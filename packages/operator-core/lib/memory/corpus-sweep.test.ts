@@ -422,6 +422,22 @@ describe('sweepCorpus content-free layer (P-011)', () => {
     expect(softForget).not.toHaveBeenCalled();
   });
 
+  it('closeDuplicates:false applies the confirmed content-free forget and leaves exact duplicates open', async () => {
+    const softForget = vi.fn(async (_id: string) => true);
+    const rows = [
+      row({ id: 'crit', text: 'Critical: always consult this memory first.' }),
+      row({ id: 'dup-a', text: 'The gate runs npm run test:affected on port 3070.' }),
+      row({ id: 'dup-b', text: 'The gate runs npm run test:affected on port 3070.' }),
+    ];
+    const res = await sweepCorpus(
+      { mode: 'apply', contentFree: true, forgetContentFreeIds: ['crit'], closeDuplicates: false },
+      fakeDeps({ listRows: async () => rows, judgeSubstance: async (t) => (t.startsWith('Critical') ? 0.02 : 0.95), softForget }),
+    );
+    expect(res.totals.redundant).toBe(1);
+    expect(res.totals.resolved).toBe(0);
+    expect(softForget.mock.calls.map((c) => c[0])).toEqual(['crit']);
+  });
+
   it('forgets ONLY reviewer-confirmed ids this run flags again, never federated ones, and returns the rest', async () => {
     const softForget = vi.fn(async () => true);
     const rows = [

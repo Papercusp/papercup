@@ -27,6 +27,14 @@ import type { IdentityActivationRequest } from './identity-activation-gate-io';
 
 export type IdentityActivationRefusal = Extract<IdentityActivationDecision, { ok: false }>;
 
+/**
+ * The SU persona-refresh `reason` for a refusal that removing stack entries cannot
+ * cure. The pty host refuses the respawn on it instead of keeping the inherited
+ * render (D-012 point 2). Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
+ * apps/operator/scripts/psu-pty-host.mjs.
+ */
+export const IDENTITY_ACTIVATION_REFUSED_REASON = 'identity-activation-refused' as const;
+
 export interface FundedSuLaunchRebuild {
   readonly rebuilt: RebuiltSuLaunchArtifact;
   /** The refusal that removed stack entries; null when every priced layer was funded. */

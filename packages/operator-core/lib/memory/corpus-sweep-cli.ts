@@ -31,6 +31,7 @@ function parseArgs(argv: string[]) {
   let contentFreeConcurrency = 4;
   let contentFreeOut: string | null = null;
   let forgetContentFreeIds: string[] | undefined;
+  let closeDuplicates = true;
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--apply') apply = true;
@@ -42,6 +43,8 @@ function parseArgs(argv: string[]) {
       forgetContentFreeIds = JSON.parse(readFileSync(argv[++i] ?? '', 'utf8')) as string[];
     }
     else if (a === '--no-judge') judgeConflicts = false;
+    // Apply only the confirmed content-free forgets; leave exact duplicates open.
+    else if (a === '--keep-duplicates') closeDuplicates = false;
     else if (a === '--verbose' || a === '-v') verbose = true;
     else if (a === '--pool') pools.push(argv[++i] ?? '');
     else if (a === '--max-pools-judged') maxPoolsJudged = Number(argv[++i] ?? 4);
@@ -56,6 +59,7 @@ function parseArgs(argv: string[]) {
     contentFreeConcurrency,
     contentFreeOut,
     forgetContentFreeIds,
+    closeDuplicates,
   };
 }
 

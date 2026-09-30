@@ -6306,11 +6306,31 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     // "Display meaningful startup progress immediately": held to the same
     // 250 ms as send feedback. The probe then times out (2 s) and PUI goes on.
     const STARTUP_PROGRESS_MS = SEND_FEEDBACK_MS;
+    // Timed in its own quiet Node process: from this worker the same binary read
+    // 194-354 ms (event-loop lateness), 18-26 ms there (WI-10004247 run 6).
+    // Median of three launches, same env and terminal as PuiPane.
+    const timerInput = {
+      bin, args: ['hud'], cwd: REPO_ROOT, cols: 120, rows: 40, launches: 3,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color',
+        LANG: process.env.LANG ?? 'en_US.UTF-8', PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`,
+        PAPERCUSP_TUI_OWNER: OWNER, ZELLIJ: '', ZELLIJ_SESSION_NAME: '', TMUX: '',
+      },
+    };
+    const { stdout: timerOut } = await promisify(execFile)(process.execPath,
+      ['--import', 'tsx', path.join(__dirname, 'startup-progress-timer.mts'), JSON.stringify(timerInput)],
+      { cwd: REPO_ROOT, timeout: 90_000 });
+    const timerLine = timerOut.split('\n').find((line) => line.startsWith('PUI_STARTUP_PROGRESS_TIMER '));
+    expect(timerLine, `startup-progress timer printed no verdict:\n${timerOut}`).toBeDefined();
+    const progressSamples = (JSON.parse(timerLine!.slice('PUI_STARTUP_PROGRESS_TIMER '.length)) as {
+      samples: Array<number | null> }).samples;
+    expect(progressSamples.every((sample) => sample !== null), JSON.stringify(progressSamples)).toBe(true);
+    const progressMs = [...progressSamples as number[]].sort((a, b) => a - b)[1];
+    if (optimised()) expect(progressMs).toBeLessThanOrEqual(STARTUP_PROGRESS_MS);
     const spawnedAt = performance.now();
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40, silentTerminal: true });
     try {
-      const progressMs = await renderedAfter(pane, () => {}, (screen) => screen.includes('Starting PUI'), 10_000);
-      if (optimised()) expect(progressMs).toBeLessThanOrEqual(STARTUP_PROGRESS_MS);
+      await pane.waitFor('Starting PUI', { timeoutMs: 10_000 });
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       const usableMs = performance.now() - spawnedAt;
       await pane.waitForGone('Starting PUI');
@@ -7395,7 +7415,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
         // block header is what proves the saved conversation was restored.
-        const AGENT_BLOCK = /^│[▸ ] agent\s/m;
+        // Chat-first prints turns inline (P-017/P-019): a reply starts with the
+        // `● ` gutter at column 0, your message with `❯ `, the cursored one `▸ `.
+        const AGENT_BLOCK = /^● \S/m;
         const restoreStarted = performance.now();
         await vi.waitFor(() => expect(pane.screen(), 'the restored chat shows the agent replies').toMatch(AGENT_BLOCK), { timeout: 60_000, interval: 250 });
         // ...all of them, in conversation order. Frame 05a once showed every
@@ -7422,7 +7444,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             expect(restored.slice(lastPromptAt), `an earlier reply after the last prompt: ${earlier}`).not.toContain(earlier);
           }
         }
-        const restoredBlocks = [...pane.screen().matchAll(/^│[▸ ] (you|agent)\s/gm)].map((match) => match[1]).join(' ');
+        const TURN_SPEAKER: Record<string, string> = { '❯': 'you', '●': 'agent', '▸': 'cursored' };
+        const restoredBlocks = [...pane.screen().matchAll(/^([❯●▸]) \S/gm)]
+          .map((match) => TURN_SPEAKER[match[1]]).join(' ');
         expect(restoredBlocks, 'restored history is in conversation order').not.toMatch(/\byou you\b/);
         log.push({ label: '05a-restored', restoreMs: Math.round(performance.now() - restoreStarted) });
         frame('05a-relaunch', pane.screen());

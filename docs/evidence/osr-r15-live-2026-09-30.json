@@ -7,12 +7,13 @@
     "VM osr18b (guest script .papercusp/scratch/osr/r18/guest-build9.sh): git fetch; git reset --hard origin/HEAD of Papercusp/papercusp-app -> PUBLIC_HEAD=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c; git status --porcelain EMPTY (STATUS_BEFORE_STANDIN)",
     "disclosed stand-in only: tauri.conf.json plugins.updater.pubkey := tester minisign pubkey; npm ci; operator-vite build; papercusp-desktop npm ci (STATUS_AFTER_INSTALL: only tauri.conf.json)",
     "PAPERCUSP_TRANSFORMERS_MODEL_CACHE=~/r18/models papercusp-desktop/bin/build-linux-local.sh (log ~/r18/build9.log, BUILD_RC=0 2026-09-30T14:07:43Z)",
-    "PATH=~/.local/bin:$PATH (syft) python3 papercusp-desktop/bin/audit-release-bundle.py --scan-artifact --licenses <each of the 3 installers> > ~/r18/lic-audit9b.log"
+    "PATH=~/.local/bin:$PATH (syft) python3 papercusp-desktop/bin/audit-release-bundle.py --scan-artifact --licenses <each of the 3 installers> > ~/r18/lic-audit9b.log",
+    ".papercusp/scratch/osr/r0026/scan.sh: same scanner, same flags, over the 3 signed 0.0.26-alpha Linux installers from the release cut (log .papercusp/scratch/osr/r0026/scan.log)"
   ],
   "exitCode": 0,
   "startedAt": "2026-09-30T13:12:42Z",
-  "finishedAt": "2026-09-30T14:10:25Z",
-  "summary": "Built from the public repo head 3c1ed9a1d7dd with ZERO source patches (git status empty after reset and after npm ci; the only modified tracked file before the build is the disclosed updater pubkey stand-in in tauri.conf.json, which a third-party builder must supply and which does not change bundled content or licenses). All three finished Linux installers pass the installer license leg with 0 UNREVIEWED and 0 denied: GUI deb (sha256 88c6c36b…) 2,078 files, 4/4 payloads covered; Server deb (8427b0d0…) 14,198 files, 648 Syft packages, 818 covered; AppImage (5a6e7e19…) 2,500 files, 338 payloads, 341 covered. The only non-permissive license outside the LGPL/MPL runtime is GNU readline linked into the bundled psql tools, shipped as the recorded aggregate component in scripts/installer-components.json (PostgreSQL AND GPL-3.0-or-later, with the offer-source obligation). No GPL-only AppImage library remains (D-013). Build-machine prerequisites, not source changes: embedding models fetched via bin/lib/transformers-models.sh into ~/r18/models, and syft in ~/.local/bin. The in-build scan pass ran without syft on PATH and reported LICENSE_GATE_RESULT status=undetermined for all three (not pass); the evidence here is the re-scan of the SAME bytes (identical sha256) with syft present. The build also rewrote package-lock.json to mark ~20 workspace entries absent from the export as extraneous (filed WI-10004261); that affects lockfile hygiene, not installer content. Scope: this certifies installers built from the public source; the 0.0.25 AppImage currently on the download channel predates D-013 and is superseded by the next published release (0.0.26).",
+  "finishedAt": "2026-09-30T17:40:00Z",
+  "summary": "Built from the public repo head 3c1ed9a1d7dd with ZERO source patches (git status empty after reset and after npm ci; the only modified tracked file before the build is the disclosed updater pubkey stand-in in tauri.conf.json, which a third-party builder must supply and which does not change bundled content or licenses). All three finished Linux installers pass the installer license leg with 0 UNREVIEWED and 0 denied: GUI deb (sha256 88c6c36b…) 2,078 files, 4/4 payloads covered; Server deb (8427b0d0…) 14,198 files, 648 Syft packages, 818 covered; AppImage (5a6e7e19…) 2,500 files, 338 payloads, 341 covered. The only non-permissive license outside the LGPL/MPL runtime is GNU readline linked into the bundled psql tools, shipped as the recorded aggregate component in scripts/installer-components.json (PostgreSQL AND GPL-3.0-or-later, with the offer-source obligation). No GPL-only AppImage library remains (D-013). Build-machine prerequisites, not source changes: embedding models fetched via bin/lib/transformers-models.sh into ~/r18/models, and syft in ~/.local/bin. The in-build scan pass ran without syft on PATH and reported LICENSE_GATE_RESULT status=undetermined for all three (not pass); the evidence here is the re-scan of the SAME bytes (identical sha256) with syft present. The build also rewrote package-lock.json to mark ~20 workspace entries absent from the export as extraneous (filed WI-10004261); that affects lockfile hygiene, not installer content. Scope: this certifies installers built from the public source; the 0.0.25 AppImage currently on the download channel predates D-013 and is superseded by the next published release (0.0.26), whose signed Linux installers already pass the same scan (assert next-distributed-candidate-0026-clean) but are not yet uploaded.",
   "assertions": [
     {
       "id": "public-head-zero-patches",
@@ -48,6 +49,16 @@
       "id": "identity-clean",
       "passed": true,
       "evidence": "build9.log: all three finished artifacts '✓ CLEAN — no sensitive/build-box identity or credential in the assembled bundle'."
+    },
+    {
+      "id": "next-distributed-candidate-0026-clean",
+      "passed": true,
+      "evidence": "0.0.26-alpha release cut (tag desktop-v0.0.26-alpha = main 29bf7350, which contains D-013 commit 7b58f326; /tmp/papercup-release-cut.log HARNESS_RESULT verdict=pass 17:07Z) signed Linux installers re-scanned 2026-09-30 17:22-17:40Z (.papercusp/scratch/osr/r0026/scan.log): GUI deb ad0db432… files=2048 payloads=4 covered=4 denied=0 unreviewed=0; Server deb 12d098a0… files=17711 syftPackages=649 covered=821 denied=0 unreviewed=0; AppImage 1524fe42… files=2852 payloads=612 covered=615 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass for all three; 0 avcodec/avformat/GPL-only matches in the log. These are the exact signed bytes the 0.0.26 updater manifest (/tmp/papercusp-latest-desktop-v0.0.26-alpha.json) points at."
+    },
+    {
+      "id": "distribution-status-disclosed",
+      "passed": true,
+      "evidence": "At 17:21Z the r2 alpha latest.json still served 0.0.25 and the 0.0.26 AppImage URL returned 404: 0.0.26 publishes only after P-521 journeys re-run and P-401 GO (su-537352a3, reply 17:3xZ). Until then the downloadable 0.0.25 AppImage predates D-013; the published hash can be checked against the sha256 values above once uploaded."
     }
   ],
   "evidencePlane": "live",

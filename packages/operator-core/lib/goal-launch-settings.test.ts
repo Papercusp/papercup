@@ -1207,6 +1207,45 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     },
   };
 
+  it("claimability:'skip' leaves claimable unmeasured without running the per-id floor count", async () => {
+    // Obligation readers never read queue.claimable, and the per-id claim-floor
+    // SQL alone exceeded their optional-read budget on a 333-row goal queue.
+    const explainIssueClaimFloors = vi.fn(async (_harness: string, ids: string[]) =>
+      ids.map(() => ({ admissible: true })));
+    vi.doMock('./work-items', () => ({ explainIssueClaimFloors }));
+    try {
+      const row = {
+        ...portfolioRow,
+        queue: {
+          ...portfolioRow.queue,
+          issueCandidates: [{ id: 'EI-1', harness: 'papercusp' }, { id: 'EI-2', harness: 'papercusp' }],
+        },
+      };
+      const read = (claimability: 'count' | 'skip') => readGoalPortfolioBrief({
+        workspaceId: WS,
+        goalId: 'goal-1',
+        sql: mockSql({ portfolio: { 'goal-1': row } }),
+        now: NOW,
+        launch,
+        claimability,
+      });
+
+      // CONTROL: the count path reaches the mocked floor count, so the skip
+      // assertion below cannot pass merely because the mock never bound.
+      const counted = await read('count');
+      expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', ['EI-1', 'EI-2']);
+      expect(counted?.queue).toMatchObject({ claimable: 2, claimabilityScope: 'issue-family' });
+
+      explainIssueClaimFloors.mockClear();
+      const skipped = await read('skip');
+      expect(explainIssueClaimFloors).not.toHaveBeenCalled();
+      expect(skipped?.queue).toMatchObject({ claimable: null, claimabilityScope: 'not-requested' });
+      expect(skipped?.degradedReasons.join(' ') ?? '').not.toContain('claimability unavailable');
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
   it('assembles ordered plan state while keeping drain and TEST activity out of plan placement', async () => {
     const seen: string[] = [];
     const brief = await readGoalPortfolioBrief({

@@ -28,14 +28,17 @@ export const EMSCRIPTEN_PROCESS_HOOKS = ['uncaughtException', 'unhandledRejectio
  * removed too; hosts register theirs at boot, long before the first phonemize call.)
  */
 export async function importWithoutProcessCrashHooks<T>(load: () => Promise<T>): Promise<T> {
-  const before = new Map(EMSCRIPTEN_PROCESS_HOOKS.map((event) => [event, new Set(process.listeners(event))]));
+  // The plain EventEmitter view: `process.listeners` is overloaded per event name and
+  // rejects a union of names.
+  const emitter: NodeJS.EventEmitter = process;
+  const before = new Map(EMSCRIPTEN_PROCESS_HOOKS.map((event) => [event, new Set(emitter.listeners(event))]));
   try {
     return await load();
   } finally {
     for (const event of EMSCRIPTEN_PROCESS_HOOKS) {
       const kept = before.get(event)!;
-      for (const listener of process.listeners(event)) {
-        if (!kept.has(listener)) process.removeListener(event, listener as (...args: unknown[]) => void);
+      for (const listener of emitter.listeners(event)) {
+        if (!kept.has(listener)) emitter.removeListener(event, listener as (...args: unknown[]) => void);
       }
     }
   }

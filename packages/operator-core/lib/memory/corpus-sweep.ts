@@ -296,6 +296,12 @@ export interface CorpusSweepOpts {
    * include_superseded). Any other listed id is returned in `contentFreeUnconfirmed`.
    */
   forgetContentFreeIds?: string[];
+  /**
+   * In `apply` mode, also close exact-duplicate redundant rows. Default true.
+   * Pass false to apply ONLY the reviewer-confirmed content-free forgets, so a
+   * content-free review never widens into an unreviewed duplicate cleanup.
+   */
+  closeDuplicates?: boolean;
 }
 
 /** A row the substance judge found content-free. Reported, never auto-resolved. */
@@ -471,7 +477,7 @@ export async function sweepCorpus(
       report.redundant += group.redundantIds.length;
       report.blocked += group.blocked.length;
       duplicates.push(group);
-      if (mode !== 'apply') continue;
+      if (mode !== 'apply' || opts.closeDuplicates === false) continue;
       for (const id of group.redundantIds) {
         try {
           if (await deps.softForget(id)) report.resolved += 1;

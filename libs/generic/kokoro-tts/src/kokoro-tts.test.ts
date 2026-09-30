@@ -40,7 +40,8 @@ describe('normalizeText (pure)', () => {
 });
 
 describe('WI-10004324: phonemizer must not install process-wide crash handlers', () => {
-  const snapshot = () => new Map(EMSCRIPTEN_PROCESS_HOOKS.map((e) => [e, process.listeners(e)]));
+  const emitter: NodeJS.EventEmitter = process;
+  const snapshot = () => new Map(EMSCRIPTEN_PROCESS_HOOKS.map((e) => [e, emitter.listeners(e)]));
 
   it('the real phonemizer DOES add crash handlers on load, and the loader removes every one of them', async () => {
     // Must be the first import of `phonemizer` in this worker: a cached module never

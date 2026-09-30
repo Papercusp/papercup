@@ -1,0 +1,341 @@
+{
+  "version": "0.0.26",
+  "channel": "alpha",
+  "sourceSha": "29bf735091518f662100b56b49821be8c83d9ee1",
+  "artifacts": [
+    {
+      "name": "Papercusp GUI.app.tar.gz",
+      "sha256": "fbca28d2ac94d0caf125d3104ff6a0db0c0d8ff6fca454d10caaa6138a3b00a9"
+    },
+    {
+      "name": "Papercusp GUI_0.0.26_amd64.deb",
+      "sha256": "ad0db4327536da2be280280997dc4c818fde995e775e0e41bb4dc7c23ab98753"
+    },
+    {
+      "name": "Papercusp GUI_0.0.26_universal-apple-darwin.dmg",
+      "sha256": "15fe6af60164ce8944355fd20f04eea7ad4d43cc6b7ac043df6482a70ff28729"
+    },
+    {
+      "name": "Papercusp GUI_0.0.26_x64-setup.exe",
+      "sha256": "1bb407e5c50380f30c2e91246576b0214d9f38062133f8c6b320bdfda1c8a406"
+    },
+    {
+      "name": "Papercusp Server.app.tar.gz",
+      "sha256": "8a6444cba92cdd0a5781634012a0c799238f03c1476a8ae75d59a5d0cfa6da57"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_amd64.deb",
+      "sha256": "12d098a06a6d13084ccc52b021d6721a6115fe28c3dbb532b7079ad6485250f3"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_universal-apple-darwin.dmg",
+      "sha256": "9e23e30d27b24ab6ecdb156d6efdf80f2ff07c034f3a6c29047fc157f948fc33"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_x64-setup-1.bin",
+      "sha256": "0083863da12a8d3e47f00a59e5998dc5270a7cc856c72260ce320c02faa3805f"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_x64-setup-2.bin",
+      "sha256": "7bb0d862f8cde381815af8de19506b703c41de552e5107bb8dbd66d6cdb8d32f"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_x64-setup-3.bin",
+      "sha256": "59482fa342feeb71f2238cfbaca306101a1f9dfb3729b24a75bb3443b7a1cd10"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_x64-setup-4.bin",
+      "sha256": "3de22f2b67b03d7ab9caceb5f3c0e75dcce4a7b0410772ec32badae349cadac7"
+    },
+    {
+      "name": "Papercusp Server_0.0.26_x64-setup.exe",
+      "sha256": "4797b4088a9b8d55ef9a1acd21c06d2df1297787fd5b0be6b37268940bee851b"
+    },
+    {
+      "name": "Papercusp_GUI_0.0.26_amd64.AppImage",
+      "sha256": "1524fe4233560625b00fb498272b94a3f39e1598249f74082552be73b13fa2c3"
+    }
+  ],
+  "provenance": {
+    "schemaVersion": 1,
+    "version": "0.0.26",
+    "channel": "alpha",
+    "sourceSha": "29bf735091518f662100b56b49821be8c83d9ee1",
+    "desktopSha": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
+    "buildSha": "ac33407a",
+    "candidateDigest": "b53863863de38c5fc61e748600727f20bd8f7de1a9a5a2e31827defed852cc85",
+    "artifacts": [
+      {
+        "name": "Papercusp GUI.app.tar.gz",
+        "sha256": "fbca28d2ac94d0caf125d3104ff6a0db0c0d8ff6fca454d10caaa6138a3b00a9",
+        "bytes": 65557672,
+        "sources": [
+          "leg:mac"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp GUI_0.0.26_amd64.deb",
+        "sha256": "ad0db4327536da2be280280997dc4c818fde995e775e0e41bb4dc7c23ab98753",
+        "bytes": 49204196,
+        "sources": [
+          "leg:linux"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp GUI_0.0.26_universal-apple-darwin.dmg",
+        "sha256": "15fe6af60164ce8944355fd20f04eea7ad4d43cc6b7ac043df6482a70ff28729",
+        "bytes": 66715192,
+        "sources": [
+          "leg:mac"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp GUI_0.0.26_x64-setup.exe",
+        "sha256": "1bb407e5c50380f30c2e91246576b0214d9f38062133f8c6b320bdfda1c8a406",
+        "bytes": 73005505,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp Server.app.tar.gz",
+        "sha256": "8a6444cba92cdd0a5781634012a0c799238f03c1476a8ae75d59a5d0cfa6da57",
+        "bytes": 5577359692,
+        "sources": [
+          "leg:mac"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp Server_0.0.26_amd64.deb",
+        "sha256": "12d098a06a6d13084ccc52b021d6721a6115fe28c3dbb532b7079ad6485250f3",
+        "bytes": 5699539512,
+        "sources": [
+          "leg:linux"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp Server_0.0.26_universal-apple-darwin.dmg",
+        "sha256": "9e23e30d27b24ab6ecdb156d6efdf80f2ff07c034f3a6c29047fc157f948fc33",
+        "bytes": 5607657089,
+        "sources": [
+          "leg:mac"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp Server_0.0.26_x64-setup-1.bin",
+        "sha256": "0083863da12a8d3e47f00a59e5998dc5270a7cc856c72260ce320c02faa3805f",
+        "bytes": 2095628032,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": false
+      },
+      {
+        "name": "Papercusp Server_0.0.26_x64-setup-2.bin",
+        "sha256": "7bb0d862f8cde381815af8de19506b703c41de552e5107bb8dbd66d6cdb8d32f",
+        "bytes": 2100000000,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": false
+      },
+      {
+        "name": "Papercusp Server_0.0.26_x64-setup-3.bin",
+        "sha256": "59482fa342feeb71f2238cfbaca306101a1f9dfb3729b24a75bb3443b7a1cd10",
+        "bytes": 2100000000,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": false
+      },
+      {
+        "name": "Papercusp Server_0.0.26_x64-setup-4.bin",
+        "sha256": "3de22f2b67b03d7ab9caceb5f3c0e75dcce4a7b0410772ec32badae349cadac7",
+        "bytes": 1941175743,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": false
+      },
+      {
+        "name": "Papercusp Server_0.0.26_x64-setup.exe",
+        "sha256": "4797b4088a9b8d55ef9a1acd21c06d2df1297787fd5b0be6b37268940bee851b",
+        "bytes": 4371885,
+        "sources": [
+          "leg:windows"
+        ],
+        "sig": true
+      },
+      {
+        "name": "Papercusp_GUI_0.0.26_amd64.AppImage",
+        "sha256": "1524fe4233560625b00fb498272b94a3f39e1598249f74082552be73b13fa2c3",
+        "bytes": 166509048,
+        "sources": [
+          "leg:linux"
+        ],
+        "sig": true
+      }
+    ],
+    "legs": [
+      {
+        "leg": "linux",
+        "path": "/mnt/data/cargo-target/.papercusp-target-slots/pid2355078/release/bundle/build-provenance.json",
+        "fileSha256": "cf71089b0c9a0450c18e70dda84b2d831eaec5e0ae6d0618a6b0bc07d263ba46",
+        "version": "0.0.26",
+        "buildSha": "ac33407a",
+        "desktopHead": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
+        "workspaceHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+        "gitDirty": false,
+        "gitDirtyAtEmit": true,
+        "reused": false,
+        "builtAtUtc": "2026-09-30T16:36:47Z",
+        "toolchain": {
+          "rustc": "1.97.1",
+          "node": "v25.9.0",
+          "tauriCli": "2.11.0"
+        },
+        "releaseHostSha256": "0ea54f0ef0aa8bd883ad3614d394a5e81e55f32c9f16b52577f5ba60ea5fa28d",
+        "sidecar": {
+          "gitHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+          "serveMjsSha256": "6ef20afb5b0476a42d593a3ab4c6f6de6da290799d7efa44d54e6e5a6e4ae6bd"
+        },
+        "artifactCount": 3
+      },
+      {
+        "leg": "windows",
+        "path": "~/papercupai-workspace/papercusp-relcut-0026/papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/build-provenance.json",
+        "fileSha256": "3f63ca26494623bcbc1735721fad218af144ba51a5f1ac9b6b8682974c321c3f",
+        "version": "0.0.26",
+        "buildSha": "ac33407a",
+        "desktopHead": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
+        "workspaceHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+        "gitDirty": false,
+        "gitDirtyAtEmit": true,
+        "reused": false,
+        "builtAtUtc": "2026-09-30T16:00:57Z",
+        "toolchain": {
+          "windowsProvenanceProducer": {
+            "schemaVersion": 1,
+            "files": [
+              {
+                "path": "emit-build-provenance.sh",
+                "sha256": "66ae017a00ff460c46d17c9229c13d351587fc8f711a7892be30ea34b9d1acde"
+              },
+              {
+                "path": "lib/windows-source-repair.js",
+                "sha256": "4c38be7a496e8bc6717fbcdeb00a1799abb6d21b59cdadea739b8687215e913a"
+              }
+            ]
+          },
+          "windowsBuildPhase": "artifact-audited-and-signed"
+        },
+        "releaseHostSha256": "0ea54f0ef0aa8bd883ad3614d394a5e81e55f32c9f16b52577f5ba60ea5fa28d",
+        "sidecar": {
+          "gitHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+          "serveMjsSha256": "6ef20afb5b0476a42d593a3ab4c6f6de6da290799d7efa44d54e6e5a6e4ae6bd"
+        },
+        "artifactCount": 6
+      },
+      {
+        "leg": "mac",
+        "path": "~/papercupai-workspace/papercusp-relcut-0026/papercusp-desktop/src-tauri/target/universal-apple-darwin/release/bundle/build-provenance.json",
+        "fileSha256": "3ca3115122b7051e19542a776c6409bf52fad15890ddedb274bb459e4856d2af",
+        "version": "0.0.26",
+        "buildSha": "ac33407a",
+        "desktopHead": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
+        "workspaceHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+        "gitDirty": false,
+        "gitDirtyAtEmit": true,
+        "reused": false,
+        "builtAtUtc": "2026-09-30T17:02:41Z",
+        "toolchain": null,
+        "releaseHostSha256": "0ea54f0ef0aa8bd883ad3614d394a5e81e55f32c9f16b52577f5ba60ea5fa28d",
+        "sidecar": null,
+        "artifactCount": 4
+      }
+    ],
+    "ledger": null,
+    "buildCommand": {
+      "tool": "release:cut",
+      "invocationId": "30228504",
+      "invokedAt": "2026-09-30T14:24:49.138Z",
+      "args": {
+        "op": "run",
+        "mac": true,
+        "root": "~/papercupai-workspace/papercusp-relcut-0026",
+        "channel": "alpha",
+        "confirm": true,
+        "version": "0.0.26",
+        "windows": true,
+        "ownerName": "Avi",
+        "sourceSha": "29bf735091518f662100b56b49821be8c83d9ee1"
+      },
+      "servingBuildSha": "9a9473af95"
+    },
+    "checks": [
+      {
+        "id": "version-agreement",
+        "status": "pass",
+        "detail": "every leg record 0.0.26/alpha"
+      },
+      {
+        "id": "source-revision",
+        "status": "pass",
+        "detail": "every leg captured workspace 29bf735091518f662100b56b49821be8c83d9ee1 at cut start"
+      },
+      {
+        "id": "desktop-pin",
+        "status": "pass",
+        "detail": "every leg built desktop ac33407aea18c075b270b9e42800fd0ecef4fbf0 and baked buildSha ac33407a (the /api/health identity)"
+      },
+      {
+        "id": "clean-source",
+        "status": "pass",
+        "detail": "every leg built from a clean source at cut start (gitDirtyAtEmit=true on linux, windows, mac: the cutter's own post-preflight writes, recorded separately by the emitter)"
+      },
+      {
+        "id": "built-not-reused",
+        "status": "pass",
+        "detail": "every leg built its artifacts in this cut"
+      },
+      {
+        "id": "sidecar-payload",
+        "status": "warn",
+        "detail": "serve.mjs 6ef20afb5b0476a42d593a3ab4c6f6de6da290799d7efa44d54e6e5a6e4ae6bd from 29bf735091518f662100b56b49821be8c83d9ee1; leg(s) mac record no sidecar block"
+      },
+      {
+        "id": "artifact-identity",
+        "status": "pass",
+        "detail": "13 artifacts, each with exactly one sha256 across every record"
+      },
+      {
+        "id": "rehash",
+        "status": "warn",
+        "detail": "no artifact was re-hashed from disk; identity rests on the emitted records"
+      },
+      {
+        "id": "ledger-corroboration",
+        "status": "warn",
+        "detail": "no release ledger row was supplied"
+      },
+      {
+        "id": "signatures",
+        "status": "warn",
+        "detail": "no co-located updater .sig at emit time: Papercusp Server_0.0.26_x64-setup-1.bin, Papercusp Server_0.0.26_x64-setup-2.bin, Papercusp Server_0.0.26_x64-setup-3.bin, Papercusp Server_0.0.26_x64-setup-4.bin (D-019 signable set decides whether each is expected)"
+      },
+      {
+        "id": "build-command",
+        "status": "pass",
+        "detail": "release:cut invocation 30228504 at 2026-09-30T14:24:49.138Z built 0.0.26/alpha from 29bf735091518f662100b56b49821be8c83d9ee1"
+      }
+    ],
+    "ok": true
+  }
+}

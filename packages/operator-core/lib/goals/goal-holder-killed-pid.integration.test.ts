@@ -262,7 +262,11 @@ describe('a KILLED goal holder (pid gone, adv_sessions.ended_at never written)',
       { workspaceId: WS, goalId: GOAL, launcherOwnerId: 'test-launcher' },
       startDeps(capture),
     );
-    expect(res).toMatchObject({ ok: true, goalId: GOAL, ownerId: REPLACEMENT });
+    expect(res, `holder restart result: ${JSON.stringify(res)}`).toMatchObject({
+      ok: true,
+      goalId: GOAL,
+      ownerId: REPLACEMENT,
+    });
     expect(capture.launched).toEqual([GOAL]);
 
     // The replacement was really attached — durable state, not just a return value.

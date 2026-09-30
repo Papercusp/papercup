@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "content-free-sweep-review",
+  "plan": "jev-performance-improvements-2026-09-30",
+  "planItem": "P-011",
+  "workItemId": "WI-10004315",
+  "reviewer": "su-f7ad1084-1707-4238-bb66-0577aa8bc067",
+  "reviewedAt": "2026-09-30T17:24:00Z",
+  "sweepReport": {
+    "path": ".papercusp/bench-reports/content-free-sweep-2026-09-30T17-10-30Z.json",
+    "sha256": "5fafa40bfc39ff99447364c579ed7d04c353fc6e1c9639a0d55358dbbf20684f",
+    "command": "npx tsx packages/operator-core/lib/memory/corpus-sweep-cli.ts --no-judge --content-free --content-free-concurrency 8 --content-free-out .papercusp/bench-reports/content-free-sweep-2026-09-30T17-10-30Z.json",
+    "mode": "report",
+    "totals": { "rows": 6358, "pools": 83, "contentFreeJudged": 5302, "contentFree": 18, "contentFreeUnanswered": 0 }
+  },
+  "rule": "Only ids with decision 'confirm' are passed to --forget-content-free-ids. The forget is a soft forget: rows stay recoverable through memory:search/list with include_superseded.",
+  "rows": [
+    { "id": "0e84a76b-b033-438a-8222-178b80dbcbb6", "pool": "120f421b-25c9-47f7-8e3b-329c0edd4bf2", "pConcrete": 0.09, "text": "test", "decision": "confirm", "reason": "The whole memory is the word 'test': a leftover write probe with no information." },
+    { "id": "2a85422c-cdc5-429e-904a-01496c78e2a7", "pool": "hive:papercusp", "pConcrete": 0.09, "text": "WI3985_PRIVATE_20260827T0138Z_b80a", "decision": "confirm", "reason": "Bare federation test marker from WI-3985 (done 2026-08-29); no information, and the test that wrote it is finished." },
+    { "id": "7b6c54cc-c33b-4c35-86cb-b3fef4dc0c36", "pool": "hive:papercusp", "pConcrete": 0.09, "text": "WI3985_SHAREABLE_20260827T0117Z_c31e", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "d817ade4-38af-46d2-b549-c0f1cbfa3aaf", "pool": "hive:papercusp", "pConcrete": 0.09, "text": "WI3985_PRIVATE_20260827T0117Z_7a92", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "5963353e-b622-4425-bcaa-2026a7e72a8a", "pool": "hive:papercusp", "pConcrete": 0.1, "text": "WI3985_SHAREABLE_20260827T0138Z_54de", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "d28f4b2c-d422-46cf-96ca-91e01c129dd3", "pool": "hive:papercusp", "pConcrete": 0.1, "text": "WI3985_SHAREABLE_20260827T0033Z_7f2c", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "302b4bcd-be9e-4871-ae5a-b2140cf81c91", "pool": "hive:papercusp", "pConcrete": 0.1, "text": "WI3985_SHAREABLE_20260827T0033Z_7f2c", "decision": "confirm", "reason": "Bare WI-3985 federation test marker (duplicate text of d28f4b2c); test finished." },
+    { "id": "0bc6ee85-b2fb-4231-a8d2-5482bc8880ea", "pool": "hive:papercusp", "pConcrete": 0.11, "text": "WI3985_PRIVATE_20260827T0033Z_91ab", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "4be29121-866c-488d-90c6-03ddb41b3a97", "pool": "hive:papercusp", "pConcrete": 0.12, "text": "WI3985_FINAL_SHAREABLE_20260827T0202Z_9c4f", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "759fcdac-febe-4a8d-958f-632b0d7bc3cc", "pool": "hive:papercusp", "pConcrete": 0.12, "text": "WI3985_FINAL_SHAREABLE_20260827T0202Z_9c4f", "decision": "confirm", "reason": "Bare WI-3985 federation test marker (duplicate text of 4be29121); test finished." },
+    { "id": "4c6ddefd-a655-4801-8cd4-1fc19d0cddf3", "pool": "hive:papercusp", "pConcrete": 0.13, "text": "WI3985_FINAL_PRIVATE_20260827T0202Z_3e71", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "ae9b5935-b757-4588-9f5d-40d441ca6b79", "pool": "hive:papercusp", "pConcrete": 0.13, "text": "WI3985_ENV_PRIVATE_20260827T0206Z_f10b", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "1bb7eabb-f12e-4b0d-8170-70a53eb6320f", "pool": "hive:papercusp", "pConcrete": 0.17, "text": "WI3985_ENV_SHAREABLE_20260827T0206Z_a642", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "41d2ee46-cebe-44dc-9f12-3990c7ef4642", "pool": "hive:papercusp", "pConcrete": 0.18, "text": "WI3985_TRACE_SHAREABLE_20260827T0211Z_6d2a", "decision": "confirm", "reason": "Bare WI-3985 federation test marker; test finished." },
+    { "id": "e740d749-5d96-4cb8-9334-f2cd3db679cf", "pool": "harness:papercusp", "pConcrete": 0.35, "text": "P-104 mem0 LIVE witness SHAREABLE marker su-bce40 2026-07-17T03:58Z — this memory should federate to peer hive", "decision": "reject", "reason": "Deliberate federation witness: it states what it is for and which session wrote it. Kept as a live canary." },
+    { "id": "d444e037-c82c-4f11-acc1-87986a9b0be1", "pool": "harness:tau2-valid-mem-1781762509", "pConcrete": 0.36, "text": "Resolution applied: Got it. Let me pull up the details for that line.", "decision": "reject", "reason": "Chat filler, but it lives in a timestamped tau2 benchmark run's own pool that no agent is fed from; changing that pool could alter the benchmark's replay. Out of scope for this sweep." },
+    { "id": "b6817cf6-1233-405e-afcb-ab6665cb49ca", "pool": "harness:papercusp", "pConcrete": 0.38, "text": "P-104 mem0 LIVE witness NON-SHAREABLE marker su-bce40 2026-07-17T03:58Z — this memory must NEVER appear on any peer", "decision": "reject", "reason": "Federation leak canary: its presence is what lets a leak be detected. Must stay." },
+    { "id": "3411cd44-6a1c-44de-a796-4565528b589a", "pool": "harness:tau2-valid-mem-1781762509", "pConcrete": 0.48, "text": "Resolution applied: No problem at all! Let me look up your account.", "decision": "reject", "reason": "Same tau2 benchmark pool as d444e037; out of scope." }
+  ],
+  "summary": { "flagged": 18, "confirm": 14, "reject": 4 }
+}
