@@ -451,11 +451,11 @@ describe('portal client-credentials grant (P-016)', () => {
  * pool does, so the store must turn the text into Dates itself.
  */
 function textTimestampRunner(rowsFor: (query: string) => Record<string, unknown>[]): AppRelayServiceRunner {
-  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
     return Promise.resolve(rowsFor(query));
-  }) as unknown as Sql & { unsafe: (text: string) => string };
-  sql.unsafe = (text: string) => text;
+  };
+  const sql = Object.assign(tag, { unsafe: (text: string) => text }) as unknown as Sql;
   return ((fn: (tx: Sql) => Promise<unknown>) => fn(sql)) as AppRelayServiceRunner;
 }
 
