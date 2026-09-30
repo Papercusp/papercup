@@ -80,6 +80,9 @@ const {
 // which the production guard must refuse. Most handler tests exercise unrelated
 // routing, so give their implicit root an isolated fixture name.
 process.env.PAPERCUSP_DESKTOP_ROOT = '/tmp/release-cut-fixture/papercusp-desktop';
+// Hermetic: a shell that declares an edit tree (the :3170 drop-in does) would otherwise
+// redirect canonicalDesktopRoot away from the fixture this suite asserts.
+delete process.env.PAPERCUSP_CANONICAL_TREE;
 
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);

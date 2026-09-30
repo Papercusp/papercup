@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { buildCutEnv } from './release-cut-launch';
+import { buildCutEnv, canonicalDesktopRoot } from './release-cut-launch';
 import { RELEASE_RESUME_VERSION_PATHS, validateReleaseResumeResidue } from './agent-tools/release/cut';
 
 function repoRoot(): string {
@@ -234,5 +234,34 @@ describe('buildCutEnv canonical root plumbing', () => {
   it('keeps LOCAL-only enforcement intact', () => {
     const env = buildCutEnv({}, 'a'.repeat(40), { ...base, canonicalDesktopRoot: '/repo/papercusp-desktop' });
     expect(env.PAPERCUSP_PUBLISH_GITHUB).toBe('0');
+  });
+});
+
+// WI-10003596: on :3170 the integration root is the committed papercusp-staging mirror,
+// which papercup-staging-sync resets. Resolving the writeback target from it sent the
+// 0.0.22–0.0.25 bumps into that mirror, and the canonical manifests never moved past 0.0.22.
+describe('canonicalDesktopRoot — the tree git-sync commits, not the serving checkout', () => {
+  const staging = {
+    PAPERCUSP_INTEGRATION_ROOT: '/ws/papercusp-staging',
+    PAPERCUSP_CANONICAL_TREE: '/ws/papercusp',
+  } as NodeJS.ProcessEnv;
+
+  it('honors the declared edit tree over the serving integration root', () => {
+    expect(canonicalDesktopRoot(staging)).toBe('/ws/papercusp/papercusp-desktop');
+  });
+
+  it('never resolves into the staging mirror when an edit tree is declared', () => {
+    expect(canonicalDesktopRoot(staging)).not.toContain('papercusp-staging');
+  });
+
+  it('falls back to the serving desktop root where no edit tree is declared', () => {
+    const saved = process.env.PAPERCUSP_DESKTOP_ROOT;
+    process.env.PAPERCUSP_DESKTOP_ROOT = '/ws/papercusp/papercusp-desktop';
+    try {
+      expect(canonicalDesktopRoot({})).toBe('/ws/papercusp/papercusp-desktop');
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_DESKTOP_ROOT;
+      else process.env.PAPERCUSP_DESKTOP_ROOT = saved;
+    }
   });
 });

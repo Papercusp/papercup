@@ -110,6 +110,17 @@ export function integrationRoot(): string {
 export function desktopRoot(): string {
   return process.env.PAPERCUSP_DESKTOP_ROOT ?? path.join(integrationRoot(), 'papercusp-desktop');
 }
+/** The papercusp-desktop checkout git-sync commits — where a cut's version bump must be
+ *  written back (WI-10001570). NOT {@link desktopRoot}: on :3170 the integration root is the
+ *  committed `papercusp-staging` mirror, which papercup-staging-sync resets, so every cut
+ *  launched there wrote its bump into a tree nothing commits and the canonical manifests sat
+ *  at 0.0.22 through 0.0.23–0.0.25 (WI-10003596). `PAPERCUSP_CANONICAL_TREE` is the explicit
+ *  edit-tree declaration the staging drop-in sets (same rule as resolveEditTreeRoot); where it
+ *  is unset the serving tree IS the edit tree. */
+export function canonicalDesktopRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const declared = env.PAPERCUSP_CANONICAL_TREE?.trim();
+  return declared ? path.join(path.resolve(declared), 'papercusp-desktop') : desktopRoot();
+}
 
 export interface CutLegs {
   mac?: boolean;

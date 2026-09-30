@@ -64,6 +64,7 @@ import {
   desktopReleaseTag,
   buildCutArgv,
   desktopRoot,
+  canonicalDesktopRoot,
   integrationRoot,
   isValidVersion,
   isValidSourceSha,
@@ -255,7 +256,8 @@ function cutRuntimeEnv(
     // launched against an isolated worktree must be TOLD where canonical is — its
     // .git is an independent clone and the push leg is deleted under LOCAL-only,
     // so otherwise the bump has no route back and dies with the worktree.
-    canonicalDesktopRoot: desktopRoot(),
+    // The tree git-sync commits, never the serving checkout (WI-10003596).
+    canonicalDesktopRoot: canonicalDesktopRoot(),
     // Restores parity with a manual `bin/release-local.sh` run, where this lever has
     // always worked because a shell passes its whole environment down. The detached cut
     // is launched with an explicit env allowlist, so without this the operator's own
