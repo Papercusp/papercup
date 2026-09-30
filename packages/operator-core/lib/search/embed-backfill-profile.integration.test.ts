@@ -65,10 +65,8 @@ describe('profile-aware backfill against live catalog width', () => {
     // This is the runBackfillSweep call boundary: a skewed target is excluded
     // before backfillTable can call the embedder or issue UPDATE.
     if (inspection.widthSkew.length === 0) {
-      await backfillTable(sql, TARGET, embed, 1, 'gemma', inspection.spaceAware, undefined, {
-        profileColPresent: inspection.profileColPresent,
-        profile: EMBEDDER_DIM_SPECS.gemma,
-      });
+      await backfillTable(sql, TARGET, { embed: embed, maxRows: 1, mode: 'gemma', spaceAware: inspection.spaceAware, profileColPresent: inspection.profileColPresent,
+        profile: EMBEDDER_DIM_SPECS.gemma });
     }
 
     expect(embed).not.toHaveBeenCalled();
@@ -81,10 +79,8 @@ describe('profile-aware backfill against live catalog width', () => {
     // embedder, then PostgreSQL rejects the wrong-width write. That contrast is
     // the evidence that the production guard prevents a real attempted write.
     const bypass = vi.fn(async () => new Array(768).fill(0.1));
-    const stats = await backfillTable(sql, TARGET, bypass, 1, 'gemma', true, undefined, {
-      profileColPresent: true,
-      profile: EMBEDDER_DIM_SPECS.gemma,
-    });
+    const stats = await backfillTable(sql, TARGET, { embed: bypass, maxRows: 1, mode: 'gemma', spaceAware: true, profileColPresent: true,
+      profile: EMBEDDER_DIM_SPECS.gemma });
     expect(bypass).toHaveBeenCalledTimes(1);
     expect(stats).toMatchObject({ scanned: 1, embedded: 0, errors: 1 });
   });

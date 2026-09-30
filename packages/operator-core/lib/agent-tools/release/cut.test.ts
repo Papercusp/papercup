@@ -979,6 +979,8 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     expect(b.legs).toEqual({ mac: true });
     expect(b.unit).toBe('papercup-release-cut-mac');
     expect(b.wouldRun).toMatch(/--unit=papercup-release-cut-mac/);
+    expect(b.note).toContain('completed same-version Linux leg');
+    expect(b.note).toContain('op:run');
     expect(launchM).not.toHaveBeenCalled();
   });
   it('confirm:true fires the detached LOCAL leg with only that platform\'s flag set', async () => {

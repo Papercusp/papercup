@@ -1621,6 +1621,92 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
     );
   });
 
+  it('preserves a native Codex usage-limit cause and routes the fire through lifecycle recovery', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const error = {
+      source: 'event_msg:error' as const,
+      code: 'usage_limit_exceeded',
+      rawCode: 'usageLimitExceeded',
+      message: 'Try again at Oct 3rd, 2026 5:30 PM.',
+      retryAt: 'Oct 3rd, 2026 5:30 PM',
+      account: null,
+      timestamp: '2026-09-30T00:00:00Z',
+      turnKey: 'turn-1',
+    };
+    const res = await reconcileLoopRoutines({
+      sql: fakeSql([settledRow({ codex_adv_session_id: 30858 })], updates),
+      nowMs: Date.parse('2026-09-30T00:01:00Z'),
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow: vi.fn(async () => 0),
+      readCodexProviderErrorAfter: vi.fn(async (sessionKey, afterMs) => {
+        expect(sessionKey).toBe(30858);
+        expect(afterMs).toBe(T0);
+        return error;
+      }),
+      recordZeroToolFireObservation: vi.fn(async () => ({
+        counted: true,
+        streak: 1,
+        toolCalls: 0,
+        fireToken: new Date(T0).toISOString(),
+        threshold: 3,
+        atThreshold: false,
+      })),
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-zero-tool', 'loop-lifecycle-death:usage_limit', 'error');
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(expect.objectContaining({
+      verdict: expect.objectContaining({
+        reason: 'usage_limit',
+        evidence: expect.stringContaining('usage_limit_exceeded'),
+      }),
+    }));
+  });
+
+  it('includes the native Codex usage-limit code in the existing R4 pause alert', async () => {
+    const updates: unknown[][] = [];
+    const autoPauseLoopRoutine = vi.fn(async () => {});
+    const error = {
+      source: 'event_msg:error' as const,
+      code: 'usage_limit_exceeded',
+      rawCode: 'usageLimitExceeded',
+      message: null,
+      retryAt: null,
+      account: null,
+      timestamp: '2026-09-30T00:00:00Z',
+      turnKey: 'turn-1',
+    };
+    await reconcileLoopRoutines({
+      sql: fakeSql([settledRow({ codex_adv_session_id: 30858 })], updates),
+      nowMs: T0 + 10_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow: vi.fn(async () => 0),
+      readCodexProviderErrorAfter: vi.fn(async () => error),
+      recordZeroToolFireObservation: vi.fn(async () => ({
+        counted: true,
+        streak: 3,
+        toolCalls: 0,
+        fireToken: new Date(T0).toISOString(),
+        threshold: 3,
+        atThreshold: true,
+      })),
+      autoPauseLoopRoutine,
+      zeroToolThreshold: 3,
+    });
+
+    expect(autoPauseLoopRoutine).toHaveBeenCalledWith(
+      expect.anything(),
+      'rt-zero-tool',
+      expect.stringContaining('native Codex event_msg:error reported code=usage_limit_exceeded'),
+      'loop-zero-tool-escalation',
+    );
+  });
+
   it('unavailable tool-call evidence fails open and preserves the existing re-arm', async () => {
     const updates: unknown[][] = [];
     const recordZeroToolFireObservation = vi.fn();

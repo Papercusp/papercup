@@ -812,6 +812,52 @@ describe('upsertUnaccounted scope identity', () => {
     expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
   });
 
+  it('persists unaccounted cgroup metrics and preserves lifecycle probes on refresh', async () => {
+    const taskId = 't-unaccounted-metrics';
+    const group = {
+      taskId,
+      cgroupPath: '/sys/fs/cgroup/papercusp.slice/t-unaccounted-metrics.scope',
+      scopeUnit: 't-unaccounted-metrics.scope',
+      pids: [11],
+      sampleCmdline: 'unaccounted worker',
+      metrics: {
+        lastMemoryBytes: 1024,
+        peakMemoryBytes: 2048,
+        cpuUsec: 55,
+        pidsCurrent: 2,
+      },
+    };
+    const probe = {
+      version: 1,
+      launcherEndedSinceMs: null,
+      logPath: null,
+      logMtimeMs: null,
+      cpuUsec: 55,
+      cpuSampledAtMs: 123,
+      lastActivityAtMs: null,
+    };
+
+    await store.upsertUnaccounted([group], { workspaceId: WS });
+    await store.mergeTaskLifecycleProbes([{ taskId, probe }]);
+    await store.upsertUnaccounted(
+      [{ ...group, pids: [11, 12], metrics: { ...group.metrics, cpuUsec: 89, pidsCurrent: 4 } }],
+      { workspaceId: WS },
+    );
+
+    const row = (await store.listLifecycleJudgementTasks({ workspaceId: WS })).find((item) => item.taskId === taskId);
+    expect(row).toMatchObject({
+      lastMemoryBytes: 1024,
+      peakMemoryBytes: 2048,
+      cpuUsec: 89,
+      pidsCurrent: 4,
+      detail: {
+        pids: [11, 12],
+        scopeUnit: group.scopeUnit,
+        processLifecycleProbe: probe,
+      },
+    });
+  });
+
   it('redacts credential-bearing residue titles before persisting and on conflict refresh', async () => {
     const group = {
       taskId: 't-redaction',

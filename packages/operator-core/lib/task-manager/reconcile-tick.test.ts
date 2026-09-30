@@ -8,7 +8,7 @@ const store = vi.hoisted(() => ({
   stranded: [] as { taskId: string; reason: string }[],
   endedUnobserved: [] as { taskId: string; reason: string; terminalProvenance?: unknown }[],
   recovered: [] as { taskId: string; state: string; exitCode: number | null; reason: string }[],
-  upserted: [] as { taskId: string }[],
+  upserted: [] as { taskId: string; metrics?: unknown }[],
   cleared: [] as string[][],
 }));
 
@@ -30,7 +30,7 @@ vi.mock('./store', () => ({
     store.recovered.push(...v);
     return v.length;
   },
-  upsertUnaccounted: async (g: { taskId: string }[]) => {
+  upsertUnaccounted: async (g: { taskId: string; metrics?: unknown }[]) => {
     store.upserted.push(...g);
     return g.map((x) => x.taskId);
   },
@@ -170,11 +170,25 @@ describe('reconcileTick — happy path', () => {
             cmdline: 'rogue',
           }),
         ]),
-      fs: memFs({}),
+      fs: memFs({
+        [`/sys/fs/cgroup${cgroupPath}/memory.current`]: '4096',
+        [`/sys/fs/cgroup${cgroupPath}/memory.peak`]: '8192',
+        [`/sys/fs/cgroup${cgroupPath}/cpu.stat`]: 'usage_usec 9876\n',
+        [`/sys/fs/cgroup${cgroupPath}/pids.current`]: '2',
+      }),
       notify,
     };
     const first = await reconcileTick(args);
     expect(first.unaccountedPersisted).toBe(1);
+    expect(store.upserted[0]).toMatchObject({
+      taskId: expect.any(String),
+      metrics: {
+        lastMemoryBytes: 4096,
+        peakMemoryBytes: 8192,
+        cpuUsec: 9876,
+        pidsCurrent: 2,
+      },
+    });
     expect(first.confirmedUnaccounted).toEqual([]);
     expect(notify).not.toHaveBeenCalled();
 

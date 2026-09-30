@@ -456,7 +456,7 @@ defineTool({
     // hard cap at 1875 total) — the detailed WI-5685 race-condition explanation now
     // lives ONLY on the candidateSha arg's own .describe() (still full detail there,
     // uncounted by the prompt-weight budget), not duplicated here.
-    "Sleep until the pipeline green-checkpoint resolves — arms awaits on release:green:<pipeline> (passed), green-checkpoint:red:<pipeline> (held), and green-checkpoint:inconclusive:<pipeline> (no verdict — a wedge; payload.reason names why). candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). An already-judged candidateSha returns already_judged, not a dead wait. runId binds to the exact judging run. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
+    "Sleep until the pipeline green-checkpoint resolves — arms awaits on release:green:<pipeline> (passed), green-checkpoint:red:<pipeline> (held), and green-checkpoint:inconclusive:<pipeline> (no verdict — a wedge; payload.reason names why). candidateSha (EI-12457) binds to your exact candidate; omit it to wake on any candidate and lineage-check payload.sha via release:trace — see the candidateSha arg description for the WI-5685 race caveat (a later candidate that still contains your commit will NOT wake a sha-bound await). An already-judged candidateSha returns already_judged, not a dead wait. runId binds to the exact judging run; without pipeline it uses global keys filtered by runId, so a run from another co-hosted install still wakes you. pipeline overrides; global:true = every co-hosted pipeline. Re-arming retires your prior pending wait. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You need the gate verdict — green (your change cleared into main) or held/red — before proceeding, instead of re-polling dev:pipeline_position / dev:build_status.",
@@ -495,7 +495,8 @@ defineTool({
       .optional()
       .describe(
         "Scope to ONE pipeline's gate — the repo basename of its integration root (e.g. 'papercusp'). " +
-          "Omit to default to the current dev pipeline. Use global:true for the global keys, which wake " +
+          "Omit to default to the current dev pipeline, unless runId is supplied (then global keys are " +
+          "filtered to that exact run). Use global:true for the global keys, which wake " +
           "on EVERY co-hosted pipeline's verdict (EI-7646: you then must lineage-check payload.sha/payload.pipeline yourself).",
       ),
     candidateSha: z
@@ -525,8 +526,9 @@ defineTool({
       .describe(
         "WI-4957: bind further to the EXACT run (payload.runId, an exact match) that judged your candidate — " +
           "only needed when two runs might judge the SAME candidate sha (a re-fire, or a routine/manual race) " +
-          "and you must not accept the other one's verdict. Combines with candidateSha (both must match); rarely " +
-          "needed on its own.",
+          "and you must not accept the other one's verdict. With no explicit pipeline, runId uses the global " +
+          "event keys so the exact run can be awaited across co-hosted installs. Combines with candidateSha " +
+          "(both must match); rarely needed on its own.",
       ),
     global: z
       .boolean()
@@ -545,7 +547,8 @@ defineTool({
   async handler(args, ctx) {
     const pipeline = args.global
       ? undefined
-      : (args.pipeline ?? (await defaultCheckpointPipeline()));
+      : (args.pipeline ??
+        (args.runId ? undefined : await defaultCheckpointPipeline()));
     const keys = [
       buildKey("checkpoint", { pipeline }),
       buildKey("checkpoint-red", { pipeline }),

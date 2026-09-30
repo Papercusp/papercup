@@ -171,6 +171,21 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toContain('ARM A WAKE:');
   });
 
+  it('diagnoses a delivered wake with no loop-origin turn and repairs the existing path', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 80,
+      unreadInbox: 0,
+      rewakeGuaranteed: false,
+      activeLoopRewakeBlockedReason: 'last-fire-no-loop-turn',
+      selfCompactionAvailable: false,
+    });
+
+    expect(v.guidance).toContain('lastDeliveryOutcome=\'loop-delivered-wake-no-loop-turn\'');
+    expect(v.guidance).toContain('repair the EXISTING loop state');
+    expect(v.guidance).toContain('confirm a loop-origin turn before settling');
+    expect(v.guidance).not.toContain('ARM A WAKE:');
+  });
+
   it('a CLOSED gate WITH a guarantee keeps the base settle guidance', () => {
     const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true });
     expect(v.shouldContinue).toBe(false);

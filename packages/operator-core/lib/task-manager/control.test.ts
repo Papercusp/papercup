@@ -42,6 +42,9 @@ vi.mock('./store', () => ({
 
 const { killTask, killScopeUnit, freezeTask, thawTask, limitTask, verifyPidStillOurs } = await import('./control');
 
+/** Where a live Papercusp transient scope sits, as `systemctl show -p ControlGroup` prints it. */
+const USER_SCOPE_PREFIX = '/user.slice/user-1000.slice/user@1000.service/papercusp.slice';
+
 function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
   const r: TaskRow = {
     workspaceId: 'w',
@@ -236,16 +239,89 @@ describe('killTask — confined path', () => {
       execFileAsync: (async (_f: string, args: string[]) => {
         calls.push(args);
         if (args.includes('--signal=SIGKILL')) throw new Error('systemd bus disconnected during escalation');
-        return { stdout: '', stderr: '' };
+        // systemd still knows the unit: this failure is not a collected scope.
+        return { stdout: args[1] === 'show' ? `${USER_SCOPE_PREFIX}/pc-failedkill.scope\n` : '', stderr: '' };
       }) as never,
     });
     expect(calls).toEqual([
       ['--user', 'kill', '--signal=SIGTERM', 'pc-failedkill.scope'],
       ['--user', 'kill', '--signal=SIGKILL', 'pc-failedkill.scope'],
+      ['--user', 'show', '-p', 'ControlGroup', '--value', 'pc-failedkill.scope'],
     ]);
     expect(out).toMatchObject({ ok: false, error: 'command_failed', detail: expect.stringContaining('systemd bus disconnected') });
     expect(out.detail).not.toContain('no retry is required');
     expect(store.closed).toHaveLength(0);
+  });
+
+  // WI-10004447: su-session-stdio-peer close() waited 5 s, the real omp engine
+  // exited just after, systemd collected its scope, and the SIGKILL failed with
+  // `Unit … not loaded`, which surfaced as a teardown failure.
+  const notLoaded = (unit: string) => new Error(
+    `Command failed: systemctl --user kill --signal=SIGKILL ${unit}\nFailed to kill unit ${unit}: Unit ${unit} not loaded.`);
+
+  it('WI-10004447: a scope collected before the signal is already_gone, not command_failed, and the row stays open', async () => {
+    row({ taskId: 'raced' });
+    const calls: string[][] = [];
+    const out = await killTask('raced', {
+      signal: 'SIGKILL',
+      sleep: async () => {},
+      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'kill') throw notLoaded('pc-raced.scope');
+        return { stdout: args[1] === 'show' ? '\n' : '', stderr: '' };
+      }) as never,
+    });
+    expect(calls.map((a) => a[1])).toEqual(['kill', 'show']);
+    expect(out).toMatchObject({ ok: false, error: 'already_gone', detail: expect.stringContaining('no longer known to systemd') });
+    // The exit watcher records the payload's own exit; killTask did not kill it.
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('WI-10004447: a failed signal on a unit systemd still knows stays command_failed', async () => {
+    row({ taskId: 'stillknown' });
+    const out = await killTask('stillknown', {
+      signal: 'SIGKILL',
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'kill') throw new Error('Access denied');
+        return { stdout: args[1] === 'show' ? `${USER_SCOPE_PREFIX}/pc-stillknown.scope\n` : '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'command_failed', detail: expect.stringContaining('Access denied') });
+    expect(store.closed).toHaveLength(0);
+  });
+
+  it('WI-10004447: a scope collected between SIGTERM and the SIGKILL escalation verifies empty instead of failing', async () => {
+    row({ taskId: 'racedescalation' });
+    // Alive when the escalation is decided; it exits and systemd collects the
+    // scope just before the SIGKILL lands.
+    let alive = true;
+    const out = await killTask('racedescalation', {
+      escalateAfterMs: 1,
+      sleep: async () => {},
+      fs: { readFile: () => (alive ? '4242\n' : ''), readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args.includes('--signal=SIGKILL')) { alive = false; throw notLoaded('pc-racedescalation.scope'); }
+        return { stdout: args[1] === 'show' ? (alive ? `${USER_SCOPE_PREFIX}/pc-racedescalation.scope\n` : '\n') : '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, taskId: 'racedescalation' });
+    expect((out as { detail: string }).detail).not.toContain('escalated to SIGKILL');
+  });
+
+  it('WI-10004447: killScopeUnit treats a scope collected before its signal as already_gone', async () => {
+    let showCalls = 0;
+    const out = await killScopeUnit('pc-racedunit.scope', {
+      fs: { readFile: () => '777\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args[1] === 'kill') throw notLoaded('pc-racedunit.scope');
+        // First `show` resolves the live scope; the re-ask after the failed kill finds it collected.
+        return { stdout: args[1] === 'show' ? (showCalls++ === 0 ? `${USER_SCOPE_PREFIX}/pc-racedunit.scope\n` : '\n') : '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'already_gone' });
   });
 
   it('EI-22074929140199832: verifies the SCOPE, not the stored cgroup_path — a mismatched path never becomes a phantom survivor', async () => {
@@ -627,6 +703,8 @@ describe('killScopeUnit — explicit orphan-scope teardown', () => {
     expect(calls.slice(1)).toEqual([
       ['--user', 'kill', '--signal=SIGTERM', 'pc-orphan123.scope'],
       ['--user', 'kill', '--signal=SIGKILL', 'pc-orphan123.scope'],
+      // A failed escalation re-asks systemd whether the scope was collected (WI-10004447).
+      ...(failure ? [['--user', 'show', '-p', 'ControlGroup', '--value', 'pc-orphan123.scope']] : []),
     ]);
     if (failure) {
       expect(out).toMatchObject({ ok: false, error: 'command_failed', detail: expect.stringContaining('systemd bus disconnected') });

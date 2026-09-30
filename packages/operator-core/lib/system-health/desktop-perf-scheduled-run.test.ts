@@ -15,13 +15,26 @@ function fakeChild() {
   return ee;
 }
 
-function io(overrides: Partial<DesktopPerfScheduledRunIO> = {}): {
+function io(
+  overrides: Partial<DesktopPerfScheduledRunIO> & { buildExitCode?: number; autoCloseBuild?: boolean } = {},
+): {
   io: DesktopPerfScheduledRunIO;
+  buildChild: ReturnType<typeof fakeChild>;
   child: ReturnType<typeof fakeChild>;
   spawnFn: ReturnType<typeof vi.fn>;
 } {
+  const buildChild = fakeChild();
   const child = fakeChild();
-  const spawnFn = vi.fn(() => child as never);
+  let spawnCount = 0;
+  const spawnFn = vi.fn(() => {
+    if (spawnCount++ === 0) {
+      if (overrides.autoCloseBuild !== false) {
+        queueMicrotask(() => buildChild.emit('close', overrides.buildExitCode ?? 0));
+      }
+      return buildChild as never;
+    }
+    return child as never;
+  });
   return {
     io: {
       spawnFn: spawnFn as unknown as DesktopPerfScheduledRunIO['spawnFn'],
@@ -30,6 +43,7 @@ function io(overrides: Partial<DesktopPerfScheduledRunIO> = {}): {
       // that care about the no-row guard override this explicitly.
       readNewestRunTs: overrides.readNewestRunTs ?? advancingWatermark(),
     },
+    buildChild,
     child,
     spawnFn,
   };
@@ -63,7 +77,7 @@ describe('runDesktopPerfScheduledRun', () => {
   // throws (Node's default), and a 'close'/'data' emit with no listener is
   // just silently dropped, which hangs the test until it times out.
   async function flushReadEnabledTick(): Promise<void> {
-    await Promise.resolve();
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
   }
 
   it('spawns `npm run test:all` in the wdio dir and resolves ran:true on a clean exit', async () => {
@@ -77,11 +91,34 @@ describe('runDesktopPerfScheduledRun', () => {
     expect(typeof r.durationMs).toBe('number');
     // `test:all` is the script that boots the packaged binary; the package's plain `test`
     // is the headless runner-guard suite the gate runs (WI-10003821) and produces no measures.
-    expect(spawnFn).toHaveBeenCalledWith(
+    expect(spawnFn).toHaveBeenNthCalledWith(
+      1,
+      'npm',
+      ['run', 'build'],
+      expect.objectContaining({ cwd: expect.stringContaining('papercusp-desktop') }),
+    );
+    expect(spawnFn).toHaveBeenNthCalledWith(
+      2,
       'npm',
       ['run', 'test:all'],
       expect.objectContaining({ cwd: expect.stringContaining('tools/perf-test/wdio') }),
     );
+  });
+
+  it('skips WDIO when the release build fails so an older package is never measured', async () => {
+    const { io: fakeIo, child, spawnFn } = io({ buildExitCode: 23 });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const r = await runDesktopPerfScheduledRun(fakeIo);
+      expect(r.ran).toBe(false);
+      expect(r.skippedReason).toMatch(/release build exited 23/);
+      expect(r.buildExitCode).toBe(23);
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('skipping WDIO'));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('spawns a wdio script that really runs the WDIO suite, not just the unit guards', async () => {
@@ -221,6 +258,32 @@ describe('runDesktopPerfScheduledRun', () => {
     } finally {
       vi.useRealTimers();
       warnSpy.mockRestore();
+    }
+  });
+
+  it('kills a hung release build and never starts WDIO against the stale artifact', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { io: fakeIo, buildChild, child, spawnFn } = io({ autoCloseBuild: false });
+      const kill = vi.fn();
+      (buildChild as unknown as { kill: typeof kill }).kill = kill;
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000 + 1);
+      const r = await p;
+      expect(r.ran).toBe(false);
+      expect(r.buildTimedOut).toBe(true);
+      expect(kill).toHaveBeenCalledWith('SIGKILL');
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+      expect(child.listenerCount('close')).toBe(0);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('release build timed out'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('skipping WDIO'));
+    } finally {
+      vi.useRealTimers();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 });

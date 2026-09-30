@@ -187,6 +187,31 @@ const call = async (n) => {
     expect(summarize(runs)).toMatchObject({ runs: 3, clean: 3, failed: 0, diverged: 0, served: { exact: 6, exhausted: 0 } });
   });
 
+  it('sweep runs every selected session exactly once across the slots', async () => {
+    for (const id of ['claude-s2', 'claude-s3']) {
+      mkdirSync(path.join(root, 'corpus', id), { recursive: true });
+      writeFileSync(path.join(root, 'corpus', id, 'exchanges.jsonl'), readFileSync(path.join(root, 'corpus', 'claude-s1', 'exchanges.jsonl')));
+    }
+    const runs = await drive({
+      cacheDir: path.join(root, 'cache'),
+      agents: 2,
+      sessions: ['claude-s1', 'claude-s2', 'claude-s3'].map((id) => meta({ id })),
+      corpus,
+      corpusDir: path.join(root, 'corpus'),
+      outDir: path.join(root, 'out'),
+      runId: 'S',
+      speed: 0,
+      staggerMs: 0,
+      durationSec: 3600,
+      isolation: 'none',
+      keepWork: false,
+      sweep: true,
+    });
+    expect(runs.map((r) => r.sessionId).sort()).toEqual(['claude-s1', 'claude-s2', 'claude-s3']);
+    expect(new Set(runs.map((r) => r.slot))).toEqual(new Set([0, 1]));
+    expect(summarize(runs)).toMatchObject({ runs: 3, clean: 3, diverged: 0, served: { exact: 6, exhausted: 0 } });
+  });
+
   it('flags a replay that ran past its recording as diverged and failed', async () => {
     process.env.FAKE_EXTRA = '1';
     const [r] = await run(1);

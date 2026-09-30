@@ -1638,6 +1638,7 @@ export async function upsertUnaccounted(
     scopeUnit: string | null;
     pids: number[];
     sampleCmdline: string;
+    metrics?: TaskMetrics;
   }[],
   opts: { workspaceId?: string } = {},
   inject?: Sql,
@@ -1656,21 +1657,35 @@ export async function upsertUnaccounted(
     await sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
-        launched_by, scope_unit, cgroup_path, pid, confined, state, detail
+        launched_by, scope_unit, cgroup_path, pid, confined, state, detail,
+        last_memory_bytes, peak_memory_bytes, cpu_usec, pids_current
       ) VALUES (
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
         ${title},
         '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
-        ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb
+        ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb,
+        ${g.metrics?.lastMemoryBytes ?? null}, ${g.metrics?.peakMemoryBytes ?? null},
+        ${g.metrics?.cpuUsec ?? null}, ${g.metrics?.pidsCurrent ?? null}
       )
       ON CONFLICT (task_id) DO UPDATE
         SET title = EXCLUDED.title,
             scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
             last_seen_at = now(),
             updated_at = now(),
+            last_memory_bytes = EXCLUDED.last_memory_bytes,
+            peak_memory_bytes = EXCLUDED.peak_memory_bytes,
+            cpu_usec = EXCLUDED.cpu_usec,
+            pids_current = EXCLUDED.pids_current,
             state = CASE WHEN harness_shared.task_ledger.ended_at IS NULL
                          THEN 'unaccounted' ELSE harness_shared.task_ledger.state END,
-            detail = ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb
+            -- A lifecycle probe is written independently between reconcile
+            -- ticks; refresh residue facts without erasing that restart-safe
+            -- activity clock (or any other ledger detail).
+            detail = (CASE
+                        WHEN jsonb_typeof(harness_shared.task_ledger.detail) = 'object'
+                          THEN harness_shared.task_ledger.detail
+                        ELSE '{}'::jsonb
+                      END) || EXCLUDED.detail
     `;
     seen.push(g.taskId);
   }

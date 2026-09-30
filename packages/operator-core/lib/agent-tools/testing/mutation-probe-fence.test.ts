@@ -189,6 +189,22 @@ describe('mutationProbeRefusal narrowing', () => {
     await expect(mutationProbeRefusal(dir, ['tests/prose.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
   });
 
+  it('does not mistake `new Set()` for a path segment named by the probe stem', async () => {
+    const dir = checkout({ ...base,
+      'src/other.ts': 'export const values = new Set();\n',
+      'tests/other.test.ts': "import { values } from '../src/other';\nexport default values;\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/other.test.ts'], probe('plans/new.ts'))).resolves.toBeNull();
+  });
+
+  it('still fences a runtime-assembled path when a string literal contains the probe stem as a path segment', async () => {
+    const dir = checkout({ ...base,
+      'src/loader.ts': "export const target = 'plans/' + 'new' + '.ts';\n",
+      'tests/loader.test.ts': "import { target } from '../src/loader';\nexport default target;\n" });
+    const refusal = await mutationProbeRefusal(dir, ['tests/loader.test.ts'], probe('plans/new.ts'));
+    expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+    expect(refusal!.hint).toContain('loader.ts names new');
+  });
+
   it('refuses a test that imports the probed source, directly or transitively', async () => {
     const dir = checkout({ ...base,
       'tests/direct.test.ts': "import { subject } from '../src/subject';\nexport default subject;\n",

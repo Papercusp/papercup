@@ -85,7 +85,7 @@ function pruneCpuSamples(nowMs: number): void {
 }
 
 function currentCpuBusyPercent(taskId: string, cpuUsec: number | null | undefined, sampledAtMs: number): number | null {
-  if (cpuUsec == null) return null;
+  if (cpuUsec == null || !Number.isFinite(sampledAtMs) || sampledAtMs <= 0) return null;
   const next = { cpuUsecTotal: cpuUsec, sampledAtMs };
   const previous = cpuSamples.get(taskId);
   cpuSamples.set(taskId, next);
@@ -389,7 +389,11 @@ export default defineTool({
                 rssMb: mb(r.lastMemoryBytes),
                 peakRssMb: mb(r.peakMemoryBytes),
                 cpuSec: r.cpuUsec == null ? null : Math.round(r.cpuUsec / 1_000_000),
-                cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, sampledAtMs),
+                // cpuUsec is the last persisted cgroup sample. Using the request time
+                // here makes repeated reads of that same snapshot look like a new idle
+                // interval, producing a confident 0. lastSeenAt is written alongside
+                // the metric refresh, so identical snapshots share the same sample time.
+                cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, Date.parse(r.lastSeenAt)),
                 pids: r.state === 'unaccounted' && args.live
                   ? unaccountedPids.get(r.taskId)?.length ?? null
                   : r.pidsCurrent,

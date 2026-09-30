@@ -52,9 +52,10 @@
 
 import { hostname as osHostname, userInfo } from 'node:os';
 import { homedir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { open, readdir, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // Imported, never re-declared: the owner-name env key is ONE truth and a second copy of it
 // here is exactly how these three gates drifted apart in the first place.
 import { OWNER_NAME_ENV } from './release-content-scrub';
@@ -84,6 +85,53 @@ export type IdentityKey =
   | `release-literal:${number}`;
 
 export type IdentityLiterals = ReadonlyMap<IdentityKey, string>;
+
+/** Preserve the real host across the audit's neutralized UTS namespace. */
+export function mergeReleaseSeedRedactionValues(output: string, realHostname?: string): readonly string[] {
+  return [...new Set([
+    realHostname?.trim(),
+    ...output.split(/\r?\n/).map((line) => line.split('\t', 1)[0]?.trim()),
+  ].filter((value): value is string => !!value && value.length >= 3))];
+}
+
+/** ONE release literal source for fresh cuts, reused cuts, and seed usability checks. */
+export function releaseSeedRedactionValues(
+  root?: string,
+  env: NodeJS.ProcessEnv = process.env,
+): readonly string[] {
+  const workspaceRoot = root ?? env.PAPERCUSP_WORKSPACE_ROOT ??
+    resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const audit = join(workspaceRoot, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
+  const result = spawnSync('python3', [audit, '--identity-literals'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env,
+  });
+  if (result.status !== 0) {
+    const detail = typeof result.stderr === 'string' ? result.stderr.trim() : '';
+    throw new Error(`[seed-identity] could not resolve release identity literals from ${audit}${detail ? `: ${detail}` : ''}`);
+  }
+  return mergeReleaseSeedRedactionValues(result.stdout ?? '', env[SEED_REAL_HOSTNAME_ENV]);
+}
+
+/** Keep matching, de-duplication, and neutral-host handling identical in both callers. */
+export function mergeSeedIdentityLiterals(
+  machine: IdentityLiterals,
+  extraLiterals: readonly string[],
+  neutralHostname: string,
+): IdentityLiterals {
+  const merged = new Map<IdentityKey, string>(machine);
+  const known = new Set([...machine.values()].map((v) => v.toLowerCase()));
+  const neutral = neutralHostname.trim().toLowerCase();
+  let n = 0;
+  for (const lit of extraLiterals) {
+    const value = lit.trim();
+    if (value.length < 3 || known.has(value.toLowerCase()) || value.toLowerCase() === neutral) continue;
+    known.add(value.toLowerCase());
+    merged.set(`release-literal:${n++}`, value);
+  }
+  return merged;
+}
 
 /** Generic account names that identify a CI runner, not a person — the ONE shared list,
  *  pinned equal to the python gate's GENERIC_ACCOUNTS (WI-10004233: a local copy drifted). */
@@ -395,22 +443,12 @@ export async function assertStagedSeedCarriesNoIdentity(inp: {
     neutralHostname: inp.neutralHostname,
     probe: inp.probe,
   });
-  const merged = new Map<IdentityKey, string>(machine);
-  const known = new Set([...machine.values()].map((v) => v.toLowerCase()));
   // The neutral label is the FIX, not an identity (see resolveIdentityLiterals) — but it can
   // arrive HERE through the release set: audit-release-bundle.py's live hostname probe runs
   // inside the UTS child and reports the neutral label, and the projection's redact list keeps
   // it. Cut #4 (2026-09-01) red-ed on exactly that — `release-literal:2` = 'papercusp-build'
   // at rocksdb.creating.host.identity in 4 SSTs, after a 3h scan. Fold it here as well.
-  const neutral = inp.neutralHostname.trim().toLowerCase();
-  let n = 0;
-  for (const lit of inp.extraLiterals ?? []) {
-    const v = lit.trim();
-    if (v.length < 3 || known.has(v.toLowerCase()) || v.toLowerCase() === neutral) continue;
-    known.add(v.toLowerCase());
-    merged.set(`release-literal:${n++}`, v);
-  }
-  const literals: IdentityLiterals = merged;
+  const literals = mergeSeedIdentityLiterals(machine, inp.extraLiterals ?? [], inp.neutralHostname);
   if (unknownHostname) {
     throw new Error(
       `[seed-identity] ⛔ cannot prove the staged seed is clean: gethostname() reports the neutral ` +

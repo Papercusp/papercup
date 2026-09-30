@@ -160,6 +160,10 @@ export function composedSearchToObject(nuqsSearch: URLSearchParams): Record<stri
 
 function useNuqsTanstackRouterAdapter(watchKeys: string[]) {
   const search = useLocation({
+    // The projection allocates an object on every location update. Keep its
+    // identity when watched values did not change so opening a popup does not
+    // re-render every unrelated query-state consumer in the desktop shell.
+    structuralSharing: true,
     select: (state) =>
       Object.fromEntries(
         Object.entries(state.search).filter(([key]) => watchKeys.includes(key)),

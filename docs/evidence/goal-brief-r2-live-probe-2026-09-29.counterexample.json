@@ -13,14 +13,14 @@
   "mode": "counterexample",
   "counterexample": {
     "id": "scope-mismatch",
-    "targets": "auto-bar-r-2-p-003",
+    "targets": "auto-bar-r-2-p-003,auto-bar-r-2-p-007",
     "fault": "each lineage is judged against the NEXT lineage's drain fleet (roster, leader, lease pair, claim filter) — a scope/lease mismatch",
-    "expected": "r2-clean-lineage-exists=false, auto-bar-r-2-p-003=false, exitCode 1 (caught)"
+    "expected": "r2-clean-lineage-exists=false, auto-bar-r-2-p-003=false, auto-bar-r-2-p-007=false, exitCode 1 (caught)"
   },
   "exitCode": 1,
-  "startedAt": "2026-09-29T22:00:35.958Z",
-  "finishedAt": "2026-09-29T22:00:36.565Z",
-  "summary": "2/5 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-2-P-003.",
+  "startedAt": "2026-09-30T22:29:01.411Z",
+  "finishedAt": "2026-09-30T22:29:02.573Z",
+  "summary": "2/6 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clauses AUTO-BAR-R-2-P-003/AUTO-BAR-R-2-P-007.",
   "assertions": [
     {
       "id": "r2-clean-lineage-exists",
@@ -46,6 +46,11 @@
       "id": "auto-bar-r-2-p-003",
       "passed": false,
       "evidence": "2/4 R-2 sub-assertions passed over 6 P-007 lineages (9368ec=non-fleet-claim, 406e99=non-fleet-claim, 8016e1=no-goal-stamped-plan-work, 956e4d=non-fleet-claim, a88411=no-goal-stamped-plan-work, 81a93e=no-goal-stamped-plan-work); 7 residual unknown(s) disclosed"
+    },
+    {
+      "id": "auto-bar-r-2-p-007",
+      "passed": false,
+      "evidence": "2/4 R-2 sub-assertions passed (clause text identical to AUTO-BAR-R-2-P-003 @rev4)"
     }
   ],
   "plan": "goal-brief-to-claimed-plan-work-2026-09-23",

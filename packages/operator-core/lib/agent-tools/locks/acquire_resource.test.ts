@@ -15,6 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { z } from 'zod';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -47,7 +48,7 @@ const exclM = vi.mocked(acquireResourceExclusiveWithWait);
 const endedOwnersM = vi.mocked(endedSessionOwners);
 const crossM = vi.mocked(findCrossDomainResourceConflicts);
 const txnM = vi.mocked(inWorkspaceTxn);
-const tool = (await import('./acquire_resource')).default;
+const { default: tool, resolveWaitSec } = await import('./acquire_resource');
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
@@ -284,5 +285,65 @@ describe('locks:acquire_resource cross-domain guard', () => {
       expect.objectContaining({ resource: 'dev-server', requestedMode: 'shared', owner: 'me' }),
     );
     expect(crossM.mock.calls[0]![0].targetDomain).not.toBe('dom');
+  });
+});
+
+// EI-24431892879107061: locks:acquire spells its bounded wait `wait.max_sec`, so
+// callers carried that spelling onto locks:acquire_resource (142 invalid-input vs
+// 4389 ok in 4 days), each a wasted round-trip. `max_sec` is now a declared alias
+// of `max_drain_sec` (alias-group:max_drain_sec|max_sec).
+describe('locks:acquire_resource wait alias (max_sec | max_drain_sec)', () => {
+  it('resolveWaitSec: one spelling resolves, equal pair resolves, no wait means 0', () => {
+    expect(resolveWaitSec(undefined)).toBe(0);
+    expect(resolveWaitSec({ max_drain_sec: 5 })).toBe(5);
+    expect(resolveWaitSec({ max_sec: 7 })).toBe(7);
+    expect(resolveWaitSec({ max_drain_sec: 3, max_sec: 3 })).toBe(3);
+    // 0 is a real value (immediate refusal), not "absent".
+    expect(resolveWaitSec({ max_sec: 0 })).toBe(0);
+  });
+
+  it('resolveWaitSec: a conflicting pair and an EMPTY wait object are both refused', () => {
+    expect(() => resolveWaitSec({ max_drain_sec: 3, max_sec: 9 })).toThrow(/alias-group:max_drain_sec\|max_sec/);
+    // `wait: {}` was rejected before the alias (max_drain_sec was required); it must
+    // stay a refusal rather than silently becoming "no wait".
+    expect(() => resolveWaitSec({})).toThrow(/needs `max_drain_sec`/);
+  });
+
+  it('the published schema accepts the sibling spelling and still rejects unknown keys and over-cap values', () => {
+    const ok = tool.args.safeParse({ resource: 'dev-server', mode: 'exclusive', wait: { max_sec: 5 } });
+    expect(ok.success).toBe(true);
+    const typo = tool.args.safeParse({ resource: 'dev-server', mode: 'exclusive', wait: { max_secs: 5 } });
+    expect(typo.success).toBe(false);
+    const overCap = tool.args.safeParse({ resource: 'dev-server', mode: 'exclusive', wait: { max_sec: 10_000 } });
+    expect(overCap.success).toBe(false);
+  });
+
+  it('CONTROL: the pre-alias shape (strict object, max_drain_sec only, `?? 0` read) is exactly what these assertions discriminate against', () => {
+    // The live failure this guards (EI-24431892879107061) was a strict zod object whose
+    // only key was max_drain_sec. Keep that wrong implementation here so the assertions
+    // above are shown to FAIL on it rather than merely pass on the fix.
+    const preAliasSchema = z.object({ max_drain_sec: z.number().int().nonnegative().max(45) }).strict();
+    const preAliasRead = (w?: { max_drain_sec?: number }) => w?.max_drain_sec ?? 0;
+    expect(preAliasSchema.safeParse({ max_sec: 5 }).success).toBe(false); // schema test would fail
+    expect(preAliasRead({ max_sec: 5 } as never)).toBe(0); // handler test expects 5, would fail
+    // Calibration: the same controls accept the spelling the pre-alias code DID support.
+    expect(preAliasSchema.safeParse({ max_drain_sec: 5 }).success).toBe(true);
+    expect(preAliasRead({ max_drain_sec: 5 })).toBe(5);
+  });
+
+  it('a call using wait.max_sec reaches the drain wait with the SAME cap as max_drain_sec', async () => {
+    mockResolvedTyped(exclM, { ok: false, reason: 'held_exclusive', holders: [] });
+    await tool.handler({ resource: 'dev-server', mode: 'exclusive', wait: { max_sec: 5 } } as never, {} as never);
+    expect(exclM).toHaveBeenCalledWith(expect.objectContaining({ maxWaitSec: 5 }));
+  });
+
+  it('a conflicting pair is refused BEFORE any lock is taken', async () => {
+    await expect(
+      tool.handler(
+        { resource: 'dev-server', mode: 'exclusive', wait: { max_drain_sec: 3, max_sec: 9 } } as never,
+        {} as never,
+      ),
+    ).rejects.toThrow(/alias-group:max_drain_sec\|max_sec/);
+    expect(exclM).not.toHaveBeenCalled();
   });
 });

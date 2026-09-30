@@ -230,6 +230,18 @@ function expectedWidths(): Map<string, { dims: number; why: string }> {
       'profile-bound capability-class storage ' +
       `(CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE; discriminator=${capabilityClass.profileColumn})`,
   });
+  // Migrations 1166 and 1170 add these physical vector(768) columns. They are
+  // not in WIDTH_MIGRATION_WIPE_SET, so pin their schema facts here without
+  // claiming they participate in the active prose refill contract. If either
+  // gains a semantic reader, move it into that contract with its refill path.
+  m.set(key('report_library_chunks', 'embedding'), {
+    dims: 768,
+    why: 'physical storage contract from migration 1166 (report library chunks)',
+  });
+  m.set(key('event_key_registry', 'embedding'), {
+    dims: 768,
+    why: 'physical storage contract from migration 1170 (event key registry)',
+  });
   return m;
 }
 

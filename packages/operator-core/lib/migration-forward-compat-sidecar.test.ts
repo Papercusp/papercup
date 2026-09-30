@@ -23,11 +23,12 @@
  * an evaluator that refuses EVERYTHING would pass every negative assertion below.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   PARKED_SUFFIXES,
@@ -37,6 +38,7 @@ import {
   SIDECAR_VERSION,
   effectiveMigrationName,
   evaluateForwardCompatSidecar,
+  forwardCompatReviewWarnings,
   makeAncestorResolver,
   migrationSha256,
   sidecarNameFor,
@@ -163,6 +165,50 @@ describe('forward-compat sidecar — effective-name mapping', () => {
     for (const artifact of [ARTIFACT, ...PARKED_SUFFIXES.map((s: string) => `${ARTIFACT}${s}`)]) {
       expect(sidecarNameFor(effectiveMigrationName(artifact))).toBe(expected);
     }
+  });
+});
+
+describe('forward-compat sidecar — review-date alarm scan', () => {
+  let directory: string;
+  const writeSidecar = (name: string, reviewBy: string) => {
+    writeFileSync(join(directory, name), JSON.stringify({ reviewBy }));
+  };
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'forward-compat-review-'));
+  });
+  afterEach(() => rmSync(directory, { recursive: true, force: true }));
+
+  it('warns on the review date fourteen days ahead and ignores dates outside the window', () => {
+    writeSidecar('900-near.sql.forward-compat.json', '2026-01-15');
+    writeSidecar('901-later.sql.forward-compat.json', '2026-01-16');
+    writeSidecar('902-not-a-sidecar.json', '2026-01-01');
+
+    expect(forwardCompatReviewWarnings(directory, {
+      now: new Date('2026-01-01T00:00:00.000Z'),
+      warningDays: 14,
+    })).toEqual([{
+      kind: 'expiring',
+      file: '900-near.sql.forward-compat.json',
+      reviewBy: '2026-01-15',
+    }]);
+  });
+
+  it('reports expired and invalid sidecars so their fail-closed state is visible between restarts', () => {
+    writeSidecar('900-expired.sql.forward-compat.json', '2025-12-31');
+    writeSidecar('901-invalid.sql.forward-compat.json', 'soon');
+    writeSidecar('902-invalid-calendar-date.sql.forward-compat.json', '2025-02-31');
+    writeFileSync(join(directory, '903-malformed.sql.forward-compat.json'), '{');
+
+    expect(forwardCompatReviewWarnings(directory, {
+      now: new Date('2026-01-01T00:00:00.000Z'),
+      warningDays: 14,
+    })).toEqual([
+      { kind: 'expired', file: '900-expired.sql.forward-compat.json', reviewBy: '2025-12-31' },
+      { kind: 'invalid', file: '901-invalid.sql.forward-compat.json', detail: 'reviewBy is missing or is not YYYY-MM-DD' },
+      { kind: 'invalid', file: '902-invalid-calendar-date.sql.forward-compat.json', reviewBy: '2025-02-31', detail: 'reviewBy is not a real date' },
+      { kind: 'invalid', file: '903-malformed.sql.forward-compat.json', detail: 'sidecar is not valid JSON' },
+    ]);
   });
 });
 

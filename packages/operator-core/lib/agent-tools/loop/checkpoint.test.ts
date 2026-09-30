@@ -428,6 +428,24 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
     ).toBe(true);
   });
 
+  it('rejects a delivered fire reconciled as no-loop-turn even before starvation counters trip', () => {
+    expect(
+      classifyLoopNextWake(
+        loop({
+          lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn',
+          lastWakeStatus: 'delivered',
+          fireStarved: false,
+          turnsStalled: false,
+        }),
+      ),
+    ).toEqual({ guaranteed: false, reason: 'last-fire-no-loop-turn' });
+    expect(
+      loopGuaranteesNextWake(
+        loop({ lastDeliveryOutcome: 'loop-delivered-wake-no-loop-turn', turnsStalled: false }),
+      ),
+    ).toBe(false);
+  });
+
   // P-013 / RSR-P-013-C (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
   // a cold loop re-armed and was told rewakeGuaranteed:true while its previous fire had
   // parked "no injectable psu host"; the next fire parked identically and the session went

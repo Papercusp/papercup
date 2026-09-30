@@ -702,10 +702,10 @@ export default defineTool({
   name: 'release:cut',
   profile: 'engineer',
   description:
-    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (fire ONE platform leg on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; `platform` = one leg). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic). op:reclaim (list/remove stale cut worktrees; dry-run unless confirm+targets).',
+    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (fire ONE platform leg on its own unit, for a fleet-split cut; same gate). A non-Linux run-leg requires a completed same-version Linux leg with artifacts in the selected Cargo target slot; it fails before the expensive gates when Linux artifacts are absent. For a one-command single-platform cut, use op:run with the requested platform enabled. op:abort-leg (stop one leg). op:status (poll; `platform` = one leg). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic). op:reclaim (list/remove stale cut worktrees; dry-run unless confirm+targets).',
   guidance: {
     when:
-      'Cutting a desktop release. Brand-new version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): prepare the tag once, then each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).',
+      'Cutting a desktop release. Brand-new version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): prepare the tag once, build and verify the Linux leg first, then each non-Linux agent gate-status (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs). For a single-platform release, use op:run with the requested platform enabled so Linux is built in the same cut.',
     notWhen: "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub.",
     seeAlso: [
       'papercusp-desktop/bin/verify-provenance.sh, papercusp-desktop/bin/vm-preflight.sh, and papercusp-desktop/bin/install-and-relaunch-verify.sh (the RELEASE-RUNBOOK ship-gates this cut composes)',
@@ -1196,6 +1196,9 @@ export default defineTool({
         root: selected.desktopRoot,
         release: { version: args.version, channel, sourceSha: args.sourceSha },
       });
+      const orderingNote = platform === 'linux'
+        ? ''
+        : ' A non-Linux run-leg reuses Linux and requires a completed same-version Linux leg with artifacts in the selected Cargo target slot. For a single-command cut, use op:run with the requested platform enabled so Linux and that platform build together.';
       const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
       if (inFlight && !inFlight.ok) {
         return json({
@@ -1236,8 +1239,8 @@ export default defineTool({
           preflight: { go: pre.go, blockers: pre.blockers },
           wouldRun: `systemd-run ${argv.join(' ')}`,
           note: pre.go
-            ? `Pass confirm:true to fire the detached LOCAL ${platform} leg (unit ${cutUnitFor(platform)}). Then poll release:cut{op:status,platform:'${platform}'}.`
-            : `⚠ preflight is NOT green for this leg — resolve first: ${pre.blockers.join('; ')}. confirm:true would fire anyway.`,
+            ? `Pass confirm:true to fire the detached LOCAL ${platform} leg (unit ${cutUnitFor(platform)}). Then poll release:cut{op:status,platform:'${platform}'}.${orderingNote}`
+            : `⚠ preflight is NOT green for this leg — resolve first: ${pre.blockers.join('; ')}. confirm:true would fire anyway.${orderingNote}`,
         });
       }
 

@@ -56,6 +56,7 @@ beforeEach(() => {
   wslInstall.mockClear();
   wslImport.mockClear();
   wslBootstrap.mockClear();
+  wslFinalizeReady.mockClear();
   askConfirm.mockClear();
 });
 afterEach(cleanup);
@@ -136,5 +137,16 @@ describe('WslOnboardingGate', () => {
     render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
     await waitFor(() => expect(screen.getByText(/Configuring runtime/i)).toBeTruthy());
     await waitFor(() => expect(wslBootstrap).toHaveBeenCalled());
+  });
+
+  it('continues in the existing GUI process when onboarding reaches Ready', async () => {
+    wslStatus
+      .mockResolvedValueOnce(mkStatus('PendingBootstrap'))
+      .mockResolvedValueOnce(mkStatus('Ready'));
+    render(<WslOnboardingGate><div>app body</div></WslOnboardingGate>);
+
+    await waitFor(() => expect(wslBootstrap).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText('app body')).toBeTruthy());
+    expect(wslFinalizeReady).not.toHaveBeenCalled();
   });
 });

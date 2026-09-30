@@ -215,6 +215,75 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
   });
 });
 
+describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599)', () => {
+  it('checks review dates before checkout equality can take the no-op path', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const lockIdx = script.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
+    const warningCallIdx = script.indexOf('\nforward_compat_review_warnings\n');
+    const repoCheckIdx = script.indexOf('[ -d "$INTEGRATION_ROOT/.git" ]');
+    const targetIdx = script.indexOf('target="$(git -C');
+    expect(lockIdx).toBeGreaterThan(-1);
+    expect(warningCallIdx).toBeGreaterThan(lockIdx);
+    expect(warningCallIdx).toBeLessThan(repoCheckIdx);
+    expect(warningCallIdx).toBeLessThan(targetIdx);
+    expect(script).toContain('--warn-review-by-days=$warning_days');
+    expect(script).toContain('--sidecar-directory=$STAGING_ROOT/libs/papercusp/libs/db/sql');
+  });
+
+  it('sends one workspace alarm for a stable warning set instead of repeating it every timer tick', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-review-alarm-'));
+    try {
+      const bin = join(root, 'bin');
+      const integration = join(root, 'integration');
+      const staging = join(root, 'staging');
+      mkdirSync(bin);
+      mkdirSync(join(integration, 'scripts'), { recursive: true });
+      mkdirSync(staging, { recursive: true });
+      writeFileSync(join(integration, 'scripts/mcp-call.mjs'), 'fixture');
+      const alarmTrace = join(root, 'alarm-trace');
+      writeFileSync(join(bin, 'node'), [
+        '#!/bin/sh',
+        'if [ "$1" = "scripts/check-migration-forward-compat.mjs" ]; then',
+        '  printf "%s\\n" "$REVIEW_REPORT"',
+        '  exit 0',
+        'fi',
+        'if [ "$1" = "scripts/mcp-call.mjs" ]; then',
+        '  printf "%s\\n" "$3" >> "$ALARM_TRACE"',
+        '  exit 0',
+        'fi',
+        'exec "$REAL_NODE" "$@"',
+        '',
+      ].join('\n'), { mode: 0o700 });
+
+      const report = 'check-migration-forward-compat: WARNING 941-example.sql.forward-compat.json reviewBy 2026-10-28 is within 14 days';
+      const r = runFn(['forward_compat_review_warnings'],
+        'log() { printf "%s\\n" "$*"; }\nforward_compat_review_warnings\nforward_compat_review_warnings', {
+          env: {
+            INTEGRATION_ROOT: integration,
+            STAGING_ROOT: staging,
+            XDG_STATE_HOME: join(root, 'state'),
+            REVIEW_REPORT: report,
+            ALARM_TRACE: alarmTrace,
+            REAL_NODE: process.execPath,
+            PATH: `${bin}:${process.env.PATH}`,
+          },
+        });
+
+      expect(r.status).toBe(0);
+      const calls = readFileSync(alarmTrace, 'utf8').trim().split('\n');
+      expect(calls).toHaveLength(1);
+      const payload = JSON.parse(calls[0]);
+      expect(payload.to).toEqual(['*']);
+      expect(payload.expects).toBe('none');
+      expect(payload.summary).toMatch(/migration forward-compat reviews need attention/);
+      expect(payload.body[0].text).toMatch(/renew or remove each sidecar/i);
+      expect(r.stdout).toContain('ALARM: migration forward-compat sidecar review dates need attention');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('staging schema preparation before cutover (EI-24180022773715880)', () => {
   let root: string;
   beforeEach(() => {
@@ -750,11 +819,12 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
 
   it('downgrades its checkout lock before the final dev:restart so the staging collision guard admits cutover', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const downgrade = script.indexOf('flock -s 9');
+    const downgrade = script.lastIndexOf('flock -s 9');
     const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
-    expect(downgrade).toBeGreaterThan(script.indexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"'));
+    const assignment = script.indexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
+    expect(downgrade).toBeGreaterThan(assignment);
     expect(restart).toBeGreaterThan(downgrade);
-    expect(script.slice(downgrade, restart)).toContain('keeps');
+    expect(script.slice(downgrade, downgrade + 200)).toContain('could not downgrade');
   });
 
   it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {

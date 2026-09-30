@@ -221,12 +221,7 @@ describe('runBackfillSweep (P-010)', () => {
     ];
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql as unknown as Parameters<typeof backfillTable>[0];
-    const stats = await backfillTable(
-      sql,
-      { table: 'harness_shared.session_turns', embedCol: 'text_embedding', bodySql: 'text', keyCols: ['id'] },
-      async () => VEC,
-      4,
-    );
+    const stats = await backfillTable(sql, { table: 'harness_shared.session_turns', embedCol: 'text_embedding', bodySql: 'text', keyCols: ['id'] }, { embed: async () => VEC, maxRows: 4, mode: 'openai' });
     expect(stats.scanned).toBe(4);
     expect(stats.embedded).toBe(4);
     const selects = unsafeCalls.filter((c) => c.q.trimStart().startsWith('SELECT'));
@@ -397,7 +392,7 @@ describe('embedding-space discriminator (WI-3616)', () => {
     // One stale row (its vector is non-NULL but was made by openai), then empty.
     const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'hello world' }], [], []]);
 
-    const stats = await backfillTable(sql, TARGET, embed, 10, 'local', true);
+    const stats = await backfillTable(sql, TARGET, { embed: embed, maxRows: 10, mode: 'local', spaceAware: true });
 
     // It was NOT skipped just because text_embedding was already non-NULL.
     expect(stats.embedded).toBe(1);
@@ -422,7 +417,7 @@ describe('embedding-space discriminator (WI-3616)', () => {
 
   it('stamps the active mode so a converged column stops being re-swept', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
-    await backfillTable(sql, TARGET, embed, 10, 'openai', true);
+    await backfillTable(sql, TARGET, { embed: embed, maxRows: 10, mode: 'openai', spaceAware: true });
     const update = calls.find((c) => c.q.includes('UPDATE'))!;
     expect(update.params![1]).toBe('openai');
   });
@@ -433,7 +428,7 @@ describe('embedding-space discriminator (WI-3616)', () => {
     // The legacy path must therefore omit `mode` entirely — not just skip reading it.
     const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
 
-    await backfillTable(sql, TARGET, embed, 10, 'local', false);
+    await backfillTable(sql, TARGET, { embed: embed, maxRows: 10, mode: 'local', spaceAware: false });
 
     const select = calls.find((c) => c.q.includes('SELECT'))!;
     expect(select.q).not.toContain('_mode');
@@ -518,10 +513,8 @@ describe('exact embedding-profile discriminator (P-003)', () => {
 
   it('writes vector, legacy mode and exact profile atomically without re-deriving identity', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'row-1', body: 'x' }], [], []]);
-    const stats = await backfillTable(sql, TARGET, async () => VEC, 10, 'gemma', true, undefined, {
-      profileColPresent: true,
-      profile: EMBEDDER_DIM_SPECS.gemma,
-    });
+    const stats = await backfillTable(sql, TARGET, { embed: async () => VEC, maxRows: 10, mode: 'gemma', spaceAware: true, profileColPresent: true,
+      profile: EMBEDDER_DIM_SPECS.gemma });
     expect(stats.embedded).toBe(1);
 
     const select = calls.find((c) => c.q.includes('SELECT'))!;
@@ -545,9 +538,7 @@ describe('exact embedding-profile discriminator (P-003)', () => {
   it('fails closed when a profile-aware target is called without exact profile identity', async () => {
     const { sql, calls } = fakeSql([]);
     await expect(
-      backfillTable(sql, TARGET, async () => VEC, 10, 'gemma', true, undefined, {
-        profileColPresent: true,
-      }),
+      backfillTable(sql, TARGET, { embed: async () => VEC, maxRows: 10, mode: 'gemma', spaceAware: true, profileColPresent: true }),
     ).rejects.toThrow(/requires an exact embedding profile/);
     expect(calls).toEqual([]);
   });
@@ -606,9 +597,7 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     // migration 777 would re-embed the whole corpus (~28h of sidecar) for no change in what
     // is embedded. Same SQL and the same binds as before 777.
     const { sql, calls } = fakeSql(oneRow());
-    await backfillTable(sql, TARGET, embed, 10, 'local', true, undefined, {
-      recipeColPresent: true,
-    });
+    await backfillTable(sql, TARGET, { embed: embed, maxRows: 10, mode: 'local', spaceAware: true, recipeColPresent: true });
 
     const select = calls.find((c) => c.q.includes('SELECT'))!;
     expect(select.q).not.toContain('_recipe');
@@ -631,9 +620,7 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
 
   it('a declared bump makes the existing population stale and stamps the new version', async () => {
     const { sql, calls } = fakeSql(oneRow());
-    const stats = await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
-      recipeColPresent: true,
-    });
+    const stats = await backfillTable(sql, V2, { embed: embed, maxRows: 10, mode: 'local', spaceAware: true, recipeColPresent: true });
     expect(stats.embedded).toBe(1);
 
     const select = calls.find((c) => c.q.includes('SELECT'))!;
@@ -651,9 +638,7 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     // Migration 777 is per-table on purpose, so "declared but absent" is an ordinary state
     // (a surface that opted in, on a database where only other surfaces were migrated).
     const { sql, calls } = fakeSql(oneRow());
-    await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
-      recipeColPresent: false,
-    });
+    await backfillTable(sql, V2, { embed: embed, maxRows: 10, mode: 'local', spaceAware: true, recipeColPresent: false });
     const select = calls.find((c) => c.q.includes('SELECT'))!;
     expect(select.q).not.toContain('_recipe');
     expect(select.params).toEqual([10, 'local', 0]);
@@ -664,9 +649,7 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     // unused bind. With TWO optional terms there are four layouts, and the two that only
     // occur on a partially-migrated database are exactly the ones nothing else covers.
     const { sql, calls } = fakeSql(oneRow());
-    await backfillTable(sql, V2, embed, 10, 'local', false, undefined, {
-      recipeColPresent: true,
-    });
+    await backfillTable(sql, V2, { embed: embed, maxRows: 10, mode: 'local', spaceAware: false, recipeColPresent: true });
     const select = calls.find((c) => c.q.includes('SELECT'))!;
     expect(select.q).not.toContain('_mode');
     expect(select.q).toContain('coalesce(text_embedding_recipe, 1) IS DISTINCT FROM $2');
@@ -728,9 +711,7 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
     // forever while `stats.embedded` cheerfully counts successes. Both predicates must be
     // the SAME expression; only their placeholder positions differ.
     const { sql, calls } = fakeSql(oneRow());
-    await backfillTable(sql, V2, embed, 10, 'local', true, undefined, {
-      recipeColPresent: true,
-    });
+    await backfillTable(sql, V2, { embed: embed, maxRows: 10, mode: 'local', spaceAware: true, recipeColPresent: true });
     const norm = (s: string): string => s.replace(/\$\d+/g, '?').replace(/\s+/g, ' ').trim();
     // Both statements bind mode at $2 and recipe at $3, so after normalising placeholders
     // the predicate is literally the same string on both sides.
@@ -1038,13 +1019,13 @@ describe('embed-backfill drain policy (P-005)', () => {
 
   it('pulls FRESHEST-FIRST when the target declares an order', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);
-    await backfillTable(sql, ORDERED, embed, 10, 'gemma', true);
+    await backfillTable(sql, ORDERED, { embed: embed, maxRows: 10, mode: 'gemma', spaceAware: true });
     expect(selects(calls)[0].q).toContain('ORDER BY ingested_at DESC');
   });
 
   it('omits ORDER BY entirely for a target that declares none', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);
-    await backfillTable(sql, UNORDERED, embed, 10, 'gemma', true);
+    await backfillTable(sql, UNORDERED, { embed: embed, maxRows: 10, mode: 'gemma', spaceAware: true });
     expect(selects(calls)[0].q).not.toContain('ORDER BY');
   });
 
@@ -1062,7 +1043,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     };
     const perRow = vi.fn(async () => VEC);
 
-    const stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+    const stats = await backfillTable(sql, ORDERED, { embed: perRow, maxRows: 10, mode: 'gemma', spaceAware: true, embedMany: embedMany });
 
     expect(stats.embedded).toBe(3);
     // ONE batch call carrying all three bodies — not three single-text calls.
@@ -1081,7 +1062,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     };
     const perRow = vi.fn(async () => VEC);
 
-    const stats = await backfillTable(sql, ORDERED, perRow, 20, 'gemma', true, embedMany);
+    const stats = await backfillTable(sql, ORDERED, { embed: perRow, maxRows: 20, mode: 'gemma', spaceAware: true, embedMany: embedMany });
 
     expect(stats.embedded).toBe(20);
     // No single call may carry more than BATCH_EMBED_CHUNK_SIZE. The budget from
@@ -1108,7 +1089,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let stats;
     try {
-      stats = await backfillTable(sql, ORDERED, perRow, 20, 'gemma', true, embedMany);
+      stats = await backfillTable(sql, ORDERED, { embed: perRow, maxRows: 20, mode: 'gemma', spaceAware: true, embedMany: embedMany });
     } finally {
       warn.mockRestore();
     }
@@ -1141,7 +1122,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let stats;
     try {
-      stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+      stats = await backfillTable(sql, ORDERED, { embed: perRow, maxRows: 10, mode: 'gemma', spaceAware: true, embedMany: embedMany });
     } finally {
       warn.mockRestore();
     }
@@ -1174,7 +1155,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let stats;
     try {
-      stats = await backfillTable(sql, operatorTurns, perRow, 10, 'gemma', true, embedMany);
+      stats = await backfillTable(sql, operatorTurns, { embed: perRow, maxRows: 10, mode: 'gemma', spaceAware: true, embedMany: embedMany });
     } finally {
       warn.mockRestore();
     }
@@ -1198,7 +1179,7 @@ describe('embed-backfill drain policy (P-005)', () => {
       return VEC;
     };
 
-    const stats = await backfillTable(sql, ORDERED, flaky, 10, 'gemma', true);
+    const stats = await backfillTable(sql, ORDERED, { embed: flaky, maxRows: 10, mode: 'gemma', spaceAware: true });
 
     expect(stats.embedded).toBe(1);
     expect(stats.errors).toBe(1);
@@ -1220,7 +1201,7 @@ describe('embed-backfill drain policy (P-005)', () => {
     const { sql } = fakeSql(rows);
 
     // maxRows well above the old ceiling: the loop must keep going, not stop at 4.
-    const stats = await backfillTable(sql, ORDERED, embed, 1000, 'gemma', true);
+    const stats = await backfillTable(sql, ORDERED, { embed: embed, maxRows: 1000, mode: 'gemma', spaceAware: true });
     expect(stats.embedded).toBe(9);
   });
 });

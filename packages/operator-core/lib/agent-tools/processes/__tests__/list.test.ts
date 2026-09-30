@@ -521,9 +521,9 @@ describe('processes:list structured output', () => {
     });
   });
 
-  it('derives current CPU busy percentage from successive cumulative samples', async () => {
+  it('uses persisted sample timestamps and ignores repeated reads of the same CPU sample', async () => {
     const { listTasks } = await import('../../../task-manager/store');
-    const row = (cpuUsec: number): TaskRow => ({
+    const row = (cpuUsec: number, lastSeenAt: string): TaskRow => ({
       taskId: 'cpu-rate-task',
       workspaceId: 'default',
       rootTaskId: 'cpu-rate-task',
@@ -537,7 +537,7 @@ describe('processes:list structured output', () => {
       confined: true,
       state: 'running',
       startedAt: '2026-08-24T09:00:00.000Z',
-      lastSeenAt: '2026-08-24T09:00:00.000Z',
+      lastSeenAt,
       lastMemoryBytes: 1024,
       peakMemoryBytes: 2048,
       cpuUsec,
@@ -553,54 +553,52 @@ describe('processes:list structured output', () => {
 
     vi.useFakeTimers();
     try {
-      vi.setSystemTime(new Date('2026-08-24T09:01:00.000Z'));
-      vi.mocked(listTasks).mockResolvedValueOnce([row(0)]);
-      const first = await dispatchProjectedTool(
-        projected,
-        'processes:list',
-        {},
-        {
-          log: vi.fn(),
-          signal: new AbortController().signal,
-          progress: vi.fn(),
-          emit: vi.fn(),
-          workspaceId: 'default',
-          runId: 'processes-list-cpu-first',
-          role: 'operator',
-          gateBypass: { role: true, capability: true, quota: true },
-          transport: 'mcp',
-          requestedFormat: 'json',
-          requestedStructured: true,
-          tx: makeTx(),
-        },
-        {},
-      );
-      vi.setSystemTime(new Date('2026-08-24T09:01:01.000Z'));
-      vi.mocked(listTasks).mockResolvedValueOnce([row(1_000_000)]);
-      const second = await dispatchProjectedTool(
-        projected,
-        'processes:list',
-        {},
-        {
-          log: vi.fn(),
-          signal: new AbortController().signal,
-          progress: vi.fn(),
-          emit: vi.fn(),
-          workspaceId: 'default',
-          runId: 'processes-list-cpu-second',
-          role: 'operator',
-          gateBypass: { role: true, capability: true, quota: true },
-          transport: 'mcp',
-          requestedFormat: 'json',
-          requestedStructured: true,
-          tx: makeTx(),
-        },
-        {},
-      );
+      const sampleTime = new Date('2026-08-24T09:01:00.000Z').getTime();
+      const read = (runId: string) => dispatchProjectedTool(
+          projected,
+          'processes:list',
+          {},
+          {
+            log: vi.fn(),
+            signal: new AbortController().signal,
+            progress: vi.fn(),
+            emit: vi.fn(),
+            workspaceId: 'default',
+            runId,
+            role: 'operator',
+            gateBypass: { role: true, capability: true, quota: true },
+            transport: 'mcp',
+            requestedFormat: 'json',
+            requestedStructured: true,
+            tx: makeTx(),
+          },
+          {},
+        );
+
+      vi.setSystemTime(sampleTime);
+      vi.mocked(listTasks).mockResolvedValueOnce([row(0, new Date(sampleTime).toISOString())]);
+      const first = await read('processes-list-cpu-first');
+
+      // The ledger still has the same metric sample ten seconds later. Request time
+      // must not turn that cached counter into an apparently measured zero.
+      vi.setSystemTime(sampleTime + 10_000);
+      vi.mocked(listTasks).mockResolvedValueOnce([row(0, new Date(sampleTime).toISOString())]);
+      const repeated = await read('processes-list-cpu-repeated');
+
+      // A later persisted sample does provide a valid interval. Its sample timestamps,
+      // rather than the much later request time, set the rate denominator.
+      vi.setSystemTime(sampleTime + 20_000);
+      vi.mocked(listTasks).mockResolvedValueOnce([row(1_000_000, new Date(sampleTime + 1000).toISOString())]);
+      const second = await read('processes-list-cpu-second');
 
       expect(first.ok, JSON.stringify(first)).toBe(true);
+      expect(repeated.ok, JSON.stringify(repeated)).toBe(true);
       expect(second.ok, JSON.stringify(second)).toBe(true);
       expect((first.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
+        cpuSec: 0,
+        cpuBusyPercent: null,
+      });
+      expect((repeated.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0]).toMatchObject({
         cpuSec: 0,
         cpuBusyPercent: null,
       });

@@ -13,7 +13,8 @@
  *
  * Each agent SLOT runs sessions round-robin from the selection; with `--duration-sec` a slot
  * keeps starting its next session until the deadline, so N stays N for the whole window (the
- * capacity question is "N concurrent agents", not "N sessions").
+ * capacity question is "N concurrent agents", not "N sessions"). `--sweep` instead runs every
+ * selected session exactly once, N at a time (the replay-fidelity pass over the whole corpus).
  *
  * Per-agent accounting (`--isolation systemd`, the default): every session runs as its own
  * transient user service in `capdrv.slice`, wrapped so that — while still inside its cgroup —
@@ -253,6 +254,8 @@ export interface DriverOptions {
   durationSec: number;
   isolation: Isolation;
   keepWork: boolean;
+  /** Run every selected session exactly once across the slots (ignores durationSec). */
+  sweep?: boolean;
   onRun?: (r: AgentRun) => void;
 }
 
@@ -262,10 +265,18 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
   const server = await startReplayServer({ corpusDir: o.corpusDir, speed: o.speed, logFile: path.join(o.outDir, 'served.jsonl') });
   const runs: AgentRun[] = [];
   const deadline = Date.now() + o.durationSec * 1000;
+  // Sweep mode: slots share one queue and every selected session runs exactly once.
+  let next = 0;
+  const pick = (s: number, it: number): SessionMeta | undefined => {
+    if (o.sweep) return next < o.sessions.length ? o.sessions[next++] : undefined;
+    return it === 0 || Date.now() < deadline ? sessionFor(o.sessions, s, it) : undefined;
+  };
   const slot = async (s: number) => {
     await new Promise((r) => setTimeout(r, s * o.staggerMs));
-    for (let it = 0; it === 0 || Date.now() < deadline; it++) {
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, meta: sessionFor(o.sessions, s, it), slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork });
+    for (let it = 0; ; it++) {
+      const meta = pick(s, it);
+      if (!meta) break;
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
@@ -335,6 +346,7 @@ async function main(): Promise<void> {
     durationSec: Number(arg('duration-sec', '0')),
     isolation,
     keepWork: process.argv.includes('--keep-work'),
+    sweep: process.argv.includes('--sweep'),
     onRun: (r) =>
       console.log(
         `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)}${r.diverged ? ' DIVERGED' : ''}`,

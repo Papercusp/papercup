@@ -2241,6 +2241,24 @@ describe('deriveKickoffPrompt (EI-5503 + WI-1962 + WI-1356 — the turn-1 kickof
     expect(bare).toContain('{ slug: "p1" }');
   });
 
+  it('WI-10004449: an AUTO fleet LEADER gets the leader kickoff, never the member one', async () => {
+    const { deriveKickoffPrompt, LEADER_AUTO_MODE_KICKOFF_DIRECTIVE } = await import('../routes/agent-mcp/bootstrap-su');
+    const base = { planSlug: 'p1', harnessSlug: 'papercusp', autoMode: true, launchContextPath: '/tmp/leader.md', fleetSlug: 'f1' };
+    const leader = deriveKickoffPrompt({ ...base, fleetRole: 'leader', loopAutoArmed: true });
+    expect(leader).toContain(LEADER_AUTO_MODE_KICKOFF_DIRECTIVE);
+    expect(leader).toContain("fleet's LEADER, not a member");
+    expect(leader).toContain('lead fleet `f1` on plan `p1`');
+    expect(leader).not.toContain('You are a fleet member');
+    expect(leader).not.toContain('claim your lane and work that item');
+    // A member launch is unchanged: it still gets the member activation.
+    const member = deriveKickoffPrompt({ ...base, fleetRole: 'member', loopAutoArmed: true });
+    expect(member).toContain('You are a fleet member');
+    expect(member).not.toContain(LEADER_AUTO_MODE_KICKOFF_DIRECTIVE);
+    // DRAIN keeps its own directive; an interactive (non-AUTO) leader keeps the plan kickoff.
+    expect(deriveKickoffPrompt({ ...base, fleetRole: 'leader', drainMode: true })).not.toContain(LEADER_AUTO_MODE_KICKOFF_DIRECTIVE);
+    expect(deriveKickoffPrompt({ ...base, autoMode: false, fleetRole: 'leader' })).toContain('handed the plan `p1`');
+  });
+
   it('AUTO prepends the activation to whichever base applies (brief / bare)', async () => {
     const { deriveKickoffPrompt, AUTO_MODE_DIRECTIVE, LAUNCH_CONTEXT_KICKOFF } =
       await import('../routes/agent-mcp/bootstrap-su');

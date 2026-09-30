@@ -16,9 +16,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createFleetMock, setLeaderMock, setSpecMock, presenceMock, couplingMock } = vi.hoisted(() => ({
+const { createFleetMock, setLeaderMock, setSpecMock, presenceMock, couplingMock, potHomeSlugMock } = vi.hoisted(() => ({
   createFleetMock: vi.fn(), setLeaderMock: vi.fn(), setSpecMock: vi.fn(),
-  presenceMock: vi.fn(), couplingMock: vi.fn(),
+  presenceMock: vi.fn(), couplingMock: vi.fn(), potHomeSlugMock: vi.fn(),
 }));
 vi.mock('../agent-fleets-store', async (load) => ({
   ...(await load<Record<string, unknown>>()),
@@ -28,6 +28,10 @@ vi.mock('../agent-fleets-store', async (load) => ({
 vi.mock('../scheduler/claim-spec-store', async (load) => ({
   ...(await load<Record<string, unknown>>()),
   setClaimSpec: setSpecMock,
+}));
+vi.mock('../hive-federation', async (load) => ({
+  ...(await load<Record<string, unknown>>()),
+  potHomeSlugForHarness: potHomeSlugMock,
 }));
 vi.mock('../agent-tools/coordination/presence', async (load) => ({
   ...(await load<Record<string, unknown>>()),
@@ -49,20 +53,22 @@ beforeEach(() => {
   setSpecMock.mockResolvedValue({ ok: true, revision: 1, errors: [] });
   presenceMock.mockResolvedValue(null);
   couplingMock.mockResolvedValue({ state: 'coupled' });
+  potHomeSlugMock.mockResolvedValue('papercusp-home');
 });
 
 describe('P-014 delegated drain leadership', () => {
   it('mints a positive goal lane under a truthfully leaderless fleet row', async () => {
     const goalTx = vi.fn(async () => []);
     await mintDrainFleetForGoal({
-      workspaceId: 'ws', goalId: 'g-1', goalTitle: 'Goal', agentOwnerId: 'su-holder',
+      workspaceId: 'ws', harnessSlug: 'papercusp-test', goalId: 'g-1', goalTitle: 'Goal', agentOwnerId: 'su-holder',
       goalTx: goalTx as never,
     });
+    expect(potHomeSlugMock).toHaveBeenCalledWith('ws', 'papercusp-test');
     expect(createFleetMock).toHaveBeenCalledWith(expect.objectContaining({
       owner: 'su-holder', leaderOwnerId: null,
     }));
     expect(setSpecMock).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'ws', spec: expect.objectContaining({
+      workspaceId: 'ws', potSlug: 'papercusp-home', spec: expect.objectContaining({
         view: { filter: { field: 'goal', op: '=', value: 'g-1' } },
       }),
     }));

@@ -824,6 +824,22 @@ describe("kickoffPositionalArgs (EI-5503 plan auto-kickoff)", () => {
   it("default parse has no kickoff key (so the gate treats it as enabled)", () => {
     expect((parseArgs([]) as { kickoff?: boolean }).kickoff).toBeUndefined();
   });
+  it("WI-10004449: --fleet-role=leader boots a --fleet launch as leader, in either order", () => {
+    type FleetArgs = { fleet: string | null; fleetRole: string | null };
+    const after = parseArgs(["--fleet=f1", "--fleet-role=leader"]) as unknown as FleetArgs;
+    const before = parseArgs(["--fleet-role=leader", "--fleet=f1"]) as unknown as FleetArgs;
+    const spaced = parseArgs(["--fleet-role=leader", "--fleet", "f1"]) as unknown as FleetArgs;
+    for (const a of [after, before, spaced]) expect([a.fleet, a.fleetRole]).toEqual(["f1", "leader"]);
+    // No flag, or an invalid value, keeps the member default.
+    expect((parseArgs(["--fleet=f1"]) as unknown as FleetArgs).fleetRole).toBe("member");
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect((parseArgs(["--fleet=f1", "--fleet-role=boss"]) as unknown as FleetArgs).fleetRole).toBe("member");
+      expect(warn).toHaveBeenCalledWith("psu: ignoring --fleet-role=boss (expected leader|member)");
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   // Free-form --kickoff (the general, plan-independent first-turn seam used by the
   // desktop tutorial's docs-agent launcher).

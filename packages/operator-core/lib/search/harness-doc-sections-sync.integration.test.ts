@@ -186,20 +186,9 @@ describe('harness docs → doc_sections → docs:search (live SQL)', () => {
         WHERE table_schema = 'harness_shared' AND table_name = 'doc_sections'`,
     );
     const names = new Set(cols.map((c) => c.column_name));
-    const stats = await backfillTable(
-      db.adminSql as never,
-      target,
-      embed,
-      10_000,
-      'gemma',
-      true,
-      undefined,
-      {
-        recipeColPresent: names.has(recipeColOf(target)),
+    const stats = await backfillTable(db.adminSql as never, target, { embed: embed, maxRows: 10_000, mode: 'gemma', spaceAware: true, recipeColPresent: names.has(recipeColOf(target)),
         profileColPresent: names.has(profileColOf(target)),
-        profile: EMBEDDER_DIM_SPECS.gemma,
-      },
-    );
+        profile: EMBEDDER_DIM_SPECS.gemma });
     expect(stats).toMatchObject({ errors: 0 });
 
     const after = await census();

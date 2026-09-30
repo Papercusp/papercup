@@ -97,7 +97,8 @@ import {
   planHostnameNeutralization,
   buildNeutralizedChildEnv,
 } from './seed-hostname-neutralization.js';
-import { assertStagedSeedCarriesNoIdentity, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
+import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
+export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
@@ -224,23 +225,6 @@ export async function withCutSeedSingleton<T>(input: {
 }
 
 /**
- * Keep the seed projection's scrub list in lockstep with the final desktop audit.
- *
- * The audit runs inside the UTS-neutralized child, so its live hostname probe sees
- * `papercusp-build`, not the real build-box hostname. The parent deliberately passes
- * that real value through {@link SEED_REAL_HOSTNAME_ENV}; retain it explicitly or the
- * projection can redact the username while leaving the hostname in content prose.
- */
-export function mergeReleaseSeedRedactionValues(output: string, realHostname?: string): readonly string[] {
-  return [...new Set([
-    realHostname?.trim(),
-    ...output
-      .split(/\r?\n/)
-      .map((line) => line.split('\t', 1)[0]?.trim()),
-  ].filter((value): value is string => !!value && value.length >= 3))];
-}
-
-/**
  * Resolve the release literal set whenever the finished seed contains a corestore,
  * whether that corestore is cut fresh or grafted from `--reuse-corestore`.
  *
@@ -257,20 +241,6 @@ export function resolveReleaseSeedRedactionValuesForCut(input: {
   readonly load: () => readonly string[];
 }): readonly string[] {
   return input.wantCorestore || input.reuseCorestoreDir ? input.load() : [];
-}
-
-function releaseSeedRedactionValues(root: string): readonly string[] {
-  const audit = join(root, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
-  const result = spawnSync('python3', [audit, '--identity-literals'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (result.status !== 0) {
-    const detail = typeof result.stderr === 'string' ? result.stderr.trim() : '';
-    throw new Error(`[cut-seed] could not resolve release identity literals from ${audit}${detail ? `: ${detail}` : ''}`);
-  }
-  const output = result.stdout ?? '';
-  return mergeReleaseSeedRedactionValues(output, process.env[SEED_REAL_HOSTNAME_ENV]);
 }
 
 export interface PickGitEncryptionInput {

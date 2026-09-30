@@ -162,6 +162,24 @@ const MOVED: MovedAlgorithm[] = [
       },
     ],
   },
+  {
+    // P-006: the stale-row pull that skips rows already failed this call.
+    name: 'backfill stale-row pull',
+    libFile: 'backfill/backfill-table.ts',
+    libDefinition: /\bexport async function backfillTable</,
+    fingerprint: /LIMIT \$1 OFFSET \$\{\s*\w+\s*\}/,
+    preMove: { file: 'lib/search/embed-backfill.ts', line: '        LIMIT $1 OFFSET ${selOffsetExpr}`,' },
+    hosts: [{ file: 'lib/search/embed-backfill.ts', imports: ['backfillTable'], calls: /\bbackfillTableCore</ }],
+  },
+  {
+    // P-006: the sweep's rotation of which target leads.
+    name: 'backfill round-robin sweep',
+    libFile: 'backfill/sweeper.ts',
+    libDefinition: /\bexport function createBackfillSweeper</,
+    fingerprint: /\bsweepCounter\s*%\s*\w+\.length\b/,
+    preMove: { file: 'lib/search/embed-backfill.ts', line: '    const offset = __sweepState.sweepCounter % TARGETS.length;' },
+    hosts: [{ file: 'lib/search/embed-backfill.ts', imports: ['createBackfillSweeper'], calls: /\bcreateBackfillSweeper</ }],
+  },
 ];
 
 /**

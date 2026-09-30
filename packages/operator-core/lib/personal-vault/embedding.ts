@@ -35,17 +35,6 @@ export async function runPersonalVaultEmbedBackfillOnce(): Promise<BackfillStats
   const names = new Set(columns.map((r) => r.column_name));
   if (!names.has('embedding')) return { skipped: 'personal_documents.embedding unavailable' };
   const embed = await buildPersonalDocumentEmbedder();
-  return backfillTable(
-    sql,
-    PERSONAL_EMBED_TARGET,
-    embed,
-    PERSONAL_EMBED_MAX_ROWS_PER_TICK,
-    PERSONAL_EMBEDDER_MODE,
-    names.has('embedding_mode'),
-    undefined,
-    {
-      profileColPresent: names.has('embedding_profile'),
-      profile: EMBEDDER_DIM_SPECS[PERSONAL_EMBEDDER_MODE],
-    },
-  );
+  return backfillTable(sql, PERSONAL_EMBED_TARGET, { embed: embed, maxRows: PERSONAL_EMBED_MAX_ROWS_PER_TICK, mode: PERSONAL_EMBEDDER_MODE, spaceAware: names.has('embedding_mode'), profileColPresent: names.has('embedding_profile'),
+      profile: EMBEDDER_DIM_SPECS[PERSONAL_EMBEDDER_MODE] });
 }

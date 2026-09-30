@@ -95,6 +95,87 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
+# A sidecar's reviewBy is intentionally fail-closed in the restart preflight,
+# but that only runs when server code needs a restart. This advisory scan runs on
+# every useful timer pass against the CURRENT serving checkout, including an
+# unchanged-HEAD no-op, so a date cannot expire silently between releases.
+# Warn 14 days before the review date and send one coord alarm per warning state;
+# if delivery fails, retry at most once per UTC day rather than flooding inboxes.
+forward_compat_review_warnings() {
+  local warning_days=14 warning_report state_home state_dir state_file fingerprint today
+  local previous_fingerprint previous_day previous_status alert_body alert_status tmp_file
+  state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  state_dir="$state_home/papercusp"
+  state_file="$state_dir/staging-sync-forward-compat-review"
+
+  if ! warning_report="$(cd "$INTEGRATION_ROOT" && node scripts/check-migration-forward-compat.mjs \
+    "--warn-review-by-days=$warning_days" \
+    "--sidecar-directory=$STAGING_ROOT/libs/papercusp/libs/db/sql")"; then
+    log "ALARM: forward-compat review-date scan failed; the staging sync will continue and the full restart preflight remains fail-closed"
+    return 0
+  fi
+
+  if [ -z "$warning_report" ]; then
+    rm -f "$state_file"
+    return 0
+  fi
+
+  fingerprint="$(printf '%s' "$warning_report" | sha256sum | cut -d' ' -f1)"
+  today="$(date -u +%F)"
+  previous_fingerprint=""
+  previous_day=""
+  previous_status=""
+  if [ -r "$state_file" ]; then
+    read -r previous_fingerprint previous_day previous_status < "$state_file" || true
+  fi
+  if [ "$fingerprint" = "$previous_fingerprint" ] && [ "$previous_status" = sent ]; then
+    return 0
+  fi
+  if [ "$fingerprint" = "$previous_fingerprint" ] && [ "$previous_day" = "$today" ]; then
+    return 0
+  fi
+
+  log "ALARM: migration forward-compat sidecar review dates need attention"
+  while IFS= read -r warning_line; do
+    [ -n "$warning_line" ] && log "$warning_line"
+  done <<< "$warning_report"
+
+  alert_status=failed
+  if [ -f "$INTEGRATION_ROOT/scripts/mcp-call.mjs" ]; then
+    alert_body="$(PAPERCUSP_REVIEW_WARNING_REPORT="$warning_report" node -e '
+      const report = process.env.PAPERCUSP_REVIEW_WARNING_REPORT || "";
+      process.stdout.write(JSON.stringify({
+        to: ["*"],
+        expects: "none",
+        summary: "Staging migration forward-compat reviews need attention",
+        body: [{ text: `${report}\n\nRenew or remove each sidecar before its reviewBy date.` }],
+      }));
+    ' 2>/dev/null || true)"
+    if [ -n "$alert_body" ] && (
+      cd "$INTEGRATION_ROOT" &&
+      timeout 30 node scripts/mcp-call.mjs coord:send "$alert_body" \
+        --client system-staging-sync-review-alarm --harness papercusp --workspace papercusp-workspace >/dev/null
+    ); then
+      alert_status=sent
+    else
+      log "ALARM DELIVERY FAILED: coord:send could not notify the Papercusp workspace; this condition will be retried tomorrow"
+    fi
+  else
+    log "ALARM DELIVERY FAILED: scripts/mcp-call.mjs is unavailable; this condition will be retried tomorrow"
+  fi
+
+  if ! mkdir -p "$state_dir"; then
+    log "WARNING: could not persist the sidecar warning state; a later tick may repeat this alarm"
+    return 0
+  fi
+  tmp_file="$state_file.$$"
+  if ! printf '%s %s %s\n' "$fingerprint" "$today" "$alert_status" > "$tmp_file" || ! mv -f "$tmp_file" "$state_file"; then
+    rm -f "$tmp_file"
+    log "WARNING: could not persist the sidecar warning state; a later tick may repeat this alarm"
+  fi
+  return 0
+}
+
 # A migration is applied during the next host boot, before :3170 can bind. Run
 # the same source lints against the checkout we are about to serve while the old
 # process is still alive. In particular, forward-compat catches an unacknowledged
@@ -453,6 +534,8 @@ if ! flock -n 9; then
   log "staging-sync lock is held — another staging-sync, a staging restart, or a release cut${cut_note} — skipping this tick"
   exit 0
 fi
+
+forward_compat_review_warnings
 
 [ -d "$INTEGRATION_ROOT/.git" ] || { log "FATAL: integration root not a git repo: $INTEGRATION_ROOT"; exit 1; }
 

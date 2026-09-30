@@ -277,6 +277,7 @@ Launch context:
 
 Fleet and execution:
   --fleet=<slug>                     Join an existing fleet
+  --fleet-role=leader|member         Role in that fleet (default member)
   --seat=<ref>                       Consume a delegated fleet seat
   --headless                         Launch without a desktop window
   --auto, --no-auto                  Set AUTO mode explicitly
@@ -849,6 +850,7 @@ export function parseArgs(argv) {
     account: null,
     fleet: null,
     fleetRole: null,
+    fleetRoleRequested: null,
     fleetName: null,
     fleetScheme: null,
     auto: null,
@@ -984,7 +986,7 @@ export function parseArgs(argv) {
     if (pendingFleet) {
       pendingFleet = false;
       out.fleet = a;
-      out.fleetRole = "member";
+      out.fleetRole = out.fleetRoleRequested ?? "member";
       continue;
     }
     if (a === "--") {
@@ -1250,7 +1252,22 @@ export function parseArgs(argv) {
     else if (a === "--fleet") pendingFleet = true;
     else if (a.startsWith("--fleet=")) {
       out.fleet = a.slice("--fleet=".length);
-      out.fleetRole = "member";
+      out.fleetRole = out.fleetRoleRequested ?? "member";
+    }
+    // WI-10004449: `--fleet-role=leader` boots a scripted launch as the fleet's
+    // LEADER. fleet:launch-on-plan { leader:'spawn' } needs it: the registry names
+    // the spawned leader only after its process opens, so a bare `--fleet=` resolved
+    // it as a member (member kickoff, member mission) against its own leader brief.
+    // Order-independent with --fleet. It is deliberately NOT re-emitted into
+    // launch_argv (psuLaunchArgvRecord): on resume the registry decides who leads.
+    else if (a.startsWith("--fleet-role=")) {
+      const role = a.slice("--fleet-role=".length);
+      if (role === "leader" || role === "member") {
+        out.fleetRoleRequested = role;
+        if (out.fleet) out.fleetRole = role;
+      } else {
+        console.error(`psu: ignoring --fleet-role=${role} (expected leader|member)`);
+      }
     }
     // agent-allocation P-005 (launch-from-seats): the delegated agent_slot template
     // this member consumes ('<model>:<effort>:<account>', emitted by

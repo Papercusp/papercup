@@ -7,6 +7,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { createHash } from 'node:crypto';
 import { getuid } from 'node:process';
 import { build, type Metafile, type Plugin } from 'esbuild';
+import ts from 'typescript';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import { createRequireSpecifiers, unfollowableImportCall } from './create-require-specifiers';
 
@@ -241,6 +242,38 @@ async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Prom
   return uncovered;
 }
 
+/** A literal contains a path segment only at a path boundary, not as part of an identifier or prose. */
+function hasPathSegment(value: string, segment: string): boolean {
+  if (!segment) return false;
+  let from = 0;
+  while (from <= value.length - segment.length) {
+    const at = value.indexOf(segment, from);
+    if (at < 0) return false;
+    const before = value[at - 1];
+    const after = value[at + segment.length];
+    const beginsSegment = at === 0 || before === '/' || before === '\\';
+    const endsSegment = after === undefined || after === '/' || after === '\\' || after === '.';
+    if (beginsSegment && endsSegment) return true;
+    from = at + 1;
+  }
+  return false;
+}
+
+/** Return a probed stem named by a string literal as a complete path segment, if any. */
+function namedPathLiteral(file: string, text: string, names: string[]): string | null {
+  if (names.length === 0) return null;
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  let found: string | null = null;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      && (found = names.find((name) => hasPathSegment(node.text, name)) ?? null)) return;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 /** Why one test file may observe a probed source, or null when its closure provably cannot. */
 async function reachReason(
   closure: Set<string>, test: string, probes: string[], unfollowable: Map<string, string>,
@@ -250,13 +283,14 @@ async function reachReason(
   for (const [file, why] of unfollowable) {
     if (closure.has(file)) return `${file} ${why}`;
   }
-  // The extension-less stem also catches a path assembled at runtime (`name + '.ts'`).
+  // The extension-less stem also catches a path assembled at runtime (`'name' + '.ts'`),
+  // but only when a string literal contains it as a complete path segment.
   const names = probes.map((probe) => basename(probe, extname(probe)));
   for (const file of closure) {
     if (!CODE_EXTENSIONS.has(extname(file))) continue;
     const text = await readFile(file, 'utf8').catch(() => null);
     if (text === null) return `could not read ${file}`;
-    const named = names.find((name) => text.includes(name));
+    const named = namedPathLiteral(file, text, names);
     if (named) return `${file} names ${named}`;
     if ((file === test || TEST_SIDE_FILE.test(file)) && OUT_OF_GRAPH_ACCESS.test(text)) {
       return `${file} reads the filesystem or spawns a process`;

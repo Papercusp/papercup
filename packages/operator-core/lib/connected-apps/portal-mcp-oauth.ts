@@ -54,6 +54,7 @@ import {
   TOKEN_GRANT_TYPES_SUPPORTED,
   publicOriginOf,
 } from './mcp-oauth-discovery';
+import { pgDate, pgDateOrNull, type PgTimestamp } from './pg-dates';
 import type { AppKeyScopes } from './store';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
@@ -252,8 +253,17 @@ interface ClientRow {
   redirect_uris: string[];
   token_endpoint_auth_method: OAuthTokenEndpointAuthMethod;
   client_secret_hash: string | null;
-  created_at: Date;
+  created_at: PgTimestamp;
 }
+
+const clientOf = (row: ClientRow): OAuthClient => ({
+  clientId: row.client_id,
+  clientName: row.client_name,
+  redirectUris: row.redirect_uris,
+  tokenEndpointAuthMethod: row.token_endpoint_auth_method,
+  clientSecretHash: row.client_secret_hash,
+  createdAt: pgDate(row.created_at, 'hosted_mcp_oauth_clients.created_at'),
+});
 
 interface RequestRow {
   handle_hash: string;
@@ -269,8 +279,8 @@ interface RequestRow {
   granted_scopes: AppKeyScopes | null;
   state: PortalRequestStatus;
   approved_by: string | null;
-  code_expires_at: Date | null;
-  expires_at: Date;
+  code_expires_at: PgTimestamp | null;
+  expires_at: PgTimestamp;
 }
 
 const REQUEST_COLUMNS = `handle_hash, client_id, control_workspace_id, organization_id, customer_workspace_id, redirect_uri,
@@ -292,8 +302,8 @@ const requestOf = (row: RequestRow): PortalOAuthRequest => ({
   grantedScopes: row.granted_scopes,
   status: row.state,
   approvedBy: row.approved_by,
-  codeExpiresAt: row.code_expires_at,
-  expiresAt: row.expires_at,
+  codeExpiresAt: pgDateOrNull(row.code_expires_at, 'hosted_mcp_oauth_requests.code_expires_at'),
+  expiresAt: pgDate(row.expires_at, 'hosted_mcp_oauth_requests.expires_at'),
 });
 
 /**
@@ -318,18 +328,7 @@ export class PostgresPortalOAuthStore implements PortalOAuthStore {
               ${input.clientName}, ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify([...input.redirectUris])}::text::jsonb)),
               ${input.tokenEndpointAuthMethod}, ${clientSecret ? sha256Hex(clientSecret) : null}, ${now})
       RETURNING client_id, client_name, redirect_uris, token_endpoint_auth_method, client_secret_hash, created_at`);
-    const row = rows[0]!;
-    return {
-      client: {
-        clientId: row.client_id,
-        clientName: row.client_name,
-        redirectUris: row.redirect_uris,
-        tokenEndpointAuthMethod: row.token_endpoint_auth_method,
-        clientSecretHash: row.client_secret_hash,
-        createdAt: row.created_at,
-      },
-      clientSecret,
-    };
+    return { client: clientOf(rows[0]!), clientSecret };
   }
 
   async getClient(customerWorkspaceId: string, clientId: string): Promise<OAuthClient | null> {
@@ -339,17 +338,7 @@ export class PostgresPortalOAuthStore implements PortalOAuthStore {
         FROM papercusp_auth.hosted_mcp_oauth_clients
        WHERE client_id = ${clientId} AND customer_workspace_id = ${customerWorkspaceId}
        LIMIT 1`);
-    const row = rows[0];
-    return row
-      ? {
-          clientId: row.client_id,
-          clientName: row.client_name,
-          redirectUris: row.redirect_uris,
-          tokenEndpointAuthMethod: row.token_endpoint_auth_method,
-          clientSecretHash: row.client_secret_hash,
-          createdAt: row.created_at,
-        }
-      : null;
+    return rows[0] ? clientOf(rows[0]) : null;
   }
 
   async createRequest(input: NewPortalOAuthRequest): Promise<void> {

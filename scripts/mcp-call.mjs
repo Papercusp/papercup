@@ -37,7 +37,7 @@
  * in full on stdout, so a caller that judges the answer itself can accept 5.
  * `--raw` prints the transport body unjudged and never exits 5.
  */
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -148,6 +148,25 @@ export function buildFallbackWarning({
  * fetch failure could duplicate a POST whose request reached the operator.
  * The injected seams keep the restart-window behavior directly testable.
  */
+/**
+ * WI-10004231: a caller that bounds this process with its own deadline (vmcall.sh,
+ * 30s by default) cannot tell a slow CLIENT start from a slow SERVER answer, because
+ * both surface as the same timeout. On same-box run 8 the VM dispatched the call ~1s
+ * after vmcall had killed us, and nothing recorded when the request left. When
+ * PAPERCUSP_MCP_CALL_SENT_MARKER names a file, stamp the epoch-ms at which the request
+ * is handed to fetch, so the caller can classify its timeout. Best-effort: a
+ * diagnostic must never fail the call.
+ */
+export function stampRequestSent(env = process.env, write = writeFileSync, now = Date.now) {
+  const marker = env.PAPERCUSP_MCP_CALL_SENT_MARKER;
+  if (!marker) return;
+  try {
+    write(marker, `${now()}\n`);
+  } catch {
+    // Diagnostic only.
+  }
+}
+
 export async function fetchWithConnectionRecovery(
   url,
   init,
@@ -575,6 +594,7 @@ async function main() {
   for (let index = 0; index < candidatePorts.length; index += 1) {
     const port = candidatePorts[index];
     try {
+      stampRequestSent();
       const candidateRes = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
         // An explicit pin means the caller deliberately chose this operator
         // and must not be silently routed to another port while it restarts.

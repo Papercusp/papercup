@@ -291,15 +291,27 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       }
     }
 
-    const groups = result.unaccounted.map((g) => ({
+    const groups = result.unaccounted.map((g) => {
       // A scope of OURS whose row already closed keeps its own id, so the history
       // stays attached to the real task instead of forking a phantom one.
-      taskId: (g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit)) || residueTaskId(g.cgroupPath),
-      cgroupPath: g.cgroupPath,
-      scopeUnit: g.scopeUnit,
-      pids: g.pids,
-      sampleCmdline: g.sampleCmdline,
-    }));
+      // Sample the same cgroup source as owned tasks: `/proc` membership proves
+      // presence, while cpu.stat / memory.current / pids.current provide the
+      // activity and resource measurements shown to the lifecycle judge.
+      const sample = sampleCgroup(absCgroupDir(g.cgroupPath), fs);
+      return {
+        taskId: (g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit)) || residueTaskId(g.cgroupPath),
+        cgroupPath: g.cgroupPath,
+        scopeUnit: g.scopeUnit,
+        pids: g.pids,
+        sampleCmdline: g.sampleCmdline,
+        metrics: {
+          lastMemoryBytes: sample.memoryBytes,
+          peakMemoryBytes: sample.peakMemoryBytes,
+          cpuUsec: sample.cpuUsec,
+          pidsCurrent: sample.pidsCurrent,
+        },
+      };
+    });
     const persisted = await upsertUnaccounted(groups, { workspaceId: deps.workspaceId });
     unaccountedPersisted = persisted.length;
     residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });

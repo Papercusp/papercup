@@ -10,7 +10,7 @@
 // pins the single-useQueryStates path (still preferred: one navigate); test 2
 // now pins that even the two-separate-setter path clears BOTH keys, so a future
 // adapter regression that reintroduces the clobber is caught.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   createRootRoute,
@@ -40,6 +40,7 @@ function mountAt(url: string, ui: React.ReactNode) {
   const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: () => <div /> });
   const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute]) });
   render(<RouterProvider router={router} />);
+  return router;
 }
 
 // THE FIX PATTERN: one useQueryStates → one navigate → both keys land.
@@ -70,6 +71,33 @@ function TwoSeparateHooks() {
 }
 
 describe('nuqs custom-adapter multi-key write (CreateHarnessPicker close regression)', () => {
+  it('opening a popup does not re-render a consumer watching an unchanged key', async () => {
+    const backgroundRender = vi.fn();
+    function Background() {
+      const [dock] = useQueryState('dock', parseAsString);
+      backgroundRender(dock);
+      return <div data-testid="background">{dock}</div>;
+    }
+    function Popup() {
+      const [plan, setPlan] = useQueryState('wppop', parseAsString);
+      return (
+        <button data-testid="open-popup" onClick={() => void setPlan('papercusp::plan')}>
+          {plan ?? 'closed'}
+        </button>
+      );
+    }
+    const router = mountAt('/?dock=plans', <><Background /><Popup /></>);
+    await waitFor(() => expect(screen.getByTestId('background').textContent).toBe('plans'));
+    await waitFor(() => expect(router.state.status).toBe('idle'));
+    const before = backgroundRender.mock.calls.length;
+
+    fireEvent.click(screen.getByTestId('open-popup'));
+    await waitFor(() => expect(window.location.search).toContain('wppop='));
+    await waitFor(() => expect(router.state.status).toBe('idle'));
+    expect(screen.getByTestId('open-popup').textContent).toBe('papercusp::plan');
+    expect(backgroundRender.mock.calls.length).toBe(before);
+  });
+
   it('a single useQueryStates write clears BOTH keys atomically (the fix)', async () => {
     mountAt('/?open=true&step=github', <CombinedHook />);
     await waitFor(() => expect(window.location.search).toContain('open=true'));

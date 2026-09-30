@@ -206,16 +206,20 @@ export interface GoalSpendRollup {
 }
 
 /**
- * The SESSION leg: samples attributed (via adv_sessions) to owners under the
- * goal, excluding samples already covered by the pot leg's harness match.
+ * The SESSION leg: samples attributed to owners under the goal plus selected
+ * consult answer sessions they opened, excluding samples already covered by
+ * the pot leg's harness match.
  *
  * For legacy NULL rows, owner→goal membership deliberately reads the SAME two
  * tables as resolveGoalContext (modes/goal-context.ts) rather than any
- * agent-supplied list. adv_sessions is NOT workspace-filtered on purpose: coord
- * owner ids are globally unique and a respawn chain can carry rows under more
- * than one workspace label, while the SAMPLE-side workspace_id filter still
- * holds the tenancy line. The goal-lifetime lower bound mirrors goalSpend(): a
- * subject's spend from before the goal existed never bills to it.
+ * agent-supplied list. Consult answer sessions are linked through the persisted
+ * routing snapshot for consults requested by those owners, with the same
+ * answer-session start bound as conversations:get. adv_sessions for goal owners
+ * is NOT workspace-filtered on purpose: coord owner ids are globally unique
+ * and a respawn chain can carry rows under more than one workspace label, while
+ * the SAMPLE-side workspace_id filter still holds the tenancy line. The
+ * goal-lifetime lower bound mirrors goalSpend(): a subject's spend from before
+ * the goal existed never bills to it.
  */
 export async function sessionSpendForGoal(
   sql: Sql,
@@ -231,6 +235,16 @@ export async function sessionSpendForGoal(
       sessions: string;
     }>
   >`
+    WITH goal_owners AS (
+      SELECT m.owner_id FROM harness_shared.agent_modes m
+       WHERE m.workspace_id = ${opts.workspaceId}
+         AND m.mode = ${GOAL_MODE}
+         AND m.subject = ${opts.goalId}
+      UNION
+      SELECT b.owner_id FROM harness_shared.session_briefs b
+       WHERE b.workspace_id = ${opts.workspaceId}
+         AND b.goal_id = ${opts.goalId}
+    )
     SELECT COALESCE(SUM(s.cost_usd), 0) AS cost,
            COUNT(*)                     AS samples,
            COUNT(*) FILTER (WHERE s.cost_usd IS NOT NULL) AS priced_samples,
@@ -245,20 +259,34 @@ export async function sessionSpendForGoal(
          s.goal_id = ${opts.goalId}
          OR (
            s.goal_id IS NULL
-           AND s.session_id IN (
-             SELECT a.session_id
-               FROM harness_shared.adv_sessions a
-              WHERE a.session_id IS NOT NULL
-                AND a.coord_owner_id IN (
-                  SELECT m.owner_id FROM harness_shared.agent_modes m
-                   WHERE m.workspace_id = ${opts.workspaceId}
-                     AND m.mode = ${GOAL_MODE}
-                     AND m.subject = ${opts.goalId}
-                  UNION
-                  SELECT b.owner_id FROM harness_shared.session_briefs b
-                   WHERE b.workspace_id = ${opts.workspaceId}
-                     AND b.goal_id = ${opts.goalId}
-                )
+           AND (
+             s.session_id IN (
+               SELECT a.session_id
+                 FROM harness_shared.adv_sessions a
+                WHERE a.session_id IS NOT NULL
+                  AND a.coord_owner_id IN (SELECT owner_id FROM goal_owners)
+             )
+             OR EXISTS (
+               SELECT 1
+                 FROM harness_shared.consult_state cs
+                 CROSS JOIN LATERAL jsonb_array_elements(
+                   CASE
+                     WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
+                       THEN cs.routing #> '{selection,selected}'
+                     ELSE '[]'::jsonb
+                   END
+                 ) selected
+                 JOIN harness_shared.adv_sessions answer_session
+                   ON answer_session.workspace_id = cs.workspace_id
+                  AND answer_session.coord_owner_id = NULLIF(selected->>'answeringOwnerId', '')
+                  AND answer_session.session_id IS NOT NULL
+                  AND answer_session.started_at >= cs.created_at
+                WHERE cs.workspace_id = ${opts.workspaceId}
+                  AND cs.requester_id IN (SELECT owner_id FROM goal_owners)
+                  AND answer_session.session_id = s.session_id
+                  AND s.ts >= (EXTRACT(EPOCH FROM answer_session.started_at) * 1000)::bigint
+                  AND NULLIF(selected->>'answeringOwnerId', '') IS NOT NULL
+             )
            )
          )
        )

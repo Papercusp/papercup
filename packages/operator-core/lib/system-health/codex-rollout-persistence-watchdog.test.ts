@@ -31,6 +31,7 @@ import {
   classifyCodexProviderError,
   evaluateCodexRolloutPersistence,
   evaluateCodexProviderFailureRecurrence,
+  latestCodexProviderErrorAfter,
   providerFailureDisposition,
   readCodexRolloutTail,
   scanCodexProviderFailureTail,
@@ -118,6 +119,29 @@ describe('native Codex provider-error recurrence', () => {
     expect(recurrence).toMatchObject({ consecutiveFailures: 3, threshold: 3, dead: true });
     expect(recurrence.failures).toHaveLength(3);
     expect(recurrence.latest?.source).toBe('event_msg:task_complete');
+  });
+
+  it('returns only a structured provider error after the loop fire and clears it on a later success', () => {
+    const beforeFire = JSON.stringify({
+      timestamp: '2026-08-27T00:00:01Z',
+      type: 'event_msg',
+      payload: { type: 'error', codex_error_info: 'usageLimitExceeded', turn_id: 'old' },
+    });
+    const afterFire = JSON.stringify({
+      timestamp: '2026-08-27T00:01:01Z',
+      type: 'event_msg',
+      payload: { type: 'error', codex_error_info: 'usageLimitExceeded', turn_id: 'current' },
+    });
+    const success = JSON.stringify({
+      timestamp: '2026-08-27T00:02:01Z',
+      type: 'event_msg',
+      payload: { type: 'task_complete', status: 'completed' },
+    });
+    const fireMs = Date.parse('2026-08-27T00:01:00Z');
+
+    expect(latestCodexProviderErrorAfter(beforeFire, fireMs)).toBeNull();
+    expect(latestCodexProviderErrorAfter(afterFire, fireMs)?.code).toBe('usage_limit_exceeded');
+    expect(latestCodexProviderErrorAfter(`${afterFire}\n${success}`, fireMs)).toBeNull();
   });
 
   it('resets the trailing streak after a successful terminal and parses a bounded tail', () => {

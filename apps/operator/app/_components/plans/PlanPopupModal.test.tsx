@@ -14,6 +14,12 @@ import {
 } from "nuqs/adapters/testing";
 import type { AuthorIdentity } from "@/app/admin/plans/plans-api";
 
+const phaseSpy = vi.hoisted(() => vi.fn());
+vi.mock("../perf/perf-marks", () => ({
+  markInteractionPhase: phaseSpy,
+  PERF_INTERACTIONS: { planPopupOpen: "plan-popup-open" },
+}));
+
 const {
   planRows,
   planListState,
@@ -125,6 +131,7 @@ vi.mock("./PlanSessionsTab", () => ({
 import PlanPopupModal from "./PlanPopupModal";
 
 afterEach(() => {
+  phaseSpy.mockClear();
   planRows.value = [];
   planListState.loading = false;
   planListState.error = null;
@@ -208,6 +215,11 @@ function installFullscreenApi(enabled = true) {
 }
 
 describe("PlanPopupModal provenance", () => {
+  it("records the first popup render before its content commits", () => {
+    renderPopup(null, null);
+    expect(phaseSpy).toHaveBeenCalledWith("plan-popup-open", "popup-render-started");
+  });
+
   it.each([
     ["scout", undefined, "Blender", "blender", "Plan source: Blender"],
     [

@@ -9,7 +9,7 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 // Historical migrations and fixtures may name the retired schema. Operational
 // scripts must address the canonical tables after the compatibility views retire.
 function referencesRetiredSchema(source: string, fileName = 'script.mjs'): boolean {
-  return /\bpapercup_shared\s*\./.test(stripCommentsOnly(source, fileName));
+  return /\bpapercup_shared\b/.test(stripCommentsOnly(source, fileName));
 }
 
 describe('local physical rename contract', () => {
@@ -24,15 +24,18 @@ describe('local physical rename contract', () => {
   it('detects retired SQL references while allowing canonical SQL and history comments', () => {
     expect(referencesRetiredSchema('await sql`SELECT * FROM papercup_shared.briefings`')).toBe(true);
     expect(referencesRetiredSchema('await sql`SELECT * FROM papercusp_shared.briefings`')).toBe(false);
+    expect(referencesRetiredSchema("const schemas = ['harness_shared', 'papercup_shared'];")).toBe(true);
+    expect(referencesRetiredSchema("const schemas = ['harness_shared', 'papercusp_shared'];")).toBe(false);
     expect(referencesRetiredSchema('// formerly papercup_shared.briefings\nawait sql`SELECT 1`')).toBe(false);
   });
 
   it('keeps operational scripts off the retired shared schema', () => {
-    const files = globSync('scripts/**/*.{mjs,mts,ts}', {
+    const files = globSync(['scripts/**/*.{mjs,mts,ts}', 'libs/papercusp/libs/db/scripts/**/*.{mjs,mts,ts}'], {
       cwd: ROOT,
       exclude: ['scripts/**/node_modules/**', 'scripts/**/.*'],
     });
     expect(files).toContain('scripts/backfill-briefings.mjs');
+    expect(files).toContain('libs/papercusp/libs/db/scripts/build-reference-schema.ts');
     const offenders = files.filter((file) =>
       referencesRetiredSchema(readFileSync(join(ROOT, file), 'utf8'), file),
     );
@@ -54,9 +57,15 @@ describe('local physical rename contract', () => {
       'packages/operator-core/lib/system-health/service-restart-rate-watchdog.ts',
       'packages/operator-core/lib/search/embed-coverage.ts',
       'packages/operator-core/lib/search/session-ingest-lag-watchdog.ts',
+      'packages/operator-core/lib/pot/soak-report.ts',
+      'packages/operator-core/lib/agent-tools/logs/read.ts',
+      'packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts',
       'packages/operator-core/lib/harness/routines/seed-*routine.ts',
+      'packages/operator-core/lib/harness/routines/seed-oddsmith-cron-routines.ts',
     ], { cwd: ROOT });
     expect(files).toContain('packages/operator-core/lib/scout/generation-watermark.ts');
+    expect(files).toContain('packages/operator-core/lib/pot/soak-report.ts');
+    expect(files).toContain('packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts');
     const offenders = files.filter((file) =>
       /\bpapercup-(?:dev-api|staging-api|bg-host)\b/.test(
         stripCommentsOnly(readFileSync(join(ROOT, file), 'utf8'), file),

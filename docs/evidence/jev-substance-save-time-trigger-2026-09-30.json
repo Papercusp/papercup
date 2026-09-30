@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Jev save-time substance check after the trigger wording: refusal rate on real memories and catch rate on self-promoters (P-010, bar R-3; WI-10004428)",
+  "framework": "operational",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/memory/bench/jev-substance-cli.ts",
+    "--sample",
+    "600",
+    "--seed",
+    "p010d",
+    "--exclude-sample-seed",
+    "p010,p010c",
+    "--paired",
+    "312",
+    "--substance-wording",
+    "trigger"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T21:33:48Z",
+  "finishedAt": "2026-09-30T21:34:52Z",
+  "summary": "The save-time substance question (jev-conflict-judge.ts buildConflictRequest { substance: true }, wording 'trigger' from jev-substance-wording.ts, jev-1.13.0) was asked of a seeded 600-memory sample drawn from 3,955 live real memories across 83 pools, and of 156 self-promoting memories. Seed p010d excluded every memory in the earlier p010 and p010c samples (0 overlap), so no threshold or wording decision had used these rows. At the adopted threshold 0.4 (CONTENT_FREE_MAX_P_CONCRETE in jev-conflict-judge.ts) it refused 2 of 600 real memories (0.3%, 95% CI 0.1% to 1.2%): 1 of 300 on the selection half and 1 of 300 on the confirmation half, both within the 1% budget. It caught 156 of 156 self-promoters asked alone and 156 of 156 asked with three conflict neighbours (highest self-promoter P 0.30 alone, 0.26 paired). The v1 wording on the same rows saved 4 of 156 at 0.5 (hn-026, lg-011, lg-030, lg-036). Latency p50 176 ms, p95 269 ms, 0 failed calls; 1,184 live Jev calls, all written to the decision ledger. The report header lists productionThreshold 0.5 because the run predates adopting 0.4; the verdict row is t=0.4. Source report: .papercusp/bench-reports/jev-substance-trigger-2026-09-30T21-34-52-720Z.{md,json} (gitignored bench output; this file carries its verdict). Pre-registration and the held-out comparison: docs/evidence/jev-substance-trigger-2026-09-30.json.",
+  "assertions": [
+    {
+      "id": "real-refusal-rate-within-1pct",
+      "passed": true,
+      "evidence": "Whole sample 2/600 = 0.3% refused at t=0.4 (CI 0.1% to 1.2%); selection half 1/300 = 0.3%, confirmation half 1/300 = 0.3%."
+    },
+    {
+      "id": "sample-size-at-least-500",
+      "passed": true,
+      "evidence": "realSample 600 of 3,955 live real memories, seed p010d, disjoint from p010 and p010c, split 300/300 into selection and confirmation halves."
+    },
+    {
+      "id": "self-promoters-caught",
+      "passed": true,
+      "evidence": "156/156 self-promoting memories refused at t=0.4 asked alone and 156/156 asked paired with conflict neighbours; the 4 topical self-promoters the v1 wording saved are all caught."
+    },
+    {
+      "id": "no-failed-calls",
+      "passed": true,
+      "evidence": "0 failed or timed-out Jev calls of 1,184; latency p50 176 ms, p95 269 ms."
+    }
+  ],
+  "workItemId": "WI-10004307",
+  "specId": "AUTO-BAR-R-3-P-010",
+  "testFile": "packages/operator-core/lib/memory/bench/jev-substance.test.ts",
+  "sourceFile": "packages/operator-core/lib/memory/jev-conflict-judge.ts"
+}

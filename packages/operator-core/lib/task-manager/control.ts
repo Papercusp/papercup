@@ -259,6 +259,22 @@ async function scopeCgroupPath(
   }
 }
 
+/**
+ * After a `systemctl kill` FAILED, is the scope simply already collected?
+ *
+ * A payload can exit on its own between a caller's liveness read and the signal,
+ * so systemd collects its transient scope and the kill fails with `Unit … not
+ * loaded`. That is not a failure to signal; the subtree is gone
+ * (WI-10004447: su-session-stdio-peer close() waited 5 s, the real omp engine
+ * exited just after, and teardown failed as command_failed). Re-ask systemd;
+ * never parse the kill's error text. Returns the already_gone detail, or null
+ * when the unit is still known or the question itself failed.
+ */
+async function collectedAfterFailedSignal(scopeUnit: string, d: ReturnType<typeof deps>): Promise<string | null> {
+  const resolved = await scopeCgroupPath(scopeUnit, d);
+  return !resolved.ok && resolved.error === 'already_gone' ? resolved.detail : null;
+}
+
 export async function killTask(taskId: string, opts: KillTaskOptions = {}): Promise<ControlOutcome> {
   const d = deps(opts);
   const row = await getTask(taskId);
@@ -338,6 +354,11 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     notifyTaskKillRequested(taskId, signal);
     const res = await systemctl(['kill', `--signal=${signal}`, row.scopeUnit], d);
     if (!res.ok) {
+      // The payload exited on its own and systemd collected the scope: nothing
+      // was left to signal. The exit watcher records the real exit, so the row
+      // is not closed here (WI-10004447).
+      const collected = await collectedAfterFailedSignal(row.scopeUnit, d);
+      if (collected) return { ok: false, taskId, action: 'kill', error: 'already_gone', detail: collected };
       return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: res.detail };
     }
     let escalated = false;
@@ -347,14 +368,16 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         notifyTaskKillRequested(taskId, 'SIGKILL');
         const escalation = await systemctl(['kill', '--signal=SIGKILL', row.scopeUnit], d);
         // Pending termination is a success only when SIGKILL was delivered.
-        // A failed command must not suppress recovery or close a live task.
-        if (!escalation.ok) {
+        // A failed command must not suppress recovery or close a live task,
+        // unless the scope was collected in between: then the verification
+        // below reads it as empty (WI-10004447).
+        if (!escalation.ok && !(await collectedAfterFailedSignal(row.scopeUnit, d))) {
           return {
             ok: false, taskId, action: 'kill', error: 'command_failed',
             detail: `SIGKILL escalation failed for scope ${row.scopeUnit}: ${escalation.detail}`,
           };
         }
-        escalated = true;
+        escalated = escalation.ok;
       }
     }
     // EI-19478780721557822: a `systemctl kill` exit code only proves the SIGNAL was
@@ -520,6 +543,9 @@ export async function killScopeUnit(
   const signal = opts.signal ?? 'SIGTERM';
   const res = await systemctl(['kill', `--signal=${signal}`, scopeUnit], d);
   if (!res.ok) {
+    // Collected between the probe above and the signal (WI-10004447).
+    const collected = await collectedAfterFailedSignal(scopeUnit, d);
+    if (collected) return { ok: false, scopeUnit, action, error: 'already_gone', detail: collected };
     return { ok: false, scopeUnit, action, error: 'command_failed', detail: res.detail };
   }
 
@@ -528,13 +554,13 @@ export async function killScopeUnit(
     await d.sleep(opts.escalateAfterMs);
     if (countCgroupProcesses(resolved.cgroupPath, d) > 0) {
       const escalation = await systemctl(['kill', '--signal=SIGKILL', scopeUnit], d);
-      if (!escalation.ok) {
+      if (!escalation.ok && !(await collectedAfterFailedSignal(scopeUnit, d))) {
         return {
           ok: false, scopeUnit, action, error: 'command_failed',
           detail: `SIGKILL escalation failed for scope ${scopeUnit}: ${escalation.detail}`,
         };
       }
-      escalated = true;
+      escalated = escalation.ok;
     }
   }
 

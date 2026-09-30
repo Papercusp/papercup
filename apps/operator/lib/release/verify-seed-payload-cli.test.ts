@@ -35,6 +35,7 @@ import {
 import type { SeedStoreVerifier } from './seed-payload-integrity-guard.js';
 import { SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
 import { DEFAULT_NEUTRAL_BUILD_HOSTNAME } from './seed-hostname-neutralization.js';
+import { OWNER_NAME_ENV } from './release-content-scrub.js';
 
 /** Control: every store is intact. */
 const alwaysOk: SeedStoreVerifier = async () => ({ ok: true });
@@ -62,13 +63,14 @@ const probing = (over: Partial<Record<keyof Probe, string>> = {}): Probe => ({
   gitEmail: () => over.gitEmail,
 });
 
-/** No resolvable identity: the identity leg runs, finds nothing to hunt, and passes. */
+/** No machine identity; the shared deps fixture still supplies a synthetic owner. */
 const NO_IDENTITY = probing();
 
 const deps = (verify: SeedStoreVerifier, over: Partial<VerifySeedPayloadDeps> = {}): VerifySeedPayloadDeps => ({
   verify,
-  env: {},
+  env: { [OWNER_NAME_ENV]: 'Zqxwerty Testperson' },
   probe: NO_IDENTITY,
+  releaseLiterals: () => [],
   ...over,
 });
 
@@ -210,6 +212,53 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
     const writeLeakyFile = async (literal: string = BUILDER_HOME) =>
       writeFile(join(dir, 'presence.json'), JSON.stringify({ path: `${literal}/papercupai-workspace` }), 'utf8');
 
+    it('uses the canonical runtime literal resolver to reject a release-only organization in reused bytes', async () => {
+      const organization = 'zqxorganization';
+      await writeManifest();
+      await writeFile(join(dir, '000237.log'), Buffer.from(`\0state ${organization.toUpperCase()} state`));
+      const env = {
+        ...process.env,
+        [OWNER_NAME_ENV]: `Zqxwerty Testperson;${organization}`,
+        PAPERCUSP_RELEASE_OWNER_EMAIL: 'zqx@example.invalid',
+      };
+      // Control: the old machine-only verifier misses the same binary bytes.
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk, { env })))
+        .toBe(EXIT_OK);
+      const lines: string[] = [];
+      const productionDeps = deps(alwaysOk, { env, releaseLiterals: undefined });
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (line) => lines.push(line), productionDeps))
+        .toBe(EXIT_MISMATCH);
+      expect(lines.join('\n')).toContain('release-literal:');
+      await writeFile(join(dir, '000237.log'), Buffer.from('\0state redacted state'));
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, productionDeps)).toBe(EXIT_OK);
+    });
+
+    it('keeps the neutral build hostname out of the canonical release scan', async () => {
+      await writeManifest();
+      await writeFile(join(dir, '000237.log'), Buffer.from(`\0host ${DEFAULT_NEUTRAL_BUILD_HOSTNAME}`));
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, deps(alwaysOk, {
+        releaseLiterals: () => [DEFAULT_NEUTRAL_BUILD_HOSTNAME, DEFAULT_NEUTRAL_BUILD_HOSTNAME.toUpperCase()],
+      }))).toBe(EXIT_OK);
+    });
+
+    it('reports UNDETERMINED when the canonical release literal resolver cannot run', async () => {
+      await writeManifest();
+      const lines: string[] = [];
+      const code = await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (line) => lines.push(line), deps(alwaysOk, {
+        releaseLiterals: () => { throw new Error('audit literal resolver unavailable'); },
+      }));
+      expect(code).toBe(EXIT_UNDETERMINED);
+      expect(lines.join('\n')).toContain('audit literal resolver unavailable');
+    });
+
+    it('reports UNDETERMINED when no owner name was supplied, while a definite machine hit stays BROKEN', async () => {
+      await writeManifest();
+      const unknownOwner = deps(alwaysOk, { env: {}, probe: probing({ home: BUILDER_HOME }) });
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, unknownOwner)).toBe(EXIT_UNDETERMINED);
+      await writeLeakyFile();
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, unknownOwner)).toBe(EXIT_MISMATCH);
+    });
+
     // CALIBRATION for this leg: if the identity scan were dropped, this goes green and fails.
     it('reports BROKEN — never OK — when the staged bytes carry the build box home path', async () => {
       await writeManifest();
@@ -241,7 +290,7 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
         { seedDir: dir, origin: 'reuse' },
         silent,
         deps(alwaysOk, {
-          env: { [SEED_REAL_HOSTNAME_ENV]: 'buildbox-42' },
+          env: { [OWNER_NAME_ENV]: 'Zqxwerty Testperson', [SEED_REAL_HOSTNAME_ENV]: 'buildbox-42' },
           probe: probing({ hostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME }),
         }),
       );

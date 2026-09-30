@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
 
 // EI-19937931088042507 / EI-19938311427988534: readBgHostJournalUncached shells out to
 // `journalctl` via execFile with NO default timeout — an unresponsive/slow journal (disk
@@ -38,6 +39,26 @@ import {
 } from './soak-report';
 
 describe('parseBgHostUnitJournal', () => {
+  it('counts evidence from the canonical bg-host unit', () => {
+    const journal = [
+      'Sep 30 10:00:00 host systemd[4022]: Started papercusp-bg-host.service - Papercusp dedicated background host.',
+      'Sep 30 10:01:00 host systemd[4022]: papercusp-bg-host.service: Consumed 1min CPU time, 4G memory peak, 0B memory swap peak.',
+      "Sep 30 10:01:00 host systemd[4022]: papercusp-bg-host.service: Failed with result 'oom-kill'.",
+      'Sep 30 10:01:00 host systemd[4022]: papercusp-bg-host.service: A process of this unit has been killed by the OOM killer.',
+    ].join('\n');
+
+    expect(parseBgHostUnitJournal(journal)).toMatchObject({
+      restartCount: 1,
+      failureCount: 1,
+      oomKillCount: 1,
+      peakMemoryMb: 4096,
+      highMemoryPeakCount: 1,
+      journalAvailable: true,
+      journalError: null,
+    });
+    expect(parseBgHostGlobalJournal(journal)).toBe(1);
+  });
+
   it('counts restarts, oom evidence, and memory peaks', () => {
     const journal = [
       'Started papercup-bg-host.service',
@@ -424,6 +445,21 @@ describe('computeSoakReport', () => {
 });
 
 describe('readBgHostJournalUncached — bounded against a hung journalctl (EI-19937931088042507)', () => {
+  it('queries the canonical unit and includes its restart lines in the journal filter', async () => {
+    const journalctl = vi.mocked(execFile);
+    journalctl.mockClear();
+    await readBgHostJournalUncached(24);
+
+    expect(journalctl).toHaveBeenCalledTimes(2);
+    for (const call of journalctl.mock.calls) {
+      expect(call[0]).toBe('journalctl');
+      const args = call[1] as string[];
+      expect(args[args.indexOf('-u') + 1]).toBe('papercusp-bg-host.service');
+    }
+    const unitArgs = journalctl.mock.calls[0][1] as string[];
+    expect('Started papercusp-bg-host.service').toMatch(new RegExp(unitArgs[unitArgs.indexOf('--grep') + 1]));
+  });
+
   it('degrades to an explicit journalError instead of hanging when journalctl is killed by the timeout', async () => {
     const start = Date.now();
     const result = await readBgHostJournalUncached(24);

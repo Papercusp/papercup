@@ -198,6 +198,10 @@ import {
   zeroToolEscalationThreshold,
 } from './loop-zero-tool-escalation';
 import {
+  readCodexProviderErrorAfter as defaultReadCodexProviderErrorAfter,
+  type CodexProviderError,
+} from '../../system-health/codex-rollout-persistence-watchdog';
+import {
   decideMonitorSettlement,
   monitorDeltaObservedForFire,
   persistMonitorNoDeltaBudget,
@@ -876,6 +880,8 @@ interface LoopRow {
    *  'lifecycle' via (see classifyLoopLifecycleTurn). null when no such turn is indexed yet
    *  (session_turns ingest lag) — never treated as a death, only ever as "nothing to check". */
   last_assistant_text_after_fire: string | null;
+  /** Current native Codex session row, used only when a settled fire has zero tool calls. */
+  codex_adv_session_id?: number | string | null;
   /** WI-6852: newest session_turns ts indexed for this owner (any speaker) — the ingest
    *  WATERMARK. Disambiguates the field above: a null text with a watermark BEHIND the quiet
    *  instant is an ingest lag, not evidence the turn ended cleanly. null when the owner has no
@@ -1198,6 +1204,8 @@ export async function reconcileLoopRoutines(
     escalateLifecycleDeath?: (info: LifecycleDeathInfo) => Promise<void>;
     /** WI-41228: canonical agent-authored tool-call evidence for the dispatched fire window. */
     countAgentToolCallsInWindow?: typeof defaultCountAgentToolCallsInWindow;
+    /** Native Codex rollout evidence for a settled zero-tool fire; null means no current failure. */
+    readCodexProviderErrorAfter?: typeof defaultReadCodexProviderErrorAfter;
     /** WI-41228: idempotent routine-metadata streak writer, injectable for focused tests. */
     recordZeroToolFireObservation?: typeof defaultRecordZeroToolFireObservation;
     /** WI-41228: shared disarm primitive used before the existing dead-loop termination path. */
@@ -1221,6 +1229,7 @@ export async function reconcileLoopRoutines(
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
   const escalateLifecycleDeath = opts.escalateLifecycleDeath ?? defaultEscalateLifecycleDeath;
   const countAgentToolCallsInWindow = opts.countAgentToolCallsInWindow ?? defaultCountAgentToolCallsInWindow;
+  const readCodexProviderErrorAfter = opts.readCodexProviderErrorAfter ?? defaultReadCodexProviderErrorAfter;
   const recordZeroToolFireObservation = opts.recordZeroToolFireObservation ?? defaultRecordZeroToolFireObservation;
   const autoPauseLoopRoutine = opts.autoPauseLoopRoutine ?? defaultAutoPauseLoopRoutine;
   const zeroToolThreshold = opts.zeroToolThreshold ?? zeroToolEscalationThreshold();
@@ -1307,6 +1316,14 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary = ${SESSION_START_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
+           (SELECT a.id
+              FROM harness_shared.adv_sessions a
+             WHERE a.coord_owner_id = r.target_owner_id
+               AND a.workspace_id = r.workspace_id
+               AND a.agent = 'codex'
+               AND a.ended_at IS NULL
+             ORDER BY a.id DESC
+             LIMIT 1) AS codex_adv_session_id,
            (r.payload_template->>'carry') AS carry,
            r.metadata->>'armed_at' AS armed_at,
            (SELECT max(cn.updated_ts)
@@ -1891,7 +1908,7 @@ export async function reconcileLoopRoutines(
       // `deferPastWall` branch can actually push the next fire out.
       // WI-36792: a 'gate-backoff' re-arm targets the gate's own expiry, not the interval —
       // and never sooner than one interval, so it can never out-pace the loop's own cadence.
-      const rearmMs = gateRetryMs != null ? Math.max(gateRetryMs, intervalMs) : (turnDeath?.rearmDelayMs ?? intervalMs);
+      let rearmMs = gateRetryMs != null ? Math.max(gateRetryMs, intervalMs) : (turnDeath?.rearmDelayMs ?? intervalMs);
 
       // WI-41228 (P-005) — ESCALATION RUNG R4. A fire can settle cleanly at the session layer
       // while the agent produces zero authored tool calls (expired bearer, split state, or a new
@@ -1924,6 +1941,23 @@ export async function reconcileLoopRoutines(
         });
 
         if (toolCalls != null) {
+          let nativeCodexUsageFailure: CodexProviderError | null = null;
+          if (toolCalls === 0 && row.codex_adv_session_id != null) {
+            const nativeError = await runWithWorkspace(row.routine_workspace_id, () =>
+              readCodexProviderErrorAfter(row.codex_adv_session_id!, lastFiredMs),
+            ).catch((e) => {
+              console.warn(
+                `[loop-reconcile] native Codex provider evidence read failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+              );
+              return null;
+            });
+            if (nativeError && /usage.?limit|quota/i.test(nativeError.code)) {
+              nativeCodexUsageFailure = nativeError;
+              const text = `You've hit your usage limit${nativeError.message ? `: ${nativeError.message}` : ''}`;
+              turnDeath = classifyLoopLifecycleTurn(text, intervalMs, nowMs);
+              if (turnDeath) rearmMs = Math.max(intervalMs, turnDeath.rearmDelayMs);
+            }
+          }
           const fireToken = new Date(lastFiredMs).toISOString();
           const observation = await recordZeroToolFireObservation(db, {
             routineId: row.id,
@@ -1941,7 +1975,11 @@ export async function reconcileLoopRoutines(
             const reason =
               `zero-tool escalation (WI-41228): ${observation.streak} consecutive dispatched turns ` +
               `recorded zero agent-authored tool calls (threshold=${observation.threshold}, ` +
-              `last_fire=${observation.fireToken})`;
+              `last_fire=${observation.fireToken})` +
+              (nativeCodexUsageFailure
+                ? `; native Codex ${nativeCodexUsageFailure.source} reported code=${nativeCodexUsageFailure.code}` +
+                  (nativeCodexUsageFailure.retryAt ? `, retry hint=${nativeCodexUsageFailure.retryAt}` : '')
+                : '');
             // Pause FIRST so this fire cannot be re-armed below. Then reuse the existing terminal
             // path for attributed fire history, ghost-await cancellation, deduped human escalation,
             // and the loud terminal log. Cause-agnostic by design; no blind auto-respawn loop.

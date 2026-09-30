@@ -15,13 +15,16 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import type { AppRelayConnector, AppRelayPort } from '../workspace-host/hosted-app-relay';
+import type { Sql } from 'postgres';
 import {
   InMemoryPortalOAuthStore,
+  PostgresPortalOAuthStore,
   handleHostedMcpOAuth,
   isPortalMcpOAuthPath,
   narrowedGrant,
   type PortalMcpOAuthDependencies,
 } from './portal-mcp-oauth';
+import type { AppRelayServiceRunner } from '../workspace-host/hosted-app-relay';
 
 const PORTAL = 'https://app.papercusp.com';
 const WS = 'ws-1';
@@ -438,5 +441,98 @@ describe('portal client-credentials grant (P-016)', () => {
     });
     expect(password.status).toBe(400);
     expect(await password.json()).toMatchObject({ error: 'unsupported_grant_type' });
+  });
+});
+
+/**
+ * WI-10004446: once anything drizzle-wraps the shared pool, a raw `timestamptz` read comes back as
+ * Postgres text, not a Date (connected-apps/pg-dates.ts). The hosted control plane's pool did, and
+ * registration answered 500 on `createdAt.getTime()`. This runner answers every query the way that
+ * pool does, so the store must turn the text into Dates itself.
+ */
+function textTimestampRunner(rowsFor: (query: string) => Record<string, unknown>[]): AppRelayServiceRunner {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const query = strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
+    return Promise.resolve(rowsFor(query));
+  }) as unknown as Sql & { unsafe: (text: string) => string };
+  sql.unsafe = (text: string) => text;
+  return ((fn: (tx: Sql) => Promise<unknown>) => fn(sql)) as AppRelayServiceRunner;
+}
+
+describe('PostgresPortalOAuthStore reads timestamps a drizzle-wrapped pool returns as text (WI-10004446)', () => {
+  const workspace = { controlPlaneWorkspaceId: 'control-1', organizationId: 'org-1', customerWorkspaceId: WS };
+  const clientRow = {
+    client_id: `pcoc_${'c'.repeat(22)}`,
+    client_name: 'Scripted client',
+    redirect_uris: [REDIRECT],
+    token_endpoint_auth_method: 'none',
+    client_secret_hash: null,
+    created_at: '2026-09-30 21:52:12.123456+00',
+  };
+  const requestRow = {
+    handle_hash: 'h'.repeat(64),
+    client_id: clientRow.client_id,
+    control_workspace_id: 'control-1',
+    organization_id: 'org-1',
+    customer_workspace_id: WS,
+    redirect_uri: REDIRECT,
+    code_challenge: CHALLENGE,
+    oauth_state: null,
+    resource: null,
+    requested_scopes: {},
+    granted_scopes: null,
+    state: 'pending',
+    approved_by: null,
+    code_expires_at: null,
+    expires_at: '2026-09-30 22:02:12.5-04',
+  };
+
+  it('registers and reads a client whose created_at arrives as text', async () => {
+    const store = new PostgresPortalOAuthStore(textTimestampRunner(() => [clientRow]));
+    const registered = await store.registerClient(
+      workspace,
+      { clientName: 'Scripted client', redirectUris: [REDIRECT], tokenEndpointAuthMethod: 'none' },
+      new Date('2026-09-30T21:52:12Z'),
+    );
+    expect(registered.client.createdAt).toBeInstanceOf(Date);
+    expect(registered.client.createdAt.toISOString()).toBe('2026-09-30T21:52:12.123Z');
+    const read = await store.getClient(WS, clientRow.client_id);
+    expect(read?.createdAt.toISOString()).toBe('2026-09-30T21:52:12.123Z');
+  });
+
+  it('answers the registration endpoint with client_id_issued_at, not a 500', async () => {
+    const h = harness();
+    const deps: PortalMcpOAuthDependencies = {
+      ...h.deps,
+      store: new PostgresPortalOAuthStore(textTimestampRunner(() => [clientRow])),
+    };
+    const response = await handleHostedMcpOAuth(
+      new Request(`${ISSUER}/oauth/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Scripted client', redirect_uris: [REDIRECT], token_endpoint_auth_method: 'none' }),
+      }),
+      deps,
+    );
+    expect(response?.status).toBe(201);
+    expect(await response!.json()).toMatchObject({ client_id_issued_at: 1790805132 });
+  });
+
+  it('reads request expiry and code expiry as Dates, keeping a NULL code expiry null', async () => {
+    const pending = new PostgresPortalOAuthStore(textTimestampRunner(() => [requestRow]));
+    const request = await pending.getRequest(WS, requestRow.handle_hash);
+    expect(request?.expiresAt.toISOString()).toBe('2026-10-01T02:02:12.500Z');
+    expect(request?.codeExpiresAt).toBeNull();
+
+    const approved = new PostgresPortalOAuthStore(
+      textTimestampRunner(() => [{ ...requestRow, state: 'approved', code_expires_at: '2026-09-30 21:53:12+00' }]),
+    );
+    const claimed = await approved.claimCode(WS, 'x'.repeat(64), new Date('2026-09-30T21:52:30Z'));
+    expect(claimed?.codeExpiresAt?.toISOString()).toBe('2026-09-30T21:53:12.000Z');
+  });
+
+  it('refuses a timestamp column that does not parse, naming it', async () => {
+    const store = new PostgresPortalOAuthStore(textTimestampRunner(() => [{ ...clientRow, created_at: 'infinity' }]));
+    await expect(store.getClient(WS, clientRow.client_id)).rejects.toThrow(/hosted_mcp_oauth_clients\.created_at/);
   });
 });

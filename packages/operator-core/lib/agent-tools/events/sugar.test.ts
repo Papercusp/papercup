@@ -280,18 +280,34 @@ describe("checkpoint:await sugar", () => {
 
   // WI-4957: runId binds further than candidateSha alone — needed only when two runs
   // might judge the same candidate (a re-fire, or a routine/manual race).
-  it("WI-4957: binds runId to a payloadFilter on every registered key", async () => {
+  it("WI-4957: binds runId to a payloadFilter on global keys when pipeline is omitted", async () => {
     const out = await call({ runId: "run-abc-123" });
 
+    expect(devDeployState).not.toHaveBeenCalled();
     for (const call_ of vi.mocked(registerAwait).mock.calls) {
       expect(call_[0].payloadFilter).toEqual({ runId: "run-abc-123" });
     }
     expect(out.events).toEqual([
-      "release:green:papercusp",
-      "green-checkpoint:red:papercusp",
-      "green-checkpoint:inconclusive:papercusp",
-      "green-checkpoint:held:papercusp",
+      "release:green",
+      "green-checkpoint:red",
+      "green-checkpoint:inconclusive",
+      "green-checkpoint:held",
     ]);
+  });
+
+  it("WI-4957: an explicit pipeline keeps a runId await pipeline-scoped", async () => {
+    const out = await call({ pipeline: "papercup", runId: "run-abc-123" });
+
+    expect(devDeployState).not.toHaveBeenCalled();
+    expect(out.events).toEqual([
+      "release:green:papercup",
+      "green-checkpoint:red:papercup",
+      "green-checkpoint:inconclusive:papercup",
+      "green-checkpoint:held:papercup",
+    ]);
+    for (const call_ of vi.mocked(registerAwait).mock.calls) {
+      expect(call_[0].payloadFilter).toEqual({ runId: "run-abc-123" });
+    }
   });
 
   it("WI-4957: candidateSha + runId compose into ONE AND-filter (both must match)", async () => {
@@ -831,20 +847,24 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
   });
 
   it("a scoped call probes with the resolved pipeline as installSlug", async () => {
-    await call({ candidateSha: "94c1234567890abcdef", pipeline: "papercup" });
+    await call({
+      candidateSha: "94c1234567890abcdef",
+      pipeline: "papercup",
+      runId: "run-xyz",
+    });
 
     expect(findGreenCheckpointVerdictForCandidate).toHaveBeenCalledWith(
       "papercup",
       "94c1234567890abcdef",
-      { runId: undefined },
+      { runId: "run-xyz" },
     );
   });
 
-  it("threads runId into the probe alongside candidateSha", async () => {
+  it("a runId-only scoped-by-payload call probes across all pipelines", async () => {
     await call({ candidateSha: "94c1234567890abcdef", runId: "run-xyz" });
 
     expect(findGreenCheckpointVerdictForCandidate).toHaveBeenCalledWith(
-      "papercusp",
+      null,
       "94c1234567890abcdef",
       { runId: "run-xyz" },
     );

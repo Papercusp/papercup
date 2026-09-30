@@ -13,6 +13,12 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactElement } from 'react';
 
+const phaseSpy = vi.hoisted(() => vi.fn());
+vi.mock('@/app/_components/perf/perf-marks', () => ({
+  markInteractionPhase: phaseSpy,
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
+}));
+
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 // usePlan drives the load branches; the other hooks/fetchers are inert.
 let planResult: {
@@ -128,6 +134,7 @@ function mkPlan(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  phaseSpy.mockClear();
   planResult = { data: null, loading: false, error: null };
   revisionsResult = { data: [], loading: false };
   featureTimelineEvents = [];
@@ -141,6 +148,10 @@ describe('PlanDetail (plan-detail main pane)', () => {
     planResult = { data: null, loading: true, error: null };
     renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />);
     expect(screen.getByText(/Loading my-plan/)).toBeTruthy();
+    expect(phaseSpy.mock.calls.map((call) => call[1])).toEqual([
+      'detail-render-started',
+      'detail-mounted',
+    ]);
   });
 
   it('renders the error state and Retry calls refresh', () => {
