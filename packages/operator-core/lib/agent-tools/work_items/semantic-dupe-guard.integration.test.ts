@@ -32,7 +32,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: holder.sql }),
 }));
 
-import { findSemanticDupes, queryCandidatesReal, type SemanticDupeDeps } from './semantic-dupe-guard';
+import * as realGuard from './semantic-dupe-guard';
+import type { SemanticDupeDeps } from './semantic-dupe-guard';
+
+// Mutation-probe seam: scripts/mutation-probe.sh copy-out mode sets this to the mutated
+// copy inside its repo mirror, so proving this guard falsifiable never dirties the shared
+// tree or needs a git-sync hold. Unset (every normal run), the real module is used.
+const subjectPath = process.env.PAPERCUSP_SEMANTIC_DUPE_GUARD_SUBJECT;
+const guard: typeof realGuard = subjectPath
+  ? ((await import(subjectPath)) as typeof realGuard)
+  : realGuard;
+const { findSemanticDupes, queryCandidatesReal } = guard;
 
 const CUT = 2000;
 const SHARED_TAIL = 'The reconciler double-books the quarterly ledger when the fiscal calendar crosses a leap day.';
