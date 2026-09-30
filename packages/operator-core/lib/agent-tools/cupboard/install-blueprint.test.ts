@@ -124,6 +124,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           providerBindings: ['crm.email@1.0.0 → crm-email-tool@1.0.0'],
           contextReads: [], rules: [], events: [], operations: [], pluginCode: [], sharedContent: [],
         },
+        identitySurface: null,
         bindingJournal: {
           recovered: [],
           pots: [{ potSlug: 'sales-ops', dependentId: 'blueprint-install:abc', applied: true,
