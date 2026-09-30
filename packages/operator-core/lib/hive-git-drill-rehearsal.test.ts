@@ -123,7 +123,11 @@ function converge(rig: ReturnType<typeof stubRig>) {
   for (const home of [rig.towerHome, rig.vmHome]) {
     mkdirSync(join(home, '.papercusp', 'identity'), { recursive: true });
     writeFileSync(join(home, '.papercusp', 'local-announce-identity.json'), '{}\n');
-    mkdirSync(join(home, '.papercusp', 'pot-git', 'same-box-pot', 'gh-1296269.git'), { recursive: true });
+    const store = join(home, '.papercusp', 'pot-git', 'same-box-pot', 'gh-1296269.git');
+    mkdirSync(store, { recursive: true });
+    // A converged owner's store is a bare repo, not merely a directory (run 20260930T054405Z).
+    const init = spawnSync('git', ['init', '--bare', '--quiet', store], { encoding: 'utf8' });
+    if (init.status !== 0) throw new Error(`git init --bare failed: ${init.stderr}`);
   }
   for (const f of ['vmcall.sh', 'mcp-call.mjs', 'boot-vm.sh']) writeFileSync(join(rig.dir, f), '');
   symlinkSync(root, join(rig.dir, 'vm-dep-source'));
@@ -414,6 +418,19 @@ describe('rig-profile.sh — the same-box paths are checked before the slow run'
     const r = pathsReady(rig);
     expect(r.status, r.stderr).toBe(0);
     expect(r.stderr).toBe('');
+  });
+
+  it('refuses a pot-git store that exists but is not yet a bare repo', () => {
+    // Same-box run 20260930T054405Z: git-sync had created both store directories but not
+    // initialized them, an existence check passed, and phase A died on `not a git repository`.
+    const rig = converge(stubRig());
+    const towerStore = join(rig.towerHome, '.papercusp', 'pot-git', 'same-box-pot', 'gh-1296269.git');
+    rmSync(towerStore, { recursive: true, force: true });
+    mkdirSync(towerStore, { recursive: true });
+    const r = pathsReady(rig);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/RIG_PROFILE_PATH_NOT_A_REPO TOWER_REPO=/);
+    expect(r.stderr).not.toMatch(/VM_REPO/);
   });
 
   it('the drill entry refuses a rig with a missing profile path before any work', () => {
