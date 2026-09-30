@@ -9,6 +9,7 @@ import { delimiter, dirname } from 'node:path';
 const h = vi.hoisted(() => {
   const state = {
     dataCbs: [] as ((d: string) => void)[],
+    exitCbs: [] as ((e: { exitCode: number; signal?: number }) => void)[],
     written: [] as string[],
     killed: 0,
     outcome: 'token' as 'token' | 'reject',
@@ -19,7 +20,10 @@ const h = vi.hoisted(() => {
       state.dataCbs.push(cb);
       return { dispose: () => { state.dataCbs = state.dataCbs.filter((c) => c !== cb); } };
     },
-    onExit: (_cb: (e: { exitCode: number; signal?: number }) => void) => ({ dispose: () => {} }),
+    onExit: (cb: (e: { exitCode: number; signal?: number }) => void) => {
+      state.exitCbs.push(cb);
+      return { dispose: () => { state.exitCbs = state.exitCbs.filter((c) => c !== cb); } };
+    },
     write: (d: string) => {
       state.written.push(d);
       // Model the real `claude setup-token` Ink TUI: the pasted code alone does NOTHING;
@@ -99,17 +103,20 @@ vi.mock('./account-pool', () => ({
   normalizeAccountProvider: (provider: unknown) => (provider === 'codex' ? 'codex' : 'claude'),
 }));
 vi.mock('./account-pool-store', () => ({ updateAccountPool: h.updateAccountPool, accountStatus: h.accountStatus }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 import { startCliLink, completeCliLink, resolveCliBin, getCliLinkStatus, __resetCliLinksForTest } from './account-link-cli';
 
 afterEach(() => {
   __resetCliLinksForTest();
   h.state.dataCbs = [];
+  h.state.exitCbs = [];
   h.state.written = [];
   h.state.outcome = 'token';
   h.state.mode = 'claude';
   vi.unstubAllEnvs();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe('account-link-cli — CLI-driven OAuth link', () => {
@@ -198,6 +205,87 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     expect(regInput.provider).toBe('codex');
     expect(regInput.credentialRef).toBe('codex-cli:/tmp/test/deploy-credentials/codex-acme.codex-cli');
     expect(JSON.stringify(r)).not.toContain('codex-access-token');
+  });
+
+  it('installs an approved Codex login when its CLI exits, without a complete call', async () => {
+    h.state.mode = 'codex';
+    const s = await startCliLink({ accountId: 'codex-auto', provider: 'codex' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.state.exitCbs.slice().forEach((cb) => cb({ exitCode: 0 }));
+    await vi.waitFor(() => expect(getCliLinkStatus(s.linkId).status).toBe('completed'));
+    expect(h.registerAccount).toHaveBeenCalledTimes(1);
+    expect(h.registerAccount.mock.calls[0]?.[1]).toMatchObject({
+      id: 'codex-auto', provider: 'codex',
+      credentialRef: 'codex-cli:/tmp/test/deploy-credentials/codex-auto.codex-cli',
+    });
+    const late = await completeCliLink({ linkId: s.linkId });
+    expect(late.ok).toBe(true);
+    expect(JSON.stringify(late)).not.toContain('codex-access-token');
+    expect(h.registerAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares Codex finalization when device approval races an explicit complete call', async () => {
+    h.state.mode = 'codex';
+    const s = await startCliLink({ accountId: 'codex-race', provider: 'codex' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.state.exitCbs.slice().forEach((cb) => cb({ exitCode: 0 }));
+    const result = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
+    expect(result.ok).toBe(true);
+    expect(h.registerAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not install a login when the Codex CLI exits unsuccessfully', async () => {
+    h.state.mode = 'codex';
+    const s = await startCliLink({ accountId: 'codex-failed', provider: 'codex' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.state.exitCbs.slice().forEach((cb) => cb({ exitCode: 1 }));
+    expect(h.registerAccount).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('installs a completed Codex login before pending-link expiry deletes it', async () => {
+    h.state.mode = 'codex';
+    vi.useFakeTimers();
+    const starting = startCliLink({ accountId: 'codex-expiry', provider: 'codex' });
+    await vi.advanceTimersByTimeAsync(5);
+    const s = await starting;
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(getCliLinkStatus(s.linkId).status).toBe('completed');
+    expect(h.registerAccount).toHaveBeenCalledTimes(1);
+    expect(h.writeFile.mock.invocationCallOrder[0]).toBeLessThan(h.rm.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it('preserves an approved login at expiry when registration fails, then allows retry', async () => {
+    h.state.mode = 'codex';
+    vi.useFakeTimers();
+    const starting = startCliLink({ accountId: 'codex-retry', provider: 'codex' });
+    await vi.advanceTimersByTimeAsync(5);
+    const s = await starting;
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.updateAccountPool.mockRejectedValueOnce(new Error('registry unavailable'));
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(getCliLinkStatus(s.linkId).status).toBe('failed');
+    expect(h.rm.mock.calls.some(([path]) => String(path).includes('.codex-setup-'))).toBe(false);
+    const retried = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
+    expect(retried.ok).toBe(true);
+  });
+
+  it('rejects malformed Codex credentials before replacing an existing account home', async () => {
+    h.state.mode = 'codex';
+    const s = await startCliLink({ accountId: 'codex-malformed', provider: 'codex' });
+    expect(s.ok).toBe(true);
+    if (!s.ok) return;
+    h.readFile.mockResolvedValueOnce('{invalid');
+    const result = await completeCliLink({ linkId: s.linkId }, { notify: () => {} });
+    expect(result.ok).toBe(false);
+    expect(h.rm).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
   });
 
   it('completeCliLink fails fast (no write/register) when claude rejects the code', async () => {
