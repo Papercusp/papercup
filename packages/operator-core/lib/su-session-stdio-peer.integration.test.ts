@@ -20,7 +20,7 @@ import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from './su-session-stdio-p
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
-const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '' }));
+const processState = vi.hoisted(() => ({ children: new Map<string, ChildProcess>(), stderr: '', killFailure: '', killError: '' }));
 vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: string, args: string[], _spec: unknown, options: { spawnOptions: object }) => {
   const child = spawn(binary, args, options.spawnOptions);
   const taskId = randomUUID(); processState.children.set(taskId, child);
@@ -29,7 +29,9 @@ vi.mock('./task-manager/managed-spawn', () => ({ managedSpawn: async (binary: st
 } }));
 vi.mock('./task-manager/control', () => ({ killTask: async (taskId: string) => {
   processState.children.get(taskId)?.kill('SIGKILL');
-  return processState.killFailure ? { ok: false, error: 'command_failed', detail: processState.killFailure } : { ok: true };
+  return processState.killFailure
+    ? { ok: false, error: processState.killError || 'command_failed', detail: processState.killFailure }
+    : { ok: true };
 } }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', () => ({ startSupervisorBeat: vi.fn() }));
 import { startSuStdioPeer } from './su-session-stdio-peer';
@@ -54,7 +56,7 @@ const homes: string[] = [];
 afterEach(async () => {
   for (const peer of peers.splice(0)) await peer.close();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
-  processState.children.clear(); processState.stderr = ''; processState.killFailure = '';
+  processState.children.clear(); processState.stderr = ''; processState.killFailure = ''; processState.killError = '';
 });
 
 async function peer(binary: string, args: string[], env: NodeJS.ProcessEnv = {}, onMessage = (_frame: RpcFrame) => {}, config?: string,
@@ -461,6 +463,33 @@ describe('native JSON-line pipe transport', () => {
     } finally {
       peers.splice(peers.indexOf(p), 1);
       await p.done;
+    }
+  });
+
+  // WI-10004247: an explicit SIGKILL reported `incomplete` (a D-state
+  // process outlived the verification window) is a delivered kill, not a
+  // refused one. Close succeeds once the engine itself exits; the calibration
+  // keeps a genuinely refused kill failing.
+  it('closes when a delivered SIGKILL reports incomplete, and still fails a refused kill', async () => {
+    const script = `
+      setInterval(()=>{},1000);
+      process.stdin.on('data',line=>process.stdout.write(JSON.stringify({id:JSON.parse(line).id,result:{ready:true}})+'\\n'));
+    `;
+    const pending = await peer(process.execPath, ['-e', script]);
+    await pending.request({ method: 'initialize' });
+    processState.killFailure = 'scope pc-test.scope signalled SIGKILL but 1 process(es) still alive after the verification window';
+    processState.killError = 'incomplete';
+    await expect(pending.close()).resolves.toBeUndefined();
+    const refused = await peer(process.execPath, ['-e', script]);
+    await refused.request({ method: 'initialize' });
+    processState.killError = 'command_failed';
+    try {
+      const failure = await refused.close().catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain('Structured engine teardown failed: command_failed');
+    } finally {
+      peers.splice(peers.indexOf(refused), 1);
+      await refused.done;
     }
   });
 
