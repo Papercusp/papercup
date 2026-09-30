@@ -19,7 +19,7 @@ import {
   type LocalAnnounceIdentity,
 } from '../hyperbee/local-announce-identity';
 
-export const PHYSICAL_DRILL_EVIDENCE_SCHEMA = 'hive-git-physical-evidence/v2';
+export const PHYSICAL_DRILL_EVIDENCE_SCHEMA = 'hive-git-physical-evidence/v3';
 export const PHYSICAL_DRILL_HOST_IDENTITY_SCHEMA = 'hive-git-physical-host-identity/v1';
 export const PHYSICAL_DRILL_HOST_RECEIPT_SCHEMA = 'hive-git-physical-host-receipt/v1';
 const MACHINE_FINGERPRINT_DOMAIN = 'papercusp-physical-machine/v1';
