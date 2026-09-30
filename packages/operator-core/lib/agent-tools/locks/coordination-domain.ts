@@ -257,6 +257,11 @@ export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
   // EI-24374781045212391: one physical rig is shared by callers on :3170 and
   // :3070, whose staging and release checkouts must see the same lease.
   'hive-git-physical-rig',
+  // WI-10004352: one papercusp-bg-host.service on this host. dev:restart drains it
+  // through exclusive(bg-host), and the physical drill fences it with a shared lease
+  // for the whole run. Keyed to the serving checkout, a lease taken via :3070 was
+  // invisible to a restart served by :3170, so the fence did not fence anything.
+  'bg-host',
   // EI-21270032782365521: all SO_REUSEPORT operator workers spend from one
   // optional mid-turn memory budget. A caller-tree domain would recreate the
   // exact split-brain this set exists to prevent and make locks:list lie.

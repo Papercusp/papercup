@@ -200,6 +200,12 @@ describe('HOST_GLOBAL_RESOURCES', () => {
     expect(resourceLockDomain('hive-git-physical-rig')).not.toBe(lockCoordinationDomain());
   });
 
+  it('includes bg-host, so a drill lease taken via one operator fences a dev:restart served by another (WI-10004352)', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('bg-host')).toBe(true);
+    expect(resourceLockDomain('bg-host')).toBe(hostGlobalLockDomain());
+    expect(resourceLockDomain('bg-host')).not.toBe(lockCoordinationDomain());
+  });
+
   it('does not include an unrelated per-target resource (e.g. staging-server)', () => {
     expect(HOST_GLOBAL_RESOURCES.has('staging-server')).toBe(false);
   });

@@ -1282,6 +1282,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       const out = join(root, 'publish-raw.json');
       const ptool = join(root, 'ptool');
       const timedOut = join(root, 'timed-out-once');
+      const unreachableCount = join(root, 'unreachable-count');
+      // What ptool prints when the host refuses the connection (WI-10004352:
+      // a peer's dev:restart bounced the tower bg-host mid-phase-B).
+      const unreachable =
+        'could not reach the operator at http://127.0.0.1:3271/api/mcp (connect ECONNREFUSED 127.0.0.1:3271). Is the desktop/operator running? Override with PAPERCUSP_OPERATOR_URL or --url=.';
       // The exact failure ptool prints when its client deadline beats the
       // server's reply (P-505 run 13, WI-10003638).
       const unknownOutcome =
@@ -1296,6 +1301,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         `  unknown-once:*--url=http://127.0.0.1:3271*)`,
         `    if [ -e '${timedOut}' ]; then printf '%s\\n' '${fired}'; else : > '${timedOut}'; echo '${unknownOutcome}' >&2; exit 1; fi ;;`,
         `  unknown-always:*--url=http://127.0.0.1:3271*) echo '${unknownOutcome}' >&2; exit 1 ;;`,
+        `  unreachable-twice:*--url=http://127.0.0.1:3271*)`,
+        `    n=$(($(cat '${unreachableCount}' 2>/dev/null || echo 0) + 1)); printf '%s\\n' "$n" > '${unreachableCount}'`,
+        `    if [ "$n" -gt 2 ]; then printf '%s\\n' '${fired}'; else echo '${unreachable}' >&2; exit 1; fi ;;`,
+        `  unreachable-always:*--url=http://127.0.0.1:3271*) echo '${unreachable}' >&2; exit 1 ;;`,
         `  *) printf '%s\\n' '${refusal}' ;;`,
         'esac',
         '',
@@ -1303,9 +1312,20 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       chmodSync(ptool, 0o755);
       const keyOf = (call: string) => /--idempotency-key=(\S+)/.exec(call)?.[1];
 
-      const run = (mode: 'direct' | 'route' | 'refuse' | 'unknown-once' | 'unknown-always') => {
+      const run = (
+        mode:
+          | 'direct'
+          | 'route'
+          | 'refuse'
+          | 'unknown-once'
+          | 'unknown-always'
+          | 'unreachable-twice'
+          | 'unreachable-always',
+        env: Record<string, string> = {},
+      ) => {
         rmSync(log, { force: true });
         rmSync(timedOut, { force: true });
+        rmSync(unreachableCount, { force: true });
         const script = [
           'set -euo pipefail',
           `TOWER_CALL='${ptool}'`,
@@ -1321,7 +1341,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
           encoding: 'utf8',
           timeout: 30_000,
           killSignal: 'SIGKILL',
-          env: { ...process.env, STUB_MODE: mode, TOWER_GIT_SYNC_REPLAY_WAIT_SEC: '0' },
+          env: {
+            ...process.env,
+            STUB_MODE: mode,
+            TOWER_GIT_SYNC_REPLAY_WAIT_SEC: '0',
+            HIVE_GIT_TOWER_TRANSPORT_POLL_SEC: '0',
+            ...env,
+          },
         });
         const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
         return { ...result, calls, output: existsSync(out) ? readFileSync(out, 'utf8') : '' };

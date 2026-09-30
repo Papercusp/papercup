@@ -1626,6 +1626,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh'], label: 'macOS fresh-install state isolation: trap-restores both Papercusp roots across PASS/FAIL/TERM and refuses stale backups (EI-20332777704574867)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/streak-escalation.selftest.sh'], label: 'live-federation-gate streak escalation: a run of consecutive non-GREEN verdicts computes its own streak length and escalates, instead of going quiet because each repeat reason was already filed (WI-39354)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/remote-object-state.selftest.sh'], label: 'upload-release.sh remote_state: a multipart object is never accepted on SIZE alone, so a rebuilt-but-same-size artifact cannot be silently kept as already-uploaded (EI-23963309971611146)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh'], label: "offline-installer journey evidence: the operator's home dir and username are redacted in every spelling, incl. the dash-encoded scratch dir, while the guest's /home/tester paths survive (WI-10004119)" },
       ],
     },
   ],

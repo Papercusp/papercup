@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Content-free sweep live check: only reviewer-confirmed rows were soft-forgotten, all recoverable (P-011, bar R-4)",
+  "framework": "operational",
+  "specId": "AUTO-BAR-R-4-P-011",
+  "workItemId": "WI-10004315",
+  "sourceFile": "packages/operator-core/lib/memory/corpus-sweep.ts",
+  "testFile": "packages/operator-core/lib/memory/corpus-sweep.test.ts",
+  "command": [
+    "bash",
+    ".papercusp/scratch/p011-r4-live-check.sh"
+  ],
+  "startedAt": "2026-09-30T18:41:22Z",
+  "finishedAt": "2026-09-30T18:41:23Z",
+  "exitCode": 0,
+  "summary": "Read-only check of harness_shared.memory_canonical against the committed review record docs/evidence/content-free-sweep-review-2026-09-30.json (sha256 7d7a7ba0487cdbed92b63b791fa6488ea7d9e66e324ab93dfbb2222f9e9f5129). The 17:29Z apply run soft-forgot 6 rows; every one still exists with invalid_at set (recoverable via include_superseded), every one is a reviewer-confirmed id, none is shareable, and no other row in the two swept pools was invalidated in the apply window. Rows: 0bc6ee85 WI3985_PRIVATE_20260827T0033Z_91ab; 0e84a76b test; 2a85422c WI3985_PRIVATE_20260827T0138Z_b80a; 41d2ee46 WI3985_TRACE_SHAREABLE_20260827T0211Z_6d2a; ae9b5935 WI3985_ENV_PRIVATE_20260827T0206Z_f10b; d817ade4 WI3985_PRIVATE_20260827T0117Z_7a92",
+  "reviewRecord": {
+    "path": "docs/evidence/content-free-sweep-review-2026-09-30.json",
+    "sha256": "7d7a7ba0487cdbed92b63b791fa6488ea7d9e66e324ab93dfbb2222f9e9f5129"
+  },
+  "forgottenRows": [
+    {
+      "id": "0bc6ee85-b2fb-4231-a8d2-5482bc8880ea",
+      "pool": "hive:papercusp",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:32.581173-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "WI3985_PRIVATE_20260827T0033Z_91ab"
+    },
+    {
+      "id": "0e84a76b-b033-438a-8222-178b80dbcbb6",
+      "pool": "120f421b-25c9-47f7-8e3b-329c0edd4bf2",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:30.23661-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "test"
+    },
+    {
+      "id": "2a85422c-cdc5-429e-904a-01496c78e2a7",
+      "pool": "hive:papercusp",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:32.575748-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "WI3985_PRIVATE_20260827T0138Z_b80a"
+    },
+    {
+      "id": "41d2ee46-cebe-44dc-9f12-3990c7ef4642",
+      "pool": "hive:papercusp",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:32.639115-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "WI3985_TRACE_SHAREABLE_20260827T0211Z_6d2a"
+    },
+    {
+      "id": "ae9b5935-b757-4588-9f5d-40d441ca6b79",
+      "pool": "hive:papercusp",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:32.634701-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "WI3985_ENV_PRIVATE_20260827T0206Z_f10b"
+    },
+    {
+      "id": "d817ade4-38af-46d2-b549-c0f1cbfa3aaf",
+      "pool": "hive:papercusp",
+      "state": "active",
+      "invalid_at": "2026-09-30T13:28:32.585866-04:00",
+      "superseded_by": null,
+      "shareable": false,
+      "text": "WI3985_PRIVATE_20260827T0117Z_7a92"
+    }
+  ],
+  "invalidatedInApplyWindow": [
+    {
+      "id": "0bc6ee85-b2fb-4231-a8d2-5482bc8880ea",
+      "pool": "hive:papercusp",
+      "invalid_at": "2026-09-30T13:28:32.581173-04:00"
+    },
+    {
+      "id": "0e84a76b-b033-438a-8222-178b80dbcbb6",
+      "pool": "120f421b-25c9-47f7-8e3b-329c0edd4bf2",
+      "invalid_at": "2026-09-30T13:28:30.23661-04:00"
+    },
+    {
+      "id": "2a85422c-cdc5-429e-904a-01496c78e2a7",
+      "pool": "hive:papercusp",
+      "invalid_at": "2026-09-30T13:28:32.575748-04:00"
+    },
+    {
+      "id": "41d2ee46-cebe-44dc-9f12-3990c7ef4642",
+      "pool": "hive:papercusp",
+      "invalid_at": "2026-09-30T13:28:32.639115-04:00"
+    },
+    {
+      "id": "ae9b5935-b757-4588-9f5d-40d441ca6b79",
+      "pool": "hive:papercusp",
+      "invalid_at": "2026-09-30T13:28:32.634701-04:00"
+    },
+    {
+      "id": "d817ade4-38af-46d2-b549-c0f1cbfa3aaf",
+      "pool": "hive:papercusp",
+      "invalid_at": "2026-09-30T13:28:32.585866-04:00"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "every-forgotten-row-still-exists",
+      "passed": true,
+      "evidence": "6 of 6 apply.forgotten ids are present in memory_canonical (no hard delete)."
+    },
+    {
+      "id": "every-forgotten-row-is-soft-closed",
+      "passed": true,
+      "evidence": "invalid_at is set on 6 of 6 forgotten rows; the row stays readable through include_superseded / as_of."
+    },
+    {
+      "id": "every-forgotten-row-was-reviewer-confirmed",
+      "passed": true,
+      "evidence": "Each forgotten id is a decision=confirm row in docs/evidence/content-free-sweep-review-2026-09-30.json (14 confirm ids, reviewer su-f7ad1084)."
+    },
+    {
+      "id": "no-unreviewed-row-forgotten-in-apply-window",
+      "passed": true,
+      "evidence": "Rows invalidated in the swept pools between 17:20Z and 17:40Z: 6; all are in apply.forgotten."
+    },
+    {
+      "id": "no-shareable-row-forgotten",
+      "passed": true,
+      "evidence": "None of the forgotten rows is shareable (federated rows are refused by the sweep)."
+    }
+  ]
+}

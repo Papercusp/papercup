@@ -309,9 +309,8 @@ describe('plans:get — cache wiring', () => {
     expect(M.overlayIssueBlocksForPlan).not.toHaveBeenCalled();
     expect(M.getAcceptanceRubricForPlan).not.toHaveBeenCalled();
     expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
-    // The lifecycle derivation retains its own scoped read; the two optional
-    // feature/test transactions are the ones excluded from the body path.
-    expect(withWorkspace).toHaveBeenCalledTimes(1);
+    // A fast body defers lifecycle as well as the optional feature/test reads.
+    expect(withWorkspace).not.toHaveBeenCalled();
 
     const decorated = await run({ slug: 'alpha', mode: 'full', includeRaw: true, includeHistory: false });
     expect(decorated.results[0].enrichmentsDeferred).toBeUndefined();
@@ -319,7 +318,7 @@ describe('plans:get — cache wiring', () => {
     expect(M.overlayIssueBlocksForPlan).toHaveBeenCalledOnce();
     expect(M.getAcceptanceRubricForPlan).toHaveBeenCalledOnce();
     expect(M.getLatestPlanAudit).toHaveBeenCalledOnce();
-    expect(withWorkspace).toHaveBeenCalledTimes(4);
+    expect(withWorkspace).toHaveBeenCalledTimes(3);
   });
 
   it('still honors explicit history requests when the UI default omits incidental history', async () => {

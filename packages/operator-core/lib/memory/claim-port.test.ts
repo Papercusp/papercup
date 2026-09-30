@@ -7,7 +7,14 @@
  * never failed or materially delayed by recall.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { buildClaimRecallBlock, claimRecallQueryOf, CLAIM_RECALL_BUDGET_CHARS } from './claim-port';
+import {
+  buildClaimRecallBlock,
+  buildClaimRecallResult,
+  claimRecallQueryOf,
+  readClaimRecallOutcomeStats,
+  _resetClaimRecallOutcomeStatsForTests,
+  CLAIM_RECALL_BUDGET_CHARS,
+} from './claim-port';
 import { resolveLaunchProfile, buildLaunchMemoryBlock } from './launch-profile';
 import { getSessionUserOrDefault } from '../auth';
 
@@ -189,5 +196,99 @@ describe('buildClaimRecallBlock', () => {
   it('uses the REAL resolver (plan rung for claimed titles)', () => {
     const p = resolveLaunchProfile({ harnessSlug: 'h', claimedItemTitles: ['a — b'] });
     expect(p.rung).toBe('plan');
+  });
+});
+
+/**
+ * WI-10004121: never-throws must not mean never-tells. Each null path carries a
+ * distinct typed reason, so a deadline expiry, a thrown recall chain and an
+ * empty admission can be told apart after the fact (they were indistinguishable
+ * when the P-013 benchmark's positive control failed on a null recall).
+ */
+describe('buildClaimRecallResult — typed null reasons (WI-10004121)', () => {
+  beforeEach(() => _resetClaimRecallOutcomeStatsForTests());
+
+  it('no-queries: nothing to query with, no recall call', async () => {
+    const r = await buildClaimRecallResult({ items: [{ summary: 'no title' }] });
+    expect(r.block).toBeNull();
+    expect(r.outcome.reason).toBe('no-queries');
+    expect(buildLaunchMemoryBlock).not.toHaveBeenCalled();
+  });
+
+  it('no-hits: the admission pipeline settled with no block', async () => {
+    const r = await buildClaimRecallResult({ items: [{ title: 't' }], deadlineMs: 1000 });
+    expect(r.block).toBeNull();
+    expect(r.outcome.reason).toBe('no-hits');
+    expect(r.outcome.errorClass).toBeUndefined();
+  });
+
+  it('ok: a block was returned', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue('## R\n\n- a fact');
+    const r = await buildClaimRecallResult({ items: [{ title: 't' }], port: 'create' });
+    expect(r.block).toContain('- a fact');
+    expect(r.outcome).toMatchObject({ reason: 'ok', port: 'create' });
+  });
+
+  it('deadline: a recall that has not settled by the deadline is reported as deadline, not no-hits', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+    );
+    const r = await buildClaimRecallResult({ items: [{ title: 't' }], deadlineMs: 30 });
+    expect(r.block).toBeNull();
+    expect(r.outcome.reason).toBe('deadline');
+    expect(r.outcome.deadlineMs).toBe(30);
+    expect(r.outcome.elapsedMs).toBeGreaterThanOrEqual(25);
+    expect(r.outcome.elapsedMs).toBeLessThan(2000);
+    expect(readClaimRecallOutcomeStats().lastFailure).toMatchObject({ reason: 'deadline' });
+  });
+
+  it('error: a thrown recall chain is reported with its class and message', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockRejectedValue(
+      new SyntaxError("The requested module './self-describing-store' does not provide an export named 'papercuspPath'"),
+    );
+    const r = await buildClaimRecallResult({ items: [{ title: 't' }] });
+    expect(r.block).toBeNull();
+    expect(r.outcome.reason).toBe('error');
+    expect(r.outcome.errorClass).toBe('SyntaxError');
+    expect(r.outcome.errorMessage).toContain('papercuspPath');
+  });
+
+  it('counts every outcome by reason', async () => {
+    await buildClaimRecallResult({ items: [{ summary: 'x' }] });
+    await buildClaimRecallResult({ items: [{ title: 't' }] });
+    vi.mocked(buildLaunchMemoryBlock).mockRejectedValue(new Error('embed down'));
+    await buildClaimRecallResult({ items: [{ title: 't' }] });
+    await buildClaimRecallBlock({ items: [{ title: 't' }] });
+    const { counts, lastFailure } = readClaimRecallOutcomeStats();
+    expect(counts).toEqual({ ok: 0, 'no-queries': 1, 'no-hits': 1, deadline: 0, error: 2 });
+    expect(lastFailure).toMatchObject({ reason: 'error', errorClass: 'Error', errorMessage: 'embed down' });
+  });
+
+  it('warns once per window on deadline/error, never on no-hits (opted in)', async () => {
+    _resetClaimRecallOutcomeStatsForTests({ optInToWarn: true });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await buildClaimRecallResult({ items: [{ title: 't' }] }); // no-hits
+      expect(warn).not.toHaveBeenCalled();
+      vi.mocked(buildLaunchMemoryBlock).mockRejectedValue(new TypeError('boom'));
+      await buildClaimRecallResult({ items: [{ title: 't' }] });
+      await buildClaimRecallResult({ items: [{ title: 't' }] });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/reason=error .*class=TypeError/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent under the test runner unless a suite opts in', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(buildLaunchMemoryBlock).mockRejectedValue(new Error('embed down'));
+      await buildClaimRecallResult({ items: [{ title: 't' }] });
+      expect(warn).not.toHaveBeenCalled();
+      expect(readClaimRecallOutcomeStats().counts.error).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

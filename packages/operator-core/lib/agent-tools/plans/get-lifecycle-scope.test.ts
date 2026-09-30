@@ -161,6 +161,46 @@ afterEach(async () => {
 });
 
 describe("plans:get — lifecycle signals are scoped to the plan row's workspace", () => {
+  it("returns fast-body reads while lifecycle is stalled and still derives enriched follow-ups", async () => {
+    let release!: () => void;
+    const lifecycleGate = new Promise<void>((resolve) => { release = resolve; });
+    M.derivePlanLifecycleForRead.mockImplementationOnce(async () => {
+      await lifecycleGate;
+      return null;
+    });
+    let body: Record<string, unknown> | undefined;
+    const fastRead = run({
+      slug: "stalled-lifecycle", mode: "full", includeHistory: false, includeEnrichments: false,
+    }).then((value) => {
+      body = value.results[0];
+      return value;
+    });
+    try {
+      await vi.waitFor(() => expect(body).toMatchObject({
+        slug: "stalled-lifecycle", enrichmentsDeferred: true,
+      }), { timeout: 1000 });
+      expect(M.derivePlanLifecycleForRead).not.toHaveBeenCalled();
+      expect(body?.lifecycle).toBeUndefined();
+
+      let enrichedSettled = false;
+      const enrichedRead = run({
+        slug: "stalled-lifecycle", mode: "full", includeHistory: false,
+      }).then((value) => {
+        enrichedSettled = true;
+        return value;
+      });
+      await vi.waitFor(() => expect(M.derivePlanLifecycleForRead).toHaveBeenCalledOnce());
+      expect(enrichedSettled).toBe(false);
+      release();
+      const enriched = (await enrichedRead).results[0];
+      expect(enriched.enrichmentsDeferred).toBeUndefined();
+      expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await fastRead;
+    }
+  });
+
   it.each([
     { mode: "meta" },
     { heading: "Now" },
