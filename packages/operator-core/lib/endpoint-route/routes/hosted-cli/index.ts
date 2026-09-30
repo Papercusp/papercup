@@ -30,6 +30,7 @@ import {
 } from '../../hosted-workspace-connector';
 import { PORTAL_RELAY_NOTICE } from '../../../remote-access/relay-notice';
 import { RELAY_INSTALL_ID_RE, type HostedCliStore, type HostedCliToken } from './store';
+import { parseHostedPsuCustomerArgv } from '../../../workspace-host/hosted-psu-session';
 
 export { PostgresHostedCliStore, type HostedCliStore } from './store';
 
@@ -500,6 +501,14 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       const body = (await readJson(request)) ?? {};
       const sessionKey = body.session === undefined ? randomString(random, 12) : body.session;
       if (typeof sessionKey !== 'string' || !SESSION_KEY_RE.test(sessionKey)) return jsonError('invalid_session_key', 400);
+      // D-002: `program:'psu'` asks the machine to start psu itself. Its arguments are checked
+      // here against the same allowlist the relay and the host apply, so a refused flag is a
+      // 400 before any ticket is minted.
+      if (body.program !== undefined && body.program !== 'shell' && body.program !== 'psu') {
+        return jsonError('invalid_program', 400);
+      }
+      const psu = body.program === 'psu' ? parseHostedPsuCustomerArgv(body.argv) : null;
+      if (psu && !psu.ok) return jsonError('psu_argv_refused', 400, { reason: psu.reason });
       let rows;
       try {
         rows = await deps.store.listWorkspaces(caller.token.organizationId);
@@ -518,8 +527,11 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       }
       // Its own hosted session id gives psu its own shell on the machine (the host keys PTYs by
       // user + session), separate from the portal's Terminal tab; reusing the key within the
-      // host's idle window reattaches to the same shell.
-      const hostedSessionId = `cli.${caller.token.id}.${sessionKey}`;
+      // host's idle window reattaches to the same shell. A psu session gets a separate id
+      // space (session keys cannot contain '.'), so the same key never names both programs.
+      const hostedSessionId = psu
+        ? `cli.${caller.token.id}.psu.${sessionKey}`
+        : `cli.${caller.token.id}.${sessionKey}`;
       let issued;
       try {
         issued = await deps.connectorGateway.issueSessionTicket({
@@ -542,11 +554,18 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       const socketUrl = new URL('/api/hosted/connectors/socket', origin);
       socketUrl.protocol = 'wss:';
       socketUrl.searchParams.set('ticket', issued.ticket);
+      if (psu?.ok) {
+        socketUrl.searchParams.set('kind', 'psu');
+        socketUrl.searchParams.set('argv', JSON.stringify(psu.argv));
+      }
       return Response.json(
         {
           ok: true,
           socketUrl: socketUrl.toString(),
           session: sessionKey,
+          // Echoed so psu can tell this control plane honoured the request: an older one
+          // ignores `program` and mints a shell ticket, which the client must not use for psu.
+          program: psu ? 'psu' : 'shell',
           expiresAt: issued.binding.expiresAt.toISOString(),
         },
         { headers: { 'cache-control': 'no-store' } },
