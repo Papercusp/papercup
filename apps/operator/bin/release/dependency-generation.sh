@@ -114,8 +114,11 @@ dependency_generation_input_fingerprint() {
 # This is the producer-side seam used before the checkpoint run-lock: a moving
 # integration worktree can publish only when its live lockfiles are compatible
 # with the exact candidate fingerprint.
+# Optional 4th argument: a directory to ALSO materialise each input blob into, at its
+# repo-relative path. The exact-ref builder uses it so the files it stages are, by
+# construction, exactly the set this function fingerprints (WI-10004151).
 dependency_generation_input_manifest_ref() {
-  local root="$1" ref="$2" prefix="${3:-}"
+  local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}"
   local record metadata mode type object rel digest submodule_path submodule_object
   while IFS= read -r -d '' record; do
     metadata="${record%%$'\t'*}"
@@ -130,7 +133,13 @@ dependency_generation_input_manifest_ref() {
     case "$rel" in
       .papercusp/*|*/.papercusp/*|node_modules/*|*/node_modules/*) continue ;;
     esac
-    digest="$(git -C "$root" cat-file blob "$object" | dependency_generation_sha256)" || return 1
+    if [ -n "$extract_root" ]; then
+      mkdir -p "$extract_root/$(dirname "${prefix}${rel}")" || return 1
+      git -C "$root" cat-file blob "$object" > "$extract_root/${prefix}${rel}" || return 1
+      digest="$(dependency_generation_sha256 < "$extract_root/${prefix}${rel}")" || return 1
+    else
+      digest="$(git -C "$root" cat-file blob "$object" | dependency_generation_sha256)" || return 1
+    fi
     printf '%s\t%s\n' "${prefix}${rel}" "$digest"
   done < <(git -C "$root" ls-tree -r -z "$ref")
 
@@ -152,7 +161,8 @@ dependency_generation_input_manifest_ref() {
         return 74
       }
     dependency_generation_input_manifest_ref \
-      "$root/$submodule_path" "$submodule_object" "${prefix}${submodule_path}/" || return $?
+      "$root/$submodule_path" "$submodule_object" "${prefix}${submodule_path}/" \
+      "$extract_root" || return $?
   done < <(
     git -C "$root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null \
       | awk '{ print $2 }'
@@ -1820,9 +1830,142 @@ dependency_generation_ensure() {
   fi
 }
 
+# ── Exact-ref builder (WI-10004151) ──────────────────────────────────────────────
+# `--ensure-ref <ref>` publishes from the LIVE integration tree and then re-opens by the
+# ref's own input key, so a ref whose dependency inputs differ from the live tree's was a
+# PERMANENT typed miss (exit 74): no installed tree ever had those inputs. The frozen
+# repair queue produces exactly that — a hunk-exact package-lock.json admission yields a
+# lock no checkout has installed — and green-checkpoint verification then stalled with no
+# way forward (repairHead 5955f82b, 2026-09-30).
+#
+# When the ref's lockfiles describe the same installed packages as the live ones, modulo
+# live-only workspace LINKS (dependency-lock-equivalence.mjs decides and names them), the
+# exact generation is the live trees minus those links. So: stage the ref's inputs in a
+# private scratch root beside the live trees (same filesystem), prove the scratch input
+# fingerprint equals the ref's, hardlink the live node_modules trees in, drop the links,
+# and let the ordinary ensure path publish it under the ref's key. Anything that would
+# need a real install is refused with the reasons, never published under a false key.
+DEPENDENCY_GENERATION_EXACT_SCRATCH=''
+
+dependency_generation_exact_scratch_parent() {
+  printf '%s/.papercusp/dependency-exact-ref\n' "$1"
+}
+
+# Directories in the scratch root are fresh inodes; FILES are hardlinks shared with the
+# live trees. Only ever widen directory modes: a file chmod would rewrite the live inode.
+dependency_generation_remove_exact_scratch() {
+  local scratch="$1"
+  [ -n "$scratch" ] && [ -d "$scratch" ] || return 0
+  find "$scratch" -type d ! -perm -u+w -exec chmod u+w {} + 2>/dev/null || true
+  rm -rf -- "$scratch"
+}
+
+dependency_generation_cleanup_exact_scratch() {
+  local scratch="${DEPENDENCY_GENERATION_EXACT_SCRATCH:-}"
+  DEPENDENCY_GENERATION_EXACT_SCRATCH=''
+  dependency_generation_remove_exact_scratch "$scratch"
+}
+
+# A killed builder leaves its scratch root behind. Reclaim same-host roots whose recorded
+# writer is gone (and ownerless roots once old), exactly as abandoned .build-* dirs are.
+dependency_generation_sweep_exact_scratch() {
+  local parent="$1" host dir marker
+  [ -d "$parent" ] || return 0
+  host="$(dependency_generation_host)"
+  for dir in "$parent"/*; do
+    [ -d "$dir" ] || continue
+    marker="$dir/.papercusp-exact-ref-writer"
+    if { [ -f "$marker" ] && ! dependency_generation_writer_is_live "$marker" "$host"; } \
+      || { [ ! -f "$marker" ] && dependency_generation_path_is_old "$dir"; }; then
+      dependency_generation_log "removing abandoned exact-ref scratch $(basename "$dir")"
+      dependency_generation_remove_exact_scratch "$dir"
+    fi
+  done
+}
+
+# Prints the scratch root on success. Exit 74 = the ref is not buildable from the live
+# trees (a typed miss that names why); any other non-zero = the build itself failed.
+dependency_generation_prepare_exact_ref_root() {
+  local integration_root="$1" ref="$2" exact_input="$3"
+  local parent scratch have ref_manifest live_manifest verdict rc line drop trees=0
+  local helper="${DEPENDENCY_GENERATION_LOCK_EQUIVALENCE:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-equivalence.mjs}"
+  parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
+  mkdir -p "$parent" || return 1
+  dependency_generation_sweep_exact_scratch "$parent"
+  scratch="$(mktemp -d "$parent/${exact_input:0:16}.XXXXXX")" || return 1
+  DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
+  dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return 1
+
+  # 1. The ref's dependency inputs, materialised by the same walk that keys them.
+  ref_manifest="$(
+    dependency_generation_input_manifest_ref "$integration_root" "$ref" '' "$scratch" \
+      | LC_ALL=C sort
+  )" || return $?
+
+  # 2. Proof the staging reproduces the ref's key before anything is built on it.
+  have="$(dependency_generation_input_fingerprint "$scratch")" || return 1
+  [ "$have" = "$exact_input" ] || {
+    dependency_generation_log \
+      "FATAL: exact-ref scratch inputs $have do not reproduce ref $ref inputs $exact_input"
+    return 1
+  }
+
+  # 3. Install-equivalence against the live inputs.
+  live_manifest="$(dependency_generation_input_manifest "$integration_root")" || return 1
+  printf '%s\n' "$ref_manifest" > "$scratch/.ref-inputs" || return 1
+  printf '%s\n' "$live_manifest" > "$scratch/.live-inputs" || return 1
+  rc=0
+  verdict="$(
+    "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+      --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
+      --live-root "$integration_root" --live-manifest "$scratch/.live-inputs"
+  )" || rc=$?
+  rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
+  if [ "$rc" -eq 3 ]; then
+    dependency_generation_log \
+      "FATAL: no prewarmed dependency generation for input fingerprint $exact_input; exact-ref build refused: ref $ref dependency inputs are not install-equivalent to the live tree's:"
+    while IFS= read -r line; do
+      [ -n "$line" ] && dependency_generation_log "  ${line#NOT_EQUIVALENT$'\t'}"
+    done <<< "$verdict"
+    return 74
+  fi
+  [ "$rc" -eq 0 ] || {
+    dependency_generation_log "FATAL: dependency-lock-equivalence failed rc=$rc for ref $ref"
+    return 1
+  }
+
+  # 4. Hardlink the live trees (metadata only; the ordinary ensure copies from here).
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    drop="${line#"$integration_root"/}"
+    mkdir -p "$scratch/$(dirname "$drop")" || return 1
+    cp -al -- "$line" "$scratch/$drop" || {
+      dependency_generation_log "FATAL: cannot hardlink $drop into the exact-ref scratch root (same filesystem required)"
+      return 1
+    }
+    trees=$((trees + 1))
+  done < <(dependency_generation_enumerate_node_modules "$integration_root")
+
+  # 5. Drop the live-only workspace links the ref's lock does not have.
+  while IFS=$'\t' read -r line drop; do
+    [ "$line" = 'DROP_LINK' ] || continue
+    if [ -L "$scratch/$drop" ]; then
+      rm -f -- "$scratch/$drop" || return 1
+      dependency_generation_log "exact-ref build: dropped live-only workspace link $drop"
+    elif [ -e "$scratch/$drop" ]; then
+      dependency_generation_log \
+        "FATAL: no prewarmed dependency generation for input fingerprint $exact_input; exact-ref build refused: $drop is a live-only lock link but not a symlink on disk"
+      return 74
+    fi
+  done <<< "$verdict"
+  dependency_generation_log \
+    "exact-ref build: staged ref $ref inputs $exact_input with $trees hardlinked live trees"
+  printf '%s\n' "$scratch"
+}
+
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only=''
-  local input_before='' input_after='' exact_input='' selector='' lease_owner_pid=''
+  local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1842,6 +1985,7 @@ dependency_generation_main() {
     return 2
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
+  build_root="$integration_root"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
   if [ -n "$prune_only" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
@@ -1933,13 +2077,22 @@ dependency_generation_main() {
     fi
     dependency_generation_log \
       "exact ref $ensure_ref has unseen dependency inputs $exact_input; prewarming before checkpoint serialization"
+    live_input="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+    if [ "$live_input" != "$exact_input" ]; then
+      # WI-10004151: publishing from the live tree could only ever miss this key.
+      dependency_generation_log \
+        "exact ref $ensure_ref inputs $exact_input differ from the live tree's $live_input; building from the ref's own lockfiles"
+      dependency_generation_prepare_exact_ref_root \
+        "$integration_root" "$ensure_ref" "$exact_input" || return $?
+      build_root="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
+    fi
   fi
   dependency_generation_configure_workspace_dirs \
-    "$integration_root" "${workspace_dirs[@]}" || return $?
+    "$build_root" "${workspace_dirs[@]}" || return $?
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
-    input_before="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+    input_before="$(dependency_generation_input_fingerprint "$build_root")" || return 1
   fi
-  dependency_generation_ensure "$integration_root" "$generation_root" || return $?
+  dependency_generation_ensure "$build_root" "$generation_root" || return $?
   if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
     # Index under the PRE-build inputs, and never abort on live lockfile drift.
     #
@@ -1963,7 +2116,7 @@ dependency_generation_main() {
     # The drift is still worth recording, and for --ensure-ref the re-open by
     # the exact candidate key below remains the arbiter of whether this
     # generation actually fits the candidate — a typed miss, not a fatal.
-    input_after="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+    input_after="$(dependency_generation_input_fingerprint "$build_root")" || return 1
     if [ "$input_after" != "$input_before" ]; then
       dependency_generation_log \
         "live dependency inputs changed during generation prewarm (before=$input_before after=$input_after); indexing under the pre-build inputs the copied trees reflect"
@@ -1991,6 +2144,7 @@ dependency_generation_main() {
     dependency_generation_select_input_fingerprint \
       "$exact_input" "$generation_root" || return $?
   fi
+  dependency_generation_cleanup_exact_scratch
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
     "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" \
@@ -2001,6 +2155,8 @@ dependency_generation_main() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
+  # An exact-ref build's scratch root must not outlive a failed or killed run.
+  trap 'dependency_generation_cleanup_exact_scratch' EXIT
   dependency_generation_main "$@"
 fi
 

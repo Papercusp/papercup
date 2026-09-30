@@ -905,7 +905,84 @@ describe('immutable dependency generation', () => {
     const result = ensureRef(integration, candidate);
     expect(result.status).toBe(74);
     expect(result.stderr).toContain('no prewarmed dependency generation');
+    // WI-10004151: the refusal now NAMES why the ref cannot be built from the live trees.
+    expect(result.stderr).toContain('not install-equivalent');
+    expect(result.stderr).toContain('node_modules/live-only');
   });
+
+  // WI-10004151: the frozen repair queue admits package-lock.json hunk-exactly, which yields
+  // a lock NO checkout ever installed. --ensure-ref used to publish from the live tree and
+  // re-open by the ref's key — a permanent exit 74 that stalled verification (5955f82b).
+  const lockWith = (packages: Record<string, Record<string, unknown>>) =>
+    `${JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages: { '': { name: 'fixture' }, ...packages } })}\n`;
+  const PKG = {
+    'node_modules/pkg': {
+      version: '1.0.0',
+      resolved: 'https://registry.example.invalid/pkg-1.0.0.tgz',
+      integrity: 'sha512-fixture',
+    },
+  };
+  const exactScratch = (integration: string) =>
+    join(integration, '.papercusp/dependency-exact-ref');
+
+  it('WI-10004151: builds an exact ref from its own lockfiles when it differs from live only by a workspace link', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'candidate lock without the staging-only link');
+    const exact = fingerprintRef(integration, candidate);
+    expect(exact.status, exact.stderr).toBe(0);
+    const exactInput = publishedInputFingerprint(exact.stdout);
+
+    // Live (staging) moved on: a new workspace link the candidate's lock does not have.
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({
+        ...PKG,
+        'node_modules/@papercusp/extra': { resolved: 'packages/b', link: true },
+      }),
+    );
+    mkdirSync(join(integration, 'node_modules/@papercusp'), { recursive: true });
+    execFileSync('ln', ['-s', '../../packages/b', join(integration, 'node_modules/@papercusp/extra')]);
+
+    const built = ensureRef(integration, candidate);
+    expect(built.status, built.stderr).toBe(0);
+    expect(built.stderr).toContain("building from the ref's own lockfiles");
+    expect(built.stderr).toContain('dropped live-only workspace link node_modules/@papercusp/extra');
+    // Indexed under the CANDIDATE's key, not the live tree's.
+    expect(publishedInputFingerprint(built.stdout)).toBe(exactInput);
+    const generation = publishedPath(built.stdout);
+    expect(readFileSync(join(generation, 'node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(existsSync(join(generation, 'node_modules/@papercusp/extra'))).toBe(false);
+    // The live tree is untouched and the private scratch root is gone.
+    expect(existsSync(join(integration, 'node_modules/@papercusp/extra'))).toBe(true);
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+
+    // The next exact-candidate pass is a plain selector hit on the same identity.
+    const again = ensureRef(integration, candidate);
+    expect(again.status, again.stderr).toBe(0);
+    expect(again.stderr).not.toContain("building from the ref's own lockfiles");
+    expect(publishedIdentity(again.stdout)).toBe(publishedIdentity(built.stdout));
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: refuses (74, reasons named) an exact ref that would need a real install, and leaves no scratch', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'candidate at pkg 1.0.0');
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({ 'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' } }),
+    );
+
+    const result = ensureRef(integration, candidate);
+    expect(result.status).toBe(74);
+    // The gate's describeRepairHeadRunnerFailure keys on this exact phrase.
+    expect(result.stderr).toMatch(/no prewarmed dependency generation for input fingerprint [0-9a-f]{64}/);
+    expect(result.stderr).toContain('not install-equivalent');
+    expect(result.stderr).toContain('node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)');
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('keeps a completed prewarm when live lockfiles drift mid-build, indexing the pre-build inputs', () => {
     const integration = makeIntegration();
