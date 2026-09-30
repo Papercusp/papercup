@@ -11,6 +11,8 @@ import {
   validateTargetedFileOutcomes,
   type FailingFile,
   type RepairHeadVerificationDeps,
+  type TargetedFileResult,
+  type TargetedGateResult,
 } from "./green-checkpoint";
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
@@ -726,6 +728,26 @@ describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold"
     expect(result).toMatchObject({ kind: "unavailable" });
     expect(result.summary).toContain("the file runner failed to execute at repair head cccccccc (vitest crashed: ENOSPC)");
     expect(gateRuns).toBe(0);
+  });
+
+  // Regression (2026-09-30, 9b4ff59de8): swapping `.catch(() => null)` for a settle wrapper kept
+  // the THROWN arm but dropped the resolved-null arm, so a null gate result fell through to the
+  // full gate (green-checkpoint.test.ts EI-23071029479486567 "unavailable" case).
+  it("holds on a runner that RESOLVES null exactly as on one that throws — never the full gate", async () => {
+    const fileQueue = queueWith([entry({ kind: "test-file", id: "lib/a.test.ts", workspace: CORE })]);
+    const fileNull = await verifyRepairHead({
+      runTestsAtRef: async () => null as unknown as TargetedFileResult,
+      runGateAtRef: async (head) => ({ pass: true, summary: "unused", measuredHead: head }),
+    }, fileQueue);
+    expect(fileNull.kind).toBe("unavailable");
+    expect(fileNull.summary).toContain("the file runner failed to execute at repair head cccccccc (it returned no result)");
+
+    const gateQueue = queueWith([entry({ kind: "lint-leg", id: "lint:x" })]);
+    const gateNull = await verifyRepairHead({
+      runGateAtRef: async () => null as unknown as TargetedGateResult,
+    }, gateQueue);
+    expect(gateNull.kind).toBe("unavailable");
+    expect(gateNull.summary).toContain("the gate runner failed to execute at repair head cccccccc (it returned no result)");
   });
 
   it("bounds a long failure to one line", () => {
