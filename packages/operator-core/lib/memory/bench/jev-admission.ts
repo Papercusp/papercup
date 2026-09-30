@@ -36,7 +36,14 @@ import { createHash } from 'node:crypto';
 import { mcnemarExact, pairedBootstrapCI, type McNemarResult, type PairedComparison } from '@papercusp/bench-metrics';
 import type { DecisionOutcome, QuestionMap } from '@papercusp/decision-model';
 
-import { admissionPYes, RELEVANCE_CRITERIA, RELEVANCE_INSTRUCTIONS, type AdmissionEncoding } from '../jev-admission-request';
+import {
+  admissionPYes,
+  admissionVariantTexts,
+  RELEVANCE_CRITERIA,
+  RELEVANCE_INSTRUCTIONS,
+  type AdmissionEncoding,
+  type AdmissionVariant,
+} from '../jev-admission-request';
 import {
   aggregateByClass,
   latencyStats,
@@ -100,10 +107,16 @@ function sha256(text: string): string {
  * The cache rubric version. It embeds a hash of the question template, so a
  * reworded question can never be served a grade the old wording produced, and
  * the floor, because a grade is given in the context of its co-candidates.
+ * The v1 string is unchanged from before variants existed, so v1 grades already
+ * cached stay valid; every other variant hashes its own question texts.
  */
-export function admissionRubricVersion(encoding: AdmissionEncoding, floor: number): string {
-  const template = sha256(JSON.stringify({ RELEVANCE_INSTRUCTIONS, RELEVANCE_CRITERIA, encoding })).slice(0, 8);
-  return `jev-memory-admission-v1:${encoding}:${template}:floor=${floor.toFixed(2)}`;
+export function admissionRubricVersion(encoding: AdmissionEncoding, floor: number, variant: AdmissionVariant = 'v1'): string {
+  if (variant === 'v1') {
+    const template = sha256(JSON.stringify({ RELEVANCE_INSTRUCTIONS, RELEVANCE_CRITERIA, encoding })).slice(0, 8);
+    return `jev-memory-admission-v1:${encoding}:${template}:floor=${floor.toFixed(2)}`;
+  }
+  const template = sha256(JSON.stringify({ texts: admissionVariantTexts(variant), encoding })).slice(0, 8);
+  return `jev-memory-admission-${variant}:${encoding}:${template}:floor=${floor.toFixed(2)}`;
 }
 
 // ─── Per-query scores from a filter ────────────────────────────────────────
@@ -122,8 +135,12 @@ export interface QueryScores {
 }
 
 /** Map a decision outcome onto candidate-aligned P(yes) scores. */
-export function scoresFromDecision(outcome: DecisionOutcome<QuestionMap>, questionIds: readonly string[]): QueryScores {
-  const p = admissionPYes(outcome, questionIds);
+export function scoresFromDecision(
+  outcome: DecisionOutcome<QuestionMap>,
+  questionIds: readonly string[],
+  substanceIds?: readonly string[],
+): QueryScores {
+  const p = admissionPYes(outcome, questionIds, substanceIds);
   if (outcome.kind === 'inconclusive' || 'failure' in p) {
     const failure = outcome.kind === 'inconclusive' ? outcome.reason : 'failure' in p ? p.failure : 'malformed-response';
     return { scores: null, failure, latencyMs: outcome.latencyMs, cached: false, inputTokens: null, costUsd: null };
