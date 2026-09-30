@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from sentence_transformers import SentenceTransformer
+from mdenseon_config import apply_pinned_rope
 
 MODEL = "lightonai/mDenseOn"
 REVISION = "a5fdb000f7a21da96c3bddde3a782ef777316df3"
@@ -188,11 +189,22 @@ def load_pinned_tokenizer(snapshot):
     )
 
 
+def load_pinned_config(snapshot):
+    from transformers import AutoConfig
+
+    snapshot = Path(snapshot)
+    canonical = json.loads((snapshot / "config.json").read_text())
+    config = apply_pinned_rope(
+        AutoConfig.from_pretrained(snapshot, local_files_only=True), canonical)
+    config.reference_compile = False
+    return config
+
+
 def finalize_existing_onnx(directory):
     """Validate and finalize an already-exported graph without re-exporting its weights."""
     import onnx
     import onnxruntime as ort
-    from transformers import AutoConfig, AutoModel
+    from transformers import AutoModel
 
     root = Path(directory).resolve()
     graph = root / "onnx/model.onnx"
@@ -206,8 +218,7 @@ def finalize_existing_onnx(directory):
                   "top10Ranking": "exact"}
     started = time.perf_counter()
     tokenizer = load_pinned_tokenizer(snapshot)
-    config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
-    config.reference_compile = False
+    config = load_pinned_config(snapshot)
     model = AutoModel.from_pretrained(snapshot, config=config,
                                      attn_implementation="eager", local_files_only=True).eval()
     options = ort.SessionOptions()
@@ -272,6 +283,9 @@ def finalize_existing_onnx(directory):
                             "versions": frozen["versions"]},
         "validationVersions": {name: package_version(name) for name in
                                ["torch", "transformers", "onnx", "onnxruntime", "numpy"]},
+        "effectiveRope": {"global": config.global_rope_theta,
+                          "local": config.local_rope_theta,
+                          "parameters": config.rope_parameters},
         "seconds": time.perf_counter() - started,
     }
     write_json_atomic(root / ("validation-report.json" if accepted else "validation-report.failed.json"),
@@ -279,8 +293,7 @@ def finalize_existing_onnx(directory):
     if not accepted:
         raise ValueError("existing ONNX graph failed the predeclared normalized-vector parity contract")
 
-    config_json = json.loads((snapshot / "config.json").read_text())
-    config_json["reference_compile"] = False
+    config_json = config.to_dict()
     graph_proto = onnx.load(graph, load_external_data=False)
     external_files = sorted({entry.value for tensor in graph_proto.graph.initializer
                              for entry in tensor.external_data if entry.key == "location"})
@@ -310,16 +323,15 @@ def finalize_existing_onnx(directory):
 
 def export_onnx(directory):
     """Use Optimum's supported ModernBERT exporter, keeping the Hub snapshot intact."""
-    from optimum.exporters.onnx import export, validate_model_outputs
+    from optimum.exporters.onnx import export
     from optimum.exporters.tasks import TasksManager
-    from transformers import AutoConfig, AutoModel, AutoTokenizer
+    from transformers import AutoModel
 
     root = Path(directory).resolve()
     if root.exists():
         raise ValueError(f"refusing to overwrite existing export directory: {root}")
-    snapshot = snapshot_download(MODEL, revision=REVISION, local_files_only=True)
-    config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
-    config.reference_compile = False
+    snapshot = Path(snapshot_download(MODEL, revision=REVISION, local_files_only=True))
+    config = load_pinned_config(snapshot)
     model = AutoModel.from_pretrained(snapshot, config=config,
                                      attn_implementation="eager", local_files_only=True).eval()
     constructor = TasksManager.get_exporter_config_constructor(
@@ -331,11 +343,7 @@ def export_onnx(directory):
     print(f"exporting pinned {MODEL}@{REVISION} -> {graph}", flush=True)
     _, outputs = export(model, onnx_config, graph, opset=17, device="cpu",
                         input_shapes={"batch_size": 2, "sequence_length": 32})
-    # Padding and a different sequence length must work, not just the trace input.
-    validate_model_outputs(onnx_config, model, graph, outputs, atol=1e-4,
-                           input_shapes={"batch_size": 1, "sequence_length": 64},
-                           device="cpu", use_subprocess=False)
-    tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+    tokenizer = load_pinned_tokenizer(snapshot)
     # SentenceTransformers enforces this independently of tokenizer_config.json.
     tokenizer.model_max_length = 8192
     tokenizer.save_pretrained(root)
@@ -359,18 +367,11 @@ def export_onnx(directory):
         exported_config["transformers.js_config"] = {
             "use_external_data_format": {"model.onnx": len(external_files)}}
         (root / "config.json").write_text(json.dumps(exported_config, indent=2))
-    manifest = {"formatVersion": 1, "model": MODEL, "revision": REVISION,
-                "dimensions": 768, "pooling": "cls", "normalization": "l2",
-                "maxLength": 8192, "output": "last_hidden_state", "weightDtype": "fp32",
-                "prompts": {"query": "query: ", "document": "document: "},
-                "versions": {p: importlib.metadata.version(p) for p in
-                             ["torch", "transformers", "optimum", "optimum-onnx", "onnx"]},
-                "files": {str(p.relative_to(root)): {"bytes": p.stat().st_size,
-                          "sha256": file_sha256(p)}
-                          for p in root.rglob("*") if p.is_file()}}
-    # A completed manifest is published only after export and Optimum validation.
-    (root / "export-manifest.json").write_text(json.dumps(manifest, indent=2))
-    print(f"validated ONNX export: {root}", flush=True)
+    # The normalized CLS/frozen-reference contract also checks token IDs,
+    # padded/long inputs and retrieval rankings. Numerical self-parity alone
+    # cannot detect a semantically wrong config shared by torch and ONNX.
+    del model
+    finalize_existing_onnx(root)
 
 
 def main():
