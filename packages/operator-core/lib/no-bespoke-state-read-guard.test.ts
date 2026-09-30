@@ -13,7 +13,7 @@
  * Same posture as `no-raw-setinterval-guard.test.ts` (P-007), for the same reason.
  */
 import { execSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
@@ -542,7 +542,9 @@ describe('no-bespoke-state-read guard:where it looks (EI-19444550724173505)', ()
       killSignal: 'SIGKILL',
     })
       .split('\n')
-      .filter((file) => /\.ts$/.test(file) && !/\.(test|spec)\./.test(file));
+      .filter((file) => /\.ts$/.test(file) && !/\.(test|spec)\./.test(file))
+      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+      .filter((file) => existsSync(join(REPO_ROOT, file)));
     for (const file of guardFiles) {
       for (const row of parseToolDefs(readFileSync(join(REPO_ROOT, file), 'utf8'))) {
         if (isStateReadCandidate(row)) scanned.add(row.name);

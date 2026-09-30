@@ -114,6 +114,66 @@ describe('createNotifyBus — EI-9920 retry-on-failed-start', () => {
     await bus._stopForTests();
   });
 
+  // WI-10004194: ending the pool destroys a LISTEN still in flight (postgres.js
+  // rejects it with CONNECTION_DESTROYED). When that close is ours — the last
+  // handler left mid-start — it is not a failed start. The PTY suite's
+  // fail-on-console turned exactly this into a red on an unrelated case.
+  it('WI-10004194: the last handler leaving while LISTEN is in flight logs no failure, and a new subscriber starts cleanly', async () => {
+    let rejectListen!: (err: Error) => void;
+    listen.mockImplementationOnce(() => new Promise((_, reject) => { rejectListen = reject; }));
+    end.mockImplementationOnce(async () => { rejectListen(new Error('write CONNECTION_DESTROYED localhost:32785')); });
+
+    const bus = createNotifyBus('tui_intents', 'tui-intents-bus');
+    const unsubscribe = bus.subscribe(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listen).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(listen).toHaveBeenCalledTimes(1); // no retry into an empty bus
+
+    listen.mockResolvedValueOnce(undefined);
+    const handler = vi.fn();
+    bus.subscribe(handler);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(postgresFactory).toHaveBeenCalledTimes(2);
+    (listen.mock.calls[1][1] as (payload: string) => void)('client-7');
+    expect(handler).toHaveBeenCalledWith('client-7');
+
+    await bus._stopForTests();
+  });
+
+  it('WI-10004194: a stale start rejection landing after a newer start leaves the live listener alone', async () => {
+    let rejectFirst!: (err: Error) => void;
+    listen
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(undefined);
+
+    const bus = createNotifyBus('tui_intents', 'tui-intents-bus');
+    const unsubscribe = bus.subscribe(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    unsubscribe(); // end() resolves without settling the first LISTEN yet
+    await vi.advanceTimersByTimeAsync(0);
+
+    bus.subscribe(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listen).toHaveBeenCalledTimes(2);
+
+    rejectFirst(new Error('write CONNECTION_DESTROYED localhost:32785'));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    // The second listener is still the live one: another subscriber reuses it.
+    bus.subscribe(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(postgresFactory).toHaveBeenCalledTimes(2);
+    expect(listen).toHaveBeenCalledTimes(2);
+
+    await bus._stopForTests();
+  });
+
   it('a well-formed first start never schedules a retry and fans out notifications', async () => {
     listen.mockResolvedValueOnce(undefined);
 

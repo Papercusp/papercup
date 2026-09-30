@@ -107,6 +107,49 @@ describe('agent-activity-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)
     expect(listen).toHaveBeenCalledTimes(1); // never retried into an empty bus
   });
 
+  // WI-10004194: see pg-notify-bus.test.ts — our own close destroying an
+  // in-flight LISTEN is not a failed start and must not clobber a newer one.
+  it('WI-10004194: the last handler leaving while LISTEN is in flight logs no failure and does not retry', async () => {
+    let rejectListen!: (err: Error) => void;
+    listen.mockImplementationOnce(() => new Promise((_, reject) => { rejectListen = reject; }));
+    end.mockImplementationOnce(async () => { rejectListen(new Error('write CONNECTION_DESTROYED localhost:32785')); });
+
+    const { onAgentActivity } = await import('./agent-activity-bus');
+    const unsubscribe = onAgentActivity(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    unsubscribe();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(listen).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-10004194: a stale start rejection landing after a newer start leaves the live listener alone', async () => {
+    let rejectFirst!: (err: Error) => void;
+    listen
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(undefined);
+
+    const { onAgentActivity } = await import('./agent-activity-bus');
+    const unsubscribe = onAgentActivity(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    unsubscribe();
+    await vi.advanceTimersByTimeAsync(0);
+    onAgentActivity(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listen).toHaveBeenCalledTimes(2);
+
+    rejectFirst(new Error('write CONNECTION_DESTROYED localhost:32785'));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+
+    onAgentActivity(vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(postgresFactory).toHaveBeenCalledTimes(2);
+    expect(listen).toHaveBeenCalledTimes(2);
+  });
+
   it('a well-formed first start never schedules a retry and fans out the owner_id', async () => {
     listen.mockResolvedValueOnce(undefined);
 

@@ -145,6 +145,26 @@ describe('coord-inbox-bus — EI-9991 retry-on-failed-start (mirrors EI-9920)', 
     expect(listen).toHaveBeenCalledTimes(1); // never retried into an empty bus
   });
 
+  // WI-10004194: a close that ran while the start was still in flight saw
+  // started=false and did nothing; the start must close itself when it finds
+  // no handler left, or the LISTEN connection stays open with nobody to wake.
+  it('WI-10004194: a start that finishes after the last handler left closes its LISTEN', async () => {
+    let resolveListen!: () => void;
+    listen.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveListen = resolve; }));
+
+    const { onCoordInbox, _coordInboxTestSeam } = await import('./coord-inbox-bus');
+    const unsubscribe = onCoordInbox(vi.fn());
+    await vi.waitFor(() => expect(listen).toHaveBeenCalledTimes(1));
+
+    unsubscribe(); // mid-start: nothing to close yet
+    expect(end).not.toHaveBeenCalled();
+
+    resolveListen();
+    await _coordInboxTestSeam.ready();
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
   it('a well-formed first start never schedules a retry', async () => {
     listen.mockResolvedValueOnce(undefined);
 

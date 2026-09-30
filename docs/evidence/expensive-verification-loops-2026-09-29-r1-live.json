@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EVL R-1 live: the running operator stamps slow verification attempts in task_ledger",
+  "framework": "operational",
+  "command": [
+    "sudo",
+    "-n",
+    "-u",
+    "postgres",
+    "psql",
+    "-d",
+    "papercusp",
+    "-At",
+    "-F",
+    "|",
+    "-c",
+    "SELECT task_id, work_item_id, state, coalesce(detail->'verificationAttempt'->>'fingerprint','') AS fp, detail->'verificationAttempt'->>'durationMs' AS ms, to_char(started_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM harness_shared.task_ledger WHERE workspace_id='papercusp-workspace' AND detail ? 'verificationAttempt' AND started_at >= '2026-09-30T07:30:00Z' AND started_at < '2026-09-30T08:05:00Z' ORDER BY started_at"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T08:09:36Z",
+  "finishedAt": "2026-09-30T08:09:36Z",
+  "summary": "11 task_ledger rows carry detail.verificationAttempt between 07:30Z and 08:05Z on 2026-09-30, across 3 work-items; 2 failed attempts carry a failure fingerprint.",
+  "assertions": [
+    {
+      "id": "attempts-recorded",
+      "passed": true,
+      "evidence": "11 stamped rows"
+    },
+    {
+      "id": "attributed-to-work-items",
+      "passed": true,
+      "evidence": "WI-10004161, WI-10003976, WI-10003321"
+    },
+    {
+      "id": "failures-fingerprinted",
+      "passed": true,
+      "evidence": "0munsjieg195kexo8f5 log:6b233f10c259; 0munso5kz1aiyqc514j exit:6f799226e732"
+    }
+  ],
+  "rows": [
+    [
+      "0munsheci1n3y7qo3pu",
+      "WI-10004161",
+      "exited",
+      "",
+      "541026",
+      "2026-09-30T07:34:03Z"
+    ],
+    [
+      "0munsjieg195kexo8f5",
+      "WI-10003976",
+      "timed_out",
+      "log:6b233f10c259",
+      "477395",
+      "2026-09-30T07:35:41Z"
+    ],
+    [
+      "0munsl8an1b3g7ywnph",
+      "WI-10003321",
+      "exited",
+      "",
+      "208459",
+      "2026-09-30T07:37:02Z"
+    ],
+    [
+      "0munso5kz1aiyqc514j",
+      "WI-10003976",
+      "ended_unobserved",
+      "exit:6f799226e732",
+      "1193555",
+      "2026-09-30T07:39:18Z"
+    ],
+    [
+      "0munszw7l68al5mp8sz",
+      "WI-10004161",
+      "exited",
+      "",
+      "180845",
+      "2026-09-30T07:48:26Z"
+    ],
+    [
+      "0munt0xzy1c26rzbnwn",
+      "WI-10003321",
+      "exited",
+      "",
+      "186563",
+      "2026-09-30T07:49:15Z"
+    ],
+    [
+      "0munt294uo5tjjqh1sr",
+      "WI-10003321",
+      "exited",
+      "",
+      "252543",
+      "2026-09-30T07:50:16Z"
+    ],
+    [
+      "0munt4zn6lkp1ir1ftz",
+      "WI-10004161",
+      "exited",
+      "",
+      "146494",
+      "2026-09-30T07:52:23Z"
+    ],
+    [
+      "0munt61vnacllqo1wfa",
+      "WI-10003321",
+      "exited",
+      "",
+      "166640",
+      "2026-09-30T07:53:13Z"
+    ],
+    [
+      "0muntdyx01ikalc2j32",
+      "WI-10003321",
+      "exited",
+      "",
+      "259142",
+      "2026-09-30T07:59:22Z"
+    ],
+    [
+      "0munth3xt1w11e9iast",
+      "WI-10003321",
+      "exited",
+      "",
+      "204747",
+      "2026-09-30T08:01:49Z"
+    ]
+  ]
+}

@@ -77,7 +77,9 @@ function listScannedFiles(): string[] {
       })
         .split('\n')
         .filter(Boolean)
-        .filter((f) => /\.(md|ya?ml)$/i.test(f));
+        .filter((f) => /\.(md|ya?ml)$/i.test(f))
+        // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+        .filter((f) => existsSync(join(REPO, f)));
     } catch {
       files = [];
     }

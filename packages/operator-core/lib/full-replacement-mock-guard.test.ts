@@ -27,7 +27,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   analyzeMockCalls,
@@ -173,7 +173,9 @@ describe('full-replacement mock guard: the live tree', () => {
         maxBuffer: 64 * 1024 * 1024,
       })
         .split('\n')
-        .filter(Boolean),
+        .filter(Boolean)
+        // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+        .filter((f) => existsSync(join(ROOT, f))),
     read: (f: string) => {
       try {
         return readFileSync(join(ROOT, f), 'utf8');

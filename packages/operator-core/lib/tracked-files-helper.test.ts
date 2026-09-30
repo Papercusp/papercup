@@ -422,3 +422,147 @@ describe('recursing guards must report coverage (WI-6776 ratchet)', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * WI-10004176 — the index-lag ratchet (follow-up to WI-10004173).
+ *
+ * On the shared tree an agent's plain `rm` leaves the path in the INDEX until the next
+ * git-sync sweep commits the deletion. A guard that enumerates `git ls-files` and then
+ * reads every entry throws ENOENT for every agent that runs it in that window — three
+ * guards went red at once on 2026-09-30 after one agent deleted 11 files. The gate's
+ * clean checkout never sees the window, so nothing in CI catches it; this does.
+ *
+ * The contract: a file that EXECUTES an index enumeration and reads files must drop
+ * index entries with no directory entry — via presentOnDisk / listTrackedFiles /
+ * listFilesIncludingUntracked, a `.filter(… existsSync(…))` over the list, or a
+ * subtracted `ls-files --deleted` — or appear in ALLOW with the reason it is safe.
+ * Like the WI-6776 ratchet above, this classifies on CODE shape, so it is a pattern
+ * ratchet and can miss an exotic invocation; it exists so a NEW ordinary one cannot
+ * silently reintroduce the class.
+ */
+describe('enumerate-then-read guards tolerate index-lagged deletions (WI-10004176 ratchet)', () => {
+  const repoRoot = fileURLToPath(new URL('../../..', import.meta.url));
+
+  /** Raw index readers that are safe WITHOUT the filter. Each entry states WHY. */
+  const ALLOW = new Map<string, string>([
+    [
+      'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.edge.test.ts',
+      'lists the index of a temp repo it just built and reads two files it wrote — never the shared tree.',
+    ],
+    [
+      'apps/operator/lib/release/runtime-workspace-build-coverage.ts',
+      'release code (must not import scripts/); every manifest read is try/catch → continue.',
+    ],
+    [
+      'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts',
+      'asserts on the index population itself (no tracked .vitest-tmp artifact); never reads an entry.',
+    ],
+    [
+      'packages/operator-core/lib/doc-claims/dot-prefixed-test-scratch.test.ts',
+      'asserts on the index population itself (no tracked dot-prefixed test); never reads an entry.',
+    ],
+    [
+      'apps/operator/lib/no-pnpm-hijack.test.ts',
+      'asserts on the index population itself (no tracked foreign lockfile); never reads an entry.',
+    ],
+    [
+      'packages/operator-core/lib/nonasserting-test-guard.test.ts',
+      'every entry read is try/catch → return ("deleted between ls-files and read").',
+    ],
+    ['scripts/check-no-agent-intent-comments.mjs', 'every entry read is try/catch → continue ("vanished mid-scan").'],
+    ['scripts/check-no-control-bytes.mjs', 'every entry read is try/catch → continue ("vanished between git ls-files and read").'],
+    ['scripts/check-no-identity-literals.mjs', 'every entry read is try/catch → continue ("vanished mid-run").'],
+    ['scripts/check-no-owner-name-tags.mjs', 'every entry read is try/catch → continue ("vanished mid-run").'],
+    ['scripts/scan-retirement-surface.mjs', 'every entry read is try/catch → continue ("gone since ls-files ran").'],
+    [
+      'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+      'production git-sync: every ls-files call tests index MEMBERSHIP of named paths; it never enumerates-then-reads.',
+    ],
+    [
+      'scripts/test-files.mjs',
+      'asks index MEMBERSHIP of the caller-named paths (provenance banner); its reads are ENOENT-tolerant.',
+    ],
+  ]);
+
+  const SOURCE = /\.(?:[cm]?ts|tsx|[cm]?js)$/;
+  const SKIP = /(?:^|\/)(?:node_modules|dist|\.vitest-tmp|env-sidecars|sidecar)\/|\.min\.js$|\.d\.[cm]?ts$/;
+  /** An index-enumeration INVOCATION: argv starting with 'ls-files', git('ls-files', …), or a `git ls-files` shell string. */
+  const INVOKE = /\[\s*(['"`])ls-files\1|\bgit\s*\(\s*(['"`])ls-files\2|(['"`])git(?:\s+-C\s+\S+)?\s+ls-files\b/g;
+  const READS = /\breadFileSync\s*\(|\breadFile\s*\(|\bcreateReadStream\s*\(/;
+  const FILTERED =
+    /\b(?:presentOnDisk|listTrackedFiles|listFilesIncludingUntracked)\b|\.filter\(\s*\(?\s*\w+\s*\)?\s*=>\s*(?:fs\.)?existsSync\(|(['"`])ls-files\1\s*,\s*(['"`])--deleted\2/;
+  /** Listings that cannot contain an index-lagged deletion: untracked-only, stage/mode dumps, deletions. */
+  const indexFree = (invocation: string): boolean =>
+    (/--others/.test(invocation) && !/--cached/.test(invocation)) ||
+    /(?:^|[\s'"`,])(?:-s|--stage|--deleted|--error-unmatch)(?=[\s'"`,]|$)/.test(invocation);
+
+  const stripCommentLines = (text: string): string =>
+    text
+      .split('\n')
+      .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/.test(line))
+      .join('\n');
+
+  /** 'unfiltered' | 'filtered' | null (not an enumerate-then-read file). */
+  const classify = (text: string): 'unfiltered' | 'filtered' | null => {
+    if (!text.includes('ls-files')) return null;
+    const code = stripCommentLines(text);
+    const invocations = [...code.matchAll(INVOKE)].map((m) => {
+      const rest = code.slice(m.index, m.index + 240);
+      const end = rest.search(/[\])]/);
+      return end === -1 ? rest : rest.slice(0, end);
+    });
+    if (invocations.length === 0 || invocations.every(indexFree) || !READS.test(code)) return null;
+    return FILTERED.test(code) ? 'filtered' : 'unfiltered';
+  };
+
+  it('calibration: the detector separates the shapes it exists to judge', () => {
+    const bare = `const f = execFileSync('git', ['ls-files', '*.ts']).split('\\n');\nfor (const p of f) readFileSync(p);`;
+    expect(classify(bare)).toBe('unfiltered');
+    expect(classify(`${bare}\nconst kept = presentOnDisk(f, ROOT);`)).toBe('filtered');
+    expect(classify(`${bare}\nconst kept = f.filter((p) => existsSync(join(ROOT, p)));`)).toBe('filtered');
+    expect(classify(`const out = execSync('git ls-files -z'); readFileSync(x);`)).toBe('unfiltered');
+    expect(classify(`const u = git(['ls-files', '--others', '--exclude-standard']); readFileSync(u[0]);`)).toBeNull();
+    expect(classify(`const s = git(['ls-files', '-s']); readFileSync(s[0]);`)).toBeNull();
+    expect(classify(`if (args[0] === 'ls-files') return stub; readFileSync(x);`)).toBeNull();
+    expect(classify(`// execFileSync('git', ['ls-files'])\nreadFileSync(x);`)).toBeNull();
+    expect(classify(`const f = execFileSync('git', ['ls-files']);`)).toBeNull();
+  });
+
+  const scanned = (listTrackedFiles(repoRoot) as { files: string[] }).files.filter(
+    (f) => SOURCE.test(f) && !SKIP.test(f),
+  );
+  const verdicts = new Map<string, 'unfiltered' | 'filtered'>();
+  for (const rel of scanned) {
+    let text: string;
+    try {
+      text = readFileSync(join(repoRoot, rel), 'utf8');
+    } catch {
+      continue; // vanished after enumeration — the class this suite guards
+    }
+    const verdict = classify(text);
+    if (verdict) verdicts.set(rel, verdict);
+  }
+
+  it('finds the enumerate-then-read population at all (a zero here would make this suite vacuous)', () => {
+    expect(scanned.length).toBeGreaterThan(5000);
+    expect(verdicts.get('packages/operator-core/lib/design-to-code-coverage-seam.acceptance.test.ts')).toBe('filtered');
+    expect(verdicts.get('scripts/check-no-control-bytes.mjs')).toBe('unfiltered');
+  });
+
+  it('every raw index reader drops index-lagged deletions (or states why it need not)', () => {
+    const offenders = [...verdicts].filter(([rel, v]) => v === 'unfiltered' && !ALLOW.has(rel)).map(([rel]) => rel);
+    expect(
+      offenders,
+      `These files enumerate \`git ls-files\` and read files without dropping index entries that are\n` +
+        `gone from disk. On the shared tree a plain \`rm\` stays in the index until git-sync commits it,\n` +
+        `so each read of such an entry throws ENOENT for every agent that runs the guard meanwhile.\n` +
+        `FIX: wrap the enumerated list — presentOnDisk(list, root) from scripts/lib/tracked-files.mjs —\n` +
+        `or filter it with existsSync. If a file is safe without it, add it to ALLOW WITH A REASON.`,
+    ).toEqual([]);
+  });
+
+  it('ALLOW carries no stale entries (each must still be an unfiltered raw reader)', () => {
+    const stale = [...ALLOW.keys()].filter((rel) => verdicts.get(rel) !== 'unfiltered');
+    expect(stale, 'remove these from ALLOW — they no longer need the exemption').toEqual([]);
+  });
+});

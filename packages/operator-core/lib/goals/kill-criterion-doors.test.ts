@@ -26,7 +26,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,7 +58,9 @@ function repoFiles(): string[] {
     killSignal: 'SIGKILL',
   })
     .split('\n')
-    .filter(Boolean);
+    .filter(Boolean)
+    // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+    .filter((f) => existsSync(join(ROOT, f)));
 }
 
 /**

@@ -71,6 +71,8 @@ function trackedBasenames(): string[] {
     cachedBases = out
       .split('\0')
       .filter((p) => p.length > 0 && !isTestFile(p))
+      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+      .filter((p) => existsSync(join(REPO_ROOT, p)))
       .map((p) => basename(p, extname(p)));
   }
   return cachedBases;

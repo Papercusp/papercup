@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EVL R-2 live: the running operator refuses the next slow attempt of a looping item until audited",
+  "framework": "operational",
+  "command": [
+    "sudo",
+    "-n",
+    "-u",
+    "postgres",
+    "psql",
+    "-d",
+    "papercusp",
+    "-At",
+    "-F",
+    "|",
+    "-c",
+    "SELECT id, tool_name, to_char(invoked_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), error_code, coord_owner_id, serving_build_sha FROM harness_shared.tool_invocations WHERE workspace_id='papercusp-workspace' AND invoked_at >= '2026-09-29T08:00:00Z' AND invoked_at < '2026-09-30T08:05:00Z' AND error_code='loop_audit_required' ORDER BY invoked_at"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T08:09:36Z",
+  "finishedAt": "2026-09-30T08:09:36Z",
+  "summary": "5 capability:bash calls were refused with error_code=loop_audit_required in the 24h before 08:05Z on 2026-09-30, from 4 distinct sessions.",
+  "assertions": [
+    {
+      "id": "refusals-recorded",
+      "passed": true,
+      "evidence": "30098462 2026-09-30T01:31:32Z a188b898d3; 30102686 2026-09-30T01:47:24Z a188b898d3; 30102732 2026-09-30T01:47:41Z a188b898d3; 30166870 2026-09-30T06:46:55Z 023df66c19; 30174893 2026-09-30T07:34:38Z 481ab03898"
+    },
+    {
+      "id": "independent-sessions",
+      "passed": true,
+      "evidence": "su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7, su-616ddc4c-9f9c-46df-869d-ee83f38290aa, su-f08bc8c5-d836-4e9c-bea6-f7ddaac4d186, su-d18cd980-6bbb-4b0c-ace7-42b84796d817"
+    }
+  ],
+  "rows": [
+    [
+      "30098462",
+      "capability:bash",
+      "2026-09-30T01:31:32Z",
+      "loop_audit_required",
+      "su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7",
+      "a188b898d3"
+    ],
+    [
+      "30102686",
+      "capability:bash",
+      "2026-09-30T01:47:24Z",
+      "loop_audit_required",
+      "su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7",
+      "a188b898d3"
+    ],
+    [
+      "30102732",
+      "capability:bash",
+      "2026-09-30T01:47:41Z",
+      "loop_audit_required",
+      "su-616ddc4c-9f9c-46df-869d-ee83f38290aa",
+      "a188b898d3"
+    ],
+    [
+      "30166870",
+      "capability:bash",
+      "2026-09-30T06:46:55Z",
+      "loop_audit_required",
+      "su-f08bc8c5-d836-4e9c-bea6-f7ddaac4d186",
+      "023df66c19"
+    ],
+    [
+      "30174893",
+      "capability:bash",
+      "2026-09-30T07:34:38Z",
+      "loop_audit_required",
+      "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+      "481ab03898"
+    ]
+  ]
+}

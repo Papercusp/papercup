@@ -63,7 +63,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
+import { coverageOf, describeUnscanned, presentOnDisk } from './lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -639,10 +639,12 @@ export function judgeFile({ file, text, includes }) {
  * because `bin/git-hooks/pre-push` has no file extension and was outside the corpus).
  */
 function trackedFiles() {
-  return execFileSync('git', ['ls-files', '--recurse-submodules'], { cwd: ROOT, maxBuffer: 1 << 28 })
+  const files = execFileSync('git', ['ls-files', '--recurse-submodules'], { cwd: ROOT, maxBuffer: 1 << 28 })
     .toString()
     .split('\n')
     .filter(Boolean);
+  // WI-10004176: drop index entries a plain `rm` left behind until git-sync commits it.
+  return presentOnDisk(files, ROOT);
 }
 
 /**

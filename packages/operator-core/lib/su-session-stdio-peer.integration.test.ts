@@ -1963,7 +1963,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             .map(path => path.slice(path.lastIndexOf('/') + 1))))].sort(),
           captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
           canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
-      } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org.cleanup(); }
+      } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org?.cleanup(); }
     } finally {
       for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
       await gateway.close();
@@ -2280,7 +2280,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         if (nativeStatus === 'failed') expect(timeline.upstreamWrites.calls.length).toBeGreaterThan(0);
       } finally {
         dbSpy.mockRestore(); workspaceSpy.mockRestore();
-        await org.cleanup();
+        await org?.cleanup();
       }
       console.log('CARRY_NATIVE_GATEWAY_RECEIPT', JSON.stringify({ mode, threadId, turnId, nativeStatus,
         gatewayRequestId: timeline.requestId, upstreamAttempts: timeline.upstreamWrites.calls.length,

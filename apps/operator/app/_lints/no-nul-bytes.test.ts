@@ -38,7 +38,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -93,7 +93,9 @@ function trackedTextFiles(): string[] {
   return out
     .toString('utf8')
     .split(NUL)
-    .filter((p) => p && TEXT_FILE_RE.test(p) && !SKIP_RE.test(p));
+    .filter((p) => p && TEXT_FILE_RE.test(p) && !SKIP_RE.test(p))
+    // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+    .filter((p) => existsSync(resolve(REPO_ROOT, p)));
 }
 
 describe('source integrity', () => {

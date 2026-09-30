@@ -26,7 +26,7 @@
  * it gets deleted rather than silently widening the exemption.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -158,7 +158,9 @@ const allowed = (h: Hit) => ALLOWLIST.some((a) => a.path === h.path && h.sentenc
 function lsFiles(prefix: string, cwd = ROOT): string[] {
   return execFileSync('git', ['ls-files', '--', prefix], { cwd, encoding: 'utf8', maxBuffer: 1 << 28 })
     .split('\n')
-    .filter(Boolean);
+    .filter(Boolean)
+    // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+    .filter((f) => existsSync(join(cwd, f)));
 }
 
 function liveCorpus(): { files: CorpusFile[]; counts: Record<string, number> } {

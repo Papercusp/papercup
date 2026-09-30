@@ -18,7 +18,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,7 +60,9 @@ function repoTestFiles(): string[] {
   )
     .trim()
     .split('\n')
-    .filter((p) => p && !p.includes('node_modules'));
+    .filter((p) => p && !p.includes('node_modules'))
+    // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+    .filter((p) => existsSync(resolve(REPO_ROOT, p)));
 }
 
 const SCRIPT_SRC = readFileSync(SCRIPT, 'utf8');

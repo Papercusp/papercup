@@ -20,7 +20,7 @@
  * per guard: see `stripCommentsOnly`'s doc for the case where one guard needs both.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -582,7 +582,9 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
       maxBuffer: 64 * 1024 * 1024,
     })
       .split('\n')
-      .filter(Boolean);
+      .filter(Boolean)
+      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+      .filter((f) => existsSync(join(REPO_ROOT, f)));
 
   const isTreeScanningGuard = (commentsOnlyView: string): boolean =>
     SCANS_CODE_FILES.test(commentsOnlyView) &&

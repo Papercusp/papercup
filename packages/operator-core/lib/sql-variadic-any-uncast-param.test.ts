@@ -137,6 +137,28 @@ function sqlFragmentIdentifiers(source: string): Set<string> {
   return ids;
 }
 
+/**
+ * Whether offset `at` sits inside a PLAIN template literal passed directly to `.unsafe(`.
+ *
+ * `sql.unsafe(\`SELECT jsonb_build_object(${keyObject}) …\`, [limit])` LOOKS like the broken
+ * shape but contains no parameter at all: the template is UNTAGGED, so `${keyObject}` is ordinary
+ * JS string interpolation of SQL TEXT, and the only bound parameters are the `$N` placeholders
+ * in the params array. (Found at libs/generic/search/src/chunks/embed.ts, where the text is a
+ * list of identifiers validated by `validateChunkEmbedTarget`.) Skipping it is being right about
+ * the semantics, like the fragment rule above, not exempting a call site that was ever broken.
+ *
+ * Deliberately narrow: only when the NEAREST backtick before `at` opens a template that is the
+ * direct argument of `.unsafe(` (a generic without parens is allowed). A tagged `sql` template, a
+ * template assigned to a variable, or the closing backtick of a nested template all still scan,
+ * so the failure direction stays toward flagging.
+ */
+function insideUnsafeTextTemplate(source: string, at: number): boolean {
+  const tick = source.lastIndexOf('`', at);
+  if (tick === -1) return false;
+  const before = source.slice(Math.max(0, tick - 400), tick);
+  return /\.unsafe\s*(?:<[^()`]*>)?\s*\(\s*$/.test(before);
+}
+
 export function findUncastVariadicAnyParams(source: string, file: string): UncastFinding[] {
   const findings: UncastFinding[] = [];
   const fragments = sqlFragmentIdentifiers(source);
@@ -146,6 +168,7 @@ export function findUncastVariadicAnyParams(source: string, file: string): Uncas
       const at = source.indexOf(`${fn}(`, cursor);
       if (at === -1) break;
       cursor = at + fn.length;
+      if (insideUnsafeTextTemplate(source, at)) continue; // text interpolation, not a parameter
       let depth = 0;
       let end = at + fn.length;
       for (; end < source.length; end++) {
@@ -193,6 +216,11 @@ const FRAGMENT_FIXTURE = [
   "const sourceStamp = sql`jsonb_build_object('plan_slug', ${planSlug}::text)`",
   "const stamped = sql`SELECT jsonb_build_object('plan_item', ${sourceStamp})`",
 ].join('\n');
+const UNSAFE_TEXT_FIXTURE =
+  'const rows = await sql.unsafe<{ key: Record<string, unknown>; text: string }[]>(\n' +
+  '  `SELECT jsonb_build_object(${keyObject}) AS key FROM t LIMIT $1`,\n' +
+  '  [limit] as never[],\n' +
+  ');';
 
 describe('the detector itself is falsifiable', () => {
   it('flags a bare uncast parameter (the shape all three incidents shipped)', () => {
@@ -228,6 +256,26 @@ describe('the detector itself is falsifiable', () => {
       "sql`SELECT jsonb_build_object('plan_item', ${stamp})`",
     ].join('\n');
     expect(findUncastVariadicAnyParams(notAFragment, 'fixture.ts')).toHaveLength(1);
+  });
+
+  it('does NOT flag text interpolation in a plain template passed to sql.unsafe(...)', () => {
+    expect(findUncastVariadicAnyParams(UNSAFE_TEXT_FIXTURE, 'fixture.ts')).toEqual([]);
+  });
+
+  it('the unsafe exemption is about the TAG: the same body as a tagged sql template IS flagged', () => {
+    // Calibration: without this, the case above could pass because the fixture stopped being
+    // detector-shaped rather than because the untagged-template rule recognised it.
+    expect(UNSAFE_TEXT_FIXTURE).toMatch(/jsonb_build_object\(\$\{keyObject\}\)/);
+    const tagged = 'sql`SELECT jsonb_build_object(${keyObject}) AS key FROM t`';
+    expect(findUncastVariadicAnyParams(tagged, 'fixture.ts')).toHaveLength(1);
+  });
+
+  it('the unsafe exemption does not leak past the unsafe template into a later tagged template', () => {
+    const later = [
+      'await sql.unsafe(`SELECT 1`, []);',
+      "const r = sql`SELECT jsonb_build_object('a', ${v})`;",
+    ].join('\n');
+    expect(findUncastVariadicAnyParams(later, 'fixture.ts')).toHaveLength(1);
   });
 
   it('finds a parameter in a NESTED variadic-any call, not just the outer one', () => {

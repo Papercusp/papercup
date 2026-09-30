@@ -45,7 +45,10 @@ vi.mock('../events/identity-reaction', () => ({
   executeIdentityReaction: h.execute,
   settleIdentityReceipt: h.settle,
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: 'the-sql' }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: 'the-sql' }),
+}));
 
 import type { IdentityReactionPayload } from '../events/identity-reaction';
 import {

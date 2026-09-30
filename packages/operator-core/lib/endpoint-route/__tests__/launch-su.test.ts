@@ -37,6 +37,16 @@ import { DISPLAY_TERMINAL_LAUNCH, type AdvSessionRow } from '../../adv-sessions'
 // (86 lines, zero imports), so the genuine implementation is both safe to load and the
 // thing we actually want exercised — mocking it would assert a stub instead.
 import '../../mcp-base-url';
+// Same hang, second import: WI-10004158 / D-011 (commit e89081eeca, 2026-09-30) made the
+// route's OMP branch with an omitted `account` do
+// `await import('…/apps/operator/scripts/psu-launcher.mjs')` for `ompDefaultModel`. Only
+// `agent: 'omp'` takes it, so it bit exactly 'uses --no-plan when no plan is given' (60s
+// timeout, first pass AND solo). Loaded eagerly and for real, like mcp-base-url above: the
+// attach-path test already loads the genuine module under this file's node:* mocks (via
+// su-session-attached-launch's static import), and with `homedir()` pinned to /home/x the
+// real `ompDefaultModel` deterministically returns null. A bare vi.mock factory would instead
+// strip the exports su-session-attached-launch imports statically.
+import '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { EventEmitter } from 'node:events';
 // Imported rather than hardcoded so the fake-clock advance in `callPost` cannot
 // drift from the probe it has to outlast — a literal here silently under-advances

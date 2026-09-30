@@ -269,7 +269,9 @@ describe('affected-tests: templates/ reaches every workspace that tests it (EI-2
       .split('\n')
       .map((l) => l.trim())
       // Tests INSIDE templates/ are shipped content run in the materialized app, not here.
-      .filter((l) => l.endsWith('.test.ts') && !l.startsWith('templates/'));
+      .filter((l) => l.endsWith('.test.ts') && !l.startsWith('templates/'))
+      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+      .filter((l) => existsSync(resolve(REPO_ROOT, l)));
 
     // Two-part signature: names the templates dir as a path segment AND reads the
     // filesystem. Both idioms in the tree are covered — a relative climb

@@ -50,6 +50,7 @@ const transportDir = process.env.SAME_BOX_TRANSPORT_UNDER_TEST ?? join(vmRig, 'l
 const drillPath = process.env.DRILL_SCRIPT_UNDER_TEST ?? join(desktopBin, 'hive-git-drill.sh');
 const probePath = process.env.PHYSICAL_PROBE_UNDER_TEST ?? join(vmRig, 'hive-git-physical-probe.sh');
 const scenarioPath = process.env.DRILL_SCENARIO_UNDER_TEST ?? join(vmRig, 'hive-git-physical-scenario.sh');
+const sameBoxRigPath = process.env.SAME_BOX_RIG_UNDER_TEST ?? join(vmRig, 'same-box-rig.sh');
 const selectLib = join(desktopBin, 'lib', 'physical-phase-select.sh');
 const tsx = join(root, 'node_modules', '.bin', 'tsx');
 
@@ -463,6 +464,67 @@ describe('rig-profile.sh — the same-box paths are checked before the slow run'
     expect(r.status).toBe(2);
     expect(r.stderr).toMatch(/RIG_PROFILE_PATH_MISSING TOWER_CACHE=/);
     expect(r.stdout).not.toMatch(/VH_RUN/);
+  });
+});
+
+describe("rig-profile.sh — UP waits until the VM owner answers phase A's first call", () => {
+  // Same-box run 8 (20260930T072904Z, WI-10003976): the rig declared UP while the VM's converge
+  // git-sync fire was still running, and phase A's first VM call timed out after 30s.
+  /** Run rig_profile_vm_answering against a stub vmcall whose body is `vmcallBody`. */
+  function vmAnswering(vmcallBody: string, budget: string, interval = '0') {
+    const rig = stubRig();
+    const bin = join(rig.dir, 'bin');
+    mkdirSync(bin);
+    // The same-box transport runs the remote command string locally; so does this stub.
+    writeFileSync(join(bin, 'ssh'), '#!/usr/bin/env bash\nshift\nexec bash -c "$*"\n', { mode: 0o755 });
+    const callsLog = join(rig.dir, 'calls.log');
+    const vmCall = join(rig.dir, 'vmcall.sh');
+    writeFileSync(vmCall, `#!/usr/bin/env bash\necho "$*" >>${JSON.stringify(callsLog)}\n${vmcallBody}\n`, { mode: 0o755 });
+    const setup = `VM=same-box-vm; VM_CALL=${JSON.stringify(vmCall)}; SB_WORKSPACE=same-box-ws; SB_GIT_SYNC_SLUG=same-box-member`;
+    const r = spawnSync(
+      'bash',
+      ['-c', `. ${JSON.stringify(profileLib)}; ${setup}; rig_profile_vm_answering ${JSON.stringify(rig.dir)} ${budget} ${interval}`],
+      { encoding: 'utf8', env: cleanEnv({ PATH: `${bin}:${process.env.PATH ?? ''}` }), timeout: 30_000 },
+    );
+    const calls = existsSync(callsLog) ? readFileSync(callsLog, 'utf8').trim().split('\n') : [];
+    return { r, calls };
+  }
+
+  it('retries a call that times out and returns 0 once the owner answers', () => {
+    // vmcall exits 124 (MCP_RESULT_TIMEOUT) on the first call and answers on the second.
+    const { r, calls } = vmAnswering('[ "$(grep -c . "$(dirname "$0")/calls.log")" -ge 2 ] || exit 124', '30');
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls).toHaveLength(2);
+    expect(r.stderr).toMatch(/RIG_PROFILE vm-not-answering-yet vmcall rc=124/);
+    expect(r.stderr).toMatch(/RIG_PROFILE vm-answering after \d+s \(vmcall rc=0\)/);
+  });
+
+  it("asks the VM owner the status query phase A makes, on the rig's git-sync member", () => {
+    const { r, calls } = vmAnswering('exit 0', '30');
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^dev:dogfood_substrate_status /);
+    expect(calls[0]).toContain('{"targetHarness":{"workspaceId":"same-box-ws","harnessSlug":"same-box-member"}}');
+    expect(calls[0]).toMatch(/--workspace same-box-ws --harness same-box-member$/);
+  });
+
+  it('counts an answered ok:false (vmcall exit 5) as answering', () => {
+    const { r, calls } = vmAnswering('exit 5', '30');
+    expect(r.status, r.stderr).toBe(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('an owner that never answers fails within the budget and names the call log', () => {
+    const { r, calls } = vmAnswering('echo "MCP_RESULT_TIMEOUT" >&2; exit 124', '1', '0.2');
+    expect(r.status).toBe(1);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(r.stderr).toMatch(/did not answer dev:dogfood_substrate_status within 1s \(log: .*\/converge-responsive\.log\)/);
+  });
+
+  it('same-box-rig.sh gates UP on this wait rather than on its own copy of the call', () => {
+    const src = readFileSync(sameBoxRigPath, 'utf8');
+    expect(src).toMatch(/rig_profile_vm_answering "\$dir" "\$remaining" \|\| exit 1/);
+    expect(src).not.toMatch(/dev:dogfood_substrate_status/);
   });
 });
 

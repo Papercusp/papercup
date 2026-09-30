@@ -3708,6 +3708,14 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   ];
   const chatJargonIn = (frame: string): string[] =>
     CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
+  // pui-chat-first-ux-2026-09-28 R-01: the chrome a default launch must not
+  // show — the workbench tab strip (h:Overview, 1:Agent Chat), zellij's tab bar
+  // ("Zellij (<session>)") and mode bar (LOCK … PANE), and the workbench's
+  // presence and agents rails (ui.rs " Presence n/m ", " Agents (n live) ").
+  const WORKBENCH_CHROME: readonly RegExp[] = [
+    /h:Overview/, /1:Agent Chat/, /Zellij \(/, /\bLOCK\b.*\bPANE\b/, / Presence \d+\/\d+ /, / Agents \(\d+ live\) /,
+  ];
+  const MULTIPLEXER_OR_SHELL = /^(zellij|tmux|screen|bash|sh|dash|zsh|fish)$/;
 
   // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: `pui` must start
   // the way `claude` / `codex` do — one conversation, full screen, in the
@@ -3724,9 +3732,14 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // The status line names the engine and the launch directory (P-003).
       await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
       const opening = pane.screen();
-      // No workbench chrome: the tab strip and the Overview tab are absent.
-      expect(opening).not.toContain('h:Overview');
-      expect(opening).not.toContain('1:Agent Chat');
+      // R-01: no multiplexer or workbench chrome — no workbench tab strip, no
+      // zellij tab bar or mode/status bar, no presence or agents rail.
+      expect(WORKBENCH_CHROME.filter((pattern) => pattern.test(opening)).map(String), opening).toEqual([]);
+      // … and no shell pane beside the chat: the terminal runs pui itself, not
+      // a multiplexer or shell hosting it, and pui has no such child either.
+      expect(readFileSync(`/proc/${pane.pty.pid}/comm`, 'utf8').trim()).toBe(path.basename(bin).slice(0, 15));
+      const children = (await processRows(['-o', 'comm=', '--ppid', String(pane.pty.pid)])).split(/\s+/).filter(Boolean);
+      expect(children.filter((name) => MULTIPLEXER_OR_SHELL.test(name)), children.join(',')).toEqual([]);
       // The composer already has focus: no `i` first, the first keystroke is text.
       pane.write(prompt);
       await pane.waitFor(prompt);
@@ -4394,13 +4407,18 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         { timeout: 10_000, interval: 100 },
       );
       // R-03: the diagnostics the chat screen omits are in `pui doctor`: the
-      // operator URL, workspace and store this chat ran against.
-      const doctor = spawnSync(bin, ['doctor'], {
-        cwd: launchDir, encoding: 'utf8', timeout: 30_000,
-        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, LANG: process.env.LANG ?? 'en_US.UTF-8',
-          PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`, PAPERCUSP_TUI_OWNER: OWNER, ZELLIJ: '' },
+      // operator URL, workspace and store this chat ran against. Async, not
+      // spawnSync: the operator answers from this process, so blocking the
+      // event loop leaves doctor's identity probe unanswered (it timed out).
+      // Doctor exits non-zero here for the uninstalled build; only its
+      // operator lines are asserted.
+      const doctorOut = await new Promise<string>((resolve) => {
+        execFile(bin, ['doctor'], {
+          cwd: launchDir, encoding: 'utf8', timeout: 30_000,
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, LANG: process.env.LANG ?? 'en_US.UTF-8',
+            PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`, PAPERCUSP_TUI_OWNER: OWNER, ZELLIJ: '' },
+        }, (_error, stdout, stderr) => resolve(`${stdout ?? ''}${stderr ?? ''}`));
       });
-      const doctorOut = `${doctor.stdout ?? ''}${doctor.stderr ?? ''}`;
       expect(doctorOut, doctorOut).toContain('PUI operator identity: OK');
       expect(doctorOut, doctorOut).toMatch(new RegExp(`endpoint:\\s+http://127\\.0\\.0\\.1:${operatorPort}`));
       expect(doctorOut, doctorOut).toMatch(new RegExp(`workspace:\\s+${WORKSPACE}`));
@@ -7288,9 +7306,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // then no two `you` blocks may be adjacent, and after the last prompt
         // no EARLIER reply may appear (at rest the old order scrolled every
         // `you` block off screen, so the adjacency check alone passed it).
+        // The logged reply is the engine's raw markdown; the chat renders it, so
+        // `add` shows as add and **x** as x. Compare on the rendered text, or a
+        // reply with a code span never matches (and an earlier-reply check that
+        // can never match proves nothing).
         const entries = log as unknown as Array<{ label?: string; prompt?: unknown; reply?: unknown }>;
         const head = (label: string, key: 'prompt' | 'reply') =>
-          String(entries.find((entry) => entry.label === label)?.[key] ?? '').trim().slice(0, 24);
+          String(entries.find((entry) => entry.label === label)?.[key] ?? '').replace(/[`*]/g, '').trim().slice(0, 24);
         const lastReply = head('04-run-tests', 'reply');
         if (lastReply) {
           await vi.waitFor(() => expect(pane.screen(), 'the restore reaches the last reply').toContain(lastReply),
@@ -7329,7 +7351,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // A history replay landing after the send would be folded into this
         // reply (the P-006 review saw the greeting twice at its start).
         expect(recalled.includes(greeting.trim()), 'the recall reply carries no replayed history').toBe(false);
-        writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: 'pui', binary: bin, binarySha256, cols: 120, rows: 40, launchDir, approvals, questions, retries, log }, null, 2) + '\n');
+        // WI-10004184: after /resume and a new message, the last pre-resume
+        // turn was drawn twice. Its reply must appear exactly once.
+        if (lastReply) {
+          const shown = pane.screen().split(lastReply).length - 1;
+          expect(shown, 'the last pre-resume reply is shown once after a new message').toBe(1);
+        }
+        // Which engines this review started and where each ended up: the
+        // recall reply has been recorded twice after /resume (WI-10004198).
+        const engines = scriptedEngine.engines.map((engine) => ({ lifecycle: engine.adapter.host.descriptor().lifecycle }));
+        writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: 'pui', binary: bin, binarySha256, cols: 120, rows: 40, launchDir, approvals, questions, retries, engines, log }, null, 2) + '\n');
         console.info('PUI_P005_REVIEW', JSON.stringify({ approvals, log: log.map(({ label, firstReplyMs, totalMs }) => ({ label, firstReplyMs, totalMs })) }));
       } finally {
         await pane.stop().catch(() => {});

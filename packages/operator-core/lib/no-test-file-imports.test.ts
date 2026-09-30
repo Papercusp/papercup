@@ -17,7 +17,7 @@
 // deliberately not matched.
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -49,7 +49,13 @@ function trackedTypeScriptFiles(): string[] {
     ['ls-files', '-z', '--', '*.ts', '*.tsx', '*.mts', '*.cts'],
     { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
-  return out.split('\0').filter((p) => p && !p.includes('/node_modules/') && !p.includes('/_retired/'));
+  return (
+    out
+      .split('\0')
+      .filter((p) => p && !p.includes('/node_modules/') && !p.includes('/_retired/'))
+      // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
+      .filter((p) => existsSync(resolve(REPO_ROOT, p)))
+  );
 }
 
 describe('no source file imports from a .test/.spec module (gate red 761d0a85ac, WI-212675)', () => {

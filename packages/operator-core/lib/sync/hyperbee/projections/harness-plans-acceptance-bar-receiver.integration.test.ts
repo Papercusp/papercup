@@ -437,24 +437,39 @@ describe('ship gate on a federated receiver (WI-10004178, D-095)', () => {
     expect((await gate(RECEIVER_WS, planSlug)).code).toBe('acceptance_authored_on_other_node');
   });
 
-  // Calibration control: the refusal must be what changes B's verdict. Remove ONE leg of
-  // the receiver conjunction on B (the rubric is no longer remote-origin) and B falls back
-  // to the ordinary rubric-family verdict: the silent outcome D-095 replaced. Without
-  // this case, a refusal that fired on every node would still pass the case above for B.
+  // Calibration control: the refusal must be the ONLY thing that changes B's verdict.
+  // Remove ONE leg of the receiver conjunction on B (the rubric is no longer remote-origin)
+  // and B must fall through to the same ordinary checks A runs. In this harness neither
+  // node proves the BAR, so both stop at the same pre-grading refusal; the point is
+  // equality with A, not which code it is. Without this case, a refusal that fired on
+  // every node would still pass the case above for B.
   it('control: without the remote-origin rubric leg, B falls through to the ordinary checks', async () => {
     const planSlug = 'receiver-ship-control';
+    const rubricSlug = `acceptance-${planSlug}`;
     const { plan, rubric } = await authorSeed(planSlug);
     await applyRemote(plan);
     await applyRemote(rubric);
     expect((await gate(RECEIVER_WS, planSlug)).code).toBe('acceptance_authored_on_other_node');
+    // Diagnostic only: each node keeps its own counter for the same rubric content. After a
+    // single write they coincide (both 1 here, measured 2026-09-30), so this harness does
+    // NOT reproduce a divergence; that needs a later write on either node.
+    const rubricVersions = {
+      author: await localPlanVersion(AUTHOR_WS, rubricSlug),
+      receiver: await localPlanVersion(RECEIVER_WS, rubricSlug),
+    };
 
     await db.adminSql`
       UPDATE harness_shared.harness_plans SET origin = 'local'
-       WHERE workspace_id = ${RECEIVER_WS} AND plan_slug = ${`acceptance-${planSlug}`}`;
+       WHERE workspace_id = ${RECEIVER_WS} AND plan_slug = ${rubricSlug}`;
     const fallthrough = await gate(RECEIVER_WS, planSlug);
-    console.log(`[WI-10004178 control] B without the refusal: code=${fallthrough.code}`);
+    const onA = await gate(AUTHOR_WS, planSlug);
+    console.log(
+      `[WI-10004178 control] rubric version A=${rubricVersions.author} B=${rubricVersions.receiver}; ` +
+      `A code=${onA.code}; B without the refusal code=${fallthrough.code}`,
+    );
     expect(fallthrough.satisfied).toBe(false);
     expect(fallthrough.code).not.toBe('acceptance_authored_on_other_node');
     expect(fallthrough.authoringNode).toBeUndefined();
+    expect(fallthrough.code).toBe(onA.code);
   });
 });

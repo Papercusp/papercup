@@ -702,7 +702,8 @@ describe('affected-tests: partial-index-alignment guard (WI-9434)', () => {
       maxBuffer: 64 * 1024 * 1024,
     });
     if (res.status !== 0) return null;
-    return (res.stdout ?? '').split('\n').find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
+    // WI-10004176: drop index entries a plain `rm` left behind until git-sync commits it.
+    return (res.stdout ?? '').split('\n').filter((f) => existsSync(resolve(REPO_ROOT, f))).find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
   }
 
   it.each(PARTIAL_INDEX_SOURCE_ROOTS.map((root) => [root]))(
@@ -1252,7 +1253,8 @@ function realOkfFileUnder(root: string): string | null {
     maxBuffer: 64 * 1024 * 1024,
   });
   if (res.status !== 0) return null;
-  return (res.stdout ?? '').split('\n').find((f) => f && isOkfScannedFile(f)) ?? null;
+  // WI-10004176: drop index entries a plain `rm` left behind until git-sync commits it.
+  return (res.stdout ?? '').split('\n').filter((f) => existsSync(resolve(REPO_ROOT, f))).find((f) => f && isOkfScannedFile(f)) ?? null;
 }
 
 describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
@@ -1365,7 +1367,8 @@ describe('affected-tests: green-checkpoint tag guard (WI-37605)', () => {
       maxBuffer: 64 * 1024 * 1024,
     });
     if (res.status !== 0) return null;
-    return (res.stdout ?? '').split('\n').find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
+    // WI-10004176: drop index entries a plain `rm` left behind until git-sync commits it.
+    return (res.stdout ?? '').split('\n').filter((f) => existsSync(resolve(REPO_ROOT, f))).find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
   }
 
   it('attaches for a TS change outside the host workspace but inside a scanned root', () => {
