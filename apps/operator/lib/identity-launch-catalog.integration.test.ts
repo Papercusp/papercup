@@ -100,7 +100,7 @@ beforeAll(async () => {
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PROVIDER), {
     id: PROVIDER, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
     contributions: [{ id: 'current-brief', purpose: 'operational', source: 'provider', refresh: 'launch',
-      inputKind: 'setting', ref: 'current-brief', producerRef: 'existing.brief' }],
+      inputKind: 'setting', ref: 'current-brief', producerRef: 'papercusp.fleet-leader-brief@1', verb: 'read' }],
   });
   vi.spyOn(globalThis, 'fetch').mockImplementation(routeFetch as typeof fetch);
 }, 60_000);
