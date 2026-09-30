@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-on-everything-rubric-evidence-hardening R-4 live criterion-ownership read",
+  "framework": "operational",
+  "plan": "work-on-everything-rubric-evidence-hardening-2026-09-20",
+  "acceptanceBar": "R-4",
+  "specClause": "rubric-criterion-ownership@7",
+  "workItem": "WI-10002116",
+  "evidencePlane": "live",
+  "runtime": "operator :3070 build 29bf735091",
+  "command": ["rubrics:get", "{ rubricRef: 'work-on-everything-stewardship-health', detail: 'full' }"],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T16:59:12.000Z",
+  "finishedAt": "2026-09-30T16:59:13.000Z",
+  "recordedBy": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+  "summary": "Live stewardship rubric is active at revision 28 and every R-4 drift marker is not broken. At revision 26 marker (1) held: delegated-execution-and-drain-health's method still required a plan-scoped fleet for every started plan, contradicting its own rev21 ownership boundary. Revisions 27-28 (rubrics:amend, 2026-09-30 ~16:58Z) moved the owner-tagged hand-dispatch rule into plan-fleet-materialization and replaced the four duplicate paragraphs in delegated-execution-and-drain-health with a pointer. The re-read at revision 28 shows the duplicate is gone.",
+  "assertions": [
+    {
+      "id": "probe-status-active",
+      "passed": true,
+      "evidence": "rubrics:get returned status 'active', revision 28, methodRef 'work-on-everything-stewardship-health-grading-runbook', 15 criteria."
+    },
+    {
+      "id": "marker-1-dedh-no-per-plan-fleet",
+      "passed": true,
+      "evidence": "delegated-execution-and-drain-health model+method contain 0 occurrences of 'For every plan of this goal', 'for EACH plan', 'members of that fleet actually' and 'fails this criterion'; the method now says the owner-tagged PLAN-FLEET LANE SCOPING rule (2026-08-27) 'is graded under `plan-fleet-materialization`, not here' and keeps 'OWNERSHIP BOUNDARY (rev21 hardening)'."
+    },
+    {
+      "id": "marker-2-claim-flow-no-plan-lease",
+      "passed": true,
+      "evidence": "claim-flow-and-completion-integrity model+method contain 0 occurrences of 'plan-item lease'/'delegated lease' and 0 plan-selecting claim-spec leaves; its method uses 'the same goal/drain claim spec'."
+    },
+    {
+      "id": "marker-3-e2e-rates-closure-not-plan-fleets",
+      "passed": true,
+      "evidence": "end-to-end-stewardship-closure model+method contain 0 occurrences of 'plan fleet', 'plan-fleet', 'per-plan' or 'independently led'; its model rates whole-circuit closure on ordinary rails."
+    },
+    {
+      "id": "marker-4-pfm-states-obligation",
+      "passed": true,
+      "evidence": "plan-fleet-materialization model states 'An entry in the owner's typed worklist is a plan-execution obligation' and contains 'independently led plan fleet' (the R-4 positive control); its method now carries the owner-tagged HAND-DISPATCH rule (2026-08-27), moved here from delegated-execution-and-drain-health."
+    }
+  ]
+}

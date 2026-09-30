@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-on-everything-rubric-evidence-hardening R-6 live evidence-contract drill",
+  "framework": "operational",
+  "plan": "work-on-everything-rubric-evidence-hardening-2026-09-20",
+  "acceptanceBar": "R-6",
+  "specClause": "rubric-improvement-verification@8",
+  "evidencePlane": "live",
+  "runtime": "operator :3070 build 29bf735091",
+  "command": [
+    "scorecards:evaluate { rubricRef: 'work-on-everything-stewardship-health', ratings: <15 keys; goal-mode-foundation = { rating: 'pass', evidence: 'narrative only' } with no evidenceRef> }",
+    "scorecards:evaluate { same set; goal-mode-foundation = { rating: 'unknown', evidenceRef: 'tool:scorecards:evaluate', evidenceKind: 'tool', attribution: 'instrument', unknownReason: 'instrument-unavailable', nextEvidenceAction } }",
+    "rubrics:get { rubricRef: 'work-on-everything-stewardship-health' }",
+    "docs:get { slug: 'agent-insights/work-on-everything-stewardship-health-grading-runbook', harness: 'papercusp' }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T16:44:00.000Z",
+  "finishedAt": "2026-09-30T16:59:13.000Z",
+  "recordedBy": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+  "summary": "On the running operator, scorecards:evaluate refuses the complete stewardship rating set whose goal-mode-foundation rating is prose-only and names evidenceRef; the fully enveloped positive control is accepted; the rubric's methodRef names the grading runbook; and the runbook carries the evidence-envelope, criterion-ownership, trend-identity and instrument-provenance guidance. No drill call writes a scorecard.",
+  "assertions": [
+    {
+      "id": "marker-1-2-narrative-only-refused-naming-evidenceRef",
+      "passed": true,
+      "evidence": "16:44Z: probe returned ok:false with \"Work on everything rating 'goal-mode-foundation' requires evidenceRef, evidenceKind, and attribution; legacy prose-only evidence is readable but cannot be regraded without an evidence envelope\"."
+    },
+    {
+      "id": "marker-3-positive-control-accepted",
+      "passed": true,
+      "evidence": "16:44Z: the same 15-key set with goal-mode-foundation graded unknown under a full envelope (evidenceRef tool:scorecards:evaluate, evidenceKind tool, attribution instrument, unknownReason instrument-unavailable, nextEvidenceAction) returned ok:true."
+    },
+    {
+      "id": "marker-4-6-runbook-guidance",
+      "passed": true,
+      "evidence": "16:45Z: the runbook contains sections 'Evidence envelope and attribution (revision 21)' (evidenceRef, evidenceKind and attribution on every rating; absenceClaim with positiveControlRef; unknownReason with nextEvidenceAction; server-computed categorical roll-up in which critical failures dominate and critical unknowns read unassessable), 'Criterion ownership', 'Trend identity' and 'Registered instrument provenance' (caller snapshots are self-reported; only a registered server resolver stamps platform-computed). A negative-control term search returned 0."
+    },
+    {
+      "id": "marker-7-methodRef-names-runbook",
+      "passed": true,
+      "evidence": "rubrics:get read methodRef 'work-on-everything-stewardship-health-grading-runbook' at revision 26 (16:44Z) and again at revision 28 (16:59Z), after the R-4 criterion-ownership amendment."
+    }
+  ]
+}
