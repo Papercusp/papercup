@@ -28,6 +28,7 @@ import {
   readHostedConnectorBearer,
   type HostedWorkspaceConnectorGateway,
 } from '../../hosted-workspace-connector';
+import { PORTAL_RELAY_NOTICE } from '../../../remote-access/relay-notice';
 import { RELAY_INSTALL_ID_RE, type HostedCliStore, type HostedCliToken } from './store';
 
 export { PostgresHostedCliStore, type HostedCliStore } from './store';
@@ -47,13 +48,10 @@ export const HOSTED_CLI_ROUTES = [
 ] as const;
 
 /**
- * The relay notice shown on the portal's approval page for a relay link (D-009). The machine
- * shows the same words before it lets the user start linking (remote-access/relay-opt-in.ts).
+ * The relay notice shown on the portal's approval page for a relay link (D-009) — the same words
+ * the machine shows before it lets the user start linking. One source: remote-access/relay-notice.ts.
  */
-export const PORTAL_RELAY_NOTICE =
-  "When the Papercusp relay is on, calls from outside apps pass through Papercusp's servers on their way to this computer. " +
-  'Papercusp can read those calls and their results while they pass through, and does not store them. ' +
-  "If you don't want that, use your own tunnel instead.";
+export { PORTAL_RELAY_NOTICE };
 
 export const HOSTED_CLI_DEVICE_CODE_TTL_MS = 10 * 60_000;
 export const HOSTED_CLI_POLL_INTERVAL_MS = 5_000;
