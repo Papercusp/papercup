@@ -181,6 +181,8 @@ describe('hive-git-drill.sh --only-phase / --from-phase', () => {
     mkdirSync(join(t, 'libs', 'generic'), { recursive: true });
     copyFileSync(drillPath, join(t, 'desk', 'bin', 'hive-git-drill.sh'));
     symlinkSync(join(desktopBin, 'lib'), join(t, 'desk', 'bin', 'lib'));
+    // The drill sources the rig profile (P-005, D-003) before it parses a selection.
+    symlinkSync(join(desktopBin, 'vm-rig', 'lib'), join(t, 'desk', 'bin', 'vm-rig', 'lib'));
     symlinkSync(join(root, 'libs', 'generic', 'verification-harness'), join(t, 'libs', 'generic', 'verification-harness'));
     const saw = join(t, 'probe-saw');
     const stub = join(t, 'desk', 'bin', 'vm-rig', 'hive-git-physical-probe.sh');
