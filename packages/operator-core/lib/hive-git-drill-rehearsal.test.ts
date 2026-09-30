@@ -433,6 +433,26 @@ describe('rig-profile.sh — the same-box paths are checked before the slow run'
     expect(r.stderr).not.toMatch(/VM_REPO/);
   });
 
+  it('a store that never initialised is explained from the OWNER log, not left behind a pointer', () => {
+    // Same-box run 7 (WI-10003976): converge died with "logs: converge-*.log" while the cause
+    // sat unread in vm.log. The failure report now carries each owner's pot-git error lines.
+    const rig = stubRig();
+    writeFileSync(join(rig.dir, 'tower.log'), '[git-sync] papercusp: committed 3 paths\n');
+    writeFileSync(
+      join(rig.dir, 'vm.log'),
+      '[boot] listening :18472\n' +
+        '[git-sync] bootstrap: pot-git: init --bare failed: pot-git: refusing local git spawn at RSS 4643MB (limit 4096MB)\n',
+    );
+    const r = spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_owner_git_failures ${JSON.stringify(rig.dir)}`], {
+      encoding: 'utf8',
+      env: cleanEnv({}),
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/^ {2}vm\.log: .*init --bare failed.*refusing local git spawn/m);
+    // Calibration: an ordinary owner line is not reported, so the match above is the filter's.
+    expect(r.stdout).not.toMatch(/tower\.log|listening/);
+  });
+
   it('the drill entry refuses a rig with a missing profile path before any work', () => {
     const rig = stubRig();
     const r = spawnSync('bash', [drillPath, '--rig', 'same-box', '--only-phase', 'A'], {
