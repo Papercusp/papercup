@@ -93,7 +93,8 @@ function appRow(tokenHash: string, id: string, over: Record<string, unknown> = {
     workspace_id: 'ws-app',
     kind: 'app',
     label: 'ci bot',
-    scopes: { capabilities: ['harness:read'] },
+    // P-003: an app key is default-deny, so the fixture key lists the one tool it calls.
+    scopes: { capabilities: ['harness:read'], tools: ['fix:app-whoami'] },
     limits: {},
     paired_at: new Date('2026-09-29T00:00:00Z'),
     expires_at: null,

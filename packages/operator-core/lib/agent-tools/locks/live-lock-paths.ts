@@ -33,6 +33,13 @@ export interface LiveLockHolding {
   intent: string;
   /** The active work-item/goal associated with the lock, when the caller stamped one. */
   goalRef?: string;
+  /**
+   * The lock's coordination domain: the absolute root of the repository `path` is relative
+   * to. The read below spans EVERY domain, so a consumer that compares `path` against one
+   * specific tree must translate by this first (EI-24649116564770033; git-sync does so via
+   * `translateLiveLockHoldingsToRoot`).
+   */
+  coordinationDomain?: string;
 }
 
 /**
@@ -54,6 +61,7 @@ export async function liveLockHoldingsStrict(): Promise<LiveLockHolding[]> {
     owner: l.owner,
     intent: l.intent,
     ...(l.goal_ref?.trim() ? { goalRef: l.goal_ref.trim() } : {}),
+    ...(l.coordination_domain?.trim() ? { coordinationDomain: l.coordination_domain.trim() } : {}),
   }));
 }
 

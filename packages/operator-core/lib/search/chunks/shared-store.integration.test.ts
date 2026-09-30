@@ -20,6 +20,7 @@ import {
   type ChunkSyncResult,
 } from '@papercusp/search';
 import { PROSE_VECTOR_DIMS } from '../prose-vector-dims';
+import { CHUNK_STORES, TEXT_CHUNKS_TABLE } from './registry';
 import { runChunkSyncTick, sha256Hex } from './tick';
 
 const TAG = `${process.pid}_${Date.now()}`;
@@ -169,6 +170,30 @@ describe('shared chunk store (live SQL, harness_shared.text_chunks)', () => {
     await sql.unsafe(`UPDATE ${TABLE} SET body = 'short now', updated_at = now() WHERE id = 42`);
     expect(stats(await tick(s))).toMatchObject({ pruned: 9, errors: 0 });
     expect([...new Set((await chunks(s)).map((r) => r.parent_key[0]))]).toEqual(['43']);
+  });
+
+  it('R-38: only parents over 2,000 chars are chunked by default, and the sweep embeds header, one newline, content', async () => {
+    // Default floor: resolveChunkSurface's minChars is 2,000 when a surface sets none.
+    const s = surface('r38', 60, { minChars: undefined, splitter: { kind: 'window', size: 1500, overlap: 100 } });
+    await sql.unsafe(
+      `INSERT INTO ${TABLE} (id, title, body) VALUES (60, 'Head', $1), (61, NULL, $1), (62, '', $1), (63, 'Exact', $2)`,
+      ['f'.repeat(2001), 'g'.repeat(2000)],
+    );
+    expect(stats(await tick(s))).toMatchObject({ parentsSynced: 3, errors: 0 });
+    const rows = await chunks(s);
+    expect([...new Set(rows.map((r) => r.parent_key[0]))]).toEqual(['60', '61', '62']);
+    // The embed sweep's text for this store, evaluated on the stored rows. It
+    // must be exactly what chunk_sha hashes and what the P-001 bench embedded.
+    const store = CHUNK_STORES.find((c) => c.table === TEXT_CHUNKS_TABLE);
+    expect(store).toBeDefined();
+    const embedded = await sql.unsafe<{ header: string | null; content: string; text: string }[]>(
+      `SELECT header, content, ${store!.embeddedTextSql} AS text FROM harness_shared.text_chunks WHERE surface = $1`,
+      [s.surface],
+    );
+    expect(embedded.length).toBe(rows.length);
+    expect(embedded.map((r) => r.header ?? null).sort()).toEqual(expect.arrayContaining(['Head', null]));
+    for (const r of embedded) expect(r.text).toBe(embeddedChunkText(r.header, r.content));
+    expect(embedded.find((r) => r.header === 'Head')!.text.startsWith('Head\nf')).toBe(true);
   });
 
   it('caps a long parent at maxChunks and reports it', async () => {

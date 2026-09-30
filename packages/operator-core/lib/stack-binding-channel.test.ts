@@ -185,4 +185,74 @@ describe('renderStackTransitionContext (P-012)', () => {
     expect(failed.text).toContain('relation missing');
     expect(warnings.some((w) => w.includes('addressed guide not read'))).toBe(true);
   });
+
+  // portable-identity P-009 / D-022: a wearer's pack-doc keys move on a pack upgrade even
+  // when no layer ref does, so the channel keys delivery on them too. Real-PG half:
+  // blueprint/package-doc-resources.integration.test.ts.
+  describe('P-009: package doc keys ride the same transition', () => {
+    const KEY_1 = '1'.repeat(64);
+    const KEY_2 = '2'.repeat(64);
+    const rows = [
+      { part_key: 'pack:procedures@1.0.0:first', body: 'V1 PROCEDURE.', ordinal: 100_000, target_section: 'Workflow', stack_scope: [`package:${KEY_1}`] },
+      { part_key: 'pack:procedures@2.0.0:first', body: 'V2 PROCEDURE.', ordinal: 100_000, target_section: 'Workflow', stack_scope: [`package:${KEY_2}`] },
+    ];
+    const reads: unknown[][] = [];
+    const guide = {
+      workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude',
+      sql: {
+        unsafe: async (q: string, params: unknown[]) => {
+          if (q.includes('SELECT 1 AS present')) return [{ present: 1 }];
+          reads.push(params);
+          const tokens = [...(params[3] as string[]), ...(params[5] as string[])];
+          return rows.filter((r) => r.stack_scope.some((t) => tokens.includes(t)));
+        },
+      } as never,
+    };
+    const unmoved = { state: state({ stack: [SU_POSTURE_REFS.member] }), stackBefore: [SU_POSTURE_REFS.member] };
+
+    it('an upgrade with NO layer move still delivers: the new version attaches, the old one is named', async () => {
+      const out = await renderStackTransitionContextResult(unmoved, {
+        ...opts, guide, packageResources: async () => ({ before: [KEY_1], after: [KEY_2] }),
+      });
+      expect(out.rendered).toBe(true);
+      expect(out.text).not.toContain(blueprint.STACK_INJECTION_STAMP);
+      expect(out.text).toContain('V2 PROCEDURE.');
+      expect(out.text).not.toContain('V1 PROCEDURE.');
+      expect(out.text).toContain('`pack:procedures@1.0.0:first`');
+    });
+
+    it('unchanged keys and an unmoved stack deliver nothing; no guide target means keys are never resolved', async () => {
+      expect((await renderStackTransitionContextResult(unmoved, {
+        ...opts, guide, packageResources: async () => ({ before: [KEY_1], after: [KEY_1] }),
+      })).text).toBe('');
+      let resolved = 0;
+      expect((await renderStackTransitionContextResult(unmoved, {
+        ...opts, packageResources: async () => { resolved += 1; return { before: [], after: [KEY_1] }; },
+      })).text).toBe('');
+      expect(resolved).toBe(0);
+    });
+
+    it('FULL-RESYNC with nothing bound still delivers a held package part — the same set a launch composes', async () => {
+      reads.length = 0;
+      const out = await renderStackTransitionContextResult({ state: state() }, {
+        ...opts, guide, packageResources: async () => ({ before: [], after: [KEY_1] }),
+      });
+      expect(out.text).toContain('## Addressed guidance — the complete set');
+      expect(out.text).toContain('V1 PROCEDURE.');
+      expect(out.text).not.toContain('V2 PROCEDURE.');
+      expect(reads.at(-1)![5]).toEqual([`package:${KEY_1}`]);
+    });
+
+    it('a key-resolution failure is VISIBLE in the delivered text, never a silent miss', async () => {
+      const warnings: string[] = [];
+      const out = await renderStackTransitionContextResult(unmoved, {
+        ...opts, warn: (m) => warnings.push(m), guide,
+        packageResources: async () => { throw new Error('installation read failed'); },
+      });
+      expect(out.rendered).toBe(true);
+      expect(out.text).toContain('## Addressed guidance — could not be read');
+      expect(out.text).toContain('package doc keys unavailable: installation read failed');
+      expect(warnings.some((w) => w.includes('addressed guide not read'))).toBe(true);
+    });
+  });
 });

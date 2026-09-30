@@ -32,8 +32,12 @@ Documentation typo fixes do not need a CLA.
 
 1. For anything larger than a small fix, open an issue first so we can agree on the approach.
 2. Keep each pull request focused on one change.
-3. Include tests in the project's test framework (Vitest for TypeScript, `cargo test` for Rust).
-4. Run the tests for the area you changed, and the typecheck, before opening the pull request.
+3. Include tests for your change in the project's test framework (Vitest for TypeScript,
+   `cargo test` for Rust). This repository does not yet carry our existing test suite; we
+   run the full suite on your change when we apply it, and tell you on the pull request if
+   anything fails.
+4. Run `npm ci` and `npm run lint:tsc` (the typecheck) before opening the pull request. CI
+   runs the same two steps on every pull request.
 5. Do not add dependencies whose licence is incompatible with the Elastic License 2.0.
    That rules out GPL, AGPL, SSPL and non-commercial licences.
 

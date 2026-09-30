@@ -29,6 +29,7 @@ import {
   type DecisionClient,
 } from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { recordDecisionModelCall } from '../decision-model-ledger';
 import { maskIntegrationKey, readIntegrationKey, writeIntegrationCredentials } from '../integration-credentials';
 import { activeWorkspaceId } from '../workspace-registry';
 
@@ -178,6 +179,9 @@ export function ensureJevDecisionClient(): DecisionClient {
     provider: createJevProvider(),
     resolveKey: readJevApiKey,
     timeoutMs: JEV_MEMORY_TIMEOUT_MS,
+    // P-003: every call — answered or inconclusive — lands in decision_model_calls.
+    // Fire-and-forget; the client never awaits it and swallows its faults.
+    onCall: (record) => recordDecisionModelCall(record).then(() => undefined),
   });
   configureDecisionModel(client);
   return client;

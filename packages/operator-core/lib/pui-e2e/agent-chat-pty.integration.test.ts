@@ -3597,6 +3597,42 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   }, 300_000);
 
+  // pui-chat-first-ux-2026-09-28 P-013: tool rows appear in call order, before
+  // the answer they produced. P-005 (pui-fresh/02-read-explain) printed the
+  // calc.js explanation first and the Bash and Read rows that produced it
+  // below it. The scripted engine writes Read, its result, then the reply —
+  // the same wire order a real Claude turn has.
+  test('P-013: a tool call renders above the answer it produced', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p013-order-')));
+    const tag = randomUUID().slice(0, 8);
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P013_ORDER_FAILURE', JSON.stringify({
+      launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      scriptedEngine.mode = 'success';
+      scriptedEngine.successText = `P13 answer ${tag}`;
+      scriptedEngine.toolResultText = `P13 tool output ${tag}`;
+      pane.write(`explain ${tag}`);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor(`P13 tool output ${tag}`);
+      const frame = pane.screen();
+      const lines = frame.split('\n');
+      const toolRow = lines.findIndex((line) => line.includes('⚙') && line.includes('Read') && line.includes('README.md'));
+      const toolOutput = lines.findIndex((line) => line.includes(`P13 tool output ${tag}`));
+      const answer = lines.findIndex((line) => line.includes(scriptedEngine.successText));
+      expect(toolRow, frame).toBeGreaterThanOrEqual(0);
+      expect(toolRow, frame).toBeLessThan(answer);
+      expect(toolOutput, frame).toBeLessThan(answer);
+      console.info('PUI_P013_ORDER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame }));
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   // pui-chat-first-ux-2026-09-28 P-003 / R-03, failed-start frame: when the
   // engine dies while starting, the default chat explains it in ONE plain
   // sentence with one next step, keeps the draft, and shows none of the

@@ -74,10 +74,17 @@ function assertRunId(runId: string): void {
   if (!RUN_ID.test(runId)) throw new Error(`physical Phase J runId is invalid: ${runId}`);
 }
 
+/**
+ * Word labels for the write titles. admissionIdentity() drops single-letter tokens, so
+ * "write A" / "write B" reduce to ONE titleKey and work_items_keyless_title_identity_uq
+ * refuses the second create (WI-10003961 rig attempt 2: write B never existed on the tower).
+ */
+export const PHASE_J_WRITE_TITLE_LABELS: Readonly<Record<PhysicalPhaseJWrite, string>> = { A: 'alpha', B: 'bravo' };
+
 /** Deterministic, run-bound content for each write, so the verifier can recompute it. */
 export function phaseJWriteTitle(runId: string, write: PhysicalPhaseJWrite): string {
   assertRunId(runId);
-  return `P-521 F4 apply outage write ${write} ${runId}`;
+  return `P-521 F4 apply outage write ${PHASE_J_WRITE_TITLE_LABELS[write]} ${runId}`;
 }
 
 export function phaseJWriteSummary(runId: string, write: PhysicalPhaseJWrite): string {

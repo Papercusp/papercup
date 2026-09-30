@@ -1275,6 +1275,41 @@ export function expandAtomicLiveLockExclusions(
   return { paths: [...paths].sort(), groups: outputGroups };
 }
 
+const NPM_MANIFEST_BASENAMES = new Set(['package.json', 'package-lock.json', 'npm-shrinkwrap.json']);
+
+/** True for an npm manifest or lockfile this repository tracks (never one inside node_modules). */
+export function isNpmManifestPath(path: string): boolean {
+  const segments = path.trim().split('/');
+  const base = segments[segments.length - 1] ?? '';
+  return NPM_MANIFEST_BASENAMES.has(base) && !segments.includes('node_modules');
+}
+
+/**
+ * EI-24649116564770033 / WI-10004077: npm manifests in one repository are ONE unit.
+ *
+ * A dependency change touches a workspace `package.json`, usually the root `package.json`,
+ * and the single root lockfile, which records every workspace at once. When any dirty
+ * manifest is withheld this pass (a live lock, an oversized or content-guard exclusion),
+ * committing the others lands half the change: observed, operator-core's new dependency
+ * reached HEAD without its root workspace entry or lockfile, so a clean `npm ci` of that
+ * commit fails. So a withheld dirty manifest withholds every other dirty manifest in the
+ * same repository until they can land together.
+ *
+ * Returns only the ADDITIONAL paths to withhold, plus the withheld manifests that caused it.
+ * A lock on a CLEAN manifest triggers nothing: no half of any change is being held back.
+ */
+export function expandNpmManifestClosure(
+  dirtyFiles: readonly string[],
+  excludedPaths: readonly string[],
+): { paths: string[]; triggers: string[] } {
+  const excluded = excludedPaths.map((path) => path.trim()).filter(Boolean);
+  const dirtyManifests = [...new Set(dirtyFiles.map((path) => path.trim()).filter(isNpmManifestPath))].sort();
+  const isExcluded = (file: string) => excluded.some((path) => gitSyncPathsOverlap(file, path));
+  const triggers = dirtyManifests.filter(isExcluded);
+  if (triggers.length === 0) return { paths: [], triggers: [] };
+  return { paths: dirtyManifests.filter((file) => !isExcluded(file)), triggers };
+}
+
 /**
  * The aggregate result of one whole-repo pass. `pushed`/`merged` name the scopes
  * ('superproject' or submodule paths) that were pushed to / merged from origin, so
@@ -3896,7 +3931,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
     // still syncs this tick.
-    const excludePaths = [
+    const baseExcludePaths = [
       ...new Set([
         ...effectiveExcludePaths,
         // liveLockHoldings is the provenance-rich authority. Keep its paths safe
@@ -3906,6 +3941,16 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         ...contentErrors.map((c) => c.file),
       ]),
     ];
+    // EI-24649116564770033: a withheld dirty manifest holds back every other dirty manifest
+    // in this repo, so a dependency change never lands without its root entry or lockfile.
+    const manifestClosure = expandNpmManifestClosure(dirty, baseExcludePaths);
+    if (manifestClosure.paths.length > 0) {
+      o.log(
+        `[git-sync] ${o.scope}: keeping npm manifests atomic — ${manifestClosure.triggers.join(', ')} ` +
+          `withheld this pass, so also deferring ${manifestClosure.paths.join(', ')}`,
+      );
+    }
+    const excludePaths = [...new Set([...baseExcludePaths, ...manifestClosure.paths])];
     const preStagedProtected = await unstagePreStagedProtectedPaths(runGit, repoPath, excludePaths, o.log);
     noteSlowPhase('protected path unstage');
     if (!preStagedProtected.ok) {

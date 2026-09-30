@@ -15,6 +15,10 @@ import { recordCurrentSessionIdentityActivation } from './session-identity-attri
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
 const carryMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1177-identity-usage-carry-correlation.sql');
+// The activation transaction fences the wearer's applied package installations
+// (control-anchor -> applySessionPackageResources), so it reads this table even
+// when the compiled artifact journals no package.
+const packageInstallationsMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1232-blueprint-package-installations.sql');
 const WS = 'identity-activation-test';
 const OWNER = 'su-identity-test';
 const SPEC_A = 'a'.repeat(64);
@@ -54,6 +58,11 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, migration);
   await applyMigrationForTest(db.sql, carryMigration);
+  await db.sql.unsafe(`
+    DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
+    DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
+  `).simple();
+  await applyMigrationForTest(db.sql, packageInstallationsMigration);
 }, 90_000);
 
 afterAll(async () => db?.cleanup());

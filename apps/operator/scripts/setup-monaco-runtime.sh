@@ -44,6 +44,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# shellcheck source=lib/mirror-tree.sh
+. scripts/lib/mirror-tree.sh
+
 ROOT="public/monaco"
 DEST="$ROOT/vs"
 STAMP="$ROOT/.version"
@@ -87,9 +90,17 @@ prune_owned_root
 # Skip the copy when the mirror already matches the installed monaco. The stamp
 # is written LAST, so an interrupted copy leaves it stale/absent and the next run
 # redoes the work rather than trusting a half-populated tree.
+#
+# A matching stamp is NOT sufficient on its own (WI-10004074): the mirror must
+# also hold exactly the package's file set. Otherwise hashed chunks left behind
+# by an older monaco build survive every "already current" run and ship in the
+# release SPA (28 of them did in 0.0.25). See scripts/lib/mirror-tree.sh.
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] && [ -f "$DEST/loader.js" ]; then
-  echo "monaco-runtime: already current (v$VERSION) — skipping copy"
-  exit 0
+  if mirror_matches "$SRC" "$DEST"; then
+    echo "monaco-runtime: already current (v$VERSION) — skipping copy"
+    exit 0
+  fi
+  echo "monaco-runtime: v$VERSION stamp is current but $DEST/ file set differs from monaco-editor — re-copying"
 fi
 
 rm -rf "$DEST"

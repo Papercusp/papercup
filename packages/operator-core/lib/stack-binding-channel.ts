@@ -123,6 +123,14 @@ export interface StackTransitionContextOptions {
    * longer does — the same parts a launch with the new stack composes. Omit ⇒ layer text only.
    */
   guide?: import('./doc-projection/addressed-project-guide').AddressedGuideTarget | null;
+  /**
+   * P-009 / D-022: the wearer's pack-doc resource keys on each side of the transition —
+   * `before` = the applied installation's, `after` = the one the desired revision leaves it
+   * holding. A pack upgrade moves these without moving a layer ref, so the channel does not
+   * early-return while they differ. Resolved lazily; a failure is surfaced in the delivered
+   * text like a guide read failure. Needs `guide` (its target) to deliver anything.
+   */
+  packageResources?: () => Promise<{ before: readonly string[]; after: readonly string[] }>;
   /** Optional desired revision to stamp on a prepared mutation payload. */
   activation?: {
     specificationRevision: string;
@@ -158,8 +166,20 @@ export async function renderStackTransitionContextResult(
   // carry no `state` at all — that is "nothing bound", never a throw past the CTRL line.
   const after = Array.isArray(delivery?.state?.stack) ? delivery!.state!.stack!.map(String) : [];
   const before = Array.isArray(delivery?.stackBefore) ? delivery!.stackBefore!.map(String) : undefined;
-  if (before == null && after.length === 0) return { text: '', rendered: true, requiresFreshContext: false };
-  if (before != null && sameRefs(before, after)) return { text: '', rendered: true, requiresFreshContext: false };
+  let packages: { before: string[]; after: string[] } | null = null;
+  let packageError: string | null = null;
+  if (opts.packageResources && opts.guide) {
+    try {
+      const resolved = await opts.packageResources();
+      packages = { before: [...resolved.before], after: [...resolved.after] };
+    } catch (e) {
+      packageError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  const packagesMoved = packageError !== null || (packages !== null &&
+    (before == null ? packages.after.length > 0 : !sameRefs(packages.before, packages.after)));
+  if (before == null && after.length === 0 && !packagesMoved) return { text: '', rendered: true, requiresFreshContext: false };
+  if (before != null && sameRefs(before, after) && !packagesMoved) return { text: '', rendered: true, requiresFreshContext: false };
   try {
     const bp = opts.blueprint ?? (await import('@papercusp/orchestrator/blueprint'));
     const harnessDir = opts.harnessDir ?? (await import('@papercusp/harness/paths')).harnessRoot();
@@ -223,12 +243,13 @@ export async function renderStackTransitionContextResult(
       // delivered text, never swallowed: a silently-missed attach is the bug this closes.
       const { composeAddressedGuideTransition, suGuideWearer } = await import('./doc-projection/addressed-project-guide');
       try {
+        if (packageError !== null) throw new Error(`package doc keys unavailable: ${packageError}`);
         const guide = await composeAddressedGuideTransition({
           ...opts.guide,
           // A full-resync (no stackBefore) re-delivers the COMPLETE addressed set, replacing
           // what came before — the anchor's replace-full rule, same as the layer half above.
-          before: before == null ? null : suGuideWearer(bp, from.layers),
-          after: suGuideWearer(bp, to.layers),
+          before: before == null ? null : { ...suGuideWearer(bp, from.layers), packageResources: packages?.before ?? [] },
+          after: { ...suGuideWearer(bp, to.layers), packageResources: packages?.after ?? [] },
         });
         if (guide.text) parts.push(guide.text.replace(/\n+$/, ''));
       } catch (e) {

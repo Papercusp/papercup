@@ -26,6 +26,9 @@ import type { CompletionClaimBaseline } from '../completion-claim-recheck';
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
 // A leaf module with no imports of its own, so this edge cannot form a cycle.
 import type { PersistedSelfReviewJudgement } from '../work-item-self-review';
+// Pure and import-free, so the residue-ref helper below parses ids with the SAME detector
+// the hydration path uses, and this module still adds no runtime import chain.
+import { detectBodyRefs } from '../agent-tools/coordination/ref-hydrate';
 
 /** The lifecycle categories this layer renders (the D-003 automation table). */
 export const LIFECYCLE_CATEGORIES = [
@@ -152,6 +155,89 @@ export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage |
   }
 
   return population.every((entry) => statusCounts.get(entry) === 1) && statusEntries.length === population.length;
+}
+
+/** Bounds the store reads a close's residue check can cost (a real close cites ~1-3). */
+export const RESIDUE_REFS_MAX = 12;
+
+/**
+ * D-041 (goal-agent-behavior-feedback-2026-09-06, R-18): the work-item refs a close cites
+ * as its follow-ups. Filing is not disposing. Measured 6/6 in S35: the su model filed the
+ * out-of-scope defect with no `assign_to`, cited the new id only in `summary` or `deferred`,
+ * and closed with `coverage.residue: []`. A guard that reads only `residue` sees nothing, so
+ * `followUps` gathers every field that NAMES a follow-up (residue, deferred,
+ * requirementDisposition[].followUp). `summaryRefs` stays separate because a summary also
+ * cites history the closer never filed. `known` ids (the item being closed) are skipped.
+ */
+export interface ResidueCitations {
+  followUps: string[];
+  summaryRefs: string[];
+}
+
+export function residueCitations(
+  input: {
+    residue?: readonly string[] | null;
+    deferred?: readonly string[] | null;
+    requirementDisposition?: readonly { followUp?: string | null }[] | null;
+    summary?: string | null;
+  },
+  known: readonly string[] = [],
+): ResidueCitations {
+  const skip = new Set(known.map((k) => k.trim().toUpperCase()));
+  const idsIn = (text: string) =>
+    detectBodyRefs(text, RESIDUE_REFS_MAX).flatMap((r) => (r.kind === 'work-item' && !skip.has(r.id) ? [r.id] : []));
+  const followUps = [
+    ...new Set(
+      [
+        ...(input.residue ?? []),
+        ...(input.deferred ?? []),
+        ...(input.requirementDisposition ?? []).map((d) => d.followUp ?? ''),
+      ].flatMap(idsIn),
+    ),
+  ].slice(0, RESIDUE_REFS_MAX);
+  const named = new Set(followUps);
+  const summaryRefs = idsIn(input.summary ?? '')
+    .filter((id) => !named.has(id))
+    .slice(0, Math.max(0, RESIDUE_REFS_MAX - followUps.length));
+  return { followUps, summaryRefs };
+}
+
+/** A cited ref's ownership, as the caller read it from the store. */
+export interface ResidueRefOwnership {
+  id: string;
+  /** The item is in a settled state, so nothing is left to own. */
+  settled: boolean;
+  assignee: string | null;
+  createdBy: string | null;
+  /** Epoch ms; undefined when unknown. */
+  createdAtMs?: number;
+}
+
+/**
+ * The cited follow-ups that are still OPEN with NO assignee, in citation order. Every
+ * `followUps` ref counts. A summary-only ref counts only when this closer filed it at or
+ * after `sinceMs` (when it took the closed item), since only then is it this work's residue.
+ * A ref absent from `ownership` is not judged: the store could not answer, or the id does
+ * not resolve, which the unresolved-ref advisory reports on its own.
+ */
+export function unownedResidueRefs(
+  cited: ResidueCitations,
+  ownership: readonly ResidueRefOwnership[],
+  closer: { ownerId: string; sinceMs?: number },
+): string[] {
+  const byId = new Map(ownership.map((o) => [o.id.trim().toUpperCase(), o]));
+  const unowned = (id: string) => {
+    const o = byId.get(id);
+    return Boolean(o && !o.settled && !o.assignee?.trim());
+  };
+  const filedByCloser = (id: string) => {
+    const o = byId.get(id);
+    return Boolean(
+      o && o.createdBy === closer.ownerId && closer.sinceMs !== undefined &&
+        o.createdAtMs !== undefined && o.createdAtMs >= closer.sinceMs,
+    );
+  };
+  return [...cited.followUps.filter(unowned), ...cited.summaryRefs.filter((id) => unowned(id) && filedByCloser(id))];
 }
 
 /**

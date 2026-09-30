@@ -402,8 +402,21 @@ describe('call observer', () => {
       provider: 'typesafe',
       requestedModel: JEV_PINNED_MODEL,
       consumer: 'memory-injection',
+      subjectIds: [],
       outcome: { kind: 'answered', model: 'jev-1.13.0' },
     });
+  });
+
+  it('hands subject ids to the observer and never sends them to the provider', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn, calls } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    await client(fn, { onCall: (r) => void records.push(r) }).c.decide(choiceRequest, {
+      consumer: 'memory-injection',
+      subjectIds: ['mem-a1', 'mem-b2'],
+    });
+    expect(records[0]?.subjectIds).toEqual(['mem-a1', 'mem-b2']);
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls[0])).not.toContain('mem-a1');
   });
 
   it('observes inconclusive calls too (a keyless call is still an auditable event)', async () => {

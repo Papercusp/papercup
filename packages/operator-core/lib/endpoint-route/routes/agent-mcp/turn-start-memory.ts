@@ -241,22 +241,50 @@ const turnStartMemory = defineTool({
             const { renderStackTransitionContextResult } = await import('../../../stack-binding-channel');
             // portable-identity P-003: the addressed Project-guide parts a stack change
             // reaches ride the SAME transition. Target = the gate-selected launch record's
-            // profile/harness/agent — what the launch composed with. Unresolvable ⇒ layer text only.
-            const guide = await (async () => {
+            // profile/harness/agent — what the launch composed with. Unresolvable ⇒ layer text
+            // plus the wearer's package docs only (the harness-less target below).
+            const { getOrgPg } = await import('@papercusp/db-org');
+            const launchSpec = await (async () => {
               try {
-                const [{ readGateSelectedLaunchSpec }, { guideTargetFromLaunchSpec }, { getOrgPg }] = await Promise.all([
-                  import('../../../agent-tools/coordination/control-anchor'),
-                  import('../../../doc-projection/addressed-project-guide'),
-                  import('@papercusp/db-org'),
-                ]);
-                const spec = await readGateSelectedLaunchSpec(getOrgPg().sql, owner, workspaceId);
-                return guideTargetFromLaunchSpec(spec, { workspaceId, client: typeof body.client === 'string' ? body.client : null });
+                const { readGateSelectedLaunchSpec } = await import('../../../agent-tools/coordination/control-anchor');
+                return { value: await readGateSelectedLaunchSpec(getOrgPg().sql, owner, workspaceId) };
               } catch {
                 return null;
               }
             })();
+            const client = typeof body.client === 'string' ? body.client : null;
+            const guide = await (async () => {
+              if (!launchSpec) return null;
+              try {
+                const { guideTargetFromLaunchSpec } = await import('../../../doc-projection/addressed-project-guide');
+                return guideTargetFromLaunchSpec(launchSpec.value, { workspaceId, client });
+              } catch {
+                return null;
+              }
+            })();
+            // P-009 / D-022: pack docs ride this transition — before = the owner's APPLIED
+            // installation, after = what the desired revision leaves it holding (the same
+            // decision the activation apply makes). Package tokens match in any harness, so a
+            // profile with no guide still reads them against the workspace (harness '' matches
+            // no blueprint/slot/role part).
+            const packageResources = async () => {
+              const [{ resolveWearerPackageDocKeys }, { sessionPackageDocKeysForRevision }, { appliedIdentityArtifact }] =
+                await Promise.all([
+                  import('../../../blueprint/package-memory-visibility'),
+                  import('../../../blueprint/session-package-resources'),
+                  import('../../../capability-envelope/identity-grants-port'),
+                ]);
+              const sql = getOrgPg().sql;
+              const before = await resolveWearerPackageDocKeys(sql, { workspaceId, ownerId: owner });
+              if (!activationRevision) return { before, after: before };
+              if (!launchSpec) throw new Error('launch record unreadable');
+              const after = await sessionPackageDocKeysForRevision(sql, { ownerId: owner, workspaceId,
+                revision: activationRevision, artifact: appliedIdentityArtifact(launchSpec.value, activationRevision) });
+              return { before, after };
+            };
             const rendered = await renderStackTransitionContextResult(transition, {
-              ...(guide ? { guide } : {}),
+              guide: guide ?? { workspaceId, harnessSlug: '', client: client ?? 'all' },
+              packageResources,
               ...(activationRevision
                 ? {
                     repoDir: typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : undefined,

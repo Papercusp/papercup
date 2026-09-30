@@ -443,7 +443,8 @@ export type InsufficientEvidenceReason =
   | 'requirement-disposition-unfaithful'
   | 'completion-claim-falsified'
   | 'files-changed-never-existed'
-  | 'files-changed-untouched';
+  | 'files-changed-untouched'
+  | 'residue-unowned';
 
 /**
  * Impurely-derived findings about a completion, computed by the CALLER and handed in.
@@ -563,6 +564,19 @@ export interface CompletionEvidenceFindings {
     implementedWithoutResolvingCitation: readonly string[];
     deferredWithoutFollowUp: readonly string[];
   };
+
+  /**
+   * Follow-up refs this close cites that are still OPEN with NO assignee.
+   *
+   * D-041 (R-18): filing is not disposing. `work_items:create` without `assign_to` leaves
+   * an item unclaimed, so a close that files its residue that way and cites the id in
+   * `deferred`, `coverage.residue`, `requirementDisposition[].followUp` or its summary has
+   * handed the work to nobody (measured 6/6 in S35). Resolution is
+   * `unownedResidueRefs` (coord-lifecycle/records.ts): a summary-only ref counts only when
+   * this closer filed it during the work, and an unreadable store or an unresolved id is
+   * silence. Like `deferred` above, this only ever DEMOTES.
+   */
+  residueUnowned?: readonly string[];
 }
 
 /**
@@ -656,6 +670,9 @@ export function insufficientEvidenceReason(
   // dirty tree, a commit in the window, a submodule path, unknown history, an unreadable
   // tree, or any throw leaves the field undefined and falls through to today's grade.
   if (findings?.filesChangedUntouched?.length) return 'files-changed-untouched';
+  // D-041 (R-18). LAST: every check above judges the work or the record of it, while this one
+  // judges what the close leaves behind, and its repair (assign the follow-up) is the cheapest.
+  if (findings?.residueUnowned?.length) return 'residue-unowned';
   return undefined;
 }
 

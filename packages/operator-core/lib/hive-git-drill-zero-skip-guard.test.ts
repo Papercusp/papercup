@@ -20,6 +20,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1511,6 +1512,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       'physical-drill-producer.ts',
     );
     const producerSha = createHash('sha256').update(readFileSync(producer)).digest('hex');
+    // The scenario refuses to run without a probe-staged tower snapshot (WI-10004062) and
+    // resolves its tower producer from it. A symlink keeps that producer's bytes (the sha the
+    // fake VM echoes) and its import resolution identical to the checked-in file.
+    const towerSource = join(runDir, 'hive-git-physical-tower-source.test');
+    const stagedProducerDir = join(towerSource, 'packages', 'operator-core', 'lib', 'sync', 'pot-git');
+    mkdirSync(stagedProducerDir, { recursive: true });
+    symlinkSync(producer, join(stagedProducerDir, 'physical-drill-producer.ts'));
     const sha = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
     const driverDigests = `${sha(join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'vmcall.sh'))} ${sha(
       join(repoRoot(), 'scripts', 'mcp-call.mjs'),
@@ -1556,6 +1564,7 @@ esac
           HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
           HIVE_GIT_PHYSICAL_EXECUTE: 'p2p-git-live-activation-2026-07-09',
           HIVE_GIT_PHYSICAL_VM_SOURCE: '/tmp/hive-git-physical-source.123',
+          HIVE_GIT_PHYSICAL_TOWER_SOURCE: towerSource,
         },
       },
     );
@@ -2588,5 +2597,34 @@ describe('physical scenario tower ptool calls use only flags ptool accepts', () 
     const mutant = physicalScenario.replace('dev:dogfood_substrate_status --json -', 'dev:dogfood_substrate_status --json - --client x');
     expect(mutant).not.toBe(physicalScenario);
     expect(towerCallFlags(mutant).flat().filter((flag) => !accepted.has(flag))).toEqual(['--client']);
+  });
+});
+
+// WI-10003961 rig attempt 2: ptool exits 0 on an ok:false result, so the tower's refusal of
+// write B went unnoticed and Phase J waited out its whole bound for a write that never existed.
+describe('physical Phase J fails fast when the tower refuses a write', () => {
+  function createLoop(script: string): string {
+    const start = script.indexOf('for w in A B; do');
+    return start < 0 ? '' : script.slice(start, script.indexOf('\n  done\n', start));
+  }
+  const okCheck = /\.ok === true && Array\.isArray\(o\.results\) && o\.results\.length > 0 && o\.results\.every\(\(r\) => r\.ok === true\)/;
+
+  it('locates the Phase J tower-create loop (calibration)', () => {
+    expect(createLoop(physicalScenario)).toContain('work_items:create');
+  });
+  it('checks every create result is ok before continuing', () => {
+    const loop = createLoop(physicalScenario);
+    expect(loop).toMatch(okCheck);
+    expect(loop).toContain('fail "phase J tower refused write $w;');
+  });
+  it('requires a tower row for BOTH writes after authoring', () => {
+    expect(physicalScenario).toContain("fail 'phase J tower has no row for write A'");
+    expect(physicalScenario).toContain("fail 'phase J tower has no row for write B'");
+  });
+  it('a loop without the ok check fails the guard (falsifiability control)', () => {
+    const loop = createLoop(physicalScenario);
+    const mutant = physicalScenario.replace(loop, loop.replace(okCheck, 'true'));
+    expect(mutant).not.toBe(physicalScenario);
+    expect(createLoop(mutant)).not.toMatch(okCheck);
   });
 });

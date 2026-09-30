@@ -2996,12 +2996,23 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // a background highlight: the transcript already spends colour on role,
         // tone and tool state, and the marker has to stay legible on a
         // monochrome or high-contrast terminal in the release matrix.
-        let header = if Some(block_idx) == copy_focus {
+        let focused = Some(block_idx) == copy_focus;
+        let header = if focused {
             format!("▸ {header}")
         } else {
             format!("  {header}")
         };
-        lines.push(Line::from(Span::styled(header, who_style)));
+        // P-013: an assistant block that directly follows another one is the
+        // same reply continuing after a tool call (the reducer opens a new
+        // block there to keep call order). Repeating "agent" above each such
+        // block reads as a new speaker, so the header is omitted — except on
+        // the copy target, whose marker must stay on the block `y` copies.
+        let follows_same_speaker = m.role == "assistant"
+            && block_idx > 0
+            && app.chat_messages[block_idx - 1].role == "assistant";
+        if !follows_same_speaker || focused {
+            lines.push(Line::from(Span::styled(header, who_style)));
+        }
         if let Some(provenance) = m.provenance.as_ref().filter(|_| details) {
             lines.push(Line::from(Span::styled(
                 format!(
@@ -9289,6 +9300,54 @@ mod tests {
         // The draft stays visible/editable — matches the app.rs Enter-key
         // contract that a refused turn is never silently discarded.
         assert!(text.contains("> hello"), "{text}");
+    }
+
+    /// pui-chat-first-ux-2026-09-28 P-013: the tool rows render above the
+    /// answer they produced, and the answer does not repeat the speaker header
+    /// unless it is the copy target (whose `▸` marker lives on that header).
+    #[test]
+    fn chat_view_renders_tool_rows_above_the_answer_they_produced() {
+        use crate::models::{ChatMessage, ChatToolCall};
+
+        let mut calls = ChatMessage::assistant("");
+        calls.tools.push(ChatToolCall {
+            name: "Read".into(),
+            id: Some("call-1".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({ "file_path": "calc.js" })),
+            result: None,
+            outcome: ToolOutcome::Ok,
+        });
+        let answer = ChatMessage::assistant("P013 calc.js adds two numbers");
+
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.set_chat_history(
+            "c1".into(),
+            vec![ChatMessage::user("explain calc.js"), calls, answer],
+            false,
+            None,
+        );
+        // `render` concatenates the rows without separators, so positions are
+        // byte offsets into the frame and a header is its bordered-row prefix.
+        let rows = |text: &str| -> (usize, usize, usize) {
+            let tool = text.find("⚙ Read(calc.js)");
+            let reply = text.find("P013 calc.js adds");
+            let headers = text.matches("│  agent ").count() + text.matches("│▸ agent ").count();
+            (tool.expect(text), reply.expect(text), headers)
+        };
+
+        let text = render(&app, 100, 30);
+        let (tool, reply, headers) = rows(&text);
+        assert!(tool < reply, "tool row must render above its answer:\n{text}");
+        // Newest block is the default copy target, so it keeps its marked header.
+        assert_eq!(headers, 2, "{text}");
+
+        app.chat_focus = Some(0);
+        let text = render(&app, 100, 30);
+        let (tool, reply, headers) = rows(&text);
+        assert!(tool < reply, "{text}");
+        assert_eq!(headers, 1, "an unfocused follow-on block repeats no header:\n{text}");
     }
 
     #[test]

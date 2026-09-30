@@ -236,7 +236,14 @@ import {
   type ScopedContentError,
   type StrandedSubmodule,
 } from './run-git-sync';
-import { mapLiveLockHoldingsForRepo, nestedInstallRepoPrefix } from './live-lock-coordinates';
+import {
+  createLockDomainIdentity,
+  mapLiveLockHoldingsForRepo,
+  nestedInstallRepoPrefix,
+  translateLiveLockHoldingsToRoot,
+  type DomainLockHolding,
+  type LockHoldingCoordinates,
+} from './live-lock-coordinates';
 import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
@@ -2731,6 +2738,29 @@ async function nestedInstallLockPrefix(
   return nestedInstallRepoPrefix(slug, repoPath, parentRoot);
 }
 
+/** EI-24649116564770033: bound for each `rev-list`/`rev-parse` identity probe of a lock domain. */
+const LOCK_DOMAIN_IDENTITY_TIMEOUT_MS = 10_000;
+
+/**
+ * EI-24649116564770033: the canonical root that lock paths are translated into — the
+ * top-level repository (the parent, for a nested install). Lock domains are realpaths,
+ * so the anchor is too. Null when there is no repo path: rows are then used unchanged.
+ */
+async function lockCoordinateAnchor(
+  repoPath: string | null | undefined,
+  nestedPrefix: string,
+): Promise<string | null> {
+  if (!repoPath) return null;
+  const anchor = nestedPrefix
+    ? resolve(repoPath, ...nestedPrefix.split('/').filter(Boolean).map(() => '..'))
+    : resolve(repoPath);
+  try {
+    return await realpath(anchor);
+  } catch {
+    return anchor;
+  }
+}
+
 /** P-009 (EI-24015486799447670): recipients for a content-quarantine notice. Attribution
  *  (above) plus the liveness oracle, so an alarm is never addressed only to an ended
  *  session. The selection rule lives in `selectContentNoticeRecipients` (unit-tested).
@@ -3388,7 +3418,36 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // P-009 / WI-10002596: a NESTED install receives lock paths in its parent's root
     // coordinates; map them into this repo's own root so exclusion is not a silent no-op.
     const lockRepoPrefix = await nestedInstallLockPrefix(slug, workspaceId, repoPath);
-    if (lockRepoPrefix) liveLockHoldingRows = mapLiveLockHoldingsForRepo(liveLockHoldingRows, lockRepoPrefix);
+    // EI-24649116564770033: each lock path is relative to ITS OWN coordination domain, and the
+    // read above spans every domain. Translate into the top-level root's coordinates first, so
+    // an unrelated repo's `package.json` lock cannot withhold ours and a submodule-root lock
+    // protects the submodule file. One identity resolver per tick: nothing outlives it.
+    const lockAnchorRoot = await lockCoordinateAnchor(repoPath, lockRepoPrefix);
+    const lockDomainIdentity = createLockDomainIdentity((args, cwd) =>
+      runGitBounded(args, cwd, LOCK_DOMAIN_IDENTITY_TIMEOUT_MS, { signal: liveness.signal }),
+    );
+    const toRepoLockCoordinates = async (
+      rows: readonly DomainLockHolding[],
+      report: boolean,
+    ): Promise<LockHoldingCoordinates[]> => {
+      let translated: LockHoldingCoordinates[] = [...rows];
+      if (lockAnchorRoot) {
+        const result = await translateLiveLockHoldingsToRoot(rows, lockAnchorRoot, lockDomainIdentity);
+        translated = result.holdings;
+        if (report && result.dropped.length > 0) {
+          console.warn(
+            `[git-sync] ${slug}: ignoring ${result.dropped.length} live lock(s) on another repository's files: ` +
+              result.dropped
+                .map((d) => `${d.path} (${d.reason} @ ${d.coordinationDomain}; ${d.owner}: ${d.intent})`)
+                .join('; '),
+          );
+        }
+      }
+      return lockRepoPrefix ? mapLiveLockHoldingsForRepo(translated, lockRepoPrefix) : translated;
+    };
+    liveLockHoldingRows = await guarded('translate-live-file-locks', () =>
+      toRepoLockCoordinates(liveLockHoldingRows, true),
+    );
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
@@ -3455,7 +3514,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         // the longer submodule/guard window where a peer can acquire a lock.
         refreshLiveLockHoldings: () =>
           guarded('refresh-live-file-locks', () => acquireWithContentionRetry(() => liveLockHoldingsStrict())).then(
-            (rows) => (lockRepoPrefix ? mapLiveLockHoldingsForRepo(rows, lockRepoPrefix) : rows),
+            (rows) => toRepoLockCoordinates(rows, false),
           ),
         loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
         // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as

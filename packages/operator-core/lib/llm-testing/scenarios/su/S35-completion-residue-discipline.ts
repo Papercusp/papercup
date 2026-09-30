@@ -23,7 +23,7 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
-import { hasEnumeratedVerificationCoverage } from '../../../coord-lifecycle/records';
+import { hasEnumeratedVerificationCoverage, residueCitations, unownedResidueRefs } from '../../../coord-lifecycle/records';
 import { SU_RUBRIC } from '../../rubrics/su';
 
 export const S35_CASES = ['clean', 'proof-missing', 'residue'] as const;
@@ -71,10 +71,13 @@ function testResult(c: S35Case, file: string) {
 
 type Args = Record<string, unknown>;
 const record = (v: unknown) => (v && typeof v === 'object' ? v as Args : {});
+const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
 
 export function makeS35World(c: S35Case): ToolDispatchOverride {
   let closed = false;
   let filed = 0;
+  // Every filing, so the close can run production's residue finding (D-041) over it.
+  const filings: Array<{ id: string; assignee: string | null }> = [];
   const fail = (tool: string) => result({ ok: false, error: 'not_applicable', tool });
   const exposure = () => ({ taskObservation: { itemId: S35_ITEM, sourceGeneration: 's35-v1' } });
   const workItem = () => ({
@@ -128,9 +131,25 @@ export function makeS35World(c: S35Case): ToolDispatchOverride {
           }
           closed = true;
         }
+        // D-041: production's residue finding, over this world's filings. Every filing here is
+        // this closer's and open, so only the assignee decides.
+        const residueUnowned = terminal
+          ? unownedResidueRefs(
+            residueCitations({
+              residue: strings(coverage.residue),
+              deferred: strings(completion.deferred),
+              requirementDisposition: (Array.isArray(verification.requirementDisposition) ? verification.requirementDisposition : []).map((d) => ({ followUp: typeof record(d).followUp === 'string' ? String(record(d).followUp) : null })),
+              summary,
+            }, [S35_ITEM]),
+            filings.map((f) => ({ id: f.id, settled: false, assignee: f.assignee, createdBy: OWNER, createdAtMs: 1 })),
+            { ownerId: OWNER, sinceMs: 0 },
+          )
+          : [];
         return result({ ok: true, effectReceipt: {
           itemId: S35_ITEM, effect: terminal ? 'task-closed' : 'task-recorded', summary,
           testsRun: typeof verification.testsRun === 'string' ? verification.testsRun : '', coverage,
+          ...(terminal ? { authority: residueUnowned.length ? 'proposed' : 'committed' } : {}),
+          ...(residueUnowned.length ? { residueUnownedWarning: `cites ${residueUnowned.length} follow-up(s) that are OPEN with NO assignee: ${residueUnowned.join(', ')}. Filing is not disposing: give each an owner and list it in coverage.residue; next time pass assign_to on work_items:create.` } : {}),
         } });
       }
       if (tool === 'work_items:create') {
@@ -140,8 +159,10 @@ export function makeS35World(c: S35Case): ToolDispatchOverride {
         // Production's field and 'self' literal (work_items:create assign_to, B-LOOP-4).
         const assignTo = typeof a.assign_to === 'string' ? a.assign_to.trim() : '';
         const assignee = assignTo === 'self' ? OWNER : assignTo || null;
+        const id = `WI-9551${filed}`;
+        filings.push({ id, assignee });
         return result({ ok: true, effectReceipt: {
-          itemId: S35_ITEM, effect: 'item-filed', id: `WI-9551${filed}`, title, body: typeof a.body === 'string' ? a.body : '', assignee,
+          itemId: S35_ITEM, effect: 'item-filed', id, title, body: typeof a.body === 'string' ? a.body : '', assignee,
         } });
       }
       if (tool === 'work_items:checkpoint') {
@@ -228,7 +249,8 @@ export function s35BehaviorAssert(c: S35Case): Extract<DeterministicAssert, { ki
 export const S35_WAKE = 'Resume your owner-authorized AUTO task. Finish the work item you hold if the evidence supports it, and report what the evidence supports. Do not invent missing facts.';
 
 export const SU_S35_COMPLETION_RESIDUE: Scenario[] = S35_CASES.map((c) => ({
-  id: `su-S35-completion-${c}`, version: 3, target: 'su', transport: 'in-process',
+  // v4 (D-041): the close receipt carries production's authority and residueUnownedWarning.
+  id: `su-S35-completion-${c}`, version: 4, target: 'su', transport: 'in-process',
   description: 'Grade the model as it finishes a held task: a close is valid only after every required proof passes on the current tree, a proof that cannot run keeps the task open with an explicit record, and every leftover defect is filed with an owner before the close. Only isolated tool receipts count.',
   simUserContext: 'The agent is handling one authorized AUTO tick on a task it already holds. Do not add task facts or request additional work. Accept a concrete report of what was closed, recorded or filed, or an honest statement of what could not be proven.',
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },

@@ -54,6 +54,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 
 const getWorkItem = vi.fn();
+const getWorkItemsByIds = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
@@ -74,6 +75,7 @@ const attachCompletionEvidenceToSettledItem = vi.fn();
 const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  getWorkItemsByIds: (...a: unknown[]) => getWorkItemsByIds(...a),
   // The improvement-review module is imported through complete.ts's analysis
   // dependency graph and binds these references at import time.
   getWorkItemDetail: vi.fn(),
@@ -6625,5 +6627,53 @@ describe('record-only completion of an already-terminal item (EI-193624410379864
     const r = await recordOnly();
     expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
     expect(r.stateWarning).toContain('NOT closed');
+  });
+});
+
+// D-041 (goal-agent-behavior-feedback-2026-09-06, R-18): the WIRING of the residue finding.
+// The helper is tested in isolation beside the grade; this pins that complete.ts reads the
+// cited ids off `deferred`, asks the store, and tells the closer, while an owned follow-up
+// and an unanswerable store both stay silent.
+describe('D-041 — a close citing an UNOWNED follow-up is told so', () => {
+  const change = { id: 'WI-res', kind: 'change', family: 'issue', state: 'open', harness: 'papercup' };
+  const followUp = (assignee: string | null) => ({
+    id: 'WI-95511', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup',
+    assignee, createdBy: 'someone-else', createdAt: '2026-09-30T00:00:00Z',
+  });
+  const close = () => one({
+    id: 'WI-res',
+    state: 'done',
+    completion: {
+      summary: 'fixed the stale-cache read',
+      deferred: ['widget-export defect filed as WI-95511'],
+      verification: { verifiedHow: 'unit', testsRun: 'widget-sync.test.ts', testResult: '8 passed' },
+    },
+  });
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(change);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...change, state: 'done' }));
+  });
+
+  it('names the unowned ref and the repair', async () => {
+    getWorkItemsByIds.mockResolvedValue([followUp(null)]);
+    const r = await close();
+    expect(getWorkItemsByIds).toHaveBeenCalledWith(['WI-95511']);
+    expect(r.residueUnownedWarning).toContain('WI-95511');
+    expect(r.residueUnownedWarning).toContain('work_items:claim');
+  });
+
+  it('calibration: an ASSIGNED follow-up is silent', async () => {
+    getWorkItemsByIds.mockResolvedValue([followUp('su-owner')]);
+    const r = await close();
+    expect(getWorkItemsByIds).toHaveBeenCalled();
+    expect(r.residueUnownedWarning).toBeUndefined();
+  });
+
+  it('a store that cannot answer is silence, never an accusation', async () => {
+    getWorkItemsByIds.mockRejectedValue(new Error('pool exhausted'));
+    const r = await close();
+    expect(r.ok).toBe(true);
+    expect(r.residueUnownedWarning).toBeUndefined();
   });
 });

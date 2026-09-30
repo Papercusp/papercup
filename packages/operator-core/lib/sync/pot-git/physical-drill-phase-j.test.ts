@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { admissionIdentity } from '../../harness/improvements/digest';
 import {
   PHASE_J_MAX_OUTAGE_MS,
+  PHASE_J_WRITES,
   phaseJContentSha256,
   phaseJLag,
   phaseJWriteTitle,
@@ -32,6 +34,20 @@ function rejects(mutate: (input: PhysicalPhaseJInput) => void, message: RegExp):
   expect(verdict.ok).toBe(false);
   expect(verdict.errors.join('\n')).toMatch(message);
 }
+
+// WI-10003961 rig attempt 2: admissionIdentity() drops single-letter tokens, so titles
+// differing only in "A"/"B" shared one titleKey and the tower's unique index refused write B.
+describe('physical Phase J write titles are admission-distinct', () => {
+  it('gives every write its own admission titleKey', () => {
+    const keys = PHASE_J_WRITES.map((w) => admissionIdentity(phaseJWriteTitle(RUN, w)).titleKey);
+    expect(keys.every((k) => k.length > 0)).toBe(true);
+    expect(new Set(keys).size).toBe(PHASE_J_WRITES.length);
+  });
+  it('the letter-only form collides (calibration: the guard can fail)', () => {
+    const letter = (w: string) => admissionIdentity(`P-521 F4 apply outage write ${w} ${RUN}`).titleKey;
+    expect(letter('A')).toBe(letter('B'));
+  });
+});
 
 describe('physical Phase J (P-521 F4) verifier', () => {
   it('accepts a complete outage, hold, restart and exact replay', () => {

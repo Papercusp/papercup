@@ -200,4 +200,10 @@ export interface DecisionCallRecord {
   readonly startedAt: Date;
   /** The consumer label passed to `decide`, e.g. `memory-injection`. */
   readonly consumer: string | null;
+  /**
+   * Ids of what the state was built from (memory ids, doc ids, …), passed to
+   * `decide`. They let an audit resolve the judged content by id without the
+   * ledger keeping a raw copy of it. Empty when the caller passed none.
+   */
+  readonly subjectIds: readonly string[];
 }

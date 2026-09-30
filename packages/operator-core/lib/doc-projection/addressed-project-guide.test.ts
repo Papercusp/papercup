@@ -60,16 +60,22 @@ function part(over: Partial<Part> = {}): Part {
 }
 
 const CLIENT = { client: 'claude', file: 'CLAUDE.md', reader: 'Claude Code', docId: 'synthetic', budget: 50_000 };
+/** Two well-formed package resource keys (P-009 / D-022). */
+const PKG_A = 'a'.repeat(64);
+const PKG_B = 'b'.repeat(64);
 
 describe('guide-address — the ONE addressing grammar', () => {
-  it('parses the three kinds and refuses everything else', () => {
+  it('parses the four kinds and refuses everything else', () => {
     expect(parseGuideAddress('blueprint:su.fleet-leader')).toEqual({ kind: 'blueprint', value: 'su.fleet-leader' });
     expect(parseGuideAddress('slot:autonomy')).toEqual({ kind: 'slot', value: 'autonomy' });
     expect(parseGuideAddress('role:su')).toEqual({ kind: 'role', value: 'su' });
-    for (const bad of ['', 'su.fleet-leader', 'client:claude', 'slot:', 'blueprint:a b', 'slot:a:b', 'Blueprint:x']) {
+    expect(parseGuideAddress(`package:${PKG_A}`)).toEqual({ kind: 'package', value: PKG_A });
+    for (const bad of ['', 'su.fleet-leader', 'client:claude', 'slot:', 'blueprint:a b', 'slot:a:b', 'Blueprint:x',
+      // P-009 / D-022: a package value is exactly one 64-hex resource key.
+      'package:abc', `package:${PKG_A.toUpperCase()}`, `package:${PKG_A}0`]) {
       expect(parseGuideAddress(bad), bad).toBeNull();
     }
-    expect(GUIDE_ADDRESS_KINDS).toEqual(['blueprint', 'slot', 'role']);
+    expect(GUIDE_ADDRESS_KINDS).toEqual(['blueprint', 'slot', 'role', 'package']);
   });
 
   it('guideAddressProblems: shape always; vocabulary only when supplied', () => {
@@ -104,6 +110,11 @@ describe('guide-address — the ONE addressing grammar', () => {
     expect(guideAddressesForWearer({ layers: [] })).toEqual([]);
   });
 
+  it('adds one package token per held resource key, dropping a malformed key rather than widening', () => {
+    expect(guideAddressesForWearer({ role: 'su', layers: [], packageResources: [PKG_B, PKG_A, ` ${PKG_A} `, 'not-a-key'] }))
+      .toEqual([`package:${PKG_A}`, `package:${PKG_B}`, 'role:su']);
+  });
+
   it('matches by intersection; an empty stack_scope reaches everyone', () => {
     expect(guideAddressMatches([], [])).toBe(true);
     expect(guideAddressMatches(['slot:autonomy'], ['role:su'])).toBe(false);
@@ -116,6 +127,8 @@ describe('guide-address — the ONE addressing grammar', () => {
     expect(validateDocPart({ ...base, clientScope: ['all'], stackScope: ['slot:autonomy'] })).toBeNull();
     expect(validateDocPart({ ...base, clientScope: [], stackScope: ['slot:autonomy'] })).toMatch(/must also project/);
     expect(validateDocPart({ ...base, clientScope: ['all'], stackScope: ['leader'] })).toMatch(/not an address/);
+    expect(validateDocPart({ ...base, clientScope: ['all'], stackScope: [`package:${PKG_A}`] })).toBeNull();
+    expect(validateDocPart({ ...base, clientScope: ['all'], stackScope: ['package:short'] })).toMatch(/not an address/);
     expect(
       validateDocPart({ ...base, clientScope: ['all'], stackScope: ['slot:ghost'], stackVocabulary: { knownSlots: ['autonomy'] } }),
     ).toMatch(/no registered slot/);
@@ -279,7 +292,7 @@ describe('addressed-project-guide — the launch seam', () => {
     });
     const out = await compose({ text: '# Guide\n', source: '/repo/CLAUDE.md' });
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual(['ws', 'papercusp', 'claude-md', ['blueprint:su.fleet-leader', 'role:su', 'slot:fleet-posture'], ['codex', 'all']]);
+    expect(calls[0]).toEqual(['ws', 'papercusp', 'claude-md', ['blueprint:su.fleet-leader', 'role:su', 'slot:fleet-posture'], ['codex', 'all'], []]);
     expect(out.addressed?.partKeys).toEqual(['lead-1']);
     expect(out.text).toContain('Leaders bench lanes.');
   });
@@ -297,13 +310,14 @@ describe('addressed-project-guide — one wearer path for launch and mid-session
   const memberRule: AddressedGuidePart = { part_key: 'member', body: 'MEMBER RULE.', ordinal: 2, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-member'] };
   const postureRule: AddressedGuidePart = { part_key: 'posture', body: 'ANY POSTURE RULE.', ordinal: 3, target_section: 'Fleet', stack_scope: ['slot:fleet-posture'] };
   const autoRule: AddressedGuidePart = { part_key: 'auto', body: 'AUTO RULE.', ordinal: 4, target_section: 'Autonomy', stack_scope: ['blueprint:su.mode-auto'] };
-  const rows = [leaderRule, memberRule, postureRule, autoRule];
-  /** A stub `Sql` that answers the reader's query the way PG does: rows whose stack_scope meets the tokens. */
+  const packRule: AddressedGuidePart = { part_key: 'pack:procedures@1.0.0:first', body: 'PACK PROCEDURE.', ordinal: 100_000, target_section: 'Workflow', stack_scope: [`package:${PKG_A}`] };
+  const rows = [leaderRule, memberRule, postureRule, autoRule, packRule];
+  /** A stub `Sql` that answers the reader's query the way PG does: rows whose stack_scope meets the harness ($4) or package ($6) tokens. */
   function stubSql(calls: unknown[][] = []) {
     return {
       unsafe: async (_q: string, params: unknown[]) => {
         calls.push(params);
-        const tokens = params[3] as string[];
+        const tokens = [...(params[3] as string[]), ...(params[5] as string[])];
         return rows.filter((r) => r.stack_scope.some((t) => tokens.includes(t)));
       },
     } as never;
@@ -369,6 +383,26 @@ describe('addressed-project-guide — one wearer path for launch and mid-session
     expect(t.text).not.toContain('MEMBER RULE.');
     expect(t.text).not.toContain('ANY POSTURE RULE.');
     expect(t.truncated).toBe(false);
+  });
+
+  it('P-009: a package key applied mid-session attaches its doc part through the SAME path; its removal names it as detached', async () => {
+    const calls: unknown[][] = [];
+    const member = wearerFor('member');
+    const wearing = { ...member, packageResources: [PKG_A] };
+    const on = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(calls), before: member, after: wearing });
+    // Package tokens ride their own parameter, matched across guide harnesses.
+    expect(calls[0]![5]).toEqual([`package:${PKG_A}`]);
+    expect(calls[0]![3]).not.toContain(`package:${PKG_A}`);
+    expect(on.attachedPartKeys).toEqual(['pack:procedures@1.0.0:first']);
+    expect(on.detachedPartKeys).toEqual([]);
+    expect(on.text).toContain('PACK PROCEDURE.');
+    const off = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(), before: wearing, after: member });
+    expect(off.attachedPartKeys).toEqual([]);
+    expect(off.detachedPartKeys).toEqual(['pack:procedures@1.0.0:first']);
+    expect(off.text).not.toContain('PACK PROCEDURE.');
+    // A wearer holding a DIFFERENT key never reaches it.
+    const other = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(), before: null, after: { ...member, packageResources: [PKG_B] } });
+    expect(other.attachedPartKeys).not.toContain('pack:procedures@1.0.0:first');
   });
 
   it('no token change ⇒ no read and no text; a failed read THROWS (the caller surfaces it) and the budget seam still applies', async () => {

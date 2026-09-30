@@ -11,6 +11,7 @@ import {
   filterByShapes,
   memoryTextOf,
   parseLearningFile,
+  parsePackDocFile,
   OKF_VERSION,
   parseManifest,
   provenanceOf,
@@ -141,6 +142,32 @@ describe('parseLearningFile', () => {
   });
 });
 
+describe('parsePackDocFile (P-009 / D-022)', () => {
+  const file = (fm: string, body = 'Run the migration allocator before writing SQL.') =>
+    `---\n${fm}\n---\n\n${body}\n`;
+
+  it('parses with defaults (kind=recipe, id from filename) and keeps the body verbatim', () => {
+    const { doc, error } = parsePackDocFile(file('title: Allocate migrations\nsection: Storage'), 'allocate-migrations');
+    expect(error).toBeUndefined();
+    expect(doc).toEqual({ id: 'allocate-migrations', title: 'Allocate migrations', section: 'Storage',
+      kind: 'recipe', body: 'Run the migration allocator before writing SQL.' });
+  });
+
+  it('accepts an explicit id and a projecting kind', () => {
+    expect(parsePackDocFile(file('id: never-guess\ntitle: t\nsection: S\nkind: invariant'), 'fallback').doc)
+      .toMatchObject({ id: 'never-guess', kind: 'invariant' });
+  });
+
+  it('rejects a missing section/title, an empty body, and prose (it never projects)', () => {
+    expect(parsePackDocFile(file('title: t'), 'x').error).toMatch(/section missing/);
+    expect(parsePackDocFile(file('section: S'), 'x').error).toMatch(/title missing/);
+    expect(parsePackDocFile('---\ntitle: t\nsection: S\n---\n\n', 'x').error).toMatch(/empty/);
+    expect(parsePackDocFile(file('title: t\nsection: S\nkind: prose'), 'x').error).toMatch(/kind/);
+    expect(parsePackDocFile(file('id: Not Kebab\ntitle: t\nsection: S'), 'x').error).toMatch(/kebab/);
+    expect(parsePackDocFile('no frontmatter', 'x').error).toMatch(/frontmatter/);
+  });
+});
+
 describe('validatePack + filterByShapes + provenance', () => {
   const pack: KnowledgePack = {
     manifest: { id: 'p', title: 'P', description: 'd', version: '1.2.0' },
@@ -155,6 +182,12 @@ describe('validatePack + filterByShapes + provenance', () => {
     expect(validatePack(pack)).toEqual([]);
     expect(validatePack({ ...pack, items: [...pack.items, pack.items[0]] })[0]).toMatch(/duplicate/);
     expect(validatePack({ ...pack, items: [] })[0]).toMatch(/no learnings/);
+  });
+
+  it('a docs-only pack is valid; duplicate doc ids fail', () => {
+    const doc = { id: 'd', title: 'D', section: 'S', kind: 'recipe' as const, body: 'b' };
+    expect(validatePack({ ...pack, items: [], docs: [doc] })).toEqual([]);
+    expect(validatePack({ ...pack, docs: [doc, doc] })).toEqual(['duplicate doc id: d']);
   });
 
   it('repo-less (no shapes) seeds any-only; shapes add matching items', () => {
@@ -230,6 +263,22 @@ describe('load-packs (tmp fixture roots)', () => {
     expect(
       await listKnowledgePacks({ roots: [{ dir: join(root, 'missing'), source: 'builtin' }] }),
     ).toEqual([]);
+  });
+
+  it('loads docs/ items sorted by file, skips a bad one, and omits docs when a pack ships none', async () => {
+    const docRoot = join(root, 'with-docs');
+    writePack(docRoot, 'procedures', '1.0.0', {});
+    const docs = join(docRoot, 'procedures', 'docs');
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, 'b-second.md'), '---\ntitle: Second\nsection: Workflow\nkind: pointer\n---\n\nSee the runbook.\n');
+    writeFileSync(join(docs, 'a-first.md'), '---\ntitle: First\nsection: Workflow\n---\n\nDo this first.\n');
+    writeFileSync(join(docs, 'no-section.md'), '---\ntitle: Broken\n---\n\nMissing its section.\n');
+    const loaded = await loadKnowledgePack('procedures', { roots: [{ dir: docRoot, source: 'installed' }] });
+    expect(loaded?.pack.items).toEqual([]);
+    expect(loaded?.pack.docs?.map((d) => [d.id, d.kind])).toEqual([['a-first', 'recipe'], ['b-second', 'pointer']]);
+    expect(loaded?.warnings).toEqual(['procedures: docs/no-section: section missing']);
+    const docless = await loadKnowledgePack('rails-pack', roots);
+    expect(docless && 'docs' in docless.pack).toBe(false);
   });
 });
 

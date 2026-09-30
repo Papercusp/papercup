@@ -87,10 +87,15 @@ export const CHUNK_STORES: readonly ChunkStoreRegistration[] = [
     table: TEXT_CHUNKS_TABLE,
     embedCol: 'embedding',
     keyCols: ['surface', 'parent_key', 'chunk_idx'],
-    // The header (the parent's title line) is embedded with each chunk, as the
-    // P-001 bench measured it. A re-split copies vectors across by chunk_sha, so
+    // The header (the parent's title line) is embedded with each chunk as
+    // `header\ncontent`: ONE newline, exactly @papercusp/search's
+    // embeddedChunkText (which chunk_sha hashes) and the P-001 bench's
+    // embedding. nullif() makes an empty header embed content alone, as
+    // embeddedChunkText does. A re-split copies vectors across by chunk_sha, so
     // the sweep only pays for chunks whose text actually changed.
-    embeddedTextSql: `left(concat_ws(E'\\n\\n', header, content), 2000)`,
+    // shared-store.integration.test.ts evaluates this SQL against
+    // embeddedChunkText, so the two cannot drift again (R-38).
+    embeddedTextSql: `left(concat_ws(E'\\n', nullif(header, ''), content), 2000)`,
     retention:
       'derived cache — the chunk-sync prune pass (search/chunks/tick.ts -> @papercusp/search store.prune) deletes the chunks of deleted, ineligible or shrunk parents, per registered surface; a surface removed from the registry must have its rows deleted in the same change',
     searchSources: [],

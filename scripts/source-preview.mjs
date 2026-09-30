@@ -29,7 +29,7 @@
 //   node scripts/source-preview.mjs push  [--ref main] [--remote <url>] [--confirm]
 // npm: preview:export · preview:gate · preview:check · preview:push
 // Every command takes --target preview|public (default preview). The public target
-// (plan open-source-release-2026-09-29) publishes to Papercusp/papercusp under the
+// (plan open-source-release-2026-09-29) publishes to Papercusp/papercusp-app under the
 // Elastic License 2.0, APPEND-ONLY; the preview is replaced wholesale. See TARGETS.
 //
 // PAPERCUSP_RELEASE_OWNER_NAME (and _EMAIL) must be exported — read at run time, never
@@ -55,7 +55,10 @@ import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
-export const PUBLIC_REPO = 'Papercusp/papercusp';
+// NOT 'Papercusp/papercusp': that name is the private libs/papercusp library repo
+// (open-source-release-2026-09-29 D-016), and an append push there would stack the export
+// on top of the library's own history.
+export const PUBLIC_REPO = 'Papercusp/papercusp-app';
 export const SOURCE_REPO = 'Papercusp/papercup';
 export const DEFAULT_REMOTE = `https://github.com/${PREVIEW_REPO}.git`;
 export const DEFAULT_REF = 'main';
@@ -97,6 +100,13 @@ export const defaultRemote = (target) => `https://github.com/${target.repo}.git`
 export function assertRemoteMatchesTarget(target, remote) {
   const repoOf = (r) => r.replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).slice(-2).join('/').toLowerCase();
   const named = repoOf(remote);
+  // Private repositories no target may ever publish to: the source superproject and the
+  // libs/papercusp library repo, which owns the name 'Papercusp/papercusp' (D-016).
+  for (const privateRepo of [SOURCE_REPO, 'Papercusp/papercusp']) {
+    if (named === privateRepo.toLowerCase()) {
+      throw new PreviewError(`remote ${remote} is the private repository ${privateRepo} — refusing to publish the ${target.key} target there`, 2);
+    }
+  }
   for (const other of Object.values(TARGETS)) {
     if (other.key !== target.key && named === other.repo.toLowerCase()) {
       throw new PreviewError(`remote ${remote} is the ${other.key} repository (${other.repo}) — refusing to publish the ${target.key} target there`, 2);
@@ -134,10 +144,22 @@ export const DESKTOP_PUBLIC_EXCLUDES = [
  * (plan open-source-release-2026-09-29 P-007). Every one is required: a public repo
  * without a disclosure path or contribution terms is not recoverable once cloned.
  */
-export const PUBLIC_COMMUNITY_FILES = ['CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md'];
+export const PUBLIC_COMMUNITY_FILES = [
+  'CONTRIBUTING.md',
+  'SECURITY.md',
+  'CODE_OF_CONDUCT.md',
+  // P-011: the agreement CONTRIBUTING.md promises, and the bot that asks for it.
+  'CLA.md',
+  '.github/workflows/cla.yml',
+  // P-009: the public repository's own CI — the private repo's workflows never ship.
+  '.github/workflows/ci.yml',
+];
 /** The public target also adds its LICENSE, the community files, and THIRD-PARTY-NOTICES.md
  *  (generated from the export's own lockfiles by check-licenses.mjs — P-017 step 5). */
 export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE', ...PUBLIC_COMMUNITY_FILES, NOTICES_FILE];
+/** Top-level entries the added files create (`.github` for the workflows) — the README's
+ *  tree listing describes the development tree, not these. */
+const PUBLIC_ADDED_TOPS = new Set(PUBLIC_ADDED_FILES.map((f) => f.split('/')[0]));
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV = 'PAPERCUSP_UPDATE_BASE_URL';
 /** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
@@ -339,7 +361,7 @@ export function loadReleaseHost(env = process.env, path = RELEASE_HOST_ENV_PATH)
 
 export async function readmeText(dir, manifest, releasesUrl) {
   const tops = (await fs.readdir(dir, { withFileTypes: true }))
-    .filter((e) => !PUBLIC_ADDED_FILES.includes(e.name))
+    .filter((e) => !PUBLIC_ADDED_TOPS.has(e.name))
     .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
     .sort();
   const ws = await describeWorkspaces(dir);
@@ -535,7 +557,10 @@ export async function exportSnapshot({
       generatedBy: 'scripts/source-preview.mjs',
     };
     if (license !== null) await fs.writeFile(join(partial, 'LICENSE'), license);
-    for (const { name, text } of community) await fs.writeFile(join(partial, name), text);
+    for (const { name, text } of community) {
+      await fs.mkdir(dirname(join(partial, name)), { recursive: true });
+      await fs.writeFile(join(partial, name), text);
+    }
     if (target.key === 'public') {
       // Generated from the EXPORTED lockfiles, so it lists exactly what ships. A partial
       // measurement must not publish as a complete notices file.
@@ -904,6 +929,13 @@ export async function pushSnapshot({
     if (!verdict.ok) return { pushed: false, reason: 'gate', verdict, commit: manifest.source.commit };
     const { tree, comparable } = exportTrees(out);
     const current = remoteTrees(remote);
+    // An append target's main must be export lineage: its head carries MANIFEST.json with a
+    // source commit. Anything else is the wrong repository, and appending would publish the
+    // export on top of someone else's history (D-016). Checked before the dry-run return so a
+    // dry run reports it too.
+    if (t.history === 'append' && current && current.sourceCommit === null) {
+      throw new PreviewError(`refusing to append to ${remote}: its main (${current.head}) is not an export commit (no MANIFEST.json source.commit) — wrong repository?`, 2);
+    }
     if (current?.comparable === comparable) {
       return { pushed: false, reason: 'in-sync', verdict, tree, commit: manifest.source.commit, previewCommit: current.sourceCommit };
     }

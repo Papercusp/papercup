@@ -62,6 +62,7 @@ import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
 import { decideTerminalOwnerOriginHeal } from '../../work-items-terminal-owner-origin-heal';
 import {
   getWorkItem,
+  getWorkItemsByIds,
   setWorkItemStateWithAliasInfo,
   setWorkItemClaimHold,
   workItemObjectRef,
@@ -83,6 +84,8 @@ import {
   missingRootCauseVerificationV2Fields,
   hasEnumeratedVerificationCoverage,
   hasMalformedCoverageShape,
+  residueCitations,
+  unownedResidueRefs,
   stripNulBytesDeep,
   CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   type CompletionCoverage,
@@ -4061,14 +4064,56 @@ async function completeOne(
     .filter((r) => r.verdict === 'falsified')
     .map((r) => ({ claim: JSON.stringify(r.claim), reason: r.reason }));
 
+  // D-041 (goal-agent-behavior-feedback-2026-09-06, R-18): filing is not disposing. A close
+  // that files its residue without `assign_to` and cites the id has handed the work to nobody.
+  // Measured 6/6 in S35: the id sat in `summary` or `deferred` beside `coverage.residue: []`,
+  // so this reads every field that names a follow-up, not `residue` alone. Only terminal closes
+  // are judged, and it is not gated on `committed`: the warning is the point, so a `proposed`
+  // close hears it too. One set-based read; any throw is silence, never an accusation.
+  const residueUnowned = await (async () => {
+    if (!effectiveState || !TERMINAL_WORK_ITEM_STATES.has(String(effectiveState).toLowerCase())) return undefined;
+    try {
+      const cited = residueCitations(
+        {
+          residue: completionEvidenceForGate?.coverage?.residue,
+          deferred: it.completion.deferred,
+          requirementDisposition: completionEvidenceForGate?.requirementDisposition,
+          summary: it.completion.summary,
+        },
+        [it.id],
+      );
+      if (!cited.followUps.length && !cited.summaryRefs.length) return undefined;
+      const cutoff = Date.parse(String(existing.takenAt ?? existing.createdAt ?? ''));
+      const found = await getWorkItemsByIds([...cited.followUps, ...cited.summaryRefs]);
+      const refs = unownedResidueRefs(
+        cited,
+        found.map((w) => {
+          const createdAtMs = Date.parse(String(w.createdAt ?? ''));
+          return {
+            id: w.id,
+            settled: TERMINAL_WORK_ITEM_STATES.has(String(w.state ?? '').toLowerCase()),
+            assignee: w.assignee,
+            createdBy: w.createdBy,
+            ...(Number.isFinite(createdAtMs) ? { createdAtMs } : {}),
+          };
+        }),
+        { ownerId: ident.ownerId, ...(Number.isFinite(cutoff) ? { sinceMs: cutoff } : {}) },
+      );
+      return refs.length ? refs : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
   const completionEvidenceFindings: CompletionEvidenceFindings | undefined =
-    fabricatedPaths || untouchedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length
+    fabricatedPaths || untouchedPaths || testRunContradiction || requirementShortfall || claimsFalsified?.length || residueUnowned
       ? {
           ...(fabricatedPaths ? { filesChangedNeverExisted: fabricatedPaths.neverExisted } : {}),
           ...(untouchedPaths ? { filesChangedUntouched: untouchedPaths.untouched } : {}),
           ...(testRunContradiction ? { testRunContradictedByLedger: testRunContradiction } : {}),
           ...(requirementShortfall ? { requirementDispositionShortfall: requirementShortfall } : {}),
           ...(claimsFalsified?.length ? { claimsFalsified } : {}),
+          ...(residueUnowned ? { residueUnowned } : {}),
         }
       : undefined;
   // Re-run the SAME single decision point with the findings folded in, rather than overriding
@@ -4200,6 +4245,18 @@ async function completeOne(
       `silent, because absence of judgement is never judged-clean. To fix: correct the claim to match ` +
       `the source (or drop it) and re-call work_items:complete. You are not required to declare claims ` +
       `at all — but a declared one is re-derived from the tree, never believed.`
+    : undefined;
+
+  // D-041: the same anti-refusal-loop obligation — name each ref, the one repair, and what is
+  // SILENT, so an agent that filed and assigned its residue never reads this as an accusation.
+  const residueUnownedWarning = residueUnowned
+    ? `completion for ${it.id} grades at most authority:'proposed': it cites ${residueUnowned.length} ` +
+      `follow-up(s) that are OPEN with NO assignee: ${residueUnowned.join(', ')}. Filing is not ` +
+      `disposing — work_items:create without assign_to leaves an item unclaimed, so nobody owns this ` +
+      `residue. This is NOT triggered by a settled or assigned follow-up, nor by an id the summary ` +
+      `only mentions that you did not file during this work. To fix: give each an owner with ` +
+      `work_items:claim { id, assignee: '<owner id>' } (omit assignee to take it yourself) and list it ` +
+      `in coverage.residue; next time pass assign_to on work_items:create.`
     : undefined;
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
@@ -4875,6 +4932,13 @@ async function completeOne(
               `work_items:complete for this id with \`filesChanged\` listing the test file(s) you touched — ` +
               `real paths only, never a plausible-looking guess. If it did NOT add tests, pass ` +
               `\`addedTests: false\` instead; that is not a workaround, it is the accurate record.`
+            : insufficientEvidenceReason(completionEvidenceForGate) === undefined && completionEvidenceFindings
+              ? // The evidence fields are complete and a FINDING lowered the grade, so the generic
+                // "supply verifiedHow plus testsRun" advice below would send the closer to re-send
+                // fields it already sent. Name the finding; its own warning carries the repair.
+                `Its evidence fields are complete; the grade was lowered by a finding ` +
+                `(${insufficientEvidenceReason(completionEvidenceForGate, completionEvidenceFindings)}) whose ` +
+                `repair is in this reply's matching \`*Warning\` field. Fix that, not verifiedHow/testsRun.`
             : `\`committed\` requires \`verifiedHow\` ('unit'|'integration'|'live-drove-ui'|'manual'|'already-passing') ` +
               `PLUS at least one of \`testsRun\` / \`testResult\`. \`filesChanged\` and \`addedTests\` do NOT qualify — ` +
               `both say what changed, neither says anything was checked. To settle it, re-call ` +
@@ -5137,6 +5201,7 @@ async function completeOne(
     ...(testRunContradictionWarning ? { testRunContradictionWarning } : {}),
     ...(requirementShortfallWarning ? { requirementShortfallWarning } : {}),
     ...(claimsFalsifiedWarning ? { claimsFalsifiedWarning } : {}),
+    ...(residueUnownedWarning ? { residueUnownedWarning } : {}),
     ...(terminalCriteriaWarning ? { terminalCriteriaWarning } : {}),
     // The full per-claim verdict set, including the ones that HELD and the ones that could
     // not be decided — returned even when nothing was falsified, so a closer can see that

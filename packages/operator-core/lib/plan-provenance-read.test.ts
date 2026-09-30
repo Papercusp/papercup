@@ -127,6 +127,25 @@ describe('buildPlanProvenance — items (R-5)', () => {
     expect(view.items[2].sources[0]).toMatchObject({ verdict: 'not-user-turn', owner: false });
   });
 
+  it('reads a ref the audit stored no verdict for as unknown origin, never as owner or agent (D-007)', () => {
+    // Turn 3 is cited but absent from the stored verdicts; the live corpus now reads it as owner speech.
+    const audit = auditWith({
+      mappings: [mapping('M-001', [1, 3], ['P-001'])],
+      itemProvenanceCheck: enforcedAudit.activation!.itemProvenanceCheck,
+    });
+    const view = buildPlanProvenance({
+      planSlug: 'plan-a',
+      harnessSlug: 'papercusp',
+      planContent: plan(ITEMS),
+      currentRevision: null,
+      audit,
+      turns: new Map([...TURNS, [ref(3), { speaker: 'user', text: 'An unrecorded turn.', verdict: 'owner-turn' as const }]]),
+    });
+    const quote = view.items[0].sources.find((source) => source.ref === ref(3));
+
+    expect(quote).toMatchObject({ verdict: 'unknown', owner: false });
+  });
+
   it('lists items added after the audit as not-audited and marks the view stale', () => {
     const view = build(enforcedAudit, [...ITEMS, '- **P-004** `todo` Added later.'], 'hash-5');
 

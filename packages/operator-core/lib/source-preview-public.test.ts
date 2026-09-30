@@ -12,7 +12,7 @@
  * these cases pin the contract without network or scanners.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -82,8 +82,14 @@ describe('public target — the two repositories never cross', () => {
   it('refuses to publish the public target to the preview repository, and vice versa', () => {
     expect(() => assertRemoteMatchesTarget(resolveTarget('public'), 'https://github.com/Papercusp/papercusp-preview.git')).toThrow(/preview repository/);
     expect(() => assertRemoteMatchesTarget(resolveTarget('public'), 'git@github.com:papercusp/papercusp-preview')).toThrow(/preview repository/);
-    expect(() => assertRemoteMatchesTarget(resolveTarget('preview'), 'https://github.com/Papercusp/papercusp.git')).toThrow(/public repository/);
-    expect(() => assertRemoteMatchesTarget(resolveTarget('public'), 'https://github.com/Papercusp/papercusp.git')).not.toThrow();
+    expect(() => assertRemoteMatchesTarget(resolveTarget('preview'), 'https://github.com/Papercusp/papercusp-app.git')).toThrow(/public repository/);
+    expect(() => assertRemoteMatchesTarget(resolveTarget('public'), 'https://github.com/Papercusp/papercusp-app.git')).not.toThrow();
+    // D-016: the private library repo owns 'Papercusp/papercusp' and the superproject is
+    // private — no target may publish to either.
+    for (const t of ['public', 'preview']) {
+      expect(() => assertRemoteMatchesTarget(resolveTarget(t), 'git@github.com:Papercusp/papercusp.git')).toThrow(/private repository/);
+      expect(() => assertRemoteMatchesTarget(resolveTarget(t), 'https://github.com/Papercusp/papercup')).toThrow(/private repository/);
+    }
     expect(() => resolveTarget('papercup')).toThrow(/unknown target/);
   });
 
@@ -123,7 +129,29 @@ describe('public target — licensed export', () => {
     }
     expect(readFileSync(join(out, 'CONTRIBUTING.md'), 'utf8')).toMatch(/Contributor License Agreement/);
     expect(readFileSync(join(out, 'SECURITY.md'), 'utf8')).toMatch(/Report a vulnerability/);
+    // P-009/P-011: the public repo's own CI and CLA bot ship; the README's tree listing
+    // describes the development tree, so it never lists the added .github directory.
+    expect(readFileSync(join(out, 'CLA.md'), 'utf8')).toMatch(/Contributor License Agreement/);
+    expect(existsSync(join(out, '.github/workflows/ci.yml'))).toBe(true);
+    expect(existsSync(join(out, '.github/workflows/cla.yml'))).toBe(true);
+    expect(readme).not.toContain('.github/');
   }, 120_000);
+
+  it('public workflows never run pull request code with a write token', () => {
+    const wf = join(dirname(PUBLIC_LICENSE_PATH), '.github', 'workflows');
+    // Judge the configuration, not the explanatory comments (which name the trigger to avoid).
+    const config = (name: string) =>
+      readFileSync(join(wf, name), 'utf8').split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    const ci = config('ci.yml');
+    expect(readFileSync(join(wf, 'ci.yml'), 'utf8')).toMatch(/pull_request_target/); // control: the stripped text is what differs
+    // CI executes the pull request's code, so it must use the read-only trigger.
+    expect(ci).not.toMatch(/pull_request_target/);
+    expect(ci).toMatch(/permissions:\s*\n\s*contents: read/);
+    const cla = config('cla.yml');
+    // The CLA bot needs pull_request_target's write token, so it must never check out code.
+    expect(cla).toMatch(/pull_request_target/);
+    expect(cla).not.toMatch(/actions\/checkout/);
+  });
 
   it('the preview export stays evaluation-only and carries no LICENSE', async () => {
     const out = join(tmp, 'preview-export');
@@ -147,7 +175,10 @@ describe('public target — licensed export', () => {
   it('refuses a public export whose community files are missing or empty', () => {
     const dir = mkdtempSync(join(tmp, 'community-'));
     expect(() => readCommunityFiles(dir)).toThrow(/needs CONTRIBUTING\.md/);
-    for (const name of PUBLIC_COMMUNITY_FILES) writeFileSync(join(dir, name), `# ${name}\n`);
+    for (const name of PUBLIC_COMMUNITY_FILES) {
+      mkdirSync(dirname(join(dir, name)), { recursive: true });
+      writeFileSync(join(dir, name), `# ${name}\n`);
+    }
     writeFileSync(join(dir, 'SECURITY.md'), '  \n');
     expect(() => readCommunityFiles(dir)).toThrow(/SECURITY\.md is empty/);
     expect(readCommunityFiles(dirname(PUBLIC_LICENSE_PATH)).map((f) => f.name)).toEqual(PUBLIC_COMMUNITY_FILES);

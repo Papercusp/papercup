@@ -28,6 +28,7 @@ import {
 } from '../_harness-scope';
 import { resolveDocsEmbedder, docSectionsRanker, type DocSemanticHit } from './semantic-leg';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
+import { resolveAgentIdentity } from '../coordination/identity';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
 // surface would call the engine and inherit NO floor, which is the exact
@@ -160,6 +161,46 @@ const lazyOrgSql = new Proxy((() => {}) as unknown as PgHandle, {
   apply: (_t, _self, argv: unknown[]) => (getOrgPg().sql as unknown as (...a: unknown[]) => unknown)(...argv),
   get: (_t, prop) => (getOrgPg().sql as unknown as Record<string | symbol, unknown>)[prop],
 });
+
+/** A pack-doc read never holds a docs:search open for longer than this. */
+const PACKAGE_DOC_BUDGET_MS = 2_000;
+
+type PackageDocSearchHit = SearchHit & {
+  identityPackage: { partKey: string; harnessSlug: string; section: string | null };
+};
+
+/**
+ * P-009 / D-022: the caller's own identity-installed pack docs matching the query. Fail
+ * closed and quiet — no wearer, no workspace, a read error or a slow read all yield [], so
+ * a caller with no applied doc keys gets today's result. The DB is touched only once a
+ * wearer and workspace resolve, keeping a lexical-only docs search off PG otherwise.
+ */
+async function wearerPackageDocHits(ctx: unknown, query: string, limit: number): Promise<PackageDocSearchHit[]> {
+  let ownerId: string | null = null;
+  try { ownerId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId ?? null; } catch { ownerId = null; }
+  const workspaceId = (ctx as { principal?: { workspaceId?: string } | null }).principal?.workspaceId ?? '';
+  if (!ownerId || !workspaceId.trim()) return [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const { searchWearerPackageDocs } = await import('../../blueprint/package-doc-resources');
+    const hits = await Promise.race([
+      searchWearerPackageDocs(getOrgPg().sql, { workspaceId, ownerId, query, limit }),
+      new Promise<[]>((resolve) => { timer = setTimeout(() => resolve([]), PACKAGE_DOC_BUDGET_MS); }),
+    ]);
+    return hits.map((hit) => ({
+      slug: `package-doc/${hit.partKey}`,
+      url: `harness_doc_parts:${hit.harnessSlug}/claude-md#${hit.partKey}`,
+      title: hit.title,
+      score: hit.score,
+      excerpt: hit.excerpt,
+      identityPackage: { partKey: hit.partKey, harnessSlug: hit.harnessSlug, section: hit.section },
+    }));
+  } catch {
+    return [];
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
@@ -627,9 +668,13 @@ export default defineTool({
     const surfacedAuthority = authorityHit
       ? { ...authorityHit, authority: 'current' as const, surface: 'engineering' as const }
       : undefined;
+    // P-009 / D-022: the wearer's identity-installed pack docs, read ONLY through its applied
+    // doc keys (a non-wearer holds none and gets the unchanged result). They are the procedure
+    // the caller's own identity pinned, so they rank ahead of the general corpus.
+    const packageDocHits = await wearerPackageDocHits(ctx, args.query, limit);
     const reportedHits = surfacedAuthority
-      ? [surfacedAuthority, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
-      : finalHits;
+      ? [surfacedAuthority, ...packageDocHits, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
+      : packageDocHits.length > 0 ? [...packageDocHits, ...finalHits].slice(0, limit) : finalHits;
     const reportedSemanticHitCount = reportedHits.filter((hit) => 'semantic' in hit && hit.semantic === true).length;
     // EI-20031763618968912: `legs` answers "was this really a hybrid search"; it does NOT
     // answer "was the corpus underneath it complete". Those are different failures — a
@@ -649,6 +694,7 @@ export default defineTool({
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
       ...(reportedSemanticHitCount > 0 ? { semanticHitCount: reportedSemanticHitCount } : {}),
+      ...(packageDocHits.length > 0 ? { packageDocHitCount: packageDocHits.length } : {}),
       // P-020 / EI-19478862482607876: inheriting the engine's leg report and
       // then DISCARDING it is half the migration. `legs.degraded` +
       // `legs.warning` are the ready-made verdict for "was this really a
@@ -666,6 +712,7 @@ export default defineTool({
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
       returned: reportedHits.length - reportedSemanticHitCount,
+      ...(packageDocHits.length > 0 ? { packageDocHitCount: packageDocHits.length } : {}),
       ...(reportedSemanticHitCount > 0 ? { semanticHitCount: reportedSemanticHitCount } : {}),
       ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
       // P-004: measurable adoption — how often the probe fires, and whether it found anything.

@@ -177,7 +177,7 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
 
 const liveLockHoldingsMock = vi.fn(async (): Promise<Array<{ path: string; owner: string; intent: string }>> => []);
 const liveLockHoldingsStrictMock = vi.fn(
-  async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
+  async (): Promise<Array<{ path: string; owner: string; intent: string; coordinationDomain?: string }>> => [],
 );
 vi.mock('../../agent-tools/locks/live-lock-paths', () => ({
   liveLockHoldings: () => liveLockHoldingsMock(),
@@ -2109,6 +2109,51 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ liveLockHoldings: mapped });
     expect(runGitSyncMock.mock.calls[0]?.[1].excludePaths).toBeUndefined();
     expect(observedRefresh).toEqual(mapped);
+  });
+
+  it('EI-24649116564770033: translates each lock from its own coordination domain (initial read and refresh)', async () => {
+    const repo = join(tmpRoot, 'domain-super-repo');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    const canonicalRepo = realpathSync(repo);
+    registryProjects = [{ slug: 'papercup', path: repo }];
+    // The observed incident: a portal-repo lock on `package.json` withheld papercusp's root
+    // package.json, and a submodule-root lock named `bin/…` instead of `papercusp-desktop/bin/…`.
+    const portalDomain = join(tmpRoot, 'portal-app');
+    const rows = [
+      { path: 'package.json', owner: 'su-portal', intent: 'portal dependency bump', coordinationDomain: portalDomain },
+      {
+        path: 'bin/hive-git-drill.sh',
+        owner: 'su-driller',
+        intent: 'drill script',
+        coordinationDomain: join(canonicalRepo, 'papercusp-desktop'),
+      },
+      { path: 'apps/x.ts', owner: 'su-local', intent: 'local edit', coordinationDomain: canonicalRepo },
+    ];
+    liveLockHoldingsStrictMock.mockResolvedValue(rows);
+    runGitBoundedMock.mockImplementation(async (...call: unknown[]) => {
+      const [args, cwd] = call as [string[], string];
+      if (args[0] === 'rev-list') return { code: 0, stdout: cwd === canonicalRepo ? 'root-ours\n' : 'root-portal\n', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    let observedRefresh: unknown;
+    runGitSyncMock.mockImplementationOnce(async (_slug, opts) => {
+      observedRefresh = await (opts.refreshLiveLockHoldings as () => Promise<unknown>)();
+      return syncedOutcome;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await fireGitSyncNow('papercup', 'ws-42', repo);
+
+      const expected = [
+        { path: 'papercusp-desktop/bin/hive-git-drill.sh', owner: 'su-driller', intent: 'drill script' },
+        { path: 'apps/x.ts', owner: 'su-local', intent: 'local edit' },
+      ];
+      expect(runGitSyncMock.mock.calls[0]?.[1].liveLockHoldings).toEqual(expected);
+      expect(observedRefresh).toEqual(expected);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`package.json (foreign-repo @ ${portalDomain}`));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {

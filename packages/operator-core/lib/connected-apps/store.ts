@@ -22,11 +22,26 @@
  */
 
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { appKeyHashMatches, mintAppKey, parseAppKey } from './key';
+import {
+  appScopeToolOf,
+  validateAppKeyScopes,
+  type AppKeyScopeProblem,
+  type AppScopeRow,
+  type AppScopeTool,
+} from './scope-policy';
 
 export interface AppKeyScopes {
-  /** Capability strings the key is granted. P-003 enforces them. */
+  /** Capability strings the key is granted (the dispatch capability-check enforces them). */
   capabilities?: string[];
+  /**
+   * The tools the key may call: exact `group:verb` names or `group:*`. Absent or empty means
+   * NONE — an app key is default-deny (P-003, see ./scope-policy.ts).
+   */
+  tools?: string[];
+  /** When present and non-empty, the only harnesses a call may name. Absent = any harness. */
+  harnesses?: string[];
 }
 
 export interface AppKeyLimits {
@@ -59,8 +74,38 @@ export interface CreateAppKeyOptions {
   userEmail: string;
   label: string;
   capabilities?: readonly string[];
+  /** Exact `group:verb` names or `group:*`. Omitted = the key can call nothing (default-deny). */
+  tools?: readonly string[];
+  /** The only harnesses a call may name. Omitted = any harness in the workspace. */
+  harnesses?: readonly string[];
   expiresAt?: Date | null;
   limits?: AppKeyLimits;
+  /**
+   * The tool catalog used to check exact `tools` entries against the capabilities each tool
+   * declares. Defaults to the live projected catalog; tests pass their own.
+   */
+  knownTools?: ReadonlyMap<string, AppScopeTool>;
+}
+
+/** Thrown by `createAppKey` when the requested scopes include something no key may hold. */
+export class AppKeyScopeError extends Error {
+  constructor(readonly problems: readonly AppKeyScopeProblem[]) {
+    super(
+      `app key scopes refused: ${problems.map((p) => `${p.field} "${p.value}" — ${p.reason}`).join('; ')}`,
+    );
+    this.name = 'AppKeyScopeError';
+  }
+}
+
+/** The live projected catalog, keyed by MCP name, in the shape the scope policy reads. */
+export function projectedToolScopeCatalog(): ReadonlyMap<string, AppScopeTool> {
+  const out = new Map<string, AppScopeTool>();
+  for (const tool of listAllProjectedTools()) {
+    const name = tool.expose.mcp?.name;
+    if (!name) continue;
+    out.set(name, appScopeToolOf(name, tool));
+  }
+  return out;
 }
 
 export interface CreatedAppKey {
@@ -73,8 +118,14 @@ const APP_COLUMNS = `id, user_email, workspace_id, kind, label, scopes, limits,
   paired_at, expires_at, paused_at, revoked_at, last_seen, last_ip`;
 
 export async function createAppKey(opts: CreateAppKeyOptions): Promise<CreatedAppKey> {
-  const minted = mintAppKey();
   const scopes: AppKeyScopes = { capabilities: [...new Set(opts.capabilities ?? [])] };
+  if (opts.tools?.length) scopes.tools = [...new Set(opts.tools.map((t) => t.trim()))];
+  if (opts.harnesses?.length) scopes.harnesses = [...new Set(opts.harnesses.map((h) => h.trim()))];
+  // The catalog only matters when exact tools are named; capability rules need no catalog.
+  const catalog = opts.knownTools ?? (scopes.tools?.length ? projectedToolScopeCatalog() : undefined);
+  const problems = validateAppKeyScopes(scopes, catalog);
+  if (problems.length > 0) throw new AppKeyScopeError(problems);
+  const minted = mintAppKey();
   const rows = await withWorkspace(opts.workspaceId, async (tx) => tx<AppKeyRow[]>`
     INSERT INTO harness_shared.connected_apps
       (id, user_email, workspace_id, kind, label, scopes, limits, token_hash, expires_at, paired_at)
@@ -143,6 +194,23 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
   if (app.paused_at) return { ok: false, reason: 'paused' };
   if (app.expires_at && app.expires_at.getTime() <= now.getTime()) return { ok: false, reason: 'expired' };
   return { ok: true, app };
+}
+
+/**
+ * The fields the scope policy needs, read fresh for one call (P-003). Admin connection, like
+ * `verifyAppKey`: the dispatch seat reads the row by primary key before it trusts any workspace.
+ * Null when no app key has that id. Reading per call (not caching the row on the principal) is
+ * what makes pause, revoke and a scope change take effect on the very next call.
+ */
+export async function loadAppScopeRow(id: string): Promise<AppScopeRow | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<AppScopeRow[]>`
+    SELECT id, workspace_id, scopes, revoked_at, paused_at, expires_at
+      FROM harness_shared.connected_apps
+     WHERE id = ${id} AND kind = 'app'
+     LIMIT 1
+  `;
+  return rows[0] ?? null;
 }
 
 /**

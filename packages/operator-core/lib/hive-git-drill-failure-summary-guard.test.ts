@@ -49,6 +49,25 @@ const scenario = readFileSync(
     join(root, 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh'),
   'utf8',
 );
+// The scenario's phase_start reads PHYSICAL_PHASES_ALL from this lib, which is the single
+// source of the phase list; the tests below derive the expected phases from it instead of
+// hand-listing them (a hand list went stale the moment legs I and J were appended).
+const phaseSelect = join(root, 'papercusp-desktop', 'bin', 'lib', 'physical-phase-select.sh');
+function declaredPhases(): string[] {
+  const all = readFileSync(phaseSelect, 'utf8').match(/^PHYSICAL_PHASES_ALL='([A-Z](?:,[A-Z])*)'$/m)?.[1];
+  expect(all, 'physical-phase-select.sh must declare PHYSICAL_PHASES_ALL').toBeTruthy();
+  return all!.split(',');
+}
+/** The evidence schema's legs, read from source (ALL_LEGS is module-private). */
+function evidenceLegs(): string[] {
+  const source = readFileSync(
+    join(root, 'packages', 'operator-core', 'lib', 'sync', 'pot-git', 'physical-drill-evidence.ts'),
+    'utf8',
+  );
+  const list = source.match(/const ALL_LEGS = \[([^\]]*)\] as const;/)?.[1];
+  expect(list, 'physical-drill-evidence.ts must declare ALL_LEGS').toBeTruthy();
+  return [...list!.matchAll(/'([A-Z])'/g)].map(([, leg]) => leg!);
+}
 
 const scratch = mkdtempSync(join(tmpdir(), 'hive-git-failure-summary-'));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
@@ -106,6 +125,35 @@ describe('physical-failure-summary.sh', () => {
   it('reports a missing stderr file instead of failing', () => {
     expect(summarize(null)).toMatch(/^no adapter stderr at /);
   });
+
+  // Both shapes below are the tails of REAL archived runs (~/.papercusp-drill-physical-runs,
+  // 2026-09-30). The first summary shipped for each named a line that is not the cause.
+  it('skips the diagnostics line the EXIT trap prints after fail() (run 20260930T014309Z)', () => {
+    const out = summarize(
+      [
+        'Node.js v24.18.1',
+        'hive-git-physical-probe: could not build the VM run-source dependency overlay',
+        'hive-git-physical-probe: preserved failed-run diagnostics at /home/u/.papercusp-drill-p301/hive-git-physical-evidence.json.failure-diagnostics',
+        '',
+      ].join('\n'),
+    );
+    expect(out).toBe('before any phase: could not build the VM run-source dependency overlay');
+  });
+
+  it('names the refusing preflight CHECK, not the pointer line (run 20260930T020324Z)', () => {
+    const out = summarize(
+      [
+        ' M packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.ts',
+        'PHYSICAL_PREFLIGHT_FAILED drill-source-committed: uncommitted drill source: physical-drill-phase-d.ts',
+        'PHYSICAL_PREFLIGHT_FAILED hosts-answering: tower :3070/api/health answered 503',
+        'hive-git-physical-probe: rig preflight refused the run (the PHYSICAL_PREFLIGHT_FAILED line above names the check)',
+        '',
+      ].join('\n'),
+    );
+    expect(out).toBe(
+      'before any phase: rig preflight refused the run: PHYSICAL_PREFLIGHT_FAILED drill-source-committed: uncommitted drill source: physical-drill-phase-d.ts',
+    );
+  });
 });
 
 describe('the real scenario feeds the summary', () => {
@@ -113,19 +161,23 @@ describe('the real scenario feeds the summary', () => {
     const body = extractFunction(scenario, 'run_all_phases');
     // `phase_start X fn && fn`: phase_start returns 1 for a phase a selective run skips (P-002).
     const calls = [...body.matchAll(/phase_start ([A-Z]) (phase_[a-z]_[a-z_]+)\s+&&\s+(phase_[a-z]_[a-z_]+)/g)];
-    expect(calls.map(([, letter]) => letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']);
+    // Every declared phase, in order — and the declared list is the evidence schema's legs.
+    expect(calls.map(([, letter]) => letter)).toEqual(declaredPhases());
+    expect(declaredPhases()).toEqual(evidenceLegs());
     for (const [, letter, announced, invoked] of calls) {
       expect(announced).toBe(invoked);
       expect(invoked.startsWith(`phase_${letter.toLowerCase()}_`)).toBe(true);
     }
     // No phase function is called from run_all_phases without its announcement.
-    const bareCalls = body.split('\n').filter((line) => /^\s*phase_[a-h]_/.test(line));
+    const bareCalls = body.split('\n').filter((line) => /^\s*phase_[a-z]_/.test(line));
     expect(bareCalls).toEqual([]);
   });
 
   it('end to end: a stub Phase D failure through the real phase_start/run_all_phases/fail is named', () => {
     const script = [
       'set -euo pipefail',
+      // phase_start reads PHYSICAL_PHASES_ALL; the real scenario gets it from this lib.
+      `. '${phaseSelect.replace(/'/g, `'\\''`)}'`,
       extractFunction(scenario, 'now_iso'),
       extractFunction(scenario, 'fail'),
       extractFunction(scenario, 'phase_start'),

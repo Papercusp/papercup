@@ -54,6 +54,8 @@ import {
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
+  expandNpmManifestClosure,
+  isNpmManifestPath,
   runGitBounded,
   censusStrandedSubmodules,
   type RunGit,
@@ -177,6 +179,45 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
         paths: ['source.test.ts', 'source.ts'],
       }],
     });
+  });
+});
+
+// EI-24649116564770033 / WI-10004077: a withheld manifest must not let the rest of an npm
+// dependency change land alone (observed: operator-core's dep without root entry + lockfile).
+describe('expandNpmManifestClosure — npm manifests land together', () => {
+  const dirty = [
+    'package.json',
+    'package-lock.json',
+    'packages/operator-core/package.json',
+    'packages/operator-core/lib/x.ts',
+  ];
+
+  it('withholds every other dirty manifest when the root package.json is withheld', () => {
+    expect(expandNpmManifestClosure(dirty, ['package.json'])).toEqual({
+      paths: ['package-lock.json', 'packages/operator-core/package.json'],
+      triggers: ['package.json'],
+    });
+  });
+
+  it('is triggered by a withheld workspace manifest too, and by a directory exclusion', () => {
+    expect(expandNpmManifestClosure(dirty, ['packages/operator-core']).paths).toEqual([
+      'package-lock.json',
+      'package.json',
+    ]);
+  });
+
+  it('does nothing when no dirty manifest is withheld, including a lock on a CLEAN manifest', () => {
+    expect(expandNpmManifestClosure(dirty, ['packages/operator-core/lib/x.ts'])).toEqual({ paths: [], triggers: [] });
+    expect(expandNpmManifestClosure(['packages/a/package.json'], ['package.json'])).toEqual({ paths: [], triggers: [] });
+  });
+
+  it('never treats node_modules or look-alike names as manifests', () => {
+    expect(isNpmManifestPath('node_modules/x/package.json')).toBe(false);
+    expect(isNpmManifestPath('docs/package.json.md')).toBe(false);
+    expect(isNpmManifestPath('npm-shrinkwrap.json')).toBe(true);
+    expect(
+      expandNpmManifestClosure(['package.json', 'node_modules/x/package.json'], ['package.json']).paths,
+    ).toEqual([]);
   });
 });
 

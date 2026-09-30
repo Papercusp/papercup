@@ -29,7 +29,7 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
 // engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
 // 600-row request on the live 302k-row corpus.
-import { withIterativeScan } from '@papercusp/search';
+import { withIterativeScan, chunkAwareVectorLegSql, type ChunkAwareVectorLegOptions } from '@papercusp/search';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import {
   proseProfilePredicateSql,
@@ -869,6 +869,32 @@ const sessionTurnFilterSql = (p: SearchSourceParams) => {
   };
 };
 
+/**
+ * generic-rag-chunking P-006: the session-turn vector leg runs through the
+ * shared chunkAwareVectorLeg. session_turns is not a CHUNK_SURFACES entry; its
+ * chunks live in the legacy per-surface table (migration 749), keyed by the
+ * same four columns as the parent, with no anchor column. So the descriptor is
+ * local. Margin 0 keeps the pooling identical to the pre-move MAX-of-legs
+ * query (pinned by session-turn-leg-parity.integration.test.ts).
+ */
+const SESSION_TURN_VECTOR_LEG: Pick<ChunkAwareVectorLegOptions, 'surface' | 'chunks' | 'parentAlias'> = {
+  surface: {
+    surface: 'session_turns',
+    parent: {
+      table: 'harness_shared.session_turns',
+      key: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
+    },
+    parentVector: {
+      column: 'text_embedding',
+      profileColumn: 'text_embedding_profile',
+      modeColumn: 'text_embedding_mode',
+    },
+    chunkMargin: 0,
+  },
+  chunks: { table: 'harness_shared.session_turn_chunks', keying: 'typed', anchorColumn: null },
+  parentAlias: 'st',
+};
+
 const sessionTurn: SearchSource = {
   name: 'session_turn',
   async lexical(p: SearchSourceParams): Promise<Listing> {
@@ -1038,72 +1064,41 @@ const sessionTurn: SearchSource = {
     // fails the whole query before any predicate runs.
     const { turnChunksAvailable } = await import('../../search/turn-chunk-sync');
     const withChunks = await turnChunksAvailable(p.sql);
+    // The caller's predicates, bound to the parent alias `st`. The helper applies
+    // them inside BOTH legs before each leg's LIMIT, exactly as the two
+    // hand-written legs did.
+    const parentFilter = p.sql`
+          (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
+      AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
+      AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
+      AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
+      AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
+      AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+      AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
+      AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
+      AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
+      AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
+      AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)`;
     // WI-37603. The outer tag is the TRANSACTION handle (iterative scan on);
-    // the nested `p.sql` fragments below stay on the outer handle, which is
-    // safe because a postgres.js fragment is a lazy builder — only the outer
-    // query executes. The cascade-quality integration test exercises this exact
-    // leg end-to-end, so a fragment-provenance problem fails loudly there.
+    // the nested `p.sql` fragments stay on the outer handle, which is safe
+    // because a postgres.js fragment is a lazy builder — only the outer query
+    // executes. The parity and cascade-quality integration tests exercise this
+    // exact leg end-to-end, so a fragment-provenance problem fails loudly there.
     const rows = (await withIterativeScan(p.sql, (sql) => sql`
-      WITH scored AS (
-        -- ⚠ EACH BRANCH IS PARENTHESIZED ON PURPOSE. Without the parens the
-        -- trailing ORDER BY / LIMIT binds to the WHOLE union rather than to its
-        -- branch, which silently turns two independent top-K probes into one —
-        -- and the chunk leg would then be able to starve the parent leg out of
-        -- the result entirely. Verified against live PG 2026-08-03.
-        (SELECT workspace_id, source_kind, session_id, turn_idx,
-               1 - (text_embedding <=> ${p.qVec}::vector) AS sim
-          FROM harness_shared.session_turns
-         WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
-           AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
-           AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
-           AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
-           AND (${f.turnOrigin}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin})
-           AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-           AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
-           AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
-           AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
-           AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
-           AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
-           AND text_embedding IS NOT NULL
-           AND ${proseProfileSql(p, 'text_embedding_profile', 'text_embedding_mode')}
-      ORDER BY text_embedding <=> ${p.qVec}::vector
-         LIMIT ${p.limit})
-        ${withChunks
-          ? p.sql`
-        UNION ALL
-        (SELECT c.workspace_id, c.source_kind, c.session_id, c.turn_idx,
-               1 - (c.embedding <=> ${p.qVec}::vector) AS sim
-          FROM harness_shared.session_turn_chunks c
-          JOIN harness_shared.session_turns st
-            ON st.workspace_id = c.workspace_id
-           AND st.source_kind  = c.source_kind
-           AND st.session_id   = c.session_id
-           AND st.turn_idx     = c.turn_idx
-         WHERE (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
-           AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
-           AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
-           AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
-           AND (${f.turnOrigin}::text IS NULL OR st.turn_origin_verdict = ${f.turnOrigin})
-           AND (${f.ownerOnly}::boolean IS NULL OR NOT ${f.ownerOnly} OR st.turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-           AND (${f.ownerCandidates}::boolean IS NULL OR NOT ${f.ownerCandidates} OR st.turn_origin_verdict = ANY(${f.ownerCandidateVerdicts}::text[]))
-           AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
-           AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
-           AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
-           AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)
-           AND c.embedding IS NOT NULL
-           AND ${proseProfileSql(p, 'c.embedding_profile', 'c.embedding_mode')}
-      ORDER BY c.embedding <=> ${p.qVec}::vector
-         LIMIT ${p.limit})`
-          : p.sql``}
-      ),
-      best AS (
-        SELECT DISTINCT ON (workspace_id, source_kind, session_id, turn_idx)
-               workspace_id, source_kind, session_id, turn_idx, sim
-          FROM scored
-      ORDER BY workspace_id, source_kind, session_id, turn_idx, sim DESC
-      )
+      WITH best AS (${chunkAwareVectorLegSql(sql, {
+        ...SESSION_TURN_VECTOR_LEG,
+        qVec: p.qVec,
+        limit: p.limit,
+        mode: withChunks ? 'retrieve' : 'gist',
+        parentFilter,
+        // D-011: the embedding-space rule stays here; the helper only names
+        // the qualified columns. A missing column fails closed.
+        spaceFilter: (cols) => (cols.profileColumn && cols.modeColumn
+          ? proseProfileSql(p, cols.profileColumn, cols.modeColumn)
+          : p.sql`FALSE`),
+      })})
       SELECT st.source_kind, st.session_id, st.turn_idx, st.speaker, st.owner,
-             st.harness_slug, st.ts, st.text, b.sim,
+             st.harness_slug, st.ts, st.text, 1 - b.distance AS sim,
              ${p.wantHighlight === false
                ? p.sql`''`
                : p.sql`ts_headline('english', left(st.text, 4000),
@@ -1115,7 +1110,7 @@ const sessionTurn: SearchSource = {
          AND st.source_kind  = b.source_kind
          AND st.session_id   = b.session_id
          AND st.turn_idx     = b.turn_idx
-    ORDER BY b.sim DESC
+    ORDER BY b.distance, b.workspace_id, b.source_kind, b.session_id, b.turn_idx
        LIMIT ${p.limit}
     `)) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; sim: number; highlight: string }>;
     return rows.map((r) => ({

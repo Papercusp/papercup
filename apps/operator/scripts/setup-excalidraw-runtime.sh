@@ -30,6 +30,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# shellcheck source=lib/mirror-tree.sh
+. scripts/lib/mirror-tree.sh
+
 # Same require.resolve('pkg/package.json') trap as the sibling setup scripts —
 # probe paths directly instead of asking node to resolve them.
 SRC=""
@@ -55,9 +58,17 @@ STAMP="public/excalidraw/.version"
 # stamp is written LAST, so an interrupted copy leaves it stale/absent and the
 # next run redoes the work rather than trusting a half-populated tree — which
 # here would mean silent esm.sh fallback rather than a visible failure.
+#
+# A matching stamp is NOT sufficient on its own (WI-10004074): the mirror must
+# also hold exactly the package's file set, or chunks from an older excalidraw
+# build ride along into every release SPA. The stamp lives INSIDE the mirror,
+# so it is excluded from the comparison. See scripts/lib/mirror-tree.sh.
 if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] && [ -d "$DEST/fonts" ]; then
-  echo "excalidraw-runtime: already current (v$VERSION) — skipping copy"
-  exit 0
+  if mirror_matches "$SRC" "$DEST" .version; then
+    echo "excalidraw-runtime: already current (v$VERSION) — skipping copy"
+    exit 0
+  fi
+  echo "excalidraw-runtime: v$VERSION stamp is current but $DEST/ file set differs from @excalidraw/excalidraw — re-copying"
 fi
 
 rm -rf "$DEST"

@@ -60,6 +60,11 @@ export interface DecideOptions {
   readonly consumer?: string;
   /** Per-call deadline override (still bounded by nothing else — keep it small). */
   readonly timeoutMs?: number;
+  /**
+   * Ids of what `state` was built from (memory ids, doc ids, …). Never sent to
+   * the provider; handed to the observer so the ledger can store ids, not text.
+   */
+  readonly subjectIds?: readonly string[];
 }
 
 export interface DecisionClient {
@@ -256,6 +261,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         outcome,
         startedAt,
         consumer: decideOptions.consumer ?? null,
+        subjectIds: decideOptions.subjectIds ? [...decideOptions.subjectIds] : [],
       });
       return outcome as DecisionOutcome<QM>;
     },

@@ -237,6 +237,13 @@
       "path": "libs/papercusp/packages/cli/src/pg-client.node-test.ts",
       "sha256": "eb6e163f1ebc4b71ede5c842ec49f9eb3414c8945ad5bee5255ba11a345a29b1",
       "reason": "Unit-test literal placeholder Postgres connection string (single-letter user, password, host, database)."
+    },
+    {
+      "detector": "gitleaks",
+      "rule": "generic-api-key",
+      "path": "packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts",
+      "sha256": "62325c3ff51a6b19a9845707b6e64d5e08440fb49970bef0bcedd551ecd8e27e",
+      "reason": "Drill fixture token literal 'p521-phase-i-disposable' passed to a local bare-repo fork-PR simulation; never a real credential (reviewed 2026-09-30, open-source-release P-009)."
     }
   ]
 }

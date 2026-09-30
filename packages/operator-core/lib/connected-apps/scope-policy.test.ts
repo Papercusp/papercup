@@ -1,0 +1,151 @@
+import { describe, expect, it } from 'vitest';
+import {
+  evaluateAppScope,
+  hardDenyReason,
+  scopeEntryMatches,
+  validateAppKeyScopes,
+  type AppScopeRow,
+  type AppScopeTool,
+} from './scope-policy';
+
+const WS = 'ws-app';
+
+function row(over: Partial<AppScopeRow> = {}): AppScopeRow {
+  return {
+    id: 'abcdefgh12345678',
+    workspace_id: WS,
+    scopes: { capabilities: ['harness:read'], tools: ['harness:list', 'plans:*'] },
+    revoked_at: null,
+    paused_at: null,
+    expires_at: null,
+    ...over,
+  };
+}
+
+const harnessList: AppScopeTool = { name: 'harness:list', capabilities: ['harness:read'] };
+const plansGet: AppScopeTool = { name: 'plans:get', capabilities: ['plans:read'], acceptsHarness: true };
+
+function decide(tool: AppScopeTool, args: unknown = {}, r: AppScopeRow = row(), extra: { workspaceId?: string | null; harnessSlug?: string } = {}) {
+  return evaluateAppScope({ tool, args, workspaceId: 'workspaceId' in extra ? extra.workspaceId : WS, harnessSlug: extra.harnessSlug }, r);
+}
+
+describe('evaluateAppScope — tool allowlist (R-5)', () => {
+  it('allows a tool named exactly in the allowlist', () => {
+    expect(decide(harnessList)).toEqual({ allow: true });
+  });
+
+  it('allows a tool covered by a group:* entry', () => {
+    expect(decide(plansGet)).toEqual({ allow: true });
+  });
+
+  it('refuses a tool outside the allowlist even when the key holds its capability', () => {
+    const v = decide({ name: 'harness:get', capabilities: ['harness:read'] });
+    expect(v).toMatchObject({ allow: false, code: 'tool_not_in_scope' });
+  });
+
+  it('is default-deny: a key with no tools list reaches nothing', () => {
+    const v = decide(harnessList, {}, row({ scopes: { capabilities: ['harness:read'] } }));
+    expect(v).toMatchObject({ allow: false, code: 'tool_not_in_scope' });
+  });
+
+  it('never treats a bare wildcard entry as matching', () => {
+    expect(scopeEntryMatches('*', 'harness:list')).toBe(false);
+    expect(decide(harnessList, {}, row({ scopes: { tools: ['*'] } }))).toMatchObject({ allow: false, code: 'tool_not_in_scope' });
+  });
+
+  it('does not let group:* match a different group that shares a prefix', () => {
+    expect(scopeEntryMatches('plan:*', 'plans:get')).toBe(false);
+    expect(scopeEntryMatches('plans:*', 'plans:get')).toBe(true);
+  });
+});
+
+describe('evaluateAppScope — hard-deny set (R-6)', () => {
+  const hardDenied: AppScopeTool[] = [
+    { name: 'capability:bash', capabilities: ['capability:bash'] },
+    { name: 'dev:restart', capabilities: ['operator:write'] },
+    { name: 'setup:save_key', capabilities: ['operator:write'] },
+    { name: 'code:run', capabilities: ['agent_tools:read'] },
+    { name: 'tools:invoke', capabilities: ['agent_tools:read'] },
+    { name: 'fleet:launch-on-plan', capabilities: ['coord:write'] },
+    { name: 'connected_apps:create', capabilities: ['operator:write'] },
+    { name: 'harness:exec', capabilities: ['capability:fs-write'] },
+    { name: 'accounts:read_secret', capabilities: ['secrets:operator-credentials:read'] },
+  ];
+
+  it.each(hardDenied)('refuses $name even when the allowlist names it', (tool) => {
+    const r = row({ scopes: { capabilities: [...tool.capabilities], tools: [tool.name, `${tool.name.split(':')[0]}:*`] } });
+    expect(decide(tool, {}, r)).toMatchObject({ allow: false, code: 'hard_denied' });
+  });
+
+  it('refuses a cross-workspace tool the allowlist names', () => {
+    const tool: AppScopeTool = { name: 'search:semantic', capabilities: ['search:read'], crossWorkspace: true };
+    expect(decide(tool, {}, row({ scopes: { tools: ['search:semantic'] } }))).toMatchObject({ allow: false, code: 'cross_workspace' });
+  });
+
+  it('does not hard-deny an ordinary workspace tool', () => {
+    expect(hardDenyReason(harnessList)).toBeNull();
+    expect(hardDenyReason(plansGet)).toBeNull();
+  });
+});
+
+describe('evaluateAppScope — workspace and harness binding', () => {
+  it('refuses a call dispatched under another workspace', () => {
+    expect(decide(harnessList, {}, row(), { workspaceId: 'ws-other' })).toMatchObject({ allow: false, code: 'workspace_mismatch' });
+  });
+
+  it('refuses when no workspace is known (fail closed)', () => {
+    expect(decide(harnessList, {}, row(), { workspaceId: null })).toMatchObject({ allow: false, code: 'workspace_mismatch' });
+  });
+
+  it('refuses a workspace argument naming another workspace', () => {
+    expect(decide(harnessList, { workspace: 'ws-other' })).toMatchObject({ allow: false, code: 'workspace_mismatch' });
+  });
+
+  it('refuses a harness outside the harness allowlist (arg or transport)', () => {
+    const r = row({ scopes: { tools: ['plans:*'], harnesses: ['alpha'] } });
+    expect(decide(plansGet, { harness: 'beta' }, r)).toMatchObject({ allow: false, code: 'harness_not_in_scope' });
+    expect(decide(plansGet, { harness: 'alpha' }, r, { harnessSlug: 'beta' })).toMatchObject({ allow: false, code: 'harness_not_in_scope' });
+    expect(decide(plansGet, { harness: 'alpha' }, r)).toEqual({ allow: true });
+  });
+
+  it('requires a harness to be named when the key is harness-limited and the tool takes one', () => {
+    const r = row({ scopes: { tools: ['plans:*'], harnesses: ['alpha'] } });
+    expect(decide(plansGet, {}, r)).toMatchObject({ allow: false, code: 'harness_required_by_scope' });
+    expect(decide(plansGet, {}, r, { harnessSlug: '*' })).toMatchObject({ allow: false, code: 'harness_required_by_scope' });
+  });
+});
+
+describe('evaluateAppScope — live key state', () => {
+  it('refuses revoked, paused and expired keys whatever they ask for', () => {
+    expect(decide(harnessList, {}, row({ revoked_at: new Date() }))).toMatchObject({ allow: false, code: 'key_revoked' });
+    expect(decide(harnessList, {}, row({ paused_at: new Date() }))).toMatchObject({ allow: false, code: 'key_paused' });
+    expect(decide(harnessList, {}, row({ expires_at: new Date(Date.now() - 1000) }))).toMatchObject({ allow: false, code: 'key_expired' });
+    expect(decide(harnessList, {}, row({ expires_at: new Date(Date.now() + 60_000) }))).toEqual({ allow: true });
+  });
+});
+
+describe('validateAppKeyScopes — issue-time refusal (R-6)', () => {
+  it('accepts an ordinary scope', () => {
+    expect(validateAppKeyScopes({ capabilities: ['harness:read'], tools: ['harness:list', 'plans:*'], harnesses: ['alpha'] })).toEqual([]);
+  });
+
+  it('refuses the wildcard capability and hard-denied capability namespaces', () => {
+    const problems = validateAppKeyScopes({ capabilities: ['*', 'capability:bash', 'secrets:x:read', 'processes:kill', 'harness:read'] });
+    expect(problems.map((p) => p.value)).toEqual(['*', 'capability:bash', 'secrets:x:read', 'processes:kill']);
+  });
+
+  it('refuses wildcard tool entries and hard-denied groups', () => {
+    const problems = validateAppKeyScopes({ tools: ['*', '*:*', 'dev:restart', 'tools:*', 'harness:list'] });
+    expect(problems.map((p) => p.value)).toEqual(['*', '*:*', 'dev:restart', 'tools:*']);
+  });
+
+  it('with the catalog, refuses a tool whose declared capability is hard-denied, a cross-workspace tool, and an unknown tool', () => {
+    const catalog = new Map<string, Pick<AppScopeTool, 'name' | 'capabilities' | 'crossWorkspace'>>([
+      ['harness:list', { name: 'harness:list', capabilities: ['harness:read'] }],
+      ['harness:shell', { name: 'harness:shell', capabilities: ['capability:bash'] }],
+      ['search:semantic', { name: 'search:semantic', capabilities: ['search:read'], crossWorkspace: true }],
+    ]);
+    const problems = validateAppKeyScopes({ tools: ['harness:list', 'harness:shell', 'search:semantic', 'harness:nope'] }, catalog);
+    expect(problems.map((p) => p.value)).toEqual(['harness:shell', 'search:semantic', 'harness:nope']);
+  });
+});

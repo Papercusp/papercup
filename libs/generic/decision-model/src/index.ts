@@ -33,3 +33,14 @@ export {
   type DecideOptions,
   type FetchLike,
 } from './client.js';
+export {
+  toDecisionLedgerEntry,
+  canonicalJson,
+  sha256Hex,
+  stateSha256,
+  questionsSchemaSha256,
+  optionOrderOf,
+  type DecisionLedgerEntry,
+  type DecisionLedgerOptions,
+  type DecisionPricing,
+} from './ledger.js';

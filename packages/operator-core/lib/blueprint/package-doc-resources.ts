@@ -12,6 +12,7 @@ import type { KnowledgePack, PackDocItem } from '../knowledge-packs/pack-format'
 import { packageResourceKey, preparePackageResource,
   type PackageExternalResource, type PackageResourceAddress, type PackageResourceDriver,
   type PackageResourceReceipt } from './package-resource-receipts';
+import { resolveWearerPackageDocKeys } from './package-memory-visibility';
 
 /** The composed guide doc a package part belongs to (addressed parts never project into it). */
 export const PACKAGE_DOC_ID = 'claude-md';
@@ -189,6 +190,41 @@ export function packageDocDriver(
       });
     },
   };
+}
+
+export interface WearerPackageDocHit {
+  partKey: string;
+  harnessSlug: string;
+  section: string | null;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+/** docs:search's pack-doc source (D-022): the query's lexemes OR-matched over
+ * ONLY the parts addressed to the wearer's applied doc keys. A non-wearer holds
+ * no key, so it reads nothing — the same boundary as the transition channel. */
+export async function searchWearerPackageDocs(sql: postgres.Sql, input: {
+  workspaceId: string; ownerId: string; query: string; limit: number;
+}): Promise<WearerPackageDocHit[]> {
+  const keys = await resolveWearerPackageDocKeys(sql, input);
+  if (!keys.length || !input.query.trim()) return [];
+  const rows = await sql<Array<{ part_key: string; harness_slug: string; target_section: string | null; body: string; score: number }>>`
+    SELECT p.part_key, p.harness_slug, p.target_section, p.body,
+           ts_rank_cd(to_tsvector('english', coalesce(p.target_section, '') || ' ' || p.body), q.q)::float8 AS score
+      FROM harness_shared.harness_doc_parts p
+      CROSS JOIN LATERAL (SELECT replace(plainto_tsquery('english', ${input.query})::text, '&', '|')::tsquery AS q) q
+     WHERE p.workspace_id = ${input.workspaceId} AND p.doc_id = ${PACKAGE_DOC_ID} AND p.tombstone = false
+       AND p.stack_scope && ${keys.map((key) => `package:${key}`)}::text[]
+       AND to_tsvector('english', coalesce(p.target_section, '') || ' ' || p.body) @@ q.q
+     ORDER BY score DESC, p.ordinal, p.part_key
+     LIMIT ${Math.max(1, input.limit)}`;
+  return rows.map((row) => {
+    const lead = /^\*\*(.+?)\*\*\n+/.exec(row.body);
+    const text = lead ? row.body.slice(lead[0].length) : row.body;
+    return { partKey: row.part_key, harnessSlug: row.harness_slug, section: row.target_section,
+      title: lead?.[1] ?? row.part_key, excerpt: text.replace(/\s+/g, ' ').trim().slice(0, 240), score: row.score };
+  });
 }
 
 export async function prepareKnowledgeDocResources(

@@ -3273,6 +3273,33 @@ impl App {
         self.chat_scroll = 0;
     }
 
+    /// Keep a turn in call order (pui-chat-first-ux-2026-09-28 P-013).
+    ///
+    /// A block renders its text, then its tool rows. Text that arrives AFTER
+    /// a tool call is the answer that call produced, so writing it into the
+    /// block that already holds the call would print the answer above the
+    /// tools that produced it (P-005: the calc.js explanation sat above the
+    /// `ls` and Read rows). Such text starts a new in-flight block instead.
+    /// The renderer omits the role header on a same-turn follow-on block, so
+    /// the turn still reads as one agent reply.
+    ///
+    /// SU-session only. That stream delivers each text segment as plain text
+    /// with its own started/completed pair. The legacy converse stream instead
+    /// wraps the whole reply in one `<say>` span that `finalize` extracts from
+    /// the concatenated buffer, so splitting it at a tool would surface prose
+    /// that contract hides.
+    fn begin_text_after_tools(&mut self) {
+        let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) else {
+            return;
+        };
+        if m.tools.is_empty() {
+            return;
+        }
+        m.content = crate::chat_tags::finalize(&m.content);
+        m.streaming = false;
+        self.chat_messages.push(ChatMessage::streaming_assistant());
+    }
+
     // ── Transcript copy contract (P-007, PUBLIC_RELEASE_UX.md:188/:373) ──────
 
     /// The block `y` / `Shift-Y` would act on: the explicit focus when set,
@@ -3951,6 +3978,12 @@ impl App {
                 content,
                 ..
             } => {
+                if role == "assistant" {
+                    // P-013: a text segment that follows a tool call opens its
+                    // own block, before any delta or its canonical `completed`
+                    // value is written into the block holding the call.
+                    self.begin_text_after_tools();
+                }
                 if phase == "started" && role == "assistant" {
                     if !self.chat_messages.iter().any(|message| message.streaming) {
                         self.chat_messages.push(ChatMessage::streaming_assistant());
@@ -15052,6 +15085,94 @@ mod tests {
             app.chat_messages.last().unwrap().tools[0].outcome,
             ToolOutcome::Ok
         );
+    }
+
+    /// pui-chat-first-ux-2026-09-28 P-013: text an engine writes AFTER a tool
+    /// call is the answer that call produced, so it must land in a block below
+    /// the call — never appended to the block that renders the call's row
+    /// beneath its text.
+    #[test]
+    fn su_session_text_after_a_tool_call_opens_a_block_below_it() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let seq = std::cell::Cell::new(0u64);
+        let next = || {
+            seq.set(seq.get() + 1);
+            seq.get()
+        };
+        let text = |app: &mut App, phase: &str, content: Option<&str>| {
+            let mut e = su_event_base("transcript", next());
+            e["phase"] = json!(phase);
+            e["turnId"] = json!("turn-1");
+            e["role"] = json!("assistant");
+            e["channel"] = json!("text");
+            if let Some(content) = content {
+                e["content"] = json!(content);
+            }
+            app.apply_su_session_event(su_event(e));
+        };
+        let tool = |app: &mut App, phase: &str, call: &str, name: &str| {
+            let mut e = su_event_base("tool", next());
+            e["phase"] = json!(phase);
+            e["turnId"] = json!("turn-1");
+            e["callId"] = json!(call);
+            e["name"] = json!(name);
+            e["isError"] = json!(false);
+            app.apply_su_session_event(su_event(e));
+        };
+
+        // text → tool → tool → text, in wire order.
+        text(&mut app, "started", None);
+        text(&mut app, "delta", Some("Let me look."));
+        text(&mut app, "completed", Some("Let me look."));
+        tool(&mut app, "started", "call-1", "Bash");
+        tool(&mut app, "completed", "call-1", "Bash");
+        tool(&mut app, "started", "call-2", "Read");
+        tool(&mut app, "completed", "call-2", "Read");
+        text(&mut app, "started", None);
+        text(&mut app, "delta", Some("calc.js adds "));
+        text(&mut app, "delta", Some("two numbers."));
+        text(&mut app, "completed", Some("calc.js adds two numbers."));
+
+        let blocks: Vec<(String, Vec<String>)> = app
+            .chat_messages
+            .iter()
+            .map(|m| (m.content.clone(), m.tools.iter().map(|t| t.name.clone()).collect()))
+            .collect();
+        assert_eq!(
+            blocks,
+            vec![
+                ("Let me look.".to_string(), vec![]),
+                (String::new(), vec!["Bash".to_string(), "Read".to_string()]),
+                ("calc.js adds two numbers.".to_string(), vec![]),
+            ],
+            "blocks must follow call order"
+        );
+        assert!(app.chat_messages.iter().all(|m| !m.streaming));
+        // The empty tool block adds nothing to the model's history.
+        assert_eq!(
+            app.chat_history_for_send(),
+            vec![
+                ("assistant".to_string(), "Let me look.".to_string()),
+                ("assistant".to_string(), "calc.js adds two numbers.".to_string()),
+            ]
+        );
+    }
+
+    /// The legacy converse stream keeps its one-block shape: its `<say>` span
+    /// is extracted from the whole buffer, so a tool call must not split it.
+    #[test]
+    fn legacy_converse_text_after_a_tool_call_stays_in_one_block() {
+        let mut a = App::new();
+        a.begin_user_send("hi");
+        a.update(Event::ChatDelta("thinking aloud ".into()));
+        a.update(Event::ChatToolCall(ChatToolCall::plain("harness:list".into())));
+        a.update(Event::ChatDelta("<say>done</say>".into()));
+        a.update(Event::ChatDone);
+        assert_eq!(a.chat_messages.len(), 2);
+        assert_eq!(a.chat_messages[1].content, "done");
+        assert_eq!(a.chat_messages[1].tools.len(), 1);
     }
 
     #[test]

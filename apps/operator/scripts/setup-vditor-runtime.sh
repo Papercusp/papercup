@@ -35,6 +35,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# shellcheck source=lib/mirror-tree.sh
+. scripts/lib/mirror-tree.sh
+
 # Same require.resolve('pkg/package.json') trap as the sibling setup scripts —
 # probe paths directly instead of asking node to resolve them.
 SRC=""
@@ -108,11 +111,18 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] \
   && ! grep -qF 'https://cdn.jsdelivr.net/npm/d3@6.7.0' "$MARKMAP" \
   && ! grep -qF 'https://cdn.jsdelivr.net/npm/markmap-view@0.14.3' "$MARKMAP" \
   && ! grep -qF 'https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js' "$MARKMAP"; then
-  echo "vditor-runtime: already current (v$VERSION) — skipping copy"
-  exit 0
+  # A matching stamp is NOT sufficient on its own (WI-10004074): both mirrors
+  # must hold exactly their expected file sets, or files from an older build ride
+  # along into every release SPA. See scripts/lib/mirror-tree.sh.
+  if mirror_matches "$SRC" "$DEST" \
+    && [ "$(mirror_file_set "$LOCAL_DEST")" = "$(printf '%s\n' ./.versions ./d3.min.js ./markmap-view.min.js ./webfontloader.js | LC_ALL=C sort)" ]; then
+    echo "vditor-runtime: already current (v$VERSION) — skipping copy"
+    exit 0
+  fi
+  echo "vditor-runtime: v$VERSION stamp is current but a mirror's file set has drifted — re-copying"
 fi
 
-rm -rf "$DEST"
+rm -rf "$DEST" "$LOCAL_DEST"
 mkdir -p "$DEST"
 cp -r "$SRC"/. "$DEST"/
 
