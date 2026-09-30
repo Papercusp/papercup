@@ -35,15 +35,20 @@ fi
 
 DEST="public/wake-runtime"
 mkdir -p "$DEST"
-cp "$SRC"/*.wasm "$DEST/" 2>/dev/null || true
-cp "$SRC"/ort.bundle.min.mjs "$DEST/" 2>/dev/null || true
+# `--remove-destination` on every copy (WI-10004321): plain cp rewrites an
+# existing destination in place, on the SAME inode, which also rewrites every
+# tree that hard-links it (release trees did, via setup-release-checkout.sh
+# step 3b). Unlinking first confines a rewrite to this tree. See
+# setup-vad-runtime.sh for the full account.
+cp --remove-destination "$SRC"/*.wasm "$DEST/" 2>/dev/null || true
+cp --remove-destination "$SRC"/ort.bundle.min.mjs "$DEST/" 2>/dev/null || true
 # The threaded backend's JS loader modules. ort.bundle.min.mjs DYNAMICALLY
 # imports `ort-wasm-simd-threaded.<variant>.mjs` (jsep/jspi/asyncify/plain) to
 # instantiate the multi-threaded wasm — WITHOUT them onnxruntime-web fails with
 # "Importing a module script failed → no available backend found", which silently
 # broke openWakeWord + Silero VAD in the desktop webview (WI-4498). Copying only
 # *.wasm + ort.bundle.min.mjs (the old behavior) left these out.
-cp "$SRC"/ort-wasm-simd-threaded*.mjs "$DEST/" 2>/dev/null || true
+cp --remove-destination "$SRC"/ort-wasm-simd-threaded*.mjs "$DEST/" 2>/dev/null || true
 
 # Guard (recurrence): the jsep loader is what ort requests by default, so its
 # absence is exactly the silent-break above. Fail loudly rather than ship a

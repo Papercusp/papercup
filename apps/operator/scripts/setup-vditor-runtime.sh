@@ -163,5 +163,9 @@ fi
 
 printf '%s\n' "$LOCAL_VERSIONS" > "$LOCAL_STAMP"
 
+# $STAMP sits OUTSIDE the rm'd $DEST, so a `>` redirect would truncate the
+# existing inode in place and rewrite every tree that hard-links it (WI-10004321).
+# Unlink first so the new stamp is this tree's own file.
+rm -f "$STAMP"
 echo "$VERSION" > "$STAMP"
 echo "vditor-runtime: mirrored vditor v$VERSION and local markmap assets into $DEST/ ($(du -sh "$DEST" | cut -f1))"
