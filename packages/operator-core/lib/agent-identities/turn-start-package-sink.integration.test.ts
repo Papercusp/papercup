@@ -57,7 +57,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
   let db: OrgTestDb;
   let root: string;
 
-  async function registerClass(id: string, provider: string | null) {
+  async function registerClass(id: string, provider: string | null, kind: 'tool' | 'recipe' = 'tool') {
     const sql = db.adminSql;
     await sql`
       INSERT INTO harness_shared.capability_class_registry (workspace_id, id, version, title, description, interface_verbs)
@@ -65,21 +65,28 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
         ${JSON.stringify({ read: { inputSchema: { type: 'object' }, outputSchema: NOTES_SCHEMA } })}::jsonb)`;
     if (!provider) return;
     const run = `run-${id}`;
+    // A recipe row carries the inspected evidence class-provider.ts requires to admit it.
+    const report = kind === 'recipe'
+      ? { schemaVersion: 'capability-class-recipe-v1', recipes: { read: {
+        ok: true, recipe: { id: `${provider}:read`, revision: 'a'.repeat(64) },
+        inspectionPin: { sourceSha256: 'b'.repeat(64), bindingsSha256: 'c'.repeat(64), recipeRevision: 'a'.repeat(64) },
+        toolNames: ['notes:read'], requiredCapabilities: ['notes:read'], outputSchema: NOTES_SCHEMA } } }
+      : {};
     await sql`
       INSERT INTO harness_shared.capability_class_conformance_runs
         (id, workspace_id, class_id, class_version, provider_package, provider_version, registry_revision,
          verb_bindings, structural_passed, report, provider_kind, latency_class)
       VALUES (${run}, ${WS}, ${id}, '1.0.0', ${provider}, '1.0.0', 'registry-1',
-        ${sql.json({ read: `${provider}:read` })}, true, '{}'::jsonb, 'tool', 'sync')`;
+        ${sql.json({ read: `${provider}:read` })}, true, ${sql.json(report)}, ${kind}, 'sync')`;
     await sql`
       INSERT INTO harness_shared.capability_class_provider_bindings
         (workspace_id, class_id, class_version, provider_package, provider_version, conformance_run_id,
          provider_kind, latency_class)
-      VALUES (${WS}, ${id}, '1.0.0', ${provider}, '1.0.0', ${run}, 'tool', 'sync')`;
+      VALUES (${WS}, ${id}, '1.0.0', ${provider}, '1.0.0', ${run}, ${kind}, 'sync')`;
     await sql`
       INSERT INTO harness_shared.pot_capability_class_bindings
         (workspace_id, pot_slug, class_id, class_version, provider_package, provider_version, provider_kind, latency_class)
-      VALUES (${WS}, ${POT}, ${id}, '1.0.0', ${provider}, '1.0.0', 'tool', 'sync')`;
+      VALUES (${WS}, ${POT}, ${id}, '1.0.0', ${provider}, '1.0.0', ${kind}, 'sync')`;
   }
 
   const due = (id: string, ref: string, priority: number, tokenBudget: number, trigger: unknown = 'every-turn') => ({
@@ -111,6 +118,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
     await registerClass('context.notes', 'notes-tool');
     await registerClass('context.unbound', null);
+    await registerClass('context.recipe', 'notes-recipe', 'recipe');
     // Two identities, three due contributions, each asking for most of the sink.
     writeIdentity('pkg-a', [due('brief', 'context.notes@1', 90, 300)]);
     writeIdentity('pkg-b', [
@@ -120,6 +128,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
       due('later', 'context.notes@1', 99, 300, 'on-demand'),
     ]);
     writeIdentity('pkg-unbound', [due('ghost', 'context.unbound@1', 40, 100)]);
+    writeIdentity('pkg-recipe', [due('pinned', 'context.recipe@1', 40, 100)]);
   }, 180_000);
 
   beforeEach(() => {
@@ -213,6 +222,17 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     })]);
     const rows = projectPackageOrientationRows(sink.classes, 'turn-start').map((row) => row.text);
     expect(rows).toEqual(['- ⟦pkg-unbound/ghost omitted: provider-error⟧']);
+  }, 120_000);
+
+  it('omits an inspected recipe binding visibly and dispatches nothing until the wearer resolver exists (P-013 D-020)', async () => {
+    await wear('owner-recipe', ['domain:pkg-recipe']);
+    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-recipe', workspaceId: WS, deps: { limits: LIMITS }, turnId:'r1' });
+    expect(dispatch.calls).toEqual([]);
+    expect(sink.result!.omissions).toEqual([expect.objectContaining({
+      contributionId: 'pinned', reason: 'provider-error', detail: 'capability-class:recipe-wearer-unavailable',
+    })]);
+    const rows = projectPackageOrientationRows(sink.classes, 'turn-start').map((row) => row.text);
+    expect(rows).toEqual(['- ⟦pkg-recipe/pinned omitted: provider-error⟧']);
   }, 120_000);
 
   it('is a no-op for a wearer that declares nothing due, and for an unknown session', async () => {
