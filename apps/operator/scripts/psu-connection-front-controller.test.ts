@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +11,7 @@ import {
   HOSTED_RECONNECT_POLL_MS,
   PSU_CONNECTION_STORE_VERSION,
   defaultPsuConnectionStorePath,
+  hostedForwardInput,
   loadPsuConnectionStore,
   normalizeGcpIapProfile,
   normalizeHostedPortalOrigin,
@@ -539,7 +541,8 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
       `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
     );
     expect(terminals[0]?.initialInput).toBe(
-      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--role=su' '--label=it'\\''s mine'\r`,
+      `command -v psu >/dev/null && exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--role=su' '--label=it'\\''s mine'; ` +
+        `printf '%s\\n' 'psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.'\r`,
     );
     const sessions = portal.calls
       .filter((call) => call.url.endsWith("/terminal"))
@@ -548,6 +551,41 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     expect(sessions).toHaveLength(2);
     expect(sessions[0]).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(sessions[1]).toBe(sessions[0]);
+  });
+
+  describe("the line typed into the workspace shell, run by a real bash (WI-10003949)", () => {
+    // The remote terminal turns the typed CR into a newline; a pipe does not.
+    const typeInto = (bin: string, line: string) =>
+      spawnSync("/bin/bash", ["--norc", "--noprofile", "-s"], {
+        input: `${line.replace(/\r$/, "\n")}echo still-in-shell\n`,
+        env: { PATH: `${bin}:/usr/bin:/bin` },
+        encoding: "utf8",
+      });
+
+    it("stays in the shell and says why when the machine has no psu", () => {
+      const result = typeInto(tempHome(), hostedForwardInput("psu", ["--role=su"]));
+
+      expect(result.stdout).toBe(
+        "psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.\n" +
+          "still-in-shell\n",
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    });
+
+    it("replaces the shell with psu, marked forwarded, with every argv cell intact", () => {
+      const bin = tempHome();
+      writeFileSync(
+        join(bin, "psu"),
+        '#!/bin/sh\necho "forwarded=$PAPERCUSP_PSU_CONNECTION_FORWARDED"\nfor cell in "$@"; do echo "[$cell]"; done\nexit 7\n',
+      );
+      chmodSync(join(bin, "psu"), 0o755);
+
+      const result = typeInto(bin, hostedForwardInput("psu", ["--role=su", "--label=it's mine", "a b"]));
+
+      expect(result.stdout).toBe("forwarded=1\n[--role=su]\n[--label=it's mine]\n[a b]\n");
+      expect(result.status).toBe(7);
+    });
   });
 
   it("names the resume command when the relay drops before the remote shell exits", async () => {
@@ -1101,12 +1139,8 @@ describe("pui through psu's saved connections (P-017)", () => {
     ).resolves.toEqual({ handled: true, argv: ["workbench"], exitCode: 0 });
     await run(["--connect=portal.example.test", "workbench"]);
 
-    expect(terminals[0]?.initialInput).toBe(
-      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui 'workbench'\r`,
-    );
-    expect(terminals[1]?.initialInput).toBe(
-      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu 'workbench'\r`,
-    );
+    expect(terminals[0]?.initialInput).toBe(hostedForwardInput("pui", ["workbench"]));
+    expect(terminals[1]?.initialInput).toBe(hostedForwardInput("psu", ["workbench"]));
     const [pui, psu] = portal.calls
       .filter((call) => call.url.endsWith("/terminal"))
       .map((call) => (call.body as { session: string }).session);
@@ -1250,9 +1284,7 @@ describe("pui through psu's saved connections (P-017)", () => {
     const listed = portal.calls.find((call) => call.url.endsWith("/cli/workspaces"));
     expect(listed?.headers.authorization).toBe(`Bearer ${NEW_TOKEN}`);
     expect(terminals).toHaveLength(1);
-    expect(terminals[0]?.initialInput).toBe(
-      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui\r`,
-    );
+    expect(terminals[0]?.initialInput).toBe(hostedForwardInput("pui", []));
     // Sign-in-then-connect does not print the "now run --connect" hint.
     expect(output).not.toHaveBeenCalled();
     expect(loadPsuConnectionStore(storePath).profiles.map((profile: { name: string }) => profile.name)).toEqual([
