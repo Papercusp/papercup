@@ -648,7 +648,7 @@ export function makeBearerCredentialResolver(credentialRef: string): CredentialR
   const { kind, path } = parseCredentialRef(credentialRef);
   if (kind === 'keychain' || kind === 'apikey') {
     throw new Error(
-      `inference-gateway: unsupported bearer credentialRef '${credentialRef}' (${kind}: is Claude-only; use token:/file:/env: for bearer accounts)`,
+      `inference-gateway: unsupported bearer credentialRef '${credentialRef}' (${kind === 'keychain' ? 'keychain: is Claude-subscription-only' : 'apikey: is Claude-only'}; use token:/file:/env: for bearer accounts)`,
     );
   }
   let cachedToken: string | undefined;
@@ -672,18 +672,82 @@ export function makeBearerCredentialResolver(credentialRef: string): CredentialR
   };
 }
 
-/**
- * Build the `anthropic-beta` header to send upstream on an OAuth (subscription) request: the
- * client's existing beta flags PLUS the required `oauth-2025-04-20`, de-duplicated.
- */
-export function withOAuthBeta(incoming: string | null | undefined, context1m = false): string {
-  const flags = new Set(
+/** Split a comma-separated `anthropic-beta` value into trimmed, de-duplicated flags (order kept). */
+function betaFlags(incoming: string | null | undefined): Set<string> {
+  return new Set(
     (incoming ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
   );
+}
+
+/**
+ * Build the `anthropic-beta` header to send upstream on an OAuth (subscription) request: the
+ * client's existing beta flags PLUS the required `oauth-2025-04-20`, de-duplicated.
+ */
+export function withOAuthBeta(incoming: string | null | undefined, context1m = false): string {
+  const flags = betaFlags(incoming);
   flags.add(CLAUDE_OAUTH_BETA);
   if (context1m) flags.add(CLAUDE_CONTEXT_1M_BETA);
   return [...flags].join(',');
+}
+
+/**
+ * The client's `anthropic-beta` flags plus the 1M-context beta when requested — WITHOUT the
+ * subscription OAuth flag. This is the auth-neutral request-level value; the per-attempt layer
+ * (`claudeAttemptHeaders`) adds or removes the OAuth flag for the account the attempt lands on.
+ * Returns undefined when no flag remains.
+ */
+export function withClientBetas(incoming: string | null | undefined, context1m = false): string | undefined {
+  const flags = betaFlags(incoming);
+  flags.delete(CLAUDE_OAUTH_BETA);
+  if (context1m) flags.add(CLAUDE_CONTEXT_1M_BETA);
+  return flags.size ? [...flags].join(',') : undefined;
+}
+
+/** The auth mode a Claude `credentialRef` selects, decided from the ref alone (no secret read). */
+export function claudeAuthModeForRef(credentialRef: string): ClaudeAuthMode {
+  return parseCredentialRef(credentialRef).kind === 'apikey' ? 'api-key' : 'oauth';
+}
+
+/**
+ * Upstream headers for ONE Claude attempt (anthropic-credits-gateway-2026-09-30 P-006).
+ *
+ * Auth is decided per ATTEMPT, not per request: a request that hits a usage cap on a subscription
+ * account can rotate to a Console API-key account and must present THAT account's credential shape.
+ *  - `oauth` (subscription): `authorization: Bearer <token>` and the `oauth-2025-04-20` beta.
+ *  - `api-key` (Console credits): `x-api-key: <key>`, NO `authorization`, and the OAuth beta
+ *    REMOVED — a Console key carrying the subscription-only beta is rejected — while every other
+ *    client beta (context-1m, …) is kept.
+ * Any `authorization` / `x-api-key` already in `base` is dropped first, so a caller can never
+ * smuggle its own credential upstream (the gateway also strips them at intake; this is the
+ * attempt-level backstop). Header names are matched case-insensitively.
+ */
+export function claudeAttemptHeaders(
+  base: Record<string, string>,
+  authMode: ClaudeAuthMode,
+  token: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  let beta: string | undefined;
+  for (const [k, v] of Object.entries(base)) {
+    const lk = k.toLowerCase();
+    if (lk === 'authorization' || lk === 'x-api-key') continue;
+    if (lk === 'anthropic-beta') {
+      beta = beta ? `${beta},${v}` : v;
+      continue;
+    }
+    out[k] = v;
+  }
+  const flags = betaFlags(beta);
+  if (authMode === 'api-key') {
+    flags.delete(CLAUDE_OAUTH_BETA);
+    out['x-api-key'] = token;
+  } else {
+    flags.add(CLAUDE_OAUTH_BETA);
+    out.authorization = `Bearer ${token}`;
+  }
+  if (flags.size) out['anthropic-beta'] = [...flags].join(',');
+  return out;
 }
