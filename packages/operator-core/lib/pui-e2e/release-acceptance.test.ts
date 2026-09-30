@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
-import { probeDockerCreateStart, runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke } from './release-acceptance-run';
+import { DOCKER_START_PROBE_TIMEOUT_MS, probeDockerCreateStart, runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke, sweepOrphanedProbeContainers } from './release-acceptance-run';
 
 describe('Docker create/start release preflight', () => {
   it('passes on the first bounded offline stock-container launch that succeeds', () => {
@@ -15,11 +15,19 @@ describe('Docker create/start release preflight', () => {
       return { status: 0 };
     });
     expect(problem).toBeNull();
-    expect(calls).toHaveLength(2);
     expect(calls[0]).toEqual({ args: ['image', 'inspect', 'ubuntu:24.04'], timeout: 5_000 });
-    const [launch] = calls.slice(1);
-    expect(launch.timeout).toBe(20_000);
-    expect(launch.args).toEqual(expect.arrayContaining(['--pull=never', '--network=none', 'ubuntu:24.04', '--name']));
+    const launches = calls.filter(({ args }) => args[0] === 'run');
+    expect(launches).toHaveLength(1);
+    expect(launches[0].timeout).toBe(DOCKER_START_PROBE_TIMEOUT_MS);
+    expect(launches[0].args).toEqual(expect.arrayContaining(['--pull=never', '--network=none', 'ubuntu:24.04', '--name']));
+  });
+
+  // WI-10004239: on the release host an ordinary first launch took 24.6s (the
+  // next 1.4s) while the WI-10003403 wedge lasts minutes. A 20s budget refused
+  // every attempt of that healthy host before any leg ran.
+  it('gives each launch a budget above a slow loaded-host start and below a minutes-long wedge', () => {
+    expect(DOCKER_START_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+    expect(DOCKER_START_PROBE_TIMEOUT_MS).toBeLessThan(120_000);
   });
 
   // EI-24453068584648808: one ~20s stall on a loaded host refused a whole
@@ -35,10 +43,44 @@ describe('Docker create/start release preflight', () => {
     });
     expect(problem).toBeNull();
     expect(launches).toBe(2);
-    const stalledName = calls[1][calls[1].indexOf('--name') + 1];
+    const first = calls.findIndex((args) => args[0] === 'run');
+    const stalledName = calls[first][calls[first].indexOf('--name') + 1];
     expect(stalledName).toMatch(/^pui-release-preflight-/);
-    expect(calls[2]).toEqual(['rm', '--force', stalledName]);
-    expect(calls[3][0]).toBe('run');
+    expect(calls[first + 1]).toEqual(['rm', '--force', stalledName]);
+    expect(calls[first + 2][0]).toBe('run');
+  });
+
+  // WI-10004239: a timed-out client does not cancel the daemon's create, so a
+  // per-attempt removal can lose the race and leave a Created container. Eight
+  // such containers from three runs were found on the release host.
+  it('removes probe containers left by exited runs and keeps those of live runs', () => {
+    const calls: string[][] = [];
+    const listed = [
+      'pui-release-preflight-111-1790766510125-1',
+      'pui-release-preflight-222-1790766530190-2',
+      `pui-release-preflight-${process.pid}-1790766550268-3`,
+      'other-pui-release-preflight-333-1-1',
+      'pui-release-preflight-notapid-1-1',
+    ].join('\n');
+    const removed = sweepOrphanedProbeContainers((args) => {
+      calls.push(args);
+      return args[0] === 'ps' ? { status: 0, stdout: `${listed}\n` } : { status: 0 };
+    }, (pid) => pid === 222);
+    expect(removed).toEqual(['pui-release-preflight-111-1790766510125-1']);
+    expect(calls[0]).toEqual(expect.arrayContaining(['ps', '--all', '--filter', 'name=pui-release-preflight-']));
+    expect(calls[1]).toEqual(['rm', '--force', 'pui-release-preflight-111-1790766510125-1']);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('sweeps orphans before the first launch and removes nothing when docker cannot list', () => {
+    const calls: string[][] = [];
+    expect(probeDockerCreateStart((args) => {
+      calls.push(args);
+      if (args[0] === 'ps') return { status: 0, stdout: 'pui-release-preflight-444-1-1\n' };
+      return { status: 0 };
+    }, () => false)).toBeNull();
+    expect(calls.map((args) => args[0])).toEqual(['image', 'ps', 'rm', 'run']);
+    expect(sweepOrphanedProbeContainers(() => ({ status: 1 }), () => false)).toEqual([]);
   });
 
   it('refuses only when every attempt fails, naming each failure and removing each attempt', () => {
