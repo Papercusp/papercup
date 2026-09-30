@@ -6,6 +6,7 @@
  * provider and anchor reads as seams, so budget, omission and fence behaviour
  * come from the production evaluator rather than a restatement of it.
  */
+import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resetSinkEvaluatorForTests } from './sink-evaluator';
 import {
@@ -69,18 +70,52 @@ describe('evaluatePreToolGuards (fail closed, deny-only)', () => {
     expect(evaluatePreToolGuards(rules, call('coord:send', { mode: 'write' }))).toEqual({ decision: 'none' });
   });
 
-  it('refuses when evaluation throws, when input was cut, and when a worn pin no longer parses', () => {
+  // Every way a guard can fail to prove a call allowed, with the refusal the real evaluator owes.
+  const failClosedScenarios = () => [
     // An invalid pattern is an author bug the matcher throws on at evaluation.
-    const throwing = worn(guardPin('broken', { deny: { 'input.command': { matches: '[' } } }));
-    const thrown = evaluatePreToolGuards(throwing, call('capability:bash', { command: 'ls' }));
-    expect(thrown).toMatchObject({ decision: 'deny', ruleId: 'broken' });
+    { name: 'evaluation throws', rules: worn(guardPin('broken', { deny: { 'input.command': { matches: '[' } } })),
+      pending: call('capability:bash', { command: 'ls' }), refusal: { ruleId: 'broken' } },
+    { name: 'input cut', rules: worn(guardPin('no-rm', { deny: { 'input.command': { matches: 'rm -rf' } } })),
+      pending: { ...call('capability:bash', { command: 'ls' }), inputTruncated: true },
+      refusal: { ruleId: 'no-rm', reason: expect.stringContaining('exceeds') } },
+    { name: 'pin unreadable', rules: wornSyncRules(artifact(layer('coder', ['bad']), { ...guardPin('bad', {}), value: null })),
+      pending: call('anything'), refusal: { identityId: 'coder', ruleId: 'bad' } },
+  ];
+  const openings = (evaluate: typeof evaluatePreToolGuards) => failClosedScenarios()
+    .filter(({ rules, pending }) => evaluate(rules, pending).decision !== 'deny').map(({ name }) => name);
 
+  // Falsifiability control, kept permanently: the natural fail-OPEN bug. It
+  // evaluates guards like the real one but swallows a throw and ignores both
+  // the cut-input flag and unreadable pins.
+  const failOpenControl: typeof evaluatePreToolGuards = (rules, pending) => {
+    const event = { tool: pending.tool, input: pending.input, client: pending.client };
+    for (const { identityId, rule } of rules.rules) {
+      if (rule.sink !== 'pre-tool' || !rule.guard || !ruleMatchesTool(rule.tools, pending.tool)) continue;
+      try {
+        if (rule.guard.deny !== undefined && evaluateDataCondition(rule.guard.deny as DataCondition, event)) {
+          return { decision: 'deny', identityId, ruleId: rule.id, reason: 'control' };
+        }
+      } catch { /* the bug under control: a throw reads as no refusal */ }
+    }
+    return { decision: 'none' };
+  };
+
+  it('refuses when evaluation throws, when input was cut, and when a worn pin no longer parses', () => {
+    for (const { rules, pending, refusal } of failClosedScenarios()) {
+      expect(evaluatePreToolGuards(rules, pending)).toMatchObject({ decision: 'deny', ...refusal });
+    }
+    expect(openings(evaluatePreToolGuards)).toEqual([]);
+  });
+
+  it('catches a fail-open evaluator in each of those scenarios (falsifiability control)', () => {
+    // Calibration: the control agrees with the real evaluator wherever evaluation succeeds...
     const plain = worn(guardPin('no-rm', { deny: { 'input.command': { matches: 'rm -rf' } } }));
-    expect(evaluatePreToolGuards(plain, { ...call('capability:bash', { command: 'ls' }), inputTruncated: true }))
-      .toMatchObject({ decision: 'deny', ruleId: 'no-rm', reason: expect.stringContaining('exceeds') });
-
-    const unreadable = wornSyncRules(artifact(layer('coder', ['bad']), { ...guardPin('bad', {}), value: null }));
-    expect(evaluatePreToolGuards(unreadable, call('anything'))).toMatchObject({ decision: 'deny', identityId: 'coder', ruleId: 'bad' });
+    for (const command of ['rm -rf /', 'ls']) {
+      expect(failOpenControl(plain, call('capability:bash', { command })).decision)
+        .toBe(evaluatePreToolGuards(plain, call('capability:bash', { command })).decision);
+    }
+    // ...so each scenario alone is what tells them apart.
+    expect(openings(failOpenControl)).toEqual(['evaluation throws', 'input cut', 'pin unreadable']);
   });
 
   it('never approves: the only verdicts are deny and none', () => {
