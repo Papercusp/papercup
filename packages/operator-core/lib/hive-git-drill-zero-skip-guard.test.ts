@@ -1481,9 +1481,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain('phase_a_status_args() {');
     expect(physicalScenario).toContain('phase_a_status_args "$VM_GIT_SYNC_SLUG"');
     expect(physicalScenario).toContain('phase_a_status_args "$TOWER_GIT_SYNC_SLUG"');
-    expect(phaseAScenario.indexOf('require_phase_a_two_host_substrate_ready >')).toBeLessThan(
+    expect(phaseAScenario.indexOf('require_phase_a_two_host_substrate_ready "$phase_dir" >')).toBeLessThan(
       phaseAScenario.indexOf('phase-a-quarantine'),
     );
+    // WI-10004347: the readiness gate waits for convergence through the shared helper
+    // instead of reading both hosts once.
+    expect(physicalScenario).toContain('-- phase_a_two_host_substrate_observe');
+    expect(physicalScenario).toContain('${HIVE_GIT_PHASE_A_READINESS_WAIT_SEC:-300}');
 
   });
 
@@ -1542,7 +1546,7 @@ case "$*" in
     if printf '%s\\n' "$*" | grep -F '"projection"' >/dev/null \
       && printf '%s\\n' "$*" | grep -F '"harnesses[].harnessSlug"' >/dev/null; then
       printf '%s\\n' received > '${projectionMarker}'
-      printf '%s\\n' '{"substrateActive":true,"reachedSubstrateOwner":true,"healthInputsObserved":true,"bootedCount":1,"harnesses":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world","verdict":"healthy","reasons":[]}],"contentConnectivity":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world","topicHex":"${'ab'.repeat(32)}","contentPeers":0,"lastContentAnnounceRecvMs":${Date.now()}}]}'
+      printf '%s\\n' '{"substrateActive":true,"reachedSubstrateOwner":true,"healthInputsObserved":true,"bootedCount":1,"harnesses":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world-3-pot","verdict":"healthy","reasons":[]}],"contentConnectivity":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world-3-pot","topicHex":"${'ab'.repeat(32)}","contentPeers":0,"lastContentAnnounceRecvMs":${Date.now()}}]}'
     else
       printf '%s\\n' '{"summary":"payload preview omitted","_projection":{"kind":"bounded-payload","truncated":true}}'
     fi
@@ -1568,6 +1572,9 @@ esac
           HIVE_GIT_PHYSICAL_EXECUTE: 'p2p-git-live-activation-2026-07-09',
           HIVE_GIT_PHYSICAL_VM_SOURCE: '/tmp/hive-git-physical-source.123',
           HIVE_GIT_PHYSICAL_TOWER_SOURCE: towerSource,
+          // One read: the zero-peer VM never converges, so a waiting budget would only
+          // slow this case down. The budgeted wait is covered by the next case.
+          HIVE_GIT_PHASE_A_READINESS_WAIT_SEC: '0',
         },
       },
     );
@@ -1579,6 +1586,135 @@ esac
     // If the dispatch projection regresses away, the fake returns the same
     // spill wrapper observed on the physical VM and this marker stays absent.
     expect(existsSync(projectionMarker)).toBe(true);
+    expect(existsSync(quarantineMarker)).toBe(false);
+    expect(existsSync(scpMarker)).toBe(false);
+    expect(existsSync(output)).toBe(false);
+    const readiness = JSON.parse(
+      readFileSync(join(runDir, 'phase-a', 'two-host-substrate-readiness.json'), 'utf8'),
+    );
+    expect(readiness).toMatchObject({ ready: false, failedGate: 'vm', attempts: 1, waitBudgetSec: 0 });
+    expect(readiness.vm).toMatchObject({ host: 'vm', ready: false, contentPeers: 0 });
+  });
+
+  it('waits out a transient zero-peer VM read and passes Phase A readiness on the next read (WI-10004347)', () => {
+    const runDir = mkdtempSync(join(evidenceDir, 'phase-a-substrate-readiness-wait-'));
+    const fakeBin = join(runDir, 'bin');
+    const fakeHome = join(runDir, 'home');
+    const output = join(runDir, 'unsigned-evidence.json');
+    const towerIdentity = join(runDir, 'tower-identity.json');
+    const vmIdentity = join(runDir, 'vm-identity.json');
+    const quarantineMarker = join(runDir, 'quarantine-reached');
+    const vmReads = join(runDir, 'vm-readiness-reads');
+    const towerReads = join(runDir, 'tower-readiness-reads');
+    const pastGateMarker = join(runDir, 'past-readiness-gate');
+    const identity = (hostId: string, byte: number) => ({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId,
+      deviceKey: Buffer.alloc(32, byte).toString('base64'),
+      machineFingerprint: byte.toString(16).repeat(64),
+    });
+    writeFileSync(towerIdentity, JSON.stringify(identity('tower', 1)));
+    writeFileSync(vmIdentity, JSON.stringify(identity('vm', 2)));
+    mkdirSync(fakeBin);
+
+    // The staged tower producer is a stub: the first thing Phase A runs after the readiness
+    // gate is its tower baseline observation, so the stub records that the gate let the run
+    // through and stops it there, before anything reaches a store or the quarantine.
+    const towerSource = join(runDir, 'hive-git-physical-tower-source.test');
+    const stagedProducerDir = join(towerSource, 'packages', 'operator-core', 'lib', 'sync', 'pot-git');
+    mkdirSync(stagedProducerDir, { recursive: true });
+    const stubProducer = join(stagedProducerDir, 'physical-drill-producer.ts');
+    writeFileSync(
+      stubProducer,
+      `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(pastGateMarker)}, process.argv.slice(2).join(' '));\nprocess.exit(42);\n`,
+    );
+    const sha = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+    const driverDigests = `${sha(join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'vmcall.sh'))} ${sha(
+      join(repoRoot(), 'scripts', 'mcp-call.mjs'),
+    )}`;
+    const scpMarker = join(runDir, 'scp-attempted');
+    writeFileSync(join(fakeBin, 'scp'), `#!/bin/sh\nprintf '%s\\n' "$*" > '${scpMarker}'\nexit 97\n`);
+    chmodSync(join(fakeBin, 'scp'), 0o755);
+    const topic = 'cd'.repeat(32);
+    const status = (peers: string) =>
+      `{"substrateActive":true,"reachedSubstrateOwner":true,"healthInputsObserved":true,"bootedCount":1,"harnesses":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world-3-pot","verdict":"healthy","reasons":[]}],"contentConnectivity":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world-3-pot","topicHex":"${topic}","contentPeers":${peers},"lastContentAnnounceRecvMs":%s}]}`;
+    // The VM reads zero peers once (a content-channel re-pair in progress), then one.
+    writeFileSync(
+      join(fakeBin, 'ssh'),
+      `#!/bin/sh
+case "$*" in
+  *vmcall.sh*mcp-call.mjs*shasum*) printf '%s\\n' '${driverDigests}' ;;
+  *shasum*) printf '%s\\n' '${sha(stubProducer)}' ;;
+  *dev:dogfood_substrate_status*)
+    n=$(($(cat '${vmReads}' 2>/dev/null || echo 0) + 1)); printf '%s\\n' "$n" > '${vmReads}'
+    if [ "$n" -ge 2 ]; then peers=1; else peers=0; fi
+    printf '${status('%s')}\\n' "$peers" "$(date +%s%3N)"
+    ;;
+  *phase-a-quarantine*) printf '%s\\n' reached > '${quarantineMarker}'; exit 90 ;;
+  *) exit 91 ;;
+esac
+`,
+    );
+    chmodSync(join(fakeBin, 'ssh'), 0o755);
+    // The tower is reached through $HOME/.local/bin/ptool; a fake HOME keeps this case off the
+    // real operator.
+    mkdirSync(join(fakeHome, '.local', 'bin'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.local', 'bin', 'ptool'),
+      `#!/bin/sh
+cat >/dev/null
+case "$1" in
+  dev:dogfood_substrate_status)
+    n=$(($(cat '${towerReads}' 2>/dev/null || echo 0) + 1)); printf '%s\\n' "$n" > '${towerReads}'
+    printf '${status('1')}\\n' "$(date +%s%3N)"
+    ;;
+  *) exit 93 ;;
+esac
+`,
+    );
+    chmodSync(join(fakeHome, '.local', 'bin', 'ptool'), 0o755);
+
+    const attempted = spawnSync(physicalScenarioPath, [output, towerIdentity, vmIdentity], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
+      env: {
+        ...process.env,
+        HOME: fakeHome,
+        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        HIVE_GIT_PHYSICAL_PLAN: 'p2p-git-live-activation-2026-07-09',
+        HIVE_GIT_PHYSICAL_EXECUTE: 'p2p-git-live-activation-2026-07-09',
+        HIVE_GIT_PHYSICAL_VM_SOURCE: '/tmp/hive-git-physical-source.123',
+        HIVE_GIT_PHYSICAL_TOWER_SOURCE: towerSource,
+        HIVE_GIT_PHASE_A_READINESS_WAIT_SEC: '60',
+        // vh_converge's documented test seam: no real 10s sleep between the two reads.
+        VH_CONVERGE_SLEEP: 'true',
+      },
+    });
+
+    expect(attempted.stderr).not.toContain('substrate readiness gate failed');
+    const readiness = JSON.parse(
+      readFileSync(join(runDir, 'phase-a', 'two-host-substrate-readiness.json'), 'utf8'),
+    );
+    expect(readiness).toMatchObject({
+      schemaVersion: 'hive-git-phase-a-substrate-readiness/v3',
+      ready: true,
+      sameTopic: true,
+      failedGate: null,
+      attempts: 2,
+      waitBudgetSec: 60,
+      pollSec: 10,
+    });
+    expect(readiness.waitedMs).toEqual(expect.any(Number));
+    expect(readiness.vm).toMatchObject({ ready: true, contentPeers: 1, contentTopicHex: topic });
+    expect(readiness.tower).toMatchObject({ ready: true, contentPeers: 1, contentTopicHex: topic });
+    // Both hosts are judged in the SAME read: the VM was read twice, and the tower only on the
+    // read where the VM was ready.
+    expect(readFileSync(vmReads, 'utf8').trim()).toBe('2');
+    expect(readFileSync(towerReads, 'utf8').trim()).toBe('1');
+    // The gate let the run through to Phase A's next step (the stub stopped it there).
+    expect(readFileSync(pastGateMarker, 'utf8')).toMatch(/^phase-a-observe tower present /);
+    expect(attempted.status).not.toBe(0);
     expect(existsSync(quarantineMarker)).toBe(false);
     expect(existsSync(scpMarker)).toBe(false);
     expect(existsSync(output)).toBe(false);

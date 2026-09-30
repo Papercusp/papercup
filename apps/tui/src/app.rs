@@ -12243,6 +12243,101 @@ impl App {
             // hold-to-talk surface added later is stopped by focus loss without
             // anyone remembering to wire a second site.
             Event::FocusLost => self.release_held(None),
+            Event::Mouse(m) => self.on_mouse(m),
+        }
+    }
+
+    /// Lines one wheel notch scrolls the conversation — the step most
+    /// terminals scroll their own scrollback by.
+    pub const WHEEL_LINES: u16 = 3;
+
+    /// Scroll the conversation `lines` further back, clamped to the top as of
+    /// the last draw. Every scroll-back gesture goes through here.
+    pub fn scroll_chat_up(&mut self, lines: u16) {
+        let wanted = self.chat_scroll.saturating_add(lines);
+        self.chat_scroll = match self.chat_scroll_limit.get() {
+            Some(limit) => wanted.min(limit.max(self.chat_scroll)),
+            None => wanted,
+        };
+    }
+
+    /// Scroll back, and at the start of what is loaded ask for earlier
+    /// messages — PgUp's "page back into history" gesture, shared with the
+    /// wheel.
+    fn scroll_chat_back(&mut self, lines: u16) -> Action {
+        self.scroll_chat_up(lines);
+        if self.chat_has_more_earlier
+            && !self.chat_loading_earlier
+            && self.conversation_id.is_some()
+        {
+            self.chat_loading_earlier = true;
+            return Action::LoadEarlierChat;
+        }
+        Action::Render
+    }
+
+    /// pui-chat-first-ux P-018. Mouse events arrive only on the chat-first
+    /// surface (main.rs turns reporting on there). The wheel scrolls the
+    /// conversation. A left-button drag selects screen text and the release
+    /// copies it through the same OSC 52 path as `y`, because mouse reporting
+    /// takes plain drags away from the terminal's own selection; Shift+drag
+    /// still reaches the terminal.
+    pub fn on_mouse(&mut self, m: crossterm::event::MouseEvent) -> Action {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        if self.too_small() {
+            return Action::None;
+        }
+        let at = (m.column, m.row);
+        match m.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if self.tab == Tab::Operator => {
+                // A selection is in screen cells; scrolling moves the text
+                // out from under it.
+                self.mouse_selection = None;
+                self.mouse_selection_frame.borrow_mut().take();
+                if m.kind == MouseEventKind::ScrollUp {
+                    self.scroll_chat_back(Self::WHEEL_LINES)
+                } else {
+                    self.chat_scroll = self.chat_scroll.saturating_sub(Self::WHEEL_LINES);
+                    Action::Render
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_selection = Some(crate::chat_copy::MouseSelection {
+                    anchor: at,
+                    head: at,
+                });
+                self.mouse_selection_frame.borrow_mut().take();
+                Action::Render
+            }
+            MouseEventKind::Drag(MouseButton::Left) => match self.mouse_selection.as_mut() {
+                Some(sel) => {
+                    sel.head = at;
+                    Action::Render
+                }
+                None => Action::None,
+            },
+            MouseEventKind::Up(MouseButton::Left) => {
+                let Some(mut sel) = self.mouse_selection.take() else {
+                    return Action::None;
+                };
+                sel.head = at;
+                let frame = self.mouse_selection_frame.borrow_mut().take();
+                // A click is not a selection, and nothing is copied before a
+                // frame showed the selection being made.
+                let (false, Some(frame)) = (sel.is_click(), frame) else {
+                    return Action::Render;
+                };
+                let text = crate::chat_copy::screen_selection_text(&frame, &sel);
+                if text.trim().is_empty() {
+                    return Action::Render;
+                }
+                let outcome = crate::chat_copy::copy_selection(
+                    &text,
+                    crate::chat_copy::passthrough_from_env(),
+                );
+                self.apply_copy_outcome(outcome)
+            }
+            _ => Action::None,
         }
     }
 
@@ -13415,17 +13510,7 @@ impl App {
             // PgUp/PgDn are how the conversation scrolls without leaving the
             // box. PgUp at the top loads earlier messages, as outside the box.
             match code {
-                KeyCode::PageUp => {
-                    self.chat_scroll = self.chat_scroll.saturating_add(10);
-                    if self.chat_has_more_earlier
-                        && !self.chat_loading_earlier
-                        && self.conversation_id.is_some()
-                    {
-                        self.chat_loading_earlier = true;
-                        return Action::LoadEarlierChat;
-                    }
-                    return Action::Render;
-                }
+                KeyCode::PageUp => return self.scroll_chat_back(10),
                 KeyCode::PageDown => {
                     self.chat_scroll = self.chat_scroll.saturating_sub(10);
                     return Action::Render;
@@ -13666,23 +13751,13 @@ impl App {
                 KeyCode::Char('{') => return self.step_chat_focus(-1),
                 // PageUp doubles as the deliberate "page back into history" gesture
                 // (mirrors the Operator-tab arm): scroll up + kick a load-earlier.
-                KeyCode::PageUp => {
-                    self.chat_scroll = self.chat_scroll.saturating_add(10);
-                    if self.chat_has_more_earlier
-                        && !self.chat_loading_earlier
-                        && self.conversation_id.is_some()
-                    {
-                        self.chat_loading_earlier = true;
-                        return Action::LoadEarlierChat;
-                    }
-                    return Action::Render;
-                }
+                KeyCode::PageUp => return self.scroll_chat_back(10),
                 KeyCode::PageDown => {
                     self.chat_scroll = self.chat_scroll.saturating_sub(10);
                     return Action::Render;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.chat_scroll = self.chat_scroll.saturating_add(1); // into history
+                    self.scroll_chat_up(1); // into history
                     return Action::Render;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -14459,17 +14534,7 @@ impl App {
             // PageUp is also the deliberate "page back into history" gesture, so it
             // kicks off a load-earlier fetch when more turns exist (deduped by the
             // in-flight flag). The fetch prepends without moving the user's view.
-            KeyCode::PageUp if self.tab == Tab::Operator => {
-                self.chat_scroll = self.chat_scroll.saturating_add(10);
-                if self.chat_has_more_earlier
-                    && !self.chat_loading_earlier
-                    && self.conversation_id.is_some()
-                {
-                    self.chat_loading_earlier = true;
-                    return Action::LoadEarlierChat;
-                }
-                Action::Render
-            }
+            KeyCode::PageUp if self.tab == Tab::Operator => self.scroll_chat_back(10),
             KeyCode::PageDown if self.tab == Tab::Operator => {
                 self.chat_scroll = self.chat_scroll.saturating_sub(10);
                 Action::Render
@@ -14498,7 +14563,7 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.tab == Tab::Operator {
-                    self.chat_scroll = self.chat_scroll.saturating_add(1); // into history
+                    self.scroll_chat_up(1); // into history
                     return Action::Render;
                 }
                 let prev_domain = self.testing_sel;
@@ -28871,5 +28936,170 @@ mod first_run_copy_tests {
         let setup = app.session_setup.as_ref().expect("setup reopened");
         assert_eq!(setup.note.as_deref(), Some("Cloud sign-in was cancelled."));
         assert_eq!(app.chat_input, "keep me");
+    }
+}
+
+/// pui-chat-first-ux P-018: in the chat-first view the wheel scrolls the
+/// conversation (not the message history) and a drag copies what it covers.
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::{backend::TestBackend, style::Modifier, Terminal};
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn chat_first_app(turns: usize) -> App {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.chat_first = true;
+        a.chat_composing = true;
+        for i in 0..turns {
+            a.chat_messages
+                .push(ChatMessage::user(&format!("question {i}")));
+            a.chat_messages
+                .push(ChatMessage::assistant(&format!("answer {i}")));
+        }
+        a
+    }
+
+    /// Draw `a` as the run loop does; returns the terminal for cell checks.
+    fn draw(a: &App) -> Terminal<TestBackend> {
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| crate::ui::draw(f, a)).unwrap();
+        term
+    }
+
+    fn rows(term: &Terminal<TestBackend>) -> Vec<String> {
+        term.backend()
+            .buffer()
+            .content()
+            .chunks(80)
+            .map(|row| row.iter().map(|c| c.symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_conversation_and_leaves_the_draft_alone() {
+        let mut a = chat_first_app(20);
+        a.chat_input = "half-typed".into();
+        a.chat_cursor = a.chat_input.len();
+        draw(&a);
+        assert_eq!(
+            a.update(mouse(MouseEventKind::ScrollUp, 10, 5)),
+            Action::Render
+        );
+        assert_eq!(a.chat_scroll, App::WHEEL_LINES);
+        assert_eq!(a.chat_input, "half-typed", "the wheel recalled history");
+        a.update(mouse(MouseEventKind::ScrollDown, 10, 5));
+        assert_eq!(a.chat_scroll, 0);
+        a.update(mouse(MouseEventKind::ScrollDown, 10, 5));
+        assert_eq!(a.chat_scroll, 0);
+        assert_eq!(a.chat_input, "half-typed");
+    }
+
+    /// Spinning past the top banks nothing: one notch down moves the view.
+    #[test]
+    fn the_wheel_stops_at_the_top_of_the_conversation() {
+        let mut a = chat_first_app(20);
+        draw(&a);
+        let top = a.chat_scroll_limit.get().expect("drawn");
+        assert!(top > App::WHEEL_LINES, "the fixture must overflow: {top}");
+        for _ in 0..100 {
+            a.update(mouse(MouseEventKind::ScrollUp, 10, 5));
+        }
+        assert_eq!(a.chat_scroll, top);
+        a.update(mouse(MouseEventKind::ScrollDown, 10, 5));
+        assert_eq!(a.chat_scroll, top - App::WHEEL_LINES);
+        // PgUp shares the clamp.
+        for _ in 0..20 {
+            a.update(Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::PageUp,
+                KeyModifiers::NONE,
+            )));
+        }
+        assert_eq!(a.chat_scroll, top);
+    }
+
+    #[test]
+    fn the_wheel_does_nothing_off_the_conversation() {
+        let mut a = chat_first_app(3);
+        a.tab = Tab::Fleet;
+        assert_eq!(
+            a.update(mouse(MouseEventKind::ScrollUp, 10, 5)),
+            Action::None
+        );
+        assert_eq!(a.chat_scroll, 0);
+    }
+
+    #[test]
+    fn a_drag_highlights_and_copies_the_text_it_covers() {
+        let mut a = chat_first_app(2);
+        let screen = rows(&draw(&a));
+        let (row, line) = screen
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("answer 1"))
+            .expect("the reply is on screen");
+        let col = line[..line.find("answer 1").unwrap()].chars().count() as u16;
+        let row = row as u16;
+        let end = col + "answer 1".len() as u16 - 1;
+
+        a.update(mouse(MouseEventKind::Down(MouseButton::Left), col, row));
+        draw(&a);
+        a.update(mouse(MouseEventKind::Drag(MouseButton::Left), end, row));
+        let term = draw(&a);
+        let cell = |x: u16| term.backend().buffer()[(x, row)].modifier;
+        assert!(cell(col).contains(Modifier::REVERSED));
+        assert!(cell(end).contains(Modifier::REVERSED));
+        assert!(!cell(end + 1).contains(Modifier::REVERSED));
+
+        let Action::CopyToClipboard { sequence } =
+            a.update(mouse(MouseEventKind::Up(MouseButton::Left), end, row))
+        else {
+            panic!("the release copies");
+        };
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode("answer 1");
+        assert!(sequence.contains(&payload), "{sequence:?}");
+        assert_eq!(
+            a.toast.as_ref().map(|t| t.message.as_str()),
+            Some("Copied 8 characters")
+        );
+        assert!(a.mouse_selection.is_none());
+        assert!(a.mouse_selection_frame.borrow().is_none());
+    }
+
+    #[test]
+    fn a_click_copies_nothing() {
+        let mut a = chat_first_app(2);
+        draw(&a);
+        a.update(mouse(MouseEventKind::Down(MouseButton::Left), 3, 3));
+        draw(&a);
+        assert_eq!(
+            a.update(mouse(MouseEventKind::Up(MouseButton::Left), 3, 3)),
+            Action::Render
+        );
+        assert!(a.toast.is_none());
+    }
+
+    /// Without a frame that showed the selection there is nothing to read.
+    #[test]
+    fn a_selection_never_drawn_copies_nothing() {
+        let mut a = chat_first_app(2);
+        a.update(mouse(MouseEventKind::Down(MouseButton::Left), 0, 1));
+        a.update(mouse(MouseEventKind::Drag(MouseButton::Left), 20, 2));
+        assert_eq!(
+            a.update(mouse(MouseEventKind::Up(MouseButton::Left), 20, 2)),
+            Action::Render
+        );
+        assert!(a.toast.is_none());
     }
 }

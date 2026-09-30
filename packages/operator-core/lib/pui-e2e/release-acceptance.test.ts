@@ -5,7 +5,10 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
-import { DOCKER_START_PROBE_TIMEOUT_MS, probeDockerCreateStart, runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke, sweepOrphanedProbeContainers } from './release-acceptance-run';
+import {
+  DOCKER_START_PROBE_TIMEOUT_MS, probeDockerCreateStart, remeasureStockMachines, runCloudDeviceStartSmoke,
+  runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs, sweepOrphanedProbeContainers,
+} from './release-acceptance-run';
 
 describe('Docker create/start release preflight', () => {
   it('passes on the first bounded offline stock-container launch that succeeds', () => {
@@ -113,8 +116,38 @@ describe('Docker create/start release preflight', () => {
     const result = runStockMachineSmoke('/missing-candidate', ['ubuntu:24.04', 'debian:stable-slim'],
       () => 'Docker create/start preflight timed out');
     expect(result).toHaveLength(2);
-    expect(result.every(({ status, output }) => status === null
+    expect(result.every(({ status, output, unmeasured }) => status === null && unmeasured === true
       && output.includes('preflight timed out'))).toBe(true);
+  });
+
+  // WI-10004247 run 7: a Docker stall on the host (WI-10003403) refused the
+  // preflight, and every PTY leg was skipped as if the binary had failed.
+  it('lets the legs run past an unmeasured smoke but not past a failed one', () => {
+    const unmeasured = runStockMachineSmoke('/missing-candidate', ['ubuntu:24.04'], () => 'stalled');
+    expect(stockMachinesBlockLegs(unmeasured)).toBe(false);
+    expect(stockMachinesBlockLegs([{ image: 'ubuntu:24.04', status: 1, output: 'install.sh: not found' }])).toBe(true);
+    expect(stockMachinesBlockLegs([{ image: 'ubuntu:24.04', status: null, output: 'timed out' }])).toBe(true);
+    expect(stockMachinesBlockLegs([{ image: 'ubuntu:24.04', status: 0, output: 'pui 0.1.0' }])).toBe(false);
+  });
+
+  it('measures an unmeasured smoke again after the legs, and only then', () => {
+    const passed = [{ image: 'ubuntu:24.04', status: 0, output: 'ok' }];
+    let calls = 0;
+    const smoke = () => { calls++; return passed; };
+    expect(remeasureStockMachines(passed, smoke)).toBe(passed);
+    expect(calls).toBe(0);
+    const unmeasured = [{ image: 'ubuntu:24.04', unmeasured: true, status: null, output: 'stalled' }];
+    expect(remeasureStockMachines(unmeasured, smoke)).toBe(passed);
+    expect(calls).toBe(1);
+  });
+
+  it('refuses an unmeasured smoke as unmeasured, a failed one as failed, a passed one not at all', () => {
+    expect(stockMachineRefusal({ image: 'debian:stable-slim', unmeasured: true, status: null, output: 'stalled' }))
+      .toBe('stock-machine smoke on debian:stable-slim was not measured: the host could not start a container '
+        + 'before or after the legs: stalled');
+    expect(stockMachineRefusal({ image: 'debian:stable-slim', status: 2, output: 'boom' }))
+      .toBe('stock-machine smoke on debian:stable-slim failed (status 2): boom');
+    expect(stockMachineRefusal({ image: 'debian:stable-slim', status: 0, output: 'ok' })).toBeNull();
   });
 });
 

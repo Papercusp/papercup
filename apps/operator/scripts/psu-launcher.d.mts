@@ -1067,8 +1067,9 @@ export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { hom
 };
 /**
  * The model that was LAST ACTIVE in a session, read from its own transcript
- * (WI-3758: `psu --resume` shows it and offers to keep it). Tail-reads the
- * final ~256KB and scans lines newest-first:
+ * (WI-3758: `psu --resume` shows it and offers to keep it). Scans backward in
+ * blocks to the latest valid model record, retaining split JSONL bytes until
+ * the complete line is available (including split UTF-8 code points):
  *   - claude: `{"type":"assistant","message":{"model":"…"}}` — the model that
  *     actually answered; `<synthetic>` (error/system events) is skipped.
  *   - codex: `{"type":"turn_context","payload":{"model":"…","effort":"…"}}`

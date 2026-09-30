@@ -665,3 +665,41 @@ pub fn spawn_input_listener(tx: UnboundedSender<Event>) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::mouse_event_wanted;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    fn at(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 4,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// pui-chat-first-ux P-018: the wheel and the left button reach the app;
+    /// pointer motion and the other buttons stay in the reader.
+    #[test]
+    fn only_the_wheel_and_the_left_button_are_forwarded() {
+        for kind in [
+            MouseEventKind::ScrollUp,
+            MouseEventKind::ScrollDown,
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            assert!(mouse_event_wanted(&at(kind)), "{kind:?} is dropped");
+        }
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Drag(MouseButton::Middle),
+            MouseEventKind::ScrollLeft,
+        ] {
+            assert!(!mouse_event_wanted(&at(kind)), "{kind:?} is forwarded");
+        }
+    }
+}

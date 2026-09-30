@@ -14,7 +14,13 @@ vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', coord
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
-vi.mock('./su-lock-store', () => ({ tryHeartbeatResource: vi.fn() }));
+// WI-10004326: the lock_id locator. Default null (no recorded row found) so the
+// WI-5960 cases below exercise exactly the inferred-candidate fallback order.
+vi.mock('./su-lock-store', () => ({
+  tryHeartbeatResource: vi.fn(),
+  getTxPool: vi.fn(() => ({})),
+  readOwnedResourceLockDomain: vi.fn(async () => null),
+}));
 // WI-5960: a special-domain (git-sync:*, host-global) lease was ACQUIRED under a
 // domain other than the caller's own tree-scoped one — heartbeat must be able to
 // find it there too. Distinct from the caller's 'dom' so the fallback tests below
@@ -23,7 +29,7 @@ vi.mock('./coordination-domain', () => ({
   candidateResourceLockDomains: vi.fn(() => ['dom', 'ws-scoped-domain', 'papercusp-host-global']),
 }));
 
-import { tryHeartbeatResource } from './su-lock-store';
+import { readOwnedResourceLockDomain, tryHeartbeatResource } from './su-lock-store';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 const hbM = vi.mocked(tryHeartbeatResource);
@@ -118,6 +124,34 @@ describe('locks:heartbeat_resource handler', () => {
     // tried the caller's own domain ('dom') first, THEN the fallback that hit —
     // never skipped straight to the special domain, and stopped once it found it.
     expect(hbM.mock.calls.map((c) => c[1])).toEqual(['dom', 'ws-scoped-domain']);
+  });
+
+  it('WI-10004326: extends a lease acquired through ANOTHER operator install, in its own recorded domain', async () => {
+    // The lease lives in a checkout domain this operator never infers (not 'dom',
+    // not a special domain). Before the fix every candidate missed and the lease
+    // lapsed however often its holder renewed it.
+    const otherInstall = '/home/x/papercusp-staging';
+    vi.mocked(readOwnedResourceLockDomain).mockResolvedValueOnce(otherInstall);
+    hbM.mockImplementation(async (_tx, domain) =>
+      domain === otherInstall
+        ? { extended: true, expires_ts: new Date('2026-03-01T00:00:00Z') }
+        : { extended: false, expires_ts: null },
+    );
+    const b = body(await call());
+    expect(b.results[0]).toMatchObject({ ok: true, extended: true, expires_ts: '2026-03-01T00:00:00.000Z' });
+    // located by lock_id + OWNER (never another owner's lease), and tried first.
+    expect(vi.mocked(readOwnedResourceLockDomain).mock.calls[0]?.slice(1)).toEqual([
+      '33333333-3333-3333-3333-333333333333',
+      'me',
+    ]);
+    expect(hbM.mock.calls.map((c) => c[1])).toEqual([otherInstall]);
+  });
+
+  it('WI-10004326: a failed locator read degrades to the inferred candidates, never to fewer', async () => {
+    vi.mocked(readOwnedResourceLockDomain).mockRejectedValueOnce(new Error('pool down'));
+    mockResolvedTyped(hbM, { extended: false, expires_ts: null });
+    await call();
+    expect(hbM.mock.calls.map((c) => c[1])).toEqual(['dom', 'ws-scoped-domain', 'papercusp-host-global']);
   });
 
   it('WI-5960: reports the no-op (never-alive) result when NO domain — caller or special — has the lease', async () => {

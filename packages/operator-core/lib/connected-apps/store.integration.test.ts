@@ -156,6 +156,19 @@ describe('connected-apps store (real PG + real RLS)', () => {
     expect((await listAppKeys(ws)).map((r) => r.id)).not.toContain(id);
   });
 
+  it('P-324: the 1244 deploy-window view mobile_devices is gone once every migration applies (1272), and connected_apps remains', async () => {
+    // New code must reach phones through connected_apps. A reintroduced shim under the old
+    // name would let pre-rename code keep working unnoticed, so its absence is asserted.
+    const [row] = await h.adminSql`
+      SELECT to_regclass('harness_shared.mobile_devices') IS NULL     AS shim_gone,
+             to_regclass('harness_shared.connected_apps') IS NOT NULL AS table_present
+    `;
+    // Booleans, not regclass::text: that prints unqualified names whenever harness_shared is
+    // on the search_path.
+    expect(row.shim_gone).toBe(true);
+    expect(row.table_present).toBe(true);
+  });
+
   it('recordAppKeyUse stamps last_seen and last_ip', async () => {
     const ws = freshWs();
     const { app } = await createAppKey({ workspaceId: ws, userEmail: 'o@example.test', label: 'u' });

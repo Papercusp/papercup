@@ -30,74 +30,18 @@ import { WORKSPACE_HOST_RELEASE_BIN_DIR } from '@papercusp/deployment-driver';
 import { hostedAgentIdentityPsuEnv } from './hosted-agent-identity-psu-env';
 import { localOperatorOrigin } from './hosted-operator-http';
 import type { PtyAccessScope } from '../pty-ticket';
+import { HOSTED_PSU_CUSTOMER_ENV } from './hosted-psu-argv.mjs';
 
-/** The env switch psu's launcher reads for hosted-customer mode (P-008). */
-export const HOSTED_PSU_CUSTOMER_ENV = 'PAPERCUSP_PSU_HOSTED_CUSTOMER';
+// The allowlist itself lives in plain JS so psu's launcher applies the same one (D-002 rule 4).
+export {
+  HOSTED_PSU_CUSTOMER_ENV,
+  HOSTED_PSU_MAX_ARGS,
+  parseHostedPsuCustomerArgv,
+  type HostedPsuArgvResult,
+} from './hosted-psu-argv.mjs';
 
 /** The release's psu entrypoint. Readable by the service user only (D-043). */
 export const HOSTED_PSU_ENTRYPOINT = posix.join(WORKSPACE_HOST_RELEASE_BIN_DIR, 'psu');
-
-/** More forwarded arguments than any real invocation needs; a longer list is refused. */
-export const HOSTED_PSU_MAX_ARGS = 16;
-
-/** The agent CLIs the customer agent toolchain carries (`hostedCustomerAgentCommand`). */
-const HOSTED_PSU_AGENTS = new Set(['claude', 'codex', 'omp']);
-
-const MODEL_SPEC = /^[A-Za-z0-9][A-Za-z0-9._:/@[\]-]{0,127}$/;
-const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const LABEL_MAX = 128;
-
-/** Flags that take no value. */
-const HOSTED_PSU_BARE_FLAGS = new Set(['--no-picker', '--resume', '--fork', '--fork-session']);
-
-/** Flags that take a value, with the check that value must pass. */
-const HOSTED_PSU_VALUE_FLAGS: ReadonlyMap<string, (value: string) => boolean> = new Map([
-  ['--agent', (value) => HOSTED_PSU_AGENTS.has(value)],
-  ['--model', (value) => MODEL_SPEC.test(value)],
-  ['--label', (value) => value.length > 0 && value.length <= LABEL_MAX && !/[\p{Cc}]/u.test(value)],
-  ['--resume', (value) => SESSION_ID.test(value)],
-]);
-
-export type HostedPsuArgvResult = { ok: true; argv: string[] } | { ok: false; reason: string };
-
-/**
- * Check the customer's psu arguments against the D-002 allowlist.
- *
- * Returns the arguments NORMALISED to the `--flag=value` form, so the argv psu receives has no
- * space-separated value it could read as a separate flag. Refuses the whole list on the first
- * argument it does not admit — including `--`, which would forward the rest verbatim to the agent.
- */
-export function parseHostedPsuCustomerArgv(argv: unknown): HostedPsuArgvResult {
-  if (argv === undefined || argv === null) return { ok: true, argv: [] };
-  if (!Array.isArray(argv)) return { ok: false, reason: 'argv_not_a_list' };
-  if (argv.length > HOSTED_PSU_MAX_ARGS) return { ok: false, reason: 'argv_too_long' };
-  const out: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const arg: unknown = argv[i];
-    if (typeof arg !== 'string' || arg.length === 0 || arg.length > 512 || arg.includes('\0')) {
-      return { ok: false, reason: 'argv_malformed' };
-    }
-    if (HOSTED_PSU_BARE_FLAGS.has(arg)) {
-      out.push(arg);
-      continue;
-    }
-    const eq = arg.indexOf('=');
-    const flag = eq === -1 ? arg : arg.slice(0, eq);
-    let value: string | undefined = eq === -1 ? undefined : arg.slice(eq + 1);
-    const check = HOSTED_PSU_VALUE_FLAGS.get(flag);
-    if (!check) return { ok: false, reason: `flag_not_allowed:${flag.slice(0, 64)}` };
-    if (value === undefined) {
-      // Space form (`--agent codex`). `--resume` alone is the bare flag handled above.
-      const next: unknown = argv[i + 1];
-      if (typeof next !== 'string') return { ok: false, reason: `flag_needs_value:${flag}` };
-      value = next;
-      i++;
-    }
-    if (!check(value)) return { ok: false, reason: `flag_value_refused:${flag}` };
-    out.push(`${flag}=${value}`);
-  }
-  return { ok: true, argv: out };
-}
 
 export interface HostedPsuSpawnInput {
   scope: PtyAccessScope;

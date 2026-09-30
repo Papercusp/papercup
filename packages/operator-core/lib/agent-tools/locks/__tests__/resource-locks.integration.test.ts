@@ -20,6 +20,7 @@ import {
   tryAcquireResource,
   tryReleaseResource,
   tryHeartbeatResource,
+  readOwnedResourceLockDomain,
   readResourceLockStatus,
   readResourceQueue,
   listLiveResourceDomains,
@@ -406,6 +407,32 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(h.extended).toBe(true);
     expect(h.expires_ts).not.toBeNull();
   });
+
+  it.skipIf(!live)(
+    'WI-10004326: a lease acquired in another install domain is located by lock_id + owner and extended THERE',
+    async () => {
+      await ensureBootstrap();
+      const acquiredIn = uniqueWs(); // e.g. the staging checkout's domain
+      const servedFrom = uniqueWs(); // e.g. the release checkout's domain
+      const a = await acq(acquiredIn, 'A', 'dev-server', 'shared', 30);
+      expect(a.ok).toBe(true);
+      if (!a.ok) return;
+      // The defect: the serving operator's inferred domain does not hold the row.
+      const miss = await inWorkspaceTxn(servedFrom, 'A', (tx) =>
+        tryHeartbeatResource(tx, servedFrom, 'A', a.lock_id, 120),
+      );
+      expect(miss.extended).toBe(false);
+      // The fix: the row's own domain, owner-scoped (another owner cannot locate it).
+      expect(await readOwnedResourceLockDomain(getTxPool(), a.lock_id, 'A')).toBe(acquiredIn);
+      expect(await readOwnedResourceLockDomain(getTxPool(), a.lock_id, 'B')).toBeNull();
+      const located = (await readOwnedResourceLockDomain(getTxPool(), a.lock_id, 'A'))!;
+      const hit = await inWorkspaceTxn(located, 'A', (tx) =>
+        tryHeartbeatResource(tx, located, 'A', a.lock_id, 120),
+      );
+      expect(hit.extended).toBe(true);
+      await rel(acquiredIn, 'A', a.lock_id);
+    },
+  );
 
   it.skipIf(!live)('refuses a second exclusive requester while one is held (held_exclusive)', async () => {
     await ensureBootstrap();

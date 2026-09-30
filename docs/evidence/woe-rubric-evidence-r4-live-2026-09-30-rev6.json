@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-on-everything-rubric-evidence-hardening R-4 live criterion-ownership read (acceptance rubric rev 6)",
+  "framework": "operational",
+  "plan": "work-on-everything-rubric-evidence-hardening-2026-09-20",
+  "acceptanceBar": "R-4",
+  "specClause": "rubric-criterion-ownership@8",
+  "workItem": "WI-10002116",
+  "evidencePlane": "live",
+  "runtime": "operator :3070 build 29bf735091",
+  "command": [
+    "rubrics:get { rubricRef: 'work-on-everything-stewardship-health', detail: 'full', payloadTier: 'full' }",
+    "tools:invoke rubrics:get { rubricRef: 'work-on-everything-stewardship-health', projection: { pick: ['results[].rubric.status'] } }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T18:14:24.971Z",
+  "finishedAt": "2026-09-30T18:14:25.661Z",
+  "recordedBy": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+  "summary": "Re-read after acceptance rubric rev 6 (R-4 probe gained projection pick results[].rubric.status). The live stewardship rubric is active at revision 34 (rev 30-34 changed only rolling-budget-circuit-and-capacity). Every R-4 drift marker is not broken and the positive control is present. The rev-6 projected structured probe returns exactly {results:[{rubric:{status:'active'}}]}.",
+  "assertions": [
+    {
+      "id": "probe-status-active-projected",
+      "passed": true,
+      "evidence": "Projected probe returned {\"results\":[{\"rubric\":{\"status\":\"active\"}}]}; the full read shows status 'active', revision 34, methodRef 'work-on-everything-stewardship-health-grading-runbook', 15 criteria."
+    },
+    {
+      "id": "marker-1-dedh-no-per-plan-fleet",
+      "passed": true,
+      "evidence": "delegated-execution-and-drain-health model+method: 0 occurrences each of 'For every plan of this goal', 'for EACH plan', 'members of that fleet actually', 'fails this criterion'; 1 occurrence each of 'is graded under `plan-fleet-materialization`' and 'OWNERSHIP BOUNDARY'."
+    },
+    {
+      "id": "marker-2-claim-flow-no-plan-lease",
+      "passed": true,
+      "evidence": "claim-flow-and-completion-integrity model+method: 0 occurrences of 'plan-item lease' and 'delegated lease'; 1 occurrence of 'the same goal/drain claim spec'."
+    },
+    {
+      "id": "marker-3-e2e-rates-closure-not-plan-fleets",
+      "passed": true,
+      "evidence": "end-to-end-stewardship-closure model+method: 0 occurrences each of 'plan fleet', 'plan-fleet', 'per-plan', 'independently led'."
+    },
+    {
+      "id": "marker-4-pfm-states-obligation",
+      "passed": true,
+      "evidence": "plan-fleet-materialization model+method contains \"An entry in the owner's typed worklist is a plan-execution obligation\" and 'independently led plan fleet' (R-4 positive control), and carries the HAND-DISPATCH rule."
+    }
+  ]
+}

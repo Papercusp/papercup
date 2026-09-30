@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "kind": "p2p-candidate-sidecar-reproducibility",
+  "workItem": "WI-10002524",
+  "plan": "p2p-public-release-endgame-2026-09-01",
+  "planItem": "P-521",
+  "candidate": {
+    "id": "desktop-v0.0.26-alpha@29bf73509151",
+    "workspaceHead": "29bf735091518f662100b56b49821be8c83d9ee1",
+    "desktopHead": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
+    "role": "final candidate (D-080). NOT publishable as signed: the reference sidecar carries an unscrubbed owner-name literal (WI-10004349)"
+  },
+  "method": {
+    "scope": "papercusp-desktop/bin/build-desktop-sidecar.sh only (the Linux sidecar payload). The Tauri bundle / .deb / AppImage / Windows / mac legs were NOT rebuilt.",
+    "reference": {
+      "root": "~/papercupai-workspace/papercusp-relcut-0026/papercusp-desktop/src-tauri/sidecar",
+      "builtAtUtc": "2026-09-30T15:01:43Z",
+      "note": "the relcut-0026 sidecar dir, built by the 0.0.26 cut (log /tmp/papercup-release-cut.log). The cut set PAPERCUSP_BUILD_VERSION=0.0.26 and PAPERCUSP_BUILD_SHA=ac33407a"
+    },
+    "reproduction": {
+      "root": "/mnt/data/papercusp-repro/papercusp-repro-0026/papercusp-desktop/src-tauri/sidecar",
+      "checkout": "apps/operator/bin/release/setup-release-checkout.sh --ref 29bf7350 (object-sourced). Dependency trees were reused from generation v1-7d87ca54 in COPY mode because the checkout is cross-filesystem; tree-copy took 1057 s. SETUP_EXIT=0 at 2026-09-30T17:56:34Z. The desktop submodule is at ac33407a, the same as the reference",
+      "env": "mirrors release-local.sh: sourced ~/.papercusp/release-identity.env (PAPERCUSP_RELEASE_OWNER_NAME + PAPERCUSP_RELEASE_OWNER_EMAIL; values not recorded), PAPERCUSP_RELEASE_AUDIT=1, PAPERCUSP_SKIP_DEP_GENERATION=1, PROVENANCE_SOURCE_GIT_HEAD=29bf7350…, PROVENANCE_SOURCE_GIT_DIRTY=false, PAPERCUP_DOGFOOD_REPO_REF=desktop-v0.0.26-alpha. NOT set: PAPERCUSP_BUILD_VERSION / PAPERCUSP_BUILD_SHA",
+      "attempts": [
+        { "n": 1, "exit": 0, "startedAtUtc": "2026-09-30T17:56:40Z", "finishedAtUtc": "2026-09-30T18:03:42Z", "log": "/mnt/data/papercusp-repro/build-0026.log" }
+      ],
+      "filesystemNote": "the reproduction root is on /mnt/data; relcut-0026 is on /"
+    },
+    "comparison": "sha256 of every regular file in both trees (find -type f | sha256sum), joined on relative path under LC_ALL=C; symlink lists compared separately. Script /mnt/data/papercusp-repro/repro-0026.sh; result /mnt/data/papercusp-repro/compare-0026.json",
+    "manifestDigests": {
+      "reference": "5137982a9e77a7bfd68d8d58a4d5ae9c95a0233ab4a0faae628d92b5af0a823c",
+      "reproduction": "7fc3cec8ff4d8a6e97ca6c2b09689f74521295882e634970408c94cbfcc8a205",
+      "note": "sha256 of the sorted `sha256sum` listings, retained at /mnt/data/papercusp-repro/ref-0026.sha256 and repro-0026.sha256"
+    }
+  },
+  "headline": {
+    "serveMjs": {
+      "reproducedByteForByte": false,
+      "reproducedModuloVersionInput": true,
+      "referenceSha256": "6ef20afb5b0476a42d593a3ab4c6f6de6da290799d7efa44d54e6e5a6e4ae6bd",
+      "reproductionSha256": "ab7ca907af5d31019008ac1f96c51a5ac367c9b9410bd9e0ca4d2f836f725c13",
+      "bytes": 67836128,
+      "differingBytes": [
+        { "offset": 17295771, "reference": "6", "reproduction": "5" },
+        { "offset": 49569778, "reference": "6", "reproduction": "5" }
+      ],
+      "detail": "exactly 2 of 67,836,128 bytes differ (cmp -l). Both are the last digit of the baked version default (bakedVersion ?? \"0.0.26\" vs \"0.0.25\"). The reproduction did not set PAPERCUSP_BUILD_VERSION, so it baked the package version"
+    },
+    "mcpProxyMjs": {
+      "reproduced": true,
+      "sha256": "77e8394f7ee3ab24baab14742e30f085a0fcf821ec58fa48bbc787bbd5dfc02b"
+    }
+  },
+  "counts": {
+    "referenceFiles": 17591,
+    "reproductionFiles": 14127,
+    "identical": 14089,
+    "differ": 38,
+    "onlyInReference": 3464,
+    "onlyInReproduction": 0,
+    "symlinkListsIdentical": true
+  },
+  "differences": [
+    {
+      "paths": ["serve.mjs"],
+      "class": "version-input",
+      "detail": "see headline.serveMjs: the version digit is the only difference",
+      "basis": "measured (cmp -l)"
+    },
+    {
+      "paths": ["build-provenance.json", ".sidecar-build-stamp"],
+      "class": "timestamp + cut-supplied provenance inputs",
+      "detail": "builtAtUtc / epochSec / passedAtUtc / mtimes differ, and serveSha256 follows serve.mjs. The cut also supplied inputs the reproduction did not: version 0.0.26 (repro 0.0.25), a captured build-start manifest (repro: 'build-start-manifest-not-supplied'), and releaseHostSha256 (repro null). gitDirtyAtEmit is true in the reference; the reproduction's false was forced by PROVENANCE_SOURCE_GIT_DIRTY=false",
+      "basis": "measured (diff of the JSON)",
+      "note": "why the reference tree was dirty at emit was not investigated"
+    },
+    {
+      "paths": [
+        "apps/operator-docs/src/content/docs/agent-insights/plans-audit-sibling-repo-citations.mdx",
+        "apps/operator-docs/src/content/docs/agent-insights/credentials-are-already-provisioned-search-before-escalating.mdx",
+        "internal-docs/agent-insights/plans-audit-sibling-repo-citations.{md,html}",
+        "internal-docs/agent-insights/credentials-are-already-provisioned-search-before-escalating.{md,html}"
+      ],
+      "class": "reference-defect (release privacy)",
+      "detail": "The reference ships an owner-name literal (a sibling-project name listed in release-identity.env's PAPERCUSP_RELEASE_OWNER_NAME) unscrubbed in these 6 files. The reproduction, with the env sourced, rewrote it to 'owner-…'. The reference mdx blob equals git at 29bf7350, i.e. it was never scrubbed. The cut log shows 'owner-name preflight: 1 explicit owner-name literal(s) resolved' (the env file holds more than one) and 'PARTIAL COVERAGE: EMAIL not covered', and the audit still printed CLEAN. The desktop cut path does not load owner-identity-env.ts. The 0.0.25 cut sidecar (relcut-0025) carries the same 6 files",
+      "basis": "measured (diff, git hash-object, grep counts in both sidecars, cut log lines 110/24757/24763)",
+      "workItem": "WI-10004349"
+    },
+    {
+      "paths": ["node_modules/@papercusp/embedded-postgres-server/package-lock.json", "node_modules/@papercusp/embedded-postgres-server/node_modules/{.package-lock.json,pg/**,pg-protocol/**,pg-cloudflare/**,pg-connection-string/**} (24 files)"],
+      "class": "unlocked-dependency (defect in both builds)",
+      "detail": "Reference pg 8.23.0 / pg-protocol 1.16.0 / pg-cloudflare 1.4.0 / pg-connection-string 2.14.0; reproduction 8.23.1 / 1.16.1 / 1.4.1 / 2.14.1. The committed lock at 29bf7350 pins pg 8.20.0 / pg-protocol 1.13.0, so neither build honoured it. 25 of the 38 differing files",
+      "basis": "measured (package.json versions in both sidecars and in the source lock); the install mechanism in build-desktop-sidecar.sh is inferred, not probed",
+      "workItem": "WI-10004350"
+    },
+    {
+      "paths": ["bin/pui", "pui-companion.wasm", "pui-install.json"],
+      "class": "rust-build-path",
+      "detail": "The reference binaries each embed '/build/papercupai-workspace/papercusp-relcut-0026/apps/pui-companion-proto/src/lib.rs' (home prefix remapped to /build; no build-user literal in either build). pui-install.json differs only in binarySha256, companionSha256 and builtAtEpoch",
+      "basis": "measured for the reference path and the user-literal absence; the reproduction's embedded path string was not located"
+    },
+    {
+      "paths": ["db-seed.dump"],
+      "class": "time-derived value (partly classified)",
+      "detail": "2940818 B vs 2940836 B. The setval for harness_shared.hlc_packed_seq differs (117360579040706560 vs 117361295001124864, an HLC clock-derived sequence). Further binary data blocks also differ",
+      "basis": "measured for the HLC setval (strings diff); the remaining binary blocks are unclassified"
+    },
+    {
+      "paths": ["env-sidecars/staging/** (3463 files)", "source.tar.zst"],
+      "class": "out-of-scope-step",
+      "detail": "Created in the reference AFTER build-desktop-sidecar.sh finished: env-sidecars/staging at 15:03:17Z and source.tar.zst at 15:27:28Z, vs the build-stamp passedAtUtc 15:03:12Z. They come from later cut steps; the reproduction ran build-desktop-sidecar.sh only",
+      "basis": "measured (mtimes)"
+    }
+  ],
+  "resolvedSince0025": [
+    "spa/monaco/vs: 124 files in both trees (0.0.25 reference had 28 stale extras, WI-10004074)",
+    "spa/wake-runtime, spa/vad-runtime: identical listings (0.0.25 reproduction nested them one level deep across filesystems, WI-10004073; this run used copy-mode provisioning)",
+    "spa/index.html: identical (0.0.25 differed on the baked live-flag snapshot)",
+    "onlyInReproduction: 0 (0.0.25: 547)"
+  ],
+  "verdict": {
+    "operatorPayloadReproducible": true,
+    "wholeSidecarReproducible": false,
+    "publishableAsSigned": false,
+    "summary": "The operator payload reproduces from the pinned source in a separate checkout on a different path and filesystem. mcp-proxy.mjs is byte-identical. serve.mjs differs only in the 2 bytes of the baked version input the reproduction did not supply. 14089 of the 14127 files present in both trees are identical. Of the 38 that differ: 25 are an unlocked nested pg dependency tree (WI-10004350, a defect in both builds); 6 are docs where the reference cut failed to scrub an owner-name literal (WI-10004349, a release-privacy defect that also affects the 0.0.25 cut); 3 are Rust build-path binaries; 2 are timestamps and provenance inputs; 1 is the version input; 1 is a time-derived seed value. The reference-only files come from later cut steps. Because of WI-10004349 the signed 0.0.26 should not be published; a re-cut with the owner identity env loaded is required.",
+    "residue": [
+      "WI-10004349: desktop cut does not load release-identity.env; the owner-name literal ships in 0.0.25 and 0.0.26 (owner decision needed on the published 0.0.25)",
+      "WI-10004350: embedded-postgres-server nested deps resolve outside the lock",
+      "db-seed.dump binary blocks beyond the HLC setval not classified",
+      "reproduction Rust binaries' embedded path not located",
+      "reference gitDirtyAtEmit:true not investigated",
+      "Tauri bundle / .deb / AppImage / Windows / mac legs not rebuilt"
+    ]
+  },
+  "recordedBy": "su-537352a3-23c0-4af1-930b-180ece60cc8d",
+  "recordedAtUtc": "2026-09-30T18:18:00Z"
+}

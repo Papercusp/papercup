@@ -496,7 +496,7 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     expect(loadPsuConnectionStore(storePath).profiles).toEqual([]);
   });
 
-  it("opens psu on a cloud workspace through the relay at the trusted portal, forwarding every argv cell", async () => {
+  it("on an older cloud that ignores `program`, uses its shell ticket at the trusted portal with the interim line, forwarding every argv cell", async () => {
     const home = tempHome();
     const storePath = savedStore(home, [hostedProfile()]);
     const portal = fakePortal({
@@ -515,7 +515,7 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     const terminals: Array<{ socketUrl: string; initialInput: string }> = [];
     const run = () =>
       runPsuConnectionFrontController(
-        ["--connect=portal.example.test", "--role=su", "--label=it's mine"],
+        ["--connect=portal.example.test", "--agent=codex", "--label=it's mine"],
         {
           home,
           storePath,
@@ -531,18 +531,23 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
 
     await expect(run()).resolves.toEqual({
       handled: true,
-      argv: ["--role=su", "--label=it's mine"],
+      argv: ["--agent=codex", "--label=it's mine"],
       exitCode: 0,
     });
     await run();
 
     expect(portal.calls[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    // psu asked for itself; the reply did not say `psu`, so no psu kind is requested.
+    expect(portal.calls.find((call) => call.url.endsWith("/terminal"))?.body).toMatchObject({
+      program: "psu",
+      argv: ["--agent=codex", "--label=it's mine"],
+    });
     expect(terminals[0]?.socketUrl).toBe(
       `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
     );
     expect(terminals[0]?.initialInput).toBe(
       `printf '\\033[H\\033[2J'; ` +
-        `command -v psu >/dev/null && exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--role=su' '--label=it'\\''s mine'; ` +
+        `command -v psu >/dev/null && exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--agent=codex' '--label=it'\\''s mine'; ` +
         `printf '%s\\n' 'psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.'\r`,
     );
     const sessions = portal.calls
@@ -552,6 +557,91 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     expect(sessions).toHaveLength(2);
     expect(sessions[0]).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(sessions[1]).toBe(sessions[0]);
+  });
+
+  describe("the machine starts psu itself (D-002)", () => {
+    const psuReply = ({ body }: { body: unknown }) => ({
+      status: 200,
+      body: {
+        ok: true,
+        socketUrl: `wss://elsewhere.example/api/hosted/connectors/socket?ticket=${TICKET}&kind=psu`,
+        session: (body as { session: string }).session,
+        program: (body as { program?: string }).program === "psu" ? "psu" : "shell",
+      },
+    });
+    type Opened = { socketUrl: string; initialInput: string | null; expectKind?: string };
+    function connect(
+      argv: string[],
+      results: Array<Record<string, unknown>>,
+      reply: (input: { body: unknown }) => { status: number; body: unknown } = psuReply,
+    ) {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({ ...WORKSPACES, "/api/hosted/cli/workspaces/ws-live/terminal": reply });
+      const terminals: Opened[] = [];
+      const notice = vi.fn();
+      const run = runPsuConnectionFrontController(["--connect=portal.example.test/ws-live", ...argv], {
+        home,
+        storePath,
+        interactive: false,
+        fetch: portal.fetch,
+        notice,
+        async openHostedTerminal(input: Opened) {
+          terminals.push(input);
+          return results.shift() ?? { exit: { code: 0, signal: 0 }, bound: true };
+        },
+      });
+      const bodies = () =>
+        portal.calls.filter((call) => call.url.endsWith("/terminal")).map((call) => call.body as Record<string, unknown>);
+      return { run, terminals, bodies, notice };
+    }
+
+    it("asks for the psu kind with the argv and types nothing", async () => {
+      const t = connect(["--agent", "codex"], [{ exit: { code: 3, signal: 0 }, bound: true }]);
+      await expect(t.run).resolves.toEqual({ handled: true, argv: ["--agent", "codex"], exitCode: 3 });
+      expect(t.bodies()).toEqual([expect.objectContaining({ program: "psu", argv: ["--agent", "codex"] })]);
+      const url = new URL(t.terminals[0]!.socketUrl);
+      expect(url.origin).toBe("wss://portal.example.test");
+      expect(url.searchParams.get("kind")).toBe("psu");
+      expect(JSON.parse(url.searchParams.get("argv")!)).toEqual(["--agent", "codex"]);
+      expect(t.terminals[0]).toMatchObject({ initialInput: null, expectKind: "psu" });
+    });
+
+    it.each(["unknown", "unanswered", "degraded"])(
+      "falls back to the interim shell line on a fresh shell ticket when the machine cannot start psu (%s)",
+      async (kindUnavailable) => {
+        const t = connect(["--no-picker"], [{ bound: false, kindUnavailable }]);
+        await expect(t.run).resolves.toMatchObject({ handled: true, exitCode: 0 });
+        expect(t.bodies().map((body) => body.program)).toEqual(["psu", undefined]);
+        expect(t.bodies()[1]!.session).toBe(t.bodies()[0]!.session);
+        expect(new URL(t.terminals[1]!.socketUrl).searchParams.has("kind")).toBe(false);
+        expect(t.terminals[1]!.initialInput).toBe(hostedForwardInput("psu", ["--no-picker"]));
+        expect(t.notice).toHaveBeenCalledWith(expect.stringContaining(`cannot start psu for you yet (${kindUnavailable})`));
+      },
+    );
+
+    it("refuses a flag outside the allowlist before asking the cloud for anything", async () => {
+      const t = connect(["--role=su"], []);
+      await expect(t.run).rejects.toThrow(
+        "psu on a Papercusp cloud workspace takes only --agent, --model, --label, --no-picker, --resume and --fork; --role is not available there.",
+      );
+      expect(t.bodies()).toEqual([]);
+      expect(t.terminals).toEqual([]);
+    });
+
+    it("names the flag when the cloud refuses the argv", async () => {
+      const t = connect(["--model=x"], [], () => ({
+        status: 400,
+        body: { ok: false, error: { code: "psu_argv_refused", reason: "flag_value_refused:--model" } },
+      }));
+      await expect(t.run).rejects.toThrow("that --model value is not accepted there.");
+      expect(t.terminals).toEqual([]);
+    });
+
+    it("says psu, not a shell, keeps running when the relay drops", async () => {
+      const t = connect([], [{ exit: null, bound: true, closeCode: 1006, closeReason: "gone" }]);
+      await expect(t.run).rejects.toThrow("psu keeps running on the machine for a while");
+    });
   });
 
   describe("the line typed into the workspace shell, run by a real bash (WI-10003949)", () => {
@@ -1139,13 +1229,15 @@ describe("pui through psu's saved connections (P-017)", () => {
         },
       });
 
+    // The same argv for both programs, so only the program can tell the sessions apart. The
+    // portal replies without `program`, so psu takes the interim shell line too (D-002 rule 5).
     await expect(
-      run(["--connect-program=pui", "--connect=portal.example.test", "workbench"]),
-    ).resolves.toEqual({ handled: true, argv: ["workbench"], exitCode: 0 });
-    await run(["--connect=portal.example.test", "workbench"]);
+      run(["--connect-program=pui", "--connect=portal.example.test", "--no-picker"]),
+    ).resolves.toEqual({ handled: true, argv: ["--no-picker"], exitCode: 0 });
+    await run(["--connect=portal.example.test", "--no-picker"]);
 
-    expect(terminals[0]?.initialInput).toBe(hostedForwardInput("pui", ["workbench"]));
-    expect(terminals[1]?.initialInput).toBe(hostedForwardInput("psu", ["workbench"]));
+    expect(terminals[0]?.initialInput).toBe(hostedForwardInput("pui", ["--no-picker"]));
+    expect(terminals[1]?.initialInput).toBe(hostedForwardInput("psu", ["--no-picker"]));
     const [pui, psu] = portal.calls
       .filter((call) => call.url.endsWith("/terminal"))
       .map((call) => (call.body as { session: string }).session);

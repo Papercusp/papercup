@@ -3,7 +3,7 @@
  * bulk-endpoint-standardization-2026-06-21.
  */
 import { describe, it, expect } from 'vitest';
-import { toList, mergeIds, runBulk } from './_bulk';
+import { toList, mergeIds, runBulk, mergeBulkEnvelopes } from './_bulk';
 
 describe('_bulk', () => {
   it('toList normalizes scalar / array / nullish', () => {
@@ -133,5 +133,31 @@ describe('_bulk envelope ok is the conjunction of results[].ok', () => {
     expect(anyItemFailed).toBe(true);
     expect(env.ok).toBe(false);
     expect(env.counts).toEqual({ ok: 1, failed: 2 });
+  });
+});
+
+/**
+ * REGRESSION (WI-10002111 / R-2): a tool that accepts several addressing modes runs one runBulk per
+ * mode and merges them. The merged envelope's `ok` must be DERIVED from the merged counts — not
+ * inherited from the first constituent (processes:kill once spread envs[0], so a clean first batch
+ * reported ok:true beside a later batch's failures).
+ */
+describe('mergeBulkEnvelopes derives ok from the merged counts', () => {
+  it('REGRESSION: a clean first envelope cannot mask a later envelope\'s failure', async () => {
+    const clean = await runBulk(['a'], async () => ({ ok: true as const }));
+    const dirty = await runBulk(['b', 'c'], async (id) => ({ ok: id !== 'c' }));
+    expect(clean.ok).toBe(true);
+    const merged = mergeBulkEnvelopes([clean, dirty]);
+    expect(merged.counts).toEqual({ ok: 2, failed: 1 });
+    expect(merged.ok).toBe(false);
+    expect(merged.ok).toBe(merged.counts.failed === 0);
+    expect(merged.results).toHaveLength(3);
+  });
+
+  it('all-clean merge stays ok:true and an empty merge is vacuously ok', async () => {
+    const a = await runBulk([1], async () => ({ ok: true as const }));
+    const b = await runBulk([2, 3], async () => ({ ok: true as const }));
+    expect(mergeBulkEnvelopes([a, b]).ok).toBe(true);
+    expect(mergeBulkEnvelopes([]).ok).toBe(true);
   });
 });

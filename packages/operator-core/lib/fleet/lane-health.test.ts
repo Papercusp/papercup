@@ -23,7 +23,7 @@ vi.mock('../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeFeatureFamilyExclusions: mocks.diagnoseFleetScopeFeatureFamilyExclusions,
 }));
 
-import { readFleetLaneHealth, readFleetLaneHealthDiagnosed } from './lane-health';
+import { readClaimSpecLaneHealth, readFleetLaneHealth, readFleetLaneHealthDiagnosed } from './lane-health';
 
 const planFilter: FilterNode = { field: 'plan', op: '=', value: 'p' };
 
@@ -260,5 +260,50 @@ describe('readFleetLaneHealth — feature-family-aware effective verdict (EI-211
       }),
     );
     expect(mocks.aggregateIssueClaimExclusions).not.toHaveBeenCalled();
+  });
+});
+
+describe('lane-health read failures keep their cause (EI-24700545763161721)', () => {
+  const timeout = 'canceling statement due to statement timeout';
+
+  it('names the failed read in the diagnosed unavailable result', async () => {
+    mocks.aggregateIssueClaimExclusions.mockRejectedValue(new Error(timeout));
+
+    const reading = await readFleetLaneHealthDiagnosed({
+      fleet: 'fleet-x',
+      harness: 'papercusp',
+      workspaceId: 'ws-x',
+    });
+
+    expect(reading.laneHealth).toBeNull();
+    expect(reading.unavailable).toMatchObject({ code: 'lane-health-unavailable', stage: 'issue-family' });
+    expect(reading.unavailable?.detail).toContain(`Cause: ${timeout}`);
+  });
+
+  it('adds no cause when the read returned without throwing', async () => {
+    mocks.diagnoseFleetScopeFeatureFamilyExclusions.mockResolvedValue(null);
+
+    const reading = await readFleetLaneHealthDiagnosed({
+      fleet: 'fleet-x',
+      harness: 'papercusp',
+      workspaceId: 'ws-x',
+    });
+
+    expect(reading.unavailable?.code).toBe('lane-health-unavailable');
+    expect(reading.unavailable?.detail).not.toContain('Cause:');
+  });
+
+  it('stays fail-soft by default and rethrows only when asked', async () => {
+    mocks.aggregateIssueClaimExclusions.mockRejectedValue(new Error(timeout));
+    const args = {
+      spec: spec as never,
+      record: resolved().record as never,
+      fleet: 'fleet-x',
+      harness: 'papercusp',
+      workspaceId: 'ws-x',
+    };
+
+    await expect(readClaimSpecLaneHealth(args)).resolves.toBeNull();
+    await expect(readClaimSpecLaneHealth({ ...args, throwOnError: true })).rejects.toThrow(timeout);
   });
 });

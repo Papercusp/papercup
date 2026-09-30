@@ -11687,6 +11687,50 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       )).toMatchObject({ modelSpec: "gpt-6-astra:xhigh", modelSource: "inherited" });
     });
 
+    it.each([0, 800 * 1024])("codex: carry keeps an in-session model switch after %i bytes of tool output", (paddingBytes) => {
+      const codexHome = join(home, ".papercusp", "su-codex-homes", "session-44");
+      const file = join(codexHome, "sessions", "2026", "09", "30",
+        `rollout-2026-09-30T16-59-38-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", payload: { model: "gpt-5.6-sol", effort: "medium" } },
+        { type: "turn_context", payload: { model: "gpt-6.1-sol", effort: "xhigh" } },
+        { type: "response_item", payload: { type: "function_call_output", output: "x".repeat(paddingBytes) } },
+      ]);
+      writeFileSync(join(codexHome, "config.toml"),
+        'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "medium"\n[features]\n');
+      writeFileSync(join(codexHome, "AGENTS.md"), "# Base persona\n");
+      const inherited = ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="medium"'];
+      const detected = detectRespawnModelSpec(inherited, {
+        agent: "codex", codexHome, advSessionId: 44, home,
+        modelSource: "configured-default",
+      });
+      expect(detected).toBe("gpt-6.1-sol:xhigh");
+      for (const subcommand of [[], ["resume", UUID], ["fork", UUID]]) {
+        const carry = mintCarryRespawnArgs([...inherited, ...subcommand], {
+          agent: "codex", codexHome, home, ownerId: "su-model-carry-regression",
+          model: detected, systemPromptAddendum: "Continue the checkpointed work.",
+        });
+        expect(modelSpecFromRecycleArgv(carry.args)).toBe("gpt-6.1-sol:xhigh");
+        expect(carry.args).not.toContain("gpt-5.6-sol");
+        expect(carry.args).not.toContain("resume");
+        expect(carry.args).not.toContain("fork");
+      }
+    });
+
+    it("codex: reconstructs a model record spanning read chunks, including multibyte text", () => {
+      const file = join(home, ".papercusp", "su-codex-homes", "session-45", "sessions",
+        "2026", "09", "30", `rollout-2026-09-30T17-00-00-${UUID}.jsonl`);
+      writeJsonl(file, [
+        { type: "turn_context", payload: { model: "gpt-5.6-sol", effort: "medium" } },
+        { type: "turn_context", payload: {
+          model: "gpt-6.1-sol", effort: "xhigh", instructions: "é".repeat(300 * 1024),
+        } },
+        { type: "response_item", payload: { output: "y".repeat(400 * 1024) } },
+      ]);
+      expect(lastActiveModelFor({ agent: "codex", id: 45, sessionId: UUID }, { home }))
+        .toBe("gpt-6.1-sol:xhigh");
+    });
+
     it("codex: an UNTRACKED session (no adv row id) falls back to the shared ~/.codex store", () => {
       const f = join(
         home,

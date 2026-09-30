@@ -16,8 +16,9 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { stringify as stringifyYaml } from 'yaml';
 import { fileURLToPath } from 'node:url';
 import {
   assembleOpenApiDocument,
@@ -40,7 +41,7 @@ import {
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
-import { projectBlueprintToPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
+import { projectBlueprintToPg, readBlueprintHashFromPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
 import { openBlueprintOperationWait, type BlueprintOperationHandle } from './operation-service';
 import { BLUEPRINT_OPERATION_TOOLS, BlueprintOperationStatusSchema } from './operation-contract';
 import { BlueprintOperationClient, createProjectedBlueprintOperationPort } from './operation-client';
@@ -680,5 +681,57 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
              (SELECT count(*)::int FROM harness_shared.harness_plans) AS plans,
              (SELECT count(*)::int FROM harness_shared.plan_runs) AS runs`;
     expect(counts).toEqual({ items: 2, plans: 0, runs: 0 });
+  });
+});
+
+// WI-10004001: harness:create writes .papercusp/blueprint.yaml and leaves the PG projection
+// lazy, so a harness that declares operations must accept its first submit without an
+// orchestrator tick having projected it first.
+describe.each<Transport>(['http', 'mcp'])('WI-10004001 lazy blueprint projection on submit over %s', (transport) => {
+  const created: string[] = [];
+  const freshSlug = (tag: string) => {
+    const slug = `wi10004001-${tag}-${transport}-${globalThis.crypto.randomUUID().slice(0, 8)}`;
+    created.push(slug);
+    return slug;
+  };
+  afterAll(() => {
+    for (const slug of created) rmSync(`/tmp/${slug}`, { recursive: true, force: true });
+  });
+
+  it('projects the git-canonical .papercusp/blueprint.yaml on first submit instead of refusing a fresh harness', async () => {
+    // The state harness:create leaves behind: the file is written, nothing is projected yet.
+    const slug = freshSlug('lazy');
+    mkdirSync(`/tmp/${slug}/.papercusp`, { recursive: true });
+    writeFileSync(`/tmp/${slug}/.papercusp/blueprint.yaml`, stringifyYaml(OPERATION_SOURCE));
+    expect(await readBlueprintHashFromPg(db.sql, WORKSPACE, slug)).toBeNull();
+
+    const args = { ...submitArgs('lazy-first'), harness: slug };
+    const { handle } = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, args));
+
+    // Separates the root cause (submit read PG without the lazy projector) from the
+    // alternative (projection itself fails for an operation-bearing blueprint): submit
+    // succeeds AND its handle is pinned to exactly the revision the lazy path projected.
+    const projected = await readBlueprintHashFromPg(db.sql, WORKSPACE, slug);
+    expect(projected).toMatch(/^[0-9a-f]{64}$/);
+    expect(handle).toMatchObject({
+      workspaceId: WORKSPACE, harnessSlug: slug, operationId: 'extract',
+      specificationRevision: projected, target: { kind: 'work-item' },
+    });
+    expect(await readBlueprintSpecificationSnapshot(db.sql, WORKSPACE, slug, projected!)).not.toBeNull();
+
+    // A replayed submit returns the same handle from its receipt: one work item, not two.
+    expect((await ok<{ handle: unknown }>(call(transport, ALPHA, T.submit, args))).handle).toEqual(handle);
+    const [{ count }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count FROM harness_shared.work_items
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${slug}`;
+    expect(count).toBe(1);
+  });
+
+  it('refuses a harness with neither a projection nor a blueprint file with the typed undeclared code', async () => {
+    const slug = freshSlug('none');
+    const refusal = await refused(call(transport, ALPHA, T.submit, { ...submitArgs('lazy-none'), harness: slug }));
+    expect(refusal.code).toBe('invalid_input');
+    expect(refusal.message).toMatch(/^undeclared: harness declares no blueprint operations/);
+    expect(await readBlueprintHashFromPg(db.sql, WORKSPACE, slug)).toBeNull();
   });
 });

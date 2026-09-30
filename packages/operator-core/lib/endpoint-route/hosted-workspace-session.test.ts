@@ -307,6 +307,66 @@ describe('HostedWorkspaceSessionBroker — operator-http channels (D-418 / WI-10
   });
 });
 
+// D-002 / P-007 (psu-cloud-connector-liveness-multi-signin-2026-09-29): psu started by the host.
+describe('HostedWorkspaceSessionBroker — psu channels (D-002)', () => {
+  function attached(attach: Parameters<HostedWorkspaceSessionBroker['attachBrowser']>[2]) {
+    let n = 0;
+    const broker = new HostedWorkspaceSessionBroker({ randomId: () => `channel-${++n}` });
+    const host = new FakeSocket();
+    const client = new FakeSocket();
+    broker.attachConnector(connector, host);
+    broker.attachBrowser(ticket(), client, attach);
+    return { broker, host, client };
+  }
+  const opens = (host: FakeSocket) =>
+    host.sent.filter((m) => (m as { type: string }).type === 'relay.open') as Array<Record<string, unknown>>;
+
+  it('opens with kind psu and the NORMALISED argv, and echoes the kind', () => {
+    const { host, client } = attached({ kind: 'psu', argv: ['--agent', 'codex', '--no-picker'] });
+    expect(opens(host)).toEqual([expect.objectContaining({ kind: 'psu', argv: ['--agent=codex', '--no-picker'], role: 'controller' })]);
+    expect(client.sent).toContainEqual(expect.objectContaining({ type: 'session.bound', kind: 'psu', role: 'controller' }));
+  });
+
+  it('opens psu with an empty argv when the client sent none', () => {
+    const { host } = attached({ kind: 'psu' });
+    expect(opens(host)[0]).toMatchObject({ kind: 'psu', argv: [] });
+  });
+
+  it('refuses an argv outside the allowlist before anything reaches the machine', () => {
+    for (const argv of [['--', 'rm'], ['--dangerously-skip-permissions'], 'not-a-list', ['--agent', 'bash']]) {
+      const { host, client } = attached({ kind: 'psu', argv });
+      expect(client.closed).toEqual([[4403, 'psu_argv_refused']]);
+      expect(opens(host)).toEqual([]);
+    }
+  });
+
+  it('never sends argv on a pty open, whatever the client attached', () => {
+    const { host } = attached({ argv: ['--agent', 'codex'] });
+    expect(opens(host)[0]).not.toHaveProperty('argv');
+    expect(opens(host)[0]).not.toHaveProperty('kind');
+  });
+
+  it('elects roles like a terminal: a second tab is an observer until it claims control', () => {
+    const { broker, host } = attached({ kind: 'psu' });
+    const second = new FakeSocket();
+    broker.attachBrowser(ticket(), second, { kind: 'psu' });
+    expect(second.sent).toContainEqual(expect.objectContaining({ type: 'session.bound', kind: 'psu', role: 'observer' }));
+    second.message({ type: 'pty.input', data: 'aGk=' });
+    expect(second.sent).toContainEqual({ type: 'session.denied', reason: 'observer_read_only', requestType: 'pty.input' });
+    second.message({ type: 'session.claim-control' });
+    expect(second.sent).toContainEqual({ type: 'session.role', role: 'controller' });
+    second.message({ type: 'pty.input', data: 'aGk=' });
+    expect(host.sent).toContainEqual({ type: 'relay', channelId: 'channel-2', payload: { type: 'pty.input', data: 'aGk=' } });
+  });
+
+  it('refuses http frames on a psu channel', () => {
+    const { host, client } = attached({ kind: 'psu' });
+    client.message({ type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/health' });
+    expect(client.sent).toContainEqual({ type: 'session.denied', reason: 'channel_kind_mismatch', requestType: 'http.request' });
+    expect(host.sent.filter((m) => (m as { type: string }).type === 'relay')).toEqual([]);
+  });
+});
+
 /** A socket that answers pings the way `ws` does, unless told the link is dead. */
 class PingableSocket extends FakeSocket {
   pings = 0;

@@ -97,6 +97,13 @@ export interface RunResult {
 
 export interface StockMachineResult {
   image: string;
+  /**
+   * True when the host could not start a container at all (the create/start
+   * preflight refused), so the image never ran the candidate. That says
+   * nothing about the binary: it must not stop the PTY legs, which need no
+   * Docker, and the smoke is measured again after them (WI-10004247 run 7).
+   */
+  unmeasured?: boolean;
   status: number | null;
   output: string;
 }
@@ -245,13 +252,46 @@ case "$psu_version" in
   *) echo 'psu --version did not print a version' >&2; exit 1 ;;
 esac`;
 
+/**
+ * Only a smoke that RAN and failed says the binary cannot start on stock
+ * Linux. One the host never started is unmeasured, and skipping every PTY leg
+ * for it threw away whole acceptance runs to a Docker stall on the host
+ * (WI-10003403) that had nothing to do with the candidate.
+ */
+export function stockMachinesBlockLegs(machines: StockMachineResult[]): boolean {
+  return machines.some((machine) => !machine.unmeasured && machine.status !== 0);
+}
+
+/**
+ * Measure an unmeasured smoke once more, after the legs. The stalls seen on
+ * the release host cleared within about half an hour, and the legs take
+ * longer than that, so this usually turns a stall into a delay. A smoke that
+ * ran is kept as it was.
+ */
+export function remeasureStockMachines(
+  machines: StockMachineResult[], smoke: () => StockMachineResult[],
+): StockMachineResult[] {
+  return machines.some((machine) => machine.unmeasured) ? smoke() : machines;
+}
+
+/** The refusal a stock smoke contributes to the verdict, or null when it passed. */
+export function stockMachineRefusal(machine: StockMachineResult): string | null {
+  if (machine.unmeasured) {
+    return `stock-machine smoke on ${machine.image} was not measured: the host could not start a container `
+      + `before or after the legs: ${machine.output.slice(-1_000)}`;
+  }
+  return machine.status === 0
+    ? null
+    : `stock-machine smoke on ${machine.image} failed (status ${machine.status}): ${machine.output.slice(-1_000)}`;
+}
+
 /** Exercise the shipped unit on stock Linux, without host libraries or network. */
 export function runStockMachineSmoke(
   unit: string, images = STOCK_LINUX_IMAGES, probe = probeDockerCreateStart,
 ): StockMachineResult[] {
   const dockerProblem = probe();
   if (dockerProblem) {
-    return images.map((image) => ({ image, status: null, output: dockerProblem }));
+    return images.map((image) => ({ image, unmeasured: true, status: null, output: dockerProblem }));
   }
   return images.map((image) => {
     const run = spawnSync('docker', [
@@ -355,7 +395,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     target: string; source: { commit: string };
   };
   const sourceSha = provenance.source.commit;
-  const stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
+  let stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
   const cloudDeviceStart = await runCloudDeviceStartSmoke();
 
   const home = path.join(work, 'home');
@@ -387,7 +427,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('VITEST')));
   // A binary that cannot start on stock Linux cannot earn PTY evidence. Keep
   // writing the acceptance verdict, but avoid launching expensive live legs.
-  const legsToRun = !cloudDeviceStart.ok || stockMachines.some((machine) => machine.status !== 0)
+  const legsToRun = !cloudDeviceStart.ok || stockMachinesBlockLegs(stockMachines)
     ? [] : [null, ...(options.real ?? [])];
   const acceptancePg = legsToRun.length ? await startAcceptancePg(work) : { env: {}, stop: async () => {} };
   try {
@@ -434,10 +474,10 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   if (!contract) extra.push(`candidate ${sourceSha} carries no apps/tui/PUBLIC_RELEASE_UX.md`);
   if (!matrixText) extra.push(`candidate ${sourceSha} carries no apps/tui/release/acceptance-matrix.json`);
   if (!platform) extra.push(`this host (${process.platform}/${process.arch}) is not a platform in the release matrix`);
+  stockMachines = remeasureStockMachines(stockMachines, () => runStockMachineSmoke(unit));
   for (const machine of stockMachines) {
-    if (machine.status !== 0) {
-      extra.push(`stock-machine smoke on ${machine.image} failed (status ${machine.status}): ${machine.output.slice(-1_000)}`);
-    }
+    const refusal = stockMachineRefusal(machine);
+    if (refusal) extra.push(refusal);
   }
   const suiteProvenance = ACCEPTANCE_SOURCES.map((file) => ({ file, candidateBlob: blob(sourceSha, file), runBlob: blob(null, file) }));
   for (const entry of suiteProvenance) {

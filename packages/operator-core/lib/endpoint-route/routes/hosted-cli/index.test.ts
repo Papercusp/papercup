@@ -325,6 +325,59 @@ describe('hosted psu CLI routes', () => {
       userId: 'user-1', audience: 'workspace-operator', transport: 'websocket',
       hostedSessionId: `cli.${token.tokenId}.resume-me`,
     });
+    expect(body.program).toBe('shell');
+  });
+
+  // D-002 (psu-cloud-connector-liveness-multi-signin-2026-09-29): the machine starts psu itself.
+  describe('program psu (D-002)', () => {
+    async function open(payload: Record<string, unknown>) {
+      const t = setup();
+      const { token } = await signIn(t);
+      const response = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token.accessToken}` },
+        body: JSON.stringify(payload),
+        params: { workspaceId: 'ws-a' },
+      });
+      return { t, token, response, body: await response.json() };
+    }
+
+    it('asks the relay for the psu kind with the normalised argv, on a separate session id', async () => {
+      const { t, token, response, body } = await open({ session: 'k1', program: 'psu', argv: ['--agent', 'codex', '--no-picker'] });
+      expect(response.status).toBe(200);
+      expect(body.program).toBe('psu');
+      const url = new URL(body.socketUrl);
+      expect(url.searchParams.get('kind')).toBe('psu');
+      expect(JSON.parse(url.searchParams.get('argv')!)).toEqual(['--agent=codex', '--no-picker']);
+      expect(t.tickets[0]).toMatchObject({ hostedSessionId: `cli.${token.tokenId}.psu.k1` });
+    });
+
+    it('sends an empty argv when the client passed none', async () => {
+      const { body } = await open({ program: 'psu' });
+      expect(JSON.parse(new URL(body.socketUrl).searchParams.get('argv')!)).toEqual([]);
+    });
+
+    it('refuses an argv outside the allowlist with its reason, before any ticket is minted', async () => {
+      const { t, response, body } = await open({ program: 'psu', argv: ['--', 'sh'] });
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({ ok: false, error: { code: 'psu_argv_refused', reason: 'flag_not_allowed:--' } });
+      expect(t.tickets).toHaveLength(0);
+    });
+
+    it('refuses an unknown program rather than falling back to a shell', async () => {
+      const { t, response, body } = await open({ program: 'bash' });
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({ ok: false, error: { code: 'invalid_program' } });
+      expect(t.tickets).toHaveLength(0);
+    });
+
+    it('keeps a shell request free of psu parameters', async () => {
+      const { body } = await open({ program: 'shell', argv: ['--agent', 'codex'] });
+      expect(body.program).toBe('shell');
+      const url = new URL(body.socketUrl);
+      expect(url.searchParams.has('kind')).toBe(false);
+      expect(url.searchParams.has('argv')).toBe(false);
+    });
   });
 
   // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29). avi-test, 2026-09-29: the row said

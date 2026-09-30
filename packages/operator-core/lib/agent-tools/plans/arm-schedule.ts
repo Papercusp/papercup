@@ -53,15 +53,19 @@ export default defineTool({
   args: argsSchema,
   async handler(args, ctx) {
     if (!(await getFlag(FLAGS.SCHEDULED_PLANS, 'system'))) {
+      // Every item is refused, so the envelope is NOT ok: ok is the conjunction of results[].ok
+      // (== counts.failed === 0), never a constant. A hardcoded `ok: true` here let a caller
+      // toast "armed" while every slug was refused (WI-10002111 / R-2).
+      const refused = mergeIds(args.slug, args.slugs);
       return bulkContent({
-        ok: true,
-        results: mergeIds(args.slug, args.slugs).map((slug) => ({
+        ok: refused.length === 0,
+        results: refused.map((slug) => ({
           ok: false,
           slug,
           error: 'feature_disabled',
           detail: 'the papercusp-scheduled-plans flag is off',
         })),
-        counts: { ok: 0, failed: mergeIds(args.slug, args.slugs).length },
+        counts: { ok: 0, failed: refused.length },
       });
     }
     const opts = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));

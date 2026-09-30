@@ -22,7 +22,7 @@ import {
   acceptBlueprintDirectWorkItem,
   acceptBlueprintPlanRun,
 } from './operation-admission';
-import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
+import { readOrProjectBlueprintHash, readBlueprintSpecificationSnapshot } from './project-to-pg';
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 import { BlueprintOperationRefusal } from './operation-refusal';
 
@@ -107,7 +107,9 @@ export function submitBlueprintOperation(
     `,
       internal?.expectedSpecificationRevision
         ? Promise.resolve(null)
-        : readBlueprintHashFromPg(sql, input.workspaceId, input.harnessSlug),
+        // WI-10004001: a harness created with operations is projected lazily, so the
+        // first submit projects its blueprint instead of refusing it.
+        : readOrProjectBlueprintHash(sql, input.workspaceId, input.harnessSlug),
     ]);
     if (internal?.expectedSpecificationRevision && previous[0]?.specification_revision &&
         internal.expectedSpecificationRevision !== previous[0].specification_revision) {
@@ -116,7 +118,10 @@ export function submitBlueprintOperation(
     const revision = previous[0]?.specification_revision ??
       internal?.expectedSpecificationRevision ??
       currentHash;
-    if (!revision) throw new Error('blueprint operation has no projected specification');
+    if (!revision) {
+      throw new BlueprintOperationRefusal('undeclared',
+        'harness declares no blueprint operations: no projected specification and no .papercusp/blueprint.yaml');
+    }
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
     const { operation } = operationFromSpecification(specification, input.operationId);

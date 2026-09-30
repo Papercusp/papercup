@@ -16,11 +16,17 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => (
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
-vi.mock('./su-lock-store', () => ({ tryReleaseResource: vi.fn() }));
+// WI-10004326: the lock_id locator defaults to "no recorded row" so the WI-5960
+// cases keep exercising the inferred-candidate order unchanged.
+vi.mock('./su-lock-store', () => ({
+  tryReleaseResource: vi.fn(),
+  getTxPool: vi.fn(() => ({})),
+  readOwnedResourceLockDomain: vi.fn(async () => null),
+}));
 vi.mock('./contention-retry', () => ({ acquireWithContentionRetry: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 
-import { tryReleaseResource } from './su-lock-store';
+import { readOwnedResourceLockDomain, tryReleaseResource } from './su-lock-store';
 import { mockImplementationTyped } from '../../testing/typed-mock';
 import { acquireWithContentionRetry } from './contention-retry';
 import { broadcastResourceBackUp } from './resource-broadcast';
@@ -65,6 +71,24 @@ describe('locks:release_resource handler', () => {
       ],
     });
     expect(backUpM).not.toHaveBeenCalled();
+  });
+
+  it('WI-10004326: releases a lease acquired through ANOTHER operator install in its own recorded domain, first', async () => {
+    const otherInstall = '/home/x/papercusp-staging';
+    vi.mocked(readOwnedResourceLockDomain).mockResolvedValueOnce(otherInstall);
+    mockImplementationTyped(releaseM, async (_tx, opts) =>
+      (opts.coordinationDomain === otherInstall
+        ? { released: 1, releasedModes: ['exclusive'], exclusiveResources: ['p013-benchmark-rig'], waiters: {} }
+        : { released: 0, releasedModes: [], exclusiveResources: [], waiters: {} }) as never,
+    );
+    const b = body(await call({ lock_id: '22222222-2222-2222-2222-222222222222' }));
+    expect(b.results[0]).toMatchObject({ ok: true, released: 1 });
+    // one store call, in the located domain, owner-scoped: no inference was needed.
+    expect(releaseM.mock.calls.map((c) => c[1].coordinationDomain)).toEqual([otherInstall]);
+    expect(vi.mocked(readOwnedResourceLockDomain).mock.calls[0]?.slice(1)).toEqual([
+      '22222222-2222-2222-2222-222222222222',
+      'me',
+    ]);
   });
 
   it('surfaces an expired-before-release warning instead of a silent ok:true / released:0', async () => {

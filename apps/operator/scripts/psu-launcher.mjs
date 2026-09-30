@@ -138,6 +138,11 @@ import {
   resolveCodexModel,
   resolveCodexModelSelection,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
+// D-002: the argv allowlist the workspace host applies to a psu it starts for a customer.
+import {
+  isHostedPsuCustomer,
+  parseHostedPsuCustomerArgv,
+} from "../../../packages/operator-core/lib/workspace-host/hosted-psu-argv.mjs";
 // WI-126377: the ONE builder for this picker's rows + the effort intersection
 // rule. Plain .mjs for the same reason as every import below it — see that
 // file's header for why a registry's advertised effort list can never be
@@ -3814,7 +3819,9 @@ export function mintCarryRespawnArgs(
       ? strippedKickoff.slice(0, subcommandAt)
       : strippedKickoff;
     return {
-      args: freshArgs,
+      // Apply the detected model AFTER stripping the old subcommand, so an
+      // added effort flag also stays on the fresh successor's root argv.
+      args: mintRecycleArgs(freshArgs, { agent, model }).args,
       nativeId: null,
       launchContextPath,
       codexAgentsPath: agentsPath,
@@ -4019,15 +4026,16 @@ export function addClaudeResumeToolReferencesToEnv(session, env, { home = homedi
   return { transcriptPath, restored, toolReferences: analysis.toolReferences };
 }
 
-/** How much of a transcript's tail lastActiveModelFor reads — the model appears
- *  on every assistant event (claude) / turn_context (codex), so a quarter-MB of
- *  tail always covers the latest turn without reading a multi-MB file. */
+/** Read block size, not a search limit: one Codex turn can write megabytes
+ *  after its turn_context. Stop at the latest valid model record, not at an
+ *  arbitrary tail cutoff that silently forgets the owner's /model choice. */
 const LAST_MODEL_TAIL_BYTES = 256 * 1024;
 
 /**
  * The model that was LAST ACTIVE in a session, read from its own transcript
- * (WI-3758: `psu --resume` shows it and offers to keep it). Tail-reads the
- * final ~256KB and scans lines newest-first:
+ * (WI-3758: `psu --resume` shows it and offers to keep it). Scans backward in
+ * blocks to the latest valid model record, retaining split JSONL bytes until
+ * the complete line is available (including split UTF-8 code points):
  *   - claude: `{"type":"assistant","message":{"model":"…"}}` — the model that
  *     actually answered; `<synthetic>` (error/system events) is skipped.
  *   - codex: `{"type":"turn_context","payload":{"model":"…","effort":"…"}}`
@@ -4040,34 +4048,14 @@ const LAST_MODEL_TAIL_BYTES = 256 * 1024;
 export function lastActiveModelFor(session, { home = homedir() } = {}) {
   const file = sessionTranscriptFile(session, { home });
   if (!file) return null;
-  let tail;
-  try {
-    const size = statSync(file).size;
-    const want = Math.min(size, LAST_MODEL_TAIL_BYTES);
-    const fd = openSync(file, "r");
-    try {
-      const buf = Buffer.alloc(want);
-      readSync(fd, buf, 0, want, size - want);
-      tail = buf.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return null;
-  }
-  const lines = tail.split("\n");
-  // A truncated read starts mid-line — drop the partial first line so a stray
-  // `"model":"…"` fragment can never half-parse into a wrong answer.
-  if (tail.length === LAST_MODEL_TAIL_BYTES) lines.shift();
   const marker =
     session.agent === "codex"
       ? '"turn_context"'
       : session.agent === "omp"
         ? '"model_change"'
         : '"assistant"';
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line.includes(marker) || !line.includes('"model"')) continue; // cheap prefilter
+  const modelFromLine = (line) => {
+    if (!line.includes(marker) || !line.includes('"model"')) return null;
     try {
       const o = JSON.parse(line);
       // WI-2141859: a SUBAGENT turn (`isSidechain`) can answer on a different
@@ -4075,7 +4063,7 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
       // this session running" — for the resume picker OR for the respawn model
       // carry below. Claude stamps the flag on every record it writes; codex
       // and omp have no sidechains, so the guard is inert for them.
-      if (o?.isSidechain === true) continue;
+      if (o?.isSidechain === true) return null;
       const m =
         session.agent === "codex"
           ? o?.type === "turn_context"
@@ -4097,10 +4085,37 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
         return m;
       }
     } catch {
-      /* malformed / partial line — keep scanning */
+      /* malformed line — keep scanning */
     }
+    return null;
+  };
+  try {
+    let position = statSync(file).size;
+    let pending = Buffer.alloc(0);
+    const fd = openSync(file, "r");
+    try {
+      while (position > 0) {
+        const want = Math.min(position, LAST_MODEL_TAIL_BYTES);
+        position -= want;
+        const block = Buffer.alloc(want);
+        if (readSync(fd, block, 0, want, position) !== want) return null;
+        const bytes = pending.length ? Buffer.concat([block, pending]) : block;
+        let end = bytes.length;
+        for (let i = bytes.length - 1; i >= 0; i--) {
+          if (bytes[i] !== 10) continue;
+          const model = modelFromLine(bytes.subarray(i + 1, end).toString("utf8"));
+          if (model) return model;
+          end = i;
+        }
+        pending = bytes.subarray(0, end);
+      }
+      return modelFromLine(pending.toString("utf8"));
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /** The effort levels a `<model>:<effort>` spec may carry. Kept local so the
@@ -8687,6 +8702,9 @@ async function fetchFleetChoices(workspace) {
  * server, which creates the agent_fleets row + re-derives the slug authoritatively).
  */
 async function pickFleet(workspace) {
+  // D-002 rule 2: a hosted customer's psu never joins or creates a fleet.
+  if (isHostedPsuCustomer(process.env))
+    return { slug: null, role: null, name: null, scheme: null };
   const { fleets, nextScheme, schemes } = await fetchFleetChoices(workspace);
   const existing = Array.isArray(fleets) ? fleets : [];
   const NEW = "__new__";
@@ -8971,6 +8989,8 @@ export function identityPickerChoices(page) {
 }
 
 export async function pickIdentity(workspace, harness) {
+  // D-002 rule 2: a hosted customer's psu launches as plain su, the picker's own default.
+  if (isHostedPsuCustomer(process.env)) return { stack: [], selectedIdentityRevision: null };
   const { select } = await import("@inquirer/prompts");
   let after = null;
   for (;;) {
@@ -15473,6 +15493,12 @@ async function ensureBackendInstalled(
   }
   const label = AGENT_LABELS[agent] ?? agent;
   console.error(`psu: the ${label} backend (\`${agent}\`) is not installed.`);
+  // D-002 rule 2: never offered on a hosted customer's psu — the installer would run as the
+  // service user. The customer toolchain is the root-owned one the host image carries (D-423).
+  if (isHostedPsuCustomer(process.env)) {
+    console.error(`psu: this cloud workspace's agent toolchain has no ${label}; choose another agent with --agent.`);
+    return false;
+  }
   if (!interactive) {
     console.error(
       "psu: install it with `papercusp setup` (or run psu interactively to be prompted), then re-run.",
@@ -15721,7 +15747,19 @@ async function main() {
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
-  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+  // D-002 rule 4: a psu the workspace host started for a customer runs as the service user, so
+  // it admits only the host's allowlist, checked again here in case a host let a flag through.
+  // It also never reaches the connection front controller: it is already where it runs.
+  const hostedCustomer = isHostedPsuCustomer(process.env);
+  if (hostedCustomer) {
+    const checked = parseHostedPsuCustomerArgv(rawArgv);
+    if (!checked.ok) {
+      console.error(`psu: this cloud workspace does not accept these arguments (${checked.reason}).`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+  if (!hostedCustomer && (rawArgv.includes("--version") || rawArgv.includes("-V"))) {
     const versionArgs = parseArgs(rawArgv);
     if (versionArgs.version) {
       process.stdout.write(`psu ${psuClientVersion()}\n`);
@@ -15732,9 +15770,9 @@ async function main() {
     const recoveryArgs = parseArgs(rawArgv);
     if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
   }
-  const connection = await runPsuConnectionFrontController(
-    rawArgv,
-  );
+  const connection = hostedCustomer
+    ? { handled: false, argv: rawArgv }
+    : await runPsuConnectionFrontController(rawArgv);
   if (connection.handled) {
     process.exitCode = connection.exitCode ?? 0;
     return;

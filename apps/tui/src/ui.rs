@@ -71,6 +71,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     // No control character may reach the terminal (P-011): it desyncs the
     // terminal from ratatui's model and leaves stale characters behind.
     crate::glyph::scrub_control_cells(f.buffer_mut());
+    // pui-chat-first-ux P-018: a mouse drag in progress. Reverse the selected
+    // cells, and keep the frame, because releasing the button copies the text
+    // that was on screen, which only the drawn frame holds.
+    if let Some(sel) = app.mouse_selection {
+        if !sel.is_click() {
+            crate::chat_copy::paint_selection(f.buffer_mut(), &sel);
+        }
+        *app.mouse_selection_frame.borrow_mut() = Some(f.buffer_mut().clone());
+    }
 }
 
 /// The stable blocking view below the supported size: one instruction instead
@@ -3330,6 +3339,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let max_top = total.saturating_sub(visible);
     // chat_scroll = lines up from the bottom; clamp so it never overscrolls.
     let top = max_top.saturating_sub(app.chat_scroll.min(max_top));
+    // Scrolling up clamps to this (App::scroll_chat_up), so the wheel stops
+    // at the top instead of banking notches past it.
+    app.chat_scroll_limit.set(Some(max_top));
 
     let earlier = if app.chat_loading_earlier {
         " · ↑ loading…"
@@ -3745,7 +3757,8 @@ pub const QUIET_SHORTCUTS_HINT: &str = "? for shortcuts";
 pub const QUIET_SEND_HINT: &str = "Enter sends";
 
 /// The keys the chat-first message box answers to, listed by `?` (P-021).
-/// Each one is a real binding of the composing arm in `App::on_key`.
+/// Each one is a real binding of the composing arm in `App::on_key`, or of
+/// `App::on_mouse` for the wheel and drag (P-018).
 const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("Enter", "send"),
     ("Shift+Enter", "new line (or \\ then Enter)"),
@@ -3753,6 +3766,9 @@ const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("@", "attach a file"),
     ("↑ ↓", "messages you sent before"),
     ("PgUp PgDn", "scroll the conversation"),
+    ("Wheel", "scroll the conversation"),
+    ("Drag", "select and copy"),
+    ("Shift+drag", "the terminal's own selection"),
     ("Esc", "stop a reply, or leave the box"),
     ("Ctrl+R", "show tool output"),
     ("Ctrl+O", "details"),

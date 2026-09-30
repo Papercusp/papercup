@@ -60,6 +60,10 @@ describe('plans:arm-schedule guard chain', () => {
     flagM.mockResolvedValue(false);
     const b = body(await call());
     expect(b.results[0].error).toBe('feature_disabled');
+    // REGRESSION (WI-10002111 / R-2): the envelope's ok is DERIVED from its items. Every item is
+    // refused here, so a constant `ok: true` would let a caller report "armed" on an all-failed batch.
+    expect(b.ok).toBe(false);
+    expect(b.ok).toBe(b.counts.failed === 0);
     expect(armM).not.toHaveBeenCalled();
   });
 

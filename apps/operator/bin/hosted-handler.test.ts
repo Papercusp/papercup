@@ -19,6 +19,14 @@ describe("readAttachRequest", () => {
     expect(read("?kind=desktop&desktopSessionId=s1&desktopMode=takeover"))
       .toEqual({ kind: "desktop", desktopSessionId: "s1", desktopMode: "takeover" });
   });
+  it("reads the D-002 psu kind with its JSON argv", () => {
+    const argv = encodeURIComponent(JSON.stringify(["--agent", "codex"]));
+    expect(read(`?kind=psu&argv=${argv}`)).toEqual({ kind: "psu", argv: ["--agent", "codex"] });
+    expect(read("?kind=psu")).toEqual({ kind: "psu" });
+  });
+  it("hands an unparseable psu argv on raw, so the broker refuses it instead of dropping it", () => {
+    expect(read("?kind=psu&argv=--agent%20codex")).toEqual({ kind: "psu", argv: "--agent codex" });
+  });
 });
 
 const servers: Array<ReturnType<typeof serve>> = [];
