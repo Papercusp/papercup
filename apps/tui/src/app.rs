@@ -6550,6 +6550,7 @@ impl App {
         let mode = self.chat_mode.as_deref().unwrap_or("manual");
         let selected_backend = self
             .su_backend
+            .or(self.configured_su_backend())
             .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
             .label();
         let backend = self
@@ -6619,6 +6620,7 @@ impl App {
             .as_ref()
             .map(|session| session.backend())
             .or(self.su_backend)
+            .or(self.configured_su_backend())
             .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
             .label()
     }
@@ -6745,7 +6747,22 @@ impl App {
                 .map(|session| session.backend()),
             picked_backend: self.su_backend,
             loaded_class: self.pui_runtime_class,
+            configured_backend: self.configured_su_backend(),
         })
+    }
+
+    /// The operator's configured agent engine (`GET /api/agent-config`
+    /// `effectiveBackend`): what a conversation with no pick runs on, and what
+    /// the status line names before the first send (P-016). `None` until the
+    /// read lands, or for a value this client does not map.
+    pub fn configured_su_backend(&self) -> Option<crate::su_session::SuSessionBackend> {
+        let config = self.operator_config.agent.as_ref()?;
+        match config.effective_backend.as_str() {
+            "codex" => Some(crate::su_session::SuSessionBackend::Codex),
+            "omp" => Some(crate::su_session::SuSessionBackend::Omp),
+            "claude-code" | "claude" => Some(crate::su_session::SuSessionBackend::Claude),
+            _ => None,
+        }
     }
 
     /// Record a launched pane into the crew roster (P12b) if it's a `psu` agent
@@ -7583,12 +7600,8 @@ impl App {
             .map(|identity| identity.endpoint.clone())
             .unwrap_or_else(crate::client::selected_endpoint_label);
         let mut setup = crate::session_config::SessionSetup::new(endpoint, self.chat_input.clone());
-        if let Some(config) = self.operator_config.agent.as_ref() {
-            setup.backend = match config.effective_backend.as_str() {
-                "codex" => crate::su_session::SuSessionBackend::Codex,
-                "omp" => crate::su_session::SuSessionBackend::Omp,
-                _ => crate::su_session::SuSessionBackend::Claude,
-            };
+        if let Some(backend) = self.configured_su_backend() {
+            setup.backend = backend;
         }
         if self.agent_chat_id.is_none() && self.su_session.is_none() {
             setup.backend = self.su_backend.unwrap_or(setup.backend);
@@ -10601,6 +10614,7 @@ impl App {
                 ));
                 let backend = self
                     .su_backend
+                    .or(self.configured_su_backend())
                     .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
                 self.su_open_in_flight = true;
                 Action::OpenContinuedSuSession {
@@ -17388,6 +17402,34 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_codex_or_omp_backend_names_and_opens_a_new_chat() {
+        use crate::su_session::{SuDispatchTarget, SuSessionBackend};
+        for (configured, expected) in [
+            ("codex", SuSessionBackend::Codex),
+            ("omp", SuSessionBackend::Omp),
+        ] {
+            let mut a = setup_app();
+            a.operator_config.agent = Some(
+                serde_json::from_value(json!({ "effectiveBackend": configured })).unwrap(),
+            );
+            assert_eq!(a.configured_su_backend(), Some(expected));
+            // The status line names the engine the first message will run on.
+            assert_eq!(a.chat_engine_label(), expected.label());
+            assert_eq!(
+                a.su_dispatch_decision().target,
+                SuDispatchTarget::OpenSuSession(expected)
+            );
+            // An explicit owner pick still outranks the configuration.
+            a.su_backend = Some(SuSessionBackend::Claude);
+            assert_eq!(
+                a.su_dispatch_decision().target,
+                SuDispatchTarget::OpenSuSession(SuSessionBackend::Claude)
+            );
+            assert_eq!(a.chat_engine_label(), SuSessionBackend::Claude.label());
+        }
+    }
+
+    #[test]
     fn session_setup_first_send_requires_review_and_preserves_exact_initial_turn() {
         let mut a = setup_app();
         a.tab = Tab::Operator;
@@ -18911,12 +18953,21 @@ mod tests {
                 "restart {restart}: Codex must adopt on 102, never re-adopt 101"
             );
 
-            // (3) the ended OMP session is preserved for inspection and never
-            // respawned — selecting it must emit no attach at all.
+            // (3) the ended OMP session kept its saved native conversation, so
+            // selecting it resumes it on its OWN id and backend (P-009 D-008:
+            // after P-009 every normal quit ends the engine, so "ended" is no
+            // longer "abandoned"). Rows with no native id, FailedOrphaned,
+            // Pending and RuntimeReplaced still never adopt
+            // (su_inventory_never_adopts_non_attached_or_terminal_rows).
             assert_eq!(
                 adopt(&mut app, "chat-omp"),
-                Action::Render,
-                "restart {restart}: an ended session must be preserved, not respawned"
+                Action::AttachSuSession {
+                    harness: "papercup".into(),
+                    chat_id: "chat-omp".into(),
+                    adv_session_id: 103,
+                    backend: B::Omp,
+                },
+                "restart {restart}: an ended session with a saved conversation resumes on 103"
             );
             assert!(app
                 .su_session_inventory
@@ -18932,8 +18983,8 @@ mod tests {
             );
             assert_eq!(
                 app.su_adopted_sessions.iter().copied().collect::<Vec<_>>(),
-                vec![101, 102],
-                "restart {restart}: exactly the two live backends were adopted, each once"
+                vec![101, 102, 103],
+                "restart {restart}: each backend's session was adopted exactly once"
             );
         }
     }

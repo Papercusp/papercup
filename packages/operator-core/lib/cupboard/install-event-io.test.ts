@@ -232,6 +232,56 @@ describe('installEventFromCupboard', () => {
     expect(again.result.registeredKey).toBe(EVENT_KEY);
   });
 
+  it('refuses a key another contributor holds, and a refused FRESH install leaves nothing on disk (D-026)', async () => {
+    await writePackage();
+    const attempts: RegisterEventKeyInput[] = [];
+
+    const refused = await installEventFromCupboard(
+      { listingId: 'listing-work-item-lifecycle', workspaceId: 'ws-1' },
+      {
+        seedRegistry: async (input) => {
+          attempts.push(input);
+          return { refusedBy: 'core' };
+        },
+      },
+    );
+
+    expect(refused).toMatchObject({ ok: false, status: 409 });
+    if (refused.ok) return;
+    expect(refused.error).toContain(`"${EVENT_KEY}" is already registered by core`);
+    // The claim was attempted as THIS package, so the holder comparison had its subject.
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.contributor).toMatch(/^cupboard:/);
+    // Nothing landed: a later identical install is a fresh 'install', not a no-op or a 409.
+    expect(resolveInstalledEvent(EVENT_KEY)).toBeNull();
+
+    // POSITIVE CONTROL: the same package installs once the claim succeeds.
+    const ok = await installEventFromCupboard(
+      { listingId: 'listing-work-item-lifecycle', workspaceId: 'ws-1' },
+      recordingSeeder().deps,
+    );
+    expect(ok).toMatchObject({ ok: true, result: { operation: 'install' } });
+  });
+
+  it('keeps an already-installed package when its re-seed is refused, and names an unattributed holder', async () => {
+    await writePackage();
+    expect((await installEventFromCupboard(
+      { listingId: 'listing-work-item-lifecycle', workspaceId: 'ws-1' },
+      recordingSeeder().deps,
+    )).ok).toBe(true);
+
+    const refused = await installEventFromCupboard(
+      { listingId: 'listing-work-item-lifecycle', workspaceId: 'ws-1' },
+      { seedRegistry: async () => ({ refusedBy: null }) },
+    );
+
+    expect(refused).toMatchObject({ ok: false, status: 409 });
+    if (refused.ok) return;
+    expect(refused.error).toContain('an unattributed contributor');
+    // The directory was this listing's before the refusal; only a fresh install is undone.
+    expect(resolveInstalledEvent(EVENT_KEY)).not.toBeNull();
+  });
+
   it('refuses a re-install of a DIFFERENT version without update:true, seeding nothing', async () => {
     await writePackage();
     expect((await installEventFromCupboard(

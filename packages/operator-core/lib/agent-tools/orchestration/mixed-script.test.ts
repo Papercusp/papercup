@@ -396,10 +396,12 @@ describe('P-012 server-side mixed capability scripts', () => {
     expect(result).toMatchObject({
       ok: false,
       dispatchCount: 1,
+      // A parent abort terminates the worker itself (run-script.ts `signal`), so
+      // the RUN reports the caller cancellation, not a per-call timeout.
+      error: expect.stringContaining('script_aborted'),
       // The handler observes the aborted signal immediately; dispatch-stack
       // deliberately normalizes that cancellation into its public timeout
       // error instead of leaking a handler-specific rejection string.
-      error: expect.stringContaining('tool capability:bash failed [timeout]'),
       uncertainMutations: [
         expect.objectContaining({
           tool: 'capability:bash',

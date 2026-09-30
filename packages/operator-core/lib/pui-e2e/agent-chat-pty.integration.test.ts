@@ -3799,8 +3799,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         if (backend === 'codex') {
           expect(own.native.codexConfig ?? '').not.toMatch(/mcp_servers\.["']?papercusp-su/);
           expect(own.native.codexConfig ?? '').not.toMatch(/project_doc_max_bytes\s*=\s*0/);
-          // The user's own ~/.codex/AGENTS.md (or none) — never the SU playbook.
-          expect(own.native.codexAgents).not.toBe(sealed);
+          // A coding-assistant Codex launch's prompt IS the Codex home's
+          // AGENTS.md: the user's own ~/.codex/AGENTS.md copied in (or none),
+          // never a sealed SU render (checked against the inside launch below).
+          expect(own.native.codexAgents).toBe(sealed);
           expect(own.native.codexHooks).toBe(false);
         } else {
           expect(own.native.ompServers ?? []).not.toContain('papercusp-su');
@@ -3810,6 +3812,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const su = await chatIn(inside);
         expect(su.launch).toMatchObject({ backend, identity: 'su', cwd: inside });
         if (backend === 'codex') {
+          // The outside chat's AGENTS.md is not the SU playbook render.
+          expect(own.native.codexAgents).not.toBe(su.native.codexAgents);
           expect(su.native.codexConfig).toMatch(/mcp_servers\.["']?papercusp-su/);
           expect(su.native.codexAgents).toBe(readFileSync(su.launch.promptFile, 'utf8'));
         } else {

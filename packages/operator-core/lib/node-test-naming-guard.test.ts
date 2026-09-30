@@ -22,7 +22,8 @@
  * turning a silent watchdog red back into an actionable unit failure.
  */
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,6 +66,27 @@ function collectVitestGlobbedTestFiles(dir: string, out: string[] = []): string[
   return out;
 }
 
+/**
+ * Is `absPath` ignored by the git repository that owns it? The contract is about
+ * the REPOSITORY: a gitignored file (an agent's `.papercusp/scratch/` demo) never
+ * reaches a clean checkout, git-sync never commits it, and it must not red-pin
+ * this guard in the shared tree (WI-10004152: `.papercusp/scratch/ivo-tsc/
+ * ivo-tictactoe.test.ts` did exactly that in a tip pre-flight). Untracked but
+ * NOT ignored files still count — git-sync will commit them.
+ *
+ * `git -C <nearest existing ancestor>` so the innermost repository answers (a
+ * submodule path is judged by the submodule's own ignore rules) and a path whose
+ * directory does not exist yet can still be asked about. Anything other than a
+ * definite "ignored" (exit 0) — including a git error — keeps the file in scope:
+ * fail toward flagging, never toward silence.
+ */
+export function isGitIgnored(absPath: string): boolean {
+  let cwd = dirname(absPath);
+  while (!existsSync(cwd) && dirname(cwd) !== cwd) cwd = dirname(cwd);
+  const res = spawnSync('git', ['-C', cwd, 'check-ignore', '-q', relative(cwd, absPath)], { stdio: 'ignore' });
+  return res.status === 0;
+}
+
 /** The subset of `files` that are `node:test` suites misnamed as vitest-globbed
  *  `*.test.<ext>` (they import `node:test`), sorted. Pure — takes explicit
  *  contents so it is unit-testable without touching the filesystem. */
@@ -96,6 +118,17 @@ describe('findMisnamedNodeTests', () => {
   });
 });
 
+describe('isGitIgnored', () => {
+  // Both directions, so the filter below can neither pass vacuously (everything
+  // "ignored") nor stop filtering (nothing ignored). Pattern-based: the probe
+  // paths need not exist.
+  it('treats a .papercusp/scratch path as ignored and a tracked source path as not', () => {
+    expect(isGitIgnored(join(REPO_ROOT, '.papercusp', 'scratch', 'naming-guard-probe', 'x.test.ts'))).toBe(true);
+    expect(isGitIgnored(fileURLToPath(import.meta.url))).toBe(false);
+    expect(isGitIgnored(join(REPO_ROOT, 'packages', 'operator-core', 'lib', 'not-yet-written.test.ts'))).toBe(false);
+  });
+});
+
 describe('node:test naming contract (vitest collision guard, EI-10878)', () => {
   it('has NO node:test suite named as a vitest-globbed *.test.<ext> anywhere in the repo', () => {
     const files = collectVitestGlobbedTestFiles(REPO_ROOT).map((abs) => ({
@@ -108,7 +141,8 @@ describe('node:test naming contract (vitest collision guard, EI-10878)', () => {
         }
       })(),
     }));
-    const misnamed = findMisnamedNodeTests(files);
+    // check-ignore runs only on the (usually empty) flagged set, never the walk.
+    const misnamed = findMisnamedNodeTests(files).filter((p) => !isGitIgnored(join(REPO_ROOT, p)));
     expect(
       misnamed,
       misnamed.length

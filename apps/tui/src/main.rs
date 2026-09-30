@@ -7925,6 +7925,7 @@ mod tests {
                 attached: false,
                 ended_backend: None,
                 picked_backend: None,
+                configured_backend: None,
                 loaded_class: Some(crate::su_session::PuiRuntimeClass::parse(
                     old_default.su_runtime_class.as_deref()
                 )),

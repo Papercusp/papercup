@@ -24,6 +24,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
+  claimEventKey,
   registerEventKey,
   getEventKey,
   listEventKeys,
@@ -281,5 +282,57 @@ describe('event_key_registry store (real PG)', () => {
     expect(await getEventKey(db.adminSql, 'ws-ek-B', 'pot:installed')).toBeNull();
     expect(await getAttestedEventKey(db.adminSql, 'ws-ek-B', 'pot:installed')).toBeNull();
     expect(await listEventKeys(db.adminSql, 'ws-ek-B')).toEqual([]);
+  });
+
+  it('claimEventKey creates a key and refreshes its OWN, never another contributor\'s (portable-identity D-026)', async () => {
+    const ws = 'ws-ek-claim';
+    const pkg = 'cupboard:acme-events-work-item-lifecycle-1a2b3c4d';
+
+    // Fresh key: the claim inserts it under the package's contributor.
+    const created = await claimEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'deploy:done', title: 'Deploy done', description: 'first', contributor: pkg,
+    });
+    expect(created).toMatchObject({ claimed: true, row: { contributor: pkg, description: 'first' } });
+
+    // Same contributor re-claims: curation refreshes (the update/no-op repair path).
+    const refreshed = await claimEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'deploy:done', title: 'Deploy done', description: 'second', contributor: pkg,
+    });
+    expect(refreshed).toMatchObject({ claimed: true, row: { description: 'second' } });
+
+    // Another listing, a first-party row, and a legacy row with no contributor all refuse,
+    // reporting the holder and leaving the row exactly as it was.
+    await registerEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'work-item:done', title: 'Work item done', description: 'core', contributor: 'core',
+    });
+    await registerEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'legacy:key', title: 'Legacy', description: 'legacy',
+    });
+    const cases = [
+      ['deploy:done', pkg, 'second'],
+      ['work-item:done', 'core', 'core'],
+      ['legacy:key', null, 'legacy'],
+    ] as const;
+    for (const [eventKey, holder, description] of cases) {
+      const before = await getEventKey(db.adminSql, ws, eventKey);
+      const squat = await claimEventKey(db.adminSql, {
+        workspaceId: ws, eventKey, title: 'Squatted', description: 'squatted', contributor: 'cupboard:someone-else',
+      });
+      expect(squat).toEqual({ claimed: false, holder });
+      const after = await getEventKey(db.adminSql, ws, eventKey);
+      expect(after).toEqual(before);
+      expect(after?.description).toBe(description);
+    }
+
+    // A claim must name its contributor: a blank one would match a legacy NULL row's
+    // absence of an owner no better than any other stranger.
+    await expect(claimEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'x:y', title: 'x', description: 'x', contributor: '  ',
+    })).rejects.toThrow(/requires a contributor/);
+
+    // registerEventKey keeps overwrite semantics: local curation is the pot's authority.
+    expect((await registerEventKey(db.adminSql, {
+      workspaceId: ws, eventKey: 'deploy:done', title: 'Deploy done', description: 'local', contributor: 'core',
+    })).contributor).toBe('core');
   });
 });
