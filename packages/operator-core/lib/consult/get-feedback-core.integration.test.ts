@@ -28,7 +28,9 @@ import {
   resolveProseProfileSelection,
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
+import { CONSULT_QUESTIONS_CHUNK_SURFACE } from '../search/chunks/registry';
 import {
+  DEFAULT_ARCHIVE_FLOOR,
   getFeedbackCore,
   HARD_BLOCKED_EXPIRY_MS,
   MAX_CONSULT_DEPTH,
@@ -68,6 +70,11 @@ const MIGRATION_837 = fileURLToPath(
 const MIGRATION_847 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/847-widen-consult-interest-vecs-to-768.sql', import.meta.url),
 );
+// The shared chunk store (generic-rag-chunking P-003): peersKnowLookup ranks each
+// settled question by its own vector and its window chunks (P-012, D-027).
+const MIGRATION_1242 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1242-text-chunks.sql', import.meta.url),
+);
 const GEMMA_QUERY_PROFILE = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
 
 let rootSql: Sql;
@@ -105,6 +112,7 @@ beforeAll(async () => {
   await rootSql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
   await rootSql.unsafe(readFileSync(MIGRATION_837, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_847, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_1242, 'utf8'));
   await rootSql.unsafe(`
     ALTER TABLE harness_shared.consult_state
       ADD COLUMN query_embedding_mode text,
@@ -1506,6 +1514,8 @@ async function seedClosedConsult(opts: {
   outcome?: Record<string, unknown>;
   mode?: string | null;
   profile?: string | null;
+  /** Defaults to closed_answered, the only state the archive reads. */
+  state?: string;
 }): Promise<void> {
   // sql.json, NOT JSON.stringify + ::jsonb: this fixture connection runs
   // prepare:true, under which the hand-stringified idiom double-encodes into a
@@ -1517,7 +1527,7 @@ async function seedClosedConsult(opts: {
        routing, outcome, closed_at, query_embedding, query_embedding_mode, query_embedding_profile)
     VALUES
       (${opts.ws}, ${opts.conv}, 'req-past', ${opts.responder ?? 'resp-arch'},
-       'closed_answered', ${opts.question ?? 'an earlier, similar question'},
+       ${opts.state ?? 'closed_answered'}, ${opts.question ?? 'an earlier, similar question'},
        '{}'::jsonb, ${rootSql.json((opts.outcome ?? { answer: 'archived answer', confidence: 'high' }) as never)},
        ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector,
        ${opts.mode === undefined ? 'gemma' : opts.mode},
@@ -2445,5 +2455,138 @@ describe('peersKnowLookup — the orient peers-know fold reads the settled archi
       workspaceId: legacyWs,
       intent: 'legacy mode maps only to its current profile',
     }))?.ref).toBe('pk-legacy-current');
+  });
+});
+
+// ── peersKnowLookup retrieve mode (generic-rag-chunking-2026-09-29 P-012, D-027) ──
+//
+// A settled question longer than the 2,000-character embedding window has a parent
+// vector over its head only. P-012 stores window chunks for the rest, and
+// peersKnowLookup ranks each question by the nearer of its parent vector and its
+// chunks (a chunk less the surface's chunk margin). Every long question below keeps
+// its parent vector far from the intent (θ = 1.2, cos 0.36, under the archive
+// floor), so a hit can only arrive through a chunk.
+describe('peersKnowLookup retrieve mode — an intent matching only the tail of a long settled question', () => {
+  const CUT = 2000;
+  const FAR = 1.2;
+  const MARGIN = CONSULT_QUESTIONS_CHUNK_SURFACE.chunkMargin ?? 0;
+  const TAIL = 'Pin hnsw.iterative_scan to relaxed_order before a filtered vector query, or the index returns too few rows.';
+  const HEAD = 'The consult cascade walks the ranked responders in order and records each decline. '.repeat(30).slice(0, CUT);
+  const LONG_QUESTION = `${HEAD}\n${TAIL}`;
+  const INTENT = 'filtered hnsw vector query returns too few rows';
+  const query = (vec: number[]) => ({ embed: async (_text: string) => vec, profile: GEMMA_QUERY_PROFILE });
+
+  async function seedQuestionChunk(opts: {
+    ws: string;
+    conv: string;
+    idx: number;
+    content: string;
+    vec: number[];
+    profile?: string;
+  }): Promise<void> {
+    await rootSql`
+      INSERT INTO harness_shared.text_chunks
+        (surface, parent_key, chunk_idx, content, parent_sha, chunk_sha, splitter_version,
+         embedding, embedding_mode, embedding_profile)
+      VALUES (${CONSULT_QUESTIONS_CHUNK_SURFACE.surface}, ${[opts.ws, opts.conv]}::text[], ${opts.idx},
+              ${opts.content}, 'sha', ${`${opts.conv}-${opts.idx}`}, 'window-1500-250@v1',
+              ${JSON.stringify(opts.vec)}::vector, 'gemma',
+              ${opts.profile ?? EMBEDDER_DIM_SPECS.gemma.profileId})`;
+  }
+
+  /** A long settled question: parent vector and head chunk far, tail chunk at `tailTheta`. */
+  async function seedLongQuestion(opts: {
+    ws: string;
+    conv: string;
+    tailTheta: number;
+    outcome?: Record<string, unknown>;
+    state?: string;
+    chunks?: boolean;
+    chunkProfile?: string;
+  }): Promise<void> {
+    await seedClosedConsult({
+      ws: opts.ws,
+      conv: opts.conv,
+      vec: vecAt(FAR),
+      question: LONG_QUESTION,
+      outcome: opts.outcome,
+      state: opts.state,
+    });
+    if (opts.chunks === false) return;
+    await seedTailChunks(opts.ws, opts.conv, opts.tailTheta, opts.chunkProfile);
+  }
+
+  async function seedTailChunks(ws: string, conv: string, tailTheta: number, profile?: string): Promise<void> {
+    await seedQuestionChunk({ ws, conv, idx: 0, content: LONG_QUESTION.slice(0, 1500), vec: vecAt(FAR + 0.05), profile });
+    await seedQuestionChunk({ ws, conv, idx: 1, content: LONG_QUESTION.slice(1250), vec: vecAt(tailTheta), profile });
+  }
+
+  it('the fixture is valid: the shared text lies past the cut, the parent vector is under the floor, a near chunk is over it', () => {
+    expect(LONG_QUESTION.indexOf(TAIL)).toBeGreaterThan(CUT);
+    expect(LONG_QUESTION.slice(1250)).toContain(TAIL);
+    expect(Math.cos(FAR)).toBeLessThan(DEFAULT_ARCHIVE_FLOOR);
+    expect(MARGIN).toBeGreaterThan(0);
+    expect(Math.cos(0.05) - MARGIN).toBeGreaterThanOrEqual(DEFAULT_ARCHIVE_FLOOR);
+  });
+
+  it('surfaces the long settled question through its tail chunk, over closer non-settled, archive-copy and other-workspace rows', async () => {
+    const ws = 'ws-pk-tail';
+    await seedLongQuestion({
+      ws,
+      conv: 'pk-long',
+      tailTheta: 0.05,
+      outcome: { answer: 'set hnsw.iterative_scan = relaxed_order', confidence: 'high' },
+    });
+    // Each competitor's tail chunk sits EXACTLY on the intent, nearer than pk-long's,
+    // so only the corpus predicate can keep it out.
+    await seedLongQuestion({ ws, conv: 'pk-long-copy', tailTheta: 0, outcome: { source: 'archive', answer: 'copied answer' } });
+    await seedLongQuestion({ ws, conv: 'pk-long-active', tailTheta: 0, state: 'active' });
+    await seedLongQuestion({ ws, conv: 'pk-long-cant-help', tailTheta: 0, state: 'closed_cant_help' });
+    await seedLongQuestion({ ws: 'ws-pk-tail-elsewhere', conv: 'pk-long-elsewhere', tailTheta: 0 });
+
+    const countRows = async () => {
+      const [r] = await rootSql`
+        SELECT (SELECT count(*)::int FROM harness_shared.consult_state) AS consults,
+               (SELECT count(*)::int FROM harness_shared.text_chunks) AS chunks`;
+      return r;
+    };
+    const before = await countRows();
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT });
+    expect(hit).not.toBeNull();
+    expect(hit!.ref).toBe('pk-long');
+    expect(hit!.answer).toBe('set hnsw.iterative_scan = relaxed_order');
+    // sim is 1 - the chunk's distance plus the margin, not the chunk's raw cosine.
+    expect(hit!.sim).toBeCloseTo(Math.cos(0.05) - MARGIN, 5);
+    // Read-only: neither the archive nor the chunk store was written.
+    expect(await countRows()).toEqual(before);
+  });
+
+  it('control: the same row misses without its chunks and hits once they exist', async () => {
+    const ws = 'ws-pk-tail-nochunk';
+    await seedLongQuestion({ ws, conv: 'pk-long-bare', tailTheta: 0, chunks: false });
+    expect(await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT })).toBeNull();
+
+    await seedTailChunks(ws, 'pk-long-bare', 0);
+    expect((await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT }))?.ref).toBe('pk-long-bare');
+  });
+
+  it('applies the chunk margin before the archive floor; a parent vector at the same angle is not penalised', async () => {
+    // Cosine just over the floor, which the margin pushes under it.
+    const theta = Math.acos(DEFAULT_ARCHIVE_FLOOR + MARGIN / 2);
+    const chunkWs = 'ws-pk-tail-margin';
+    await seedLongQuestion({ ws: chunkWs, conv: 'pk-long-margin', tailTheta: theta });
+    expect(await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: chunkWs, intent: INTENT })).toBeNull();
+
+    const parentWs = 'ws-pk-parent-margin';
+    await seedClosedConsult({ ws: parentWs, conv: 'pk-short-margin', vec: vecAt(theta) });
+    const hit = await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: parentWs, intent: INTENT });
+    expect(hit?.ref).toBe('pk-short-margin');
+    expect(hit!.sim).toBeCloseTo(DEFAULT_ARCHIVE_FLOOR + MARGIN / 2, 5);
+  });
+
+  it('does not read a chunk embedded under a different profile', async () => {
+    const ws = 'ws-pk-tail-foreign';
+    await seedLongQuestion({ ws, conv: 'pk-long-foreign', tailTheta: 0, chunkProfile: EMBEDDER_DIM_SPECS.openai.profileId });
+    expect(await peersKnowLookup(rootSql, query(vecAt(0)), { workspaceId: ws, intent: INTENT })).toBeNull();
   });
 });

@@ -7,8 +7,10 @@
  * it IS in the source — the guard is pinned to that string's OLD wording.
  * ORPHANED reports only: nothing resembling the literal survives, or the literal is not
  * prose (a value pin, a shape guard, fixture-composed output).
+ * COINCIDENT and RENAMED report only: the fragment is outside the test's subject, or the
+ * file positively pins the new wording (see the header).
  *
- * @typedef {'DRIFTED' | 'ORPHANED'} VacuousVerdict
+ * @typedef {'DRIFTED' | 'ORPHANED' | 'COINCIDENT' | 'RENAMED'} VacuousVerdict
  */
 /**
  * A negative assertion with a static literal argument, as extracted from a test file.
@@ -164,16 +166,42 @@ export function driftFragment(lit: string, includes: IncludesFn): {
  */
 export function createCorpusIncludes(corpus: string, queries: Iterable<string>): IncludesFn;
 /**
+ * The SUBJECT of a test file: the corpus files its negative assertions are about. A
+ * DRIFTED verdict claims "the emitter this guard watches was reworded", and only the
+ * subject can carry that evidence (WI-10004205). Three sources, all static:
+ *   1. basename siblings: `foo.test.ts` / `foo.integration.test.ts` → `foo.*` in the same
+ *      directory, or one level up from `__tests__/` / `test/` / `tests/`;
+ *   2. every relative specifier in the file (`./x`, `../y.js`): imports, dynamic imports,
+ *      `vi.mock`, `require`, and paths the test reads, resolved the way TS resolves them;
+ *   3. every repo-relative path the test names verbatim (`'scripts/foo.sh'`).
+ * Workspace-package imports (`@papercusp/…`) are deliberately NOT followed. That misses
+ * a subject reached only through a package, whose drift is then reported COINCIDENT
+ * rather than gating; the alternative, following re-exports, re-admits the coincidental
+ * matches this exists to remove.
+ *
+ * @param {string} testPath - Repo-relative POSIX path of the test file.
+ * @param {string} text - The test file's source.
+ * @param {{ has(path: string): boolean }} corpus - Repo-relative paths eligible as corpus.
+ * @returns {string[]} Subject paths, a subset of `corpus`, sorted.
+ */
+export function resolveSubjectFiles(testPath: string, text: string, corpus: {
+    has(path: string): boolean;
+}): string[];
+/**
  * Judge one test file's negative assertions. `includes` answers "does the non-test
  * corpus contain this string" — injected so the unit tests can drive a synthetic corpus.
+ * `subjectIncludes` answers the same over the test's SUBJECT files only
+ * (resolveSubjectFiles). Omit it when the subject is unknown: drift is then judged
+ * against the whole corpus, exactly as before the locality rule.
  *
- * @param {{ file: string; text: string; includes: IncludesFn }} args
+ * @param {{ file: string; text: string; includes: IncludesFn; subjectIncludes?: IncludesFn }} args
  * @returns {{ considered: number; findings: VacuousFinding[] }}
  */
-export function judgeFile({ file, text, includes }: {
+export function judgeFile({ file, text, includes, subjectIncludes }: {
     file: string;
     text: string;
     includes: IncludesFn;
+    subjectIncludes?: IncludesFn;
 }): {
     considered: number;
     findings: VacuousFinding[];
@@ -210,8 +238,10 @@ export const DOC_PROMPT_RE: RegExp;
  * it IS in the source — the guard is pinned to that string's OLD wording.
  * ORPHANED reports only: nothing resembling the literal survives, or the literal is not
  * prose (a value pin, a shape guard, fixture-composed output).
+ * COINCIDENT and RENAMED report only: the fragment is outside the test's subject, or the
+ * file positively pins the new wording (see the header).
  */
-export type VacuousVerdict = "DRIFTED" | "ORPHANED";
+export type VacuousVerdict = "DRIFTED" | "ORPHANED" | "COINCIDENT" | "RENAMED";
 /**
  * A negative assertion with a static literal argument, as extracted from a test file.
  */

@@ -5,7 +5,7 @@
  * client → ledger wiring) is decision-model-ledger.integration.test.ts.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DecisionCallRecord } from '@papercusp/decision-model';
+import { stateSha256, type DecisionCallRecord } from '@papercusp/decision-model';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -59,6 +59,21 @@ describe('recordDecisionModelCall failure contract', () => {
     h.sql = fakeSql(() => Promise.resolve([]));
     await expect(recordDecisionModelCall(record)).resolves.toBe(true);
     expect(decisionModelLedgerStats()).toMatchObject({ written: 1, failed: 0, lastError: null });
+  });
+
+  it('binds the state HASH as the state_sha256 value and never the judged state text (R-3)', async () => {
+    const tag = fakeSql(() => Promise.resolve([]));
+    h.sql = tag;
+    await expect(recordDecisionModelCall(record)).resolves.toBe(true);
+    const calls = (tag as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(calls).toHaveLength(1);
+    const [strings, ...values] = calls[0] as [TemplateStringsArray, ...unknown[]];
+    const columns = strings.join('?').match(/\(([^)]*)\)\s*VALUES/s)?.[1].split(',').map((c) => c.trim());
+    expect(columns).toBeDefined();
+    const expectedHash = stateSha256(record.request.state);
+    expect(expectedHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(values[columns!.indexOf('state_sha256')]).toBe(expectedHash);
+    expect(JSON.stringify(values)).not.toContain('turn text');
   });
 
   it('a sql client that throws synchronously is still swallowed', async () => {

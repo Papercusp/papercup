@@ -113,6 +113,7 @@ const scriptedEngine = vi.hoisted(() => ({
     accountRoute?: string | null }>,
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
+  realEventSources: new Map<SuSessionEvent, number[]>(),
   initialization: Promise.resolve(),
 }));
 
@@ -152,10 +153,16 @@ vi.mock('../su-session-claude-engine', async (original) => {
         // Observe the production host; never supply a query, attach an adapter,
         // or send an owner turn from the fixture in the live-provider journey.
         const engine = actual.startClaudeSuEngine(args[0], args[1], args[2], args[3]);
-        scriptedEngine.engines.push(engine);
+        const index = scriptedEngine.engines.push(engine) - 1;
+        // WI-10004198: a resumed chat's engine reuses the host of the engine it
+        // replaces (same agentChatId). A second subscribe loop on that host
+        // recorded every later event twice, so read each host once.
+        if (scriptedEngine.engines.slice(0, index).some((other) => other.adapter.host === engine.adapter.host)) return engine;
         void (async () => {
           for await (const { event } of engine.adapter.host.subscribe()) {
             scriptedEngine.events.push(event);
+            // WI-10004198: which started engine each real event came from.
+            scriptedEngine.realEventSources.set(event, [...(scriptedEngine.realEventSources.get(event) ?? []), index]);
           }
         })();
         return engine;
@@ -7262,7 +7269,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             await sleep(1_500);
             frame(label, pane.screen());
             const reply = completed.map((event) => (event.type === 'transcript' ? String(event.content) : '')).join('\n');
-            log.push({ label, prompt, firstReplyMs, totalMs: Math.round(performance.now() - started), reply });
+            // WI-10004198: the started-engine index each completed reply event
+            // came from; one event listed twice means one host subscribed twice.
+            const replySources = completed.map((event) => scriptedEngine.realEventSources.get(event) ?? []);
+            log.push({ label, prompt, firstReplyMs, totalMs: Math.round(performance.now() - started), reply, replySources });
             return reply;
           }
           if (lifecycle === 'failed' || lifecycle === 'ended' || Date.now() > deadline) {
@@ -7359,8 +7369,16 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
         // Which engines this review started and where each ended up: the
         // recall reply has been recorded twice after /resume (WI-10004198).
-        const engines = scriptedEngine.engines.map((engine) => ({ lifecycle: engine.adapter.host.descriptor().lifecycle }));
+        const engines = scriptedEngine.engines.map((engine, index, all) => {
+          const descriptor = engine.adapter.host.descriptor();
+          return { lifecycle: descriptor.lifecycle, identity: descriptor.identity ?? null, pid: engine.pid() ?? null,
+            sharesHostWith: all.findIndex((other) => other.adapter.host === engine.adapter.host) === index
+              ? null : all.findIndex((other) => other.adapter.host === engine.adapter.host) };
+        });
         writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: 'pui', binary: bin, binarySha256, cols: 120, rows: 40, launchDir, approvals, questions, retries, engines, log }, null, 2) + '\n');
+        // WI-10004198: each engine event is recorded once, however many engines
+        // the review started on one host.
+        expect(new Set(scriptedEngine.events).size, 'an engine event was recorded more than once').toBe(scriptedEngine.events.length);
         console.info('PUI_P005_REVIEW', JSON.stringify({ approvals, log: log.map(({ label, firstReplyMs, totalMs }) => ({ label, firstReplyMs, totalMs })) }));
       } finally {
         await pane.stop().catch(() => {});

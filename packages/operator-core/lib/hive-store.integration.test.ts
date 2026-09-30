@@ -30,7 +30,9 @@ describe('hive-store (real PG, migration 184)', () => {
   let db: OrgTestDb;
   let sql: Sql;
   beforeAll(async () => {
-    db = await createOrgTestDb();
+    // Pool of 8 so the concurrent get-or-create case really races on separate
+    // connections (the default pool of 2 would mostly serialize it).
+    db = await createOrgTestDb({ adminPoolMax: 8 });
     sql = db.adminSql; // RLS-bypass for the bulk CRUD assertions
   }, 120_000);
   afterAll(async () => {
@@ -57,6 +59,28 @@ describe('hive-store (real PG, migration 184)', () => {
     expect(second.created).toBe(false);
     expect(second.record.pubkeyBase64).toBe(pk(1)); // unchanged
     expect(second.record.title).toBe('Alpha'); // unchanged
+  });
+
+  it('concurrent get-or-create of one hive never fails on its other unique keys (WI-10004191)', async () => {
+    // A Network board refresh racing navigation lazily backfills the same hive
+    // from several requests at once: same (workspace, slug), same pubkey. With
+    // the slug key as the only ON CONFLICT arbiter, a loser that passed the
+    // pre-check hit pots_public_key_key (or the canonical-slug key) instead of
+    // returning the winner's row.
+    for (let i = 0; i < 40; i += 1) {
+      const input = { workspaceId: 'ws-race', homeSlug: `race-${i}`, pubkeyBase64: pk(100 + i), keychainId: `hive:ws-race:race-${i}` };
+      const results = await Promise.all(Array.from({ length: 6 }, () => insertHiveIfAbsent(input, sql)));
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      for (const r of results) expect(r.record.pubkeyBase64).toBe(input.pubkeyBase64);
+    }
+  });
+
+  it('refuses to bind a pubkey that already identifies a different hive', async () => {
+    await insertHiveIfAbsent({ workspaceId: 'ws-dup', homeSlug: 'first', pubkeyBase64: pk(150), keychainId: 'k' }, sql);
+    await expect(
+      insertHiveIfAbsent({ workspaceId: 'ws-dup', homeSlug: 'second', pubkeyBase64: pk(150), keychainId: 'k' }, sql),
+    ).rejects.toThrow(/already identifies another hive/);
+    expect(await getHiveBySlug('ws-dup', 'second', sql)).toBeNull();
   });
 
   it('resolves by home-slug AND by pubkey', async () => {

@@ -104,13 +104,15 @@ export async function peersKnowLookup(
       return s`
         WITH best AS (${chunkAwareVectorLegSql(handle, {
           surface: CONSULT_QUESTIONS_CHUNK_SURFACE,
-          parentAlias: 'c',
+          // Not 'c': the builder reserves that alias for the chunk table and throws,
+          // which the catch below would turn into a silent null on every lookup.
+          parentAlias: 'cs',
           qVec,
           limit: 1,
           mode: 'retrieve',
-          parentFilter: s`c.workspace_id = ${params.workspaceId}
-                          AND c.state = 'closed_answered'
-                          AND (c.outcome->>'source' IS DISTINCT FROM 'archive')`,
+          parentFilter: s`cs.workspace_id = ${params.workspaceId}
+                          AND cs.state = 'closed_answered'
+                          AND (cs.outcome->>'source' IS DISTINCT FROM 'archive')`,
           // The embedding-space rule stays with the caller; a missing column fails closed.
           spaceFilter: (cols) =>
             cols.profileColumn && cols.modeColumn
@@ -136,7 +138,14 @@ export async function peersKnowLookup(
       closedAt: top.closed_at ? new Date(top.closed_at as string).toISOString() : null,
       sim: Number(top.sim),
     };
-  } catch {
+  } catch (err) {
+    // A database capability miss (pgvector absent, column not migrated, dims
+    // mismatch) carries a SQLSTATE `code` and is the expected degrade. Anything
+    // else is a bug in this query, and must not read as "no settled answer":
+    // a reserved builder alias once nulled every lookup this way.
+    if (typeof (err as { code?: unknown } | null)?.code !== 'string') {
+      console.warn(`[peers-know] lookup failed with a non-database error: ${(err as Error)?.message ?? String(err)}`);
+    }
     return null;
   }
 }

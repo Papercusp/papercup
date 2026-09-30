@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { resolveChunkSurface, splitterVersionOf } from '@papercusp/search';
 import {
   CHUNK_SURFACES,
+  CONSULT_QUESTIONS_CHUNK_SURFACE,
   OPERATOR_TURNS_CHUNK_SURFACE,
+  WORK_ITEMS_CHUNK_SURFACE,
   PLANS_CHUNK_SURFACE,
   surfaceStoreTable,
   TEXT_CHUNKS_TABLE,
@@ -69,6 +71,43 @@ describe('chunk surface registry', () => {
     expect(surfaceStoreTable(s)).toBe(TEXT_CHUNKS_TABLE);
     // Its chunks feed the search:semantic 'turns' source, so the coverage gate counts them there.
     expect(s.searchSource).toBe('turns');
+  });
+
+  it('R-40: every registered collection carries its P-001 verdict (D-014 to D-017)', () => {
+    // Pinned from the decisions, not read back from the registry: a registry edit
+    // that drifts from its bench verdict fails here.
+    const VERDICTS: Record<string, { maxChunks: number; chunkMargin: number; decision: string }> = {
+      plans: { maxChunks: 32, chunkMargin: 0, decision: 'D-014' },
+      work_items: { maxChunks: 4, chunkMargin: 0, decision: 'D-015' },
+      consult_questions: { maxChunks: 8, chunkMargin: 0.04, decision: 'D-016' },
+      operator_turns: { maxChunks: 8, chunkMargin: 0.06, decision: 'D-017' },
+    };
+    const shared = CHUNK_SURFACES.filter((s) => surfaceStoreTable(s) === TEXT_CHUNKS_TABLE);
+    expect(shared.map((s) => s.surface).sort()).toEqual(Object.keys(VERDICTS).sort());
+    for (const s of shared) {
+      const v = VERDICTS[s.surface]!;
+      expect(s.splitter, `${s.surface} ${v.decision}`).toEqual({ kind: 'window', size: 1500, overlap: 250 });
+      expect(s.maxChunks, `${s.surface} ${v.decision}`).toBe(v.maxChunks);
+      expect(s.chunkMargin ?? 0, `${s.surface} ${v.decision}`).toBe(v.chunkMargin);
+    }
+  });
+
+  it('work items and consult questions chunk their long text against their own parent vector (P-011, P-012)', () => {
+    expect(WORK_ITEMS_CHUNK_SURFACE.parent).toEqual({ table: 'harness_shared.work_items', key: ['harness_slug', 'feature_id'] });
+    expect(WORK_ITEMS_CHUNK_SURFACE.textSql).toBe('p.summary');
+    expect(WORK_ITEMS_CHUNK_SURFACE.searchSource).toBe('work_item');
+    expect(CONSULT_QUESTIONS_CHUNK_SURFACE.parent).toEqual({
+      table: 'harness_shared.consult_state',
+      key: ['workspace_id', 'conversation_id'],
+    });
+    expect(CONSULT_QUESTIONS_CHUNK_SURFACE.textSql).toBe('p.question');
+    expect(CONSULT_QUESTIONS_CHUNK_SURFACE.parentVector).toEqual({
+      column: 'query_embedding',
+      profileColumn: 'query_embedding_profile',
+      modeColumn: 'query_embedding_mode',
+    });
+    // Escalations are not registered (D-018).
+    expect(CHUNK_SURFACES.map((s) => s.surface)).not.toContain('escalations');
   });
 
   it('plan templates are never chunked (they are never searched)', () => {
