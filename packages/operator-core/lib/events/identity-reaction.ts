@@ -35,10 +35,11 @@
  *
  * The one at-least-once window is a crash after dispatch returns and before the
  * terminal UPDATE: the recovered step sees `authorizing` and dispatches again. An
- * operation provider closes it with the receipt id as its request key; a plain
- * tool is at-least-once there.
+ * operation provider closes it: it is submitted through `blueprint:submit` under
+ * a request key derived from the receipt id, so the second submit replays the
+ * first blueprint receipt (D-030). A plain tool is at-least-once there.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   dispatchProjectedTool,
@@ -57,6 +58,7 @@ import {
   type IdentityWearer,
 } from '../agent-identities/identity-async-rules';
 import { cancelIdentityRuleSubscription } from '../agent-identities/identity-rule-subscriptions';
+import type { CapabilityProviderKind } from '../capability-class-registry-store';
 import type { IdentityReactionCeiling } from '../capability-envelope/identity-grants-port';
 import { withPgRetry } from '../pg-transient-retry';
 import type { LatchedEventSubscriber } from './await/store';
@@ -106,6 +108,19 @@ export const UNRESOLVED_IDENTITY_FIRE = '(unresolved)';
 
 /** The spawn id a wearer-principal dispatch is recorded under in tool_invocations. */
 export const IDENTITY_REACTION_SPAWN_ID = 'identity-reaction';
+
+/** The provider kinds an identity reaction resolves: sync tools and async blueprint operations (D-030 §3). */
+export const IDENTITY_REACTION_PROVIDER_KINDS: readonly CapabilityProviderKind[] = ['tool', 'operation'];
+
+/**
+ * The blueprint request key of one identity reaction's operation submit. The
+ * receipt id can exceed the 200-char key limit, so it is hashed; the same
+ * receipt always yields the same key, which is what makes a recovered
+ * re-dispatch replay the first submit (D-030 §4).
+ */
+export function identityOperationRequestKey(receiptId: string): string {
+  return `identity-reaction:${createHash('sha256').update(receiptId).digest('hex')}`;
+}
 
 /* ------------------------------------------------------------------ */
 /* Planning (pure).                                                     */
@@ -357,6 +372,8 @@ export interface IdentityReactionDeps {
   resolveFire: (workspaceId: string, potSlug: string, fire: string) => Promise<ResolveClassFireResult>;
   readCeiling: (input: { workspaceId: string; harnessSlug: string; role: string }) => Promise<IdentityReactionCeiling>;
   isRegisteredTool: (tool: string) => boolean;
+  /** The operation submit tool and the capabilities it declares; null when it is not registered here. */
+  readOperationSubmit: () => Promise<{ tool: string; capabilities: readonly string[] } | null>;
   dispatch: (input: IdentityDispatchInput) => Promise<{ ok: boolean; error?: string }>;
 }
 
@@ -371,12 +388,18 @@ function defaultDeps(): IdentityReactionDeps {
     validateFire: (workspaceId, fire) =>
       withWorkspace(workspaceId, (tx) => validateClassFireTarget(tx, workspaceId, fire)),
     resolveFire: (workspaceId, potSlug, fire) =>
-      withWorkspace(workspaceId, (tx) => resolveClassFireTarget(tx, { workspaceId, potSlug, fire })),
+      withWorkspace(workspaceId, (tx) =>
+        resolveClassFireTarget(tx, { workspaceId, potSlug, fire, providerKinds: IDENTITY_REACTION_PROVIDER_KINDS })),
     readCeiling: async (input) => {
       const { readIdentityReactionCeiling } = await import('../capability-envelope/identity-grants-port');
       return readIdentityReactionCeiling(input);
     },
     isRegisteredTool: (tool) => lookupByMcpName(tool) != null,
+    readOperationSubmit: async () => {
+      const { BLUEPRINT_OPERATION_TOOLS } = await import('../blueprint/operation-contract');
+      const projected = lookupByMcpName(BLUEPRINT_OPERATION_TOOLS.submit);
+      return projected ? { tool: BLUEPRINT_OPERATION_TOOLS.submit, capabilities: [...projected.capabilities] } : null;
+    },
     dispatch: dispatchAsWearer,
   };
 }
@@ -449,8 +472,36 @@ export async function executeIdentityReaction(
   if (resolved.status !== 'resolved') {
     return refuse(resolved.status === 'unbound' ? 'unbound' : 'class-invalid', resolved.error, attribution);
   }
-  if (!deps.isRegisteredTool(resolved.tool)) {
-    return refuse('unbound', `class ${resolved.target.classRef} verb ${resolved.target.verb} resolves to "${resolved.tool}", which is not a registered tool`, attribution);
+  const bound = `class ${resolved.target.classRef} verb ${resolved.target.verb}`;
+
+  // What the dispatch is: the bound tool itself, or — for an operation provider
+  // — the blueprint submit of the bound operation under a receipt-derived key
+  // (D-030 §4). Either way it goes through the one wearer dispatch below.
+  const ruleArgs = (entry.rule.args ?? {}) as Record<string, unknown>;
+  let dispatch: { tool: string; args: Record<string, unknown>; capabilities: readonly string[] };
+  if (resolved.providerKind === 'operation') {
+    if (!resolved.operationHarnessSlug) {
+      return refuse('unbound', `${bound} resolves to operation provider ${resolved.providerPackage}@${resolved.providerVersion}, which pins no harness`, attribution);
+    }
+    const submit = await deps.readOperationSubmit();
+    if (!submit) return refuse('unbound', `${bound} resolves to a blueprint operation, but no operation submit tool is registered`, attribution);
+    dispatch = {
+      tool: submit.tool,
+      args: {
+        harness: resolved.operationHarnessSlug,
+        operationId: resolved.tool,
+        requestKey: identityOperationRequestKey(payload.receiptId),
+        input: ruleArgs,
+      },
+      capabilities: submit.capabilities,
+    };
+  } else if (resolved.providerKind === 'tool') {
+    if (!deps.isRegisteredTool(resolved.tool)) {
+      return refuse('unbound', `${bound} resolves to "${resolved.tool}", which is not a registered tool`, attribution);
+    }
+    dispatch = { tool: resolved.tool, args: ruleArgs, capabilities: [] };
+  } else {
+    return refuse('unbound', `${bound} resolves to a ${resolved.providerKind} provider, which an identity reaction does not dispatch`, attribution);
   }
 
   // 5. The allowlist the dispatch is held to.
@@ -462,6 +513,7 @@ export async function executeIdentityReaction(
     target: validated.target,
     declaredClassNeeds: wearer.rules.declaredClassNeeds,
     ceiling,
+    dispatchCapabilities: dispatch.capabilities,
   });
   if (!allowlist.ok) return refuse('capability-empty', allowlist.reason, attribution);
 
@@ -471,16 +523,16 @@ export async function executeIdentityReaction(
     ownerId: payload.ownerId,
     role: wearer.role,
     harnessSlug: wearer.harnessSlug,
-    tool: resolved.tool,
-    args: (entry.rule.args ?? {}) as Record<string, unknown>,
+    tool: dispatch.tool,
+    args: dispatch.args,
     capabilities: allowlist.capabilities,
     cause: { depth: 1, chain: [payload.pinRef], ruleId: payload.pinRef, rootRunId: payload.fireId },
   });
   if (!dispatched.ok) {
     const error = dispatched.error ?? 'reaction failed';
     await settle({ status: 'failed', error, ...attribution });
-    return { status: 'failed', tool: resolved.tool, error };
+    return { status: 'failed', tool: dispatch.tool, error };
   }
   await settle({ status: 'fired', error: null, ...attribution });
-  return { status: 'fired', tool: resolved.tool };
+  return { status: 'fired', tool: dispatch.tool };
 }
