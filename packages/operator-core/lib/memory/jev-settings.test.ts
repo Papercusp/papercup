@@ -13,6 +13,8 @@ const db = vi.hoisted(() => ({
   failReads: false,
   reads: 0,
   writes: [] as Array<{ key: string; value: string; workspace: string }>,
+  /** decision_model_calls inserts, keyed by column name (parsed from the INSERT's column list). */
+  ledger: [] as Array<Record<string, unknown>>,
 }));
 const creds = vi.hoisted(() => ({ store: {} as Record<string, string> }));
 
@@ -33,10 +35,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
         db.writes.push({ key, value, workspace });
         return Promise.resolve([]);
       }
+      if (text.includes('INSERT INTO harness_shared.decision_model_calls')) {
+        const cols = text.slice(text.indexOf('(') + 1, text.indexOf(') VALUES')).split(',').map((c) => c.trim());
+        db.ledger.push(Object.fromEntries(cols.map((c, i) => [c, values[i]])));
+        return Promise.resolve([]);
+      }
       return Promise.reject(new Error(`unexpected SQL: ${text}`));
     }, {
       // Transaction-capable like the production org client (WI-40234).
       begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined),
+      array: (v: unknown) => v,
+      json: (v: unknown) => v,
     }),
   }),
 }));
@@ -62,6 +71,7 @@ import {
   getJevMode,
   getJevSettingsView,
   JEV_API_KEY_NAME,
+  JEV_PRICING,
   jevModeKey,
   resolveJevMemoryInjection,
   setJevApiKey,
@@ -76,6 +86,7 @@ beforeEach(() => {
   db.failReads = false;
   db.reads = 0;
   db.writes = [];
+  db.ledger = [];
   creds.store = {};
   __resetJevSettingsCacheForTest();
   configureDecisionModel(null);
@@ -195,5 +206,42 @@ describe('the decision client', () => {
 
   it('installs one process-wide client', () => {
     expect(ensureJevDecisionClient()).toBe(ensureJevDecisionClient());
+  });
+});
+
+// WI-10004268: the client used to record calls without pricing, so every
+// decision_model_calls row had cost_usd NULL and the ledger reported $0 spend.
+describe('the call ledger row', () => {
+  it('prices Jev at $0.042 per million input tokens, output free', () => {
+    expect(JEV_PRICING).toEqual({ inputUsdPerMillionTokens: 0.042, outputUsdPerMillionTokens: 0 });
+  });
+
+  it('an answered call is written with a non-null cost computed from its input tokens', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      status: 200,
+      headers: { get: () => null },
+      text: async () => JSON.stringify({
+        model: 'jev-1.13.0',
+        answers: { q: { type: 'noul', noul: 0.9 } },
+        usage: { input_tokens: 12_345, output_tokens: 7 },
+      }),
+    })));
+    ensureJevDecisionClient();
+    await setJevApiKey(KEY);
+    await decide({ state: 'turn text', questions: { q: { type: 'yesNo', instructions: 'Relevant?' } } });
+    // The ledger write is fire-and-forget, so wait for it to land.
+    await vi.waitFor(() => expect(db.ledger).toHaveLength(1));
+    const row = db.ledger[0];
+    expect(row).toMatchObject({ outcome: 'answered', input_tokens: 12_345, output_tokens: 7 });
+    expect(row.cost_usd).not.toBeNull();
+    expect(row.cost_usd as number).toBeCloseTo((12_345 * 0.042) / 1_000_000, 12);
+  });
+
+  it('an inconclusive call has no tokens, so its cost stays null', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    ensureJevDecisionClient();
+    await decide({ state: 'turn text', questions: { q: { type: 'yesNo', instructions: 'Relevant?' } } });
+    await vi.waitFor(() => expect(db.ledger).toHaveLength(1));
+    expect(db.ledger[0]).toMatchObject({ outcome: 'inconclusive', inconclusive_reason: 'no-key', cost_usd: null });
   });
 });
