@@ -1324,7 +1324,10 @@ fn goal_detail_lines(g: &crate::models::GoalSummary) -> Vec<Line<'static>> {
             Span::styled("   needs you: ", Theme::dim()),
             Span::raw(g.needs_human.to_string()),
             Span::styled("   spend: ", Theme::dim()),
-            Span::raw(format!("${:.2}", g.spend_usd)),
+            Span::raw(match g.spend_usd {
+                Some(usd) => format!("${:.2}", usd),
+                None => "unmeasured".to_string(),
+            }),
         ]),
     ];
     let sampled = g.pots.len();
@@ -2797,6 +2800,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // jargon. Session ids, lifecycle, reconciliation, pot/role and raw errors
     // show only in the Ctrl-O details view (on by default in the workbench).
     let details = app.chat_details_visible();
+    // pui-chat-first-ux P-017: the chat-first conversation is printed inline,
+    // the way Claude Code and Codex print theirs: no box around the transcript
+    // and only a rule above and below the composer. A side border there cost
+    // two columns and was copied into every selected reply as `│`. The docked
+    // pane and the workbench keep their boxes, because there the border is what
+    // separates the chat from the pane beside it.
+    let inline = chat_is_inline(app);
+    let side_borders: u16 = if inline { 0 } else { 2 };
     // Background reads may clear the global status error. Keep the actual
     // refusal with the unsent turn so the owner can act on it before retrying.
     // Without details it is ONE plain sentence: cause and next step.
@@ -2820,7 +2831,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         } else {
             None
         };
-        let wrap_width = area.width.saturating_sub(2).max(1) as usize;
+        let wrap_width = area.width.saturating_sub(side_borders).max(1) as usize;
         sentence
             .into_iter()
             .chain(raw)
@@ -2836,7 +2847,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let card_h = card_block_height(app, area);
     // Keep each selected setting together when the Presence rail or a narrow
     // terminal leaves too little room for the complete configuration row.
-    let width = area.width.saturating_sub(2).max(1) as usize;
+    let width = area.width.saturating_sub(side_borders).max(1) as usize;
     let mut selection_rows: Vec<String> = Vec::new();
     let selection = if details {
         app.agent_chat_selection_label()
@@ -2912,8 +2923,22 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         (None, rows[1])
     };
 
-    let inner_w = transcript_area.width.saturating_sub(2).max(1) as usize; // minus borders
+    let inner_w = transcript_area.width.saturating_sub(side_borders).max(1) as usize;
     let mut lines: Vec<Line> = Vec::new();
+    // Inline, the transcript has no title bar to say that older turns can be
+    // loaded, so the first line of the history says it instead (it is on
+    // screen exactly when PgUp at the top would load them).
+    if inline && (app.chat_loading_earlier || app.chat_has_more_earlier) {
+        lines.push(Line::from(Span::styled(
+            if app.chat_loading_earlier {
+                "↑ loading earlier messages…"
+            } else {
+                "↑ earlier messages: PgUp"
+            },
+            Theme::dim(),
+        )));
+        lines.push(Line::from(""));
+    }
     if !details {
         // Plain progress in product words; a failure is the composer's one
         // sentence instead, so it is never shown twice.
