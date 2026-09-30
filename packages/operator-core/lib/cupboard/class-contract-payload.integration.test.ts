@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { snapshotPackageDirectory } from '@papercusp/orchestrator/blueprint';
+import { FIRST_PARTY_CLASS_NAMESPACE, snapshotPackageDirectory } from '@papercusp/orchestrator/blueprint';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
@@ -354,6 +354,12 @@ describe('P-021 portable class contracts through the signed Cupboard release (re
       interfaceVerbs: { send: { inputSchema: sendInput } },
     });
     expect((await refusal(run([entry(contract({ id: 'crm.email-plus' }))], { publisherLogin: 'crm' }))).code)
+      .toBe('platform-shadow');
+
+    // First-party classes are code, not rows (D-039): their namespace is held with no registry row.
+    const firstPartyShadow = contract({ id: `${FIRST_PARTY_CLASS_NAMESPACE}.leader-brief` });
+    expect((await getCapabilityClass(db.adminSql, WS, firstPartyShadow.id, firstPartyShadow.version))).toBeNull();
+    expect((await refusal(run([entry(firstPartyShadow)], { publisherLogin: FIRST_PARTY_CLASS_NAMESPACE }))).code)
       .toBe('platform-shadow');
 
     expect((await refusal(run([entry(contract({ description: 'Different bytes, same version.' }))]))).code)
