@@ -696,6 +696,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(fixture.reached).toHaveLength(1);
     expect(fixture.reached[0]).toMatchObject({ responder: 'audit-dead' });
     expect(fixture.reached[0].body).toContain('Audit exact revival source.');
+    // vacuous-negative-ok: the transcript-answer instruction belongs to the grading route only; pins it out of this route's body
     expect(fixture.reached[0].body).not.toContain('Answer FROM your transcript');
   });
 
@@ -738,6 +739,7 @@ describe('source-audit dispatcher through persisted consult routing', () => {
     expect(launch).not.toHaveBeenCalled();
     expect(fixture.reached[0].responder).toBe('independent-a');
     expect(fixture.reached[0].body).toContain('frozen-source-bytes');
+    // vacuous-negative-ok: the transcript-answer instruction belongs to the grading route only; pins it out of this route's body
     expect(fixture.reached[0].body).not.toContain('Answer FROM your transcript');
     const row = await stateRow(conversationId);
     const snapshot = row.routing as RoutingSnapshot;
