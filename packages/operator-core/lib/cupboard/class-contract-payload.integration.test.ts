@@ -33,6 +33,7 @@ import { validateIdentityInstallGrants } from '../capability-envelope/identity-g
 import { resolveCapabilityGrants } from './capability-grant-resolver';
 import { prepareBlueprintPublicRelease } from './blueprint-release';
 import { installBlueprintFromCupboardCore, type InstallBlueprintCoreDeps } from './install-blueprint-core';
+import type { IdentityInstallConsent } from './identity-install-consent';
 import {
   ClassContractImportError,
   classContractHash,
@@ -231,12 +232,18 @@ describe('P-021 portable class contracts through the signed Cupboard release (re
     expect(published.source.archive.classContracts.map((item) => item.ref)).toEqual([CLASS_REF]);
     expect(published.source.archive.bytes.toString('utf8')).toContain('"classContracts"');
     const carried = published.source.archive.classContracts;
+    // The signed listing declares the destination-independent consent subjects.
+    expect(manifest.permissions).toEqual([`grant:${CLASS_REF}`, 'shared:recipe:identity-recipe']);
 
-    const install = (potSlug: string, consent: ClassContractConsent | undefined, allow = ['mail:*']) =>
+    const install = (
+      potSlug: string, consent: ClassContractConsent | undefined, allow = ['mail:*'],
+      identityInstallConsent?: IdentityInstallConsent,
+    ) =>
       installBlueprintFromCupboardCore({
         githubUrl: 'https://github.com/publisher/mailer',
         expectedRelease: { manifest },
         ...(consent ? { classContractConsent: consent } : {}),
+        ...(identityInstallConsent ? { identityInstallConsent } : {}),
         capabilityContext: { workspaceId: WS, potSlug, mode: 'agent' },
       }, installDeps(sourceDir, resolvePackage, potSlug, allow));
 
@@ -290,8 +297,23 @@ describe('P-021 portable class contracts through the signed Cupboard release (re
     expect(conformance.binding).toMatchObject({ classRef: CLASS_REF, behavioralStatus: 'not-run' });
     expect(conformance.runId).not.toBe('publisher-claimed-pass');
 
-    // Within the pot ceiling: install succeeds; the import replays as a no-op.
-    const ok = await install('pot-a', approve(artifact, carried));
+    // Within the pot ceiling, the D-034 seat asks once for the grant, the
+    // binding it resolves here and the shared recipe; after that consent the
+    // install succeeds and the import replays as a no-op.
+    const asked = await install('pot-a', approve(artifact, carried)).catch((error: unknown) => error);
+    expect(asked).toMatchObject({
+      code: 'identity_install_consent_required',
+      data: { subjects: {
+        grants: [CLASS_REF],
+        providerBindings: [`${CLASS_REF} → publisher-mail@1.0.0`],
+        sharedContent: ['recipe:identity-recipe'],
+      } },
+    });
+    expect(await getPotCapabilityProviderBinding(db.adminSql, {
+      workspaceId: WS, potSlug: 'pot-a', classId: 'publisher.mail-send', classVersion: '1.0.0',
+    })).toBeNull();
+    const identityConsent = (asked as { data: { consentSubject: IdentityInstallConsent } }).data.consentSubject;
+    const ok = await install('pot-a', approve(artifact, carried), ['mail:*'], identityConsent);
     expect(ok.classContracts?.imported).toEqual([{ ref: CLASS_REF, contractHash: carried[0]!.contractHash, created: false }]);
     expect(ok.capabilityGrants?.selected).toMatchObject([{ classRef: CLASS_REF, providerPackage: 'publisher-mail' }]);
     expect((await getPotCapabilityProviderBinding(db.adminSql, {
