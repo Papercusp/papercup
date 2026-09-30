@@ -48,6 +48,11 @@ import type { SavedRecipeAdapter } from '../agent-tools/orchestration/saved-reci
 import { inspectIdentityRecipeClassProvider } from '../agent-identities/recipe-provider-conformance';
 import { identityCeilingRefusal } from '../agent-identities/wearer-authority';
 import { toolGuardText } from '../endpoint-route/routes/agent-mcp/identity-hook-sinks';
+import { getEventKey } from '../event-key-registry-store';
+import type { LatchedEventSubscriber } from '../events/await/store';
+import { planIdentityReactions } from '../events/identity-reaction';
+import { IDENTITY_RULE_SUBSCRIPTION_KIND } from '../agent-identities/identity-async-rules';
+import { IDENTITY_RULE_DELIVERY_MODE } from '../agent-identities/identity-rule-subscriptions';
 import { prepareBlueprintPublicRelease, readBlueprintLifecycle, resolveInstalledReleasePackage,
   rollbackBlueprintRelease, uninstallBlueprintRelease } from './blueprint-release';
 import { blueprintInstallJournal } from './blueprint-install-journal';
@@ -84,6 +89,11 @@ const CLASS_REF = `${CLASS_ID}@1.0.0`;
 const RECIPE = 'acme-notes';
 const RULE = 'acme-no-rm';
 const PACK = 'acme-review-kb';
+// P-017 / D-042: the publisher's own event vocabulary and an async hook on it.
+const EVENT_REF = 'acme-review-noted';
+const EVENT_KEY = `${PUBLISHER}:review-noted`;
+const ASYNC_RULE = 'acme-note-on-review';
+const FIRE = `class:${CLASS_REF}#read`;
 const MEMORY_TEXT = 'Acme reviewers read the review notes before approving a change.';
 const DOC_PART = `pack:${PACK}@1.0.0:review-steps`;
 const DOC_BODY = 'Read the notes, run the checks, then approve.';
@@ -128,6 +138,15 @@ async function writeJson(path: string, value: unknown) {
   await fs.writeFile(path, JSON.stringify(value, null, 2) + '\n');
 }
 
+/** The async hook: on one event key, firing the publisher's own class verb as the wearer. */
+async function writeAsyncRule(on: string) {
+  await writeJson(join(repo, 'packages', 'rule', ASYNC_RULE, 'rule.json'), {
+    schemaVersion: 1, id: ASYNC_RULE, title: ASYNC_RULE, description: 'read the notes when a review is noted',
+    version: '1.0.0', delivery: 'async', on, fire: FIRE, args: {},
+  });
+  await writeJson(join(repo, 'packages', 'rule', ASYNC_RULE, 'listing.json'), { kind: 'rule', version: '1.0.0' });
+}
+
 /** The publisher's repo: blueprint + prompt, vendored packages (D-037) and the class contract. */
 async function authorPublisherRepo() {
   const identity = {
@@ -136,6 +155,8 @@ async function authorPublisherRepo() {
       { kind: 'recipe', ref: RECIPE, version: '1.0.0' },
       { kind: 'rule', ref: RULE, version: '1.0.0' },
       { kind: 'knowledge-pack', ref: PACK, version: '1.0.0' },
+      { kind: 'event', ref: EVENT_REF, version: '1.0.0' },
+      { kind: 'rule', ref: ASYNC_RULE, version: '1.0.0' },
     ],
     grants: { requires: [CLASS_REF] },
     contributions: [{ id: 'reviewer-rules', purpose: 'prompt', source: 'fixed',
@@ -156,6 +177,12 @@ async function authorPublisherRepo() {
     guard: { deny: { 'input.command': { matches: 'rm -rf' } }, reason: 'no recursive deletes' },
   });
   await writeJson(join(repo, 'packages', 'rule', RULE, 'listing.json'), { kind: 'rule', version: '1.0.0' });
+  await writeJson(join(repo, 'packages', 'event', EVENT_REF, 'event.json'), {
+    schemaVersion: 1, title: 'Review noted', description: 'An Acme reviewer noted a change.', version: '1.0.0',
+    eventKey: EVENT_KEY, keyPattern: `${EVENT_KEY}:*`, tags: ['acme'],
+  });
+  await writeJson(join(repo, 'packages', 'event', EVENT_REF, 'listing.json'), { kind: 'event', version: '1.0.0' });
+  await writeAsyncRule(EVENT_KEY);
   const pack = join(repo, 'packages', 'knowledge-pack', PACK);
   await fs.mkdir(join(pack, 'docs'), { recursive: true });
   await fs.writeFile(join(pack, 'manifest.yaml'), stringifyYaml({
@@ -270,6 +297,13 @@ const packMemories = async () => (await db.adminSql<Array<{ data: string }>>`
 const packDocs = () => db.adminSql<Array<{ part_key: string; body: string; author: string | null }>>`
   SELECT part_key, body, author FROM harness_shared.harness_doc_parts
    WHERE workspace_id = ${WS} AND part_key LIKE ${`pack:${PACK}@%`} ORDER BY part_key`;
+const registeredKey = () => getEventKey(db.adminSql, WS, EVENT_KEY);
+/** The live identity-rule subscriptions on the key, as the emit's latch statement returns them. */
+const keySubscribers = () => db.adminSql<LatchedEventSubscriber[]>`
+  SELECT subscriber_id, delivery_mode, derived_from_kind, derived_from_ref
+    FROM harness_shared.coord_entity_subscriptions
+   WHERE workspace_id = ${WS} AND target_kind = 'event' AND target_ref = ${EVENT_KEY} AND cancelled_at IS NULL
+   ORDER BY derived_from_ref`;
 const recipeResult = async () => ((await recipeGetTool.handler({ id: RECIPE }, {} as never)) as
   { data: { results: Array<Record<string, unknown>> } }).data.results[0];
 
@@ -301,7 +335,7 @@ describe('P-020 third-party identity portability into a clean destination (real 
     const pins = published.source.archive.pins;
     // The vendored content travelled inside the signed closure.
     expect(pins.map((pin) => `${pin.packageKind}:${pin.ref}`)).toEqual(expect.arrayContaining([
-      `recipe:${RECIPE}`, `rule:${RULE}`, `knowledge-pack:${PACK}`, `blueprint:${ID}`,
+      `recipe:${RECIPE}`, `rule:${RULE}`, `knowledge-pack:${PACK}`, `event:${EVENT_REF}`, `rule:${ASYNC_RULE}`, `blueprint:${ID}`,
     ]));
     recipePin = pins.find((pin) => pin.packageKind === 'recipe' && pin.ref === RECIPE)!;
     packPin = pins.find((pin) => pin.packageKind === 'knowledge-pack' && pin.ref === PACK)!;
@@ -312,6 +346,7 @@ describe('P-020 third-party identity portability into a clean destination (real 
     expect(await db.adminSql`SELECT pot_slug FROM harness_shared.pot_capability_class_bindings WHERE workspace_id = ${WS}`)
       .toEqual([]);
     expect(await resolveInstalledReleasePackage(INSTALLED_BLUEPRINTS_DIR(), { kind: 'recipe', ref: RECIPE })).toBeNull();
+    expect(await registeredKey()).toBeNull();
 
     // 1. The contract asks for consent first.
     const asked = await install().catch((error: unknown) => error);
@@ -364,7 +399,8 @@ describe('P-020 third-party identity portability into a clean destination (real 
     expect(facet.blueprint_kind).toBe('identity');
     expect(listedSurface).toMatchObject({
       identity: { id: ID, version: '1.0.0', slots: ['domain'] },
-      hooks: { sync: [{ id: RULE, sink: 'pre-tool', kind: 'guard', tools: ['capability:bash'] }], async: [], unreadable: [] },
+      hooks: { sync: [{ id: RULE, sink: 'pre-tool', kind: 'guard', tools: ['capability:bash'] }],
+        async: [{ id: ASYNC_RULE, on: EVENT_KEY, fire: FIRE }], unreadable: [] },
       knowledge: [{ ref: PACK, version: '1.0.0', memories: 1,
         docs: [{ id: 'review-steps', title: 'Review steps', section: 'Review' }] }],
       classContracts: [{ ref: CLASS_REF }],
@@ -373,7 +409,8 @@ describe('P-020 third-party identity portability into a clean destination (real 
     });
     // What a shopper previews is what the signed manifest lists and install asks consent for.
     expect(listedSurface.permissions).toEqual([...manifest.permissions].sort());
-    expect(listedSurface.permissions).toEqual([`grant:${CLASS_REF}`, `rule:${RULE} (guard at pre-tool)`, `shared:recipe:${RECIPE}`]);
+    expect(listedSurface.permissions).toEqual([`event:${ASYNC_RULE} on ${EVENT_KEY}`, `grant:${CLASS_REF}`,
+      `operation:${FIRE}`, `rule:${RULE} (guard at pre-tool)`, `shared:event:${EVENT_REF}`, `shared:recipe:${RECIPE}`]);
     const consents = { classConsent, recipeConsent, identityConsent };
     const quieter = JSON.stringify({ ...listedSurface, hooks: { ...listedSurface.hooks, sync: [] } });
     await expect(install({ ...consents, listing: { blueprintKind: 'identity', identitySurface: quieter } }))
@@ -393,6 +430,9 @@ describe('P-020 third-party identity portability into a clean destination (real 
     // D-037: the destination resolves the bundled package from the release that shipped it.
     expect(await resolveInstalledReleasePackage(INSTALLED_BLUEPRINTS_DIR(), { kind: 'recipe', ref: RECIPE, version: '1.0.0' }))
       .toMatchObject({ contentHash: recipePin.contentHash });
+    // D-042: the bundled vocabulary is claimed for this workspace, attributed to the install.
+    expect(await registeredKey()).toMatchObject({ status: 'active', contributor: `cupboard:blueprint:${ID}`,
+      keyPattern: `${EVENT_KEY}:*`, tags: ['acme'] });
   }, 180_000);
 
   it('launches from the installed release and attaches mid-session to the same delivery', async () => {
@@ -449,6 +489,18 @@ describe('P-020 third-party identity portability into a clean destination (real 
       call: { tool: 'capability:bash', input, client: 'claude' } });
     await expect(guard({ command: 'rm -rf /' })).resolves.toMatch(new RegExp(`rule ${RULE}: no recursive deletes$`));
     await expect(guard({ command: 'git status' })).resolves.toBe('');
+
+    // The async hook: each wearer holds one live subscription on the claimed key,
+    // and one fire plans exactly one wearer-principal reaction per wearer.
+    const subscribers = await keySubscribers();
+    expect(subscribers).toEqual(['p020-launcher', 'p020-wearer'].map((ownerId) => ({
+      subscriber_id: expect.any(String), delivery_mode: IDENTITY_RULE_DELIVERY_MODE,
+      derived_from_kind: IDENTITY_RULE_SUBSCRIPTION_KIND, derived_from_ref: ownerId })));
+    const planned = planIdentityReactions({ workspaceId: WS, eventKey: EVENT_KEY, fireId: `${EVENT_KEY}@1#1`,
+      payload: { change: 'c-1' }, rows: subscribers });
+    expect(planned.unparseable).toEqual([]);
+    expect(planned.payloads.map((payload) => payload.ownerId)).toEqual(['p020-launcher', 'p020-wearer']);
+    expect(new Set(planned.payloads.map((payload) => payload.pinRef)).size).toBe(1);
   }, 180_000);
 
   it('refuses a vendored package or contract altered after signing, before anything activates', async () => {
@@ -466,6 +518,28 @@ describe('P-020 third-party identity portability into a clean destination (real 
     await writeJson(contractFile, contract);
 
     expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toEqual(lifecycleBefore);
+  }, 120_000);
+
+  it('refuses a signed release whose async hook listens on a key nothing catalogues, before consent or activation', async () => {
+    const lifecycleBefore = await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID);
+    await writeAsyncRule(`${PUBLISHER}:never-catalogued`);
+    try {
+      const published = await publish();
+      const unlisted = {
+        decision: 'approved' as const, artifactContentHash: published.manifest.rootHash,
+        contracts: published.source.archive.classContracts.map((entry) => ({ ref: entry.ref, contractHash: entry.contractHash })),
+      };
+      await expect(installBlueprintFromCupboardCore({
+        githubUrl: `https://github.com/${PUBLISHER}/${ID}`, expectedRelease: { manifest: published.manifest.release },
+        classContractConsent: unlisted,
+        capabilityContext: { workspaceId: WS, potSlug: POT, mode: 'agent', recipeProviderConsent: recipeConsent },
+      }, destinationDeps())).rejects.toMatchObject({ code: 'async_rule_not_installable',
+        data: { refusals: [{ rule: ASYNC_RULE, error: expect.stringContaining(`${PUBLISHER}:never-catalogued`) }] } });
+    } finally {
+      await writeAsyncRule(EVENT_KEY);
+    }
+    expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toEqual(lifecycleBefore);
+    expect(await getEventKey(db.adminSql, WS, `${PUBLISHER}:never-catalogued`)).toBeNull();
   }, 120_000);
 
   it('uninstalls and rolls back through the pot journal, and releases shared resources without damaging retained ones', async () => {
@@ -493,6 +567,8 @@ describe('P-020 third-party identity portability into a clean destination (real 
     const [proof] = await db.adminSql`SELECT status FROM harness_shared.capability_class_provider_bindings
       WHERE workspace_id = ${WS} AND class_id = ${CLASS_ID} AND provider_package = ${ID}`;
     expect(proof).toEqual({ status: 'active' });
+    // D-042: the key only this release claimed is released with it; wearers' rows now fire nothing.
+    expect(await registeredKey()).toBeNull();
 
     // Wearers release the shared resources. The destination edits the delivered doc first.
     const edited = 'Our own review steps, edited after install.';
@@ -513,6 +589,7 @@ describe('P-020 third-party identity portability into a clean destination (real 
     expect(await recipeResult()).toMatchObject({ ok: false, error: 'not_found' });
     expect(await packMemories()).toEqual([]);
     expect(await packDocs()).toEqual([{ part_key: DOC_PART, body: edited, author: PACKAGE_DOC_USER_OWNED }]);
+    expect(await keySubscribers()).toEqual([]);
     expect(await db.adminSql`SELECT phase FROM harness_shared.blueprint_package_installations
       WHERE workspace_id = ${WS} AND dependent_id LIKE 'session-package:%' AND phase NOT IN ('released')`).toEqual([]);
   }, 180_000);
