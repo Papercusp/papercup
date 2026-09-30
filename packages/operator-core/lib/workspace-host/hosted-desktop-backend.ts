@@ -351,19 +351,25 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
   const now = deps.now ?? Date.now;
   const warn = deps.onWarning ?? (() => {});
 
-  let reconciled: Promise<void> | null = null;
-  const reconcileOnce = (): Promise<void> => {
+  // Every roster/start reconciles, not only the first (WI-10004206): a desktop can die
+  // at any point after boot, and a roster read once is how a dead one stayed `ready`.
+  // Concurrent callers share the pass in flight rather than each paying for one.
+  let reconciling: Promise<void> | null = null;
+  const reconcile = (): Promise<void> => {
     if (!deps.reconcile) return Promise.resolve();
-    reconciled ??= deps.reconcile().then(
-      (reaped) => {
-        if (reaped > 0) warn(`hosted-desktop-backend — retired ${reaped} desktop row(s) no live lease backs`);
-      },
-      (error) => {
-        reconciled = null;
-        warn(`hosted-desktop-backend — desktop reconcile failed: ${String(error)}`);
-      },
-    );
-    return reconciled;
+    reconciling ??= deps.reconcile()
+      .then(
+        (reaped) => {
+          if (reaped > 0) warn(`hosted-desktop-backend — retired ${reaped} desktop row(s) no live lease backs`);
+        },
+        (error) => {
+          warn(`hosted-desktop-backend — desktop reconcile failed: ${String(error)}`);
+        },
+      )
+      .finally(() => {
+        reconciling = null;
+      });
+    return reconciling;
   };
 
   const displayFor = async (desktopSessionId: string): Promise<number | null> => {
@@ -402,12 +408,12 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
     },
 
     async roster(): Promise<HostedDesktopRosterEntry[]> {
-      await reconcileOnce();
+      await reconcile();
       return (await deps.listSessions()).map(rosterEntryForSession);
     },
 
     async start(): Promise<HostedDesktopRosterEntry | null> {
-      await reconcileOnce();
+      await reconcile();
       const desktopSessionId = await deps.ensureDesktop();
       // Served only when BOTH halves hold: the row names it, and this process holds
       // the live lease `lookup` dials through. Either alone gives the viewer an id

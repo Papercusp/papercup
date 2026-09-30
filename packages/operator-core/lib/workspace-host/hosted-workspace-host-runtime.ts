@@ -35,6 +35,7 @@ import {
   hiveDesktopSessionId,
   leasedDesktopBySessionId,
   leasedHiveDesktops,
+  reapDeadHiveDesktops,
 } from '../agent-tools/computer/desktop-lease';
 import { hostedDesktopAuditRow, recordDesktopAudit } from '../desktop/desktop-audit';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
@@ -148,10 +149,13 @@ export function createDefaultDesktopBackend(
     // desktops die with that operator's socket (D-363), so every row it holds no
     // lease for was left by a previous incarnation of it (WI-10002797).
     reconcile: async () => {
+      // A lease whose desktop died is not live, whatever the map still holds (WI-10004206):
+      // release it first, which closes its row, so the roster stops offering it.
+      const dead = await reapDeadHiveDesktops();
       const liveIds = leasedHiveDesktops()
         .map(hiveDesktopSessionId)
         .filter((id): id is string => Boolean(id));
-      return (await reconcileLocalDesktopSessions({ workspaceId: scope(), liveIds, soleOwner: true })).reaped;
+      return dead.length + (await reconcileLocalDesktopSessions({ workspaceId: scope(), liveIds, soleOwner: true })).reaped;
     },
     ...overrides,
   });
