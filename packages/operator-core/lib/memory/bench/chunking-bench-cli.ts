@@ -7,6 +7,7 @@
  *   [--folds 2] [--long 30] [--short 30] [--max-chunks 4,8,16,32]
  *   [--margins 0,0.02,0.04] [--probe-at N] [--seed s] [--model gemma]
  *   [--sidecar URL] [--json PATH]
+ *   [--live [--live-margin M] [--predicted PATH]]   (P-015: re-run on stored vectors)
  *
  * The D-016 instrument (turn-truncation-width-cli.ts) generalized: the method
  * lives in @papercusp/search-core (runChunkingBench), and this file supplies
@@ -395,6 +396,12 @@ async function main(): Promise<void> {
   // artifact's, so the re-run draws the same seeded rows and probes.
   const live = process.argv.includes('--live');
   if (live && !c.surface) throw new Error(`--live needs a registered collection; ${name} has no chunk surface`);
+  // --live-margin M: pool the stored chunks at margin M instead of the
+  // registry's, so a margin change can be measured on live data before it is
+  // made. The verdicts then compare against P-001's prediction for that arm.
+  const liveMarginArg = argOf('--live-margin');
+  const surface =
+    live && liveMarginArg !== undefined ? { ...c.surface!, chunkMargin: Number(liveMarginArg) } : c.surface;
   const predictedPath = argOf('--predicted') ?? `docs/evidence/generic-rag-chunking-2026-09-29/p001-bench-${name}.json`;
   const predicted =
     live && existsSync(predictedPath)
@@ -409,11 +416,11 @@ async function main(): Promise<void> {
   const folds = Number(argOf('--folds') ?? predicted?.sample.folds ?? 2);
   const nLong = Number(argOf('--long') ?? (predicted ? perFold(predicted.sample.tailProbes) : 30));
   const nShort = Number(argOf('--short') ?? (predicted ? perFold(predicted.sample.shortProbes) : 30));
-  const maxChunks = live ? [c.surface!.maxChunks] : numList(argOf('--max-chunks') ?? '4,8,16,32');
+  const maxChunks = live ? [surface!.maxChunks] : numList(argOf('--max-chunks') ?? '4,8,16,32');
   // Plain best-match plus margins that make a chunk displace a row only when it
   // beats it clearly — the lever against short-row demotion (R-2).
   const chunkMargins = live
-    ? [c.surface!.chunkMargin ?? 0]
+    ? [surface!.chunkMargin ?? 0]
     : numList(argOf('--margins') ?? '0,0.02,0.04,0.06,0.08', 0);
   const probeAt = argOf('--probe-at') !== undefined ? Number(argOf('--probe-at')) : undefined;
   const seed = argOf('--seed') ?? predicted?.seed ?? 'p001';
@@ -435,14 +442,14 @@ async function main(): Promise<void> {
   let shortRows: BenchRow[] = await fetchRows(client, c, PROBE_LEN * 2, CUT, nShort * folds * 3, seed);
   let stored: Awaited<ReturnType<typeof attachStoredChunks>> | null = null;
   if (live) {
-    const l = await attachStoredChunks(client, c.surface!, longRows as LiveBenchRow[]);
-    const s = await attachStoredChunks(client, c.surface!, shortRows as LiveBenchRow[]);
+    const l = await attachStoredChunks(client, surface!, longRows as LiveBenchRow[]);
+    const s = await attachStoredChunks(client, surface!, shortRows as LiveBenchRow[]);
     for (const [k, v] of s.chunks) l.chunks.set(k, v);
     for (const k of Object.keys(l.dropped) as Array<keyof typeof l.dropped>) l.dropped[k] += s.dropped[k];
     stored = { rows: [...l.rows, ...s.rows], chunks: l.chunks, dropped: l.dropped };
     longRows = l.rows;
     shortRows = s.rows;
-    console.log(`[chunking-bench] --live: surface=${c.surface!.surface} dropped ${JSON.stringify(l.dropped)}`);
+    console.log(`[chunking-bench] --live: surface=${surface!.surface} margin=${surface!.chunkMargin ?? 0} dropped ${JSON.stringify(l.dropped)}`);
   }
   const census = await client.query<{ total: string; over: string }>(
     `SELECT count(*) AS total, count(*) FILTER (WHERE length(${c.textSql}) > ${CUT}) AS over FROM ${c.table}`,
@@ -502,7 +509,7 @@ async function main(): Promise<void> {
     embed,
   });
   const decision = decideChunking(result, RULE);
-  const liveReport = stored ? compareWithPrediction(result, predicted!, c.surface!, predictedPath, stored.dropped) : null;
+  const liveReport = stored ? compareWithPrediction(result, predicted!, surface!, predictedPath, stored.dropped) : null;
   if (liveReport) console.log(`[chunking-bench] --live verdicts ${JSON.stringify(liveReport.verdicts)}`);
 
   const parentArm = result.arms[0];
