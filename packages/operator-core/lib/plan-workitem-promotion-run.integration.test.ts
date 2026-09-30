@@ -69,7 +69,46 @@ const h = vi.hoisted(() => ({
    * Null = pass-through. Real PG still performs every non-faulted write.
    */
   edgeContentionFaults: null as null | { remaining: number; injected: number },
+  /**
+   * WI-10004234: number of upcoming condition-upsert stand-down writes (the race loser's
+   * `setWorkItemState(..., 'dropped')`) that fail before reaching PG, the way a dropped
+   * connection under load fails them. Null = pass-through.
+   */
+  standDownFaults: null as null | { remaining: number; injected: number },
+  /**
+   * WI-10004234: hold every condition-marked mint until BOTH concurrent callers have minted,
+   * so exactly one of them deterministically loses the migration-741 claim race.
+   */
+  mintBarrier: null as null | { arrivals: number; release: Promise<void>; open: () => void },
 }));
+
+vi.mock('./work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./work-items')>();
+  return {
+    ...actual,
+    createWorkItem: async (...args: Parameters<typeof actual.createWorkItem>) => {
+      const created = await actual.createWorkItem(...args);
+      const barrier = h.mintBarrier;
+      const payload = (args[0]?.payload ?? {}) as Record<string, unknown>;
+      if (barrier && '_conditionUpsert' in payload) {
+        barrier.arrivals += 1;
+        if (barrier.arrivals >= 2) barrier.open();
+        await barrier.release;
+      }
+      return created;
+    },
+    setWorkItemState: async (...args: Parameters<typeof actual.setWorkItemState>) => {
+      const faults = h.standDownFaults;
+      const [, state, opts] = args;
+      if (faults && faults.remaining > 0 && state === 'dropped' && opts?.by === 'system:condition-upsert') {
+        faults.remaining--;
+        faults.injected++;
+        throw new Error('injected: stand-down write failed (CONNECTION_ENDED)');
+      }
+      return actual.setWorkItemState(...args);
+    },
+  };
+});
 
 vi.mock('./dbos/feature-blockers-edges', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./dbos/feature-blockers-edges')>();
@@ -283,6 +322,8 @@ beforeEach(async () => {
   };
   h.coverageBarrier = null;
   h.edgeContentionFaults = null;
+  h.standDownFaults = null;
+  h.mintBarrier = null;
   h.plans.clear();
 });
 
