@@ -13,12 +13,14 @@ import {
   executeCutReclaim,
   gatherCutReclaimPlan,
   isLeaseLive,
+  lastReflogEntryMs,
   machineWrittenRule,
   neverExpiringLeaseHonored,
   parsePorcelainV2,
   parseRetentionLease,
   parseWorktreePorcelain,
   planCutReclaim,
+  probeTree,
   renderReclaimPlan,
   resolveReclaimTargets,
   type HolderScan,
@@ -82,6 +84,39 @@ function input(over: Partial<ReclaimPlanInput> & { trees: Array<[ReclaimWorktree
   };
 }
 const verdict = (plan: ReturnType<typeof planCutReclaim>, p: string) => plan.verdicts.find((v) => v.path === p)!;
+
+describe('lastReflogEntryMs', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reflog-'));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('returns the newest entry, ignoring trailing blank lines', () => {
+    const p = path.join(dir, 'HEAD');
+    fs.writeFileSync(
+      p,
+      [
+        `${'a'.repeat(40)} ${'b'.repeat(40)} A <a@x> 1790000000 -0400\tcommit: first`,
+        `${'b'.repeat(40)} ${'c'.repeat(40)} B <b@x> 1790051708 +0000\tcheckout: moving from x to y 1799999999 -0400`,
+        '',
+        '',
+      ].join('\n'),
+    );
+    expect(lastReflogEntryMs(p)).toBe(1790051708_000);
+    // git omits the tab when the entry's message is empty
+    fs.appendFileSync(p, `${'c'.repeat(40)} ${'d'.repeat(40)} C <c@x> 1790060000 -0400\n`);
+    expect(lastReflogEntryMs(p)).toBe(1790060000_000);
+  });
+
+  it('is null for a missing, empty, or non-reflog file', () => {
+    expect(lastReflogEntryMs(path.join(dir, 'absent'))).toBeNull();
+    fs.writeFileSync(path.join(dir, 'empty'), '');
+    expect(lastReflogEntryMs(path.join(dir, 'empty'))).toBeNull();
+    fs.writeFileSync(path.join(dir, 'junk'), 'not a reflog line\n');
+    expect(lastReflogEntryMs(path.join(dir, 'junk'))).toBeNull();
+  });
+});
 
 describe('parsers', () => {
   it('reads worktree porcelain with head/detached/locked/prunable', () => {
@@ -353,6 +388,25 @@ describe('gather + execute against a real temporary repo', () => {
     expect(authoredWork).toHaveBeenCalledTimes(1);
     expect(authoredWork).toHaveBeenCalledWith(path.join(tmp, 'relcut-a'), repo);
     expect(plan.verdicts.find((v) => v.path.endsWith('relcut-a'))?.disposition).toBe('named-only');
+  });
+
+  it('dates a checkout by the newest reflog ENTRY, not the reflog file mtime a gc rewrites', () => {
+    const tree = path.join(tmp, 'relcut-gc');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const probe0 = probeTree(tree, null);
+    const admin = probe0.adminDir as string;
+    const oldSec = Math.floor((Date.now() - 10 * DAY) / 1000);
+    const logPath = path.join(admin, 'logs', 'HEAD');
+    // age every entry, then leave the FILE freshly written (what `git gc` / `reflog expire` does)
+    const aged = fs
+      .readFileSync(logPath, 'utf8')
+      // an entry with an empty message has NO tab (git omits it) — `worktree add` writes one
+      .replace(/ (\d{9,}) ([+-]\d{4})(?=\t|$)/gm, ` ${oldSec} $2`);
+    fs.writeFileSync(logPath, aged);
+    const oldDate = new Date(oldSec * 1000);
+    fs.utimesSync(path.join(admin, 'HEAD'), oldDate, oldDate);
+    expect(fs.statSync(logPath).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+    expect(probeTree(tree, null).lastHeadMoveMs).toBe(oldSec * 1000);
   });
 
   it('detects an authored file with the real git read and protects the tree', async () => {

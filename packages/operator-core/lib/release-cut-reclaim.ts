@@ -447,6 +447,32 @@ function mtimeOrNull(p: string): number | null {
   }
 }
 
+/**
+ * Timestamp (ms) of the NEWEST entry in a reflog file, or null when the file is missing,
+ * empty, or its last line is not a reflog entry. A reflog line is
+ * `<old> <new> <name> <email> <epoch-seconds> <tz>\t<message>`; only the tail is read,
+ * since a long-lived reflog can be large.
+ */
+export function lastReflogEntryMs(logPath: string): number | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(logPath, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size === 0) return null;
+    const len = Math.min(size, 16_384);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim() !== '');
+    const last = lines[lines.length - 1];
+    const m = last ? /\s(\d{9,})\s[+-]\d{4}(?:\t|$)/.exec(last.split('\t')[0] ?? '') : null;
+    return m?.[1] ? Number(m[1]) * 1000 : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 /** `.git` FILE of a linked worktree → its admin dir (`<common>/worktrees/<name>`). */
 export function worktreeAdminDir(worktreePath: string): string | null {
   try {
@@ -482,8 +508,12 @@ export function probeTree(worktreePath: string, rootDev: number | null): TreePro
       createdAtMs = null;
     }
   }
+  // The reflog FILE's mtime is not a checkout signal: `git gc` / `reflog expire` rewrite
+  // every worktree's logs/HEAD in one pass (measured 2026-09-30 06:46:59Z — all 31 trees
+  // got the same mtime and every one read as `recent-checkout`). Use the timestamp of
+  // the newest reflog ENTRY instead, plus HEAD's own mtime (gc never rewrites HEAD).
   const moves = adminDir
-    ? [mtimeOrNull(path.join(adminDir, 'HEAD')), mtimeOrNull(path.join(adminDir, 'logs', 'HEAD'))].filter(
+    ? [mtimeOrNull(path.join(adminDir, 'HEAD')), lastReflogEntryMs(path.join(adminDir, 'logs', 'HEAD'))].filter(
         (x): x is number => x !== null,
       )
     : [];

@@ -165,7 +165,25 @@ export const RELEASE_RESUME_VERSION_PATHS = [
   'package.json',
   'src-tauri/Cargo.toml',
   'src-tauri/tauri.conf.json',
+  'src-tauri/Cargo.lock',
 ] as const;
+
+const RELEASE_RESUME_STAGED_SIDECAR_ROOTS = ['serve.mjs', 'spa', 'db-sql', 'prompts', 'harness'] as const;
+
+function releaseResumeSidecarSourcePath(relativePath: string): string | null {
+  const prefix = 'src-tauri/env-sidecars/staging/';
+  if (!relativePath.startsWith(prefix)) return null;
+  const stagedRelativePath = relativePath.slice(prefix.length);
+  const segments = stagedRelativePath.split('/');
+  if (
+    !stagedRelativePath ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
+    !RELEASE_RESUME_STAGED_SIDECAR_ROOTS.some((root) => root === segments[0])
+  ) {
+    return null;
+  }
+  return 'src-tauri/sidecar/' + stagedRelativePath;
+}
 
 function expectedVersionFile(relativePath: string, head: string, version: string): string {
   if (relativePath === 'package.json' || relativePath === 'src-tauri/tauri.conf.json') {
@@ -179,18 +197,44 @@ function expectedVersionFile(relativePath: string, head: string, version: string
   if (relativePath === 'src-tauri/Cargo.toml') {
     return head.replace(/^version = "[^"]+"/m, `version = "${version}"`);
   }
-  throw new Error(`unsupported release resume path: ${relativePath}`);
+  if (relativePath === 'src-tauri/Cargo.lock') {
+    const sections = head.split('[[package]]\n');
+    const matchingIndexes: number[] = [];
+    sections.forEach((section, index) => {
+      if (section.split('\n').some((line) => line === 'name = "papercusp-desktop"')) {
+        matchingIndexes.push(index);
+      }
+    });
+    if (matchingIndexes.length !== 1) {
+      throw new Error('expected exactly one papercusp-desktop package entry, found ' + matchingIndexes.length);
+    }
+    const targetIndex = matchingIndexes[0]!;
+    let versionLines = 0;
+    sections[targetIndex] = sections[targetIndex]!
+      .split('\n')
+      .map((line) => {
+        if (!line.startsWith('version = "') || !line.endsWith('"')) return line;
+        versionLines += 1;
+        return 'version = "' + version + '"';
+      })
+      .join('\n');
+    if (versionLines !== 1) {
+      throw new Error('expected exactly one version field for papercusp-desktop, found ' + versionLines);
+    }
+    return sections.join('[[package]]\n');
+  }
+  throw new Error('unsupported release resume path: ' + relativePath);
 }
 
-/** Validate the only dirty-tree shape that a reuseSeed retry may erase. The
- * superproject sees a dirty submodule while the submodule itself must contain
- * only release-local.sh's exact version-field rewrites. */
+/** Validate release-owned residue left by a completed-seed retry. Version files
+ * must be exact requested-version rewrites; staged environment sidecars must be
+ * byte-identical to their committed source under src-tauri/sidecar. */
 export function validateReleaseResumeResidue(input: {
   superprojectStatus: string;
   desktopStatus: string;
   desktopHeadMatches?: boolean;
   version: string;
-  files: Readonly<Record<string, { head: string; worktree: string }>>;
+  files: Readonly<Record<string, { head?: string; worktree: string; expectedSource?: string }>>;
 }): { ok: true } | { ok: false; reason: string } {
   const desktopLines = input.desktopStatus.split('\n').filter(Boolean);
   const expectedSuper = desktopLines.length > 0 ? ' m papercusp-desktop' : '';
@@ -208,22 +252,39 @@ export function validateReleaseResumeResidue(input: {
   const allowed = new Set<string>(RELEASE_RESUME_VERSION_PATHS);
   for (const line of desktopLines) {
     if (!line.startsWith(' M ')) {
-      return { ok: false, reason: `desktop status contains a non-worktree modification: ${line}` };
+      return { ok: false, reason: 'desktop status contains a non-worktree modification: ' + line };
     }
     const relativePath = line.slice(3);
-    if (!allowed.has(relativePath)) {
-      return { ok: false, reason: `desktop status contains non-cutter path: ${relativePath}` };
+    const sidecarSourcePath = releaseResumeSidecarSourcePath(relativePath);
+    const isVersionPath = allowed.has(relativePath);
+    if (!isVersionPath && sidecarSourcePath === null) {
+      return { ok: false, reason: 'desktop status contains non-cutter path: ' + relativePath };
     }
     const file = input.files[relativePath];
-    if (!file) return { ok: false, reason: `missing residue snapshot for ${relativePath}` };
-    let expected: string;
-    try {
-      expected = expectedVersionFile(relativePath, file.head, input.version);
-    } catch (err) {
-      return { ok: false, reason: `could not validate ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
-    }
-    if (file.worktree !== expected) {
-      return { ok: false, reason: `${relativePath} contains changes beyond the requested ${input.version} version bump` };
+    if (!file) return { ok: false, reason: 'missing residue snapshot for ' + relativePath };
+    if (isVersionPath) {
+      if (file.head === undefined) {
+        return { ok: false, reason: 'missing HEAD snapshot for ' + relativePath };
+      }
+      let expected: string;
+      try {
+        expected = expectedVersionFile(relativePath, file.head, input.version);
+      } catch (err) {
+        return {
+          ok: false,
+          reason: 'could not validate ' + relativePath + ': ' + (err instanceof Error ? err.message : String(err)),
+        };
+      }
+      if (file.worktree !== expected) {
+        return { ok: false, reason: relativePath + ' contains changes beyond the requested ' + input.version + ' version bump' };
+      }
+    } else {
+      if (file.expectedSource === undefined) {
+        return { ok: false, reason: 'missing trusted sidecar source snapshot for ' + relativePath };
+      }
+      if (file.worktree !== file.expectedSource) {
+        return { ok: false, reason: relativePath + ' differs from its committed source sidecar ' + sidecarSourcePath };
+      }
     }
   }
   return { ok: true };
@@ -487,20 +548,27 @@ export async function resolveCutRoot(
     }
     const desktopRoot = path.join(selected.path, 'papercusp-desktop');
     const desktopStatus = (deps.desktopStatus ?? ((root: string) => execFileSync(
-      'git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' },
+      'git', ['-C', root, 'status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' },
     )))(desktopRoot);
-    const files: Record<string, { head: string; worktree: string }> = {};
+    const files: Record<string, { head?: string; worktree: string; expectedSource?: string }> = {};
     const headFile = deps.headFile ?? ((root: string, relativePath: string) => execFileSync(
       'git', ['-C', root, 'show', `HEAD:${relativePath}`], { encoding: 'utf8' },
     ));
     const readFile = deps.readFile ?? ((absolutePath: string) => readFileSync(absolutePath, 'utf8'));
     for (const line of desktopStatus.split('\n').filter(Boolean)) {
       const relativePath = line.slice(3);
-      if ((RELEASE_RESUME_VERSION_PATHS as readonly string[]).includes(relativePath)) {
-        files[relativePath] = {
-          head: headFile(desktopRoot, relativePath),
-          worktree: readFile(path.join(desktopRoot, relativePath)),
-        };
+      const sidecarSourcePath = releaseResumeSidecarSourcePath(relativePath);
+      const isVersionPath = (RELEASE_RESUME_VERSION_PATHS as readonly string[]).includes(relativePath);
+      if (isVersionPath || sidecarSourcePath !== null) {
+        try {
+          files[relativePath] = {
+            ...(isVersionPath ? { head: headFile(desktopRoot, relativePath) } : {}),
+            ...(sidecarSourcePath ? { expectedSource: headFile(desktopRoot, sidecarSourcePath) } : {}),
+            worktree: readFile(path.join(desktopRoot, relativePath)),
+          };
+        } catch {
+          // The validator below fails closed when an expected snapshot cannot be read.
+        }
       }
     }
     const residue = validateReleaseResumeResidue({
