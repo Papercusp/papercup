@@ -46,7 +46,7 @@ function codexPolicyBaseId(model) {
  */
 // Pin effort as well as the model: an omitted launch must not inherit the
 // native client's medium effort (or a cached model selection).
-export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-5.6-sol:xhigh';
+export const CODEX_SAFE_DEFAULT_MODEL = 'gpt-6.1-sol:xhigh';
 // Alias retained for callers that describe this as the launch default.
 export const CODEX_DEFAULT_MODEL = CODEX_SAFE_DEFAULT_MODEL;
 export const CODEX_DENIED_MODEL_IDS = Object.freeze(['gpt-5.3-codex-spark']);

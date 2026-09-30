@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-22 (current public head): the public default branch head is the commit the export gate passed",
+  "framework": "operational",
+  "command": [
+    "gh api repos/Papercusp/papercusp-app/commits/main --jq .sha",
+    "git ls-remote https://github.com/Papercusp/papercusp-app refs/heads/main",
+    "export gate log of the re-sync push: docs/evidence/osr-r22-head-2026-09-30/push-real2.out (copied verbatim from .papercusp/scratch/osr/push-real2.out, sha256 03426eb6..., mtime 13:07:49Z)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T21:03:54Z",
+  "finishedAt": "2026-09-30T21:04:21Z",
+  "summary": "The public main head is 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c by both the GitHub API and git ls-remote. That is exactly the commit the export gate pushed in the 13:0xZ re-sync: the gate log shows materializing papercup@d20b360237, then audit-release-bundle, audit-release-bundle --scan-dir, gitleaks and trufflehog all clean, then 'pushed 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c (parent b98518640b8d...)', EXIT=0. The parent is the earlier gated launch commit (osr-r22-live), so no ungated commit sits between them. The public main committer date is 13:06:48Z, before the log's 13:07:49Z mtime, and there has been no later push.",
+  "assertions": [
+    {
+      "id": "head-equals-gated",
+      "passed": true,
+      "evidence": "api main=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c; ls-remote main=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c; push-real2.out line 9 'pushed 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c'."
+    },
+    {
+      "id": "gate-passed-before-push",
+      "passed": true,
+      "evidence": "push-real2.out: '==> gating the export' then 4 checks all '✓ ... clean' before the push line; EXIT=0."
+    },
+    {
+      "id": "lineage-gated",
+      "passed": true,
+      "evidence": "push-real2.out: parent b98518640b8d026adfc59b7149ed6334dcdd0c2f = the gated launch commit in osr-r22-live-2026-09-30.json."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-22",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}

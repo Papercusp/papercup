@@ -2905,11 +2905,19 @@ export const bootstrapSu = defineTool({
           throw new Error('selected identity source revision changed after picker selection');
         }
       }
+      // agent-economy-flywheel P-016 (D-011): a priced Cupboard identity release
+      // activates only with funds behind it; the refusal is typed (402 below).
+      const { assertIdentityActivationFunded } = await import('../../../cupboard/identity-activation-gate-io');
+      await assertIdentityActivationFunded({ stack: launchArtifact.stack, repoDir: cwd, workspaceId: workspace });
       if (launchArtifact.resourceArtifacts.length > 0) {
         await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql, { ownerId: sid });
       }
       promptText = launchArtifact.promptText;
     } catch (e: any) {
+      const { isIdentityActivationRefusedError } = await import('../../../cupboard/identity-activation-gate');
+      if (isIdentityActivationRefusedError(e)) {
+        return jsonRes({ status: 'error', error: e.code, detail: e.message, refused: e.refused }, 402);
+      }
       return jsonRes({ status: 'error', error: `compile su launch artifact: ${e?.message ?? e}` }, 500);
     }
 

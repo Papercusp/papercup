@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-19 (current public head): GitHub Actions passes on the public default-branch head",
+  "framework": "operational",
+  "command": [
+    "gh api repos/Papercusp/papercusp-app/commits/main --jq .sha",
+    "gh run list --repo Papercusp/papercusp-app --commit 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c --json conclusion,databaseId,name,status,headSha,createdAt",
+    "gh run view 36719354327 --repo Papercusp/papercusp-app --json conclusion,headSha,event,workflowName,jobs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T21:03:54Z",
+  "finishedAt": "2026-09-30T21:04:21Z",
+  "summary": "The public head moved from the launch commit b98518640b8d to 3c1ed9a1d7dd (public re-sync pushed 13:06:48Z). The CI workflow on that head (run 36719354327, event push, created 13:07:09Z) completed with conclusion success; its only job 'check' succeeded. It is the only run listed for that commit.",
+  "assertions": [
+    {
+      "id": "head-is-current",
+      "passed": true,
+      "evidence": "api main=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c at 21:03:54Z; git ls-remote refs/heads/main=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c at 21:04:21Z."
+    },
+    {
+      "id": "ci-green-on-head",
+      "passed": true,
+      "evidence": "run 36719354327 workflow 'CI' event push headSha=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c status completed conclusion success; jobs: check=success."
+    },
+    {
+      "id": "no-failing-run-on-head",
+      "passed": true,
+      "evidence": "gh run list --commit 3c1ed9a1d7dd returns exactly 1 run, conclusion success."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-19",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}

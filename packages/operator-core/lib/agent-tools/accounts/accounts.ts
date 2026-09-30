@@ -28,7 +28,7 @@ const wsArg = z.string().min(1).optional().describe('Workspace id (defaults to t
 export default defineTool({
   name: 'accounts:register',
   description:
-    "Register (or update) a provider account in the pool. `provider:'claude'` (default) uses a Claude Max OAuth credential: `token:<path>` (`claude setup-token`) | `file:<path>` / absolute / `~` (`.credentials.json`). `provider:'codex'` uses a bearer credential for the Codex/OpenAI-compatible gateway: `token:<path>` or `env:NAME`. Credential refs are references, never the secret. Optional `egress` pins the account to its own outbound IP. Re-registering an existing id updates credentialRef/provider/label/egress, preserving bindings + rate state. Returns {ok, account}.",
+    "Register (or update) a provider account in the pool. `provider:'claude'` (default) uses a Claude subscription OAuth credential: `token:<path>` (`claude setup-token`) | `file:<path>` / absolute / `~` (`.credentials.json`) — or an Anthropic Console API key that spends API credits: `apikey:env:NAME` | `apikey:file:<path>` | `apikey:credentials` (the key saved with setup:save_key). `provider:'codex'` uses a bearer credential for the Codex/OpenAI-compatible gateway: `token:<path>` or `env:NAME`. Credential refs are references, never the secret. Optional `egress` pins the account to its own outbound IP. Re-registering an existing id updates credentialRef/provider/label/egress, preserving bindings + rate state. Returns {ok, account}.",
   guidance: {
     when: 'Adding a Claude Max subscription the inference gateway can pool (each subscription has its own 5h/7d rolling budget — more accounts = more aggregate budget). Register ≥2 before flipping papercusp-inference-gateway-multi-account.',
     notWhen: 'Setting the operator API key (operator:credentials). A one-off local run (no deploy).',
@@ -45,7 +45,7 @@ export default defineTool({
   args: z.object({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only; becomes part of the rate-bucket key)'),
     provider: z.enum(['claude', 'codex']).optional().describe("Provider for this account. Defaults to 'claude'."),
-    credentialRef: z.string().min(1).describe('Credential reference. Claude: token:<path> | file:<path> | absolute/~ .credentials.json. Codex: token:<path> or env:NAME bearer credential.'),
+    credentialRef: z.string().min(1).describe('Credential reference. Claude: token:<path> | file:<path> | absolute/~ .credentials.json | apikey:env:NAME | apikey:file:<path> | apikey:credentials (Console API key). Codex: token:<path> or env:NAME bearer credential.'),
     label: z.string().min(1).optional().describe('Optional human label'),
     egress: z
       .object({

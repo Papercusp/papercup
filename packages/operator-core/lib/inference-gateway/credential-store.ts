@@ -58,20 +58,97 @@ function expandHome(p: string): string {
   return p.startsWith('~') ? p.replace(/^~/, process.env.HOME ?? '~') : p;
 }
 
-/** Parse a credentialRef into its channel + path (mirrors `resolveCredential`). Every account is a
- *  consumer Claude Max OAuth subscription — `token:` (a `claude setup-token`), `file:` (a
- *  refreshable `.credentials.json` bundle), or `keychain:` (the macOS login-Keychain item Claude
- *  Code stores the SAME bundle JSON in — darwin has no `.credentials.json` on disk; P-006,
- *  cross-platform-hardening-and-agent-ergonomics-2026-07-05). There is NO static-API-key channel:
- *  this deployment has no `ANTHROPIC_API_KEY`, and a raw billed key would 400 against the
- *  subscription-only `oauth-2025-04-20` beta the gateway sends. */
-export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'env' | 'keychain'; path: string } {
+/** Parse a credentialRef into its channel + path (mirrors `resolveCredential`). A Claude account is
+ *  either a consumer Claude subscription — `token:` (a `claude setup-token`), `file:` (a refreshable
+ *  `.credentials.json` bundle), or `keychain:` (the macOS login-Keychain item Claude Code stores the
+ *  SAME bundle JSON in — darwin has no `.credentials.json` on disk; P-006,
+ *  cross-platform-hardening-and-agent-ergonomics-2026-07-05) — or an Anthropic Console API key,
+ *  `apikey:<source>` (anthropic-credits-gateway-2026-09-30 P-005, D-002). An API-key account spends
+ *  the Console organization's API credits and authenticates with `x-api-key` instead of the
+ *  subscription OAuth Bearer; `path` carries the raw source spec, parsed by `parseApiKeySource`. */
+export function parseCredentialRef(ref: string): { kind: 'token' | 'file' | 'env' | 'keychain' | 'apikey'; path: string } {
   if (ref.startsWith('token:')) return { kind: 'token', path: expandHome(ref.slice(6)) };
   if (ref.startsWith('file:')) return { kind: 'file', path: expandHome(ref.slice(5)) };
   if (ref.startsWith('env:')) return { kind: 'env', path: ref.slice(4).trim() };
   if (ref.startsWith('keychain:')) return { kind: 'keychain', path: ref.slice(9).trim() };
+  if (ref.startsWith('apikey:')) {
+    const spec = ref.slice(7).trim();
+    parseApiKeySource(spec); // validate eagerly so a malformed ref fails at parse, not at first request
+    return { kind: 'apikey', path: spec };
+  }
   if (ref.startsWith('/') || ref.startsWith('~')) return { kind: 'file', path: expandHome(ref) };
-  throw new Error(`inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/keychain:/path — Claude Max OAuth only)`);
+  throw new Error(
+    `inference-gateway: unsupported credentialRef '${ref}' (expected token:/file:/keychain:/path for a Claude subscription, or apikey:env:NAME | apikey:file:PATH | apikey:credentials for a Console API key)`,
+  );
+}
+
+/** How an upstream Claude request authenticates. `oauth` = `Authorization: Bearer` plus the
+ *  subscription `oauth-2025-04-20` beta (a subscription account; also the shape of a plain bearer
+ *  account). `api-key` = `x-api-key` with NO Authorization header and NO oauth beta (an Anthropic
+ *  Console API key, billed to the organization's API credits). */
+export type ClaudeAuthMode = 'oauth' | 'api-key';
+
+/** Where an `apikey:` account's key lives. `credentials` is the operator credentials store's
+ *  `anthropic_api_key` (written by `setup:save_key`), so a key saved once is usable without copying
+ *  it into a file or the gateway's environment. */
+export type ApiKeySource = { kind: 'env'; name: string } | { kind: 'file'; path: string } | { kind: 'credentials' };
+
+/** Parse the part of an `apikey:` credentialRef after the scheme. Throws on an unknown source. */
+export function parseApiKeySource(spec: string): ApiKeySource {
+  const s = spec.trim();
+  if (s === 'credentials') return { kind: 'credentials' };
+  if (s.startsWith('env:')) {
+    const name = s.slice(4).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`inference-gateway: apikey:env: needs an environment variable name, got '${name}'`);
+    }
+    return { kind: 'env', name };
+  }
+  if (s.startsWith('file:')) {
+    const path = expandHome(s.slice(5).trim());
+    if (!path) throw new Error('inference-gateway: apikey:file: needs a path');
+    return { kind: 'file', path };
+  }
+  throw new Error(
+    `inference-gateway: unsupported apikey source '${spec}' (expected apikey:env:NAME | apikey:file:PATH | apikey:credentials)`,
+  );
+}
+
+/** Reads the operator credentials store's `anthropic_api_key` — injectable for tests (the default
+ *  touches Postgres, lazily, so importing this module never does). */
+export type ApiKeyCredentialsReader = () => Promise<string | undefined>;
+const defaultApiKeyCredentialsReader: ApiKeyCredentialsReader = async () => {
+  const { readCredentials } = await import('../credentials');
+  return (await readCredentials()).anthropic_api_key;
+};
+let apiKeyCredentialsReader: ApiKeyCredentialsReader = defaultApiKeyCredentialsReader;
+export function _setApiKeyCredentialsReaderForTests(fn: ApiKeyCredentialsReader | null): void {
+  apiKeyCredentialsReader = fn ?? defaultApiKeyCredentialsReader;
+}
+
+/** Resolve an API key from its source. Refuses a subscription OAuth token (`sk-ant-oat…`) — sent as
+ *  `x-api-key` it would 401 on every request; that credential belongs under `token:`. */
+async function readApiKey(source: ApiKeySource): Promise<string> {
+  let raw: string | undefined;
+  let where: string;
+  if (source.kind === 'env') {
+    raw = process.env[source.name];
+    where = `environment variable ${source.name}`;
+  } else if (source.kind === 'file') {
+    raw = await fs.readFile(source.path, 'utf8');
+    where = source.path;
+  } else {
+    raw = await apiKeyCredentialsReader();
+    where = 'the operator credentials store (anthropic_api_key — set it with setup:save_key)';
+  }
+  const key = normalizeBearerToken(raw ?? '');
+  if (!key) throw new Error(`inference-gateway: no Anthropic API key in ${where}`);
+  if (key.startsWith('sk-ant-oat')) {
+    throw new Error(
+      `inference-gateway: ${where} holds a subscription OAuth token, not a Console API key — register it as token:<path> instead of apikey:`,
+    );
+  }
+  return key;
 }
 
 /**
@@ -117,8 +194,11 @@ export interface CredentialResolver {
    *  gateway refreshes near expiry), or `keychain` (the macOS local-credential FRESHEST-SCAN —
    *  serves the newest live bundle across the base Keychain item, every per-config-dir sibling
    *  and the disk bundle, self-refreshing only when all of them are hard-expired; see the
-   *  channel comment above). All are subscription OAuth → Bearer + the oauth beta. */
-  readonly kind: 'token' | 'file' | 'keychain';
+   *  channel comment above), or `apikey` (an Anthropic Console API key — never refreshes). */
+  readonly kind: 'token' | 'file' | 'keychain' | 'apikey';
+  /** How the upstream request authenticates with what `current()` returns: `oauth` (Bearer + the
+   *  oauth beta) for every subscription channel, `api-key` (x-api-key) for `apikey:`. */
+  readonly authMode: ClaudeAuthMode;
 }
 
 // ── macOS local-credential channel (`keychain:`) — the FRESHEST-SCAN resolver ──────────────────
@@ -421,11 +501,12 @@ export async function credentialRefSupportsOpenAiBearer(credentialRef: string): 
  * accounts never share a refresh.
  */
 export function makeCredentialResolver(credentialRef: string, harnessKey?: string): CredentialResolver {
-  ensureClaudeProvider();
   const { kind, path } = parseCredentialRef(credentialRef);
   if (kind === 'env') {
-    throw new Error(`inference-gateway: unsupported Claude credentialRef '${credentialRef}' (env: is only valid for bearer accounts)`);
+    throw new Error(`inference-gateway: unsupported Claude credentialRef '${credentialRef}' (env: is only valid for bearer accounts; a Console API key in the environment is apikey:env:NAME)`);
   }
+  if (kind === 'apikey') return makeApiKeyResolver(parseApiKeySource(path));
+  ensureClaudeProvider();
   const dedupKey = harnessKey ?? path;
 
   let cachedToken: string | undefined;
@@ -438,6 +519,7 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
 
   return {
     kind,
+    authMode: 'oauth',
     invalidate() {
       cachedToken = undefined;
       cachedExpiresAt = 0;
@@ -540,16 +622,39 @@ export function makeCredentialResolver(credentialRef: string, harnessKey?: strin
   };
 }
 
+/**
+ * An Anthropic Console API-key account (`apikey:`, anthropic-credits-gateway-2026-09-30 P-005). The
+ * key is read once and cached — keys do not expire, so there is nothing to refresh — and an upstream
+ * 401 `invalidate()`s the cache so a rotated key (a new env value, file, or `setup:save_key`) is
+ * picked up on the next request without a gateway restart.
+ */
+function makeApiKeyResolver(source: ApiKeySource): CredentialResolver {
+  let cachedKey: string | undefined;
+  return {
+    kind: 'apikey',
+    authMode: 'api-key',
+    invalidate() {
+      cachedKey = undefined;
+    },
+    async current() {
+      if (cachedKey) return cachedKey;
+      cachedKey = await readApiKey(source);
+      return cachedKey;
+    },
+  };
+}
+
 export function makeBearerCredentialResolver(credentialRef: string): CredentialResolver {
   const { kind, path } = parseCredentialRef(credentialRef);
-  if (kind === 'keychain') {
+  if (kind === 'keychain' || kind === 'apikey') {
     throw new Error(
-      `inference-gateway: unsupported bearer credentialRef '${credentialRef}' (keychain: is Claude-subscription-only; use token:/file:/env: for bearer accounts)`,
+      `inference-gateway: unsupported bearer credentialRef '${credentialRef}' (${kind}: is Claude-only; use token:/file:/env: for bearer accounts)`,
     );
   }
   let cachedToken: string | undefined;
   return {
     kind: kind === 'env' ? 'token' : kind,
+    authMode: 'oauth',
     invalidate() {
       cachedToken = undefined;
     },

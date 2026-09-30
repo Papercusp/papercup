@@ -31,14 +31,14 @@ describe('managed Codex model policy', () => {
     }
   });
 
-  it('resolves Sol xhigh only through an explicit configured-default selection', () => {
-    expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-5.6-sol:xhigh');
+  it('resolves GPT-6.1 Sol xhigh only through an explicit configured-default selection', () => {
+    expect(CODEX_SAFE_DEFAULT_MODEL).toBe('gpt-6.1-sol:xhigh');
     expect(resolveCodexModelSelection(undefined, { source: 'configured-default' })).toEqual({
-      model: 'gpt-5.6-sol:xhigh',
+      model: 'gpt-6.1-sol:xhigh',
       source: 'configured-default',
     });
     expect(codexModelConfigToml(CODEX_SAFE_DEFAULT_MODEL)).toEqual([
-      'model = "gpt-5.6-sol"',
+      'model = "gpt-6.1-sol"',
       'model_reasoning_effort = "xhigh"',
       '',
     ]);

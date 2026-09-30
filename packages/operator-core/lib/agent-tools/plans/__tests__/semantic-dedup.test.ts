@@ -28,8 +28,18 @@
  * gate for data reasons); the fixture is recorded, offline and deterministic.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+
+// Copy-out mutation probes: an absolute path to a module whose exports replace
+// @papercusp/search's (e.g. a mutated copy of libs/generic/search/src/near-duplicate.ts),
+// so plans:new's cut is proven to come from the library without dirtying the
+// shared tree. Unset, the real module is returned untouched.
+vi.mock('@papercusp/search', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/search')>();
+  const subject = process.env.PAPERCUSP_SEARCH_LIBRARY_SUBJECT;
+  return subject ? { ...real, ...((await import(subject)) as object) } : real;
+});
 import {
   confirmSimilarPlans,
   planDupeAbsoluteOverride,

@@ -796,6 +796,10 @@ finish() {
   fi
   if [ -n "$PROBE_ADMISSION_FD" ]; then
     flock -x "$PROBE_ADMISSION_FD" || exit 3
+    # Recorded BEFORE the manifest goes, so the subject is never uncovered while
+    # the lock lingers (EI-24720263797874266).
+    probe_admission_record_restored "$ADMISSION_ROOT" "$ADMISSION_DIR" "$FILE" "$BASE" ||
+      log "note: could not record the verified restore of $FILE; the testing:run fence stays conservative while its lock lingers"
     rm -f -- "$PROBE_MANIFEST"
     flock -u "$PROBE_ADMISSION_FD"
   fi

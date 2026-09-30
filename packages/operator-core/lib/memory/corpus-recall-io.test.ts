@@ -79,6 +79,27 @@ beforeEach(() => {
   resetCorpusEmbedderWarmup();
 });
 
+it('does not start a second corpus search after the parent prompt expired', async () => {
+  const parent = new AbortController();
+  let release!: (result: ReturnType<typeof ok>) => void;
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  runHybridSearch.mockImplementationOnce(async () => {
+    started();
+    return await new Promise<ReturnType<typeof ok>>((resolve) => { release = resolve; });
+  });
+  const recall = recallCorpusContext({ ...base, signal: parent.signal });
+  await didStart;
+  const options = runHybridSearch.mock.calls[0][1];
+  expect(options.signal).toBeInstanceOf(AbortSignal);
+  parent.abort(new Error('obsolete prompt'));
+  expect((await recall).outcome).toBe('timed-out');
+  expect(options.signal.aborted).toBe(true);
+  release(ok([]));
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(runHybridSearch).toHaveBeenCalledOnce();
+});
+
 describe('recallCorpusContext — the contract handed to the search engine', () => {
   it('reads ONLY the session_turn + work_item sources', async () => {
     runHybridSearch.mockResolvedValue(ok());

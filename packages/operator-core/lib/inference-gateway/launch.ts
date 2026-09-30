@@ -775,6 +775,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       accountId: account.accountId,
       token: () => resolver.current(),
       invalidateToken: () => resolver.invalidate(),
+      // anthropic-credits-gateway-2026-09-30 P-005: an `apikey:` account authenticates with
+      // x-api-key; the request path picks the headers per attempt from this (P-006).
+      authMode: resolver.authMode,
       // Per-account IP routing (D-003): route this account's upstream through its own egress dispatcher
       // (proxy / bound source IP) when configured; absent ⇒ default shared egress.
       egress: account.egress,
@@ -1164,9 +1167,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       refreshMs,
       () => {
         for (const { resolver } of resolvers) {
-          // `token` setup-tokens never expire — skip; `file` refreshes via OAuth; `keychain`
-          // (macOS local fallback) re-runs the freshest-scan across every local credential source.
-          if (resolver.kind === 'token') continue;
+          // `token` setup-tokens and `apikey` Console keys never expire — skip; `file` refreshes via
+          // OAuth; `keychain` (macOS local fallback) re-runs the freshest-scan across every local source.
+          if (resolver.kind === 'token' || resolver.kind === 'apikey') continue;
           resolver.invalidate();
           void resolver.current().catch((e) => log('warn', `proactive refresh failed: ${(e as Error).message}`));
         }

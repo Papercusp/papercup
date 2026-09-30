@@ -12,6 +12,10 @@ export interface ActiveAccount {
   accountId: string;
   token(): Promise<string>;
   invalidateToken?(): void;
+  /** How `token()` authenticates upstream (anthropic-credits-gateway-2026-09-30 P-005): `oauth` =
+   *  `Authorization: Bearer` + the oauth beta; `api-key` = an Anthropic Console key sent as
+   *  `x-api-key`. Absent ⇒ `oauth` (every pre-existing account). */
+  authMode?: 'oauth' | 'api-key';
   /** Per-account upstream egress. Singular/legacy; superseded by a non-empty `egressPool`. */
   egress?: AccountEgress;
   /** Rotating egress bindings for one account; callers skip entries on per-IP cooldown. */

@@ -79,6 +79,13 @@ const runHybridSearch = vi.fn(async (sources: Array<{ name: string }>, ctx: Reco
 // looks nothing like its cause (WI-7262 class).
 vi.mock('@papercusp/search', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/search')>()),
+  // Copy-out mutation probes: an absolute path to a module whose exports replace
+  // the library's (e.g. a mutated copy of libs/generic/search/src/coverage-gate.ts),
+  // so the papercusp wiring is proven to depend on the library without dirtying
+  // the shared tree.
+  ...(process.env.PAPERCUSP_SEARCH_LIBRARY_SUBJECT
+    ? ((await import(process.env.PAPERCUSP_SEARCH_LIBRARY_SUBJECT)) as object)
+    : {}),
   runFullTextSearch,
   runHybridSearch,
   configureSearchDefaults: vi.fn(),

@@ -196,6 +196,51 @@ async function testImportClosures(root: string, tests: string[]): Promise<Closur
   return { status: 'complete', files, unfollowable };
 }
 
+const sha256 = (value: string | Buffer): string => createHash('sha256').update(value).digest('hex');
+
+/** True when the probe's verified-restore record still matches the subject's current bytes. */
+async function verifiedRestored(admissionDir: string, realRoot: string, subject: string): Promise<boolean> {
+  const record = await readFile(join(admissionDir, 'restored', sha256(subject))).catch(() => null);
+  if (!record) return false;
+  const fields = record.toString('utf8').split('\0');
+  if (fields.length !== 4 || fields[3] !== '' || fields[0] !== realRoot || fields[1] !== subject) return false;
+  if (!/^[0-9a-f]{64}$/.test(fields[2]!)) return false;
+  const current = await readFile(subject).catch(() => null);
+  return current !== null && sha256(current) === fields[2];
+}
+
+/**
+ * EI-24720263797874266: the probed paths that could expose a mutant to an admitted test. A
+ * 'mutation probe' file lock outlives the in-tree dirty window: its holder takes it before the
+ * probe starts and the probe heartbeats it to 1200s, while the mutant exists only between
+ * manifest publication and verified restore. Fencing on the lock alone therefore refused
+ * unrelated tests (and every acceptance grade) for up to 20 minutes per probe. A path is
+ * COVERED, and never reaches the closure fence, when either:
+ *  - the live original-byte manifest names it: every testing:run child enters the admission
+ *    overlay, which binds the published original over the mutant; or
+ *  - its current bytes still hash to the record the probe wrote after verifying its restore:
+ *    the file IS its pre-probe original, and a protocol probe cannot mutate it again while an
+ *    admitted test holds the overlay's shared admission lock.
+ * A hand mutation or later edit changes the bytes, so that path stays uncovered and fenced.
+ */
+async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Promise<string[]> {
+  const admissionDir = join('/tmp', `papercusp-mutation-probe-${getuid?.() ?? 0}-${sha256(realRoot)}`);
+  const manifest = await readFile(join(admissionDir, 'original.manifest')).catch(() => null);
+  let overlaid: string | null = null;
+  if (manifest) {
+    const fields = manifest.toString('utf8').split('\0');
+    if (fields.length === 5 && fields[4] === '' && fields[0] === realRoot) overlaid = fields[1]!;
+  }
+  const uncovered: string[] = [];
+  for (const path of probePaths) {
+    const subject = resolve(realRoot, path);
+    if (subject === overlaid) continue;
+    if (await verifiedRestored(admissionDir, realRoot, subject)) continue;
+    uncovered.push(path);
+  }
+  return uncovered;
+}
+
 /** Why one test file may observe a probed source, or null when its closure provably cannot. */
 async function reachReason(
   closure: Set<string>, test: string, probes: string[], unfollowable: Map<string, string>,
@@ -251,23 +296,18 @@ export async function mutationProbeRefusal(
   }
   if (probePaths.length === 0) return null;
   // The in-tree probe publishes its immutable original before changing the
-  // subject. Every testing:run child enters the admission wrapper, which holds
-  // a shared flock through the whole test and binds this copy over the mutant.
-  // A legacy probe without that snapshot still needs the closure fence below.
-  const admissionKey = createHash('sha256').update(realRoot).digest('hex');
-  const manifestPath = join('/tmp', `papercusp-mutation-probe-${getuid?.() ?? 0}-${admissionKey}`, 'original.manifest');
-  const manifest = await readFile(manifestPath).catch(() => null);
-  if (manifest) {
-    const fields = manifest.toString('utf8').split('\0');
-    if (fields.length === 5 && fields[4] === '' && fields[0] === realRoot && probePaths.length === 1
-      && fields[1] === resolve(realRoot, probePaths[0]!)) return null;
-  }
+  // subject, and records a verified restore after. Every testing:run child
+  // enters the admission wrapper, which holds a shared flock through the whole
+  // test and binds the published copy over the mutant. Only a path neither
+  // proves safe (a legacy or hand mutation) still needs the closure fence below.
+  const uncovered = await uncoveredProbePaths(realRoot, probePaths);
+  if (uncovered.length === 0) return null;
   const refuse = (why: string): MutationProbeRefusal => ({
     error: 'mutation_probe_active',
-    hint: `no test process was started because this checkout has an active mutation probe on ${probePaths.join(', ')} and ${why}; retry after the probe restores its source`,
+    hint: `no test process was started because this checkout has an active mutation probe on ${uncovered.join(', ')} and ${why}; retry after the probe restores its source`,
   });
-  const probes = probePaths.map((path) => resolve(realRoot, path));
-  const nonModule = probePaths.find((path) => !CODE_EXTENSIONS.has(extname(path)));
+  const probes = uncovered.map((path) => resolve(realRoot, path));
+  const nonModule = uncovered.find((path) => !CODE_EXTENSIONS.has(extname(path)));
   if (nonModule) return refuse(`${nonModule} is not a code module, so only a filesystem read can reach it`);
   const tests: string[] = [];
   for (const file of files) {

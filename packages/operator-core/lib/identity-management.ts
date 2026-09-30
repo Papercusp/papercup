@@ -538,6 +538,17 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       nudge: { queued: false, reason: null },
     };
   }
+  // agent-economy-flywheel P-016 (D-011): attach, switch and rollback activate the
+  // resulting stack, so a priced Cupboard identity release needs funds behind it.
+  // A detach only removes layers and never activates one, so it is never refused.
+  if (input.action !== 'detach') {
+    const { assertIdentityActivationFunded } = await import('./cupboard/identity-activation-gate-io');
+    await assertIdentityActivationFunded({
+      stack: rebuilt.artifact.stack,
+      repoDir: repoDir ?? undefined,
+      workspaceId: input.workspaceId,
+    });
+  }
   await provisionLaunchIdentityResources(rebuilt.artifact, sql, { ownerId: input.ownerId });
   const nextRecord: SuLaunchSpecRecord = {
     ...record,

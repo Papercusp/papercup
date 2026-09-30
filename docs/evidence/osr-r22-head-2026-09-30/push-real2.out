@@ -1,0 +1,10 @@
+==> materializing d20b360237373f31326a9ba287086b625dd8624d (+ submodules at their gitlinks)
+==> selecting the public-safe cut (shared with the installer)
+==> desktop shell: identity scrub redacted 23 file(s)
+==> gating the export
+  ✓ audit-release-bundle: clean
+  ✓ audit-release-bundle --scan-dir: clean
+  ✓ gitleaks: clean
+  ✓ trufflehog: clean
+pushed 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c (parent b98518640b8d026adfc59b7149ed6334dcdd0c2f) (tree d44db83c0b291570ac67c70f9ed927be3b78166a) = Papercusp/papercup@d20b360237373f31326a9ba287086b625dd8624d → Papercusp/papercusp-app
+EXIT=0

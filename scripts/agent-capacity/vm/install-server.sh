@@ -11,8 +11,14 @@
 # and timing lines T_*=<seconds>. Exits non-zero with a reason on any failure.
 set -euo pipefail
 
-OBJ="${1:?usage: install-server.sh <gs-uri> <sha256>}"
-WANT_SHA="${2:?usage: install-server.sh <gs-uri> <sha256>}"
+OBJ="${1:?usage: install-server.sh <gs-uri> <sha256> [KEY=VAL ...]}"
+WANT_SHA="${2:?usage: install-server.sh <gs-uri> <sha256> [KEY=VAL ...]}"
+shift 2
+EXTRA_ENV=()
+for kv in "$@"; do
+  [[ "$kv" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "BAD_ENV_ARG $kv (want KEY=VAL, no spaces)"; exit 2; }
+  EXTRA_ENV+=("$kv")
+done
 SVC_USER=pcsrv
 DEB=/var/tmp/papercusp-server.deb
 t0=$(date +%s)
@@ -58,6 +64,18 @@ sudo loginctl enable-linger "$SVC_USER"
 for _ in $(seq 1 60); do sudo test -S "/run/user/$uid/bus" && break; sleep 1; done
 sudo test -S "/run/user/$uid/bus" || { echo "USER_MANAGER_NOT_UP uid=$uid"; exit 5; }
 as_user() { sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }
+# Extra KEY=VAL arguments become a systemd drop-in, written BEFORE the first start so the
+# first boot already sees them. The capacity baseline passes PAPERCUSP_DISABLE_DOGFOOD_HIVE=1:
+# without it a fresh install auto-joins the dogfood `papercusp` hive and spends its first
+# hour folding that hive's seed into Postgres (WI-10004421), which is not customer idle.
+if [ ${#EXTRA_ENV[@]} -gt 0 ]; then
+  dropin="/home/$SVC_USER/.config/systemd/user/papercusp-server.service.d"
+  sudo install -d -o "$SVC_USER" -g "$SVC_USER" "/home/$SVC_USER/.config" "/home/$SVC_USER/.config/systemd" \
+    "/home/$SVC_USER/.config/systemd/user" "$dropin"
+  { echo '[Service]'; for kv in "${EXTRA_ENV[@]}"; do echo "Environment=$kv"; done; } \
+    | sudo -u "$SVC_USER" tee "$dropin/capacity-env.conf" >/dev/null
+  for kv in "${EXTRA_ENV[@]}"; do echo "SERVER_ENV=$kv"; done
+fi
 as_user systemctl --user daemon-reload
 as_user systemctl --user enable --now papercusp-server.service
 cg_rel=$(as_user systemctl --user show -p ControlGroup --value papercusp-server.service)

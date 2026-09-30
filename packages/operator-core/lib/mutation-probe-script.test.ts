@@ -996,6 +996,19 @@ const ACCEPT_SWEEP = '--accept-sweep-race';
 describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   beforeEach(() => { git(dir, ['init', '-q']); });
 
+  /**
+   * EI-24720263797874266: the verified-restore record the testing:run fence reads, so a
+   * 'mutation probe' lock that outlives the dirty window stops fencing unrelated tests.
+   */
+  function restoredRecord(): string[] | null {
+    const root = realpathSync(dir);
+    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const record = join(admissionDir, 'restored', createHash('sha256').update(join(root, 'subject.txt')).digest('hex'));
+    return existsSync(record) ? readFileSync(record, 'utf8').split('\0') : null;
+  }
+  const verifiedOriginal = () => [realpathSync(dir), join(realpathSync(dir), 'subject.txt'),
+    createHash('sha256').update(ORIGINAL).digest('hex'), ''];
+
   it('admits a concurrent test against original bytes while the tracked subject is mutated', async () => {
     const mutantStarted = join(dir, 'mutant-started');
     const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
@@ -1038,6 +1051,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       ]),
     ).toBe(0);
     expect(read()).toBe(ORIGINAL);
+    expect(restoredRecord()).toEqual(verifiedOriginal());
   });
 
   it('restores and clears an orphaned admission manifest after the probe is killed before its trap', async () => {

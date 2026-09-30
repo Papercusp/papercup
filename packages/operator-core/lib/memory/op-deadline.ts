@@ -162,22 +162,59 @@ export function withMemoryTimeout<T>(
 ): Promise<T> {
   trackUnderlyingMemoryWork(p);
   return new Promise<T>((resolve, reject) => {
+    const signal = controller?.signal;
+    const onAbort = () => { cleanup(); reject(signal?.reason); };
     const timer = setTimeout(() => {
       const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`);
       controller?.abort(error);
       reject(error);
     }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    // Still observe the raw promise when already aborted: native work may
+    // ignore cancellation and its drain signal must reflect actual settlement.
+    if (signal?.aborted) { cleanup(); onAbort(); }
     p.then(
       (v) => {
-        clearTimeout(timer);
+        cleanup();
         resolve(v);
       },
       (e) => {
-        clearTimeout(timer);
+        cleanup();
         reject(e);
       },
     );
   });
+}
+
+/** One lifetime for queueing, retrieval and rendering; phases cannot renew it. */
+export interface MemoryWorkDeadline {
+  readonly signal: AbortSignal;
+  run<T>(start: () => Promise<T>, label: string, capMs?: number): Promise<T>;
+  close(): void;
+}
+
+export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal): MemoryWorkDeadline {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener('abort', onParentAbort, { once: true });
+  const expiresAt = Date.now() + timeoutMs;
+  const expire = () => controller.abort(new MemoryTimeoutError(`memory block exceeded ${timeoutMs}ms`));
+  const timer = setTimeout(expire, timeoutMs);
+  return {
+    signal: controller.signal,
+    async run(start, label, capMs = timeoutMs) {
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0 && !controller.signal.aborted) expire();
+      controller.signal.throwIfAborted();
+      return await withMemoryTimeout(start(), label, Math.min(remaining, capMs), controller);
+    },
+    close() { clearTimeout(timer); parent?.removeEventListener('abort', onParentAbort); },
+  };
 }
 
 /**

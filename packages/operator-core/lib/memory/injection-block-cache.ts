@@ -32,6 +32,7 @@
 
 import { getOrSetBounded, type Cache } from '@papercusp/cache';
 import { getOperatorCache } from '../cache/instance';
+import { createMemoryWorkDeadline, type MemoryWorkDeadline } from './op-deadline';
 
 /** Always serve-stale + revalidate: the block is query-dependent, so a cached
  *  build is by definition one turn behind — never "fresh". */
@@ -69,7 +70,7 @@ export type MemoryBlockBoundedResult =
 export async function getMemoryBlockBoundedResult(
   workspaceId: string,
   scopeKey: string,
-  build: () => Promise<string | null>,
+  build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<MemoryBlockBoundedResult> {
   const cache = opts.cache ?? getOperatorCache();
@@ -79,7 +80,13 @@ export async function getMemoryBlockBoundedResult(
     cache,
     workspaceId,
     `memory-inject-block:${scopeKey}`,
-    build,
+    async () => {
+      // Created only for an actual single-flight build, never for a cache hit
+      // or a coalesced waiter. SWR and the caller's wait retain their semantics.
+      const deadline = createMemoryWorkDeadline(deadlineMs);
+      try { return await build(deadline); }
+      finally { deadline.close(); }
+    },
     {
       deadlineMs,
       softTtlMs: opts.softTtlMs ?? MEMORY_BLOCK_SOFT_TTL_MS,
@@ -116,7 +123,7 @@ export async function getMemoryBlockBoundedResult(
 export async function getMemoryBlockBounded(
   workspaceId: string,
   scopeKey: string,
-  build: () => Promise<string | null>,
+  build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<string | null> {
   return (await getMemoryBlockBoundedResult(workspaceId, scopeKey, build, opts)).block;

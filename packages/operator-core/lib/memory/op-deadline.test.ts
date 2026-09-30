@@ -20,6 +20,7 @@ import {
   memoryWriteRetryBackoffMs,
   embedFailureReason,
   runWithTrackedMemoryTimeouts,
+  createMemoryWorkDeadline,
 } from './op-deadline';
 
 describe('memory degraded latch — self-healing', () => {
@@ -84,6 +85,35 @@ describe('memory degraded latch — self-healing', () => {
 });
 
 describe('withMemoryTimeout — deadline race', () => {
+  it('spends one deadline across phases and never starts work after expiry', async () => {
+    vi.useFakeTimers();
+    const deadline = createMemoryWorkDeadline(100);
+    try {
+      const first = deadline.run(() => new Promise<string>((resolve) => setTimeout(() => resolve('ready'), 70)), 'admission');
+      await vi.advanceTimersByTimeAsync(70);
+      await expect(first).resolves.toBe('ready');
+      const second = deadline.run(() => new Promise<string>((resolve) => setTimeout(() => resolve('late'), 70)), 'embed');
+      const rejected = expect(second).rejects.toBeInstanceOf(MemoryTimeoutError);
+      await vi.advanceTimersByTimeAsync(30);
+      await rejected;
+      const lexical = vi.fn(async () => 'late');
+      await expect(deadline.run(lexical, 'lexical')).rejects.toBeInstanceOf(MemoryTimeoutError);
+      expect(lexical).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(100);
+    } finally { deadline.close(); vi.useRealTimers(); }
+  });
+
+  it('cancels a child immediately when its parent lifetime expires', async () => {
+    const parent = new AbortController();
+    const deadline = createMemoryWorkDeadline(5000, parent.signal);
+    const p = deadline.run(() => new Promise<string>(() => {}), 'corpus');
+    const rejected = expect(p).rejects.toThrow('obsolete');
+    parent.abort(new Error('obsolete'));
+    await rejected;
+    expect(deadline.signal.aborted).toBe(true);
+    deadline.close();
+  });
+
   it('forwards expiry while retaining non-cooperative raw work until it settles', async () => {
     const controller = new AbortController();
     let resolve!: (v: string) => void;

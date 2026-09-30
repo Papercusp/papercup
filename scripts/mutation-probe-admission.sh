@@ -45,6 +45,29 @@ probe_admission_cleanup_scratch() {
   rmdir -- "$scratch_real"
 }
 
+# Record that <subject> was verified byte-identical to <original> after an
+# in-tree probe (or orphan recovery) restored it (EI-24720263797874266). A
+# 'mutation probe' file lock outlives the dirty window: its holder takes it
+# before the probe starts and the probe heartbeats it to 1200s, while the
+# mutant exists only between manifest publication and verified restore. The
+# testing:run fence (mutation-probe-fence.ts) treats a locked subject whose
+# CURRENT bytes still hash to this record as unmutated, so the lingering lock
+# stops fencing unrelated tests. Any later change to the subject (a real edit
+# or a hand mutation) breaks the hash and falls back to the closure fence.
+# Write-then-rename so a reader never sees a partial record. Best effort: a
+# missing record only keeps the fence conservative.
+probe_admission_record_restored() {
+  local root="$1" admission_dir="$2" subject="$3" original="$4"
+  local records="$admission_dir/restored" key sum tmp
+  mkdir -p -m 700 -- "$records" || return 1
+  key="$(printf '%s' "$subject" | sha256sum | cut -d' ' -f1)" || return 1
+  sum="$(sha256sum < "$original" | cut -d' ' -f1)" || return 1
+  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
+  tmp="$records/.$key.$$"
+  printf '%s\0%s\0%s\0' "$root" "$subject" "$sum" >"$tmp" || return 1
+  mv -f -- "$tmp" "$records/$key"
+}
+
 probe_admission_recover_orphan() {
   local root="$1" manifest="$2"
   if ! probe_admission_read_manifest "$root" "$manifest"; then
@@ -73,6 +96,8 @@ probe_admission_recover_orphan() {
     }
   fi
 
+  probe_admission_record_restored "$root" "$(dirname -- "$manifest")" "$subject" "$snapshot" ||
+    printf 'mutation-probe admission: could not record the verified restore; the testing:run fence stays conservative\n' >&2
   rm -f -- "$manifest" || {
     printf 'mutation-probe admission: could not clear recovered manifest; refusing test\n' >&2
     return 1

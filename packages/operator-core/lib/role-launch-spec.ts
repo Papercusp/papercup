@@ -959,6 +959,10 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     entry.contentHash === acceptedOperation.identity.contentHash)) {
     throw new Error('accepted blueprint worker identity changed during launch composition');
   }
+  // agent-economy-flywheel P-016 (D-011): a priced Cupboard identity release
+  // activates only with funds behind it. Refuses with IdentityActivationRefusedError.
+  const { assertIdentityActivationFunded } = await import('./cupboard/identity-activation-gate-io');
+  await assertIdentityActivationFunded({ stack: compiled.stack, repoDir: cwd, workspaceId: input.workspaceId });
   if (compiled.resourceArtifacts.length > 0) {
     const { getOrgPg } = await import('@papercusp/db-org');
     await provisionLaunchIdentityResources(compiled, getOrgPg().sql, { ownerId: sid });
