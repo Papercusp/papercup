@@ -20,6 +20,14 @@ const conflictJudgeAvailable = vi.fn<() => boolean>();
 const warnKnowledgePackJudgeUnavailableOnce = vi.fn();
 const createAnthropicJudge = vi.fn(() => async () => ({ conflicts: [] as never[] }));
 
+// P-009: realJudge() now asks resolveConflictJudge(); route it through the
+// anthropic-judge mocks below (the factory is pinned in conflict-judge.test.ts).
+vi.mock('../memory/conflict-judge', () => ({
+  resolveConflictJudge: async () =>
+    conflictJudgeAvailable()
+      ? { available: true, backend: 'anthropic', judge: createAnthropicJudge() }
+      : { available: false, reason: 'test: no judge' },
+}));
 vi.mock('../memory/anthropic-judge', () => ({
   conflictJudgeAvailable: (...args: unknown[]) =>
     (conflictJudgeAvailable as unknown as (...a: unknown[]) => boolean)(...args),
