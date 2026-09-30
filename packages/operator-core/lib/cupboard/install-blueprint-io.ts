@@ -27,8 +27,8 @@ import {
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
   parseCapabilityClassRef,
-  type CapabilityProviderKind,
 } from '../capability-class-registry-store';
+import { IDENTITY_GRANT_PROVIDER_KINDS } from '../agent-identities/grant-provider-kinds';
 import { activeWorkspaceId } from '../workspace-registry';
 import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
@@ -61,8 +61,9 @@ import {
 } from './blueprint-release';
 
 /** Install resolves, binds and compensates tool AND inspected recipe providers;
- * recipe selections pass install-core's consent seat first (P-013, D-019). */
-const INSTALL_PROVIDER_KINDS: readonly CapabilityProviderKind[] = ['tool', 'recipe'];
+ * recipe selections pass install-core's consent seat first (P-013, D-019). The
+ * launch compiler resolves the same set, so what installs also launches (P-020). */
+const INSTALL_PROVIDER_KINDS = IDENTITY_GRANT_PROVIDER_KINDS;
 
 export interface InstallBlueprintFromCupboardInput {
   /** Resolve the repo URL + listing_ref from the Cupboard listing. */
