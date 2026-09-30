@@ -21,8 +21,10 @@ import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvS
 import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
+  accountFromArgv,
   composeLaunchModelSpec,
   flagValueFromArgv,
+  isLaunchAccountValue,
   MIN_COMPACTION_LIMIT_TOKENS,
   modelSpecFromArgv,
   MODEL_EFFORT_LEVELS,
@@ -43,9 +45,10 @@ const PSU_TOKEN = /(^|[\s&;|(])psu(\s)/;
  *
  * WHY THE DOOR MATTERS, and why this is not pedantry: `capability:terminal` is the
  * arbitrary-COMMAND door and hardcodes `preferProcessPerWindow: true`, which
- * resolves to xterm. `capability:launch-agent` uses `preferProcessPerWindow:
- * isResume`, so a fresh launch gets the owner's normal emulator. Both doors share
- * ONE spawn path — the divergence is emulator POLICY, not mechanism — but a
+ * resolves to a process-per-window emulator. `capability:launch-agent` keeps
+ * that reliability default unless an explicit `$TERMINAL` preference is set,
+ * so the configured terminal wins for visible launches. Both doors share ONE
+ * spawn path — the divergence is emulator POLICY, not mechanism — but a
  * launch through the wrong door lands in a different window manager, skips the
  * backend preflight (P-002) and the started-verification (P-003), and is exactly
  * how the owner's two failed omp launches happened.
@@ -220,6 +223,8 @@ export interface ResumeTarget {
   model: string | null;
   /** The Codex model-source provenance recorded in launch argv, when present. */
   modelSource: CodexModelSource | null;
+  /** The account route recorded in the source session's launch argv, when present. */
+  account: string | null;
   /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
    *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
@@ -240,15 +245,19 @@ export type ResolveResumeError =
 
 export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeError;
 
-/** Read the model settings that a resume must carry from the durable launch argv. */
-function resumeModelMetadata(launchArgv: unknown): Pick<ResumeTarget, 'model' | 'modelSource'> {
+/** Read the model and account settings that a resume must carry from launch argv. */
+function resumeLaunchMetadata(
+  launchArgv: unknown,
+): Pick<ResumeTarget, 'model' | 'modelSource' | 'account'> {
   const source = flagValueFromArgv(launchArgv, 'model-source');
+  const account = accountFromArgv(launchArgv);
   return {
     model: modelSpecFromArgv(launchArgv),
     modelSource:
       source === 'explicit' || source === 'inherited' || source === 'configured-default'
         ? source
         : null,
+    account: account && isLaunchAccountValue(account) ? account : null,
   };
 }
 
@@ -396,7 +405,7 @@ export async function resolveResumeTarget(ref: {
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
   const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
-  const modelMetadata = resumeModelMetadata(row.launchArgv);
+  const launchMetadata = resumeLaunchMetadata(row.launchArgv);
   // The psu launcher already supports tracked Codex rows with no native UUID:
   // `psu --resume=<adv row id>` resolves the row, restores its isolated
   // CODEX_HOME, and runs `codex resume --last`. Other backends need a native
@@ -422,7 +431,7 @@ export async function resolveResumeTarget(ref: {
     ownerId: row.coordOwnerId,
     agent: row.agent,
     cwd: row.cwd,
-    ...modelMetadata,
+    ...launchMetadata,
     endedAt: row.endedAt,
     endedBy: row.endedBy,
     live: host != null,
@@ -742,6 +751,14 @@ export function defaultLaunchAccountFor(opts: {
 
 export interface MemberLaunchOpts {
   fleetSlug: string;
+  /**
+   * psu --fleet-role: only `'leader'` is emitted; omitted means psu's `--fleet=`
+   * default, `member`. WI-10004449: `fleet:launch-on-plan { leader:'spawn' }` writes
+   * the registry leader only AFTER the spawned process opens, so a bare `--fleet=`
+   * booted the spawned LEADER as a member (member kickoff, member mission, "claim
+   * its next actionable item"), contradicting its own --launch-context leader brief.
+   */
+  fleetRole?: 'leader';
   agent: string;
   harness: string;
   /** psu --plan the member self-pulls on. OPTIONAL (P-003): a pure claim-spec fleet
@@ -1000,6 +1017,8 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
     'psu',
     '--no-picker',
     `--fleet=${identifier('fleet', opts.fleetSlug)}`,
+    // WI-10004449: only a leader declares its role; member argv stays unchanged.
+    ...(opts.fleetRole === 'leader' ? ['--fleet-role=leader'] : []),
     `--agent=${identifier('agent', opts.agent)}`,
     // Pre-pinned coord identity, emitted in the SAME slot buildAgentLaunchCommand
     // uses (after --agent, before --harness) so the two composers stay
