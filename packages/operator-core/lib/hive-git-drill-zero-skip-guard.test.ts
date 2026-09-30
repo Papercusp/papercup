@@ -2608,23 +2608,38 @@ describe('physical Phase J fails fast when the tower refuses a write', () => {
     return start < 0 ? '' : script.slice(start, script.indexOf('\n  done\n', start));
   }
   const okCheck = /\.ok === true && Array\.isArray\(o\.results\) && o\.results\.length > 0 && o\.results\.every\(\(r\) => r\.ok === true\)/;
+  const okCall = 'ptool_result_ok "$phase_dir/tower-create-$w.json"';
+  /** The shared ptool_result_ok() helper body (top-level function, closing `}` at column 0). */
+  function okHelper(script: string): string {
+    const start = script.indexOf('\nptool_result_ok() {\n');
+    return start < 0 ? '' : script.slice(start, script.indexOf('\n}\n', start) + 2);
+  }
 
-  it('locates the Phase J tower-create loop (calibration)', () => {
+  it('locates the Phase J tower-create loop and the ok helper (calibration)', () => {
     expect(createLoop(physicalScenario)).toContain('work_items:create');
+    expect(okHelper(physicalScenario)).toContain('process.exit(');
   });
   it('checks every create result is ok before continuing', () => {
     const loop = createLoop(physicalScenario);
-    expect(loop).toMatch(okCheck);
+    expect(loop).toContain(okCall);
+    expect(okHelper(physicalScenario)).toMatch(okCheck);
     expect(loop).toContain('fail "phase J tower refused write $w;');
+  });
+  it('registers every accepted create as a fixture to drop (WI-10004116)', () => {
+    expect(createLoop(physicalScenario)).toContain('drill_fixture_register "$phase_dir/tower-create-$w.json"');
   });
   it('requires a tower row for BOTH writes after authoring', () => {
     expect(physicalScenario).toContain("fail 'phase J tower has no row for write A'");
     expect(physicalScenario).toContain("fail 'phase J tower has no row for write B'");
   });
-  it('a loop without the ok check fails the guard (falsifiability control)', () => {
+  it('a helper without the ok check, or a loop that skips it, fails the guard (falsifiability control)', () => {
+    const helper = okHelper(physicalScenario);
+    const hollow = physicalScenario.replace(helper, helper.replace(okCheck, 'true'));
+    expect(hollow).not.toBe(physicalScenario);
+    expect(okHelper(hollow)).not.toMatch(okCheck);
     const loop = createLoop(physicalScenario);
-    const mutant = physicalScenario.replace(loop, loop.replace(okCheck, 'true'));
-    expect(mutant).not.toBe(physicalScenario);
-    expect(createLoop(mutant)).not.toMatch(okCheck);
+    const skipped = physicalScenario.replace(loop, loop.replace(okCall, 'true'));
+    expect(skipped).not.toBe(physicalScenario);
+    expect(createLoop(skipped)).not.toContain(okCall);
   });
 });
