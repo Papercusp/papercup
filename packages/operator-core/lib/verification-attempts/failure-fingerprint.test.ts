@@ -14,7 +14,7 @@
  * a fingerprinter that collapsed everything to one key would pass the equality checks.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -131,5 +131,47 @@ describe('failureFingerprint reads the hive-git drill summary where the drill pr
     expect(d.fingerprint).not.toBe(e.fingerprint);
     const bare = failureFingerprint({ exitCode: 1, logTail: 'phase D (phase_d): observe did not converge' });
     expect(bare.fingerprint).toBe(d.fingerprint);
+  });
+});
+
+// WI-10004209: every failed capability:bash job log ends with the runner's own marker lines.
+// Two different drill failures (PDS runs 8 and 9) both fingerprinted to that marker.
+describe('failureFingerprint never fingerprints the capability:bash runner markers', () => {
+  const jobEnd = (exit: number, at: string) =>
+    [
+      `[capability:bash] JOB END: status=failed exit=${exit} at ${at} — this line was recorded by the transient-service runner; its file-backed sink survives loss of the operator host and is authoritative for durable output.`,
+      `[capability:bash] JOB END: status=failed exit=${exit} at ${at} — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has been durably recorded yet: the job may still be running, or it may have died before its close handler wrote JOB END.`,
+    ].join('\n');
+
+  it('a log holding only runner markers falls through to the exit code, so different exits differ', () => {
+    const run8 = failureFingerprint({ exitCode: 4, exitReason: 'exited', logTail: jobEnd(4, '2026-09-30T07:35:01.000Z') });
+    const run9 = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: jobEnd(1, '2026-09-30T08:03:44.000Z') });
+    expect(run8.source).toBe('exit');
+    expect(run8.label).not.toContain('JOB END');
+    expect(run8.fingerprint).not.toBe(run9.fingerprint);
+  });
+
+  it('the attempt’s own failure line wins over the markers after it', () => {
+    const a = failureFingerprint({
+      exitCode: 1,
+      logTail: `phase A (phase_a_storage_join): Phase A rejected: tower is missing physical device namespace 28d2b6a3 (VM)\n${jobEnd(1, '2026-09-30T09:11:51.000Z')}`,
+    });
+    const b = failureFingerprint({
+      exitCode: 1,
+      logTail: `vm git-sync:run failed: MCP_RESULT_TIMEOUT after 120s\n${jobEnd(1, '2026-09-30T08:18:47.000Z')}`,
+    });
+    expect(a.source).toBe('log');
+    expect(a.label).toContain('Phase A rejected');
+    expect(b.source).toBe('log');
+    expect(b.label).toContain('MCP_RESULT_TIMEOUT');
+    expect(a.fingerprint).not.toBe(b.fingerprint);
+  });
+
+  it('pins the skipped prefix to the markers bash-jobs.ts actually writes', async () => {
+    const { RUNNER_MARKER_PREFIX } = await import('./failure-fingerprint');
+    const src = readFileSync(path.join(ROOT, 'packages/operator-core/lib/agent-tools/capability/bash-jobs.ts'), 'utf8');
+    const markers = [...src.matchAll(/export const JOB_LOG_\w+_MARKER_PREFIX = '([^']+)'/g)].map((m) => m[1]!);
+    expect(markers.length).toBeGreaterThanOrEqual(2);
+    for (const m of markers) expect(m.startsWith(RUNNER_MARKER_PREFIX)).toBe(true);
   });
 });

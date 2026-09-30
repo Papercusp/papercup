@@ -72,6 +72,14 @@ import type {
 } from './capability-provider-package-closure';
 import type { IdentityGrantFailure } from '../capability-envelope/blueprint-envelopes';
 import type { CupboardReleaseManifest } from './listing-manifest';
+import {
+  identityConsentSubjects,
+  identityInstallConsentRefusal,
+  identityInstallConsentSubject,
+  identityPermissionLines,
+  type IdentityConsentSubjects,
+  type IdentityInstallConsent,
+} from './identity-install-consent';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -98,6 +106,10 @@ export interface InstallBlueprintCoreInput {
    * (P-021), bound to the exact artifact hash and {ref, contractHash} set that
    * a `class_contract_consent_required` refusal returned. */
   classContractConsent?: ClassContractConsent;
+  /** Administrator consent to everything beyond package-private content (P-014,
+   * D-034), echoing the `consentSubject` an `identity_install_consent_required`
+   * refusal returned. Content-only releases need none. */
+  identityInstallConsent?: IdentityInstallConsent;
   capabilityContext?: {
     workspaceId: string;
     potSlug: string;
@@ -137,6 +149,8 @@ export interface InstallBlueprintCoreResult {
   capabilityProviderInstalls: CapabilityProviderPackageInstallResult | null;
   /** Consent-bound class-contract import; null when the release carries none. */
   classContracts: ImportClassContractsResult | null;
+  /** What the install needed consent for (contentOnly when nothing). */
+  consent: IdentityConsentSubjects;
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -465,35 +479,49 @@ export async function installBlueprintFromCupboardCore(
       ? raw.version
       : depCheck.pins.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
 
-    // P-021 / D-015: third-party class contracts ride in the signed closure.
-    // They enter the destination registry only after the listed release has
-    // verified (hash pin + publisher signature) and only with administrator
-    // consent bound to this exact artifact and contract set — before grant
-    // resolution, so a grant on a novel class resolves against the registry.
+    // The listed release verifies (hash pin + a PRESENT publisher signature)
+    // before anything is written: class contracts, bindings or bytes.
     let classContracts: ClassContractPayloadEntry[] = [];
+    let releaseArchive: ReturnType<typeof buildBlueprintReleaseArchive>;
+    let verifiedPublisherLogin: string | null;
     try {
       classContracts = await readClassContractSources(bpDir);
+      releaseArchive = buildBlueprintReleaseArchive(depCheck.pins, id, classContracts);
+      ({ verifiedPublisherLogin } = verifyListedBlueprintRelease({
+        id, version, archive: releaseArchive, expectedRelease: input.expectedRelease,
+      }));
     } catch (error) {
       if (error instanceof ClassContractImportError) throw classContractInstallError(error);
+      if (error instanceof BlueprintLifecycleError) throw new InstallBlueprintError(error.message, error.status);
       throw error;
     }
+    const artifactContentHash = releaseArchive.package.rootHash;
+
+    // D-034 trust path: a signed manifest that lists permissions must list
+    // exactly what the closure carries. An empty legacy list is tolerated —
+    // consent below is computed from the closure, so omission hides nothing.
+    const listedPermissions = input.expectedRelease?.manifest?.signature
+      ? [...input.expectedRelease.manifest.permissions].sort() : [];
+    const carriedPermissions = identityPermissionLines(identityConsentSubjects({
+      grants: declaredCapabilityGrants, providerBindings: [], inputs: releaseArchive.pins,
+    }));
+    if (listedPermissions.length > 0 && listedPermissions.join('\n') !== carriedPermissions.join('\n')) {
+      throw new InstallBlueprintError(
+        `blueprint "${id}" signed release lists permissions that differ from what its closure carries`,
+        422,
+        'identity_permissions_mismatch',
+        { listed: listedPermissions, carried: carriedPermissions },
+      );
+    }
+
+    // P-021 / D-015: third-party class contracts ride in the signed closure.
+    // They enter the destination registry only after the listed release has
+    // verified and only with administrator consent bound to this exact
+    // artifact and contract set — before grant resolution, so a grant on a
+    // novel class resolves against the registry.
     let classContractImport: ImportClassContractsResult | null = null;
     if (classContracts.length > 0) {
-      let verifiedPublisherLogin: string | null;
-      let artifactContentHash: string;
-      let closurePins: Array<{ packageKind: string; ref: string }>;
-      try {
-        const archive = buildBlueprintReleaseArchive(depCheck.pins, id, classContracts);
-        ({ verifiedPublisherLogin } = verifyListedBlueprintRelease({
-          id, version, archive, expectedRelease: input.expectedRelease,
-        }));
-        artifactContentHash = archive.package.rootHash;
-        closurePins = archive.pins.map((pin) => ({ packageKind: pin.packageKind, ref: pin.ref }));
-      } catch (error) {
-        if (error instanceof ClassContractImportError) throw classContractInstallError(error);
-        if (error instanceof BlueprintLifecycleError) throw new InstallBlueprintError(error.message, error.status);
-        throw error;
-      }
+      const closurePins = releaseArchive.pins.map((pin) => ({ packageKind: pin.packageKind, ref: pin.ref }));
       const consentSubject = classContractConsentSubject(artifactContentHash, classContracts);
       const review = { consentSubject, contracts: classContracts };
       if (!verifiedPublisherLogin) {

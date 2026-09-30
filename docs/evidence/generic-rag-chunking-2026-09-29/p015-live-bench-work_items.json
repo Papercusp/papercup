@@ -1,0 +1,159 @@
+{
+  "collection": "work_items",
+  "table": "harness_shared.work_items",
+  "model": "gemma",
+  "seed": "p001",
+  "probe": {
+    "class": "seeded-tail",
+    "length": 240,
+    "cut": 2000
+  },
+  "chunk": {
+    "size": 1500,
+    "overlap": 250
+  },
+  "census": {
+    "rows": 240531,
+    "pastCut": 12029
+  },
+  "sample": {
+    "tailProbes": 120,
+    "shortProbes": 120,
+    "folds": 4
+  },
+  "rule": {
+    "minTailProbes": 20,
+    "minShortProbes": 20,
+    "minTailMrrGain": 0.05,
+    "maxShortMrrDrop": 0,
+    "mrrTolerance": 0.02
+  },
+  "result": {
+    "folds": 4,
+    "poolSizes": [
+      60,
+      60,
+      60,
+      60
+    ],
+    "ambiguousProbesDropped": 0,
+    "splitters": {
+      "stored": {
+        "chunkedRows": 120,
+        "meanChunks": 2.75,
+        "rowsAtCap": {
+          "4": 16
+        }
+      }
+    },
+    "arms": [
+      {
+        "label": "parent",
+        "splitter": null,
+        "maxChunks": null,
+        "chunkMargin": null,
+        "tail": {
+          "n": 120,
+          "mrr": 0.7546284999042353,
+          "recallAt1": 0.65,
+          "recallAt5": 0.9,
+          "meanRank": 2.55,
+          "improved": 0,
+          "worsened": 0,
+          "unchanged": 120,
+          "containedRate": null
+        },
+        "short": {
+          "n": 120,
+          "mrr": 0.9715805717998701,
+          "recallAt1": 0.9583333333333334,
+          "recallAt5": 0.9833333333333333,
+          "meanRank": 1.3916666666666666,
+          "improved": 0,
+          "worsened": 0,
+          "unchanged": 120,
+          "containedRate": null
+        }
+      },
+      {
+        "label": "stored@4",
+        "splitter": "stored",
+        "maxChunks": 4,
+        "chunkMargin": 0,
+        "tail": {
+          "n": 120,
+          "mrr": 0.9545289855072462,
+          "recallAt1": 0.925,
+          "recallAt5": 0.9916666666666667,
+          "meanRank": 1.275,
+          "improved": 41,
+          "worsened": 0,
+          "unchanged": 79,
+          "containedRate": 0.9916666666666667
+        },
+        "short": {
+          "n": 120,
+          "mrr": 0.9673239087301587,
+          "recallAt1": 0.95,
+          "recallAt5": 0.9833333333333333,
+          "meanRank": 1.4583333333333333,
+          "improved": 0,
+          "worsened": 3,
+          "unchanged": 117,
+          "containedRate": null
+        }
+      }
+    ]
+  },
+  "decision": {
+    "verdict": "skip",
+    "arm": null,
+    "reasons": [
+      "stored@4: short-row MRR 0.9673 vs parent 0.9716 drops more than 0"
+    ]
+  },
+  "live": {
+    "surface": "work_items",
+    "storeTable": "harness_shared.text_chunks",
+    "arm": "stored@4",
+    "predictedArm": "window@4",
+    "predictedFrom": "docs/evidence/generic-rag-chunking-2026-09-29/p001-bench-work_items.json",
+    "tolerance": {
+      "tail": 0.02,
+      "shortDrop": 0.01
+    },
+    "dropped": {
+      "parentUnembedded": 0,
+      "chunksMissing": 0,
+      "chunkUnembedded": 0,
+      "chunkStale": 0
+    },
+    "predicted": {
+      "tailRecallAt1": 0.925,
+      "tailMrr": 0.9545289855072462,
+      "tailN": 120,
+      "shortMrr": 0.9752604166666666,
+      "shortN": 120
+    },
+    "measured": {
+      "tailRecallAt1": 0.925,
+      "tailMrr": 0.9545289855072462,
+      "tailN": 120,
+      "shortMrrPooled": 0.9673239087301587,
+      "shortMrrParent": 0.9715805717998701,
+      "shortN": 120,
+      "parentTailRecallAt1": 0.65,
+      "parentTailMrr": 0.7546284999042353
+    },
+    "deltas": {
+      "tailRecallAt1": 0,
+      "tailMrr": 0,
+      "shortMrrDrop": 0.004256663069711397
+    },
+    "verdicts": {
+      "R-3": "pass",
+      "R-4": "pass",
+      "R-2": "pass"
+    }
+  }
+}

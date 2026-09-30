@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import type {
   AdmissionGitRunner,
   AdmissionOutcome,
@@ -89,6 +93,11 @@ describe("isDependencyInputLockfilePath (mirrors dependency-generation.sh)", () 
     expect(isDependencyInputLockfilePath(".papercusp/scratch/package-lock.json")).toBe(false);
     expect(isDependencyInputLockfilePath("libs/.papercusp/package-lock.json")).toBe(false);
   });
+
+  it("a patch-package patch is a dependency input but NOT a lockfile (WI-10004230)", () => {
+    expect(isDependencyInputLockfilePath("patches/foo+1.0.0.patch")).toBe(false);
+    expect(isDependencyInputLockfilePath("apps/operator/patches/foo+1.0.0.patch")).toBe(false);
+  });
 });
 
 describe("parseLsTreeLockfileManifest", () => {
@@ -106,6 +115,22 @@ describe("parseLsTreeLockfileManifest", () => {
       ["apps/operator/package-lock.json", "4".repeat(40)],
     ]);
     expect([...parsed.gitlinks.entries()]).toEqual([["libs/papercusp", "3".repeat(40)]]);
+  });
+
+  it("keeps patch-package patches exactly as the shell manifest keys them (WI-10004230)", () => {
+    const parsed = parseLsTreeLockfileManifest(
+      lsTree([
+        ["100644", "blob", "1".repeat(40), "patches/foo+1.0.0.patch"],
+        ["100644", "blob", "2".repeat(40), "libs/x/patches/bar+2.0.0.patch"],
+        ["100644", "blob", "3".repeat(40), "docs/fix.patch"],
+        ["100644", "blob", "4".repeat(40), "node_modules/x/patches/baz.patch"],
+        ["100644", "blob", "5".repeat(40), ".papercusp/scratch/patches/q.patch"],
+      ]),
+    );
+    expect([...parsed.blobs.keys()]).toEqual([
+      "patches/foo+1.0.0.patch",
+      "libs/x/patches/bar+2.0.0.patch",
+    ]);
   });
 });
 
@@ -521,5 +546,123 @@ describe("convergeLockfileDrift", () => {
       },
     });
     expect(outcome.kind).toBe("probe-failed");
+  });
+});
+
+/**
+ * WI-10004230 — measured on a real git fixture against the REAL shell fingerprint. Before the fix
+ * the walk keyed lockfiles only: a patch-only drift read `no-drift` while `--fingerprint-ref`
+ * differed, and a lockfile+patch drift admitted just the lockfile and reported `converged` with
+ * the fingerprint still missing. The oracle here is the shell key itself, so a future divergence
+ * between the TS walk and `dependency_generation_input_manifest_ref` fails this block.
+ */
+describe("WI-10004230: patch-package patches are dependency inputs (real git + shell fingerprint)", () => {
+  const SCRIPT = path.resolve(__dirname, "../../bin/release/dependency-generation.sh");
+  const PATCH_V100 = "patches/foo+1.0.0.patch";
+  const roots: string[] = [];
+  afterAll(() => {
+    for (const r of roots) rmSync(r, { recursive: true, force: true });
+  });
+
+  const git = (r: string, args: string[]) =>
+    execFileSync("git", args, { cwd: r, encoding: "utf8" }).trim();
+  const fingerprint = (r: string, ref: string) => {
+    const out = execFileSync("bash", [SCRIPT, "--integration", r, "--fingerprint-ref", ref], {
+      encoding: "utf8",
+    });
+    const m = /DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=\S+ input=([0-9a-f]{64})/.exec(out);
+    if (!m) throw new Error(`no fingerprint line in: ${out}`);
+    return m[1];
+  };
+  const lock = (fooVersion: string) =>
+    lockText({ "": { name: "root" }, "node_modules/foo": { version: fooVersion } }) + "\n";
+  function fixture(files: Record<string, string>): { root: string; A: string } {
+    const r = mkdtempSync(path.join(os.tmpdir(), "wi10004230-"));
+    roots.push(r);
+    git(r, ["init", "-q", "-b", "staging"]);
+    git(r, ["config", "user.email", "fixture@example.invalid"]);
+    git(r, ["config", "user.name", "fixture"]);
+    for (const [rel, body] of Object.entries(files)) write(r, rel, body);
+    return { root: r, A: commit(r, "A (frozen repairHead)") };
+  }
+  function write(r: string, rel: string, body: string) {
+    mkdirSync(path.dirname(path.join(r, rel)), { recursive: true });
+    writeFileSync(path.join(r, rel), body);
+  }
+  function commit(r: string, msg: string) {
+    git(r, ["add", "-A"]);
+    git(r, ["commit", "-q", "-m", msg]);
+    return git(r, ["rev-parse", "HEAD"]);
+  }
+  function converge(r: string, head: string) {
+    return convergeLockfileDrift({
+      root: r,
+      queue: { candidate: head, repairHead: head },
+      integrationRef: "staging",
+      nowMs: 1,
+    });
+  }
+
+  it("patch-only drift converges onto the live fingerprint (was: no-drift while the key missed)", () => {
+    const { root: r, A } = fixture({ "package-lock.json": lock("1.0.0"), [PATCH_V100]: "v1\n" });
+    write(r, PATCH_V100, "v2\n");
+    const live = commit(r, "B (staging)");
+    expect(fingerprint(r, A)).not.toBe(fingerprint(r, live));
+
+    const outcome = converge(r, A);
+    expect(outcome).toMatchObject({ kind: "converged", paths: [PATCH_V100] });
+    const admitted = (outcome as { toRepairHead: string }).toRepairHead;
+    expect(fingerprint(r, admitted)).toBe(fingerprint(r, live));
+  });
+
+  it("lockfile + patch drift admits BOTH, so the admitted head's key is the live key", () => {
+    const { root: r, A } = fixture({ "package-lock.json": lock("1.0.0"), [PATCH_V100]: "v1\n" });
+    write(r, "package-lock.json", lock("1.0.1"));
+    write(r, PATCH_V100, "v2\n");
+    const live = commit(r, "C (staging)");
+
+    const outcome = converge(r, A);
+    expect(outcome).toMatchObject({ kind: "converged", paths: ["package-lock.json", PATCH_V100] });
+    const admitted = (outcome as { toRepairHead: string }).toRepairHead;
+    expect(fingerprint(r, admitted)).toBe(fingerprint(r, live));
+  });
+
+  it("a patch renamed with a version bump is admitted as delete + add through the ledgered door", () => {
+    const { root: r, A } = fixture({ "package-lock.json": lock("1.0.0"), [PATCH_V100]: "v1\n" });
+    git(r, ["rm", "-q", PATCH_V100]);
+    write(r, "package-lock.json", lock("1.0.1"));
+    write(r, "patches/foo+1.0.1.patch", "v1-rebased\n");
+    const live = commit(r, "D (staging)");
+
+    const outcome = converge(r, A);
+    expect(outcome).toMatchObject({
+      kind: "converged",
+      paths: ["package-lock.json", PATCH_V100, "patches/foo+1.0.1.patch"],
+    });
+    const admitted = (outcome as { toRepairHead: string }).toRepairHead;
+    expect(git(r, ["ls-tree", "--name-only", admitted, "--", PATCH_V100])).toBe("");
+    expect(fingerprint(r, admitted)).toBe(fingerprint(r, live));
+  });
+
+  it("an uncommitted live patch is a named not-convergeable miss, never an admission", () => {
+    const { root: r, A } = fixture({ "package-lock.json": lock("1.0.0"), [PATCH_V100]: "v1\n" });
+    write(r, PATCH_V100, "uncommitted\n");
+    const outcome = converge(r, A);
+    expect(outcome).toMatchObject({
+      kind: "not-convergeable",
+      reason: "live-diverges-from-integration-ref",
+      paths: [PATCH_V100],
+    });
+    expect(describeLockfileConvergence(outcome)).toContain(PATCH_V100);
+  });
+
+  it("calibration: lockfile-only drift still converges to the live key", () => {
+    const { root: r, A } = fixture({ "package-lock.json": lock("1.0.0"), [PATCH_V100]: "v1\n" });
+    write(r, "package-lock.json", lock("1.0.1"));
+    const live = commit(r, "E (staging)");
+    const outcome = converge(r, A);
+    expect(outcome).toMatchObject({ kind: "converged", paths: ["package-lock.json"] });
+    const admitted = (outcome as { toRepairHead: string }).toRepairHead;
+    expect(fingerprint(r, admitted)).toBe(fingerprint(r, live));
   });
 });
