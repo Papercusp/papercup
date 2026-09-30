@@ -519,7 +519,7 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
             FROM harness_shared.connected_apps
            WHERE id = ${row.app_id} AND ${sql.unsafe(KEY_KINDS_SQL)} LIMIT 1`
       : [];
-    return accessTokenVerdictOf(row, parents[0], key, now);
+    return countedAuthFailure(accessTokenVerdictOf(row, parents[0], key, now), row?.app_id);
   }
   const parsed = parseAppKey(key);
   if (!parsed) return { ok: false, reason: 'malformed' };
@@ -529,7 +529,19 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
      WHERE id = ${parsed.id} AND ${sql.unsafe(KEY_KINDS_SQL)}
      LIMIT 1
   `;
-  return appKeyVerdictOf(rows[0], key, now);
+  return countedAuthFailure(appKeyVerdictOf(rows[0], key, now), rows[0]?.id);
+}
+
+/**
+ * P-328 (D-030 #3): count a refusal of a KNOWN key toward the repeated-auth-failure alert. Fire and
+ * forget, so counting never delays or fails the auth decision; `recordAppKeyAuthFailure` skips the
+ * owner-chosen states (paused, remote access off) and never throws.
+ */
+function countedAuthFailure(verdict: AppKeyVerdict, appId: string | undefined): AppKeyVerdict {
+  if (!verdict.ok && appId) {
+    void import('./alert-sweep').then((m) => m.recordAppKeyAuthFailure(appId, verdict.reason)).catch(() => {});
+  }
+  return verdict;
 }
 
 /**

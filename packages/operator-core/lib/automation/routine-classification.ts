@@ -632,6 +632,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',
   },
+  'system:connected-app-alert-sweep': {
+    spend: 'none',
+    why: 'One bounded read of connected-app keys, their activity counts and auth-failure counters, then owner-attention notifications (push/desktop/audit row) — no spawn/dispatch/wake',
+  },
   'system:worker-breaker-watch': {
     spend: 'none',
     why: 'HTTP GET of the embed sidecar /healthz + a coord broadcast on a tripped breaker — no spawn/dispatch/wake',

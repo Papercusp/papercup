@@ -585,6 +585,10 @@ import './supervision-reconcile-action';
 // timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
 // serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
 import './consult-expiry-action';
+// external-app-access-to-workspaces-2026-09-29 P-328 (D-030): `system:connected-app-alert-sweep`
+// — every 15 minutes, owner alerts for a connected app's usage spike, repeated auth failures, a
+// key about to expire, and a key whose creator left the organization. Seeded by migration 1267.
+import './connected-app-alert-sweep-action';
 // frozen-candidate-compliance-enforcement-2026-08-30 P-008: `system:frozen-candidate-drift-sweep`
 // — the ATTESTATION leg. Reports commits that touched the FROZEN candidate's failing paths
 // while landing above it, which is the exact signature of a fix the gate cannot see. Every
