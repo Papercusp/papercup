@@ -74,6 +74,11 @@ const DRAFTS_DO_NOT_CARRY: Record<string, string> = {
   pinned_commit_sha: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
   pinned_tree_digest: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
   pinned_at: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
+  // Identity facet (migration 035 / portable-identity-packages P-016): the
+  // declared surface is DERIVED from the signed release closure at direct
+  // publish. A draft has no signed closure, so creator-drafts refuses
+  // blueprint_kind 'identity' outright rather than landing one without it.
+  identity_surface: 'derived from the signed release closure; drafts refuse blueprint_kind identity',
 };
 
 /**

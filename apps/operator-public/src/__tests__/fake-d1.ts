@@ -559,6 +559,9 @@ export class FakeStore {
       let i = 0;
       const hasKind = upper.includes('H.LISTING_KIND = ?') || upper.includes(' LISTING_KIND = ?');
       const kind = hasKind ? binds[i++] : undefined;
+      // The blueprint facet (migrations 009/035) binds right after the kind.
+      const hasBlueprintKind = upper.includes('BLUEPRINT_KIND = ?');
+      const blueprintKind = hasBlueprintKind ? binds[i++] : undefined;
       const hasProject = upper.includes('H.PROJECT_REF = ?') || upper.includes(' PROJECT_REF = ?');
       const project = hasProject ? binds[i++] : undefined;
       const compositeCursor = upper.includes('H.LAST_ACTIVITY_AT = ? AND H.ID > ?');
@@ -591,6 +594,9 @@ export class FakeStore {
         rows = rows.filter((r) => !r.publisher_device_pubkey || !banned.has(r.publisher_device_pubkey));
       }
       if (hasKind) rows = rows.filter((r) => r.listing_kind === kind);
+      if (hasBlueprintKind) {
+        rows = rows.filter((r) => r.listing_kind === 'blueprint' && r.blueprint_kind === blueprintKind);
+      }
       if (hasProject) rows = rows.filter((r) => r.project_ref === project);
       if (hasClaim) rows = rows.filter((r) => r.claim_status === claim);
       if (hasSearch) {

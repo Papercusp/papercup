@@ -92,4 +92,23 @@ describe('authenticated creator draft lifecycle (P-007)', () => {
     expect(upload.status).toBe(400);
     expect((await upload.json() as { error: string }).error).toBe('artifact_size_mismatch');
   });
+
+  it('refuses an identity blueprint: its declared surface needs a signed closure a draft lacks', async () => {
+    const api = buildApi();
+    const { env, store } = makeEnv();
+    stubGithub({ user: { id: 1, login: 'alice' } });
+    const create = await api.request('/creator-drafts', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer owner', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifest: { ...manifest(`sha256:${'a'.repeat(64)}`, 1), listing_kind: 'blueprint', blueprint_kind: 'identity' },
+      }),
+    }, env);
+    expect(create.status).toBe(400);
+    expect(await create.json()).toMatchObject({
+      field: 'blueprint_kind',
+      reason: 'identity_requires_direct_publish',
+    });
+    expect(store.tables.creator_drafts ?? []).toHaveLength(0);
+  });
 });

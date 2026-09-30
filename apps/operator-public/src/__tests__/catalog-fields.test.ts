@@ -317,6 +317,84 @@ describe('Cupboard catalog fields (migration 018 / P-008)', () => {
     });
   });
 
+  describe('identity facet (migration 035 / portable-identity-packages P-016)', () => {
+    const IDENTITY = {
+      ...BASE,
+      listing_kind: 'blueprint',
+      listing_ref: 'reviewer',
+      blueprint_kind: 'identity',
+    };
+    const SURFACE = JSON.stringify({ schemaVersion: 1, id: 'reviewer', slots: ['reviewer'] });
+
+    it('stores and returns the declared surface of an identity listing', async () => {
+      const { env } = makeEnv();
+      stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });
+      const res = await publish(api, env, { ...IDENTITY, identity_surface: SURFACE });
+      expect(res.status).toBe(200);
+      const { listing } = (await res.json()) as {
+        listing: { blueprint_kind: string; identity_surface: string };
+      };
+      expect(listing.blueprint_kind).toBe('identity');
+      // Stored verbatim: the installer recomputes the surface and compares, so the
+      // Worker must not re-serialize what the publisher signed off on.
+      expect(listing.identity_surface).toBe(SURFACE);
+    });
+
+    it('refuses an identity listing without a surface, and a surface on anything else', async () => {
+      const { env } = makeEnv();
+      stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });
+      const missing = await publish(api, env, IDENTITY);
+      expect(missing.status).toBe(400);
+      expect(await missing.json()).toMatchObject({
+        field: 'identity_surface',
+        reason: 'required_with_identity_blueprint_kind',
+      });
+
+      for (const body of [
+        { ...IDENTITY, blueprint_kind: 'harness', identity_surface: SURFACE },
+        { ...BASE, identity_surface: SURFACE },
+      ]) {
+        const res = await publish(api, env, body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ field: 'identity_surface', reason: 'blueprint_identity_only' });
+      }
+    });
+
+    it('refuses a surface that is not a bounded JSON object', async () => {
+      const { env } = makeEnv();
+      stubGithub({ user: { id: 1, login: 'alice' }, repo: { id: 7, private: false } });
+      for (const [surface, reason] of [
+        ['not json', 'json_object'],
+        ['[1,2]', 'json_object'],
+        ['null', 'json_object'],
+        [JSON.stringify({ pad: 'x'.repeat(16001) }), 'non_empty_string_max_16000'],
+        [{ inline: 'object' }, 'non_empty_string_max_16000'],
+      ] as const) {
+        const res = await publish(api, env, { ...IDENTITY, identity_surface: surface });
+        expect(res.status, JSON.stringify(surface).slice(0, 40)).toBe(400);
+        expect(await res.json()).toMatchObject({ field: 'identity_surface', reason });
+      }
+    });
+
+    it('?blueprint_kind= narrows browse to that blueprint facet and rejects an unknown one', async () => {
+      const { env, store } = makeEnv();
+      store.tables.harnesses.push(
+        makeListingRow({ id: 'identity', listing_kind: 'blueprint', blueprint_kind: 'identity', identity_surface: SURFACE }),
+        makeListingRow({ id: 'hive', listing_kind: 'blueprint', blueprint_kind: 'hive' }),
+        makeListingRow({ id: 'plain', listing_kind: 'blueprint' }),
+        makeListingRow({ id: 'plugin', listing_kind: 'plugin' }),
+      );
+      expect(await listingIds(await api.request('/listings?blueprint_kind=identity', {}, env))).toEqual(['identity']);
+      expect(await listingIds(await api.request('/listings?blueprint_kind=hive', {}, env))).toEqual(['hive']);
+      // Composes with the kind filter rather than overriding it.
+      expect(await listingIds(await api.request('/listings?kind=plugin&blueprint_kind=identity', {}, env))).toEqual([]);
+
+      const bad = await api.request('/listings?blueprint_kind=persona', {}, env);
+      expect(bad.status).toBe(400);
+      expect(await bad.json()).toMatchObject({ error: 'invalid_field', field: 'blueprint_kind' });
+    });
+  });
+
   describe('filters compose', () => {
     it('narrows on kind, pricing, platform, and permission together', async () => {
       const { env, store } = makeEnv();
