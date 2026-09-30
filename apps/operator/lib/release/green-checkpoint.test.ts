@@ -5170,16 +5170,19 @@ describe("runGreenCheckpoint", () => {
   });
 
   it("EI-214116: child output resets the idle timeout while the hard ceiling stays independent", async () => {
+    // Total runtime (~4s) must exceed the idle timeout, or completing proves nothing about
+    // the reset. Each gap keeps a 2s margin under it: at 0.7s gaps vs a 1.5s idle timeout,
+    // gate-load event-loop lag alone fired the idle timer (candidate 9f0a0776, 2026-09-30).
     const completed = await runCmd(
       "bash",
       [
         "-c",
-        "printf 'stage=before\\n'; sleep 0.7; printf 'stage=copy\\n'; sleep 0.7; printf 'stage=after\\n'; sleep 0.7; printf 'stage=done\\n'",
+        "printf 'stage=before\\n'; sleep 1; printf 'stage=copy\\n'; sleep 1; printf 'stage=after\\n'; sleep 1; printf 'stage=verify\\n'; sleep 1; printf 'stage=done\\n'",
       ],
       {
-        timeoutMs: 1_500,
+        timeoutMs: 3_000,
         timeoutResetsOnProgress: true,
-        hardTimeoutMs: 8_000,
+        hardTimeoutMs: 20_000,
         killProcessGroupOnTimeout: true,
       },
     );
@@ -5201,7 +5204,7 @@ describe("runGreenCheckpoint", () => {
     expect(hardTimeout).toBeInstanceOf(Error);
     expect(String(hardTimeout)).toContain("exceeded hard timeout after 1200ms");
     expect(String(hardTimeout)).toContain("still-alive");
-  });
+  }, 30_000);
 
   it("reports child output progress while retaining stdout and stderr", async () => {
     const onProgress = vi.fn();

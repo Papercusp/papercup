@@ -19,9 +19,13 @@ import { execPath } from 'node:process';
 import { OUTER_ACTIVITY_ECHO_MARKER } from '@papercusp/orchestrator';
 
 // Set the invoke timeout BEFORE orchestrator-runner is imported (INVOKE_TIMEOUT_MS
-// is a module-load const). 600ms is ample for the fast cases and bounds the kill.
-vi.hoisted(() => {
-  process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS = '600';
+// is a module-load const). It must be ample for a REAL `node -e` child under gate
+// load: at 600ms the fast cases were SIGTERM'd before the child finished and read
+// exitCode 1 (gate candidate 9f0a0776, 2026-09-30). Cases that exercise the kill
+// pass a short per-request timeoutMs instead of relying on this default.
+const MODULE_TIMEOUT_MS = vi.hoisted(() => {
+  process.env.PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS = '30000';
+  return 30_000;
 });
 
 // buildInvokeOnce is the seam: tests set H.cmd to the {command,args,env} to spawn.
@@ -164,20 +168,21 @@ describe('spawnInvokeOnce', () => {
   it('SIGTERM-kills a hung child at the timeout and resolves (never hangs)', async () => {
     H.cmd = node('setInterval(() => {}, 1000)'); // never exits on its own
     const start = Date.now();
-    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {});
+    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {}, { timeoutMs: 600 });
     const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(3000); // killed at ~600ms, not hung to the test timeout
+    expect(elapsed).toBeLessThan(MODULE_TIMEOUT_MS); // killed at ~600ms, not hung to the default
     expect(elapsed).toBeGreaterThanOrEqual(400); // it DID wait for the timeout, not exit early
+    expect(r.timedOut).toBe(true);
     expect(r.exitCode).not.toBe(0); // terminated by signal (code null → 1)
-  }, 10_000);
+  }, 20_000);
 
   // WI-108: per-request opts.timeoutMs must override the module-level default
-  // (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS=600ms here). The invoke route passes the
+  // (PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS=MODULE_TIMEOUT_MS here). The invoke route passes the
   // caller-supplied timeoutMs through spawnInvokeOnce → runChild, so a
   // body.timeoutMs: 280_000 truly kills at 280s, not the 600s host default.
   it('per-request opts.timeoutMs overrides the module-level PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS default', async () => {
     H.cmd = node('setInterval(() => {}, 5000)'); // never exits on its own
-    // Module default is 600ms (env above). A per-request 200ms must arm the kill timer.
+    // Module default is MODULE_TIMEOUT_MS (env above). A per-request 200ms must arm the kill timer.
     // Assert the ARMED DELAY, not wall-clock elapsed: `timedOut` is set by either timer,
     // and an elapsed bound measured around a real child spawn absorbs the spawn cost,
     // which under gate load exceeded the whole 200-vs-600 margin (WI-10003853: 1028ms).
@@ -186,7 +191,7 @@ describe('spawnInvokeOnce', () => {
       const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {}, { timeoutMs: 200 });
       const armedDelays = setTimeoutSpy.mock.calls.map((call) => call[1]);
       expect(armedDelays).toContain(200);
-      expect(armedDelays).not.toContain(600);
+      expect(armedDelays).not.toContain(MODULE_TIMEOUT_MS);
       expect(r.timedOut).toBe(true);
       expect(r.exitCode).not.toBe(0);
     } finally {
