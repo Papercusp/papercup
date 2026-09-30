@@ -98,6 +98,16 @@ export type HostedHostTabRole = 'controller' | 'observer';
  */
 export type HostedHostChannelKind = 'pty' | 'desktop' | 'operator-http';
 
+/** Every kind a `relay.open` can ask for, including the two app planes (P-007, P-325). */
+export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint';
+
+/**
+ * The channels a relay-linked local install serves (EAA P-008, D-031 #7): outside apps only.
+ * pty, desktop and operator-http would hand the portal a terminal, the screen, or
+ * loopback-trusted access to a home computer, so they are refused.
+ */
+export const LOCAL_RELAY_CHANNEL_KINDS: ReadonlySet<HostedHostOpenKind> = new Set(['app-http', 'app-key-mint']);
+
 export interface HostedHostRelayOpen {
   type: 'relay.open';
   channelId: string;
@@ -286,6 +296,12 @@ export interface HostedWorkspaceHostOptions {
    * The raw field is passed through unparsed; the receiver validates it and may raise an alert.
    */
   onRelayUsage?: (relayUsage: unknown) => void;
+  /**
+   * The channel kinds this adapter serves; any other `relay.open` is closed with
+   * `channel_kind_not_allowed`. Absent means every kind (a Papercusp-hosted machine).
+   * A relay-linked local install passes {@link LOCAL_RELAY_CHANNEL_KINDS} (D-031 #7).
+   */
+  allowedChannelKinds?: ReadonlySet<HostedHostOpenKind>;
 }
 
 type HostSession = {
@@ -873,6 +889,19 @@ export class HostedWorkspaceHostSessionAdapter {
   }
 
   private async open(message: Record<string, unknown>): Promise<void> {
+    const allowed = this.options.allowedChannelKinds;
+    if (allowed) {
+      // Absent kind is 'pty' on the wire; an unknown kind is refused further down anyway.
+      const requested = message.kind === undefined ? 'pty' : message.kind;
+      if (typeof requested !== 'string' || !allowed.has(requested as HostedHostOpenKind)) {
+        const refusedChannelId = string(message.channelId, 256);
+        if (refusedChannelId) {
+          this.options.send({ type: 'relay.close', channelId: refusedChannelId, reason: 'channel_kind_not_allowed' });
+        }
+        this.warn(`refused a ${typeof requested === 'string' ? requested.slice(0, 32) : 'malformed'} channel: not served by this install`);
+        return;
+      }
+    }
     if (message.kind === 'app-http') {
       // P-007: an outside app's call relayed by the portal. There is no ticket user to
       // bind; the forwarded `Authorization` (app keys only) is the credential, and the

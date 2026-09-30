@@ -17,7 +17,11 @@ import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust'
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { APP_RELAY_INGRESS_MARKER } from './hosted-app-relay';
 import { HOSTED_PRINCIPAL_SESSION_HEADER, HOSTED_PRINCIPAL_USER_HEADER } from './hosted-operator-http';
-import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope } from './hosted-session-host';
+import {
+  HostedWorkspaceHostSessionAdapter,
+  LOCAL_RELAY_CHANNEL_KINDS,
+  type HostedHostOutboundEnvelope,
+} from './hosted-session-host';
 
 const APP_KEY = `pcapp_${'a'.repeat(16)}_${'s'.repeat(43)}`;
 
@@ -201,5 +205,63 @@ describe('HostedWorkspaceHostSessionAdapter — relay usage on app-http opens (P
     await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller', relayUsage: usage });
     expect(h.sent).toContainEqual({ type: 'relay', channelId: 'app-1', payload: { type: 'http.ready' } });
     expect(warnings).toEqual(['relay usage report failed: sink down']);
+  });
+});
+
+// EAA P-008 (D-031 #7): a relay-linked home computer serves outside apps only. The portal must
+// never get a terminal, the screen or loopback-trusted operator access through its connector.
+describe('HostedWorkspaceHostSessionAdapter — local relay channel allowlist (P-008)', () => {
+  function localHost() {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const warnings: string[] = [];
+    const createdPtys: unknown[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: '/nonexistent-root',
+      send: (message) => sent.push(message),
+      operatorHttp: { origin: 'http://127.0.0.1:9' },
+      allowedChannelKinds: LOCAL_RELAY_CHANNEL_KINDS,
+      onWarning: (message) => warnings.push(message),
+      createPty: (input) => {
+        createdPtys.push(input);
+        throw new Error('a local relay must never start a terminal');
+      },
+    });
+    return { adapter, sent, warnings, createdPtys };
+  }
+  const ticketOpen = { userId: 'user-1', hostedSessionId: 'hs-1', audience: 'workspace-operator', role: 'controller' };
+
+  it('refuses pty (explicit and absent kind), desktop and operator-http opens with a close frame', async () => {
+    const h = localHost();
+    await h.adapter.accept({ type: 'relay.open', channelId: 'c-pty', kind: 'pty', ...ticketOpen });
+    await h.adapter.accept({ type: 'relay.open', channelId: 'c-default', ...ticketOpen });
+    await h.adapter.accept({ type: 'relay.open', channelId: 'c-desk', kind: 'desktop', desktopSessionId: 'd-1', ...ticketOpen });
+    await h.adapter.accept({ type: 'relay.open', channelId: 'c-http', kind: 'operator-http', ...ticketOpen });
+    expect(h.sent).toEqual(['c-pty', 'c-default', 'c-desk', 'c-http'].map((channelId) => ({
+      type: 'relay.close', channelId, reason: 'channel_kind_not_allowed',
+    })));
+    expect(h.createdPtys).toHaveLength(0);
+    expect(h.warnings).toHaveLength(4);
+    // Nothing was opened, so a later frame on a refused channel reaches nothing.
+    await h.adapter.accept({ type: 'relay', channelId: 'c-http', payload: { type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/health', headers: {} } });
+    expect(h.sent).toHaveLength(4);
+  });
+
+  it('still serves app-http and app-key-mint', async () => {
+    const h = localHost();
+    await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller' });
+    expect(h.sent).toEqual([{ type: 'relay', channelId: 'app-1', payload: { type: 'http.ready' } }]);
+    await h.adapter.accept({ type: 'relay.open', channelId: 'mint-1', kind: 'app-key-mint', audience: 'portal-oauth', role: 'controller' });
+    expect(h.sent.some((m) => m.type === 'relay.close' && m.channelId === 'mint-1')).toBe(false);
+    expect(h.warnings).toEqual([]);
+  });
+
+  it('serves every kind when no allowlist is set (a Papercusp-hosted machine)', async () => {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding, workspaceRoot: '/nonexistent-root', send: (message) => sent.push(message), operatorHttp: { origin: 'http://127.0.0.1:9' },
+    });
+    await adapter.accept({ type: 'relay.open', channelId: 'c-http', kind: 'operator-http', ...ticketOpen });
+    expect(sent.some((m) => m.type === 'relay.close' && m.channelId === 'c-http')).toBe(false);
   });
 });

@@ -91,6 +91,11 @@ export interface HostedWorkspaceHostRuntimeOptions {
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
   createPty?: HostedWorkspaceHostOptions['createPty'];
+  /**
+   * The channel kinds every adapter this runtime builds serves. Absent on a Papercusp-hosted
+   * machine (all kinds); a relay-linked local install passes LOCAL_RELAY_CHANNEL_KINDS (D-031 #7).
+   */
+  allowedChannelKinds?: HostedWorkspaceHostOptions['allowedChannelKinds'];
 }
 
 export interface HostedWorkspaceHostRuntime {
@@ -234,6 +239,7 @@ export function createHostedWorkspaceHostRuntime(
         onRelayUsage: (relayUsage) => (options.onRelayUsage ?? defaultRelayUsageReport)(next.customerWorkspaceId, relayUsage),
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
+        ...(options.allowedChannelKinds ? { allowedChannelKinds: options.allowedChannelKinds } : {}),
       });
       for (const handoff of parked) adapter.adopt(handoff);
       parked = [];
