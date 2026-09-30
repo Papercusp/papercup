@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PDS P-002: a physical drill run with --only-phase/--from-phase executes only the selected phases, refuses a bad selection before any work, is never release evidence, and a real single-phase rig re-run finishes well under the 18-minute full-run floor (live, 2026-09-30)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "physical-drill-iteration-speed-2026-09-29",
+  "workItem": "WI-10003973",
+  "specs": ["AUTO-BAR-R-3-P-002@2"],
+  "observer": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+  "outcome": "passed",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T01:55:27Z",
+  "finishedAt": "2026-09-30T09:05:57Z",
+  "summary": "Three real single-phase re-runs on the physical rig (phases I, H and J), each started from papercusp-desktop/bin/hive-git-drill.sh --only-phase <X>, executed exactly the selected phase, recorded every other phase as PHASE_SKIP ... (not selected), ended with PARTIAL_RUN ... (diagnostic only; no release evidence) and wrote the partial stdout {\"releaseEvidence\":false}. End-to-end wall time (verification-harness start to the archived per-run evidence dir) was 4m25s, 9m46s and 3m55s, against the 18-minute full-run floor. Seven bad or unusable selections run against the same real entry point at 09:05:56Z were each refused with exit 2 in 24-139 ms, before any rig work.",
+  "assertions": [
+    {
+      "id": "only-selected-phases-run",
+      "criteria": "A run asked for one phase executes only that phase and records every other phase as not selected.",
+      "observed": "Run 20260930T015526Z-3193378 (--only-phase I): PHASE_SKIP A..H and J '(not selected)', PHASE_START I only. Run 20260930T023044Z-1175578 (--only-phase H): PHASE_SKIP A..G, I, J '(not selected)', PHASE_START H only. Run 20260930T025148Z-2551065 (--only-phase J): PARTIAL_RUN phases=J.",
+      "evidence": [
+        "~/.papercusp-drill-physical-runs/20260930T015952Z-3193378-rc0/physical-probe.stderr lines 2-10, 37-38",
+        "~/.papercusp-drill-physical-runs/20260930T024031Z-1175578-rc0/physical-probe.stderr lines 2-9, 15-17",
+        "~/.papercusp-drill-physical-runs/20260930T025544Z-2551065-rc0/physical-probe.stderr line 23"
+      ],
+      "passed": true
+    },
+    {
+      "id": "never-release-evidence",
+      "criteria": "A partial run is never signed as release evidence.",
+      "observed": "All three runs wrote physical-probe.stdout = {\"schemaVersion\":\"hive-git-physical-partial/v1\",\"phases\":\"<X>\",\"releaseEvidence\":false} and a PARTIAL_RUN line ending '(diagnostic only; no release evidence)'. The verification-harness plan for each run selects only the 'physical' phase (selection.only=[physical]); setup, mode and the local legs are recorded skip/not-selected.",
+      "evidence": [
+        "~/.papercusp-drill-physical-runs/20260930T015952Z-3193378-rc0/physical-probe.stdout",
+        "~/.papercusp-drill-physical-runs/20260930T024031Z-1175578-rc0/physical-probe.stdout",
+        "~/.papercusp-drill-physical-runs/20260930T025544Z-2551065-rc0/physical-probe.stdout",
+        "~/.local/state/verification-harness/hive-git-drill/20260930T015526Z-3193378/plan.json"
+      ],
+      "passed": true
+    },
+    {
+      "id": "single-phase-rerun-under-floor",
+      "criteria": "A real single-phase re-run on the rig finishes well under the 18-minute full-run floor.",
+      "observed": "Phase I: harness start 01:55:27.121Z, phase 01:57:08-01:59:43Z, evidence dir 01:59:52Z = 4m25s. Phase H: harness start 02:30:45.600Z, phase 02:32:25-02:40:24Z, evidence dir 02:40:31Z = 9m46s. Phase J: harness start 02:51:49.452Z, phase 02:53:18-02:55:37Z, evidence dir 02:55:44Z = 3m55s. Each includes source pinning, rig preflight and scenario deploy.",
+      "evidence": [
+        "~/.local/state/verification-harness/hive-git-drill/20260930T015526Z-3193378/result.json (verdict pass)",
+        "~/.local/state/verification-harness/hive-git-drill/20260930T023044Z-1175578/result.json (verdict pass)",
+        "~/.local/state/verification-harness/hive-git-drill/20260930T025148Z-2551065/result.json (verdict pass)"
+      ],
+      "passed": true
+    },
+    {
+      "id": "bad-selection-refused-up-front",
+      "criteria": "A bad or unusable selection is refused before any work.",
+      "observed": "Against the real entry point papercusp-desktop/bin/hive-git-drill.sh at 2026-09-30T09:05:56Z, all exit 2 before any rig work: '--only-phase Z' 24 ms ('wants A-J letters'); \"--only-phase ''\" 33 ms; '--only-phase A,B,C,D,E,F,G,H,I,J' 82 ms and '--from-phase A' 30 ms ('is every physical phase - that is the full release run'); '--only-phase D' without HIVE_GIT_PHYSICAL_PROBE_CMD 30 ms; REQUIRE_ZERO_SKIPS=1 with a partial selection 139 ms ('a partial re-run can never satisfy it'); '--rig nowhere' 24 ms ('is not a rig profile').",
+      "evidence": [".papercusp/scratch/bash-8a27720f-65b.log (capability:bash output of the seven refusals)"],
+      "passed": true
+    }
+  ],
+  "falsifier": "A run asked for a later phase still executes phase A or any other unselected phase; a bad selection fails minutes in instead of refusing up front; a partial run is signed as release evidence; or a single-phase rig re-run takes as long as a full run.",
+  "command": [
+    "bash papercusp-desktop/bin/hive-git-drill.sh --only-phase I",
+    "bash papercusp-desktop/bin/hive-git-drill.sh --only-phase H",
+    "bash papercusp-desktop/bin/hive-git-drill.sh --only-phase J",
+    "bash papercusp-desktop/bin/hive-git-drill.sh --only-phase Z | '' | A,B,C,D,E,F,G,H,I,J; --from-phase A; --only-phase D (no probe cmd); REQUIRE_ZERO_SKIPS=1 --only-phase D; --rig nowhere --only-phase D"
+  ],
+  "note": "The three rig runs were real diagnostic re-runs on the physical rig (tower + VM aviweiss@172.31.44.2), pinned sources a1e699b611a0 (I) and fd64b7230bd6 (H). The refusal matrix was run live against the current entry point; selection is validated in lines 99-159 of hive-git-drill.sh before any other work.",
+  "sourcePaths": [
+    "papercusp-desktop/bin/hive-git-drill.sh",
+    "papercusp-desktop/bin/lib/physical-phase-select.sh",
+    "papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh"
+  ]
+}
