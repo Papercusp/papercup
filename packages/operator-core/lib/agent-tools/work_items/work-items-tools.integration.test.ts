@@ -111,6 +111,9 @@ const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   activeWorkspace: 'default',
+  /** R-2 only: answer the claimable tool's caller-effective claim-spec lookup with the DEFAULT
+   *  lane (the fixture has no cup_claim_specs table). Off for every other test in the file. */
+  stubDefaultClaimSpec: false,
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -149,6 +152,42 @@ vi.mock('../../hive-federation', async () => {
   const actual = await vi.importActual<typeof import('../../hive-federation')>('../../hive-federation');
   return { ...actual, potHomeSlugForHarness: async (_ws: string, slug: string) => (slug === 'nope' ? null : slug) };
 });
+// work_items:create fires a fire-and-forget recall-stats capture (memory/injection.ts →
+// recordRecallStats → harness_shared.memory_recall_stats, a ~7-migration table irrelevant to
+// the unified-surface envelope contract under test). This hand-rolled fixture has no such
+// table, so the real writer console.warns "relation does not exist" — a hard failure under
+// vitest-fail-on-console that red-pinned the WHOLE file (WI-10003618). Stub ONLY the writer
+// (importActual-preserving, like the mocks above) so every other recall-stats export is real.
+// work_items:claimable resolves the caller-effective claim spec (scheduler/claim-spec-store →
+// harness_shared.cup_claim_specs) before it reads claimability, and refuses outright on a lookup
+// error. The focused fixture has no claim-spec tables, so stub ONLY that lookup — and only while
+// an R-2 test opts in — to the DEFAULT lane (an agent in no fleet); the claimability oracle and
+// the withdraw write under test stay real, over real Postgres.
+vi.mock('../../scheduler/claim-spec-store', async () => {
+  const actual = await vi.importActual<typeof import('../../scheduler/claim-spec-store')>('../../scheduler/claim-spec-store');
+  return {
+    ...actual,
+    getClaimSpecRecord: (async (...a: Parameters<typeof actual.getClaimSpecRecord>) =>
+      h.stubDefaultClaimSpec
+        ? ({ source: 'default', spec: { specId: 'default-fixed-ordering' }, revision: 0, updatedBy: null, updatedAt: '', harnessSlug: null } as never)
+        : actual.getClaimSpecRecord(...a)) as typeof actual.getClaimSpecRecord,
+  };
+});
+vi.mock('../../memory/recall-stats', async () => {
+  const actual = await vi.importActual<typeof import('../../memory/recall-stats')>('../../memory/recall-stats');
+  return { ...actual, recordRecallStats: async () => {} };
+});
+// setWorkItemState / releaseWorkItem read the ACTIVE operation-worker claim binding for the
+// acting owner before a terminal transition or release. That read joins adv_sessions,
+// session_briefs and blueprint_operation_invocations, none of which this hand-rolled fixture
+// creates, so the unstubbed read returns {status:'unavailable'} and every withdraw/close is
+// refused as "blueprint operation effect refused" BEFORE the contract under test (same class
+// as WI-10003526; same stub as work-items.integration.test.ts). Stub ONLY the read to "no
+// active operation" and keep the real matcher.
+vi.mock('../../blueprint/operation-worker-binding', async (orig) => ({
+  ...(await orig<typeof import('../../blueprint/operation-worker-binding')>()),
+  readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
+}));
 
 const { default: createTool } = await import('./create');
 const { default: getTool } = await import('./get');
@@ -163,6 +202,8 @@ const { default: commentTool } = await import('./comment');
 const { default: promoteTool } = await import('./promote');
 const { default: expandTool } = await import('./expand');
 const { default: updateTool } = await import('./update');
+const { default: claimableTool } = await import('./claimable');
+const { default: withdrawTool } = await import('./withdraw');
 
 // A superuser engineer ctx: resolveAgentIdentity reads uiClientId as the ownerId.
 const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default' } as never;
@@ -236,6 +277,11 @@ beforeAll(async () => {
   // lifecycle operations. Apply its canonical migrations so the integration
   // suite validates the tool surface against the same schema as production.
   await db.sql.unsafe(readMigration('163-await-event-subscriptions.sql')).simple();
+  // 599 adds event_awaits.superseded_at (+ causal_generation…) — the per-key fire-latch
+  // writer (events/await/store.ts recordKeyFire) filters on it, so without it every
+  // emitAwaitedEvent console.warns "column superseded_at does not exist" under
+  // vitest-fail-on-console (WI-10003618 / EI-24551293655721837 fixture-lag class).
+  await db.sql.unsafe(readMigration('599-event-announcement-generation.sql')).simple();
   await db.sql.unsafe(readMigration('175-watch-floor-coalesce-cols.sql')).simple();
   await db.sql.unsafe(readMigration('541-predicate-watches.sql')).simple();
   await db.sql.unsafe(readMigration('871-lifecycle-bound-watches.sql')).simple();
@@ -831,6 +877,75 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const noop = await promoteOne({ id: featId, harness: 'papercup' });
     expect(noop.ok).toBe(false);
     expect(noop.error).toMatch(/already a pipeline/);
+  });
+});
+
+/**
+ * frontier-remediation R-2 (WI-10002169) — "a withdrawn filing leaves the claimable queue",
+ * asserted AT THE TOOL SURFACE the bar names.
+ *
+ * withdraw.test.ts pins the handler's written state against a mocked engine, and
+ * ISSUE_FAMILY_CLAIMABLE_STATES pins the constant — each one inferential hop BELOW a
+ * `work_items:claimable` call. A refactor that kept both correct but broke the seam that
+ * makes the dropped row invisible to a caller's claimable read would pass every one of
+ * them. This drives the real handlers over real Postgres: file → claimable lists it →
+ * a BARE COMMENT leaves it listed (the contrast: only withdrawal removes it) → withdraw →
+ * claimable no longer lists it.
+ */
+describe('work_items:claimable × work_items:withdraw — withdrawn filing leaves the queue (R-2, real PG)', () => {
+  // A fresh filing is held out of claimable for PAPERCUSP_FILING_GRACE_SEC (default 600s, so
+  // the filer can self-claim first); zero it so a just-filed row is visible to the read.
+  let priorGrace: string | undefined;
+  beforeEach(() => {
+    h.stubDefaultClaimSpec = true;
+    priorGrace = process.env.PAPERCUSP_FILING_GRACE_SEC;
+    process.env.PAPERCUSP_FILING_GRACE_SEC = '0';
+  });
+  afterEach(() => {
+    h.stubDefaultClaimSpec = false;
+    if (priorGrace === undefined) delete process.env.PAPERCUSP_FILING_GRACE_SEC;
+    else process.env.PAPERCUSP_FILING_GRACE_SEC = priorGrace;
+  });
+  const claimableIds = async (): Promise<string[]> => {
+    const out = (await call(claimableTool, { harness: 'papercup' })) as { rows?: { id: string }[] };
+    // A refusal envelope ({ ok:false, error }) has no rows — surface it instead of a bare TypeError.
+    if (!Array.isArray(out.rows)) throw new Error(`work_items:claimable returned no rows: ${JSON.stringify(out).slice(0, 400)}`);
+    const o = out as Record<string, unknown>;
+    lastEnvelope = JSON.stringify({
+      claimableCount: o.claimableCount,
+      matchedByFilter: o.matchedByFilter,
+      excludedBreakdown: o.excludedBreakdown,
+      reason: o.reason,
+      advice: o.advice,
+    }).slice(0, 900);
+    return out.rows.map((r) => r.id);
+  };
+  let lastEnvelope = '';
+
+  it('a withdrawn issue-family filing disappears from work_items:claimable; a bare comment does not', async () => {
+    // A born-pending filing is held out of claimable until the duplicate-screening promoter
+    // admits it (admissionPending floor); critical severity is the documented create-time
+    // admission bypass (work-items-admission ADMISSION_CREATE_BYPASSES), so the rows are
+    // claimable-eligible and the read exercises the withdraw seam, not screening.
+    const created = await createOne({ kind: 'task', title: 'filed then withdrawn', severity: 'critical', harness: 'papercup' });
+    expect(created.ok).toBe(true);
+    const id = (created.workItem as { id: string }).id;
+    const keeper = await createOne({ kind: 'task', title: 'stays filed', severity: 'critical', harness: 'papercup' });
+    const keeperId = (keeper.workItem as { id: string }).id;
+
+    // Positive control: both open filings are visible to a claimable read.
+    expect(await claimableIds(), lastEnvelope).toEqual(expect.arrayContaining([id, keeperId]));
+
+    // Bare-comment contrast: a plain comment is not a retraction, so the row stays claimable.
+    await call(commentTool, { id, body: 'still relevant, just adding context' });
+    expect(await claimableIds()).toContain(id);
+
+    // Withdrawal removes exactly the withdrawn row and leaves its sibling.
+    const withdrawn = await call(withdrawTool, { id, reason: 'filed in error — duplicate of another item' });
+    expect(withdrawn.ok, JSON.stringify(withdrawn).slice(0, 700)).toBe(true);
+    const after = await claimableIds();
+    expect(after).not.toContain(id);
+    expect(after).toContain(keeperId);
   });
 });
 
