@@ -34,7 +34,7 @@ import { JEV_PINNED_MODEL } from '@papercusp/decision-model';
 import { runGoldSet, seedCorpus, seedFailureReason, type CandidateHit, type QueryOutcome } from '@papercusp/memory/bench';
 import { rerank, type RerankDegradeReason } from '@papercusp/rerank';
 
-import { readCredentials } from '../../credentials';
+import { resolveProseRerankEngine } from '../../agent-tools/search/rerank';
 import { decisionModelLedgerStats } from '../../decision-model-ledger';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { pushSearchFloors } from '../injection';
@@ -155,34 +155,43 @@ async function jevScores(outcomes: readonly QueryOutcome[], floor: number): Prom
   });
 }
 
-async function rerankScores(outcomes: readonly QueryOutcome[], floor: number): Promise<(QueryScores | undefined)[]> {
-  const creds = await readCredentials().catch(() => ({}) as { zeroentropy_api_key?: string });
-  const apiKey = creds.zeroentropy_api_key ?? process.env.ZEROENTROPY_API_KEY;
+type RerankEngineD = Awaited<ReturnType<typeof resolveProseRerankEngine>>;
+
+/** Report/cache label for the engine arm D actually ran. */
+function rerankEngineLabel(engine: RerankEngineD): string {
+  if (engine === null) return 'none';
+  return engine.engine === 'zeroentropy' ? `zeroentropy/${RERANK_MODEL}` : 'local/sidecar-reranker';
+}
+
+async function rerankScores(
+  outcomes: readonly QueryOutcome[],
+  floor: number,
+  engine: RerankEngineD,
+): Promise<(QueryScores | undefined)[]> {
+  // Arm D runs the engine prose search resolves on this host (D-010): ZeroEntropy
+  // when a key is stored, else the local scorer. With neither, every query fails open.
   const scope: GradeCacheScope = {
     workspaceId,
-    judgeModel: `zeroentropy/${RERANK_MODEL}`,
+    judgeModel: rerankEngineLabel(engine),
     rubricVersion: `memory-admission-rerank-v1:floor=${floor.toFixed(2)}`,
   };
   return mapPool(outcomes, concurrency, async (o, i) => {
     const cands = o.candidates ?? [];
     if (cands.length === 0) return undefined;
-    if (!apiKey) return { scores: null, failure: 'no-key', latencyMs: null, cached: false, inputTokens: null, costUsd: null };
+    if (engine === null) return { scores: null, failure: 'no-key', latencyMs: null, cached: false, inputTokens: null, costUsd: null };
     const query = gold[i].query;
     return cachedOr(scope, query, cands, o.queryId, async () => {
       let degraded: RerankDegradeReason | undefined;
+      const onDegrade = (r: RerankDegradeReason) => {
+        degraded = r;
+      };
       const t0 = performance.now();
       const results = await rerank(
         query,
         cands.map((c, idx) => ({ id: `${gradeDocId(c)}#${idx}`, text: c.text, row: idx })),
-        {
-          engine: 'zeroentropy',
-          model: RERANK_MODEL,
-          apiKey,
-          timeoutMs: JEV_MEMORY_TIMEOUT_MS,
-          onDegrade: (r) => {
-            degraded = r;
-          },
-        },
+        engine.engine === 'zeroentropy'
+          ? { engine: 'zeroentropy', model: RERANK_MODEL, apiKey: engine.apiKey, timeoutMs: JEV_MEMORY_TIMEOUT_MS, onDegrade }
+          : { engine: 'local', scorer: engine.scorer, timeoutMs: JEV_MEMORY_TIMEOUT_MS, onDegrade },
       );
       const latencyMs = performance.now() - t0;
       const scores = new Array<number | undefined>(cands.length);
@@ -236,13 +245,16 @@ try {
   const scoresB = await jevScores(baseline, floorA);
   log(`arm C: Jev over floor-${floorC} candidates…`);
   const scoresC = await jevScores(runC.perQuery, floorC);
-  const scoresD = withRerank ? (log('arm D: ZeroEntropy rerank-score threshold…'), await rerankScores(baseline, floorA)) : null;
+  const engineD: RerankEngineD = withRerank ? await resolveProseRerankEngine().catch(() => null) : null;
+  const engineDName =
+    engineD === null ? 'no rerank engine' : engineD.engine === 'zeroentropy' ? `ZeroEntropy ${RERANK_MODEL}` : 'local reranker';
+  const scoresD = withRerank ? (log(`arm D: ${engineDName} rerank-score threshold…`), await rerankScores(baseline, floorA, engineD)) : null;
 
   const arms = [
     evaluateFilterArm(baseline, { arm: 'B', label: `floor ${floorA} + Jev P(yes) ≥ t`, floor: floorA, outcomes: baseline, scores: scoresB, thresholds }),
     evaluateFilterArm(baseline, { arm: 'C', label: `floor ${floorC} + Jev P(yes) ≥ t`, floor: floorC, outcomes: runC.perQuery, scores: scoresC, thresholds }),
     ...(scoresD
-      ? [evaluateFilterArm(baseline, { arm: 'D', label: `floor ${floorA} + ZeroEntropy ${RERANK_MODEL} score ≥ t`, floor: floorA, outcomes: baseline, scores: scoresD, thresholds })]
+      ? [evaluateFilterArm(baseline, { arm: 'D', label: `floor ${floorA} + ${engineDName} score ≥ t`, floor: floorA, outcomes: baseline, scores: scoresD, thresholds })]
       : []),
   ];
 
@@ -274,7 +286,7 @@ try {
       filterTimeoutMs: JEV_MEMORY_TIMEOUT_MS,
       thresholds,
       cacheReads: fresh ? 'bypassed (--fresh)' : 'on',
-      rerank: withRerank ? `zeroentropy/${RERANK_MODEL}` : 'skipped (--no-rerank)',
+      rerank: withRerank ? `${rerankEngineLabel(engineD)} (the engine prose search resolves on this host, D-010)` : 'skipped (--no-rerank)',
       decisionLedger: `${ledger.written} rows written, ${ledger.failed} failed${ledger.lastError ? ` (last error: ${ledger.lastError})` : ''}; ${liveJevCalls} live Jev calls`,
       pricing: `Jev at the vendor list price $0.042/M input tokens, output free`,
     },
