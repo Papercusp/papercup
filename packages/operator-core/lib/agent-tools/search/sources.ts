@@ -43,27 +43,20 @@ const ENGINEER_ISSUES_CHUNK_PARENT = {
   key: ['base_harness_slug', 'issue_id'],
 } as const;
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
-import {
-  proseProfilePredicateSql,
-  resolveProseProfileIdSelection,
-} from '../../search/prose-vector-dims';
+import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
 
 /** Exact stored-space predicate for every vector source below. No extra read:
  * provenance comes from the query embedder through the engine policy. Unknown
  * or unaccepted identity becomes SQL FALSE, so the vector leg fails closed and
- * the engine can still return lexical results. */
+ * the engine can still return lexical results. The rule lives in
+ * @papercusp/search's embedding space (shared-vector-search-libraries P-001);
+ * the name stays because the parity census counts its call sites. */
 function proseProfileSql(
   p: Pick<SearchSourceParams, 'sql' | 'embeddingProfile'>,
   profileColumn: string,
   modeColumn: string,
 ) {
-  const selection = p.embeddingProfile
-    ? resolveProseProfileIdSelection(
-        p.embeddingProfile.profileId,
-        p.embeddingProfile.legacyMode,
-      )
-    : null;
-  return proseProfilePredicateSql(p.sql, selection, profileColumn, modeColumn);
+  return PROSE_EMBEDDING_SPACE.sourceFilterSql(p, profileColumn, modeColumn);
 }
 
 /**
