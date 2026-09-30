@@ -51,6 +51,16 @@ export function protectedResourceMetadata(origin: string) {
   };
 }
 
+/**
+ * What BOTH authorization servers — this machine's and the portal's per-workspace one
+ * (portal-mcp-oauth.ts) — advertise at their token endpoints. client_credentials is a service key
+ * in client-credentials mode (P-016, client-credentials.ts); `private_key_jwt` assertions are
+ * verified with exactly {@link CLIENT_ASSERTION_ALGORITHMS}.
+ */
+export const TOKEN_GRANT_TYPES_SUPPORTED = ['authorization_code', 'client_credentials'] as const;
+export const TOKEN_ENDPOINT_AUTH_METHODS_SUPPORTED = ['none', 'client_secret_post', 'client_secret_basic', 'private_key_jwt'] as const;
+export const CLIENT_ASSERTION_ALGORITHMS = ['RS256', 'PS256', 'ES256', 'EdDSA'] as const;
+
 /** RFC 8414 authorization-server metadata; the issuer is this origin. */
 export function authorizationServerMetadata(origin: string) {
   return {
@@ -59,9 +69,10 @@ export function authorizationServerMetadata(origin: string) {
     token_endpoint: `${origin}${MCP_OAUTH_BASE}/token`,
     registration_endpoint: `${origin}${MCP_OAUTH_BASE}/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: [...TOKEN_GRANT_TYPES_SUPPORTED],
     code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+    token_endpoint_auth_methods_supported: [...TOKEN_ENDPOINT_AUTH_METHODS_SUPPORTED],
+    token_endpoint_auth_signing_alg_values_supported: [...CLIENT_ASSERTION_ALGORITHMS],
     authorization_response_iss_parameter_supported: true,
   };
 }

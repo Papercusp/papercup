@@ -6,7 +6,9 @@
  *   POST /connected-apps/oauth/register               RFC 7591 dynamic client registration
  *   GET  /connected-apps/oauth/authorize              authorization code + PKCE (S256), consent
  *   GET  /connected-apps/oauth/continue               the browser returns here until approved
- *   POST /connected-apps/oauth/token                  code + verifier → access token (an app key)
+ *   POST /connected-apps/oauth/token                  code + verifier → access token (an app key);
+ *                                                     or grant_type=client_credentials (P-016) →
+ *                                                     a short-lived pcat_ token (client-credentials.ts)
  *
  * The host serves the two metadata documents at the root well-known paths too
  * (apps/operator/bin/host-handler.ts rewrites `/.well-known/oauth-*` here), which is where MCP
@@ -21,7 +23,14 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { RouteDefinition } from '@papercusp/agent-mcp';
 import { isLoopbackHost } from '../device/_shared';
-import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
+import { activeWorkspaceId, readRegistry, workspaceById } from '../../../workspace-registry';
+import {
+  PostgresClientCredentialsStore,
+  handleClientCredentialsGrant,
+  validateClientJwk,
+  type ClientCredentialsStore,
+  type TokenEndpointAnswer,
+} from '../../../connected-apps/client-credentials';
 import { PORTAL_APPROVER_RE } from '../../../workspace-host/hosted-app-relay';
 import { sanitizeClientLabel } from '../hosted-cli';
 import {
@@ -50,8 +59,10 @@ import {
 } from '../../../connected-apps/mcp-oauth-discovery';
 import {
   AppKeyScopeError,
+  ClientCredentialsModeError,
   createAppKey,
   resolveAppKeyScopes,
+  setClientCredentialsMode,
   type AppKeyScopeRequest,
   type AppKeyScopes,
   type CreateAppKeyOptions,
@@ -79,8 +90,9 @@ export interface McpOAuthRouteDependencies {
 
 /** An OAuth token-endpoint answer as an HTTP response: no-store, and a Basic challenge on a 401. */
 export function tokenAnswerResponse(answer: TokenEndpointAnswer): Response {
-  const challenge = answer.status === 401 ? { 'www-authenticate': 'Basic realm="papercusp"' } : {};
-  return Response.json(answer.body, { status: answer.status, headers: { ...noStore, ...challenge } });
+  const headers: Record<string, string> = { ...noStore };
+  if (answer.status === 401) headers['www-authenticate'] = 'Basic realm="papercusp"';
+  return Response.json(answer.body, { status: answer.status, headers });
 }
 
 function oauthError(error: string, description: string, status = 400, extra: Record<string, string> = {}): Response {
@@ -493,14 +505,23 @@ function scopeFieldsOf(value: unknown): AppKeyScopeRequest | null {
   return out;
 }
 
+const clientCredentialsStore = new PostgresClientCredentialsStore();
+
 const routes: ReadonlyArray<AnyRoute> = [
   ...createMcpOAuthRoutes({
     store: new PostgresOAuthStore(),
     resolveScopes: resolveAppKeyScopes,
     listWorkspaces: () => readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name ?? w.id })),
     isLocal: isLoopbackHost,
+    clientCredentials: clientCredentialsStore,
   }),
   createPortalMintRoute({ createKey: createAppKey, workspaceId: activeWorkspaceId, isLocal: isLoopbackHost }),
+  ...createClientCredentialsRoutes({
+    store: clientCredentialsStore,
+    setMode: setClientCredentialsMode,
+    workspaceExists: (id) => Boolean(workspaceById(id)),
+    isLocal: isLoopbackHost,
+  }),
 ];
 
 export default routes;

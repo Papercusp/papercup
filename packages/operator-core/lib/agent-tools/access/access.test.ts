@@ -49,6 +49,7 @@ function row(id: string, over: Partial<AppKeyRow> = {}): AppKeyRow {
     spend_cap_window_sec: null,
     rotated_at: null,
     previous_token_valid_until: null,
+    client_auth: null,
     ...over,
   };
 }

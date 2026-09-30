@@ -27,6 +27,7 @@ import { decodeJwt, importJWK, jwtVerify, type JWK } from 'jose';
 import { withWorkspace } from '@papercusp/db-org';
 import { mintAccessToken } from './key';
 import { OAuthScopeError, formatOAuthScope, parseOAuthScope } from './mcp-oauth';
+import { CLIENT_ASSERTION_ALGORITHMS } from './mcp-oauth-discovery';
 import { toolGroupOf } from './scope-policy';
 import { appKeyVerdictOf, loadClientKeyRow, type AppKeyRow, type AppKeyScopes, type StoredAppKeyRow } from './store';
 
@@ -37,7 +38,8 @@ export const CLIENT_ASSERTION_MAX_LIFETIME_SEC = 300;
 /** Clock skew allowed on an assertion's exp / nbf / iat. */
 export const CLIENT_ASSERTION_CLOCK_TOLERANCE_SEC = 30;
 export const JWT_BEARER_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
-export const CLIENT_ASSERTION_ALGORITHMS = ['RS256', 'PS256', 'ES256', 'EdDSA'] as const;
+/** Defined beside the metadata that advertises it, so the two cannot disagree. */
+export { CLIENT_ASSERTION_ALGORITHMS };
 
 const CLIENT_ID_RE = /^[A-Za-z0-9]{16}$/;
 const PRIVATE_JWK_MEMBERS = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'] as const;

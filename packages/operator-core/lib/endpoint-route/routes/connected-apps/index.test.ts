@@ -30,7 +30,7 @@ function appRow(id: string, workspaceId: string, userEmail: string, label: strin
   return {
     id, user_email: userEmail, workspace_id: workspaceId, kind: 'app', label, scopes, limits: {},
     paired_at: new Date(), expires_at: null, paused_at: null, revoked_at: null, last_seen: null, last_ip: null,
-    spend_cap_cents: null, spend_cap_window_sec: null, rotated_at: null, previous_token_valid_until: null,
+    spend_cap_cents: null, spend_cap_window_sec: null, rotated_at: null, previous_token_valid_until: null, client_auth: null,
   };
 }
 
