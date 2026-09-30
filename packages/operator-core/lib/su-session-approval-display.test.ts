@@ -44,6 +44,15 @@ describe('readable tool-approval cards (pui-chat-first-ux P-008)', () => {
     expect(approvalCardText('Bash', { command: 'npm test' }).prompt).toBe('Allow Bash(npm test)?');
   });
 
+  it('says a command description once when Claude repeats it as the request description (WI-10004215)', () => {
+    const description = 'Run the test suite with npm test';
+    const card = approvalCardText('Bash', { command: 'npm test 2>&1', description },
+      { cwd: CWD, description, decisionReason: 'This command requires approval' });
+    expect(card.prompt.split('\n')).toEqual([
+      'Allow Bash(npm test 2>&1)?', description, 'This command requires approval',
+    ]);
+  });
+
   it('summarises MCP arguments on one line with containers as sizes', () => {
     const card = approvalCardText('mcp__papercusp-su__work_items_claimable',
       { harness: 'papercusp', limit: 5, kind: ['bug', 'task'], filter: { a: 1 } });
