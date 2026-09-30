@@ -452,6 +452,7 @@ import devicePair from './device/pair';
 import connectedApps from './connected-apps';
 import connectedAppsOAuth from './connected-apps/oauth';
 import ownTunnel from './own-tunnel';
+import remoteAccess from './remote-access';
 import deviceVoice from './device/voice';
 import deviceOperator from './device/operator';
 import deviceHarnesses from './device/harnesses';
@@ -954,6 +955,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(connectedApps as AnyRoute[]),
   ...flatten(connectedAppsOAuth as AnyRoute[]),
   ...flatten(ownTunnel as AnyRoute[]),
+  ...flatten(remoteAccess as AnyRoute[]),
   ...flatten(deviceVoice as AnyRoute[]),
   ...flatten(deviceOperator as AnyRoute[]),
   ...flatten(deviceHarnesses as AnyRoute[]),
