@@ -822,6 +822,7 @@ export default defineTool({
       try {
         const minted = await mintDrainFleetForGoal({
           workspaceId,
+          harnessSlug: installSlug,
           goalId: id,
           goalTitle: args.title,
           agentOwnerId: ownerId,

@@ -55,6 +55,32 @@ vi.mock('./goals/holder', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./goals/holder')>()),
   resolveGoalHolders: goalHoldersMock,
 }));
+// The launch-time spend measurement (D-011 clause 3 / stewardship D-014). The gate
+// reaches computeGoalSpendRollup through a dynamic import; its SQL is covered by the
+// spend-rollup suites, so here each test states the legs it wants the gate to see.
+// Default: every leg empty (the zero-usage bootstrap).
+const liveSpend = vi.hoisted(() => ({
+  legs: { spentCents: null as number | null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 },
+  throws: false,
+  calls: 0,
+}));
+vi.mock('./goals/spend-rollup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./goals/spend-rollup')>()),
+  computeGoalSpendRollup: async () => {
+    liveSpend.calls += 1;
+    if (liveSpend.throws) throw new Error('ledger read failed');
+    const l = liveSpend.legs;
+    return {
+      spentCents: l.spentCents,
+      unmeasuredReason:
+        l.spentCents != null ? null : l.lineage === 0 ? 'no-lineage-samples' : 'unpriced-lineage-samples',
+      samples: l.pot + l.session,
+      pot: { samples: l.pot },
+      session: { samples: l.session },
+      lineage: { samples: l.lineage, unpricedSamples: l.lineageUnpriced },
+    };
+  },
+}));
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
@@ -2186,6 +2212,9 @@ describe('P-006: the budget launch gate', () => {
     budgetGateFlag.value = true;
     budgetGateFlag.throws = false;
     escalated.calls.length = 0;
+    liveSpend.legs = { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 };
+    liveSpend.throws = false;
+    liveSpend.calls = 0;
   });
 
   const launchWithBudget = (
@@ -2325,13 +2354,93 @@ describe('P-006: the budget launch gate', () => {
     expect(r.refusal!.message).toContain('do not infer headroom');
   });
 
-  it('PRESERVES fail-open for a goal with nothing attributed in its window', async () => {
-    // The other population: no evidence of spend, so no ceiling is being passed.
-    for (const spent_cents_unmeasured_reason of [null, 'no-lineage-samples']) {
+  // ── The OTHER null: no snapshot, or an empty authoritative stream ──
+  //
+  // Neither is evidence that nothing was spent (D-011 clause 3). The gate used to
+  // admit both on the absence; it now measures every leg at launch and admits only
+  // the zero-usage bootstrap (stewardship-remediation D-014).
+  const NULL_SNAPSHOTS = [null, 'no-lineage-samples'] as const;
+
+  it('REFUSES an empty authoritative stream beside goal usage on the pot/session legs', async () => {
+    // The failure the stewardship plan was opened for: 0 attributed samples while
+    // the session ledger measured real spend. Never read as "nothing spent".
+    for (const spent_cents_unmeasured_reason of NULL_SNAPSHOTS) {
+      liveSpend.legs = { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 102 };
+      const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
+      expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+      expect(r.refusal!.current).toBeNull();
+      expect(r.refusal!.currentScope).toBe(REFUSAL_SCOPES.BUDGET_UNATTRIBUTED);
+      expect(r.refusal!.message).toContain('102 usage sample(s)');
+      expect(r.refusal!.message).toContain('Do NOT attach a pot');
+      expect(r.degraded).toBe(false);
+    }
+  });
+
+  it('REFUSES when the launch-time measurement itself fails — no figure, no headroom', async () => {
+    for (const spent_cents_unmeasured_reason of NULL_SNAPSHOTS) {
+      liveSpend.throws = true;
+      const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
+      expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+      expect(r.refusal!.currentScope).toBe(REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED);
+      expect(r.refusal!.message).toContain('ledger read failed');
+    }
+  });
+
+  it('refuses unpriced samples found at launch exactly as it refuses the snapshot reason', async () => {
+    liveSpend.legs = { spentCents: null, lineage: 4, lineageUnpriced: 1, pot: 0, session: 4 };
+    const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null });
+    expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal!.currentScope).toBe(REFUSAL_SCOPES.BUDGET_UNMEASURABLE);
+  });
+
+  it('enforces the ceiling on a figure measured at launch when the snapshot carried none', async () => {
+    liveSpend.legs = { spentCents: 6000, lineage: 30, lineageUnpriced: 0, pot: 0, session: 30 };
+    const over = await launchWithBudget({ budget_cents: 5000, spent_cents: null });
+    expect(over.refusal?.reason).toBe('goal_budget_exceeded');
+    expect(over.refusal!.current).toBe(6000);
+    expect(over.refusal!.currentScope).toBe(REFUSAL_SCOPES.BUDGET_LINEAGE);
+    expect(over.refusal!.message).toContain('measured at launch');
+
+    liveSpend.legs = { spentCents: 100, lineage: 3, lineageUnpriced: 0, pot: 0, session: 3 };
+    const under = await launchWithBudget({ budget_cents: 5000, spent_cents: null });
+    expect(under.refusal).toBeNull();
+    // Measured, so nothing about the budget is reported unenforced.
+    expect(under.degradedReasons.filter((s) => s.includes('budget'))).toEqual([]);
+  });
+
+  it('BOOTSTRAP (D-014): admits, reported degraded, ONLY when every leg is empty', async () => {
+    for (const spent_cents_unmeasured_reason of NULL_SNAPSHOTS) {
       const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
       expect(r.refusal).toBeNull();
       expect(r.degraded).toBe(true);
+      expect(r.degradedReasons.some((s) => s.includes('zero-usage bootstrap'))).toBe(true);
     }
+  });
+
+  it('CONTROL: one usage sample on ANY diagnostic leg is enough to refuse the bootstrap', async () => {
+    // Pairs with the bootstrap case: the only difference is a single sample, so a
+    // mutant that admitted on `lineage.samples === 0` alone passes the bootstrap
+    // test above and fails here.
+    for (const legs of [
+      { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 1, session: 0 },
+      { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 1 },
+    ]) {
+      liveSpend.legs = legs;
+      const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null });
+      expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_UNATTRIBUTED);
+    }
+  });
+
+  it('reads the ledger at launch only when the snapshot has no figure and no unpriced reason', async () => {
+    await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason: UNPRICED });
+    await launchWithBudget({
+      budget_cents: 50000,
+      spent_cents: 10,
+      spent_cents_source: 'goal-lineage-rollup',
+    });
+    expect(liveSpend.calls).toBe(0);
+    await launchWithBudget({ budget_cents: 50000, spent_cents: null });
+    expect(liveSpend.calls).toBe(1);
   });
 
   it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
@@ -2365,12 +2474,14 @@ describe('P-006: the budget launch gate', () => {
     expect(hasUnmeasuredPricedSpend([], null)).toBe(false);
   });
 
-  it('D-003: a declared budget with NO snapshot degrades — never guesses, never refuses', async () => {
+  it('D-003: a declared budget with NO snapshot is measured at launch — never guessed', async () => {
+    // With every leg empty that is the bootstrap: admitted, but reported.
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: null });
+    expect(liveSpend.calls).toBe(1);
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('no measured spend in its budget window yet'))).toBe(true);
+    expect(r.degradedReasons.some((s) => s.includes('no usage on any leg in its budget window'))).toBe(true);
   });
 
   it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {

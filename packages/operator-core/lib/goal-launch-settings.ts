@@ -90,6 +90,9 @@ import { claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler
 // read's runtime graph.
 import type { PlanClosureState, PlanClosureVerdict } from './goals/plan-closure';
 import type { GoalHolderFirstTurnAttestation } from './goals/holder-attestation';
+// Type-only: erased at runtime, so it cannot close the cycle REFUSAL_SCOPES
+// documents. The value is reached through a dynamic import at launch time.
+import type { GoalSpendRollup } from './goals/spend-rollup';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -636,6 +639,17 @@ export const REFUSAL_SCOPES = {
    * goal spent nothing.
    */
   BUDGET_UNMEASURABLE: 'unmeasurable:unpriced-lineage-samples',
+  /**
+   * NOTHING could be measured because the authoritative stream is EMPTY while
+   * the goal's diagnostic legs (its pots, its holder sessions) carry usage in the
+   * same window: spend happened that write-time attribution never stamped. The
+   * exact failure the stewardship-remediation plan was opened for (0 attributed
+   * samples beside 21,444 cents on the session ledger), so it is refused, never
+   * read as "nothing spent".
+   */
+  BUDGET_UNATTRIBUTED: 'unmeasurable:unattributed-goal-samples',
+  /** The launch-time measurement itself failed, so there is no figure to judge. */
+  BUDGET_MEASUREMENT_FAILED: 'unmeasurable:measurement-failed',
   LIVE_AGENTS_IN_GOAL: 'live-agents-in-goal',
   LIVE_AGENTS_IN_FLEET: 'live-agents-in-fleet',
 } as const;
@@ -648,8 +662,10 @@ export const REFUSAL_SCOPES = {
  * which one in `spentCentsUnmeasuredReason`. Only `unpriced-lineage-samples` is
  * a hole: attributed samples exist but some carry no price, so the true total is
  * unknown and failing open would let a launch past a ceiling nobody can check.
- * `no-lineage-samples` means nothing was spent in the window, which is safe to
- * admit.
+ * `no-lineage-samples` only says the write-time-attributed stream is empty. That
+ * is not proof nothing was spent (attribution can miss a goal's sessions), so the
+ * launch gate does not admit on it: it measures every leg at launch and admits
+ * only when all of them are empty (stewardship-remediation D-014).
  *
  * Returns false whenever `spentCents` is non-null, so a stale reason can never
  * contradict a live measurement.
@@ -2808,6 +2824,121 @@ async function budgetLaunchGateEnabled(): Promise<{ enabled: boolean; infraError
  * bumps the one card instead of stacking a new one — the
  * deliverGoalWindDownReport pattern.
  */
+/**
+ * Why a declared ceiling has no figure to judge. Each cause names its own
+ * repair, which is why they are not one message.
+ */
+type BudgetUnmeasurableCause = 'unpriced-lineage-samples' | 'unattributed-goal-samples' | 'measurement-failed';
+
+const UNMEASURABLE_SCOPE: Record<BudgetUnmeasurableCause, string> = {
+  'unpriced-lineage-samples': REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
+  'unattributed-goal-samples': REFUSAL_SCOPES.BUDGET_UNATTRIBUTED,
+  'measurement-failed': REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
+};
+
+/**
+ * WI-10002052 / D-011 clause 3: a ceiling that cannot MEASURE must not silently
+ * fail open. `current: null` is load-bearing: the gate refuses BECAUSE the number
+ * is unknown, and a 0 here would assert the very figure it is refusing over not
+ * having.
+ */
+function budgetUnmeasurableRefusal(args: {
+  goalId: string;
+  budgetCents: number;
+  count: number;
+  cause: BudgetUnmeasurableCause;
+  detail?: string;
+}): GoalLaunchRefusal {
+  const head = `goal ${args.goalId} declares budget_cents=${args.budgetCents}, but its spend CANNOT BE MEASURED: `;
+  const noHeadroom =
+    `do not infer headroom from the missing value or raise/clear the ceiling merely to get a launch admitted. ` +
+    `⚠ Do NOT attach a pot to change this — goal spend is measured from goal-attributed samples, not pots.`;
+  const body =
+    args.cause === 'unpriced-lineage-samples'
+      ? `the platform snapshot (metadata.spentCents) is null because usage samples attributed to this goal in its ` +
+        `budget window carry no price, so any total would only be a floor. Refusing rather than admitting: a ` +
+        `ceiling that fails open on a partial measurement never binds. Repair the pricing of those samples ` +
+        `(the model or provider that produced them has no cost), or wait for them to leave the window; `
+      : args.cause === 'unattributed-goal-samples'
+        ? `no usage in its budget window was attributed to the goal at write time (agent_usage_samples.goal_id), ` +
+          `yet ${args.detail ?? "the goal's pot/session legs carry usage"}. Spend happened that the authoritative ` +
+          `stream never recorded, so any figure would be a floor. Refusing rather than admitting: an empty ` +
+          `authoritative stream beside non-empty goal usage is not "nothing spent". Repair write-time goal ` +
+          `attribution for those sessions, or wait for the samples to leave the window; `
+        : `the platform snapshot carries no spend figure, so the gate measured at launch, and that measurement ` +
+          `failed (${args.detail ?? 'unknown error'}). With no figure there is no headroom to judge. Refusing ` +
+          `rather than admitting: a ceiling that fails open whenever its read fails never binds. Retry once the ` +
+          `ledger read succeeds; `;
+  return {
+    reason: 'goal_budget_unmeasurable',
+    limit: args.budgetCents,
+    current: null,
+    requested: args.count,
+    currentScope: UNMEASURABLE_SCOPE[args.cause],
+    message: head + body + noHeadroom,
+  };
+}
+
+function budgetExceededRefusal(args: {
+  goalId: string;
+  budgetCents: number;
+  spentCents: number;
+  count: number;
+  spendScope: string;
+  /** Where the figure came from, rendered after the scope, e.g. ` (platform snapshot at …)`. */
+  measuredAt: string;
+}): GoalLaunchRefusal {
+  return {
+    reason: 'goal_budget_exceeded',
+    limit: args.budgetCents,
+    current: args.spentCents,
+    requested: args.count,
+    currentScope: args.spendScope,
+    message:
+      // NAME THE POPULATION (P-004). The scope travels in the sentence, not
+      // just in the structured field a human reading the refusal never sees.
+      `goal ${args.goalId} has spent ${args.spentCents} of its ${args.budgetCents} cent budget ` +
+      `[measured over ${args.spendScope}` +
+      `${
+        args.spendScope === REFUSAL_SCOPES.BUDGET_UNVERIFIED
+          ? ' — this figure carries no provenance marker, so what it counted is unknown'
+          : ' — usage attributed to this goal within its budget window'
+      }]` +
+      `${args.measuredAt}; further agent/fleet ` +
+      `launches are refused. Review spend and raise budget_cents on the goal, or wind the goal down. ` +
+      `The owner has an open escalation for this (deduped per goal).`,
+  };
+}
+
+/**
+ * D-011 clause 3 at launch time. When the snapshot carries no figure and no
+ * unpriced-sample reason, measure with the rollup's OWN function instead of
+ * admitting on the absence: a null snapshot is either no snapshot at all (the
+ * rollup has not ticked for this goal yet) or an empty authoritative stream, and
+ * neither is evidence that nothing was spent.
+ *
+ * Dynamic import for the reason REFUSAL_SCOPES documents: a static import of
+ * `./goals/spend-rollup` would close a runtime cycle through `@papercusp/agent-mcp`.
+ */
+async function measureGoalSpendAtLaunch(args: {
+  workspaceId: string;
+  goalId: string;
+  windowSec: number | null;
+  sql?: Sql;
+}): Promise<{ ok: true; rollup: GoalSpendRollup } | { ok: false; error: string }> {
+  try {
+    const { computeGoalSpendRollup } = await import('./goals/spend-rollup');
+    const rollup = await computeGoalSpendRollup(pg(args.sql), {
+      workspaceId: args.workspaceId,
+      goalId: args.goalId,
+      windowSec: args.windowSec,
+    });
+    return { ok: true, rollup };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 function escalateBudgetRefusal(args: {
   workspaceId: string;
   goalId: string;
@@ -3018,25 +3149,12 @@ export async function resolveGoalLaunchForGoal(args: {
         // samples with no price, so the total is unknown and any figure would
         // be a floor. Failing open here admits launches past a ceiling nobody
         // can check, for as long as those samples stay in the window.
-        //
-        // `current: null` is load-bearing: the gate refuses BECAUSE the number
-        // is unknown, and a 0 here would assert the very figure it is refusing
-        // over not having.
-        refusal = {
-          reason: 'goal_budget_unmeasurable',
-          limit: budget.budgetCents,
-          current: null,
-          requested: count,
-          currentScope: REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
-          message:
-            `goal ${goalId} declares budget_cents=${budget.budgetCents}, but its spend CANNOT BE MEASURED: the ` +
-            `platform snapshot (metadata.spentCents) is null because usage samples attributed to this goal in its ` +
-            `budget window carry no price, so any total would only be a floor. Refusing rather than admitting: a ` +
-            `ceiling that fails open on a partial measurement never binds. Repair the pricing of those samples ` +
-            `(the model or provider that produced them has no cost), or wait for them to leave the window; do not ` +
-            `infer headroom from the missing value or raise/clear the ceiling merely to get a launch admitted. ` +
-            `⚠ Do NOT attach a pot to change this — goal spend is measured from goal-attributed samples, not pots.`,
-        };
+        refusal = budgetUnmeasurableRefusal({
+          goalId,
+          budgetCents: budget.budgetCents,
+          count,
+          cause: 'unpriced-lineage-samples',
+        });
         // Refusing without telling anyone would trade a silent fail-OPEN for a
         // silent fail-CLOSED — the same invisibility defect pointed the other
         // way. Keep the owner informed while the measurement repair is pursued;
@@ -3048,14 +3166,75 @@ export async function resolveGoalLaunchForGoal(args: {
           refusal,
         });
       } else if (budget.spentCents == null) {
-        // The other population: no rollup tick has run yet, or nothing was
-        // attributed to this goal in its window. Nothing is being let past a
-        // ceiling, so the original fail-open stance stands unchanged here.
-        degradedReasons.push(
-          `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
-            `measured spend in its budget window yet (metadata.spentCents is written by the goal-spend-rollup ` +
-            `tick from goal-attributed usage; D-003 forbids inventing one)`,
-        );
+        // The other null: no snapshot at all (the rollup has not ticked for this
+        // goal yet), or a window whose write-time-attributed stream is empty.
+        // Neither is evidence that nothing was spent. An empty authoritative
+        // stream beside non-empty goal usage is exactly what the stewardship
+        // plan was opened for (0 attributed samples while the session ledger
+        // measured 21,444 cents), so admitting here was the fail-open D-011
+        // clause 3 forbids. Measure now, with the rollup's own function.
+        const live = await measureGoalSpendAtLaunch({
+          workspaceId: args.workspaceId,
+          goalId,
+          windowSec: rawGoalBrief?.budgetWindowSec ?? null,
+          sql: args.sql,
+        });
+        if (!live.ok) {
+          refusal = budgetUnmeasurableRefusal({
+            goalId,
+            budgetCents: budget.budgetCents,
+            count,
+            cause: 'measurement-failed',
+            detail: live.error,
+          });
+        } else if (live.rollup.spentCents != null) {
+          if (live.rollup.spentCents >= budget.budgetCents) {
+            refusal = budgetExceededRefusal({
+              goalId,
+              budgetCents: budget.budgetCents,
+              spentCents: live.rollup.spentCents,
+              count,
+              spendScope: REFUSAL_SCOPES.BUDGET_LINEAGE,
+              measuredAt: ' (measured at launch; the platform snapshot carried no figure)',
+            });
+          }
+        } else if (live.rollup.unmeasuredReason === 'unpriced-lineage-samples') {
+          refusal = budgetUnmeasurableRefusal({
+            goalId,
+            budgetCents: budget.budgetCents,
+            count,
+            cause: 'unpriced-lineage-samples',
+          });
+        } else if (live.rollup.samples > 0) {
+          refusal = budgetUnmeasurableRefusal({
+            goalId,
+            budgetCents: budget.budgetCents,
+            count,
+            cause: 'unattributed-goal-samples',
+            detail:
+              `the goal's pot/session legs carry ${live.rollup.samples} usage sample(s) in the same window ` +
+              `(${live.rollup.pot.samples} pot, ${live.rollup.session.samples} session)`,
+          });
+        } else {
+          // The zero-usage bootstrap (work-on-everything-stewardship-remediation
+          // D-014): no usage on ANY leg, so nothing can be past the ceiling. A
+          // goal's first holder, or a goal idle longer than its window, would
+          // otherwise be refused forever, because no holder means no samples.
+          degradedReasons.push(
+            `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
+              `usage on any leg in its budget window (measured at launch: 0 goal-attributed, 0 goal-session and ` +
+              `0 goal-pot samples), so nothing can be past the ceiling; admitted as the zero-usage bootstrap ` +
+              `(work-on-everything-stewardship-remediation D-014)`,
+          );
+        }
+        if (refusal) {
+          escalateBudgetRefusal({
+            workspaceId: args.workspaceId,
+            goalId,
+            launcherOwnerId: args.launcherOwnerId,
+            refusal,
+          });
+        }
       } else if (budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_LINEAGE) {
         degradedReasons.push(
           `budget ceiling not enforced — goal ${goalId} has spentCents=${budget.spentCents} but no recognized ` +
@@ -3063,27 +3242,14 @@ export async function resolveGoalLaunchForGoal(args: {
             `D-003 forbids treating an unmarked or retired-marker value as authoritative)`,
         );
       } else if (budget.spentCents >= budget.budgetCents) {
-        const spendScope = budgetSpendScope(budget.spentCentsSource);
-        refusal = {
-          reason: 'goal_budget_exceeded',
-          limit: budget.budgetCents,
-          current: budget.spentCents,
-          requested: count,
-          currentScope: spendScope,
-          message:
-            // NAME THE POPULATION (P-004). The scope travels in the sentence, not
-            // just in the structured field a human reading the refusal never sees.
-            `goal ${goalId} has spent ${budget.spentCents} of its ${budget.budgetCents} cent budget ` +
-            `[measured over ${spendScope}` +
-            `${
-              spendScope === REFUSAL_SCOPES.BUDGET_UNVERIFIED
-                ? ' — this figure carries no provenance marker, so what it counted is unknown'
-                : ' — usage attributed to this goal within its budget window'
-            }]` +
-            `${budget.spentCentsAt ? ` (platform snapshot at ${budget.spentCentsAt})` : ''}; further agent/fleet ` +
-            `launches are refused. Review spend and raise budget_cents on the goal, or wind the goal down. ` +
-            `The owner has an open escalation for this (deduped per goal).`,
-        };
+        refusal = budgetExceededRefusal({
+          goalId,
+          budgetCents: budget.budgetCents,
+          spentCents: budget.spentCents,
+          count,
+          spendScope: budgetSpendScope(budget.spentCentsSource),
+          measuredAt: budget.spentCentsAt ? ` (platform snapshot at ${budget.spentCentsAt})` : '',
+        });
         escalateBudgetRefusal({
           workspaceId: args.workspaceId,
           goalId,

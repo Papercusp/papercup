@@ -707,6 +707,7 @@ export async function startGoalFromPackage(
     try {
       const minted = await deps.mintDrain({
         workspaceId,
+        harnessSlug: installSlug,
         goalId: goalIdStarted,
         goalTitle: effective.title,
         agentOwnerId: started.ownerId,

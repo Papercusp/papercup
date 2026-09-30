@@ -554,6 +554,7 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     // The mint is FOR the goal and OWNED by the agent being spawned.
     const args = mintMock.mock.calls[0][0] as Record<string, unknown>;
     expect(args.goalId).toBe(dataOf(res).id);
+    expect(args.harnessSlug).toBe('papercusp');
     expect(args.agentOwnerId).toBe(dataOf(res).agent_owner_id);
   });
 

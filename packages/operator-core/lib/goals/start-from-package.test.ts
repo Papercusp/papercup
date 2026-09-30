@@ -455,7 +455,7 @@ describe('startGoalFromPackage — post-start stamps are fail-soft', () => {
     const res = await run(deps);
     expect(res).toMatchObject({ ok: true, drainFleet: 'goal-drain-x' });
     expect(deps.mintDrain).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: WS, goalId: STUB_ID, goalTitle: 'Work on everything', agentOwnerId: 'su-holder-1' }),
+      expect.objectContaining({ workspaceId: WS, harnessSlug: 'papercusp', goalId: STUB_ID, goalTitle: 'Work on everything', agentOwnerId: 'su-holder-1' }),
     );
     expect(res.ok && res.warnings.some((w) => w.includes("drain fleet 'goal-drain-x' minted"))).toBe(true);
     expect(deps.stampAgentOwner).toHaveBeenCalledWith(
