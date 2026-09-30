@@ -19,6 +19,7 @@ import {
   MCP_OAUTH_WELL_KNOWN,
   MCP_RESOURCE_PATH,
 } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
+import { isWebhookPath } from '@papercusp/operator-core/lib/external-triggers/webhook-path';
 
 /** The OAuth route verbs a remote client uses (routes/connected-apps/oauth.ts). */
 const OAUTH_VERBS = ['protected-resource', 'authorization-server', 'register', 'authorize', 'continue', 'token'] as const;
@@ -29,10 +30,16 @@ export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
   MCP_RESOURCE_PATH,
 ]);
 
-/** Whether the external-ingress listener serves this request path. A trailing slash is ignored. */
+/**
+ * Whether the external-ingress listener serves this request path. A trailing slash is ignored.
+ *
+ * Besides the fixed MCP + OAuth set, one path SHAPE is served: a signed webhook,
+ * exactly `/api/hooks/<source id>` (P-017, D-032 #4). The route checks the HMAC
+ * signature before it writes anything, so it needs no bearer.
+ */
 export function isServedOnExternalIngress(pathname: string): boolean {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
-  return EXTERNAL_INGRESS_SERVED_PATHS.has(normalized);
+  return EXTERNAL_INGRESS_SERVED_PATHS.has(normalized) || isWebhookPath(normalized);
 }
 
 /** The refusal for any other path: a plain 404, so the listener does not advertise what exists. */
