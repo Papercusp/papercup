@@ -136,12 +136,14 @@ const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)
  * Must precede any `[table]` (TOML top-level keys before tables); the `[mcp_servers]`
  * table each writer appends comes after.
  */
-const CODEX_ISOLATION_PREAMBLE = [
-  '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
-  'project_doc_max_bytes = 0',
-  '',
-  ...codexManagedFeaturesToml(),
-].join('\n');
+function codexIsolationPreamble(headless = false): string {
+  return [
+    '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
+    'project_doc_max_bytes = 0',
+    '',
+    ...codexManagedFeaturesToml({ headless }),
+  ].join('\n');
+}
 
 const CODEX_LOCK_GUIDANCE_RE =
   /<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->[\s\S]*?<!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-END -->/g;
@@ -995,6 +997,8 @@ export function writeRoleCodexHome(opts: {
   codexGatewayAuto?: boolean;
   /** Admission label written beside the owner header for a gateway-routed role home. */
   codexGatewayPriority?: string | null;
+  /** Suppress optional interactive plugin authentication in an unattended TUI. */
+  headless?: boolean;
   /** The directory the operator is launching this agent into (spec.cwd). Seeded
    *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
    *  not block at codex's "Do you trust this directory?" boot prompt. */
@@ -1037,7 +1041,7 @@ export function writeRoleCodexHome(opts: {
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    CODEX_ISOLATION_PREAMBLE,
+    codexIsolationPreamble(opts.headless),
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1135,6 +1139,8 @@ export interface SuCodexConfigInput {
   codexGatewayAccountId?: string | null;
   codexGatewayAuto?: boolean;
   codexGatewayPriority?: string | null;
+  /** Suppress optional interactive plugin authentication in an unattended TUI. */
+  headless?: boolean;
   trustDir?: string | null;
   /** Launch cwd for project-scoped external HTTP MCP servers. */
   projectDir?: string | null;
@@ -1210,7 +1216,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
-    CODEX_ISOLATION_PREAMBLE,
+    codexIsolationPreamble(opts.headless),
     ...inheritedCodexTrustToml(opts.trustDir),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
@@ -1368,6 +1374,8 @@ export function writeSuCodexHome(opts: {
   codexGatewayAuto?: boolean;
   /** Gateway admission label; `su` for interactive SU homes. */
   codexGatewayPriority?: string | null;
+  /** Suppress optional interactive plugin authentication in an unattended TUI. */
+  headless?: boolean;
   /** The directory the operator is launching this SU session into (resolveSuLaunchCwd).
    *  Seeded as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME
    *  does not block at codex's "Do you trust this directory?" boot prompt. */
