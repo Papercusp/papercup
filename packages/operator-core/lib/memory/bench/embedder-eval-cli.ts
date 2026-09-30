@@ -9,6 +9,8 @@
  *     [--dims 384] [--out <path.json>] \
  *     [--baseline <leg>] [--compare-with <prior-run.json>] [--limit <N>]
  *     [--vectors <candidate-vectors.json>]
+ *     [--mdenseon-model <validated-local-directory>] [--isolated-sidecar]
+ *     [--vectors-out <path.json>] [--warm-trials <N>]
  *
  * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
  * added leg loads/pools/sizes correctly before paying for a full corpus. Its
@@ -89,9 +91,16 @@ import {
   isTrainedDim,
   dimSpecFor,
   GEMMA_TARGET_DIMS,
+  buildMdenseOnEmbedder,
+  readMdenseOnExport,
+  MDENSEON_MODEL,
+  MDENSEON_REVISION,
+  sidecarEmbedBatch,
+  shutdownLocalEmbedder,
+  getWorkerState,
 } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
-import { embedResponseMeasuredModel } from '../embed-sidecar-server';
+import { createEmbedSidecarServer, embedResponseMeasuredModel, type EmbedSidecarHandle } from '../embed-sidecar-server';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
@@ -123,6 +132,7 @@ interface Leg {
 const K_VALUES = [1, 3, 5] as const;
 const MRR_CUTOFF = 10;
 const ANSWERABLE = new Set(['lexical-gap', 'exact-identifier', 'session-start-intent']);
+let isolatedSidecar: EmbedSidecarHandle | undefined;
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -155,14 +165,9 @@ function dot(a: number[], b: number[]): number {
  */
 function sidecarLeg(url: string, model: string): Leg {
   const call = (kind: 'document' | 'query'): EmbedFn => async (text: string) => {
-    const res = await fetch(`${url.replace(/\/$/, '')}/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      // A benchmark wants the model, not the cache in front of it.
-      body: JSON.stringify({ model, kind, texts: [text], bypassCache: true }),
-    });
-    if (!res.ok) throw new Error(`sidecar_embed_${res.status}: ${await res.text().catch(() => '')}`);
-    const j = (await res.json()) as { vectors: number[][] };
+    const j = await sidecarEmbedBatch(url, { model, kind, texts: [text], bypassCache: true,
+      // Cold model construction is recorded by this evaluation too.
+      timeoutMs: 180_000 });
     // Verify rather than trust the flag: an older sidecar bundle accepts
     // `bypassCache` as an unknown field, ignores it, and answers 200 from the
     // LRU. That response is indistinguishable from a real one except here.
@@ -245,6 +250,7 @@ async function buildLegs(
   names: string[],
   sidecarUrl?: string,
   ollamaUrl = 'http://127.0.0.1:11434',
+  mdenseonModel?: string,
 ): Promise<Array<Leg | { name: string; error: string }>> {
   const out: Array<Leg | { name: string; error: string }> = [];
   const familyWidths = mrlFamilyWidths(names);
@@ -296,6 +302,14 @@ async function buildLegs(
           model: PPLX_MODEL, revision: PPLX_REVISION, output: PPLX_OUTPUT,
           runtime: 'transformers-js-direct-encoder-cpu-fp32', experimental: true,
         } });
+      } else if (name === 'mdenseon') {
+        if (!mdenseonModel) throw new Error('pass --mdenseon-model <validated-local-directory>');
+        const manifest = readMdenseOnExport(mdenseonModel);
+        out.push({ name, doc: buildMdenseOnEmbedder({ kind: 'document', model: mdenseonModel }),
+          query: buildMdenseOnEmbedder({ kind: 'query', model: mdenseonModel }),
+          metadata: { model: MDENSEON_MODEL, revision: MDENSEON_REVISION,
+            runtime: 'transformers-js-worker-cpu-fp32', experimental: true,
+            graphSha256: manifest.files['onnx/model.onnx'].sha256 } });
       } else if (name === 'harrier384') {
         // Exploratory truncation — harrier has NO documented MRL (P-013).
         out.push({
@@ -317,7 +331,16 @@ async function buildLegs(
         }
       } else if (name.startsWith('sidecar')) {
         if (!sidecarUrl) out.push({ name, error: 'pass --sidecar <url>' });
-        else out.push(sidecarLeg(sidecarUrl, name.includes(':') ? name.split(':')[1] : 'gemma'));
+        else {
+          const leg = sidecarLeg(sidecarUrl, name.includes(':') ? name.split(':')[1] : 'gemma');
+          if (name === 'sidecar:mdenseon' && mdenseonModel) {
+            const manifest = readMdenseOnExport(mdenseonModel);
+            leg.metadata = { model: MDENSEON_MODEL, revision: MDENSEON_REVISION,
+              runtime: 'native-client-isolated-sidecar-worker-cpu-fp32', experimental: true,
+              graphSha256: manifest.files['onnx/model.onnx'].sha256 };
+          }
+          out.push(leg);
+        }
       } else {
         out.push({
           name,
@@ -337,6 +360,27 @@ async function buildLegs(
  *  include the ONNX model+arena loaded inside the embed worker. */
 function rssMB(): number {
   return +(process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+}
+
+async function warmTimings(leg: Leg, documents: string[], queries: string[], trials: number) {
+  const samples = { document: [] as number[], query: [] as number[] };
+  for (let trial = 0; trial < trials; trial++) {
+    for (const kind of (trial % 2 ? ['query', 'document'] : ['document', 'query']) as Array<'document' | 'query'>) {
+      const texts = kind === 'document' ? documents : queries;
+      const fn = kind === 'document' ? leg.doc : leg.query;
+      const selected = texts.filter((_, i) => i % Math.max(1, Math.floor(texts.length / 12)) === 0).slice(0, 12);
+      for (const text of trial % 2 ? selected.reverse() : selected) {
+        const start = performance.now();
+        await fn(text);
+        samples[kind].push(performance.now() - start);
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(samples).map(([kind, values]) => {
+    const sorted = [...values].sort((a, b) => a - b);
+    const quantile = (p: number) => sorted[Math.max(0, Math.ceil(sorted.length * p) - 1)] ?? null;
+    return [kind, { samples: values, n: values.length, p50Ms: quantile(0.5), p95Ms: quantile(0.95) }];
+  }));
 }
 
 /**
@@ -486,7 +530,22 @@ async function main(): Promise<void> {
   // must not cost another corpus pass).
   const legsArg = argValue('--legs');
   const legNames = legsArg === 'none' ? [] : (legsArg?.split(',').filter(Boolean) ?? ['gemma', 'local']);
-  const sidecarUrl = argValue('--sidecar');
+  let sidecarUrl = argValue('--sidecar');
+  const mdenseonModel = argValue('--mdenseon-model');
+  const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
+  const warmTrials = Number(argValue('--warm-trials') ?? 0);
+  if (!Number.isInteger(warmTrials) || warmTrials < 0 || warmTrials > 20) throw new Error('--warm-trials must be an integer from 0 to 20');
+  if (process.argv.includes('--isolated-sidecar')) {
+    if (sidecarUrl) throw new Error('--isolated-sidecar cannot target an existing sidecar');
+    if (!mdenseonModel) throw new Error('--isolated-sidecar requires --mdenseon-model');
+    readMdenseOnExport(mdenseonModel);
+    isolatedSidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 1,
+      builders: { mdenseon: async (kind) => buildMdenseOnEmbedder({ kind, model: mdenseonModel }) },
+      modelRevisions: { mdenseon: MDENSEON_REVISION },
+      log: (line) => console.log(`[isolated-sidecar] ${line}`),
+    });
+    sidecarUrl = `http://127.0.0.1:${await isolatedSidecar.listening}`;
+  }
   const ollamaUrl = argValue('--ollama') ?? 'http://127.0.0.1:11434';
   const outPath =
     argValue('--out') ??
@@ -597,6 +656,7 @@ async function main(): Promise<void> {
 
   const record = (name: string, docVecs: number[][], queryVecs: number[][], meta: Record<string, unknown>): void => {
     const scored = scoreLeg(corpusKeys, docVecs, gold.queries, queryVecs);
+    retainedVectors[name] = { docVectors: docVecs, queryVectors: queryVecs };
     results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored };
     const a = scored.byClass.ALL_ANSWERABLE;
     console.log(
@@ -617,7 +677,7 @@ async function main(): Promise<void> {
   }
 
   // Partition: MRL siblings share one forward pass, everything else is its own.
-  const built = await buildLegs(legNames, sidecarUrl, ollamaUrl);
+  const built = await buildLegs(legNames, sidecarUrl, ollamaUrl, mdenseonModel);
   const families = new Map<string, Leg[]>();
   const standalone: Leg[] = [];
   for (const leg of built) {
@@ -685,7 +745,13 @@ async function main(): Promise<void> {
     try {
       const doc = await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
       const query = await embedAll(leg.query, queryTexts, `${leg.name}/query`);
+      const workerState = getWorkerState();
+      if ((leg.name === 'mdenseon' || (leg.name === 'sidecar:mdenseon' && isolatedSidecar)) && (!workerState.alive || workerState.disabled)) {
+        throw new Error('mDenseOn validation requires a live worker; inline inference cannot qualify');
+      }
+      const repeatedWarm = warmTrials ? await warmTimings(leg, corpusTexts, queryTexts, warmTrials) : undefined;
       record(leg.name, doc.vecs, query.vecs, {
+        workerState, repeatedWarm,
         ...leg.metadata,
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
@@ -772,10 +838,21 @@ async function main(): Promise<void> {
     ),
   );
   console.log('\nwrote', outPath);
+  const vectorsOut = argValue('--vectors-out');
+  if (vectorsOut) {
+    fs.mkdirSync(path.dirname(vectorsOut), { recursive: true });
+    fs.writeFileSync(vectorsOut, JSON.stringify({ corpus: corpusChoice, corpusVersion,
+      keys: corpus.map((entry) => entry.key), queryIds: gold.queries.map((query) => query.id),
+      vectors: retainedVectors }));
+  }
+  await isolatedSidecar?.close();
+  await shutdownLocalEmbedder();
   process.exit(0);
 }
 
-void main().catch((e) => {
+void main().catch(async (e) => {
   console.error('embedder-eval failed:', e instanceof Error ? e.message : e);
+  await isolatedSidecar?.close();
+  await shutdownLocalEmbedder();
   process.exit(1);
 });

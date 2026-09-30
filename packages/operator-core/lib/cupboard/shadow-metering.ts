@@ -52,9 +52,13 @@ export interface ShadowMarkupSheet {
 
 /**
  * The E1 sheet. Measured 2026-09-30 over the prior 30 days: every identity-attributed session
- * ran launch-spec profile `engineer` (codex 608 sessions, claude 523; 8 had no launch spec),
- * no specification carried a named profession layer, and every sampled cost row was
- * `estimated`. So today every priced line is `inferred-profile` and no statement is bill-grade.
+ * ran launch-spec profile `engineer` (codex 608 sessions, claude 523; 8 had no launch spec) and
+ * every sampled cost row was `estimated`, so no statement is bill-grade yet.
+ *
+ * Specifications name the profession layer by its bare id (`papercusp-engineer`) and mark it by
+ * the `domain` slot its document fills, so the reader slot-qualifies refs to `domain:<id>` before
+ * they reach this sheet. Of 241 recent launch records, 125 carried `domain:papercusp-engineer`;
+ * the rest ran the `launch-adapter-compatibility` source and price as `inferred-profile`.
  */
 export const SHADOW_MARKUP_SHEET: ShadowMarkupSheet = Object.freeze({
   version: SHADOW_MARKUP_SHEET_VERSION,
@@ -78,7 +82,11 @@ export interface ShadowUsageAggregate {
   /** Launch-spec agent/profile of the attributed session (null when unknown). */
   agent: string | null;
   profile: string | null;
-  /** Blueprint-layer input refs of the applied specification. */
+  /**
+   * Slot-qualified refs (`<slot>:<layer id>`, e.g. `domain:papercusp-engineer`) of the applied
+   * specification's blueprint layers that fill an identity slot. Unslotted layers (the base
+   * blueprint, the pot, the compatibility source) carry no identity and are omitted.
+   */
   specificationLayerRefs: readonly string[];
   /** Applied axis-slot layer refs (identity_stack_refs): modes and fleet posture. */
   axisLayerRefs: readonly string[];

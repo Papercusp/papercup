@@ -1955,7 +1955,18 @@ export async function reconcileLoopRoutines(
               nativeCodexUsageFailure = nativeError;
               const text = `You've hit your usage limit${nativeError.message ? `: ${nativeError.message}` : ''}`;
               turnDeath = classifyLoopLifecycleTurn(text, intervalMs, nowMs);
-              if (turnDeath) rearmMs = Math.max(intervalMs, turnDeath.rearmDelayMs);
+              if (turnDeath) {
+                // Keep the native machine cause in the lifecycle escalation. The synthesized
+                // prose above classifies the wall and reset time, but otherwise erases the
+                // provider code that distinguished this failure from a generic usage-limit turn.
+                turnDeath = {
+                  ...turnDeath,
+                  evidence:
+                    `native Codex ${nativeError.source} reported code=${nativeError.code}` +
+                    (turnDeath.evidence ? `; ${turnDeath.evidence}` : ''),
+                };
+                rearmMs = Math.max(intervalMs, turnDeath.rearmDelayMs);
+              }
             }
           }
           const fireToken = new Date(lastFiredMs).toISOString();

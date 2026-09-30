@@ -60,7 +60,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/flags/server')>();
   return {
     ...actual,
-    getFlag: async (flag: string, distinct: string) =>
+    getFlag: async (flag: Parameters<typeof actual.getFlag>[0], distinct: string) =>
       flag === 'papercusp-scout-experiment-rail' || flag === 'papercusp-scout-rubric-rail'
         ? false
         : actual.getFlag(flag, distinct),

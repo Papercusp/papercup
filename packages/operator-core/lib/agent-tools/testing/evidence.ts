@@ -524,10 +524,55 @@ export type RemeasureSkip = { specId: string; testPath: string; bindingId: numbe
 export type RemeasureSelection = { specId: string; testPath: string; bindingId: number;
   staleReasons: string[]; movedPaths?: unknown; binding: Request['bindings'][number];
   /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
-  supersedes: number[] };
+  supersedes: number[];
+  /** Reviewer judgment those rows carried (WI-10004452): the fresh run will not reproduce it. */
+  judgment?: { fields: string[]; bindingIds: number[] } };
 
 /** Evidence kinds a re-measure must ACCOUNT for, even when it cannot re-run them itself. */
 export const REMEASURE_EVIDENCE_KINDS = ['test', 'mutation'] as const;
+
+/**
+ * WI-10004452 — binder-attested reviewer JUDGMENT that a fresh run cannot re-derive. The
+ * adequacy evaluator reads these (correct-layer, oracle-independence, falsifiability, …),
+ * but a re-measure reproduces only outcome/collected/executed/testLayer, and it deliberately
+ * does not replay them: re-running a stale proof re-verifies its OUTCOME, not a reviewer's
+ * judgment about it. So retiring a predecessor that carried them silently moves those
+ * criteria from pass to unknown. The retirement must name what it dropped.
+ */
+const REVIEWER_JUDGMENT_ADEQUACY_KEYS = [
+  'falsifiable', 'fixtureCalibrated', 'pathReachable', 'oracleIndependent', 'targeted', 'coverageRungs', 'disclosedGap',
+] as const;
+const REVIEWER_JUDGMENT_DETAIL_KEYS = ['pathReachability', 'observations'] as const;
+
+/** The reviewer-judgment fields one binding's details carry, as `adequacy.<key>` / `<key>` paths. */
+export function reviewerJudgmentFields(details: unknown): string[] {
+  if (details === null || typeof details !== 'object' || Array.isArray(details)) return [];
+  const record = details as Record<string, unknown>;
+  const fields: string[] = [];
+  const adequacy = record.adequacy;
+  if (adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy)) {
+    for (const key of REVIEWER_JUDGMENT_ADEQUACY_KEYS) {
+      if ((adequacy as Record<string, unknown>)[key] !== undefined) fields.push(`adequacy.${key}`);
+    }
+  }
+  for (const key of REVIEWER_JUDGMENT_DETAIL_KEYS) if (record[key] !== undefined) fields.push(key);
+  return fields;
+}
+
+/**
+ * One line for the top of a re-measure report when any retirement dropped reviewer judgment,
+ * so a caller who reads only the summary does not take "re-measured, passed" as "BAR intact".
+ */
+export function remeasureJudgmentLossWarning(outcomes: readonly unknown[]): string | null {
+  const lost = outcomes.flatMap((outcome) => {
+    const entry = outcome as { specId?: string; judgmentNotCarried?: { fields: string[]; fromBindingIds: number[] } };
+    return entry.judgmentNotCarried ? [`${entry.specId} (${entry.judgmentNotCarried.fields.join(', ')} from binding ${entry.judgmentNotCarried.fromBindingIds.join('/')})`] : [];
+  });
+  if (lost.length === 0) return null;
+  return `Reviewer judgment NOT carried to the re-measured proof for ${lost.join('; ')}. The adequacy criteria that read it ` +
+    `(correct-layer, oracle-independence, falsifiability) now read unknown for those clauses: re-verify it against the current ` +
+    `test source and re-bind by hand with plans:bind-spec-evidence (see retired[].judgmentNotCarried).`;
+}
 
 /**
  * A legacy hand-bound test can be re-run only when its immutable row still gives one exact
@@ -577,6 +622,7 @@ function handBoundTestBinding(
 export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
   const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
   const members = new Map<string, number[]>();
+  const judgments = new Map<string, { fields: Set<string>; bindingIds: number[] }>();
   for (const row of [...rows].sort((a, b) => b.id - a.id)) {
     // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
     // subject; re-running them against moved code is not the same claim.
@@ -598,7 +644,16 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       : `unrecorded:${row.evidenceRef}`;
     const key = `${row.specId}\0${row.evidenceKind}\0${pathIdentity}`;
     if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
-    if (row.specRevision === latest.get(key)!.row.specRevision) members.set(key, [...(members.get(key) ?? []), row.id]);
+    if (row.specRevision === latest.get(key)!.row.specRevision) {
+      members.set(key, [...(members.get(key) ?? []), row.id]);
+      const fields = reviewerJudgmentFields(row.details);
+      if (fields.length > 0) {
+        const judgment = judgments.get(key) ?? { fields: new Set<string>(), bindingIds: [] };
+        fields.forEach((field) => judgment.fields.add(field));
+        judgment.bindingIds.push(row.id);
+        judgments.set(key, judgment);
+      }
+    }
   }
   const selected: RemeasureSelection[] = [];
   const skipped: RemeasureSkip[] = [];
@@ -629,8 +684,10 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
     ) {
+      const judgment = judgments.get(key);
       selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),
-        binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b) });
+        binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b),
+        ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}) });
     } else if (overall === 'unknown') skipped.push({ ...base, reason: 'unmeasurable', detail: row.currentness.unknownReasons.join(',').slice(0, 240) });
     else skipped.push({ ...base, reason: 'not-remeasurable', detail: [...staleReasons, phase ?? 'no-phase'].join(',') });
   }
@@ -693,7 +750,16 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
         .catch(() => null);
       if (result && result.status !== 'not_found') retired.push(bindingId);
     }
-    outcomes.push({ specId: entry.specId, testPath: entry.testPath, replacementId: replacement.id, retired });
+    // WI-10004452: name any reviewer judgment a retired predecessor carried that the fresh
+    // proof does not, instead of letting a passing criterion quietly turn unknown.
+    const carried = new Set(reviewerJudgmentFields(replacement.details));
+    const notCarried = (entry.judgment?.fields ?? []).filter((field) => !carried.has(field));
+    const lostFrom = (entry.judgment?.bindingIds ?? []).filter((id) => retired.includes(id));
+    outcomes.push({ specId: entry.specId, testPath: entry.testPath, replacementId: replacement.id, retired,
+      ...(notCarried.length > 0 && lostFrom.length > 0
+        ? { judgmentNotCarried: { fields: notCarried, fromBindingIds: lostFrom,
+            repair: `re-verify against the current test source, then plans:bind-spec-evidence the run behind binding ${replacement.id} with this judgment` } }
+        : {}) });
   }
   return outcomes;
 }
