@@ -40,6 +40,7 @@ import type {
   PackageResourceDriver,
 } from '../blueprint/package-resource-receipts';
 import { resolveCapabilityGrants } from '../cupboard/capability-grant-resolver';
+import { identityConsentSubjects, type IdentityConsentSubjects } from '../cupboard/identity-install-consent';
 import { capabilityGrantDepsForPot } from '../cupboard/install-blueprint-io';
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { getIdentitySource, inspectIdentitySource, localDirs } from './source';
@@ -171,16 +172,8 @@ export interface IdentityDeclaredSurface {
   readonly visibility: readonly { readonly packageKind: string; readonly ref: string; readonly visibleTo: string }[];
 }
 
-/** The P-014 consent subjects: anything beyond package-private content. */
-export interface IdentityConsentSubjects {
-  readonly contentOnly: boolean;
-  readonly grants: readonly string[];
-  readonly providerBindings: readonly string[];
-  readonly rules: readonly string[];
-  readonly events: readonly string[];
-  readonly operations: readonly string[];
-  readonly pluginCode: readonly string[];
-}
+/** The P-014 consent subjects: install computes them with the same function (D-034). */
+export type { IdentityConsentSubjects } from '../cupboard/identity-install-consent';
 
 export interface IdentityLifecyclePreview {
   readonly ownerId: string;
@@ -224,6 +217,7 @@ async function loadIdentity(input: IdentityPreviewInput) {
   const merged = resolveBlueprintSource(raw, { sourcePath, resolve });
   const document = BlueprintSourceDocumentSchema.parse(merged.merged);
   let artifact: Artifact | null = null;
+  let bindings: readonly { classRef: string; providerPackage: string; providerVersion: string }[] = [];
   const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
     document.grants?.optional?.length || resolveSeedPackKey(document).packId ||
     document.contributions?.some((entry) => entry.inputKind === 'capability-provider' && entry.verb !== undefined));
@@ -245,6 +239,8 @@ async function loadIdentity(input: IdentityPreviewInput) {
     const scope = { workspaceId: input.workspaceId, potSlug: input.potSlug };
     try {
       const resolution = await resolveCapabilityGrants(document.grants, capabilityGrantDepsForPot(scope), { mode: 'agent' });
+      // The bindings install would write or reuse: its consent subjects (D-034).
+      bindings = resolution.selected;
       // The install path refuses these before it judges the grants themselves.
       for (const ref of resolution.missingRequired) {
         errors.push({ source: 'grants', code: 'required_capability_provider_absent', message: `${ref}: no conformant provider in this pot`, ref });
@@ -264,7 +260,7 @@ async function loadIdentity(input: IdentityPreviewInput) {
       errors.push({ source: 'grants', code: 'grants-unreadable', message: error instanceof Error ? error.message : String(error) });
     }
   }
-  return { errors, warnings, inspection, document, artifact };
+  return { errors, warnings, inspection, document, artifact, bindings };
 }
 
 function timingOf(trigger: InjectionTrigger): PreviewTiming {
@@ -315,19 +311,6 @@ function declaredSurface(
   };
 }
 
-function consentSubjects(declared: IdentityDeclaredSurface, artifact: Artifact | null): IdentityConsentSubjects {
-  const pluginCode = (artifact?.inputs ?? []).flatMap((entry) =>
-    entry.kind === 'package' && entry.packageKind === 'plugin' ? [entry.ref] : []);
-  const subjects = {
-    grants: [...declared.grants.requires, ...declared.grants.optional],
-    providerBindings: declared.classPins.map((pin) => `${pin.ref} → ${pin.providerPackage}@${pin.providerVersion}`),
-    rules: declared.rules.sync.map((rule) => `${rule.id} (${rule.kind} at ${rule.sink})`),
-    events: declared.rules.async.map((rule) => `${rule.id} on ${rule.on}`),
-    operations: declared.rules.async.map((rule) => rule.fire),
-    pluginCode,
-  };
-  return { contentOnly: Object.values(subjects).every((list) => list.length === 0), ...subjects };
-}
 
 function sinkDelivery(sink: string, text: string, result: SinkInvocationResult | null, error?: string): PreviewSinkDelivery {
   return {
@@ -564,7 +547,9 @@ export async function previewIdentity(input: IdentityPreviewInput): Promise<Iden
     validation: { errors: loaded.errors, warnings: loaded.warnings },
     declared,
     injection,
-    consent: declared ? consentSubjects(declared, loaded.artifact ?? null) : null,
+    consent: declared && loaded.document ? identityConsentSubjects({
+      grants: loaded.document.grants, providerBindings: loaded.bindings ?? [], inputs: loaded.artifact?.inputs ?? [],
+    }) : null,
     lifecycle,
   };
 }
