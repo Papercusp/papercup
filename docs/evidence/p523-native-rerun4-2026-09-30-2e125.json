@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P523 native packaging and signing preparation checks, rerun on the current tree (2026-09-30, desktop 0d15ef5b) for WI-10004126",
+  "framework": "node",
+  "command": [
+    "node",
+    "--test",
+    "--test-reporter=tap",
+    "--test-reporter-destination=<scratchpad>/p523-rerun4/tests.tap",
+    "--test-reporter=dot",
+    "--test-reporter-destination=stdout",
+    "--test-concurrency=1",
+    "papercusp-desktop/test/appimage-glfallback-guard.test.js",
+    "papercusp-desktop/test/appimage-gstreamer-guard.test.js",
+    "papercusp-desktop/test/appimage-hook-path-normalization.test.js",
+    "papercusp-desktop/test/appimage-pristine-derivation.test.js",
+    "papercusp-desktop/test/appimage-pristine-leg-wiring.test.js",
+    "papercusp-desktop/test/appimage-runtime-isolation.test.js",
+    "papercusp-desktop/test/bootstrap-node-install.test.js",
+    "papercusp-desktop/test/build-artifact-atomicity.test.js",
+    "papercusp-desktop/test/build-deb-archive-immutability.test.js",
+    "papercusp-desktop/test/build-deb-build-timeout.test.js",
+    "papercusp-desktop/test/build-deb-bundle-lock-path.test.js",
+    "papercusp-desktop/test/build-deb-placeholder-sidecar-guard.test.js",
+    "papercusp-desktop/test/build-deb-signing-key.test.js",
+    "papercusp-desktop/test/build-deb-stale-sidecar-guard.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-lock.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-native-abi.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-onnx-gpu-providers.test.js",
+    "papercusp-desktop/test/build-desktop-sidecar-workspace-install.test.js",
+    "papercusp-desktop/test/build-linux-distribution-profile.test.js",
+    "papercusp-desktop/test/build-script-bundle-scope.test.js",
+    "papercusp-desktop/test/build-windows-identity.test.js",
+    "papercusp-desktop/test/innoextract-compat-preflight.test.js",
+    "papercusp-desktop/test/install-and-relaunch-verify.test.js",
+    "papercusp-desktop/test/installed-app-tree.test.js",
+    "papercusp-desktop/test/provenance-release-host-record.test.js",
+    "papercusp-desktop/test/provenance-sidecar-record.test.js",
+    "papercusp-desktop/test/release-baked-host-bytes.test.js",
+    "papercusp-desktop/test/release-gitleaks.test.js",
+    "papercusp-desktop/test/release-identity-case-insensitive.test.js",
+    "papercusp-desktop/test/release-identity-scan-archives.test.js",
+    "papercusp-desktop/test/release-local-linux-reuse.test.js",
+    "papercusp-desktop/test/release-local-precheck-exit.test.js",
+    "papercusp-desktop/test/release-local-sidecar-source.test.js",
+    "papercusp-desktop/test/release-sidecar-prune-and-scrub.test.js",
+    "papercusp-desktop/test/release-upload-content-skip.test.js",
+    "papercusp-desktop/test/release-vuln-leg-npm-coverage.test.js",
+    "papercusp-desktop/test/sidecar-freshness-guard.test.js",
+    "papercusp-desktop/test/sidecar-no-database-bake-guard.test.js",
+    "papercusp-desktop/test/sidecar-stray-cache-guard.test.js",
+    "papercusp-desktop/test/tauri-config-resources.test.js",
+    "papercusp-desktop/test/windows-source-repair.test.js"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:16:02Z",
+  "finishedAt": "2026-09-30T04:18:09Z",
+  "scope": {
+    "workItemId": "WI-2147009",
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-523",
+    "refreshWorkItemId": "WI-10004126",
+    "preparationOnly": true,
+    "repositoryRoot": ".",
+    "repositoryRootResolution": "Resolve from the canonical papercusp harness checkout containing this evidence file.",
+    "preRunSuperprojectHead": "70a7af69aebacb349910fd7639df65270b137185",
+    "preRunDesktopHead": "0d15ef5b885ba9131cba6c78139401c96109f667",
+    "commitAcceptanceClaimed": false,
+    "supersedesRun": "docs/evidence/p523-native-rerun2-2026-09-23-bbee.json (42 files, 545/545 at desktop 448f4c16). Those spec-evidence bindings went stale because their source blobs moved since the bind.",
+    "companionEvidence": "Operator release Vitest reruns on the same tree, 2026-09-30, one testing:run per file, all pass: test runs 20179199, 20179209, 20179218, 20179222, 20179223, 20179226."
+  },
+  "summary": "P523 preparation rerun on the current tree: the same 42 papercusp-desktop native Node test files as the 2026-09-23 run all passed: 564 tests, 564 pass, 0 fail, 0 skipped, 0 cancelled, 0 todo, exit 0 (19 more tests than the 545 in the earlier run). Temporary fixture repos and artifacts with mocked transports. Preparation only: this is not a full installer build, signing, notarization or P-521 acceptance.",
+  "assertions": [
+    {
+      "id": "complete-native-run",
+      "passed": true,
+      "evidence": "The run wrote EXIT=0. The TAP output ended with tests 564, pass 564, fail 0, cancelled 0, skipped 0, todo 0, duration_ms 127214.919642. grep counted 564 'ok' lines and 0 'not ok' lines."
+    },
+    {
+      "id": "input-cohort-stable",
+      "passed": true,
+      "evidence": "Before and after the run, the snapshot recorded both repo heads, the papercusp-desktop dirty count, and a SHA-256 digest of the 42 test files plus papercusp-desktop/bin/*.sh and bin/*.mjs (b53aaf93d6290cd145a27e73ec8c2997eb8331b6c605941650203032c80ad874). The digest was identical before and after. The desktop head was 0d15ef5b both times. The superproject head moved 70a7af69ae -> 44609019f1 because git-sync committed during the run. One desktop file outside the digested set, bin/vm-rig/lib/rig-profile.sh, became dirty during the run; none of the 42 test files is a vm-rig test."
+    },
+    {
+      "id": "negative-controls-present",
+      "passed": true,
+      "evidence": "192 of the 564 passing tests have refusal-shaped names (refuse, reject, FAIL, corrupt, absent, invalid, missing, denies, block). This is a name-based count, not a mutation proof."
+    },
+    {
+      "id": "manifest-receipt-reuse",
+      "passed": true,
+      "evidence": "TAP ok 363 - a reused manifest receipt re-verifies its outputs instead of publishing on trust. TAP ok 364 - a reused manifest receipt refuses outputs it did not commit."
+    },
+    {
+      "id": "updater-signature-refusal",
+      "passed": true,
+      "evidence": "TAP ok 48 - refuses to publish a deb when its updater signature is missing. TAP ok 49 - refuses to publish either final path when the staged signature is invalid."
+    },
+    {
+      "id": "signing-key-preflight",
+      "passed": true,
+      "evidence": "TAP ok 72 - loads the conventional mode-0600 updater key when no signing env is supplied. TAP ok 73 - honors TAURI_SIGNING_PRIVATE_KEY_PATH instead of the conventional path. TAP ok 76 - signing-key preflight runs before seed staging and the expensive build."
+    },
+    {
+      "id": "installer-integrity-and-provenance",
+      "passed": true,
+      "evidence": "TAP ok 68 - FAILS when db-sql/ has zero migration files. TAP ok 182 - compatibility requires extraction, intact bytes, and corruption refusal. TAP ok 188 - a passing installed update writes a tag-scoped receipt bound to provenance bytes. TAP ok 190 - Windows refuses a provenance-listed Server span when any disk is absent. TAP ok 211 - macOS refuses a GUI-only transition when the matching Server DMG is absent."
+    },
+    {
+      "id": "sidecar-provenance",
+      "passed": true,
+      "evidence": "TAP ok 152 - the sidecar provenance receives the immutable build SHA and version. TAP ok 153 - vm-release sidecar reuse rejects provenance that differs from the launcher build SHA. TAP ok 245 - verify-provenance gates build-start dirt, not later cutter mutations. TAP ok 246 - verify-provenance rejects missing or non-boolean gitDirty attestations. TAP ok 247 - verify-provenance rejects missing or malformed release identity."
+    }
+  ],
+  "rawEvidence": {
+    "tapPath": "<scratchpad of su-2e125621>/p523-rerun4/tests.tap",
+    "tapSha256": "95b66f1dcda215700450ef1cc9c7e03b73440cfa867600194a5614b802541a8b",
+    "stdoutLogSha256": "0636a6268f5a2e492981ebc58426a769f840dc39a146bfa8fe7f0f3471e9eecf",
+    "inputManifestSha256": "b53aaf93d6290cd145a27e73ec8c2997eb8331b6c605941650203032c80ad874",
+    "retention": "The scratchpad originals are supplementary. This committed artifact preserves the command, observed outcome, assertion excerpts, source identity and original digests for canonical recording. It does not promise indefinite retention of the scratchpad."
+  }
+}

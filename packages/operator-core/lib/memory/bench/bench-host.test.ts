@@ -1,6 +1,55 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Client } from 'pg';
 
-import { BENCH_SCHEMA } from './bench-host';
+import { BENCH_SCHEMA, releaseBenchSchema } from './bench-host';
+
+/** A pg Client whose DROP SCHEMA fails with `dropError` (or succeeds when null). */
+function fakeClient(dropError: { code?: string; message: string } | null) {
+  const queries: string[] = [];
+  const client = {
+    query: vi.fn(async (text: string) => {
+      queries.push(text);
+      if (text.startsWith('DROP SCHEMA') && dropError) throw Object.assign(new Error(dropError.message), dropError);
+      return { rows: [] };
+    }),
+  };
+  return { client: client as unknown as Client, queries };
+}
+
+/**
+ * Measured 2026-09-30 (P-005 battery run 3): the hourly host backup's pg_dump held
+ * AccessShareLock on every table of the bench schema, so the end-of-run DROP hit a
+ * lock timeout (55P03) after the report was written, and the run exited 1.
+ */
+describe('releaseBenchSchema (end-of-run cleanup)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('drops the schema and reports true when nothing holds it', async () => {
+    const { client, queries } = fakeClient(null);
+    await expect(releaseBenchSchema(client, 'bench_memory_1')).resolves.toBe(true);
+    expect(queries).toContain('DROP SCHEMA IF EXISTS bench_memory_1 CASCADE');
+  });
+
+  it('leaves a lock-held schema to the orphan reaper instead of failing the finished run', async () => {
+    vi.useFakeTimers();
+    const { client, queries } = fakeClient({ code: '55P03', message: 'canceling statement due to lock timeout' });
+    const warn = vi.fn();
+    const done = releaseBenchSchema(client, 'bench_memory_2', warn);
+    await vi.runAllTimersAsync();
+    await expect(done).resolves.toBe(false);
+    // The retries in dropBenchSchema still ran before giving up.
+    expect(queries.filter((q) => q.startsWith('DROP SCHEMA'))).toHaveLength(3);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/bench_memory_2.*orphan reaper/);
+  });
+
+  it('still throws any failure other than a lock timeout', async () => {
+    const { client } = fakeClient({ code: '42501', message: 'permission denied for schema bench_memory_3' });
+    const warn = vi.fn();
+    await expect(releaseBenchSchema(client, 'bench_memory_3', warn)).rejects.toThrow(/permission denied/);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * Recurrence guard for the bench-schema collision class, which bit TWICE in one

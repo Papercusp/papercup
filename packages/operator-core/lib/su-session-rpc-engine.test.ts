@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-protocol';
@@ -8,7 +8,10 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import type { PuiSuSessionBinding } from './launch-agent';
 import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
 
-const mocks = vi.hoisted(() => ({ link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true) }));
+const mocks = vi.hoisted(() => ({
+  link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
+  writeOmp: vi.fn((_id: number, _options: Record<string, unknown>) => '.papercusp/su-omp-homes/session-71'),
+}));
 vi.mock('./adv-sessions', async (orig) => ({
   ...(await orig<typeof import('./adv-sessions')>()),
   setAdvSessionOmpThreadId: mocks.link,
@@ -24,7 +27,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   assertLaunchPersona: vi.fn(), sanitizeInheritedEnv: () => ({}), applyGithubTokenEnv: vi.fn(),
   modelArgsFor: (backend: string, model: string) => backend === 'codex' ? ['-m', model] : ['--model', model],
   ompCoreToolNames: () => ['tools:invoke'], ompResponsesCompatibilityEnv: () => ({}), recordSessionOwner: vi.fn(),
-  resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: () => '.papercusp/su-omp-homes/session-71',
+  resolveOmpInjectHookPath: () => '/configured/inject.ts', writeOmpSessionConfigDir: mocks.writeOmp,
   suLaunchArgs: (backend: string) => ({ args: backend === 'codex'
     ? ['--dangerously-bypass-hook-trust']
     : ['--approval-mode', 'yolo', '--system-prompt', '/sealed/su.md'] }),
@@ -50,6 +53,8 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   deliveryTimeoutMs?: number;
   beforeReady?: () => Promise<void>;
   toolApproval?: 'prompt';
+  identity?: 'su' | 'coding-assistant';
+  env?: Record<string, string>;
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
   if (overrides.resume) {
@@ -65,6 +70,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     agent: backend, sessionId: 71, nativeSessionId: null, cwd: '/project', promptFile: '/sealed/su.md',
     workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'plan', envelopeEnv: {
       PAPERCUSP_SID: binding.ownerId!, CODEX_HOME: '/configured/codex', PAPERCUSP_PROFILE: 'engineer',
+      ...overrides.env,
     } };
   let transport!: SuStdioPeerOptions;
   let exit!: () => void;
@@ -103,6 +109,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     servedAccountReader: overrides.servedAccountReader,
     beforeReady: overrides.beforeReady,
     toolApproval: overrides.toolApproval,
+    identity: overrides.identity,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -225,6 +232,42 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
         identity: expect.objectContaining({ nativeSessionId: `native-${backend}` }),
       })],
     ]));
+  });
+
+  // pui-chat-first-ux P-016: outside every registered checkout the chat runs
+  // the backend's own identity, so there is no SU server to wait for.
+  it('starts a coding-assistant session without the SU server, playbook or hooks', async () => {
+    const home = mkdtempSync(join(tmpdir(), `pui-${backend}-assistant-`));
+    nativeDirs.push(home);
+    const codexHome = join(home, 'session-codex');
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, 'config.toml'),
+      'project_doc_max_bytes = 0\n[mcp_servers.papercusp-su]\nurl = "http://su"\n[mcp_servers.docs]\nurl = "http://docs"\n');
+    writeFileSync(join(codexHome, 'AGENTS.md'), 'SU PLAYBOOK');
+    writeFileSync(join(codexHome, 'hooks.json'), '{}');
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(join(home, '.omp', 'agent', 'mcp.json'), JSON.stringify({
+      mcpServers: { 'papercusp-su': { url: 'http://su' }, context7: { url: 'http://c7' } },
+    }));
+
+    const f = fixture(backend, { tools: false, identity: 'coding-assistant', env: { CODEX_HOME: codexHome, HOME: home } });
+    await f.engine.ready;
+
+    expect(f.sent.some((frame) => frame.method === 'mcpServerStatus/list')).toBe(false);
+    if (backend === 'codex') {
+      const config = readFileSync(join(codexHome, 'config.toml'), 'utf8');
+      expect(config).not.toContain('papercusp-su');
+      expect(config).not.toContain('project_doc_max_bytes');
+      expect(config).toContain('[mcp_servers.docs]');
+      expect(existsSync(join(codexHome, 'AGENTS.md'))).toBe(false);
+      expect(existsSync(join(codexHome, 'hooks.json'))).toBe(false);
+    } else {
+      expect(f.transport().args).not.toContain('--system-prompt');
+      expect(f.transport().args).toContain('rpc-ui');
+      const [, options] = mocks.writeOmp.mock.calls.at(-1)!;
+      expect(options).toMatchObject({ discoveryOff: false, toolsAllowlist: null });
+      expect(Object.keys(JSON.parse(String(options.mcpJsonContents)).mcpServers)).toEqual(['context7']);
+    }
   });
 
   it('refuses a greeting when the SU tool connection is absent', async () => {

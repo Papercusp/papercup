@@ -1450,3 +1450,66 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(injectEntries(hooks, 'UserPromptSubmit')[0].hooks[0].command).toContain("PAPERCUSP_SID='su-inject-44'");
   });
 });
+
+describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {
+  async function suHome() {
+    const { writeSuCodexHome } = await import('./role-codex-home');
+    const project = mkdtempSync(join(fakeHome, 'project-'));
+    // The SU home inherits a project's HTTP servers from ~/.claude.json.
+    writeFileSync(join(fakeHome, '.claude.json'), JSON.stringify({
+      projects: { [project]: { mcpServers: { docs: { type: 'http', url: 'http://docs.example/mcp' } } } },
+    }));
+    const out = writeSuCodexHome({
+      sessionKey: 'coding-assistant', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'SU PLAYBOOK',
+      sid: 'su-coding-assistant', model: RESOLVED_CODEX_DEFAULT, trustDir: project, token: 'secret-token',
+    });
+    writeFileSync(join(out.codexHome, 'hooks.json'), JSON.stringify({ hooks: { UserPromptSubmit: [] } }));
+    return out;
+  }
+
+  it('strips the SU server, the AGENTS.md cap, the playbook and the hooks, and keeps the rest', async () => {
+    const { makeCodingAssistantCodexHome } = await import('./role-codex-home');
+    const out = await suHome();
+    const before = readFileSync(out.configPath, 'utf8');
+    // Control: the SU home really carries what is about to be removed.
+    expect(before).toContain('[mcp_servers.papercusp-su]');
+    expect(before).toMatch(/^project_doc_max_bytes = 0$/m);
+    expect(before).toContain('[mcp_servers."docs"]');
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    writeFileSync(join(fakeHome, '.codex', 'AGENTS.md'), 'my own codex rules');
+
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
+
+    const after = readFileSync(out.configPath, 'utf8');
+    const parsed = parseToml(after) as Record<string, any>;
+    expect(parsed.mcp_servers?.['papercusp-su']).toBeUndefined();
+    expect(parsed.mcp_servers?.docs).toMatchObject({ url: 'http://docs.example/mcp' });
+    expect(parsed.project_doc_max_bytes).toBeUndefined();
+    expect(after).not.toContain('secret-token');
+    expect(parsed.model).toBe((parseToml(before) as Record<string, any>).model);
+    expect(readFileSync(out.agentsPath, 'utf8')).toBe('my own codex rules');
+    expect(lstatSync(out.agentsPath).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
+
+    // Idempotent, and without a personal AGENTS.md the playbook is simply gone.
+    rmSync(join(fakeHome, '.codex', 'AGENTS.md'));
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
+    expect(readFileSync(out.configPath, 'utf8')).toBe(after);
+    expect(existsSync(out.agentsPath)).toBe(false);
+  });
+
+  it('removes quoted and nested papercusp-su tables but no other server', async () => {
+    const { codingAssistantCodexConfigToml } = await import('./role-codex-home');
+    const toml = [
+      'model = "m"',
+      '[mcp_servers."papercusp-su"]', 'url = "a"',
+      '[mcp_servers.papercusp-su.env]', 'X = "1"',
+      '[mcp_servers.papercusp-sub]', 'url = "keep"',
+      '[mcp_servers.papercusp]', 'url = "keep-too"',
+      '',
+    ].join('\n');
+    const out = parseToml(codingAssistantCodexConfigToml(toml)) as Record<string, any>;
+    expect(Object.keys(out.mcp_servers).sort()).toEqual(['papercusp', 'papercusp-sub']);
+    expect(out.model).toBe('m');
+  });
+});

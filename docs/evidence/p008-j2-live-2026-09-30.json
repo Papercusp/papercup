@@ -1,0 +1,282 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 J2U generic (non-SU) identity live journey (re-run on the P-008 build)",
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10002965",
+  "parentWorkItem": "WI-10002905",
+  "supersedes": "docs/evidence/p008-j2-live-2026-09-29c.json",
+  "evidencePlane": "live",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "rubricCriteria": [
+    "AUTO-BAR-R-5-P-008@3",
+    "AUTO-BAR-R-10-P-008@3"
+  ],
+  "operatorPlane": "staging :3170 (papercusp-staging checkout) serving build bba6c48424 for both launches (2026-09-30T04:09:01Z, 2026-09-30T04:10:09Z) and the S2 turn (2026-09-30T04:11:21Z); /api/health read bba6c48424 before the first launch and after the S2 turn, so no restart intervened.",
+  "fixture": {
+    "identity": "p008-j2u-generic-domain, installed (attested) under the workspace's .papercusp/blueprints root outside the repo; slot 'domain' (exclusive, replaces the pot-inherited papercusp-engineer domain layer); knobs.aiBackend.default.model = claude-opus-4-8; bundles = [{ kind: recipe, ref: p008-j2u-generic-recipe }]; no workflow graph declared",
+    "recipe": "p008-j2u-generic-recipe: a complete recipe package (id, title, description, script 'return \"from p008 j2u generic identity\"', toolsUsed [], tags []).",
+    "installer": ".papercusp/scratch/p008-j2u/install-and-preflight.mts",
+    "preflight": ".papercusp/scratch/p008-j2u/preflight.json: modelDefault claude-opus-4-8, specificationRevision 78e9071bda49b3f44485ab42bcb7bf9a86f874df3c05d24ceaa889e1d8d865b4, resourceArtifacts 1, promptMentionsRecipe false, promptHasDomain true"
+  },
+  "subject": [
+    {
+      "label": "p008-j2u-subject (fleet-inherited launch)",
+      "ownerId": "su-ecf0c3ca-8236-468b-939f-edb27fea4249",
+      "advSessionId": 31715,
+      "role": "curator",
+      "stack": [
+        "domain:p008-j2u-generic-domain"
+      ],
+      "specificationRevision": "68d1718d85e9dc9cb0c017d0da2f045fdda94925c4a762ab963518a8d79696e8",
+      "stateRevision": "a6b6271770fc95a82354e34ddc449aebcb1f00f29c4b1d711bc06a1b076ed7cb",
+      "launchedAt": "2026-09-30T04:09:03Z",
+      "command": "psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=auto --agent=claude --owner-id=su-ecf0c3ca-8236-468b-939f-edb27fea4249 --harness=papercusp --headless --role=curator --stack=domain:p008-j2u-generic-domain",
+      "transcript": "~/.papercusp/session-claude/su-ecf0c3ca-8236-468b-939f-edb27fea4249/projects/-home-<user>-papercupai-workspace-papercusp/d70fc16c-63de-4075-847c-a75f6fc6d823.jsonl"
+    },
+    {
+      "label": "p008-j2u-subject-indep (independent launch)",
+      "ownerId": "su-9476367c-cf4f-4c9d-9787-828c639d9a80",
+      "advSessionId": 31716,
+      "role": "curator",
+      "stack": [
+        "domain:p008-j2u-generic-domain"
+      ],
+      "specificationRevision": "426a239e1dacc9579e96ab146b008e9d41e769b56dc386b12807070db09a053b",
+      "stateRevision": "a6b6271770fc95a82354e34ddc449aebcb1f00f29c4b1d711bc06a1b076ed7cb",
+      "launchedAt": "2026-09-30T04:10:11Z",
+      "command": "psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --no-picker --account=auto --agent=claude --owner-id=su-9476367c-cf4f-4c9d-9787-828c639d9a80 --harness=papercusp --headless --role=curator --stack=domain:p008-j2u-generic-domain",
+      "transcript": "~/.papercusp/session-claude/su-9476367c-cf4f-4c9d-9787-828c639d9a80/projects/-home-<user>-papercupai-workspace-papercusp/d78b7ac8-cf16-4dad-92ed-d022620712f5.jsonl"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "J2U-L1-generic-launch-without-su-assignment-fields",
+      "criteria": [
+        "AUTO-BAR-R-10-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "Both subjects launched as role 'curator' (consumes feature:none, plan:none) wearing only the generic identity. Each persisted harness_shared.adv_sessions.launch_spec (rows 31715, 31716) has exactly the keys harnessSlug, role, specificationArtifact, specificationRevision, stack, stateRevision, v, workspaceId: no work-item, fleet, goal or launch-slot field. Launch was not refused for lacking SU fields.",
+      "observed": {
+        "launchSpecKeys": [
+          "harnessSlug",
+          "role",
+          "specificationArtifact",
+          "specificationRevision",
+          "stack",
+          "stateRevision",
+          "v",
+          "workspaceId"
+        ],
+        "keysUniform": true,
+        "suFieldHits": [],
+        "advSessionIds": [
+          31715,
+          31716
+        ]
+      },
+      "artifact": ".papercusp/scratch/p008-j2u/launch-result.json, launch-indep-result.json"
+    },
+    {
+      "id": "J2U-L2-composing-generic-identity-changes-no-su-state",
+      "criteria": [
+        "AUTO-BAR-R-10-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "snapshot.sh captures the launcher SU's control_state (modes, route, scope, stack), its agent_modes, its coord_presence role/fleet/fleetRole, the fleet r7-journey-0927 member list, the workspace operator_quota_overrides and the recipe row count. For the independent launch, pre-indep and post-indep snapshots are identical apart from their capture time. For the fleet-inherited launch, the only differences are the subject joining the fleet it was launched into and the bundled recipe row being provisioned; the launcher's own control state, modes and presence are unchanged.",
+      "observed": {
+        "independentDiff": [],
+        "fleetInheritedDiff": [
+          "fleet r7-journey-0927 members += su-ecf0c3ca-8236-468b-939f-edb27fea4249",
+          "recipeRows 0 -> 1"
+        ]
+      },
+      "artifact": ".papercusp/scratch/p008-j2u/snap-pre.json, snap-post.json, snap-pre-indep.json, snap-post-indep.json, snapshot.sh"
+    },
+    {
+      "id": "J2U-L3-generic-identity-refreshes-declared-context",
+      "criteria": [
+        "AUTO-BAR-R-10-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "A second turn reached the independent subject at 2026-09-30T04:11:21.819Z (inbox-wake for message P008_J2U_S2, sent 2026-09-30T04:11:21Z). Its native transcript records 2 UserPromptSubmit hook_additional_context attachments on that turn: a turn-provenance stamp and a 13611-byte block carrying a fresh '## Orientation' section and a '## Relevant memory (turn-start delta)' section. The only work-item token in that block is a recalled memory's historical citation (WI-34), not an assignment: no held item, plan or fleet field is injected.",
+      "observed": {
+        "turnAt": "2026-09-30T04:11:21.819Z",
+        "hookAttachments": [
+          {
+            "at": "2026-09-30T04:11:22.574Z",
+            "hookEvent": "UserPromptSubmit",
+            "markers": [
+              "turn-provenance"
+            ]
+          },
+          {
+            "at": "2026-09-30T04:11:23.747Z",
+            "hookEvent": "UserPromptSubmit",
+            "bytes": 13611,
+            "markers": [
+              "## Orientation",
+              "## Relevant memory (turn-start delta)"
+            ]
+          }
+        ],
+        "suAssignmentFields": []
+      },
+      "artifact": ".papercusp/scratch/p008-j2u/indep-subject-turn2-scan.json, scan-turn-context.mjs, subject transcript"
+    },
+    {
+      "id": "J2U-L4-bundled-model-default-reaches-runtime",
+      "criteria": [
+        "AUTO-BAR-R-5-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "Neither launch command passes --model. The compiled configuration carries knobs.aiBackend.default.model = claude-opus-4-8 from the identity (preflight.json). Every assistant message in both subject transcripts records message.model = claude-opus-4-8: 3 messages for su-ecf0c3ca and 7 for su-9476367c, with no other model.",
+      "observed": {
+        "configModel": "claude-opus-4-8",
+        "transcriptModels": {
+          "su-ecf0c3ca": {
+            "claude-opus-4-8": 3
+          },
+          "su-9476367c": {
+            "claude-opus-4-8": 7
+          }
+        }
+      },
+      "artifact": "subject transcripts (see subject[].transcript), .papercusp/scratch/p008-j2u/preflight.json"
+    },
+    {
+      "id": "J2U-L5-bundled-recipe-reaches-its-consumer",
+      "criteria": [
+        "AUTO-BAR-R-5-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "The recipe row count for p008-j2u-generic-recipe was 0 before the first successful launch and 1 after it: launch provisioning wrote the bundled recipe into harness_shared.code_recipes through the journaled package-resource path (package-recipe-resources.ts). The prompt does not name the recipe (preflight promptMentionsRecipe=false). Both subjects retrieved it with recipes:get (ok=true, script text returned: true/true), and the independent subject ran it with recipes:run (ok=true, summary 'from p008 j2u generic identity').",
+      "observed": {
+        "recipeRowsBefore": 0,
+        "recipeRowsAfter": 1,
+        "recipesGetScriptReturned": [
+          true,
+          true
+        ],
+        "recipesRunSummary": "from p008 j2u generic identity"
+      },
+      "artifact": ".papercusp/scratch/p008-j2u/parsed-0.json, parsed-1.json, snap-pre.json, snap-post.json"
+    },
+    {
+      "id": "J2U-L6-react-launch-without-workflow-graph",
+      "criteria": [
+        "AUTO-BAR-R-5-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "The generic identity declares no workflow graph. Both subjects launched, and their transcripts show the model choosing its own tool calls turn by turn: coord:whoami, recipes:get, coord:send for su-ecf0c3ca; recipes:get, recipes:run, coord:inbox, coord:orient, coord:send for su-9476367c. No workflow runner or graph dispatch appears.",
+      "observed": {
+        "toolSequences": {
+          "su-ecf0c3ca": [
+            "coord:whoami",
+            "recipes:get",
+            "coord:send"
+          ],
+          "su-9476367c": [
+            "recipes:get",
+            "recipes:run",
+            "coord:inbox",
+            "coord:orient",
+            "coord:send"
+          ]
+        }
+      },
+      "artifact": "subject transcripts"
+    },
+    {
+      "id": "J2U-L7-composition-grants-no-su-capabilities",
+      "criteria": [
+        "AUTO-BAR-R-10-P-008@3"
+      ],
+      "passed": true,
+      "evidence": "Every coordination call either subject made was refused server-side for the curator principal: coord:whoami (su-ecf0c3ca), coord:send (su-ecf0c3ca), coord:inbox (su-9476367c), coord:orient (su-9476367c), coord:send (su-9476367c). The composed identity carried no SU grant: both sessions kept the system:curator principal.",
+      "observed": {
+        "refusals": [
+          {
+            "subject": "su-ecf0c3ca-8236-468b-939f-edb27fea4249",
+            "tool": "coord:whoami",
+            "refusal": "missing_capability: Principal \"system:curator\" lacks capability \"coord:read\""
+          },
+          {
+            "subject": "su-ecf0c3ca-8236-468b-939f-edb27fea4249",
+            "tool": "coord:send",
+            "refusal": "missing_capability: Principal \"system:curator\" lacks capability \"coord:write\""
+          },
+          {
+            "subject": "su-9476367c-cf4f-4c9d-9787-828c639d9a80",
+            "tool": "coord:inbox",
+            "refusal": "missing_capability: Principal \"system:curator\" lacks capability \"coord:read\""
+          },
+          {
+            "subject": "su-9476367c-cf4f-4c9d-9787-828c639d9a80",
+            "tool": "coord:orient",
+            "refusal": "missing_capability: Principal \"system:curator\" lacks capability \"coord:read\""
+          },
+          {
+            "subject": "su-9476367c-cf4f-4c9d-9787-828c639d9a80",
+            "tool": "coord:send",
+            "refusal": "missing_capability: Principal \"system:curator\" lacks capability \"coord:write\""
+          }
+        ]
+      },
+      "artifact": ".papercusp/scratch/p008-j2u/parsed-0.json, parsed-1.json"
+    }
+  ],
+  "command": [
+    "node --import tsx .papercusp/scratch/p008-j2u/install-and-preflight.mts",
+    "bash .papercusp/scratch/p008-j2u/snapshot.sh pre ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2u/launch-args.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2u/snapshot.sh post",
+    "bash .papercusp/scratch/p008-j2u/snapshot.sh pre-indep ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2u/launch-args-indep.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2u/snapshot.sh post-indep",
+    "coord:send { to:[su-9476367c], wake:'required', expects:'action', summary:'P008_J2U_S2' }",
+    "node .papercusp/scratch/p008-j2u/scan-turn-context.mjs <indep transcript> 2026-09-30T04:11:21Z 2026-09-30T04:12:04Z"
+  ],
+  "commandBasis": "Launch request bodies are the launch-args JSON files; launch responses are launch-result.json and launch-indep-result.json. Subject observations come from each subject's native transcript (parse-transcript.mjs for tool calls/results, scan-turn-context.mjs for injected turn-start context). Launch-spec keys come from harness_shared.adv_sessions rows 31715/31716.",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:09:01Z",
+  "finishedAt": "2026-09-30T04:12:03.435Z",
+  "capturedAt": "2026-09-30T04:16:21.902Z",
+  "notProven": [
+    "R-5 coverage is limited to the resource kinds this identity bundles: a callable recipe and a model default. Tool/provider requirements, rubrics, knowledge, and plan/goal/datatype/event/rule resources were not bundled, so they were not driven live here. Their tree-plane coverage is the integration/unit/mutation bindings on AUTO-BAR-R-5-P-008@3.",
+    "'History' and 'addressing' preservation from R-10 were not snapshotted directly. The snapshot covers the launcher's control state, modes, presence, fleet roster, quota overrides and recipe rows.",
+    "The subject role was curator, not worker: worker consumes feature:required, and psu refuses to launch it without a feature. A feature-bound role would contradict the no-work-item-state requirement.",
+    "No event_wake_deliveries row was found for the turn-2 wake by subscriber id; the delivery is evidenced by the subject transcript's wake-pump-origin turn at 04:11:21Z.",
+    "This fixture recipe package carries description/toolsUsed/tags because, during the earlier J2S journey, two launch attempts (owners su-935950ba, su-3f70016a) died at boot (processOpened 0, no adv_sessions row) when the recipe lacked them. Both J2U launches booted (adv_sessions rows 31715, 31716). Since commit c6e61ad69c (P-006 D-018) launch-time recipe provisioning uses the journaled package-resource path, which refuses an incomplete recipe package. The preflight compile accepted that incomplete package; only provisioning refused it."
+  ],
+  "observer": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "recordedBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "sourcePaths": [
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "apps/operator/scripts/psu-launcher.mjs",
+    "packages/operator-core/lib/blueprint/package-recipe-resources.ts",
+    "packages/operator-core/lib/blueprint/compile-packages.ts"
+  ],
+  "summary": "Two headless Claude subjects were launched on :3170 build bba6c48424 as role curator wearing only the throwaway generic identity p008-j2u-generic-domain (one fleet-inherited, one independent). Their persisted launch specs carry no SU assignment fields, and composing the identity changed no SU state. A second turn to the independent subject refreshed its orientation and memory context without injecting an assignment. The identity's bundled model default reached the runtime (every assistant message is claude-opus-4-8, no --model flag). Its bundled recipe went from absent to provisioned at launch and was retrieved and run by the subjects. The model chose its own tool calls with no workflow graph, and every coordination call was refused for the curator principal.",
+  "timeBasis": "UTC throughout; snapshot 'at' fields come from Postgres now(); launch times come from launch-started-at files; turn and hook times come from subject transcript timestamps.",
+  "sourceBlobs": [
+    {
+      "path": "packages/operator-core/lib/role-launch-spec.ts",
+      "measuredBuild": "dca489b2ef",
+      "workingTree": "dca489b2ef"
+    },
+    {
+      "path": "apps/operator/scripts/psu-launcher.mjs",
+      "measuredBuild": "8226b2bc13",
+      "workingTree": "8226b2bc13"
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/package-recipe-resources.ts",
+      "measuredBuild": "99b754fe80",
+      "workingTree": "99b754fe80"
+    },
+    {
+      "path": "packages/operator-core/lib/blueprint/compile-packages.ts",
+      "measuredBuild": "80415d3035",
+      "workingTree": "80415d3035"
+    }
+  ]
+}
