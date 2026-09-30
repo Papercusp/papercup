@@ -499,6 +499,18 @@ const CONTROLS: Record<string, readonly Control[]> = {
       }),
     },
     {
+      label: 'a repair hold whose current repair head was measured red',
+      expect: assessGateVerdict({
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: true,
+        verdictUnknownLegs: [],
+        repairHeadVerdict: 'full-gate-red',
+      }),
+    },
+    {
       label: 'reds, judged against a superseded candidate',
       expect: assessGateVerdict({
         inconclusive: null,
@@ -1080,6 +1092,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   ],
   'gate.greenCheckpoint.verdict': [
     'inconclusive',
+    'repair-head-red',
     'red-stale',
     'red-current',
     'not-firing',
@@ -1502,6 +1515,29 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
         verdictUnknownLegs: [],
       }) ?? '',
       'a stale red must not read as a current one',
+    ],
+    [
+      'gate.greenCheckpoint.verdict',
+      'gate.repairQueue.verdictProvenance.repairHeadVerdict',
+      assessGateVerdict({
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+        repairHeadVerdict: 'full-gate-red',
+      }) ?? '',
+      assessGateVerdict({
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        verdictStale: false,
+        fireStale: false,
+        mainBehindStaging: false,
+        verdictUnknownLegs: [],
+        repairHeadVerdict: 'not-judged',
+      }) ?? '',
+      'a measured repair-head red must not read as a no-verdict hold',
     ],
     [
       'gate.greenCheckpoint.candidate',

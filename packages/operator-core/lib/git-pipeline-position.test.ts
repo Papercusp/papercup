@@ -8053,6 +8053,66 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
       input: { ...verdictBase, inconclusive: { status: 'run-active' }, consecutiveReds: 4 },
       expected: 'inconclusive',
     },
+    // WI-10004092: the measured incident. A crash latched `repair-in-progress` while the head was
+    // unjudged, then a verify measured it red and latched the SAME status; the code must change.
+    {
+      name: 'repair hold, repair head not yet judged — no verdict on this head',
+      input: {
+        ...verdictBase,
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        repairHeadVerdict: 'not-judged',
+      },
+      expected: 'inconclusive',
+    },
+    {
+      name: 'repair hold, repair head measured red — a code verdict, not an abort',
+      input: {
+        ...verdictBase,
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        repairHeadVerdict: 'full-gate-red',
+      },
+      expected: 'repair-head-red',
+    },
+    {
+      name: 'repair hold with no fix admitted yet — the frozen red is the head\'s red',
+      input: {
+        ...verdictBase,
+        inconclusive: { status: 'repair-in-progress' },
+        consecutiveReds: 1,
+        repairHeadVerdict: 'same-as-frozen-full-gate-red',
+      },
+      expected: 'repair-head-red',
+    },
+    {
+      name: 'repair-staging-mismatch hold with a red head is also repair-head-red',
+      input: {
+        ...verdictBase,
+        inconclusive: { status: 'repair-staging-mismatch' },
+        repairHeadVerdict: 'full-gate-red',
+      },
+      expected: 'repair-head-red',
+    },
+    {
+      name: 'a non-repair abort stays inconclusive even beside a red repair head',
+      input: { ...verdictBase, inconclusive: { status: 'cancelled' }, repairHeadVerdict: 'full-gate-red' },
+      expected: 'inconclusive',
+    },
+    {
+      name: 'repair hold with an unread queue (null verdict) stays inconclusive',
+      input: { ...verdictBase, inconclusive: { status: 'repair-in-progress' }, repairHeadVerdict: null },
+      expected: 'inconclusive',
+    },
+    {
+      name: 'repair hold whose head is isolated-green is not a red',
+      input: {
+        ...verdictBase,
+        inconclusive: { status: 'repair-in-progress' },
+        repairHeadVerdict: 'isolated-repair-green',
+      },
+      expected: 'inconclusive',
+    },
     {
       name: 'red-stale',
       input: { ...verdictBase, consecutiveReds: 2, verdictStale: true },

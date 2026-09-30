@@ -883,6 +883,7 @@ export type PipelinePositionAssessment =
   | 'awaiting-deploy';
 export type GateVerdictAssessment =
   | 'inconclusive'
+  | 'repair-head-red'
   | 'red-stale'
   | 'red-current'
   | 'not-firing'
@@ -952,15 +953,49 @@ export function assessPipelinePosition(input: {
   return null;
 }
 
+/** The `gate.inconclusive.status` values that record a SERIALIZED REPAIR HOLD rather than an
+ *  abort: the frozen queue, not the full-suite verdict path, owns progress on the lineage. */
+const REPAIR_HOLD_INCONCLUSIVE_STATUSES: ReadonlySet<string> = new Set([
+  'repair-in-progress',
+  'repair-staging-mismatch',
+]);
+
+type RepairHeadVerdict = NonNullable<
+  NonNullable<PipelinePosition['gate']['repairQueue']>['verdictProvenance']
+>['repairHeadVerdict'];
+
 export function assessGateVerdict(input: {
-  inconclusive: unknown | null;
+  inconclusive: { status: string } | null;
   consecutiveReds: number;
   verdictStale: boolean;
   fireStale: boolean;
   mainBehindStaging: boolean | null;
   verdictUnknownLegs: readonly string[];
+  /**
+   * WI-10004092: `gate.repairQueue?.verdictProvenance?.repairHeadVerdict ?? null`. Optional so
+   * existing callers keep today's behaviour; omitted/null is read as "no verdict on the repair
+   * head" and keeps the weaker `inconclusive` rather than claiming a red nobody measured.
+   */
+  repairHeadVerdict?: RepairHeadVerdict | null;
 }): GateVerdictAssessment | null {
-  if (input.inconclusive !== null) return 'inconclusive';
+  if (input.inconclusive !== null) {
+    // WI-10004092: a repair hold latches `gate.inconclusive` on EVERY tick — a crash before the
+    // queue was read and a completed verify that measured the repair head red both write
+    // `status: 'repair-in-progress'`. Returning 'inconclusive' for both made the red invisible:
+    // the code never changed, so an `op:'changed'` subscriber on this cell slept straight
+    // through it (measured 2026-09-30: repairHead 7652f8c9 went red at 01:59Z, watch never fired).
+    // The queue's own per-head provenance is what separates them, so a hold whose CURRENT head
+    // has a recorded red is a code verdict, not an abort. A head not yet judged stays
+    // 'inconclusive' — that is the honest "no verdict on this head yet".
+    const head = input.repairHeadVerdict ?? null;
+    if (
+      REPAIR_HOLD_INCONCLUSIVE_STATUSES.has(input.inconclusive.status) &&
+      (head === 'full-gate-red' || head === 'same-as-frozen-full-gate-red')
+    ) {
+      return 'repair-head-red';
+    }
+    return 'inconclusive';
+  }
   if (input.verdictUnknownLegs.includes('gate.consecutiveReds')) return null;
   if (input.consecutiveReds > 0) return input.verdictStale ? 'red-stale' : 'red-current';
   if (input.fireStale) return 'not-firing';
@@ -6736,6 +6771,7 @@ export async function gitPipelinePosition(
       fireStale: gate.fireStale,
       mainBehindStaging: verdictProvenance.mainBehindStaging ?? null,
       verdictUnknownLegs,
+      repairHeadVerdict: gate.repairQueue?.verdictProvenance?.repairHeadVerdict ?? null,
     }),
     gateCandidate: assessGateCandidate({
       judgingSha: changeInCandidate.judgingSha,

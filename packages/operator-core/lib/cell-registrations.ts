@@ -289,6 +289,15 @@ export const GATE_VERDICT_CELL: CellSpec = {
         safeAction:
           'Read `gate.inconclusive.observedAtMs` and live `gate.checkpointRunInFlight` before acting. The detail describes that abort only; do NOT stop a currently active suite or treat its historical `no suite was run` text as current.',
       },
+      // WI-10004092: a repair hold latches `gate.inconclusive` on every tick, so without this
+      // code a verify that measured the repair head red read identically to a crash, and a
+      // subscriber waiting for the verdict to CHANGE never woke.
+      'repair-head-red': {
+        meaning:
+          'A frozen repair queue holds the gate, and a completed run measured its CURRENT repair head red. This is a code verdict on the lineage being repaired, not an abort; the red counters may still describe the run that froze the candidate.',
+        safeAction:
+          'Read `release:repair-queue { op: \'get\' }` for the failing legs and `gate.greenCheckpoint.ownership` for who holds the red. If a live owner holds it, do not duplicate the triage; otherwise fix the named legs on staging and land them with `release:repair-queue { op: \'admit\' }`, never `release:checkpoint-run`.',
+      },
       'red-stale': {
         meaning:
           'Reds are on record, but the verdict is stale: it judged a candidate that has since been superseded.',
@@ -317,7 +326,13 @@ export const GATE_VERDICT_CELL: CellSpec = {
         safeAction: 'Proceed; nothing is outstanding on the gate.',
       },
     },
-    evidence: ['gate.inconclusive', 'gate.verdictStale', 'gate.fireStale', 'verdictProvenance.mainBehindStaging'],
+    evidence: [
+      'gate.inconclusive',
+      'gate.repairQueue.verdictProvenance.repairHeadVerdict',
+      'gate.verdictStale',
+      'gate.fireStale',
+      'verdictProvenance.mainBehindStaging',
+    ],
     // P-012: the streak is a count; `verdictUnknown` names it when it was not measured.
     measuredBy: { 'gate.consecutiveReds': VERDICT_HOIST },
   },
