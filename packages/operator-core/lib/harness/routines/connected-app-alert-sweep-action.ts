@@ -12,9 +12,11 @@ registerSystemAction('connected-app-alert-sweep', async () => {
   const { runConnectedAppAlertSweep } = await import('../../connected-apps/alert-sweep');
   const result = await runConnectedAppAlertSweep();
   return {
-    keys: result.keys,
-    alerts: result.alerts.length,
-    failed: result.failed,
-    kinds: [...new Set(result.alerts.map((a) => a.kind))],
+    diagnostics: {
+      keys: result.keys,
+      alerts: result.alerts.length,
+      failed: result.failed,
+      kinds: [...new Set(result.alerts.map((a) => a.kind))],
+    },
   };
 });
