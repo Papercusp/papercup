@@ -843,6 +843,73 @@ created: 2026-08-21
     ]);
   });
 
+  /**
+   * WI-10004234 (P-013 R-10 B matrix, 2026-09-30): under load a run promoted P-001 twice
+   * (consecutive ids) right after a CONNECTION_ENDED. A normal race drops the loser (D-046
+   * above), but the loser's stand-down is a separate write; when it fails,
+   * settleConditionClaim reports `duplicateLeftOpen`, and promotion ignores it,
+   * leaving TWO claimable rows for one plan item with a success result.
+   *
+   * KNOWN BUG until the staged fix lands (.papercusp/scratch/wi-10004234/STAGED-FIX.md,
+   * held until the P-013 R-10 matrix ends because condition-upsert.ts is in its import
+   * graph): both cases run as `it.fails` so the fleet gate stays green;
+   * `WI_10004234_EXPECT_FIXED=1` runs them as plain `it`. Delete `knownBug` with the fix.
+   */
+  const knownBug = process.env.WI_10004234_EXPECT_FIXED === '1' ? it : it.fails;
+  async function raceOnePlanItem() {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Exactly one open lane' }] });
+    let openCoverage!: () => void;
+    const coverageRelease = new Promise<void>((resolve) => {
+      openCoverage = resolve;
+    });
+    h.coverageBarrier = { arrivals: 0, release: coverageRelease, open: openCoverage };
+    let openMint!: () => void;
+    const mintRelease = new Promise<void>((resolve) => {
+      openMint = resolve;
+    });
+    h.mintBarrier = { arrivals: 0, release: mintRelease, open: openMint };
+    try {
+      return await Promise.allSettled([run.promotePlanItems(base), run.promotePlanItems(base)]);
+    } finally {
+      h.coverageBarrier = null;
+      h.mintBarrier = null;
+    }
+  }
+  const planRows = () =>
+    db.sql<{ feature_id: string; status: string }[]>`
+      SELECT feature_id, status FROM harness_shared.work_items
+       WHERE source_plan_slug = ${PLAN} ORDER BY feature_id`;
+
+  knownBug('WI-10004234: a TRANSIENT stand-down failure is retried, so the race loser is still dropped', async () => {
+    h.standDownFaults = { remaining: 1, injected: 0 };
+    const settled = await raceOnePlanItem();
+
+    expect(h.standDownFaults.injected).toBe(1);
+    expect(settled.map((s) => s.status)).toEqual(['fulfilled', 'fulfilled']);
+    const rows = await planRows();
+    // Both callers minted (the mint barrier guarantees a loser), so two rows exist...
+    expect(rows).toHaveLength(2);
+    // ...but exactly one lane stays open: the retried stand-down dropped the loser.
+    expect(rows.filter((row) => !wi.isSettledWorkItemState(row.status))).toHaveLength(1);
+    expect(rows.filter((row) => row.status === 'dropped')).toHaveLength(1);
+  });
+
+  knownBug('WI-10004234: a PERSISTENT stand-down failure fails the losing promotion loudly, naming the open duplicate', async () => {
+    h.standDownFaults = { remaining: Number.POSITIVE_INFINITY, injected: 0 };
+    const settled = await raceOnePlanItem();
+
+    const rejected = settled.filter((s): s is PromiseRejectedResult => s.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    const rows = await planRows();
+    const open = rows.filter((row) => !wi.isSettledWorkItemState(row.status));
+    // The duplicate really is still open (the DB write kept failing)...
+    expect(open).toHaveLength(2);
+    // ...so the losing caller must say so, with the id, rather than report success.
+    const loserId = open.map((row) => row.feature_id).find((id) => String(rejected[0]!.reason).includes(id));
+    expect(String(rejected[0]!.reason)).toMatch(new RegExp(`plan_promotion_duplicate_left_open:${PLAN}#P-001:`));
+    expect(loserId).toBeDefined();
+  });
+
   it('EI-19946482711398073/WI-37359: an item already covered ad-hoc (relates + stamp, NO implements edge) is never re-promoted', async () => {
     // Mirrors exactly what work_items:create{targetPlanItem} writes (_create-core.ts
     // §"Forward edge" + the plan_item payload stamp EI-19390496242545842 added) — a `relates`
