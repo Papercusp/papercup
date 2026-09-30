@@ -4,6 +4,7 @@
  * so a chosen mode with no key saved reads as the current system, never as Jev.
  */
 import { describe, expect, it } from 'vitest';
+import { JEV_MEMORY_ADMIT_THRESHOLD, JEV_MEMORY_VARIANT } from '@papercusp/operator-core/lib/memory/jev-memory-gate';
 import {
   JEV_KEY_CONFLICT_USE,
   JEV_KEY_MIN_LENGTH,
@@ -97,13 +98,15 @@ describe('jevKeyDraftProblem', () => {
   });
 });
 
-describe('the measured verdict beside the mode control (D-013, superseding D-012)', () => {
-  it('states when and on which model it was measured, the numbers, and that Off stays the default', () => {
+describe('the measured verdict beside the mode control (jev-performance-improvements D-004)', () => {
+  it('states when, on which model and question it was measured, the numbers, and that Off stays the default', () => {
     expect(JEV_MEASURED_VERDICT).toContain('2026-09-30');
     expect(JEV_MEASURED_VERDICT).toContain('jev-1.13.0');
-    expect(JEV_MEASURED_VERDICT).toContain('0 to 1 times in 30');
-    expect(JEV_MEASURED_VERDICT).toContain('8 in 30');
-    expect(JEV_MEASURED_VERDICT).toMatch(/borderline/);
+    // JEVPERF-P-008-A: the card names the variant and threshold production runs
+    expect(JEV_MEASURED_VERDICT).toContain(`${JEV_MEMORY_VARIANT} question at ${JEV_MEMORY_ADMIT_THRESHOLD}`);
+    expect(JEV_MEASURED_VERDICT).toContain('7 of 90');
+    expect(JEV_MEASURED_VERDICT).toContain('52 of 90');
+    expect(JEV_MEASURED_VERDICT).toContain('1.8%');
     expect(JEV_MEASURED_VERDICT).toMatch(/Off stays the default/);
   });
 

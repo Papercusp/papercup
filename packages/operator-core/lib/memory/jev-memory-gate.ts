@@ -33,20 +33,22 @@ import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type Je
 export const JEV_MEMORY_CONSUMER = 'memory-injection';
 
 /**
- * The operating point D-013 adopted (arm B, P-015): the production floor, then
- * keep a candidate when Jev's P(yes) >= 0.3, with the memory text inside each
- * yes-no question. Changing either value invalidates the D-013 measurements;
- * re-run P-004 and P-005 (bench/jev-admission-cli, bench/jev-robustness-cli)
- * before keeping a new one.
+ * The operating point production runs: the production floor, then keep a candidate
+ * when Jev's P(yes) >= 0.35, with the memory text inside each yes-no question.
+ * D-013 (plan jev-decision-model-integration-2026-09-29) adopted v1 at 0.3; D-004
+ * (plan jev-performance-improvements-2026-09-30) replaced it with v2-content at
+ * 0.35, the threshold v2-content's own admission run selected. Changing any of
+ * threshold, encoding or variant invalidates those measurements; re-run
+ * bench/jev-admission-cli and bench/jev-robustness-cli before keeping a new one.
  */
-export const JEV_MEMORY_ADMIT_THRESHOLD = 0.3;
+export const JEV_MEMORY_ADMIT_THRESHOLD = 0.35;
 export const JEV_MEMORY_ENCODING: AdmissionEncoding = 'instructions';
 /**
- * The question variant production asks. Plan jev-performance-improvements-2026-09-30
- * replaces v1 only with a variant that clears its D-001 bar in a same-run comparison
- * (P-007 records the verdict, P-008 adopts it together with its threshold).
+ * The question variant production asks: v2-content, which judges the facts in the
+ * memory rather than its claims about itself (D-004: self-promoting memories got
+ * through 1.8% of the time against v1's 31.4%, with recall and cost unchanged).
  */
-export const JEV_MEMORY_VARIANT: AdmissionVariant = 'v1';
+export const JEV_MEMORY_VARIANT: AdmissionVariant = 'v2-content';
 
 export interface JevGateCandidate {
   readonly id: string;

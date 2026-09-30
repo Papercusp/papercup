@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "Jev save-time substance check: refusal rate on real memories and catch rate on self-promoters (P-010, bar R-3)",
-  "framework": "bench-cli",
+  "framework": "operational",
   "command": [
     "npx",
     "tsx",

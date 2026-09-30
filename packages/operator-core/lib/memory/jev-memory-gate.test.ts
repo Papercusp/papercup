@@ -6,6 +6,7 @@ import {
   JEV_MEMORY_ADMIT_THRESHOLD,
   JEV_MEMORY_CONSUMER,
   JEV_MEMORY_ENCODING,
+  JEV_MEMORY_VARIANT,
   runJevMemoryGate,
   type JevMemoryGateDeps,
 } from './jev-memory-gate';
@@ -116,11 +117,13 @@ describe('runJevMemoryGate — On', () => {
     expect(r).toMatchObject({ outcome: 'answered', model: 'jev-1.14.0' });
   });
 
-  it('uses the D-013 operating point: instructions encoding, P(yes) >= 0.3', async () => {
-    // D-013 measured exactly this pair; changing either value voids those numbers
-    // until P-004 and P-005 are re-run (see the constants' doc comment).
+  it('uses the D-004 operating point: v2-content, instructions encoding, P(yes) >= 0.35', async () => {
+    // D-004 (jev-performance-improvements-2026-09-30) measured exactly this triple;
+    // changing any value voids those numbers until the admission and robustness
+    // benches are re-run (see the constants' doc comment).
+    expect(JEV_MEMORY_VARIANT).toBe('v2-content');
     expect(JEV_MEMORY_ENCODING).toBe('instructions');
-    expect(JEV_MEMORY_ADMIT_THRESHOLD).toBe(0.3);
+    expect(JEV_MEMORY_ADMIT_THRESHOLD).toBe(0.35);
     const h = harness('on', async () => answered({ m1: 0.9, m2: 0.9 }));
     await runJevMemoryGate({ message: 'where does deploy run', candidates: CANDS }, h.deps);
     const request = h.decideSpy.mock.calls[0][0] as { questions: Record<string, { question?: string }> };
