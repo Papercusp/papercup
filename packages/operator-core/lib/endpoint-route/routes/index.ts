@@ -453,6 +453,7 @@ import connectedApps from './connected-apps';
 import connectedAppsOAuth from './connected-apps/oauth';
 import ownTunnel from './own-tunnel';
 import portalRelay from './portal-relay';
+import webhookIngress from './webhooks';
 import remoteAccess from './remote-access';
 import deviceVoice from './device/voice';
 import deviceOperator from './device/operator';
@@ -957,6 +958,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(connectedAppsOAuth as AnyRoute[]),
   ...flatten(ownTunnel as AnyRoute[]),
   ...flatten(portalRelay as AnyRoute[]),
+  ...flatten(webhookIngress as AnyRoute[]),
   ...flatten(remoteAccess as AnyRoute[]),
   ...flatten(deviceVoice as AnyRoute[]),
   ...flatten(deviceOperator as AnyRoute[]),
