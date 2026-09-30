@@ -36,7 +36,8 @@ import { CanonicalManagedWrites } from '../../../../libs/generic/memory/src/cano
 import { EMBEDDER_DIM_SPECS } from '../../../../libs/generic/memory/src/embedder-dims';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
-import { getCapabilityClass, getPotCapabilityProviderBinding, recordProviderConformance } from '../capability-class-registry-store';
+import { getCapabilityClass, getPotCapabilityProviderBinding, parseCapabilityClassRef,
+  recordProviderConformance } from '../capability-class-registry-store';
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
@@ -229,8 +230,14 @@ function destinationDeps(): InstallBlueprintCoreDeps {
     capabilityGrantDeps: capabilityGrantDepsForPot({ workspaceId: WS, potSlug: POT }),
     validateCapabilityGrants: (resolution, context) => validateIdentityInstallGrants(
       { workspaceId: WS, potSlug: POT, role: context.role, resolution },
-      // The destination's own notes plugin registers notes:read.
-      async () => ({ ...CEILING, policyRevision: `fixture:${POT}`, bindings: [],
+      // The destination's own notes plugin registers notes:read. Its bindings are
+      // the pot's live ones, read as readIdentityGrantPolicy reads them.
+      async ({ classRefs }) => ({ ...CEILING, policyRevision: `fixture:${POT}`,
+        bindings: (await Promise.all(classRefs.map((classRef) => {
+          const parsed = parseCapabilityClassRef(classRef)!;
+          return getPotCapabilityProviderBinding(db.adminSql, { workspaceId: WS, potSlug: POT,
+            classId: parsed.id, classVersion: parsed.version, providerKinds: ['tool', 'recipe'] });
+        }))).filter((binding) => binding !== null),
         tools: new Map([['notes:read', ['notes:read']]]) }),
     ),
     async reviewCapabilityProviderPackages(selections) {
