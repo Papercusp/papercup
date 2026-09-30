@@ -2584,6 +2584,14 @@ pub struct App {
     pub su_open_in_flight: bool,
     pub su_active_command_id: Option<String>,
     su_rendered_owner_turns: BTreeSet<String>,
+    /// WI-10004162: saved messages held aside while an engine replay re-reads
+    /// a restored chat, so each replayed reply lands under its own owner turn.
+    /// Released as the replay reaches each later owner turn; the rest when the
+    /// replay completes or a live event arrives.
+    su_replay_tail: Vec<ChatMessage>,
+    /// Where the next replay anchor search starts in `chat_messages`, so a
+    /// repeated question anchors to the right occurrence.
+    su_replay_floor: usize,
     /// P-014: open question cards, correlation id → the prompt they show. A
     /// card event carries no tool-call id, so the prompt is what joins a card
     /// to the question tool that asked it (`question_tool_prompts`).
@@ -2998,6 +3006,8 @@ impl App {
             su_open_in_flight: false,
             su_active_command_id: None,
             su_rendered_owner_turns: BTreeSet::new(),
+            su_replay_tail: Vec::new(),
+            su_replay_floor: 0,
             su_card_prompts: std::collections::BTreeMap::new(),
             su_skipped_prompts: BTreeSet::new(),
             su_answered_prompts: BTreeSet::new(),
@@ -3673,6 +3683,8 @@ impl App {
         self.su_connection_error = None;
         self.su_launch_refusal = None;
         self.su_rendered_owner_turns.clear();
+        self.su_replay_tail.clear();
+        self.su_replay_floor = 0;
         self.su_card_prompts.clear();
         self.su_skipped_prompts.clear();
         self.su_answered_prompts.clear();
@@ -3913,6 +3925,7 @@ impl App {
             return Action::None; // replay duplicate
         }
         let replayed = envelope.sequence <= state.replay_head;
+        let replay_done = envelope.sequence >= state.replay_head;
         if envelope.sequence > state.last_sequence.saturating_add(1) {
             // Keep rendering the newest event, but make the missing range
             // visible to the operator; the next reconnect starts from the
@@ -3925,6 +3938,10 @@ impl App {
             progress.applied_sequence = envelope.sequence;
         }
         self.agent_chat_id = Some(envelope.session.agent_chat_id.clone());
+        // WI-10004162: a live event lands after the whole restored history.
+        if !replayed {
+            self.flush_su_replay_tail();
+        }
 
         match event {
             crate::su_session::SuSessionEvent::Session { descriptor, .. } => {
@@ -4020,6 +4037,10 @@ impl App {
                     if role == "owner" && phase == "completed" {
                         if self.su_rendered_owner_turns.insert(turn_id) {
                             self.chat_messages.push(ChatMessage::user(&text));
+                        } else if replayed {
+                            // Already on screen from the saved record: the
+                            // replayed reply that follows belongs under it.
+                            self.anchor_su_replay_at_owner_turn(&text);
                         }
                     } else if role == "assistant" && phase == "completed" {
                         // Completion carries the final value, repeating the
@@ -4267,8 +4288,52 @@ impl App {
                 }
             }
         }
+        if replay_done {
+            self.flush_su_replay_tail();
+        }
         self.converge_su_rematerialize();
         Action::Render
+    }
+
+    /// WI-10004162: a restored SU chat shows its saved owner turns before the
+    /// engine replays the conversation, and SU replies are not in that record.
+    /// When the replay reaches an owner turn already on screen, the saved
+    /// messages after it wait aside, so the replayed reply lands under its own
+    /// question instead of after every saved question. No match (a native
+    /// transcript that words the turn differently) keeps the old behaviour.
+    fn anchor_su_replay_at_owner_turn(&mut self, text: &str) {
+        let is_turn = |m: &ChatMessage| m.role == "user" && m.content.trim() == text.trim();
+        if let Some(pos) = self.su_replay_tail.iter().position(is_turn) {
+            let rest = self.su_replay_tail.split_off(pos + 1);
+            let released = std::mem::replace(&mut self.su_replay_tail, rest);
+            self.chat_messages.extend(released);
+            self.su_replay_floor = self.chat_messages.len();
+            return;
+        }
+        let floor = self.su_replay_floor.min(self.chat_messages.len());
+        let Some(pos) = self.chat_messages[floor..]
+            .iter()
+            .position(is_turn)
+            .map(|offset| floor + offset)
+        else {
+            return;
+        };
+        self.su_replay_floor = pos + 1;
+        if pos + 1 < self.chat_messages.len()
+            && !self.chat_messages[pos + 1..].iter().any(|m| m.streaming)
+        {
+            let mut held = self.chat_messages.split_off(pos + 1);
+            held.append(&mut self.su_replay_tail);
+            self.su_replay_tail = held;
+        }
+    }
+
+    /// Put every held saved message back, after the replayed history.
+    fn flush_su_replay_tail(&mut self) {
+        if !self.su_replay_tail.is_empty() {
+            let tail = std::mem::take(&mut self.su_replay_tail);
+            self.chat_messages.extend(tail);
+        }
     }
 
     /// Advance the archive-replay banner after an event has been reduced.
@@ -6550,13 +6615,14 @@ impl App {
             .unwrap_or_else(|| "new".to_string());
         let model = self.chat_model.as_deref().unwrap_or("server default");
         let effort = self.chat_effort.as_deref().unwrap_or("model/default");
-        let account = self.chat_account.as_deref().unwrap_or("default");
         let mode = self.chat_mode.as_deref().unwrap_or("manual");
-        let selected_backend = self
+        let selected = self
             .su_backend
             .or(self.configured_su_backend())
-            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
-            .label();
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        let account =
+            crate::session_config::account_label(self.chat_account.as_deref(), selected);
+        let selected_backend = selected.label();
         let backend = self
             .backend_identity_status()
             .unwrap_or_else(|| "backend loading".to_string());
@@ -7617,7 +7683,10 @@ impl App {
             setup.backend = self.su_backend.unwrap_or(setup.backend);
             setup.model = self.chat_model.clone();
             setup.effort = self.chat_effort.clone();
-            setup.account = self.chat_account.clone().or(Some("default".into()));
+            // WI-10004164 / D-011: keep an unchosen account unchosen. This is
+            // also bare `pui`'s chat-first quick start, so pre-filling
+            // `default` here sent an explicit account on every first launch.
+            setup.account = self.chat_account.clone();
             setup.mode = self.chat_mode.clone();
         }
         self.session_setup = Some(setup);
@@ -11902,6 +11971,8 @@ impl App {
                     self.chat_messages = messages;
                     self.chat_focus = None;
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
+                    self.su_replay_tail.clear();
+                    self.su_replay_floor = 0;
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
                     self.refresh_open_conversation_picker();
@@ -17505,7 +17576,46 @@ mod tests {
             a.su_pending_turn.as_ref().unwrap().content,
             "  first λ 雪  "
         );
-        assert_eq!(a.chat_account.as_deref(), Some("default"));
+        // WI-10004164 / D-011: the quick start never chose an account, so
+        // none is sent and launch-su resolves it (OMP gateway model -> auto).
+        assert_eq!(a.chat_account, None);
+        match action {
+            Action::OpenSuSession { launch, .. } => assert_eq!(launch.account, None),
+            other => panic!("expected a launch, got {other:?}"),
+        }
+    }
+
+    /// WI-10004164 / D-011: the new-session form leaves an account the owner
+    /// has not chosen unchosen, names that honestly, and keeps a real choice.
+    #[test]
+    fn session_setup_leaves_an_unchosen_account_unchosen() {
+        let mut a = chat_first_app();
+        a.open_session_setup();
+        assert_eq!(a.session_setup.as_ref().unwrap().account, None);
+        assert_eq!(
+            crate::session_config::account_label(None, crate::su_session::SuSessionBackend::Claude),
+            "default (not chosen)"
+        );
+        assert_eq!(
+            crate::session_config::account_label(None, crate::su_session::SuSessionBackend::Omp),
+            "default (not chosen; a gateway model uses auto)"
+        );
+        assert_eq!(
+            crate::session_config::account_label(
+                Some("default"),
+                crate::su_session::SuSessionBackend::Omp
+            ),
+            "default",
+            "an explicit default is shown as the choice it is"
+        );
+
+        let mut b = chat_first_app();
+        b.chat_account = Some("acct-7".into());
+        b.open_session_setup();
+        assert_eq!(
+            b.session_setup.as_ref().unwrap().account.as_deref(),
+            Some("acct-7")
+        );
     }
 
     /// pui-chat-first-ux P-012: Enter moves the message into the transcript
@@ -18526,6 +18636,72 @@ mod tests {
                 .any(|m| m.content.contains("what did you conclude?")),
             "the archived transcript must be reduced, not discarded as a replay duplicate"
         );
+    }
+
+    /// WI-10004162 (measured in the real-engine review frame 05a): a restored
+    /// SU chat loads its saved owner turns, whose replies are not in the
+    /// record, then the engine replays the conversation. Each replayed reply
+    /// must land under its own question, not after every saved question, and a
+    /// saved turn the replay never reaches still shows, last.
+    #[test]
+    fn su_replay_puts_each_reply_under_its_restored_owner_turn() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.chat_messages = vec![
+            ChatMessage::user("same question"),
+            ChatMessage::user("second question"),
+            ChatMessage::user("same question"),
+            ChatMessage::user("never delivered"),
+        ];
+        app.su_rendered_owner_turns = ["t1", "t2", "t3", "t4"].map(String::from).into_iter().collect();
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 9, Some(su_rematerialize_verdict())));
+        let mut sequence = 0;
+        let mut send = |app: &mut App, phase: &str, turn: &str, role: &str, content: Option<&str>| {
+            sequence += 1;
+            let mut event = su_event_base("transcript", sequence);
+            event["phase"] = json!(phase);
+            event["turnId"] = json!(turn);
+            event["role"] = json!(role);
+            event["channel"] = json!(if role == "owner" { "primary" } else { "text" });
+            if let Some(content) = content {
+                event["content"] = json!(content);
+            }
+            app.apply_su_session_event(su_event(event));
+        };
+        for (turn, question, reply) in [
+            ("t1", "same question", "reply one"),
+            ("t2", "second question", "reply two"),
+            ("t3", "same question", "reply three"),
+        ] {
+            send(&mut app, "completed", turn, "owner", Some(question));
+            send(&mut app, "started", turn, "assistant", None);
+            if turn == "t2" {
+                // Mid-replay, the later saved turns wait aside.
+                assert_eq!(app.chat_messages.last().map(|m| m.streaming), Some(true));
+                assert!(!app.chat_messages.iter().any(|m| m.content == "never delivered"));
+            }
+            send(&mut app, "completed", turn, "assistant", Some(reply));
+        }
+        let rendered: Vec<(&str, &str)> = app
+            .chat_messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                ("user", "same question"),
+                ("assistant", "reply one"),
+                ("user", "second question"),
+                ("assistant", "reply two"),
+                ("user", "same question"),
+                ("assistant", "reply three"),
+                ("user", "never delivered"),
+            ],
+            "each replayed reply belongs under its own question"
+        );
+        assert!(app.su_replay_tail.is_empty());
     }
 
     /// The progress surfaced while an archive is replayed must be a measured

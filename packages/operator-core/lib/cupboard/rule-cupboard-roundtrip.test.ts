@@ -38,6 +38,10 @@ const guardRule = (id: string) => ({
   delivery: 'sync', sink: 'pre-tool', tools: ['capability:bash'],
   guard: { deny: { 'args.command': { matches: 'rm -rf' } }, reason: 'no recursive deletes' },
 });
+const asyncRule = (id: string) => ({
+  schemaVersion: 1, id, title: `Rule ${id}`, description: 'File a task when a demo fires.', version: '1.0.0',
+  delivery: 'async', on: 'demo.unknown', fire: 'class:demo.tasks@1.0.0#create',
+});
 
 async function writeRuleDir(parent: string, ref: string, manifest: unknown = guardRule(ref)): Promise<string> {
   const dir = join(parent, ref);
@@ -110,14 +114,44 @@ describe('rule Cupboard round trip', () => {
     const repo = join(root, 'rule-repo');
     await writeRuleDir(repo, 'no-rm-rf');
 
+    const checkAsync = vi.fn(async () => 'must not be consulted for a sync rule');
     const result = await installRuleFromCupboardCore(
-      { githubUrl: GITHUB_URL, listingRef: 'no-rm-rf' }, unpinnedDeps(repo, root));
+      { githubUrl: GITHUB_URL, listingRef: 'no-rm-rf' }, unpinnedDeps(repo, root), checkAsync);
 
     expect(result).toMatchObject({
       ok: true, ref: 'no-rm-rf', ruleId: 'no-rm-rf', delivery: 'sync', sink: 'pre-tool',
       source: GITHUB_URL, installedTo: join(root, 'rules', 'installed', 'no-rm-rf'), pin: null,
     });
     expect(resolveLocalRule('no-rm-rf')).toMatchObject({ layer: 'user', delivery: 'sync', sink: 'pre-tool' });
+    expect(checkAsync).not.toHaveBeenCalled();
+  });
+
+  it('refuses an async rule the workspace catalogs reject, before anything lands (P-018, D-027 §1)', async () => {
+    const repo = join(root, 'rule-repo');
+    await writeRuleDir(repo, 'on-uncatalogued', asyncRule('on-uncatalogued'));
+    const checkAsync = vi.fn(async () => 'event key "demo.unknown" is not catalogued in this workspace');
+
+    const install = installRuleFromCupboardCore(
+      { githubUrl: GITHUB_URL, listingRef: 'on-uncatalogued' }, unpinnedDeps(repo, root), checkAsync);
+
+    await expect(install).rejects.toBeInstanceOf(InstallRuleError);
+    await expect(install).rejects.toThrow('rule "on-uncatalogued" cannot install: event key "demo.unknown" is not catalogued');
+    expect(checkAsync).toHaveBeenCalledWith(expect.objectContaining({ delivery: 'async', on: 'demo.unknown' }));
+    await expect(fs.stat(join(root, 'rules', 'installed', 'on-uncatalogued'))).rejects.toThrow();
+  });
+
+  it('installs an async rule the workspace catalogs accept', async () => {
+    const repo = join(root, 'rule-repo');
+    await writeRuleDir(repo, 'on-catalogued', asyncRule('on-catalogued'));
+    const checkAsync = vi.fn(async () => null);
+
+    const result = await installRuleFromCupboardCore(
+      { githubUrl: GITHUB_URL, listingRef: 'on-catalogued' }, unpinnedDeps(repo, root), checkAsync);
+
+    expect(result).toMatchObject({ ok: true, ref: 'on-catalogued', delivery: 'async' });
+    expect(result).not.toHaveProperty('sink');
+    expect(checkAsync).toHaveBeenCalledTimes(1);
+    expect(resolveLocalRule('on-catalogued')).toMatchObject({ layer: 'user', delivery: 'async' });
   });
 
   it('refuses a manifest that the store would not read, before anything lands', async () => {
@@ -126,7 +160,7 @@ describe('rule Cupboard round trip', () => {
     await writeRuleDir(repo, 'guard-at-stop', { ...guardRule('guard-at-stop'), sink: 'stop' });
 
     const install = installRuleFromCupboardCore(
-      { githubUrl: GITHUB_URL, listingRef: 'guard-at-stop' }, unpinnedDeps(repo, root));
+      { githubUrl: GITHUB_URL, listingRef: 'guard-at-stop' }, unpinnedDeps(repo, root), async () => null);
 
     await expect(install).rejects.toBeInstanceOf(InstallRuleError);
     await expect(install).rejects.toThrow('rule "guard-at-stop" failed to parse its rule.json');

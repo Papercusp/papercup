@@ -1,0 +1,310 @@
+/**
+ * MCP OAuth on a LOCAL install (external-app-access-to-workspaces-2026-09-29 P-006).
+ *
+ *   GET  /connected-apps/oauth/protected-resource     RFC 9728 metadata for /api/mcp
+ *   GET  /connected-apps/oauth/authorization-server   RFC 8414 metadata (issuer = this origin)
+ *   POST /connected-apps/oauth/register               RFC 7591 dynamic client registration
+ *   GET  /connected-apps/oauth/authorize              authorization code + PKCE (S256), consent
+ *   GET  /connected-apps/oauth/continue               the browser returns here until approved
+ *   POST /connected-apps/oauth/token                  code + verifier → access token (an app key)
+ *
+ * The host serves the two metadata documents at the root well-known paths too
+ * (apps/operator/bin/host-handler.ts rewrites `/.well-known/oauth-*` here), which is where MCP
+ * clients look. All of these are public: an MCP client reaches them from another network through
+ * the user's own tunnel (D-001). None grants anything by itself — the consent is given either on
+ * the local consent page (a browser on this machine) or, for a browser elsewhere, on the approval
+ * page of the computer running Papercusp under the user code the browser shows (the device-grant
+ * approval, ./index.ts). Only then does `continue` mint a one-time code bound to the client, the
+ * redirect URI and the PKCE challenge; only the token endpoint turns that into a key.
+ */
+import { randomBytes as nodeRandomBytes } from 'node:crypto';
+import { defineTool } from '@papercusp/agent-mcp';
+import type { RouteDefinition } from '@papercusp/agent-mcp';
+import { isLoopbackHost } from '../device/_shared';
+import { readRegistry } from '../../../workspace-registry';
+import {
+  OAUTH_REQUEST_TTL_MS,
+  OAuthScopeError,
+  PostgresOAuthStore,
+  clientSecretMatches,
+  formatOAuthScope,
+  isAuthorizationCode,
+  isRequestHandle,
+  isValidCodeChallenge,
+  newAuthorizationCode,
+  newRequestHandle,
+  parseOAuthScope,
+  sha256Hex,
+  validateRegistration,
+  type OAuthClient,
+  type OAuthStore,
+} from '../../../connected-apps/mcp-oauth';
+import {
+  MCP_OAUTH_BASE,
+  MCP_RESOURCE_PATH,
+  authorizationServerMetadata,
+  protectedResourceMetadata,
+  publicOriginOf,
+} from '../../../connected-apps/mcp-oauth-discovery';
+import { AppKeyScopeError, resolveAppKeyScopes, type AppKeyScopeRequest, type AppKeyScopes } from '../../../connected-apps/store';
+import { consentFormHtml, escapeHtml, htmlPage } from './index';
+
+type AnyRoute = RouteDefinition<any>;
+
+const OAUTH_BASE = MCP_OAUTH_BASE;
+const USER_CODE_ALPHABET = 'BCDFGHJKLMNPQRSTVWXZ23456789';
+const noStore = { 'cache-control': 'no-store', pragma: 'no-cache' };
+
+export interface McpOAuthRouteDependencies {
+  readonly store: OAuthStore;
+  readonly resolveScopes: (req: AppKeyScopeRequest) => AppKeyScopes;
+  readonly listWorkspaces: () => ReadonlyArray<{ id: string; name: string }>;
+  /** True when the request is from this machine and not through a tunnel or relay. */
+  readonly isLocal: (req: Request) => boolean;
+  readonly clock?: () => Date;
+  readonly randomBytes?: (size: number) => Uint8Array;
+}
+
+function oauthError(error: string, description: string, status = 400, extra: Record<string, string> = {}): Response {
+  return Response.json({ error, error_description: description }, { status, headers: { ...noStore, ...extra } });
+}
+
+/** Append OAuth response parameters to a registered redirect URI (RFC 6749 §4.1.2, RFC 9207 iss). */
+function redirectTo(redirectUri: string, params: Record<string, string | null>): Response {
+  const target = new URL(redirectUri);
+  for (const [k, v] of Object.entries(params)) if (v !== null) target.searchParams.set(k, v);
+  return new Response(null, { status: 302, headers: { location: target.toString(), ...noStore } });
+}
+
+async function formOrJson(req: Request): Promise<Record<string, unknown> | null> {
+  const type = req.headers.get('content-type') ?? '';
+  try {
+    if (type.includes('application/x-www-form-urlencoded')) return Object.fromEntries(new URLSearchParams(await req.text()));
+    const v = await req.json();
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** client_secret_basic credentials (RFC 6749 §2.3.1: form-urlencoded, then base64). */
+function basicCredentials(req: Request): { id: string; secret: string } | null {
+  const header = req.headers.get('authorization') ?? '';
+  if (!/^basic /i.test(header)) return null;
+  try {
+    const decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8');
+    const colon = decoded.indexOf(':');
+    if (colon < 0) return null;
+    return { id: decodeURIComponent(decoded.slice(0, colon)), secret: decodeURIComponent(decoded.slice(colon + 1)) };
+  } catch {
+    return null;
+  }
+}
+
+export function createMcpOAuthRoutes(deps: McpOAuthRouteDependencies): ReadonlyArray<AnyRoute> {
+  const clock = deps.clock ?? (() => new Date());
+  const random = deps.randomBytes ?? ((size: number) => nodeRandomBytes(size));
+  const randomUserCode = () => {
+    let code = '';
+    for (const byte of Buffer.from(random(8))) code += USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length];
+    return `${code.slice(0, 4)}-${code.slice(4)}`;
+  };
+
+  const resourceMetadata = defineTool({
+    method: 'GET',
+    path: '/connected-apps/oauth/protected-resource',
+    auth: 'public',
+    async handler(req) {
+      return Response.json(protectedResourceMetadata(publicOriginOf(req)), { headers: { 'cache-control': 'max-age=300' } });
+    },
+  });
+
+  const serverMetadata = defineTool({
+    method: 'GET',
+    path: '/connected-apps/oauth/authorization-server',
+    auth: 'public',
+    async handler(req) {
+      return Response.json(authorizationServerMetadata(publicOriginOf(req)), { headers: { 'cache-control': 'max-age=300' } });
+    },
+  });
+
+  const register = defineTool({
+    method: 'POST',
+    path: '/connected-apps/oauth/register',
+    auth: 'public',
+    async handler(req) {
+      const body = await formOrJson(req);
+      if (!body) return oauthError('invalid_client_metadata', 'the body must be a JSON object');
+      const verdict = validateRegistration(body);
+      if (!verdict.ok) return oauthError(verdict.error, verdict.description);
+      const { client, clientSecret } = await deps.store.registerClient(verdict.value, clock());
+      return Response.json(
+        {
+          client_id: client.clientId,
+          client_id_issued_at: Math.floor(client.createdAt.getTime() / 1000),
+          client_name: client.clientName,
+          redirect_uris: client.redirectUris,
+          token_endpoint_auth_method: client.tokenEndpointAuthMethod,
+          grant_types: ['authorization_code'],
+          response_types: ['code'],
+          ...(clientSecret ? { client_secret: clientSecret, client_secret_expires_at: 0 } : {}),
+        },
+        { status: 201, headers: noStore },
+      );
+    },
+  });
+
+  const authorize = defineTool({
+    method: 'GET',
+    path: '/connected-apps/oauth/authorize',
+    auth: 'public',
+    async handler(req) {
+      const q = new URL(req.url).searchParams;
+      const clientId = q.get('client_id') ?? '';
+      const redirectUri = q.get('redirect_uri') ?? '';
+      // Until client and redirect URI are proven, an error is a page — never a redirect (§4.1.2.1).
+      const client = clientId ? await deps.store.getClient(clientId) : null;
+      if (!client) return htmlPage('Unknown app', '<p>This app is not registered with this computer.</p>', 400);
+      if (!client.redirectUris.includes(redirectUri)) {
+        return htmlPage('Invalid redirect', '<p>The app asked to return to an address it did not register.</p>', 400);
+      }
+      const origin = publicOriginOf(req);
+      const state = q.get('state');
+      const fail = (error: string, description: string) =>
+        redirectTo(redirectUri, { error, error_description: description, state, iss: origin });
+      if (q.get('response_type') !== 'code') return fail('unsupported_response_type', 'only response_type=code is supported');
+      const challenge = q.get('code_challenge');
+      if (q.get('code_challenge_method') !== 'S256' || !isValidCodeChallenge(challenge)) {
+        return fail('invalid_request', 'PKCE with code_challenge_method=S256 is required');
+      }
+      const resource = q.get('resource');
+      const expectedResource = `${origin}${MCP_RESOURCE_PATH}`;
+      if (resource && resource !== expectedResource) return fail('invalid_target', `resource must be ${expectedResource}`);
+      let requestedScopes: AppKeyScopes;
+      try {
+        requestedScopes = deps.resolveScopes(parseOAuthScope(q.get('scope')));
+      } catch (err) {
+        if (err instanceof OAuthScopeError || err instanceof AppKeyScopeError) return fail('invalid_scope', err.message);
+        throw err;
+      }
+      const handle = newRequestHandle(random);
+      const now = clock();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const userCode = randomUserCode();
+        const created = await deps.store.createAuthorizationRequest({
+          handleHash: sha256Hex(handle),
+          userCode,
+          client,
+          redirectUri,
+          codeChallenge: challenge,
+          state,
+          resource,
+          requestedScopes,
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + OAUTH_REQUEST_TTL_MS),
+        });
+        if (!created) continue;
+        return consentPage(req, client, userCode, requestedScopes, handle);
+      }
+      return fail('temporarily_unavailable', 'could not open an authorization request');
+    },
+  });
+
+  function consentPage(req: Request, client: OAuthClient, userCode: string, scopes: AppKeyScopes, handle: string): Response {
+    const name = escapeHtml(client.clientName);
+    if (deps.isLocal(req)) {
+      return htmlPage(
+        `Allow ${client.clientName} to use a workspace?`,
+        `<p><b>${name}</b> wants to connect to a Papercusp workspace on this computer.</p>
+${consentFormHtml({ userCode, scopes, workspaces: deps.listWorkspaces(), hidden: { oauth_handle: handle } })}`,
+      );
+    }
+    // A browser elsewhere cannot be trusted to speak for the owner: the owner approves on the
+    // machine under this code, and this page keeps checking until they have.
+    const next = `${OAUTH_BASE}/continue?request=${encodeURIComponent(handle)}`;
+    const res = htmlPage(
+      `Approve ${client.clientName} on your computer`,
+      `<p>On the computer running Papercusp, open Settings → Remote access and approve code</p>
+<p><code>${escapeHtml(userCode)}</code></p><p>This page continues by itself once you have. <a href="${escapeHtml(next)}">Check now</a></p>`,
+    );
+    res.headers.set('refresh', `3; url=${next}`);
+    return res;
+  }
+
+  const cont = defineTool({
+    method: 'GET',
+    path: '/connected-apps/oauth/continue',
+    auth: 'public',
+    async handler(req) {
+      const handle = new URL(req.url).searchParams.get('request');
+      if (!isRequestHandle(handle)) return htmlPage('Request not found', '<p>This sign-in link is not valid.</p>', 400);
+      const code = newAuthorizationCode(random);
+      const progress = await deps.store.continueAuthorization({ handleHash: sha256Hex(handle), codeHash: sha256Hex(code), now: clock() });
+      const origin = publicOriginOf(req);
+      switch (progress.status) {
+        case 'code':
+          return redirectTo(progress.redirectUri, { code, state: progress.state, iss: origin });
+        case 'denied':
+          return redirectTo(progress.redirectUri, { error: 'access_denied', error_description: 'the owner denied access', state: progress.state, iss: origin });
+        case 'pending': {
+          const next = `${OAUTH_BASE}/continue?request=${encodeURIComponent(handle)}`;
+          const res = htmlPage(
+            'Waiting for approval',
+            `<p>On the computer running Papercusp, approve code</p><p><code>${escapeHtml(progress.userCode)}</code></p>`,
+          );
+          res.headers.set('refresh', `3; url=${next}`);
+          return res;
+        }
+        case 'expired':
+          return htmlPage('Request expired', '<p>Start connecting the app again.</p>', 400);
+        default:
+          return htmlPage('Request not found', '<p>This sign-in was already completed or does not exist.</p>', 400);
+      }
+    },
+  });
+
+  const token = defineTool({
+    method: 'POST',
+    path: '/connected-apps/oauth/token',
+    auth: 'public',
+    async handler(req) {
+      const body = await formOrJson(req);
+      if (!body) return oauthError('invalid_request', 'the body must be form-encoded');
+      const field = (k: string) => (typeof body[k] === 'string' ? (body[k] as string) : '');
+      if (field('grant_type') !== 'authorization_code') return oauthError('unsupported_grant_type', 'only authorization_code is supported');
+      const basic = basicCredentials(req);
+      const clientId = basic?.id ?? field('client_id');
+      const client = clientId ? await deps.store.getClient(clientId) : null;
+      const presented = basic?.secret ?? (field('client_secret') || null);
+      if (!client || !clientSecretMatches(client, presented)) {
+        return oauthError('invalid_client', 'client authentication failed', 401, { 'www-authenticate': 'Basic realm="papercusp"' });
+      }
+      const code = field('code');
+      if (!isAuthorizationCode(code)) return oauthError('invalid_grant', 'the code is not valid');
+      const result = await deps.store.redeemAuthorizationCode({
+        codeHash: sha256Hex(code),
+        client,
+        redirectUri: field('redirect_uri'),
+        codeVerifier: field('code_verifier'),
+        now: clock(),
+      });
+      if (result.status === 'invalid_grant') return oauthError('invalid_grant', result.reason);
+      if (result.status === 'invalid_scope') return oauthError('invalid_scope', 'the consented scope is no longer grantable');
+      return Response.json(
+        { access_token: result.issued.key, token_type: 'Bearer', scope: formatOAuthScope(result.scopes) },
+        { headers: noStore },
+      );
+    },
+  });
+
+  return [resourceMetadata, serverMetadata, register, authorize, cont, token];
+}
+
+const routes: ReadonlyArray<AnyRoute> = createMcpOAuthRoutes({
+  store: new PostgresOAuthStore(),
+  resolveScopes: resolveAppKeyScopes,
+  listWorkspaces: () => readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name ?? w.id })),
+  isLocal: isLoopbackHost,
+});
+
+export default routes;

@@ -434,6 +434,12 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // device_code and issues a key only for a request that was approved.
     'POST /connected-apps/device/code',
     'POST /connected-apps/device/token',
+    // MCP OAuth (P-006). An MCP client registers (RFC 7591) and redeems its code from
+    // wherever it runs, through the user's tunnel. register grants nothing: a client id
+    // only lets the app ASK. token authenticates with a one-time code that exists only
+    // after the owner consented, bound to the client, redirect URI and PKCE verifier.
+    'POST /connected-apps/oauth/register',
+    'POST /connected-apps/oauth/token',
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {

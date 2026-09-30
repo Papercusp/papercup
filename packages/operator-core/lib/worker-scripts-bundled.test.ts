@@ -85,12 +85,24 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
  * its spawner sidecar and the MCP proxy repeatedly exhausted its 8s upstream
  * header budget.  Both bundlers must publish the asset beside their entry.
  */
-const REQUIRED_RUNTIME_SIBLING_ASSETS: { source: string; output: string }[] = [
-  {
-    source: 'packages/operator-core/lib/systemd-scope-env-runner.mjs',
-    output: 'systemd-scope-env-runner.mjs',
-  },
-];
+const BUNDLE_HOST_COMMON = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
+
+/**
+ * DERIVED from the shared recipe's HOST_RUNTIME_SIBLING_SOURCES, not a second
+ * hand-kept copy: this list used to name only the systemd runner, so a builder
+ * that dropped git-ext-bridge.mjs stayed green while every same-box hive-git
+ * fetch died "Cannot find module" (WI-10003976). The positive-control test
+ * below keeps a broken parse from making every assertion vacuous.
+ */
+function runtimeSiblingAssets(): { source: string; output: string }[] {
+  const text = readFileSync(BUNDLE_HOST_COMMON, 'utf8');
+  const block = /^HOST_RUNTIME_SIBLING_SOURCES=\(([\s\S]*?)^\)/m.exec(text)?.[1] ?? '';
+  return block
+    .split(/\s+/)
+    .filter((token) => token && !token.startsWith('#'))
+    .map((source) => ({ source, output: source.slice(source.lastIndexOf('/') + 1) }));
+}
+const REQUIRED_RUNTIME_SIBLING_ASSETS = runtimeSiblingAssets();
 
 /** Directories holding BUILD OUTPUT or vendored code, where a `*.script.mjs` is
  *  a COPY produced by the very step under test — counting those would let this
@@ -156,6 +168,16 @@ function bundlerExecutable(file: string): string {
   // A shared recipe counts only when the caller actually sources and invokes it.
   if (/^source .*bundle-host-common\.sh/m.test(source) && /^bundle_host_workers /m.test(source)) {
     return source + '\n' + executableText(readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), 'utf8'));
+  }
+  return source;
+}
+
+/** The sibling stager counts only when this builder sources AND invokes it —
+ *  bundle_host_workers alone must not lend a builder the sibling names. */
+function siblingExecutable(file: string): string {
+  const source = executableText(readFileSync(file, 'utf8'));
+  if (/^source .*bundle-host-common\.sh/m.test(source) && /^bundle_host_runtime_siblings /m.test(source)) {
+    return source + '\n' + executableText(readFileSync(BUNDLE_HOST_COMMON, 'utf8'));
   }
   return source;
 }
@@ -235,6 +257,12 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
 describe('worker scripts are staged beside every bundled entry', () => {
   const scripts = findWorkerScripts(REPO_ROOT);
 
+  it('derived the known runtime-sibling population from the shared recipe', () => {
+    expect(REQUIRED_RUNTIME_SIBLING_ASSETS.map(({ output }) => output)).toEqual(
+      expect.arrayContaining(['systemd-scope-env-runner.mjs', 'git-ext-bridge.mjs']),
+    );
+  });
+
   it('found every explicitly required sibling runtime asset', () => {
     const missingSources = REQUIRED_RUNTIME_SIBLING_ASSETS.filter(
       ({ source }) => !existsSync(resolve(REPO_ROOT, source)),
@@ -293,7 +321,7 @@ describe('worker scripts are staged beside every bundled entry', () => {
     });
 
     it(`stages every required sibling runtime asset — ${bundler.label}`, () => {
-      const executable = bundlerExecutable(bundler.path);
+      const executable = siblingExecutable(bundler.path);
       const missing = REQUIRED_RUNTIME_SIBLING_ASSETS.filter(
         ({ output }) => !executable.includes(output),
       );

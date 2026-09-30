@@ -109,7 +109,8 @@ const scriptedEngine = vi.hoisted(() => ({
   // servers it may load, and whether the psu hook set is silenced.
   sdkIdentities: [] as Array<{ prompt: string; mcpServers: string[] | null; strictMcp: boolean; hooksOff: boolean }>,
   // Which agent each Codex/OMP launch was asked to run (P-016), in order.
-  rpcLaunches: [] as Array<{ backend: string; identity: string; promptFile: string; cwd: string }>,
+  rpcLaunches: [] as Array<{ backend: string; identity: string; promptFile: string; cwd: string;
+    accountRoute?: string | null }>,
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
   initialization: Promise.resolve(),
@@ -450,7 +451,7 @@ vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
   return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
     scriptedEngine.rpcLaunches.push({ backend: args[1].backend, identity: args[2].identity ?? 'su',
-      promptFile: args[0].promptFile, cwd: args[0].cwd });
+      promptFile: args[0].promptFile, cwd: args[0].cwd, accountRoute: args[2].accountRoute ?? null });
     const engine = actual.startSuRpcEngine(args[0], args[1], args[2]);
     scriptedEngine.engines.push(engine);
     void (async () => {
@@ -3044,7 +3045,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       expect(launchRequests).toEqual([expect.objectContaining({
-        attached_engine: true, agent: 'claude', harness_slug: HARNESS, account: 'default',
+        // WI-10004164 / D-011: an unchosen account is sent as null and
+        // launch-su resolves it; the form never pre-fills an explicit one.
+        attached_engine: true, agent: 'claude', harness_slug: HARNESS, account: null,
       })]);
       expect(scriptedEngine.requests).toEqual([prompt]);
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
@@ -3178,7 +3181,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(pane.screen()).toContain('Permissions: native approval prompts');
       pane.enter();
       await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
-      expect(launchRequests).toEqual([expect.objectContaining({ harness_slug: projectSlug, account: 'default' })]);
+      expect(launchRequests).toEqual([expect.objectContaining({ harness_slug: projectSlug, account: null })]);
       expect(scriptedEngine.requests).toEqual([]);
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
       console.info('PUI_EMPTY_REGISTRY_ONBOARDING_ACCEPTANCE', JSON.stringify({ binarySha256,
@@ -3849,6 +3852,98 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       }
     }, 240_000);
   }
+
+  // WI-10004164 / D-011: bare `pui` never chose an account, so none is sent
+  // and launch-su routes an OMP gateway model to `auto`. An account the owner
+  // DID choose, `default` included, is sent as chosen, and the engine's
+  // refusal reads as one plain sentence naming the reason, not as a lost
+  // connection or a bare retry prompt. The native OMP CLI is a stand-in; the
+  // PUI, launch-su and the structured engine's model/route check are real.
+  test('WI-10004164: an unchosen OMP account follows a gateway model to auto; a chosen default shows why OMP could not start', async ({ onTestFailed }) => {
+    const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+    const stdio = await import('../su-session-stdio-peer');
+    const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-wi164-omp-')));
+    const saved = await readAgentConfig();
+    const savedOmpModel = process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
+    const gatewayModel = 'papercusp-gateway/claude-sonnet-4-6';
+    let replyText = '';
+    let stage = 'config';
+    onTestFailed(() => console.info('PUI_WI164_FAILURE', JSON.stringify({
+      stage, launches: launchRequests.slice(-2), engines: scriptedEngine.rpcLaunches.slice(-2),
+    })));
+    const spy = vi.spyOn(stdio, 'startSuStdioPeer')
+      .mockImplementation(async (options) => fakeNativePeer('omp', options, () => replyText));
+    try {
+      await writeAgentConfig({ ...saved, backend: 'omp' });
+      // Pin the model the engine checks against the route, so the case does
+      // not depend on this machine's ~/.omp config (EI-24662907494758489).
+      process.env.PAPERCUSP_OMP_MODEL_SELECTOR = gatewayModel;
+
+      stage = 'unchosen';
+      const tag = randomUUID().slice(0, 8);
+      const prompt = `WI164 auto ${tag}`;
+      replyText = `WI164 auto reply ${tag}`;
+      const requestsBefore = launchRequests.length;
+      const enginesBefore = scriptedEngine.rpcLaunches.length;
+      const quick = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+      try {
+        await quick.waitFor(`OMP · ${cwd}`, { timeoutMs: 40_000 });
+        quick.write(prompt);
+        await quick.waitFor(prompt);
+        quick.enter();
+        await quick.waitFor(replyText, { timeoutMs: 60_000 });
+      } finally { await quick.stop(); }
+      expect(launchRequests.slice(requestsBefore)).toEqual([
+        expect.objectContaining({ agent: 'omp', account: null }),
+      ]);
+      expect(scriptedEngine.rpcLaunches.slice(enginesBefore)).toEqual([
+        expect.objectContaining({ backend: 'omp', accountRoute: 'auto' }),
+      ]);
+
+      stage = 'chosen-default';
+      const draft = `WI164 default ${randomUUID().slice(0, 8)}`;
+      const refusedBefore = launchRequests.length;
+      const pane = new PuiPane(bin, operatorPort, home);
+      try {
+        await openComposer(pane, false);
+        pane.write(draft);
+        pane.enter();
+        await pane.waitFor('New session — 1 Context');
+        pane.write('/');
+        pane.write(HARNESS);
+        pane.enter();
+        await pane.waitFor(`> ${HARNESS}`);
+        pane.enter();
+        await pane.waitFor('New session — 2 Runtime');
+        await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
+        expect(pane.screen()).toContain('Account: default (not chosen; a gateway model uses auto)');
+        pane.write('a');
+        await pane.waitFor('Account route — Enter select');
+        pane.write('j'); // Default system account
+        pane.enter();
+        // Chosen, the row names the choice itself, without "(not chosen…)".
+        await vi.waitFor(() => expect(pane.screen()).toMatch(/a Account: default(?! \(not chosen)/),
+          { timeout: 10_000, interval: 100 });
+        pane.enter();
+        await pane.waitFor('New session — 3 Review');
+        pane.enter();
+        await pane.waitFor('OMP could not start:', { timeoutMs: 60_000 });
+        const screen = pane.screen().replace(/\s+/g, ' ');
+        expect(screen).toContain(`OMP default account cannot use gateway model '${gatewayModel}'`);
+        expect(screen).not.toMatch(/lost its connection|stopped before it was ready/);
+      } finally { await pane.stop(); }
+      expect(launchRequests.slice(refusedBefore)).toEqual([
+        expect.objectContaining({ agent: 'omp', account: 'default' }),
+      ]);
+      console.info('PUI_WI164_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256 }));
+    } finally {
+      spy.mockRestore();
+      if (savedOmpModel === undefined) delete process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
+      else process.env.PAPERCUSP_OMP_MODEL_SELECTOR = savedOmpModel;
+      await writeAgentConfig(saved);
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 240_000);
 
   // pui-chat-first-ux-2026-09-28 P-004 / R-04, composer half: the default chat
   // takes input the way Claude Code / Codex do — a `/` command menu, multi-line
@@ -5538,7 +5633,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval allow clause probe');
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
-      expect(launchRequests[0]).toMatchObject({ account: 'default' });
+      expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
@@ -5701,7 +5796,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval deny clause probe');
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
-      expect(launchRequests[0]).toMatchObject({ account: 'default' });
+      expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
       const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
@@ -7068,7 +7163,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       try {
         await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
         frame('00-ready', pane.screen());
-        await turn('01-greeting', 'hi');
+        const greeting = await turn('01-greeting', 'hi');
         const explained = await turn('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
         expect(explained).toMatch(/add/i);
         await turn('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
@@ -7087,6 +7182,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         await pane.stop().catch(() => {});
         pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
         await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
+        // that passed over a pane with every agent reply missing. An agent
+        // block header is what proves the saved conversation was restored.
+        const AGENT_BLOCK = /^│[▸ ] agent\s/m;
+        const restoreStarted = performance.now();
+        await vi.waitFor(() => expect(pane.screen(), 'the restored chat shows the agent replies').toMatch(AGENT_BLOCK), { timeout: 60_000, interval: 250 });
+        log.push({ label: '05a-restored', restoreMs: Math.round(performance.now() - restoreStarted) });
         frame('05a-relaunch', pane.screen());
         pane.write('/resume');
         await pane.waitFor('/resume');
@@ -7100,11 +7202,17 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frame('05b-resume-picker', pane.screen());
         // The review conversation is the only earlier one in this workspace.
         pane.enter();
-        await pane.waitFor('calc.js', { timeoutMs: 60_000 });
-        await sleep(1_500);
+        await pane.waitForGone('Enter select · Esc close', { timeoutMs: 30_000 });
+        await vi.waitFor(() => expect(pane.screen(), 'the resumed chat shows the agent replies').toMatch(AGENT_BLOCK), { timeout: 60_000, interval: 250 });
+        // Hold past the pick: a re-attach that drops the history does so late.
+        await sleep(2_000);
         frame('05c-resumed', pane.screen());
+        expect(pane.screen(), 'the resumed chat still shows the agent replies').toMatch(AGENT_BLOCK);
         const recalled = await turn('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.');
         expect(recalled).toMatch(/third|optional|three/i);
+        // A history replay landing after the send would be folded into this
+        // reply (the P-006 review saw the greeting twice at its start).
+        expect(recalled.includes(greeting.trim()), 'the recall reply carries no replayed history').toBe(false);
         writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: 'pui', binary: bin, binarySha256, cols: 120, rows: 40, launchDir, approvals, questions, retries, log }, null, 2) + '\n');
         console.info('PUI_P005_REVIEW', JSON.stringify({ approvals, log: log.map(({ label, firstReplyMs, totalMs }) => ({ label, firstReplyMs, totalMs })) }));
       } finally {

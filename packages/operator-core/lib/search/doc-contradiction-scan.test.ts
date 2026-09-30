@@ -7,6 +7,9 @@ import {
   runContradictionLeg,
   createGatewayContradictionJudge,
   DOC_CONTRADICTION_JUDGE_MODEL,
+  CONTRADICTION_JUDGE_UNAVAILABLE_REASON,
+  resolveContradictionJudge,
+  type ContradictionJudgeDeps,
 } from './doc-contradiction-scan';
 import { ANTHROPIC_JUDGE_MODEL } from '../memory/anthropic-judge';
 import type { DocOverlapFinding, DocSectionRef } from './doc-section-overlap';
@@ -148,18 +151,18 @@ describe('runContradictionLeg', () => {
 
   it('kinds EVERY finding but only judges the pairs above the judge threshold', async () => {
     const judge = vi.fn(async () => ({ contradicts: false, reason: '' }));
-    const { kinded, report } = await runContradictionLeg({
+    const { kinded, report, judgeBackend } = await runContradictionLeg({
       findings,
       judgeThreshold: 0.95,
       maxJudged: 10,
       deps: {
         enabled: async () => true,
-        judgeAvailable: () => true,
+        resolveJudge: async () => ({ available: true, backend: 'jev', judge }),
         loadTitles: async () => titles,
         loadSections: async () => sections,
-        judge,
       },
     });
+    expect(judgeBackend).toBe('jev');
     // Kinds are free and the report buckets on them, so every finding gets one.
     expect(kinded).toHaveLength(2);
     expect(kinded.map((k) => k.kind)).toEqual(['rehomed-copy', 'sibling-surface']);
@@ -178,10 +181,9 @@ describe('runContradictionLeg', () => {
       maxJudged: 10,
       deps: {
         enabled: async () => false,
-        judgeAvailable: () => true,
+        resolveJudge: async () => ({ available: true, backend: 'anthropic', judge }),
         loadTitles: async () => titles,
         loadSections: async () => sections,
-        judge,
       },
     });
     // The deterministic half of the leg is unaffected by the LLM flag.
@@ -197,14 +199,74 @@ describe('runContradictionLeg', () => {
       maxJudged: 10,
       deps: {
         enabled: async () => true,
-        judgeAvailable: () => true,
+        resolveJudge: async () => ({
+          available: true,
+          backend: 'anthropic',
+          judge: async () => ({ contradicts: true, reason: 'A mandates, B forbids' }),
+        }),
         loadTitles: async () => titles,
         loadSections: async () => sections,
-        judge: async () => ({ contradicts: true, reason: 'A mandates, B forbids' }),
       },
     });
     expect(report.contradictions).toHaveLength(1);
     expect(report.contradictions[0].kind).toBe('rehomed-copy');
     expect(report.contradictions[0].reason).toBe('A mandates, B forbids');
+  });
+
+  it('an unavailable judge loads no section content and reports inconclusive, never clean', async () => {
+    const loadSections = vi.fn(async () => sections);
+    const { report, judgeBackend } = await runContradictionLeg({
+      findings,
+      judgeThreshold: 0.95,
+      maxJudged: 10,
+      deps: {
+        enabled: async () => true,
+        resolveJudge: async () => ({ available: false, reason: CONTRADICTION_JUDGE_UNAVAILABLE_REASON }),
+        loadTitles: async () => titles,
+        loadSections,
+      },
+    });
+    expect(judgeBackend).toBeNull();
+    expect(loadSections).not.toHaveBeenCalled();
+    expect(report.contradictions).toEqual([]);
+    expect(report.inconclusive).toMatch(/no contradiction judge could be built/);
+  });
+});
+
+describe('resolveContradictionJudge (D-017 / D-018)', () => {
+  const jevJudge = vi.fn(async () => ({ contradicts: false, reason: '' }));
+  const anthropicJudge = vi.fn(async () => ({ contradicts: false, reason: '' }));
+  const deps = (over: Partial<ContradictionJudgeDeps> = {}): ContradictionJudgeDeps => ({
+    readJevKey: async () => null as string | null,
+    anthropicAvailable: () => false,
+    jevJudge: () => jevJudge,
+    anthropicJudge: () => anthropicJudge,
+    ...over,
+  });
+
+  it('prefers Jev when a Jev key is stored, even with an Anthropic key present', async () => {
+    const r = await resolveContradictionJudge(deps({ readJevKey: async () => 'ts-key', anthropicAvailable: () => true }));
+    expect(r).toEqual({ available: true, backend: 'jev', judge: jevJudge });
+  });
+
+  it('falls back to the Anthropic judge when no Jev key is stored', async () => {
+    const r = await resolveContradictionJudge(deps({ anthropicAvailable: () => true }));
+    expect(r).toEqual({ available: true, backend: 'anthropic', judge: anthropicJudge });
+  });
+
+  it('treats an unreadable Jev key store as no key, without losing the Anthropic fallback', async () => {
+    const r = await resolveContradictionJudge(
+      deps({
+        readJevKey: async () => {
+          throw new Error('pg down');
+        },
+        anthropicAvailable: () => true,
+      }),
+    );
+    expect(r).toMatchObject({ available: true, backend: 'anthropic' });
+  });
+
+  it('reports unavailable, with a reason, when neither judge can be built', async () => {
+    expect(await resolveContradictionJudge(deps())).toEqual({ available: false, reason: CONTRADICTION_JUDGE_UNAVAILABLE_REASON });
   });
 });

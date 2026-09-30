@@ -961,6 +961,41 @@ describe('affected-tests: prose-vector live-schema guard (EI-20820551755839769)'
 });
 
 /**
+ * WI-10004160 — the federated-column drift guard went unrun for a month (2026-08-29 →
+ * 2026-09-30) because it is an integration test and nothing in the local gate selected it;
+ * 16 columns on 4 federated tables landed neither carried nor declared machine-local. Both
+ * sides of its contract (a migration adds the column; the mapper/projections carry it) must
+ * place the focused guard.
+ */
+describe('affected-tests: federated-column drift guard (WI-10004160)', () => {
+  const SCRIPT = 'test:integration:federated-column-completeness';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+
+  it('attaches for a migration SQL change (the side that adds a column)', () => {
+    expect(dryTasks(`${MIGRATION_SQL_DIR}/999-add-federated-column.sql`)).toContain(TASK);
+  });
+
+  it('attaches for the federation value mapper and a projection (the side that carries it)', () => {
+    expect(dryTasks('packages/operator-core/lib/sync/hyperbee/feature-issue-op-keys.ts')).toContain(TASK);
+    expect(dryTasks('packages/operator-core/lib/sync/hyperbee/projections/harness-plans.ts')).toContain(TASK);
+  });
+
+  it('does NOT attach for an unrelated operator-core source file', () => {
+    expect(dryTasks('packages/operator-core/lib/rubrics.ts')).not.toContain(TASK);
+  });
+
+  it('keeps the focused script declared with the integration config and exact contract file', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const command = pkg.scripts?.[SCRIPT];
+    expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
+    expect(command).toContain('vitest.integration.config.ts');
+    expect(command).toContain('lib/sync/hyperbee/__tests__/federated-column-completeness.integration.test.ts');
+  });
+});
+
+/**
  * WI-2141163 — the real-Postgres resource-governor queue recurrence suite must be
  * selected by the local affected-tests path. The ordinary operator-core task is
  * unit-layer and excludes `*.integration.test.ts`; the broad integration flag is

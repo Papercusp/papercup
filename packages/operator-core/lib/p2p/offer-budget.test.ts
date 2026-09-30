@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   type AxisCap,
   type BudgetEnvelope,
-  type WorkOffer,
   clampEnvelopeToLocal,
   createLedger,
   reserve,
@@ -17,8 +16,6 @@ import {
   decideWindDown,
   reserveRefusalToWindDown,
 } from './offer-budget';
-import { emitOfferWindDownReceipt, type ReceiptEmitter } from './offer-budget-receipts';
-import type { EmitP2pReceiptArgs } from './receipts';
 
 const usd = (cap: number, maxPerCall: number | null = null): AxisCap => ({ cap, unit: 'usd-micros', maxPerCall });
 const slots = (cap: number, maxPerCall: number | null = null): AxisCap => ({ cap, unit: 'slots', maxPerCall });
@@ -156,67 +153,28 @@ describe('publisher rate cap (H16)', () => {
   });
 });
 
-describe('offer-budget-receipts bridge (P-004)', () => {
-  const offer: Pick<WorkOffer, 'offerId' | 'fleetSlug' | 'publisherRef'> = {
-    offerId: 'ofr-1',
-    fleetSlug: 'ml-fleet',
-    publisherRef: 'device:abc',
-  };
-  const ctx = { workspaceId: 'ws1', potSlug: 'hive-home', responderGithubUserId: 4242 };
-
-  function capturingEmitter(): { emit: ReceiptEmitter; calls: EmitP2pReceiptArgs[] } {
-    const calls: EmitP2pReceiptArgs[] = [];
-    const emit: ReceiptEmitter = async (args) => {
-      calls.push(args);
-      return {
-        ok: true,
-        receipt: {
-          workspaceId: 'ws1',
-          potSlug: 'hive-home',
-          receiptId: 'rcpt-1',
-          kind: args.kind,
-          offerId: args.offerId ?? null,
-          action: args.action,
-          refusalCode: args.refusal?.code ?? null,
-          missingCapability: null,
-          budgetAxis: args.budgetAxis ?? null,
-          detail: args.detail ?? '',
-          requesterKind: 'fleet',
-          requesterRef: 'ml-fleet',
-          requesterGithubUserId: null,
-          responderGithubUserId: 4242,
-          responderDevicePubkey: null,
-          receiptTs: 1,
-          origin: 'local',
-        },
-      };
-    };
-    return { emit, calls };
-  }
-
-  it('a budget-exhaustion wind-down is a refusal carrying the axis + structured code', async () => {
-    const { emit, calls } = capturingEmitter();
-    const decision = decideWindDown('budget_exhausted', { axis: 'remote' });
-    const res = await emitOfferWindDownReceipt(offer, decision, ctx, emit);
-    expect(res.ok).toBe(true);
-    expect(calls).toHaveLength(1);
-    const a = calls[0]!;
-    expect(a.kind).toBe('refusal');
-    expect(a.action).toBe('wind-down');
-    expect(a.offerId).toBe('ofr-1');
-    expect(a.budgetAxis).toBe('remote');
-    expect(a.refusal?.code).toBe('budget_exhausted');
-    expect(a.requester).toEqual({ kind: 'fleet', ref: 'ml-fleet' });
-    expect(a.responderGithubUserId).toBe(4242);
+// The receipt for a wind-down is emitted by foreign-supervision.ts
+// windDownForeignSession (covered in foreign-supervision.test.ts). These pin the
+// pure decision it consumes: the X8 receipt kind and the axis it carries.
+describe('decideWindDown — X8 receipt kind', () => {
+  it('a budget-exhaustion wind-down is a refusal carrying the axis', () => {
+    const d = decideWindDown('budget_exhausted', { axis: 'remote' });
+    expect(d.cause).toBe('budget_exhausted');
+    expect(d.receiptKind).toBe('refusal');
+    expect(d.axis).toBe('remote');
+    expect(d.detail).toContain('remote-axis budget exhausted');
   });
 
-  it('a cancellation wind-down is an X8 excused-breach with no structured refusal', async () => {
-    const { emit, calls } = capturingEmitter();
-    const decision = decideWindDown('cancelled');
-    await emitOfferWindDownReceipt(offer, decision, ctx, emit);
-    const a = calls[0]!;
-    expect(a.kind).toBe('excused-breach');
-    expect(a.refusal).toBeNull();
-    expect(a.action).toBe('wind-down');
+  it('a cancellation wind-down is an excused breach with no axis', () => {
+    const d = decideWindDown('cancelled');
+    expect(d.receiptKind).toBe('excused-breach');
+    expect(d.axis).toBeNull();
+  });
+
+  it('every non-cancel cause is a plain refusal, and an explicit detail wins', () => {
+    for (const cause of ['liveness_unconfirmable', 'offer_expired', 'quota_exceeded'] as const) {
+      expect(decideWindDown(cause).receiptKind).toBe('refusal');
+    }
+    expect(decideWindDown('offer_expired', { detail: 'custom' }).detail).toBe('custom');
   });
 });

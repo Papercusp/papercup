@@ -5147,7 +5147,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             Line::from(format!("b Engine: {}", setup.backend.label())),
             Line::from(format!(
                 "a Account: {}",
-                setup.account.as_deref().unwrap_or("default")
+                crate::session_config::account_label(setup.account.as_deref(), setup.backend)
             )),
             Line::from(format!(
                 "m Model: {}",

@@ -43,6 +43,13 @@ import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarde
 
 const host = new Hono();
 
+/** Root well-known path → the connected-apps OAuth route that serves it (P-006). */
+export const MCP_OAUTH_WELL_KNOWN: Readonly<Record<string, string>> = {
+  '/.well-known/oauth-protected-resource/api/mcp': '/api/connected-apps/oauth/protected-resource',
+  '/.well-known/oauth-protected-resource': '/api/connected-apps/oauth/protected-resource',
+  '/.well-known/oauth-authorization-server': '/api/connected-apps/oauth/authorization-server',
+};
+
 // 1. NO RESPONSE COMPRESSION — deliberate, do not re-add.
 //    Papercusp ships as a Tauri DESKTOP app: this host binds 127.0.0.1
 //    (resolveBindHost) and every consumer is on the same machine. Over
@@ -107,6 +114,20 @@ host.route('/', publicDocsRoutes);
 
 // 6. Page-namespace routes (`/wiki`, `/drizzle-studio`).
 host.route('/', pageRoutes);
+
+// 6.5. MCP OAuth discovery (external-app-access P-006). MCP clients look for the RFC 9728
+//      protected-resource document and the RFC 8414 authorization-server document at the
+//      ROOT well-known paths — the resource-suffixed form for `/api/mcp` first, then the bare
+//      one. Both are served by the connected-apps OAuth routes; this only maps the paths.
+//      Exact paths, not a `/*` catch: an unknown well-known path falls through as before.
+for (const [wellKnownPath, target] of Object.entries(MCP_OAUTH_WELL_KNOWN)) {
+  host.get(wellKnownPath, (c) => {
+    const url = new URL(c.req.url);
+    url.pathname = target;
+    url.search = '';
+    return app.fetch(new Request(url, c.req.raw), c.env);
+  });
+}
 
 // 7. Local API fallthrough — every remaining `/api/*` request goes to the
 //    inner Hono app. Calling `app.fetch(c.req.raw)` (not `c.req`) preserves

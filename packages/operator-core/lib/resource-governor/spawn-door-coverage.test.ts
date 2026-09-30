@@ -30,7 +30,6 @@ const SPAWN_DOOR_FILES = [
   [`${B}agent-tools/operator/converse.ts`, 'caller (P-005)'],
   [`${B}agent-tools/fleet/place_batch.ts`, 'caller (P-006)'],
   [`${B}papercup/papercup-deep-delegate-deps.ts`, 'caller (P-007)'],
-  [`${B}p2p/offer-executor-prod-deps.ts`, 'caller (P-008)'],
   [`${B}fleet/spawn-relaunch.ts`, 'caller, recovery path (P-009)'],
   [`${B}fleet/supervision.ts`, 'caller, recovery path (P-010)'],
   [`${B}events/await/wake-executor-fresh-context.ts`, 'caller, recovery path (P-011)'],

@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
@@ -937,5 +937,63 @@ describe('launchRecordAdmitsApplied — may this revision be acknowledged?', () 
     for (const record of [null, undefined, 'launch-spec', [f.record]]) {
       expect(launchRecordAdmitsApplied(record, f.applied)).toBe(false);
     }
+  });
+});
+
+describe('P-018 appliedOrCurrentIdentityArtifact (worn-content reads)', () => {
+  it('resolves a control-only activation to the record\'s current artifact, as the kernel admits it', () => {
+    const f = fixture(undefined);
+    // Re-registering an active mode advanced only the state revision: no receipt carries it.
+    const advanced = { ...f.applied, stateRevision: 'state-b' };
+    expect(appliedIdentityArtifact(f.record, advanced)).toBeNull();
+    expect(appliedOrCurrentIdentityArtifact(f.record, advanced)?.specificationRevision)
+      .toBe(f.artifact.specificationRevision);
+  });
+
+  it('never substitutes the current artifact for a DIFFERENT applied specification', () => {
+    const f = fixture(undefined);
+    const other = { specificationRevision: 'f'.repeat(64), stateRevision: 'state-a' };
+    expect(appliedOrCurrentIdentityArtifact(f.record, other)).toBeNull();
+    expect(appliedOrCurrentIdentityArtifact(f.record, null)).toBeNull();
+    expect(appliedOrCurrentIdentityArtifact({ ...f.record, specificationArtifact: undefined },
+      { ...f.applied, stateRevision: 'state-b' })).toBeNull();
+  });
+});
+
+describe('P-018 readIdentityReactionCeiling', () => {
+  function prepare(workerRoles: unknown[]) {
+    io.state.mockImplementation(async (table) => table === 'harness_registry'
+      ? { projects: [
+        { slug: 'sales', path: '/fixture/sales', hive_slug: 'sales-pot' },
+        { slug: 'sales-pot', path: '/fixture/pot', harness_kind: 'hive' },
+      ] } : { roleEnvelopes: { su: { denyCapabilities: ['capability:bash'] } }, protectedAdditions: ['billing:*'] });
+    io.load.mockReturnValue({ layers: [{}] });
+    io.source.mockReturnValue({ id: 'sales-pot', fleet: { workerRoles } });
+    io.flag.mockResolvedValue(true);
+  }
+
+  it('reads the same sources as the grant policy: role envelope override plus the pot\'s own role ceiling', async () => {
+    prepare([{ id: 'su', capabilities: ['mail:send'] }]);
+    expect(await readIdentityReactionCeiling({ workspaceId: 'ws-a', harnessSlug: 'sales', role: 'su' })).toEqual({
+      potSlug: 'sales-pot',
+      ceilings: [{ denyCapabilities: ['capability:bash'] }, { allowCapabilities: ['mail:send'] }],
+      protectedAdditions: ['billing:*'],
+    });
+    expect(io.load).toHaveBeenCalledWith('/fixture/pot/.papercusp/blueprint.yaml', expect.any(Function));
+  });
+
+  it('adds no pot ceiling when the administrator pot declares none for the role, instead of throwing', async () => {
+    prepare([{ id: 'worker', capabilities: ['mail:send'] }]);
+    const ceiling = await readIdentityReactionCeiling({ workspaceId: 'ws-a', harnessSlug: 'sales', role: 'su' });
+    expect(ceiling.ceilings).toEqual([{ denyCapabilities: ['capability:bash'] }]);
+  });
+
+  it('throws on an unreadable source so the durable step retries rather than authorizing', async () => {
+    prepare([]);
+    io.state.mockRejectedValueOnce(new Error('registry offline'));
+    await expect(readIdentityReactionCeiling({ workspaceId: 'ws-a', harnessSlug: 'sales', role: 'su' }))
+      .rejects.toThrow('registry offline');
+    await expect(readIdentityReactionCeiling({ workspaceId: 'ws-a', harnessSlug: 'unregistered', role: 'su' }))
+      .rejects.toThrow('identity harness is not registered');
   });
 });

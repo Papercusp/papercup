@@ -3,8 +3,6 @@ import {
   AFFINITY_MAX_OWNERS,
   AFFINITY_TTL_MS,
   createLocalBackendPool,
-  ENGINE_CAPACITY_FRESH_FOR_MS,
-  freeSlots,
   HEALTH_FAIL_THRESHOLD,
   isSaturatedFor,
   nextHealthState,
@@ -33,64 +31,6 @@ function backend(over: Partial<LocalBackend> = {}): LocalBackend {
     ...over,
   };
 }
-
-describe('freeSlots (WI-3590 — pool capacity for the p2p claim gate)', () => {
-  const cand = (over: Partial<LocalBackendCandidate> & { backend: LocalBackend }): LocalBackendCandidate => ({
-    inFlight: 0,
-    healthy: true,
-    ...over,
-  });
-
-  it('sums remaining concurrency across eligible backends', () => {
-    expect(
-      freeSlots([
-        cand({ backend: backend({ id: 'a', maxConcurrent: 4 }), inFlight: 1, engineCapacity: engineCapacity(3, 4) }),
-        cand({ backend: backend({ id: 'b', maxConcurrent: 2 }), inFlight: 0, engineCapacity: engineCapacity(2, 2) }),
-      ]),
-    ).toBe(5);
-  });
-
-  it('counts a backend regardless of which models it serves (a claim gate knows no model yet)', () => {
-    expect(freeSlots([cand({ backend: backend({ models: ['something-else'], maxConcurrent: 3 }), engineCapacity: engineCapacity(3) })])).toBe(3);
-  });
-
-  it('ignores disabled and unhealthy backends — it must never count capacity selection would refuse', () => {
-    expect(
-      freeSlots([
-        cand({ backend: backend({ id: 'a', enabled: false, maxConcurrent: 4 }) }),
-        cand({ backend: backend({ id: 'b', maxConcurrent: 4 }), healthy: false }),
-        cand({ backend: backend({ id: 'c', maxConcurrent: 2 }), engineCapacity: engineCapacity(2) }),
-      ]),
-    ).toBe(2);
-  });
-
-  it('is 0 (never negative) when backends are saturated or over-counted', () => {
-    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 2, engineCapacity: engineCapacity(0, 2) })])).toBe(0);
-    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 9, engineCapacity: engineCapacity(0, 2) })])).toBe(0);
-  });
-
-  it('agrees with isSaturatedFor: zero free slots ⇒ no model can be selected', () => {
-    const c = [cand({ backend: backend({ id: 'a', maxConcurrent: 1 }), inFlight: 1, engineCapacity: engineCapacity(0, 1) })];
-    expect(freeSlots(c)).toBe(0);
-    expect(isSaturatedFor(c, 'ornith-35b')).toBe(true);
-  });
-
-  it('is 0 for an empty pool', () => {
-    expect(freeSlots([])).toBe(0);
-  });
-
-  it('fails closed for headroom when engine capacity is unknown or stale', () => {
-    expect(freeSlots([cand({ backend: backend({ maxConcurrent: 99 }) })])).toBe(0);
-    expect(
-      freeSlots([
-        cand({
-          backend: backend({ maxConcurrent: 99 }),
-          engineCapacity: { freeSlots: 4, observedAtMs: Date.now() - ENGINE_CAPACITY_FRESH_FOR_MS - 1 },
-        }),
-      ]),
-    ).toBe(0);
-  });
-});
 
 describe('pickLeastLoaded', () => {
   const cand = (over: Partial<LocalBackendCandidate> & { backend: LocalBackend }): LocalBackendCandidate => ({

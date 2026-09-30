@@ -222,6 +222,45 @@ describe('tool-scoped `slug` — the same name means different things', () => {
   });
 });
 
+/**
+ * EI-24646272383071079: `harness:create { slug }` names a harness that does not exist
+ * yet, so the clamp compared an unregistered slug against the caller's hive and refused
+ * EVERY hive-confined create. The new harness's hive is `pot` (create.ts stamps
+ * hive_slug from it), so with `pot` present the sweep checks `pot` alone.
+ */
+describe('harness:create — the new slug is not a hive reference; pot is', () => {
+  it('with pot, the sweep checks only pot (the hive the new harness joins)', () => {
+    expect(
+      collectHarnessSlugArgs({ slug: 'brand-new', pot: 'my-hive' }, { toolName: 'harness:create' }),
+    ).toEqual([{ arg: 'pot', slug: 'my-hive' }]);
+  });
+
+  it('a cross-hive pot is still swept, so creating INTO another hive stays refused', () => {
+    expect(
+      collectHarnessSlugArgs({ slug: 'brand-new', pot: 'other-hive' }, { toolName: 'harness:create' }),
+    ).toEqual([{ arg: 'pot', slug: 'other-hive' }]);
+  });
+
+  it('without pot, slug stays swept: a hive-less new harness is outside every hive', () => {
+    expect(collectHarnessSlugArgs({ slug: 'brand-new' }, { toolName: 'harness:create' })).toEqual([
+      { arg: 'slug', slug: 'brand-new' },
+    ]);
+    // A blank pot is not a hive; it must not switch the slug check off.
+    expect(
+      collectHarnessSlugArgs({ slug: 'brand-new', pot: '  ' }, { toolName: 'harness:create' }),
+    ).toEqual([{ arg: 'slug', slug: 'brand-new' }]);
+  });
+
+  it('the exemption is scoped to harness:create — pot:* slug is still a hive reference', () => {
+    expect(
+      collectHarnessSlugArgs({ slug: 'other-hive', pot: 'my-hive' }, { toolName: 'pot:obliterate' }),
+    ).toEqual([
+      { arg: 'slug', slug: 'other-hive' },
+      { arg: 'pot', slug: 'my-hive' },
+    ]);
+  });
+});
+
 describe('the clamp SWEEP is wired (not just the module)', () => {
   // isClampEnforcedArg claims the generic sweep covers every designatesHarness
   // arg. That claim is only true while _mcp-handler.ts actually calls the sweep;

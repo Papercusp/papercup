@@ -32,7 +32,7 @@ vi.mock('../agent-tools/coordination/control-anchor', () => ({
   readGateSelectedLaunchSpec: readGateSelectedLaunchSpecMock,
 }));
 vi.mock('../capability-envelope/identity-grants-port', () => ({
-  appliedIdentityArtifact: appliedIdentityArtifactMock,
+  appliedOrCurrentIdentityArtifact: appliedIdentityArtifactMock,
 }));
 
 import { readAppliedWornRules } from './sync-hook-rules';

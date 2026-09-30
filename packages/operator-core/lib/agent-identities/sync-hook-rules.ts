@@ -421,6 +421,30 @@ export async function turnStartSyncRuleRequests(input: {
  * but its artifact cannot be resolved from the gate-selected launch record.
  */
 export async function readAppliedWornRules(ownerId: string, workspaceId: string): Promise<WornSyncRules | null> {
+  return (await readAppliedIdentityRules(ownerId, workspaceId))?.sync ?? null;
+}
+
+/** What the wearer's APPLIED artifact pins, read once per revision pair. */
+export interface AppliedIdentityRules {
+  readonly applied: { readonly specificationRevision: string; readonly stateRevision: string };
+  readonly pins: WornRulePins;
+  readonly sync: WornSyncRules;
+  /**
+   * The capability classes the identity declares it needs (`configuration.grants`
+   * requires ∪ optional); null when it declares no grants at all.
+   */
+  readonly declaredClassNeeds: readonly string[] | null;
+}
+
+/**
+ * Null when nothing is applied; throws when a revision is applied but its
+ * artifact cannot be resolved from the gate-selected launch record. A
+ * control-only activation (state revision moved, specification unchanged)
+ * resolves to the record's current artifact, as the grant kernel admits it.
+ */
+export async function readAppliedIdentityRules(
+  ownerId: string, workspaceId: string,
+): Promise<AppliedIdentityRules | null> {
   const sql = getOrgPg().sql;
   const rows = await sql<{ applied: unknown }[]>`
     SELECT control_state->'activation'->'applied' AS applied
@@ -429,24 +453,38 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string)
      LIMIT 1`;
   const applied = rows[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
   if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return null;
-  const cacheKey = [workspaceId, ownerId, applied.specificationRevision, applied.stateRevision].join('\u0000');
+  return appliedIdentityRulesAt(ownerId, workspaceId,
+    { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision });
+}
+
+/** The rules at one applied revision pair the caller already read; throws when unreadable. */
+export async function appliedIdentityRulesAt(
+  ownerId: string, workspaceId: string, revision: AppliedIdentityRules['applied'],
+): Promise<AppliedIdentityRules> {
+  const cacheKey = [workspaceId, ownerId, revision.specificationRevision, revision.stateRevision].join('\u0000');
   const cached = wornRulesCache.byRevision.get(cacheKey);
-  if (cached && 'worn' in cached) return cached.worn;
+  if (cached && 'rules' in cached) return cached.rules;
   if (cached && cached.unreadableUntil > Date.now()) throw new Error('applied identity artifact unreadable');
-  const [{ readGateSelectedLaunchSpec }, { appliedIdentityArtifact }] = await Promise.all([
+  const [{ readGateSelectedLaunchSpec }, { appliedOrCurrentIdentityArtifact }] = await Promise.all([
     import('../agent-tools/coordination/control-anchor'),
     import('../capability-envelope/identity-grants-port'),
   ]);
-  const artifact = appliedIdentityArtifact(await readGateSelectedLaunchSpec(sql, ownerId, workspaceId), {
-    specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision,
-  });
+  const artifact = appliedOrCurrentIdentityArtifact(
+    await readGateSelectedLaunchSpec(getOrgPg().sql, ownerId, workspaceId), revision);
   if (!artifact) {
     rememberWornRules(cacheKey, { unreadableUntil: Date.now() + WORN_RULES_UNREADABLE_TTL_MS });
     throw new Error('applied identity artifact unreadable');
   }
-  const worn = wornSyncRules(artifact);
-  rememberWornRules(cacheKey, { worn });
-  return worn;
+  const pins = wornRulePins(artifact);
+  const grants = artifact.configuration?.grants;
+  const rules: AppliedIdentityRules = {
+    applied: revision,
+    pins,
+    sync: syncView(pins),
+    declaredClassNeeds: grants ? [...new Set([...(grants.requires ?? []), ...(grants.optional ?? [])])].sort() : null,
+  };
+  rememberWornRules(cacheKey, { rules });
+  return rules;
 }
 
 /**
@@ -461,7 +499,7 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string)
  */
 const WORN_RULES_CACHE_MAX = 256;
 const WORN_RULES_UNREADABLE_TTL_MS = 30_000;
-type WornRulesCacheEntry = { readonly worn: WornSyncRules } | { readonly unreadableUntil: number };
+type WornRulesCacheEntry = { readonly rules: AppliedIdentityRules } | { readonly unreadableUntil: number };
 const wornRulesCache = pinModuleState('@papercusp/operator-core.agent-identities.worn-sync-rules', () => ({
   byRevision: new Map<string, WornRulesCacheEntry>(),
 }));
