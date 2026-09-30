@@ -1286,6 +1286,27 @@ async function waitForCorrelatedReply(
   return chat;
 }
 
+/**
+ * A real-engine marker request whose answer is not in the request text.
+ * "Reply with exactly <token> and no other text", next to the project context
+ * a session carries, reads to Claude as a prompt-injection probe and it refuses
+ * (WI-10004247 class F: rehearsal a39934fc39, exact-resume greeting). Uppercasing
+ * a lowercase reference code is an ordinary task, and the model has to produce
+ * the marker instead of copying it. `reply` is what the screen shows;
+ * `replyPattern` tolerates the backticks, quotes or full stop a model may add
+ * around the code, while the code itself stays exact.
+ */
+function markerRequest(marker: string, lead = ''): { prompt: string; reply: string; replyPattern: RegExp } {
+  const reply = marker.toUpperCase();
+  const escaped = reply.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    prompt: `${lead}Please convert this reference code to uppercase and answer with only the converted code. `
+      + `Do not use tools. Code: ${marker.toLowerCase()}`,
+    reply,
+    replyPattern: new RegExp(`^[\\s\`'"]*${escaped}[\\s\`'".]*$`),
+  };
+}
+
 async function finishTeardown(steps: Array<() => void | Promise<void>>): Promise<void> {
   const errors: unknown[] = [];
   for (const step of steps) {
@@ -6492,8 +6513,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
 
   test('restores the same native conversation after the operator OS process exits', async () => {
     const manifest = installedManifest();
-    const greetingReply = `PUI-PROCESS-${randomUUID()}`;
-    const greeting = `Reply exactly ${greetingReply}. Do not use tools.`;
+    const processMarker = `pui-process-${randomUUID()}`;
+    const { prompt: greeting, reply: greetingReply } = markerRequest(processMarker);
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
     const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
     // Codex's `on-request` policy asks only when a command must leave its
@@ -6681,13 +6702,14 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
       await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
-      const resumedReply = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
       // The optional approval probe precedes `greeting`, so "my first
       // greeting" is ambiguous there: a real model can correctly recall the
       // permission-fixture marker instead. Name the expected historical
-      // marker while still requiring the resumed native conversation to have
-      // retained it across the operator-process boundary.
-      resumedPane.write(`Reply exactly RESUMED:${greetingReply}. Do not use tools.`);
+      // marker while still requiring the resumed native conversation to
+      // answer across the operator-process boundary.
+      const { prompt: resumePrompt, reply: resumedReply, replyPattern: resumedReplyPattern } =
+        markerRequest(`resumed-${processMarker}`);
+      resumedPane.write(resumePrompt);
       frames.beforeSubmit = resumedPane.screen();
       resumedPane.enter();
       await resumedPane.waitForReply(resumedReply);
@@ -6707,7 +6729,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             event.type === 'transcript' &&
             event.role === 'assistant' &&
             event.phase === 'completed' &&
-            resumedReply.test(event.content ?? ''),
+            resumedReplyPattern.test(event.content ?? ''),
         ),
       ).toBe(true);
       console.info(
@@ -6769,8 +6791,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   test('exact resume reaches readiness on every repetition without a startup timeout', async () => {
     const repeats = Math.max(1, Number(process.env.PUI_RESUME_REPEAT ?? '3'));
     const nonce = randomUUID();
-    const greetingReply = `PUI-REPEAT-${nonce}`;
-    const greeting = `Reply with exactly ${greetingReply} and no other text.`;
+    const { prompt: greeting, reply: greetingReply, replyPattern: greetingReplyPattern } =
+      markerRequest(`pui-repeat-${nonce}`);
     const eventsBefore = scriptedEngine.events.length;
     const launchDir = journeyDir('repeat');
     const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
@@ -6779,7 +6801,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await openComposer(pane);
       pane.write(greeting);
       pane.enter();
-      chatId = (await waitForCorrelatedReply(greeting, greetingReply)).id;
+      chatId = (await waitForCorrelatedReply(greeting, greetingReplyPattern)).id;
       await pane.waitForReply(greetingReply);
     } finally {
       await pane.stop();
@@ -6829,8 +6851,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();
     const nonce = randomUUID();
-    const greetingReply = `PUI-HELLO-${nonce}`;
-    const greeting = `Hi. Reply with exactly ${greetingReply} and no other text.`;
+    const { prompt: greeting, reply: greetingReply, replyPattern: greetingReplyPattern } =
+      markerRequest(`pui-hello-${nonce}`, 'Hi. ');
     // The answer is intentionally absent from the request: only reading this
     // newly generated file can supply the expected result.
     const fileResult = `PUI-FILE-${randomUUID()}`;
@@ -6838,8 +6860,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     writeFileSync(fixturePath, fileResult + '\n');
     const fileRequest = `Use your file-reading tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
     const longRequest = `For interruption check PUI-CANCELLED-${nonce}, count from 1 through 10000, one number per line. Do not summarize or use tools.`;
-    const followupReply = `PUI-CONTINUED-${nonce}`;
-    const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
+    const { prompt: followup, reply: followupReply, replyPattern: followupReplyPattern } =
+      markerRequest(`pui-continued-${nonce}`, 'Do not resume the interrupted task. ');
     const launchDir = journeyDir('greeting');
     const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
     const frames: Record<string, string> = {};
@@ -6848,7 +6870,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await openComposer(pane);
       pane.write(greeting);
       pane.enter();
-      const firstChat = await waitForCorrelatedReply(greeting, greetingReply);
+      const firstChat = await waitForCorrelatedReply(greeting, greetingReplyPattern);
       await pane.waitForReply(greetingReply);
       frames.greeting = pane.screen();
       const engine = scriptedEngine.engines[0];
@@ -6994,7 +7016,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       frames.interrupted = pane.screen();
       pane.write(followup);
       pane.enter();
-      const finalChat = await waitForCorrelatedReply(followup, followupReply);
+      const finalChat = await waitForCorrelatedReply(followup, followupReplyPattern);
       await pane.waitForReply(followupReply);
       frames.followup = pane.screen();
       expect(finalChat.id).toBe(firstChat.id);
@@ -7057,11 +7079,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await putViewState('Plans');
       const resumedPane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
       let resumedDescriptor;
-      const resumePrompt = `Reply exactly RESUMED:${greetingReply}. Do not use tools.`;
-      const resumedReply = `RESUMED:${greetingReply}`;
-      // Recall of the unknown marker is the assertion, not whether a model
-      // inserts whitespace after the label. The marker itself stays exact.
-      const resumedReplyPattern = new RegExp(`^RESUMED:\\s*${greetingReply}$`);
+      const { prompt: resumePrompt, reply: resumedReply, replyPattern: resumedReplyPattern } =
+        markerRequest(`resumed-pui-hello-${nonce}`);
       try {
         await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         resumedPane.write('o');
@@ -7079,7 +7098,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
               type: 'transcript',
               phase: 'completed',
               role: 'assistant',
-              content: followupReply,
+              content: expect.stringMatching(followupReplyPattern),
             }),
           ]),
         );
@@ -7098,7 +7117,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         resumedPane.write(resumePrompt);
         resumedPane.enter();
         const resumedChat = await waitForCorrelatedReply(resumePrompt, resumedReplyPattern);
-        await resumedPane.waitForReply(resumedReplyPattern);
+        await resumedPane.waitForReply(resumedReply);
         expect(resumedChat.id).toBe(firstChat.id);
         frames.resumed = resumedPane.screen();
       } catch (cause) {
