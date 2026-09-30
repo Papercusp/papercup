@@ -20,10 +20,14 @@ import {
   bindingRefs,
   stackBindingFromRefs,
   slotSpec,
+  FIRST_PARTY_INPUT_KIND,
+  firstPartyClassRef,
+  resolveFirstPartyContextClass,
 } from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import type { IdentityOmissionReason } from './omission-reasons';
 import { validateIdentityProviderOutput } from './provider-output';
+import { compileJsonSchema } from '../json-schema-validation';
 
 /** One context capability value, provenance envelope included (P-004). */
 const IDENTITY_CONTEXT_OUTPUT_MAX_BYTES = 16_384;
@@ -538,17 +542,38 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
       throw new Error('identity output needs one unique produced value or omission receipt');
     }
     supplied.add(selected.id);
+    // A setting or prompt provider names a first-party class (D-039). The class
+    // owns the output contract, so the value is checked before it can bind.
+    const firstParty = resolveFirstPartyContextClass(selected.producerRef);
+    if (!firstParty || firstParty.verb !== selected.verb ||
+        FIRST_PARTY_INPUT_KIND[firstParty.outputKind] !== selected.inputKind) {
+      throw new Error('identity ' + input.identityId + ' provider contribution ' + selected.id +
+        ' names no first-party class ' + selected.producerRef);
+    }
+    const classRef = firstPartyClassRef(firstParty);
+    const providerRef = firstParty.providerRef;
     if (output.omission) {
       omissions.push({ id: selected.id, ...output.omission });
       receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
-        outputRevision: null, status: 'omitted:' + output.omission.reason });
+        outputRevision: null, status: 'omitted:' + output.omission.reason, classRef, providerRef });
+      continue;
+    }
+    if (selected.inputKind === 'prompt-file' && (typeof output.value !== 'string' || !output.value.trim())) {
+      throw new Error('identity prompt contribution needs non-empty produced text');
+    }
+    if (!compileJsonSchema(firstParty.outputSchema as Record<string, unknown>)(output.value)) {
+      if (selected.availability !== 'optional') {
+        throw new Error(`identity ${input.identityId} provider contribution ${selected.id} output refused: schema-mismatch`);
+      }
+      const errorRef = 'capability-output:schema-mismatch';
+      omissions.push({ id: selected.id, reason: 'unavailable', errorRef });
+      receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
+        outputRevision: null, status: 'omitted:unavailable', errorRef, classRef, providerRef });
       continue;
     }
     let revision: string;
     if (selected.inputKind === 'prompt-file') {
-      if (typeof output.value !== 'string' || !output.value.trim()) {
-        throw new Error('identity prompt contribution needs non-empty produced text');
-      }
+      if (typeof output.value !== 'string') throw new Error('identity prompt contribution needs produced text');
       revision = createHash('sha256').update(output.value).digest('hex');
       closure.push({ kind: 'prompt-file', ref: selected.ref, bytes: output.value,
         contentHash: revision, producerRef: selected.producerRef });
@@ -558,7 +583,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
         producerRef: selected.producerRef });
     }
     receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
-      outputRevision: revision, status: 'bound' });
+      outputRevision: revision, status: 'bound', classRef, providerRef });
   }
   const contributionRefreshForSink = input.scope.sink === 'turn-start' ? 'turn' : input.scope.sink;
   for (const entry of declarations ?? []) {
