@@ -40,7 +40,11 @@ import {
 } from '@papercusp/blueprint-distribution';
 import { blueprintRegistrySets } from '../blueprint/registry-sets';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
-import { resolveBlueprintPackageInputs, type BlueprintPackageResolver } from '../blueprint/compile-packages';
+import {
+  resolveBlueprintPackageInputs,
+  vendoredBlueprintPackageResolver,
+  type BlueprintPackageResolver,
+} from '../blueprint/compile-packages';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 import {
   BlueprintLifecycleError,
@@ -343,12 +347,16 @@ export function servedBlueprintSource(
   cloneDir: string,
   listingRef: string | undefined,
   host: ResolveExtendsPath,
-): { bpDir: string; blueprintFile: string; resolveExtends: ResolveExtendsPath } {
+  hostPackage?: BlueprintPackageResolver,
+): { bpDir: string; blueprintFile: string; resolveExtends: ResolveExtendsPath; resolvePackage: BlueprintPackageResolver } {
   const bpDir = locateBlueprintDir(cloneDir, listingRef);
   return {
     bpDir,
     blueprintFile: join(bpDir, 'blueprint.yaml'),
     resolveExtends: cloneFirstResolveExtends(cloneDir, bpDir, host),
+    // D-037: bundled packages the repo vendors travel with it, so a clean
+    // destination installs them from the clone rather than its own stores.
+    resolvePackage: vendoredBlueprintPackageResolver(bpDir, hostPackage),
   };
 }
 
@@ -364,7 +372,8 @@ export async function installBlueprintFromCupboardCore(
   const cloneDir = join(deps.tmpDir(), `cupboard-blueprint-${Date.now()}-${Math.floor(performance.now())}`);
   try {
     await deps.cloneRepo(url, cloneDir);
-    const { bpDir, resolveExtends } = servedBlueprintSource(cloneDir, input.listingRef, deps.resolveExtends);
+    const { bpDir, resolveExtends, resolvePackage } = servedBlueprintSource(
+      cloneDir, input.listingRef, deps.resolveExtends, deps.resolvePackage);
 
     let raw: Record<string, unknown>;
     try {
@@ -463,7 +472,7 @@ export async function installBlueprintFromCupboardCore(
       if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
         requests.push({ kind: 'knowledge-pack', ref: knowledge });
       }
-      const packages = await resolveBlueprintPackageInputs(requests, deps.resolvePackage);
+      const packages = await resolveBlueprintPackageInputs(requests, resolvePackage);
       closure = { bundles: requests, inputs: [...packages, ...blueprintPackageInputs(source, packages)] };
     } catch (error) {
       throw new InstallBlueprintError(`blueprint "${id}" package resolution failed: ${error instanceof Error ? error.message : String(error)}`, 422);

@@ -144,6 +144,7 @@ export default defineTool({
         blueprintFile: served.blueprintFile,
         listingRef,
         resolveExtends: served.resolveExtends,
+        resolvePackage: served.resolvePackage,
       });
     } catch (error) {
       return Response.json(

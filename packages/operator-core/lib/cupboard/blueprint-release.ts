@@ -630,6 +630,30 @@ async function readArchive(installedDir: string, id: string, contentHash: string
   }
 }
 
+/** D-037: the retained closure of each ACTIVE installed release is the
+ * destination's installed-package tier. A bundled package resolves from the
+ * release that shipped it, and leaves with that release's uninstall/rollback. */
+export async function resolveInstalledReleasePackage(
+  installedDir: string,
+  request: { kind: string; ref: string; version?: string },
+): Promise<ResolvedPackageInput | null> {
+  const ids = await fs.readdir(join(installedDir, '.releases')).catch(() => [] as string[]);
+  for (const id of ids.sort()) {
+    try {
+      assertSafeId(id);
+      const index = await readIndex(installedDir, id);
+      if (!index.activeContentHash) continue;
+      const archive = await readArchive(installedDir, id, index.activeContentHash);
+      const pin = archive.pins.find((candidate) => candidate.packageKind === request.kind &&
+        candidate.ref === request.ref && (!request.version || candidate.revision === request.version));
+      if (pin) return pin;
+    } catch {
+      // An unreadable release offers nothing; its own lifecycle reports it.
+    }
+  }
+  return null;
+}
+
 function promptMap(archive: BlueprintReleaseArchive | null): Map<string, { hash: string; text: string }> {
   const out = new Map<string, { hash: string; text: string }>();
   for (const pin of archive?.pins ?? []) {
