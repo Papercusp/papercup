@@ -23,7 +23,9 @@ import {
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import { ACCESS_TOKEN_SLUG_SEPARATOR, APP_PRINCIPAL_SLUG_PREFIX } from './principal';
 import { appScopeToolOf, evaluateAppScope, type AppScopeRow, type AppScopeTool } from './scope-policy';
-import { loadAccessTokenScopeRow, loadAppScopeRow } from './store';
+import { raiseConnectedAppAlert, type AlertedApp, type ConnectedAppAlert } from './alerts';
+import { LLM_RUNNING_TOOLS, loadAppSpendStatus, spendCapVerdict, type AppSpendStatus } from './spend';
+import { loadAccessTokenScopeRow, loadAlertedAppRow, loadAppScopeRow } from './store';
 
 /** Denial codes are namespaced so a caller can tell an app-scope refusal from any other. */
 export const APP_SCOPE_CODE_PREFIX = 'app_scope:';
@@ -37,6 +39,15 @@ export interface EnforceAppKeyScopeDeps {
   loadAccessTokenRow?: (tokenId: string, appId: string) => Promise<AppScopeRow | null>;
   lookupTool: (name: string) => AppScopeTool | undefined;
   now?: () => Date;
+  /**
+   * The key's cap and recorded spend (P-011, R-27), read only for an LLM-running tool. Absent, or a
+   * read that fails or finds no key, refuses the LLM-running call (fail closed).
+   */
+  loadSpendStatus?: (appId: string, now: Date) => Promise<AppSpendStatus | null>;
+  /** Raises the cap-near / cap-reached alert. Best-effort, never awaited on the request path. */
+  raiseAlert?: (alert: ConnectedAppAlert) => Promise<void>;
+  /** The alerted key's display fields (label, kind, workspace). */
+  loadAlertedApp?: (appId: string) => Promise<AlertedApp | null>;
 }
 
 const DEFAULT_DEPS: EnforceAppKeyScopeDeps = {
@@ -46,7 +57,51 @@ const DEFAULT_DEPS: EnforceAppKeyScopeDeps = {
     const tool = lookupByMcpName(name);
     return tool ? appScopeToolOf(name, tool) : undefined;
   },
+  loadSpendStatus: loadAppSpendStatus,
+  raiseAlert: (alert) => raiseConnectedAppAlert(alert),
+  loadAlertedApp: loadAlertedAppRow,
 };
+
+/**
+ * The spending-cap half of the seat (P-011, R-27): an LLM-running call from a key whose recorded
+ * spend has reached its cap is refused. Null = allowed. Fails closed on a missing or failed read.
+ */
+async function spendCapDenial(
+  ref: { appId: string },
+  toolName: string,
+  deps: EnforceAppKeyScopeDeps,
+  now: Date,
+): Promise<KernelEnforcementResult | null> {
+  if (!LLM_RUNNING_TOOLS.has(toolName)) return null;
+  if (!deps.loadSpendStatus) return deny('spend_unavailable', 'the recorded spend cannot be read; no LLM work authorized');
+  let status: AppSpendStatus | null;
+  try {
+    status = await deps.loadSpendStatus(ref.appId, now);
+  } catch (err) {
+    return deny('spend_unavailable', `the recorded spend cannot be read (${err instanceof Error ? err.message : String(err)}); no LLM work authorized`);
+  }
+  if (!status) return deny('key_unknown', 'app key no longer exists');
+  const verdict = spendCapVerdict(status);
+  if (verdict.state === 'near' || verdict.state === 'reached') {
+    const windowStartMs = status.windowSec === null
+      ? null
+      : Math.floor(now.getTime() / (status.windowSec * 1000)) * status.windowSec * 1000;
+    const kind = verdict.state === 'near' ? 'spend-cap-near' : 'spend-cap-reached';
+    const { raiseAlert, loadAlertedApp } = deps;
+    if (raiseAlert && loadAlertedApp) {
+      void loadAlertedApp(ref.appId)
+        .then((app) => app && raiseAlert({ kind, app, spentCents: verdict.spentCents, capCents: verdict.capCents, windowStartMs }))
+        .catch(() => undefined);
+    }
+  }
+  if (verdict.state === 'reached') {
+    return deny(
+      'spend_cap_reached',
+      `this key has spent ${verdict.spentCents.toFixed(0)} of its ${verdict.capCents.toFixed(0)} cent cap; new LLM work is refused until the cap is raised or its window resets`,
+    );
+  }
+  return null;
+}
 
 /** The key (and, for an access token, the token) behind an app principal slug. */
 export function appPrincipalRefOfSlug(slug: string | null | undefined): { appId: string; tokenId: string | null } | null {
@@ -177,7 +232,8 @@ export async function enforceAppKeyScope(
       const verdict = evaluateAppScope(input, row);
       if (!verdict.allow) return deny(verdict.code, verdict.reason);
     }
-    return null;
+    // In scope. An LLM-running call must also be under the key's spending cap (R-27).
+    return await spendCapDenial(ref, request.toolName, deps, input.now ?? new Date());
   } catch (err) {
     return deny('unavailable', `scope check failed (${err instanceof Error ? err.message : String(err)}); no effect authorized`);
   }

@@ -26,6 +26,8 @@
  */
 
 import type { Principal } from '@papercusp/agent-mcp';
+import { notifyAttentionOnce } from '../attention-notify';
+import { onAppKeyUsed } from './alerts';
 import { isAppKeyShaped } from './key';
 import { recordAppKeyUse, verifyAppKey, type AccessTokenGrant, type AppKeyRefusal, type AppKeyRow } from './store';
 
@@ -101,7 +103,9 @@ export async function resolveAppKeyToken(
     return { ok: false, reason: 'unavailable' };
   }
   if (!verdict.ok) return verdict;
-  void recordAppKeyUse(verdict.app.id, opts.ip ?? null).catch(() => undefined);
+  // Records the use and raises the new-app / new-location alerts it implies (P-011, R-28/R-42).
+  // Off the request path and never throws.
+  void onAppKeyUsed(verdict.app, opts.ip ?? null, { recordUse: recordAppKeyUse, notify: notifyAttentionOnce });
   return { ok: true, principal: principalForAppKey(verdict.app, verdict.accessToken), app: verdict.app };
 }
 
