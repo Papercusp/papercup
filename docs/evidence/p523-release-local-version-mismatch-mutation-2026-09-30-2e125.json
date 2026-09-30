@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P523 packaging refusal control mutation probe: Linux salvage version-mismatch relabel (release-local.sh)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file papercusp-desktop/bin/release-local.sh",
+    "--fake-destructive",
+    "--mutate 's/if \\[\\[ \"\\$prior_ver\" != \"\\$VERSION\" \\]\\]; then/if false; then/'",
+    "--test 'PAPERCUSP_RELEASE_LOCAL_PATH={} node --test --test-reporter=spec --test-name-pattern=\"refuses to relabel a different version\" papercusp-desktop/test/release-local-linux-reuse.test.js'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:26:23Z",
+  "finishedAt": "2026-09-30T04:26:27Z",
+  "summary": "Copy-out mutation probe (no in-tree mutation) on the P523 packaging refusal control 'Linux salvage refuses to relabel a different version'. The baseline and the unmutated-copy baseline each ran exactly 1 test and passed. Replacing the version-mismatch branch condition in release-local.sh (the only occurrence) with `if false` let a 0.0.17 salvage be relabelled as the 0.0.18 cut; the refusal test then failed (guard exit 1). The probe reported MUTANT CAUGHT and verified release-local.sh byte-identical afterwards. This proves one of the refusal controls cited by stale counterexample binding 9477; it is not a proof of the other eight controls, and it is preparation evidence, not a full installer build, signing, notarization or P-521 acceptance.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Baseline against the tracked file and unmutated-copy baseline against the relocated copy: each 'tests 1, pass 1, fail 0, skipped 0' (node --test spec reporter), exit 0."
+    },
+    {
+      "id": "version-mismatch-relabel-mutant-killed",
+      "passed": true,
+      "evidence": "Changing `if [[ \"$prior_ver\" != \"$VERSION\" ]]; then` to `if false; then` in the Linux/Windows/mac reuse provenance check made 'Linux salvage refuses to relabel a different version' fail: assert.notEqual(result.status, 0) got 0 (ERR_ASSERTION, operator notStrictEqual); guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=ok; tree integrity VERIFIED — papercusp-desktop/bin/release-local.sh byte-identical to its pre-probe state."
+    }
+  ],
+  "workItemId": "WI-2147009",
+  "specId": "ENDGAME-P-523-contract",
+  "testFile": "papercusp-desktop/test/release-local-linux-reuse.test.js",
+  "sourceFile": "papercusp-desktop/bin/release-local.sh",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-523",
+    "refreshWorkItemId": "WI-10004126",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 9477,
+    "superprojectHead": "b1748e923a65eaea8f12336c805f01232ff33337",
+    "desktopHead": "b5963fb93a21d68c0fe7f22c27e0daa12331cd69",
+    "subjectBlob": "1240b6669c64814aa3a73a4988b7e929e1e23d04",
+    "testBlob": "e55cb7e7657f0e354fd08e8534c132efdf33364f",
+    "subjectAndTestCleanAtDesktopHead": true,
+    "preparationOnly": true
+  }
+}
