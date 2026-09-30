@@ -173,6 +173,69 @@ describe('HostedWorkspaceSessionBroker — desktop channels (P-013 / D-023, D-02
     expect(browser.sent).not.toContainEqual(expect.objectContaining({ type: 'session.denied' }));
   });
 
+  describe('the control plane records the viewer start itself (WI-10004167)', () => {
+    // The host audits into ITS database, which the control plane cannot read, so the
+    // P-318 customer-acceptance receipt could never find a hosted takeover. The broker
+    // records its own row once the host confirms the dial.
+    function audited(attach: Parameters<HostedWorkspaceSessionBroker['attachBrowser']>[2]) {
+      const audit = vi.fn();
+      const broker = new HostedWorkspaceSessionBroker({ randomId: () => 'channel-1', onAudit: audit });
+      const host = new FakeSocket();
+      const browser = new FakeSocket();
+      broker.attachConnector(connector, host);
+      broker.attachBrowser(ticket(), browser, attach);
+      const starts = () =>
+        audit.mock.calls.map(([event]) => event).filter((event) => String(event.action).startsWith('desktop_'));
+      return { host, browser, starts };
+    }
+    const ready = (action: string) => ({ type: 'relay', channelId: 'channel-1', payload: { type: 'desktop.ready', action, inputAllowed: action === 'takeover' } });
+
+    it('records a takeover start with the broker\'s own identity once the host confirms the dial', () => {
+      const { host, browser, starts } = audited({ kind: 'desktop', desktopSessionId: 'ds_1', desktopMode: 'takeover' });
+      expect(starts()).toEqual([]);
+      host.message(ready('takeover'));
+      expect(starts()).toEqual([{
+        action: 'desktop_takeover_started',
+        controlPlaneWorkspaceId: 'control',
+        organizationId: 'org-1',
+        customerWorkspaceId: 'workspace-1',
+        hostId: 'host-1',
+        generation: 7,
+        userId: 'user-1',
+        hostedSessionId: 'hosted-session-1',
+        channelId: 'channel-1',
+        detail: 'desktop=ds_1',
+      }]);
+      // Still relayed: the viewer needs the frame to start drawing.
+      expect(browser.sent).toContainEqual({ type: 'desktop.ready', action: 'takeover', inputAllowed: true });
+    });
+
+    it('records a watch start for an observer channel', () => {
+      const { host, starts } = audited({ kind: 'desktop', desktopSessionId: 'ds_1', desktopMode: 'watch' });
+      host.message(ready('watch'));
+      expect(starts().map((event) => event.action)).toEqual(['desktop_watch_started']);
+    });
+
+    it('records one start per channel, however many ready frames the host sends', () => {
+      const { host, starts } = audited({ kind: 'desktop', desktopSessionId: 'ds_1', desktopMode: 'takeover' });
+      host.message(ready('takeover'));
+      host.message(ready('takeover'));
+      expect(starts()).toHaveLength(1);
+    });
+
+    it('never records a takeover the broker did not open, whatever the host reports', () => {
+      const { host, starts } = audited({ kind: 'desktop', desktopSessionId: 'ds_1', desktopMode: 'watch' });
+      host.message(ready('takeover'));
+      expect(starts().map((event) => event.action)).toEqual(['desktop_ready_mode_mismatch']);
+    });
+
+    it('ignores a desktop.ready frame on a terminal channel', () => {
+      const { host, starts } = audited({});
+      host.message(ready('takeover'));
+      expect(starts()).toEqual([]);
+    });
+  });
+
   it('does NOT gate desktop.data on the controller role — the credential is the enforcement', () => {
     // D-024 explicitly forbids a byte filter here: an observer legitimately SENDS
     // FramebufferUpdateRequest/SetEncodings, which is how a VNC client gets pixels at
