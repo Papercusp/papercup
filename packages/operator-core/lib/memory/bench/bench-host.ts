@@ -21,6 +21,7 @@ import type { ResolvedVecMode } from '@papercusp/memory';
 // Side-effect import: wires the operator host (admin URL, credentials,
 // embedder cascade) that we then override schema-wise below.
 import '../configure';
+import { cloneLiveTriggers } from './bench-triggers';
 
 /**
  * The bench's isolated schema — **UNIQUE PER RUN** (pid-suffixed).
@@ -122,13 +123,19 @@ export async function ensureBenchSchema(client: Client, schema: string = BENCH_S
     CREATE TABLE ${schema}.memory_canonical
       (LIKE harness_shared.memory_canonical INCLUDING ALL)
   `);
+  const cloned = ['memory_canonical'];
   for (const mode of Object.keys(VEC_TABLE) as ResolvedVecMode[]) {
     const vec = VEC_TABLE[mode];
     await client.query(`
       CREATE TABLE ${schema}.${vec}
         (LIKE harness_shared.${vec} INCLUDING ALL)
     `);
+    cloned.push(vec);
   }
+  // LIKE ... INCLUDING ALL never copies triggers, and the live tables depend on
+  // them: without 1093's row_kind stamp every vector insert violates NOT NULL
+  // (WI-10004107). Reproduce them from the catalog; unclassified ones throw.
+  await cloneLiveTriggers(client, schema, cloned);
 }
 
 /**
