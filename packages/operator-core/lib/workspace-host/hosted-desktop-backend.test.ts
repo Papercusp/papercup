@@ -326,11 +326,13 @@ describe('createHostedDesktopBackend', () => {
 
   // WI-10002797: after an upgrade the pre-upgrade row still read `ready`, blocked the
   // new desktop's row, and `start` answered null. Reconcile must precede the ensure.
-  it('reconciles stale rows ONCE, before the first start or roster touches the registry', async () => {
+  // WI-10004206: and it must run on EVERY call — a desktop that died after the first
+  // roster stayed `ready` because the reconcile never ran again.
+  it('reconciles before every start and roster touches the registry', async () => {
     const order: string[] = [];
     const reconcile = vi.fn(async () => {
       order.push('reconcile');
-      return 1;
+      return 0;
     });
     const b = backend({
       reconcile,
@@ -345,7 +347,39 @@ describe('createHostedDesktopBackend', () => {
     });
     await b.roster();
     await b.start();
-    expect(order).toEqual(['reconcile', 'list', 'ensure', 'list']);
+    await b.roster();
+    expect(order).toEqual(['reconcile', 'list', 'reconcile', 'ensure', 'list', 'reconcile', 'list']);
+    expect(reconcile).toHaveBeenCalledTimes(3);
+  });
+
+  it('a roster read after a desktop dies no longer lists it', async () => {
+    let alive = true;
+    const rows = [session()];
+    const warnings: string[] = [];
+    const b = backend({
+      onWarning: (m) => warnings.push(m),
+      listSessions: async () => [...rows],
+      reconcile: async () => {
+        if (alive) return 0;
+        rows.length = 0;
+        return 1;
+      },
+    });
+    expect(await b.roster()).toHaveLength(1);
+    alive = false;
+    expect(await b.roster()).toEqual([]);
+    expect(warnings).toEqual(['hosted-desktop-backend — retired 1 desktop row(s) no live lease backs']);
+  });
+
+  it('concurrent callers share the reconcile in flight', async () => {
+    let finish!: (reaped: number) => void;
+    const reconcile = vi.fn(() => new Promise<number>((resolve) => { finish = resolve; }));
+    const b = backend({ reconcile });
+    const first = b.roster();
+    const second = b.roster();
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(1));
+    finish(0);
+    await Promise.all([first, second]);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 
@@ -354,13 +388,13 @@ describe('createHostedDesktopBackend', () => {
     const reconcile = vi
       .fn<() => Promise<number>>()
       .mockRejectedValueOnce(new Error('pg down'))
-      .mockResolvedValueOnce(0);
+      .mockResolvedValue(0);
     const b = backend({ reconcile, onWarning: (m) => warnings.push(m) });
     expect(await b.start()).toMatchObject({ desktopSessionId: 'ds_1' });
     expect(warnings.some((w) => w.includes('reconcile failed'))).toBe(true);
     await b.roster();
     await b.roster();
-    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(reconcile).toHaveBeenCalledTimes(3);
   });
 
   it('warns when the desktop runs but has no registry row — the failure that was silent', async () => {

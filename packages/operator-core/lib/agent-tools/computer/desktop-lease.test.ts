@@ -13,6 +13,7 @@ import {
   __setProvisionerForTests,
   __resetProvisioner,
   leaseCapabilities,
+  reapDeadHiveDesktops,
 } from './desktop-lease';
 import type { SandboxDesktop } from './desktop-provisioner';
 import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
@@ -119,6 +120,29 @@ describe('per-hive desktop lease', () => {
     expect(d1.released()).toBe(1);
     expect(d2.released()).toBe(1);
     expect(leasedHiveDesktops()).toEqual([]);
+  });
+
+  // WI-10004206: a dead lease stayed in the map (and its row `ready`) until something
+  // happened to call ensure for that hive, so every reader in between was offered it.
+  it('reapDeadHiveDesktops releases only the leases whose desktop is gone', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let deadAlive = true;
+    const dead = { ...fakeDesktop(116), isAlive: () => deadAlive };
+    const live = { ...fakeDesktop(117), isAlive: () => true };
+    const queue: SandboxDesktop[] = [dead, live];
+    __setProvisionerForTests(async () => queue.shift()!);
+    await ensureHiveDesktop('h-dead');
+    await ensureHiveDesktop('h-live');
+
+    expect(await reapDeadHiveDesktops()).toEqual([]);
+    deadAlive = false;
+    expect(await reapDeadHiveDesktops()).toEqual(['h-dead']);
+    expect(dead.released()).toBe(1);
+    expect(live.released()).toBe(0);
+    expect(leasedHiveDesktops()).toEqual(['h-live']);
+    expect(warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('the desktop is gone')))
+      .toEqual(['[desktop-lease] pot=h-dead display=:116: the desktop is gone — releasing its lease']);
+    warn.mockRestore();
   });
 });
 

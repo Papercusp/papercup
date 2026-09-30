@@ -11,7 +11,69 @@ import {
   releaseDesktopResources,
   releaseDesktopProcesses,
 } from './desktop-provisioner';
-import { xfceSessionLaunch } from './desktop-provisioner-core';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { X_SERVER_STDERR_TAIL_BYTES, describeXServerExit, watchXServer, xfceSessionLaunch } from './desktop-provisioner-core';
+
+/** A child whose lifecycle the test drives: node sets exitCode/signalCode before 'exit'. */
+function fakeXServer({ started = true }: { started?: boolean } = {}) {
+  const child = Object.assign(new EventEmitter(), {
+    // Node leaves `pid` undefined when the spawn itself failed.
+    pid: started ? 4242 : undefined, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null, stderr: new PassThrough(),
+  });
+  const exit = (code: number | null, signal: NodeJS.Signals | null) => {
+    child.exitCode = code; child.signalCode = signal;
+    child.emit('exit', code, signal);
+    child.stderr.end();
+    child.stderr.once('end', () => child.emit('close', code, signal));
+  };
+  return { child, asChild: child as unknown as ChildProcess, exit };
+}
+
+// WI-10004206: the X server was spawned stdio:'ignore' and never watched, so a dead one
+// left a `ready` desktop and no record of why it died.
+describe('watchXServer', () => {
+  it('is alive until the server exits, then settles with its exit and stderr tail', async () => {
+    const x = fakeXServer();
+    const watch = watchXServer(x.asChild);
+    expect(watch.isAlive()).toBe(true);
+    expect(watch.exit()).toBeNull();
+    x.child.stderr.write('Fatal server error:\n');
+    x.child.stderr.write('Cannot establish any listening sockets\n');
+    x.exit(1, null);
+    expect(watch.isAlive()).toBe(false);
+    await expect(watch.exited).resolves.toEqual({
+      code: 1, signal: null, stderrTail: 'Fatal server error:\nCannot establish any listening sockets\n',
+    });
+    expect(watch.exit()).toEqual({ code: 1, signal: null, stderrTail: expect.stringContaining('listening sockets') });
+  });
+
+  it('keeps only a bounded tail of a chatty server', async () => {
+    const x = fakeXServer();
+    const watch = watchXServer(x.asChild);
+    x.child.stderr.write('a'.repeat(X_SERVER_STDERR_TAIL_BYTES));
+    x.child.stderr.write('LAST WORDS');
+    x.exit(null, 'SIGKILL');
+    const exit = await watch.exited;
+    expect(exit.stderrTail).toHaveLength(X_SERVER_STDERR_TAIL_BYTES);
+    expect(exit.stderrTail.endsWith('LAST WORDS')).toBe(true);
+    expect(exit.signal).toBe('SIGKILL');
+  });
+
+  it('settles on a spawn that never started', async () => {
+    const x = fakeXServer({ started: false });
+    const watch = watchXServer(x.asChild);
+    x.child.emit('error', new Error('spawn Xkasmvnc ENOENT'));
+    await expect(watch.exited).resolves.toMatchObject({ code: null, signal: null, stderrTail: 'spawn Xkasmvnc ENOENT' });
+    expect(watch.isAlive()).toBe(false);
+  });
+
+  it('describes an exit on one line, and says so when the server printed nothing', () => {
+    expect(describeXServerExit(':110', { code: 0, signal: null, stderrTail: '  \n' }))
+      .toBe('X server for :110 exited code=0 signal=-; it wrote nothing to stderr');
+  });
+});
 
 describe('findFreeDisplayNumber', () => {
   it('returns the lowest free number ≥ base (skips locked displays)', () => {

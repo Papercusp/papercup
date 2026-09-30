@@ -40,6 +40,22 @@
  *                       legitimate and stable (the historical string never changes),
  *                       so it is reported under --report and never gates.
  *
+ *   COINCIDENT (report) — a long fragment exists, but only OUTSIDE the test's SUBJECT
+ *                       files (resolveSubjectFiles: its relative imports, basename
+ *                       siblings, and repo paths it names). A negative assertion guards
+ *                       its subject's output, so a 12-17 char fragment turning up in
+ *                       unrelated code is coincidence, not a reworded emitter. Measured
+ *                       (WI-10004205): 21 of 31 DRIFTED findings were this shape, and
+ *                       none of the 31 was a real drift.
+ *
+ *   RENAMED  (report) — the fragment IS in the subject, but this same file POSITIVELY
+ *                       asserts a literal containing it. The test pins the NEW wording,
+ *                       so the negative is a deliberate "the old wording must not come
+ *                       back" ratchet, not a guard a rename left behind.
+ *
+ * A test whose subject resolves to NO file is judged against the whole corpus, as
+ * before: an unresolvable subject must not quietly turn the gate off.
+ *
  * THE FALSE-POSITIVE DISCRIMINATORS (why this is not noise). A negative assertion is
  * NOT flagged when the string is producible, by any of:
  *   - it appears in a tracked non-test file (source, prompt, doc, shell hook, SQL, …);
@@ -61,7 +77,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync, realpathSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { coverageOf, describeUnscanned, presentOnDisk } from './lib/tracked-files.mjs';
 
@@ -105,7 +121,12 @@ const isExcluded = (p) =>
   /(^|\/)(package-lock\.json|Cargo\.lock)$/.test(p) ||
   p.startsWith('apps/operator/public/internal/docs/') ||
   p.startsWith('.wi3388-cargo-target/') ||
-  p.startsWith('.agent-tmp/');
+  p.startsWith('.agent-tmp/') ||
+  // Tracked compile caches and scratch trees (EI-24493767544777917): byte copies of real
+  // source, or of source that no longer exists, so neither an emitter nor a subject.
+  p.startsWith('.papercusp/') ||
+  /(^|\/)\.tmp[^/]*\//.test(p) ||
+  /(^|\/)\.tsx-tmp\//.test(p);
 
 const MAX_CORPUS_FILE = 2 * 1024 * 1024;
 const PRAGMA = 'vacuous-negative-ok:';
@@ -124,8 +145,10 @@ const ALLOW = new Set([]);
  * it IS in the source — the guard is pinned to that string's OLD wording.
  * ORPHANED reports only: nothing resembling the literal survives, or the literal is not
  * prose (a value pin, a shape guard, fixture-composed output).
+ * COINCIDENT and RENAMED report only: the fragment is outside the test's subject, or the
+ * file positively pins the new wording (see the header).
  *
- * @typedef {'DRIFTED' | 'ORPHANED'} VacuousVerdict
+ * @typedef {'DRIFTED' | 'ORPHANED' | 'COINCIDENT' | 'RENAMED'} VacuousVerdict
  */
 
 /**
@@ -580,14 +603,77 @@ function addDriftQueries(queries, lit) {
   }
 }
 
+const SUBJECT_CODE_EXTS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+const SUBJECT_SIBLING_EXTS = [...SUBJECT_CODE_EXTS, '.sh', '.bash', '.sql', '.py', '.rs', '.service', '.json', '.yml', '.yaml', ''];
+/** @type {Record<string, string[]>} */
+const SUBJECT_TS_FOR_JS = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'], '.jsx': ['.tsx'] };
+
+/**
+ * The SUBJECT of a test file: the corpus files its negative assertions are about. A
+ * DRIFTED verdict claims "the emitter this guard watches was reworded", and only the
+ * subject can carry that evidence (WI-10004205). Three sources, all static:
+ *   1. basename siblings: `foo.test.ts` / `foo.integration.test.ts` → `foo.*` in the same
+ *      directory, or one level up from `__tests__/` / `test/` / `tests/`;
+ *   2. every relative specifier in the file (`./x`, `../y.js`): imports, dynamic imports,
+ *      `vi.mock`, `require`, and paths the test reads, resolved the way TS resolves them;
+ *   3. every repo-relative path the test names verbatim (`'scripts/foo.sh'`).
+ * Workspace-package imports (`@papercusp/…`) are deliberately NOT followed. That misses
+ * a subject reached only through a package, whose drift is then reported COINCIDENT
+ * rather than gating; the alternative, following re-exports, re-admits the coincidental
+ * matches this exists to remove.
+ *
+ * @param {string} testPath - Repo-relative POSIX path of the test file.
+ * @param {string} text - The test file's source.
+ * @param {{ has(path: string): boolean }} corpus - Repo-relative paths eligible as corpus.
+ * @returns {string[]} Subject paths, a subset of `corpus`, sorted.
+ */
+export function resolveSubjectFiles(testPath, text, corpus) {
+  /** @type {Set<string>} */
+  const out = new Set();
+  const dir = posix.dirname(testPath);
+  /** @param {string} p */
+  const add = (p) => {
+    const n = posix.normalize(p);
+    if (corpus.has(n)) out.add(n);
+  };
+  /** @param {string} p */
+  const addModule = (p) => {
+    const ext = posix.extname(p);
+    if (ext && corpus.has(posix.normalize(p))) return add(p);
+    for (const e of (ext && SUBJECT_TS_FOR_JS[ext]) || []) add(p.slice(0, -ext.length) + e);
+    for (const e of SUBJECT_CODE_EXTS) {
+      add(p + e);
+      add(posix.join(p, `index${e}`));
+    }
+  };
+
+  const base = posix.basename(testPath).replace(/(\.(unit|integration|e2e|live))?\.(test|spec)\.[cm]?[jt]sx?$/, '');
+  const dirs = [dir];
+  if (/(^|\/)(__tests__|tests?)$/.test(dir)) dirs.push(posix.dirname(dir));
+  for (const d of dirs) for (const e of SUBJECT_SIBLING_EXTS) add(posix.join(d, base + e));
+
+  for (const m of text.matchAll(/['"`](\.{1,2}\/[^'"`\s$]+)['"`]/g)) addModule(posix.join(dir, m[1]));
+
+  // Not `./x` — those are test-relative and handled above; resolved from the root they
+  // would name the wrong file.
+  for (const m of text.matchAll(/['"`]([A-Za-z0-9_@-][A-Za-z0-9_@.-]*(?:\/[A-Za-z0-9_@.-]+)+)['"`]/g)) {
+    add(m[1]);
+    if (!posix.extname(m[1])) addModule(m[1]);
+  }
+  return [...out].sort();
+}
+
 /**
  * Judge one test file's negative assertions. `includes` answers "does the non-test
  * corpus contain this string" — injected so the unit tests can drive a synthetic corpus.
+ * `subjectIncludes` answers the same over the test's SUBJECT files only
+ * (resolveSubjectFiles). Omit it when the subject is unknown: drift is then judged
+ * against the whole corpus, exactly as before the locality rule.
  *
- * @param {{ file: string; text: string; includes: IncludesFn }} args
+ * @param {{ file: string; text: string; includes: IncludesFn; subjectIncludes?: IncludesFn }} args
  * @returns {{ considered: number; findings: VacuousFinding[] }}
  */
-export function judgeFile({ file, text, includes }) {
+export function judgeFile({ file, text, includes, subjectIncludes }) {
   const lines = text.split('\n');
   const negatives = extractNegativeLiterals(text);
   if (negatives.length === 0) return { considered: 0, findings: [] };
@@ -618,14 +704,22 @@ export function judgeFile({ file, text, includes }) {
 
     const drift = driftFragment(lit, includes);
     if (drift && residueIsComposed(drift.residue, haystack)) continue; // runtime-composed
-    findings.push({
-      file,
-      line: c.line,
-      kind: c.kind,
-      lit,
-      verdict: drift && proseShaped(lit) ? 'DRIFTED' : 'ORPHANED',
-      fragment: drift?.fragment ?? null,
-    });
+    /** @type {VacuousVerdict} */
+    let verdict = 'ORPHANED';
+    let fragment = drift?.fragment ?? null;
+    if (drift && proseShaped(lit)) {
+      // Locality: only the subject can prove ITS emitter was reworded.
+      const local = subjectIncludes ? driftFragment(lit, subjectIncludes) : drift;
+      if (!local) {
+        verdict = 'COINCIDENT';
+      } else {
+        fragment = local.fragment;
+        const pinned = local.fragment.trim();
+        // The same file positively asserts the new wording: a rename ratchet, not a dead guard.
+        verdict = pinned.length >= MIN_FRAGMENT && positives.some((p) => p.includes(pinned)) ? 'RENAMED' : 'DRIFTED';
+      }
+    }
+    findings.push({ file, line: c.line, kind: c.kind, lit, verdict, fragment });
   }
   return { considered, findings };
 }
@@ -686,10 +780,16 @@ function main(argv) {
   }
 
   const parts = [];
+  // Path → text, for the per-test SUBJECT corpus (resolveSubjectFiles). Holds the same
+  // string references `parts` does, so it costs a map, not a second copy of the corpus.
+  /** @type {Map<string, string>} */
+  const corpusTextOf = new Map();
   for (const f of corpusFiles) {
     try {
       if (statSync(resolve(ROOT, f)).size > MAX_CORPUS_FILE) continue;
-      parts.push(readFileSync(resolve(ROOT, f), 'utf8'));
+      const t = readFileSync(resolve(ROOT, f), 'utf8');
+      parts.push(t);
+      corpusTextOf.set(f, t);
     } catch {
       /* unreadable / gone since ls-files — skip */
     }
@@ -748,7 +848,10 @@ function main(argv) {
     const text = testTexts.get(f);
     if (text === undefined) continue;
     if (!text.includes('.not.to')) continue;
-    const r = judgeFile({ file: f, text, includes });
+    const subjects = resolveSubjectFiles(f, text, corpusTextOf);
+    const subjectText = subjects.map((s) => corpusTextOf.get(s) ?? '').join('\n \n');
+    const subjectIncludes = subjects.length > 0 ? (/** @type {string} */ s) => subjectText.includes(s) : undefined;
+    const r = judgeFile({ file: f, text, includes, subjectIncludes });
     considered += r.considered;
     for (const finding of r.findings) (finding.verdict === 'DRIFTED' ? drifted : orphaned).push(finding);
   }
@@ -789,12 +892,14 @@ function main(argv) {
         `${considered} static-literal negative assertion(s) judged.\n`,
     );
     console.log(
-      `ORPHANED (non-gating — the literal is absent, but it is not reworded PROSE, so it is\n` +
-        `most likely a deliberate value/shape guard or a "this phrasing is gone for good"\n` +
-        `ratchet. A "near:" line means a long fragment IS in the source — worth a look): ${orphaned.length}\n`,
+      `NON-GATING (${orphaned.length}). ORPHANED: the literal is absent but is not reworded PROSE,\n` +
+        `so most likely a deliberate value/shape guard or a "gone for good" ratchet. [COINCIDENT]:\n` +
+        `the fragment exists only outside the test's subject files. [RENAMED]: the same file\n` +
+        `positively pins the new wording. A "near:" line means a long fragment IS in the source:\n`,
     );
     for (const f of orphaned) {
-      console.log(`    ${f.file}:${f.line}  ${f.kind}  ${JSON.stringify(f.lit)}`);
+      const tag = f.verdict === 'ORPHANED' ? '' : `[${f.verdict}]  `;
+      console.log(`    ${f.file}:${f.line}  ${tag}${f.kind}  ${JSON.stringify(f.lit)}`);
       if (f.fragment) console.log(`        near: ${JSON.stringify(f.fragment)}`);
     }
     console.log('');
@@ -807,7 +912,7 @@ function main(argv) {
   if (drifted.length === 0) {
     console.log(
       `✓ vacuous negative assertions: none of ${considered} static-literal negative assertion(s) ` +
-        `pins a reworded string (${orphaned.length} orphaned, non-gating). Corpus: ${corpusFiles.length} file(s) ` +
+        `pins a reworded string (${orphaned.length} non-gating: orphaned/coincident/renamed). Corpus: ${corpusFiles.length} file(s) ` +
         `across the superproject + ${cov.scanned.length}/${cov.declared.length} submodule(s).` +
         coverageNote,
     );

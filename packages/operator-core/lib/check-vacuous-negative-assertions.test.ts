@@ -170,7 +170,7 @@ describe('judgeFile — locality: drift must be in the SUBJECT to gate', () => {
   });
 
   it('reports COINCIDENT, never DRIFTED, when the fragment exists only outside the subject', () => {
-    const text = `it('x', () => {\n  expect(page).not.toContain('The GUI is not ready yet');\n});`;
+    const text = `it('x', () => {\n  expect(page).not.toContain('The GUI is not ready yet');\n});`; // vacuous-negative-ok: synthetic fixture input, not a real assertion (this file's subject resolves empty: the guard drops itself from its corpus)
     const found = judgeLocal(text, 'return <p>Your desktop is not ready yet</p>;', 'export const page = render();');
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ verdict: 'COINCIDENT', fragment: ' is not ready yet' });

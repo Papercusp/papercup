@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 922,
+  "count": 923,
   "tools": [
     {
       "name": "ablation:report",
@@ -15488,6 +15488,42 @@
       }
     },
     {
+      "name": "identities:preview",
+      "http": {
+        "path": "/api/agent-tools/identities/preview",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Preview an identity in a pot as its wearer would receive it: each injection point rendered by the runtime sink evaluators from sample provider output (budgets, omissions, fences), timing, declared grants/rules/visibility, consent subjects, and, with ownerId, what a detach or upgrade would cancel or keep. Read-only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer"
+      ],
+      "guidance": {
+        "when": "Authoring an identity: checking what each sink renders against sample state before installing or attaching it.",
+        "notWhen": "Schema and structural checks only (identities:validate); attaching or installing (identities:create, cupboard install)."
+      }
+    },
+    {
       "name": "identities:validate",
       "http": {
         "path": "/api/agent-tools/identities/validate",
@@ -15495,7 +15531,7 @@
           "POST"
         ]
       },
-      "description": "Validate an identity by id or inline YAML/JSON using the blueprint source schema, inheritance and structural checks. Abstract modules are valid sources without becoming executable blueprints. Returns issues instead of throwing.",
+      "description": "Validate an identity by id or inline YAML/JSON using the blueprint source schema, inheritance and structural checks. Abstract modules are valid sources without becoming executable blueprints. In a pot, also compiles it there (`package`: compile and grant issues, declared surface). Returns issues instead of throwing.",
       "capabilities": [
         "harness:read"
       ],
@@ -15520,7 +15556,7 @@
       ],
       "guidance": {
         "when": "Checking identity source, slots, bundle conflicts, attestations and mode authority before persisting or composing.",
-        "notWhen": "Certifying publisher signatures or runtime grants; publication, conformance and authorization remain separate."
+        "notWhen": "Certifying publisher signatures or runtime grants; publication, conformance and authorization remain separate. What a wearer receives: identities:preview."
       }
     },
     {

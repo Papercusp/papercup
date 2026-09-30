@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { FrameDecoder, FrameType, encodeJsonFrame } from '@papercusp/ipc-framing';
 import { kasmvncWebsocketPort } from './x-server-backend';
 import type { SandboxDesktop } from '../agent-tools/computer/desktop-provisioner';
+import { DesktopXServerExitedError, type DesktopXServerExit } from '../agent-tools/computer/desktop-provisioner-core';
 import {
   WORKSPACE_DESKTOP_PROTOCOL, parseWorkspaceDesktop, provisionWorkspaceDesktop,
   serializeWorkspaceDesktop, serveWorkspaceDesktop, workspaceDesktopOptions,
@@ -87,5 +88,69 @@ describe('workspace desktop identity boundary', () => {
     await remote.release();
     expect(lease.release).toHaveBeenCalledOnce();
     expect(remote.isAlive?.()).toBe(false);
+  });
+
+  // WI-10004206: the worker outlived its X server, held the socket open, and the
+  // operator offered a `ready` desktop whose every dial failed, with no journal line.
+  it('ends the session when the X server exits, so the remote lease reads dead', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-desktop-wire-')); roots.push(root);
+    const path = join(root, 'session.sock');
+    let xExit!: (exit: DesktopXServerExit) => void;
+    const lease: SandboxDesktop = { ...desktop(), xServerExited: new Promise(r => { xExit = r; }) };
+    const lines: string[] = [];
+    const serving: Promise<void>[] = [];
+    const server = createServer({ allowHalfOpen: true }, socket => {
+      serving.push(serveWorkspaceDesktop(socket, socket, async () => lease, line => lines.push(line)));
+    });
+    servers.push(server);
+    await new Promise<void>(r => server.listen(path, r));
+    const remote = await provisionWorkspaceDesktop({}, { connect: () => connect(path) });
+    expect(remote.isAlive?.()).toBe(true);
+
+    xExit({ code: 1, signal: null, stderrTail: 'Fatal server error:\nCould not create server lock file: /tmp/.X110-lock\n' });
+    await Promise.all(serving);
+    await vi.waitFor(() => expect(remote.isAlive?.()).toBe(false));
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('X server for :110 exited code=1 signal=-');
+    expect(lines[0]).toContain('Could not create server lock file');
+    expect(lines[0]).toContain('ending the desktop session');
+    // Releasing an already-ended session is a no-op, not a hang.
+    await remote.release();
+  });
+
+  it('logs nothing when the X server exits because the session released it', async () => {
+    const input = new PassThrough(); const output = new PassThrough(); const bytes: Buffer[] = [];
+    output.on('data', b => bytes.push(b));
+    let xExit!: (exit: DesktopXServerExit) => void;
+    const lease: SandboxDesktop = {
+      ...desktop(),
+      xServerExited: new Promise(r => { xExit = r; }),
+      release: vi.fn(async () => { xExit({ code: null, signal: 'SIGTERM', stderrTail: '' }); }),
+    };
+    const lines: string[] = [];
+    const serving = serveWorkspaceDesktop(input, output, async () => lease, line => lines.push(line));
+    input.write(encodeJsonFrame(FrameType.REQUEST, { protocol: WORKSPACE_DESKTOP_PROTOCOL, action: 'provision', options: {} }));
+    await vi.waitFor(() => expect(bytes.length).toBeGreaterThan(0));
+    input.end(encodeJsonFrame(FrameType.REQUEST, { protocol: WORKSPACE_DESKTOP_PROTOCOL, action: 'release' }));
+    await serving;
+    await Promise.resolve();
+    expect(lease.release).toHaveBeenCalledOnce();
+    expect(lines).toEqual([]);
+  });
+
+  it('journals why the X server died before the desktop came up, and still answers an error frame', async () => {
+    const input = new PassThrough(); const output = new PassThrough(); const bytes: Buffer[] = [];
+    output.on('data', b => bytes.push(b));
+    const lines: string[] = [];
+    const provision = vi.fn(async (): Promise<SandboxDesktop> => {
+      throw new DesktopXServerExitedError(':110', { code: null, signal: 'SIGSEGV', stderrTail: 'Segmentation fault at address 0x0' });
+    });
+    const serving = serveWorkspaceDesktop(input, output, provision, line => lines.push(line));
+    input.write(encodeJsonFrame(FrameType.REQUEST, { protocol: WORKSPACE_DESKTOP_PROTOCOL, action: 'provision', options: {} }));
+    await serving;
+    expect(lines).toEqual(['X server for :110 exited code=- signal=SIGSEGV; stderr tail:\nSegmentation fault at address 0x0']);
+    const decoder = new FrameDecoder(); decoder.push(Buffer.concat(bytes));
+    expect(decoder.drain().map(f => f.type)).toEqual([FrameType.ERROR]);
   });
 });

@@ -71,8 +71,16 @@ export interface McpOAuthRouteDependencies {
   readonly listWorkspaces: () => ReadonlyArray<{ id: string; name: string }>;
   /** True when the request is from this machine and not through a tunnel or relay. */
   readonly isLocal: (req: Request) => boolean;
+  /** The client-credentials grant (P-016). Absent = the token endpoint serves authorization_code only. */
+  readonly clientCredentials?: ClientCredentialsStore;
   readonly clock?: () => Date;
   readonly randomBytes?: (size: number) => Uint8Array;
+}
+
+/** An OAuth token-endpoint answer as an HTTP response: no-store, and a Basic challenge on a 401. */
+export function tokenAnswerResponse(answer: TokenEndpointAnswer): Response {
+  const challenge = answer.status === 401 ? { 'www-authenticate': 'Basic realm="papercusp"' } : {};
+  return Response.json(answer.body, { status: answer.status, headers: { ...noStore, ...challenge } });
 }
 
 function oauthError(error: string, description: string, status = 400, extra: Record<string, string> = {}): Response {
@@ -281,7 +289,20 @@ ${consentFormHtml({ userCode, scopes, workspaces: deps.listWorkspaces(), hidden:
       const body = await formOrJson(req);
       if (!body) return oauthError('invalid_request', 'the body must be form-encoded');
       const field = (k: string) => (typeof body[k] === 'string' ? (body[k] as string) : '');
-      if (field('grant_type') !== 'authorization_code') return oauthError('unsupported_grant_type', 'only authorization_code is supported');
+      if (field('grant_type') === 'client_credentials' && deps.clientCredentials) {
+        // P-016: an unattended app exchanges its client credentials for a short-lived token.
+        const answer = await handleClientCredentialsGrant({
+          fields: body,
+          basic: basicCredentials(req),
+          audience: `${publicOriginOf(req)}${OAUTH_BASE}/token`,
+          now: clock(),
+          store: deps.clientCredentials,
+        });
+        return tokenAnswerResponse(answer);
+      }
+      if (field('grant_type') !== 'authorization_code') {
+        return oauthError('unsupported_grant_type', 'grant_type must be authorization_code or client_credentials');
+      }
       const basic = basicCredentials(req);
       const clientId = basic?.id ?? field('client_id');
       const client = clientId ? await deps.store.getClient(clientId) : null;
@@ -359,6 +380,104 @@ export function createPortalMintRoute(deps: PortalMintRouteDependencies): AnyRou
       }
     },
   });
+}
+
+export interface ClientCredentialsRouteDependencies {
+  readonly store: ClientCredentialsStore;
+  readonly setMode: typeof setClientCredentialsMode;
+  readonly workspaceExists: (id: string) => boolean;
+  /** True when the request is from this machine and not through a tunnel or relay. */
+  readonly isLocal: (req: Request) => boolean;
+  readonly clock?: () => Date;
+}
+
+const PORTAL_TOKEN_AUDIENCE_RE = /^https:\/\/[^\s/?#]+\/api\/workspaces\/[A-Za-z0-9_-]{1,120}\/oauth\/token$/;
+
+/**
+ * P-016 routes beside the token endpoint:
+ *
+ *   POST /connected-apps/client-credentials  local-only  switch a service key into (or out of)
+ *        client-credentials mode: `{ workspaceId, id, auth: 'client_secret' | 'private_key_jwt' | null, jwk? }`.
+ *        Switching ends the key's live access tokens.
+ *   POST /connected-apps/portal-token        loopback    the machine half of the PORTAL's
+ *        client-credentials grant. The portal's token endpoint relays the request's form fields
+ *        and Basic credentials over the connector's `app-key-mint` channel
+ *        (workspace-host/hosted-app-relay.ts AppKeyMintChannel is the only caller); this machine
+ *        authenticates the client and issues the token, so the portal never holds a secret. The
+ *        audience is the portal token endpoint the app addressed, which an assertion must name.
+ */
+export function createClientCredentialsRoutes(deps: ClientCredentialsRouteDependencies): ReadonlyArray<AnyRoute> {
+  const clock = deps.clock ?? (() => new Date());
+  const refuse = (code: string, status: number, extra: Record<string, unknown> = {}) =>
+    Response.json({ ok: false, error: { code, ...extra } }, { status, headers: noStore });
+
+  const setMode = defineTool({
+    method: 'POST',
+    path: '/connected-apps/client-credentials',
+    auth: 'loopback',
+    async handler(req) {
+      if (!deps.isLocal(req)) return refuse('local_only', 403);
+      const origin = req.headers.get('origin');
+      if (origin !== null && origin !== new URL(req.url).origin) return refuse('cross_origin_blocked', 403);
+      let body: Record<string, unknown>;
+      try {
+        const parsed = await req.json();
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return refuse('invalid_json', 400);
+        body = parsed as Record<string, unknown>;
+      } catch {
+        return refuse('invalid_json', 400);
+      }
+      const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : '';
+      const id = typeof body.id === 'string' ? body.id : '';
+      const auth = body.auth === null ? null : body.auth === 'client_secret' || body.auth === 'private_key_jwt' ? body.auth : undefined;
+      if (!workspaceId || !id || auth === undefined) return refuse('invalid_request', 400);
+      if (!deps.workspaceExists(workspaceId)) return refuse('workspace_not_found', 400);
+      let jwk: Record<string, unknown> | null = null;
+      if (auth === 'private_key_jwt') {
+        const verdict = await validateClientJwk(body.jwk);
+        if (!verdict.ok) return refuse('invalid_jwk', 400, { problem: verdict.problem });
+        jwk = verdict.jwk;
+      }
+      try {
+        const app = await deps.setMode(workspaceId, id, auth ? { auth, jwk } : null);
+        if (!app) return refuse('key_not_found', 404);
+        const tokenEndpoint = `${publicOriginOf(req)}${OAUTH_BASE}/token`;
+        return Response.json({ ok: true, app: { id: app.id, kind: app.kind, label: app.label, clientAuth: app.client_auth }, tokenEndpoint }, { headers: noStore });
+      } catch (err) {
+        if (err instanceof ClientCredentialsModeError) return refuse(err.code, 400);
+        throw err;
+      }
+    },
+  });
+
+  const portalToken = defineTool({
+    method: 'POST',
+    path: '/connected-apps/portal-token',
+    auth: 'loopback',
+    async handler(req) {
+      if (!deps.isLocal(req)) return refuse('local_only', 403);
+      let body: Record<string, unknown>;
+      try {
+        const parsed = await req.json();
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return refuse('invalid_json', 400);
+        body = parsed as Record<string, unknown>;
+      } catch {
+        return refuse('invalid_json', 400);
+      }
+      const fields = body.fields && typeof body.fields === 'object' && !Array.isArray(body.fields) ? (body.fields as Record<string, unknown>) : null;
+      const audience = typeof body.audience === 'string' ? body.audience : '';
+      const basicRaw = body.basic as { id?: unknown; secret?: unknown } | null | undefined;
+      const basic =
+        basicRaw && typeof basicRaw.id === 'string' && typeof basicRaw.secret === 'string' ? { id: basicRaw.id, secret: basicRaw.secret } : null;
+      if (!fields || !PORTAL_TOKEN_AUDIENCE_RE.test(audience) || (basicRaw !== null && basicRaw !== undefined && !basic)) {
+        return refuse('invalid_request', 400);
+      }
+      const answer = await handleClientCredentialsGrant({ fields, basic, audience, now: clock(), store: deps.store });
+      return Response.json({ ok: true, status: answer.status, body: answer.body }, { headers: noStore });
+    },
+  });
+
+  return [setMode, portalToken];
 }
 
 /** The scope object a mint request carries; null when a field is present but not a string array. */
