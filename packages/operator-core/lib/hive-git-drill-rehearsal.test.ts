@@ -189,6 +189,42 @@ describe('rig-profile.sh — one profile owns every host value', () => {
     expect(values.TOWER_REPO).toBe(join(rig.towerHome, '.papercusp/pot-git/same-box-pot/gh-1296269.git'));
   });
 
+  // Same-box run 20260930T050610Z failed phase A in 40s: the profile rewrote the status query
+  // to the pot home while the readiness gate matched rows on the git-sync member slug. The
+  // query is now built from that slug, so the two cannot disagree on either rig.
+  it('the phase A status query targets the harness its readiness gate matches, on both rigs', () => {
+    const fn = /\nphase_a_status_args\(\) \{\n[\s\S]*?\n\}\n/.exec(scenario)?.[0];
+    expect(fn, 'phase_a_status_args must exist in the scenario').toBeTruthy();
+    const rig = stubRig();
+    const emit = `for s in "$TOWER_GIT_SYNC_SLUG" "$VM_GIT_SYNC_SLUG"; do phase_a_status_args "$s"; echo; done; printf '%s %s\\n' "$TOWER_GIT_SYNC_SLUG" "$VM_GIT_SYNC_SLUG"`;
+    const cases = [
+      ['same-box', { HIVE_GIT_RIG: 'same-box', HIVE_GIT_SAME_BOX_RIG: rig.dir }, 'same-box-member'],
+      ['physical', {}, 'hello-world-3-pot'],
+    ] as const;
+    for (const [rigName, env, want] of cases) {
+      const r = spawnSync(
+        'bash',
+        ['-c', `set -u; TOWER_GIT_SYNC_SLUG=hello-world-3-pot; VM_GIT_SYNC_SLUG=hello-world-3-pot\n${fn}\n. ${JSON.stringify(profileLib)}; rig_profile_apply >/dev/null || exit 9; ${emit}`],
+        { encoding: 'utf8', env: cleanEnv(env) },
+      );
+      expect(r.status, `${rigName}: ${r.stderr}`).toBe(0);
+      const [tower, vm, slugs] = r.stdout.trim().split('\n');
+      expect(slugs, rigName).toBe(`${want} ${want}`);
+      expect(JSON.parse(tower).targetHarness.harnessSlug, rigName).toBe(want);
+      expect(JSON.parse(vm).targetHarness.harnessSlug, rigName).toBe(want);
+    }
+    // The gate matches rows on the same variables the query is built from.
+    expect(scenario).toContain('phase_a_status_args "$VM_GIT_SYNC_SLUG"');
+    expect(scenario).toContain('phase_a_status_args "$TOWER_GIT_SYNC_SLUG"');
+    expect(scenario).toMatch(/phase_a_host_substrate_readiness vm "\$VM_GIT_SYNC_SLUG"/);
+    expect(scenario).toMatch(/phase_a_host_substrate_readiness tower "\$TOWER_GIT_SYNC_SLUG"/);
+    // No phase record or status query names a git-sync slug as a literal; the record writers
+    // read the applied slugs, which the scenario exports after the profile.
+    expect(scenario).not.toMatch(/installSlug: '[^']+'/);
+    expect(scenario).not.toMatch(/"harnessSlug":"[a-z0-9-]+"/);
+    expect(scenario.indexOf('\nexport TOWER_GIT_SYNC_SLUG VM_GIT_SYNC_SLUG\n')).toBeGreaterThan(scenario.indexOf('\nrig_profile_apply '));
+  });
+
   it('every helper the profile hands the probe and scenario is executable', () => {
     // The scenario runs "$DEPLOY" and PATH-resolves the transports directly, so a helper that
     // lost its executable bit fails with "Permission denied" only once a rig is up (measured:
