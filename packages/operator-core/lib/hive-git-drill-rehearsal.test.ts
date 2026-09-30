@@ -15,10 +15,21 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -63,7 +74,14 @@ function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     'REQUIRE_ZERO_SKIPS',
     'SAME_BOX_VM_HOME',
     'SAME_BOX_VM_PORT',
+    'SAME_BOX_VM_PG_PORT',
+    'SAME_BOX_TOWER_HOME',
+    'SAME_BOX_TOWER_PORT',
+    'SAME_BOX_TOWER_PG_PORT',
+    'SAME_BOX_TSX',
+    'SAME_BOX_NODE',
     'SAME_BOX_RIG_DIR',
+    'PAPERCUSP_PG_PORT',
     'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID',
   ]) {
     delete env[k];
@@ -81,8 +99,10 @@ function stubRig(overrides: Record<string, string> = {}, extraLines: string[] = 
   const env: Record<string, string> = {
     SB_TOWER_HOME: towerHome,
     SB_TOWER_PORT: '41001',
+    SB_TOWER_PG_PORT: '41101',
     SB_VM_HOME: vmHome,
     SB_VM_PORT: '41002',
+    SB_VM_PG_PORT: '41102',
     SB_NODE: process.execPath,
     SB_TSX: tsx,
     SB_POT_HOME: 'same-box-pot',
@@ -157,6 +177,24 @@ describe('rig-profile.sh — one profile owns every host value', () => {
     expect(values.TOWER_REPO).toBe(join(rig.towerHome, '.papercusp/pot-git/same-box-pot/gh-1296269.git'));
   });
 
+  it('every helper the profile hands the probe and scenario is executable', () => {
+    // The scenario runs "$DEPLOY" and PATH-resolves the transports directly, so a helper that
+    // lost its executable bit fails with "Permission denied" only once a rig is up (measured:
+    // same-box-deploy.sh at mode 0644 killed `same-box-rig.sh up` after pot create + join).
+    // Derived from the profile's own $RIG_PROFILE_LIB_DIR references plus the transport dir.
+    const profile = readFileSync(profileLib, 'utf8');
+    const referenced = [...profile.matchAll(/\$RIG_PROFILE_LIB_DIR\/([A-Za-z0-9._/-]+)/g)]
+      .map((m) => join(dirname(profileLib), m[1]))
+      .filter((p) => existsSync(p) && statSync(p).isFile());
+    const transports = readdirSync(transportDir).map((f) => join(transportDir, f));
+    const helpers = [...new Set([...referenced, ...transports])];
+    // Calibration: the profile names the deploy helper and the tower tsx, so an empty set
+    // would mean the derivation broke, not that everything is fine.
+    expect(helpers.map((p) => p.split('/').pop())).toEqual(expect.arrayContaining(['same-box-deploy.sh', 'tower-tsx', 'ssh']));
+    const notExecutable = helpers.filter((p) => (statSync(p).mode & 0o111) === 0);
+    expect(notExecutable, 'rig helpers without an executable bit').toEqual([]);
+  });
+
   it('refuses a rig.env without the git-sync member slug', () => {
     const rig = stubRig({ SB_GIT_SYNC_SLUG: '' });
     const r = spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_apply`], {
@@ -204,6 +242,9 @@ describe('rig-profile.sh — one profile owns every host value', () => {
       [stubRig({}, ['PATH=/tmp/evil']), /not an allowed SB_\* assignment/],
       [stubRig({ SB_VM_PORT: '41001' }), /same port/],
       [stubRig({ SB_VM_HOME: process.env.HOME ?? '/root' }), /real \$HOME/],
+      [stubRig({ SB_VM_PG_PORT: '' }), /does not set SB_VM_PG_PORT/],
+      [stubRig({ SB_VM_PG_PORT: '41101' }), /same PG port/],
+      [stubRig({ SB_TOWER_PG_PORT: '5432' }), /live operator's PG port 5432/],
     ];
     for (const [rig, message] of cases) {
       const r = spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_apply`], {
@@ -222,7 +263,12 @@ describe('same-box transport — the rig can never reach another machine', () =>
     return spawnSync(join(transportDir, tool), args, {
       encoding: 'utf8',
       input,
-      env: cleanEnv({ SAME_BOX_VM_HOME: vmHome, SAME_BOX_VM_PORT: '41002', SAME_BOX_RIG_DIR: scratch }),
+      env: cleanEnv({
+        SAME_BOX_VM_HOME: vmHome,
+        SAME_BOX_VM_PORT: '41002',
+        SAME_BOX_VM_PG_PORT: '41102',
+        SAME_BOX_RIG_DIR: scratch,
+      }),
     });
   }
 
@@ -263,6 +309,87 @@ describe('same-box transport — the rig can never reach another machine', () =>
     const foreign = transport('scp', [src, 'aviweiss@172.31.44.2:/tmp/x'], rig.vmHome);
     expect(foreign.status).toBe(1);
     expect(foreign.stderr).toMatch(/refusing host '172\.31\.44\.2'/);
+  });
+});
+
+describe('same-box transport — a rig producer never reaches the live operator database', () => {
+  // r4 rig finding (2026-09-30): once an owner is down its embedded-pg.json is gone, and the
+  // real resolver (embedded-pg-discovery.ts) falls back to the native :5432 — the LIVE
+  // operator database. A converge run after the owners died reached it. Both transports pin
+  // the fallback to the rig instance's own PG port, so a down owner fails closed.
+  const LIVE_DB = 'postgresql://harness_admin:live@localhost:5432/papercusp';
+  function resolverProbe(): string {
+    const probe = join(scratch, 'resolve-db.mts');
+    const lib = pathToFileURL(join(root, 'packages', 'operator-core', 'lib', 'embedded-pg-discovery.ts')).href;
+    writeFileSync(
+      probe,
+      `const m = await import(${JSON.stringify(lib)});\n` +
+        `const r = m.getHarnessAdminUrlWithSource();\n` +
+        `console.log((/:(\\d+)\\//.exec(r.url)?.[1] ?? 'no-port') + '|' + r.source);\n`,
+    );
+    return probe;
+  }
+  function towerTsx(rig: ReturnType<typeof stubRig>, extra: Record<string, string>) {
+    return spawnSync(join(transportDir, 'tower-tsx'), [resolverProbe()], {
+      encoding: 'utf8',
+      cwd: root,
+      env: cleanEnv({
+        SAME_BOX_TOWER_HOME: rig.towerHome,
+        SAME_BOX_TOWER_PORT: '41001',
+        SAME_BOX_TSX: tsx,
+        SAME_BOX_NODE: process.execPath,
+        DATABASE_URL: LIVE_DB,
+        ...extra,
+      }),
+    });
+  }
+
+  it('calibration: the real resolver with no DB variables and no discovery file DOES reach :5432', () => {
+    const rig = stubRig();
+    const r = spawnSync(process.execPath, [tsx, resolverProbe()], {
+      encoding: 'utf8',
+      cwd: root,
+      env: { ...cleanEnv(), HOME: rig.towerHome, DATABASE_URL: '', HARNESS_ADMIN_DATABASE_URL: '', PAPERCUSP_PG_URL: '', PAPERCUSP_HOME: '' },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe('5432|native-fallback');
+  });
+
+  it('tower-tsx scrubs the caller database and pins the fallback to the tower instance PG port', () => {
+    const r = towerTsx(stubRig(), { SAME_BOX_TOWER_PG_PORT: '41101' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe('41101|native-fallback');
+  });
+
+  it('tower-tsx refuses to run without a rig PG port, or with the live :5432', () => {
+    for (const extra of [{}, { SAME_BOX_TOWER_PG_PORT: '5432' }, { SAME_BOX_TOWER_PG_PORT: 'x' }]) {
+      const r = towerTsx(stubRig(), extra);
+      expect(r.status, JSON.stringify(extra)).toBe(2);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/SAME_BOX_TOWER_PG_PORT/);
+    }
+  });
+
+  it('ssh runs the VM producer against the VM instance PG port, never the caller database', () => {
+    const rig = stubRig();
+    const env = cleanEnv({
+      SAME_BOX_VM_HOME: rig.vmHome,
+      SAME_BOX_VM_PORT: '41002',
+      SAME_BOX_VM_PG_PORT: '41102',
+      DATABASE_URL: LIVE_DB,
+    });
+    const cmd = `'${process.execPath}' '${tsx}' '${resolverProbe()}'`;
+    const r = spawnSync(join(transportDir, 'ssh'), ['same-box-vm', cmd], { encoding: 'utf8', env });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout.trim()).toBe('41102|native-fallback');
+    const marker = join(rig.dir, 'ran');
+    const refused = spawnSync(join(transportDir, 'ssh'), ['same-box-vm', `touch ${marker}`], {
+      encoding: 'utf8',
+      env: { ...env, SAME_BOX_VM_PG_PORT: '5432' },
+    });
+    expect(refused.status).toBe(255);
+    expect(refused.stderr).toMatch(/SAME_BOX_VM_PG_PORT/);
+    expect(existsSync(marker)).toBe(false);
   });
 });
 
