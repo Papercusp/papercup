@@ -94,6 +94,11 @@ import {
   type IdentityConsentSubjects,
   type IdentityInstallConsent,
 } from './identity-install-consent';
+import {
+  checkListedIdentityFacet,
+  type IdentityListingSurface,
+  type ListedBlueprintFacet,
+} from './identity-listing-surface';
 
 export interface InstallBlueprintCoreInput {
   /** The blueprint repo's GitHub URL (https://github.com/owner/repo[.git]). */
@@ -112,6 +117,9 @@ export interface InstallBlueprintCoreInput {
     /** The whole signed release manifest, verbatim from the listing. A present
      *  signature is verified before any bytes land; absent installs unsigned. */
     manifest?: CupboardReleaseManifest | null;
+    /** The row's facet (P-016). Present on every listing-resolved install: an
+     *  identity must be listed with the surface its verified closure derives. */
+    listing?: ListedBlueprintFacet;
   };
   /** Trusted Cupboard moderation receipt for this exact listed artifact. Direct
    * GitHub URL installs cannot supply one through the public install door. */
@@ -165,6 +173,8 @@ export interface InstallBlueprintCoreResult {
   classContracts: ImportClassContractsResult | null;
   /** What the install needed consent for (contentOnly when nothing). */
   consent: IdentityConsentSubjects;
+  /** An identity's declared surface, derived from the verified closure (P-016); null otherwise. */
+  identitySurface: IdentityListingSurface | null;
   /** The pot install journal's outcome (P-014); null outside a pot. */
   bindingJournal: BlueprintJournalReport | null;
 }
@@ -554,6 +564,22 @@ export async function installBlueprintFromCupboardCore(
       );
     }
 
+    // P-016: the storefront previews an identity from its listed surface, so a
+    // listed identity must describe exactly what this verified closure carries.
+    const { surface: identitySurface, mismatch: identityFacetMismatch } = checkListedIdentityFacet(
+      input.expectedRelease?.listing,
+      { id, version, raw, grants: declaredCapabilityGrants, contributions: declaredContributions, archive: releaseArchive },
+    );
+    if (identityFacetMismatch) {
+      throw new InstallBlueprintError(
+        `blueprint "${id}" is listed with a declared identity surface that differs from its closure ` +
+          `(${identityFacetMismatch.reason})`,
+        422,
+        'identity_surface_mismatch',
+        identityFacetMismatch,
+      );
+    }
+
     // P-021 / D-015: third-party class contracts ride in the signed closure.
     // They enter the destination registry only after the listed release has
     // verified and only with administrator consent bound to this exact
@@ -694,7 +720,7 @@ export async function installBlueprintFromCupboardCore(
       const refusal = identityInstallConsentRefusal(input.identityInstallConsent, consentSubject);
       if (refusal) {
         throw new InstallBlueprintError(`blueprint "${id}": ${refusal.detail}`, 409,
-          'identity_install_consent_' + refusal.code, { consentSubject, subjects: consent });
+          'identity_install_consent_' + refusal.code, { consentSubject, subjects: consent, identitySurface });
       }
     }
 
@@ -822,6 +848,7 @@ export async function installBlueprintFromCupboardCore(
       capabilityProviderInstalls,
       classContracts: classContractImport,
       consent,
+      identitySurface,
       bindingJournal: lifecycle.journal ?? null,
     };
   } finally {

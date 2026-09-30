@@ -36,6 +36,7 @@ import { validateListingManifest, type CupboardReleaseManifest } from './listing
 import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
 import type { CapabilityGrantResolverDeps, RecipeProviderConsent } from './capability-grant-resolver';
 import type { IdentityInstallConsent } from './identity-install-consent';
+import type { ListedBlueprintFacet } from './identity-listing-surface';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -121,6 +122,7 @@ async function resolveBlueprintListing(
   releaseVersion?: string;
   releaseContentHash?: string;
   releaseManifest?: CupboardReleaseManifest;
+  listing: ListedBlueprintFacet;
   moderationApproved: boolean;
 } | { error: string; status: number }> {
   const base = resolveCupboardBaseUrl();
@@ -171,7 +173,13 @@ async function resolveBlueprintListing(
   }
   // This is the Cupboard row's moderation status, not the publisher-authored
   // reviewStatus inside the signed release manifest.
-  return { githubUrl, listingRef, releaseVersion, releaseContentHash, releaseManifest,
+  // The facet the storefront previewed (P-016); install recomputes the surface
+  // from the verified clone and refuses a listing that describes something else.
+  const listing: ListedBlueprintFacet = {
+    blueprintKind: typeof row.blueprint_kind === 'string' ? row.blueprint_kind : null,
+    identitySurface: typeof row.identity_surface === 'string' ? row.identity_surface : null,
+  };
+  return { githubUrl, listingRef, releaseVersion, releaseContentHash, releaseManifest, listing,
     moderationApproved: row.review_status === 'approved' };
 }
 
@@ -335,7 +343,7 @@ export async function installBlueprintFromCupboard(
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
   let expectedRelease:
-    | { version?: string; contentHash?: string; manifest?: CupboardReleaseManifest }
+    | { version?: string; contentHash?: string; manifest?: CupboardReleaseManifest; listing?: ListedBlueprintFacet }
     | undefined;
   let modeApproval: { listingId: string; approvedArtifactContentHash: string } | undefined;
 
@@ -348,6 +356,7 @@ export async function installBlueprintFromCupboard(
       ...(resolved.releaseVersion ? { version: resolved.releaseVersion } : {}),
       ...(resolved.releaseContentHash ? { contentHash: resolved.releaseContentHash } : {}),
       ...(resolved.releaseManifest ? { manifest: resolved.releaseManifest } : {}),
+      listing: resolved.listing,
     };
     if (resolved.moderationApproved && resolved.releaseContentHash) {
       modeApproval = { listingId: String(input.listingId), approvedArtifactContentHash: resolved.releaseContentHash };
