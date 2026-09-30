@@ -2868,6 +2868,42 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(preview?.approverEligibility).toBeDefined();
   });
 
+  it('refuses a dry-run when a generated projection conflict would make apply fail', async () => {
+    const seeded = await seedBarContract('dry-run-projection-conflict', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
+    const scope = { harnessSlug: 'papercusp', planSlug: seeded.subject };
+    const clause = (await listSpecClauses(scope)).find((entry) => entry.specId === 'AUTO-BAR-R-1-P-001');
+    expect(clause).toBeDefined();
+
+    // Keep the generated identity but break its pair. The apply projection sees R-1/P-001
+    // missing, tries to create it at revision 0, and refuses because this row already exists.
+    // setSpecClause appends a revision; the history table deliberately rejects UPDATE.
+    const malformed = await setSpecClause({
+      ...clause!,
+      ...scope,
+      expectedRevision: clause!.revision,
+      planItemId: 'P-002',
+      actorId: 'preview-requester',
+    });
+    expect(malformed.status).toBe('revised');
+
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'preview-requester',
+      reason: 'Preview a changed BAR against the current projection set.',
+      criteria: before.criteria.map((criterion) =>
+        criterion.barKey === 'R-1'
+          ? { ...criterion, model: 'The updated first outcome remains true.', bar: undefined }
+          : criterion,
+      ),
+    };
+
+    await expect(rubrics.previewAcceptanceBarAmendment(amendment)).rejects.toThrow(
+      `acceptance_bar_revision_projection_conflict:AUTO-BAR-R-1-P-001:conflict:expected=0:actual=${clause!.revision + 1}`,
+    );
+  });
+
   it('adds a declared BAR with structured checks through the existing atomic amendment path', async () => {
     const seeded = await seedBarContract('criteria-set-addition-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
