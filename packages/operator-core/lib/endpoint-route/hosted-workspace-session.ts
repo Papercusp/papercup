@@ -87,8 +87,11 @@ type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding 
  */
 export type HostedWorkspaceChannelKind = 'pty' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint';
 
-/** Client→host frames an `app-key-mint` channel may carry (P-325, D-021): the one mint request. */
-export const APP_KEY_MINT_CLIENT_TYPES: ReadonlySet<string> = new Set(['mint.request']);
+/**
+ * Client→host frames an `app-key-mint` channel may carry: the one mint request of a consented MCP
+ * OAuth grant (P-325, D-021), or the one relayed client-credentials token request (P-016, D-022).
+ */
+export const APP_KEY_MINT_CLIENT_TYPES: ReadonlySet<string> = new Set(['mint.request', 'token.request']);
 
 /**
  * Client→host frames an `operator-http` channel may carry; everything else is refused.
@@ -361,7 +364,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     kind: AppRelayChannelKind = 'app-http',
   ): AppRelayChannel | null {
     // Each kind carries only its own client frames: an app call's http.* pair, or the one
-    // mint.request of a consented MCP OAuth grant (P-325). The machine fences both too.
+    // mint.request (P-325) / token.request (P-016) of the key channel. The machine fences both too.
     const clientTypes = kind === 'app-key-mint' ? APP_KEY_MINT_CLIENT_TYPES : OPERATOR_HTTP_CLIENT_TYPES;
     const key = connectorKey(connector.binding);
     const connectorSocket = this.connectors.get(key);

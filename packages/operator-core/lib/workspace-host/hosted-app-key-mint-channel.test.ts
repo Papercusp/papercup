@@ -18,6 +18,7 @@ import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust'
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import {
   PORTAL_MINT_ROUTE_PATH,
+  PORTAL_TOKEN_ROUTE_PATH,
   decideAppHttpRoute,
   handleHostedAppRelay,
   type HostedAppRelayDependencies,
@@ -198,10 +199,97 @@ describe('app-key-mint channel, machine end (P-325)', () => {
   });
 });
 
-describe('the mint route is reachable from neither relay plane (P-325)', () => {
-  it('refuses it on the app-http and operator-http allowlists', () => {
-    expect(decideAppHttpRoute('POST', PORTAL_MINT_ROUTE_PATH).ok).toBe(false);
-    expect(decideOperatorHttpRoute('POST', PORTAL_MINT_ROUTE_PATH).ok).toBe(false);
+const ACCESS_TOKEN = `pcat_${'b'.repeat(16)}_${'t'.repeat(43)}`;
+const AUDIENCE = 'https://app.papercusp.com/api/workspaces/workspace-1/oauth/token';
+const TOKEN_REQUEST = {
+  type: 'token.request',
+  requestId: 't-1',
+  fields: { grant_type: 'client_credentials', client_id: 'c'.repeat(16), client_secret: APP_KEY, scope: 'tool:plans:get' },
+  basic: null,
+  audience: AUDIENCE,
+};
+
+describe('app-key-mint channel carries one client-credentials token request (P-016, D-022)', () => {
+  it('forwards it to the loopback token route as the machine itself, answers token.answer once, and closes', async () => {
+    const issued = { access_token: ACCESS_TOKEN, token_type: 'Bearer', expires_in: 3600, scope: 'tool:plans:get' };
+    const op = await operator(json(200, { ok: true, status: 200, body: issued }));
+    const host = hostFor(op.origin);
+    await host.open();
+    await host.relay({ ...TOKEN_REQUEST, fields: { ...TOKEN_REQUEST.fields, resource: 'https://evil.example' } });
+
+    expect(op.seen).toHaveLength(1);
+    const call = op.seen[0]!;
+    expect(call.method).toBe('POST');
+    expect(call.url).toBe(PORTAL_TOKEN_ROUTE_PATH);
+    // Only the grant's own fields cross: the extra `resource` is dropped here too.
+    expect(JSON.parse(call.body)).toEqual({ fields: TOKEN_REQUEST.fields, basic: null, audience: AUDIENCE });
+    expect(call.headers[EXTERNAL_INGRESS_MARKER_HEADER]).toBeUndefined();
+    expect(call.headers[HOSTED_PRINCIPAL_USER_HEADER]).toBeUndefined();
+    expect(call.headers.authorization).toBeUndefined();
+
+    expect(host.frames()).toEqual([{ type: 'token.answer', requestId: 't-1', status: 200, body: issued }]);
+    expect(host.closes()).toEqual(['mint_complete']);
+    await host.relay({ ...TOKEN_REQUEST, requestId: 't-2' });
+    expect(op.seen).toHaveLength(1);
+  });
+
+  it('passes an OAuth refusal back as the answer, with its status', async () => {
+    const refusal = { error: 'invalid_client', error_description: 'client authentication failed' };
+    const op = await operator(json(200, { ok: true, status: 401, body: refusal }));
+    const host = hostFor(op.origin);
+    await host.open();
+    await host.relay({ ...TOKEN_REQUEST, basic: { id: 'c'.repeat(16), secret: APP_KEY }, fields: { grant_type: 'client_credentials' } });
+    expect(JSON.parse(op.seen[0]!.body).basic).toEqual({ id: 'c'.repeat(16), secret: APP_KEY });
+    expect(host.frames()).toEqual([{ type: 'token.answer', requestId: 't-1', status: 401, body: refusal }]);
+  });
+
+  it('never relays a long-lived key, or a non-OAuth answer, as a token', async () => {
+    for (const answer of [
+      { ok: true, status: 200, body: { access_token: APP_KEY, token_type: 'Bearer' } },
+      { ok: true, status: 500, body: { error: 'server_error' } },
+      { ok: true, status: 400, body: { note: 'no error field' } },
+      { ok: false, error: { code: 'local_only' } },
+    ]) {
+      const op = await operator(json(200, answer));
+      const host = hostFor(op.origin);
+      await host.open();
+      await host.relay(TOKEN_REQUEST);
+      expect(host.frames()).toEqual([{ type: 'mint.error', requestId: 't-1', code: 'token_failed' }]);
+    }
+  });
+
+  it('refuses a malformed token request without calling the operator', async () => {
+    for (const bad of [
+      { ...TOKEN_REQUEST, fields: 'grant_type=client_credentials' },
+      { ...TOKEN_REQUEST, fields: { ...TOKEN_REQUEST.fields, client_assertion: 'x'.repeat(9000) } },
+      { ...TOKEN_REQUEST, fields: { ...TOKEN_REQUEST.fields, scope: ['tool:plans:get'] } },
+      { ...TOKEN_REQUEST, basic: { id: 'c'.repeat(16) } },
+      { ...TOKEN_REQUEST, audience: '' },
+    ]) {
+      const op = await operator(json(200, { ok: true, status: 200, body: {} }));
+      const host = hostFor(op.origin);
+      await host.open();
+      await host.relay(bad);
+      expect(op.seen).toEqual([]);
+      expect(host.frames()).toEqual([{ type: 'mint.error', requestId: 't-1', code: 'invalid_request' }]);
+    }
+  });
+
+  it('refuses a mint answer that is a pcat_ token rather than a pcapp_ key', async () => {
+    const op = await operator(json(201, { ok: true, key: ACCESS_TOKEN, scopes: {} }));
+    const host = hostFor(op.origin);
+    await host.open();
+    await host.relay(REQUEST);
+    expect(host.frames()).toEqual([{ type: 'mint.error', requestId: 'r-1', code: 'http_201' }]);
+  });
+});
+
+describe('the mint and token routes are reachable from neither relay plane (P-325, P-016)', () => {
+  it('refuses both on the app-http and operator-http allowlists', () => {
+    for (const path of [PORTAL_MINT_ROUTE_PATH, PORTAL_TOKEN_ROUTE_PATH]) {
+      expect(decideAppHttpRoute('POST', path).ok).toBe(false);
+      expect(decideOperatorHttpRoute('POST', path).ok).toBe(false);
+    }
   });
 });
 

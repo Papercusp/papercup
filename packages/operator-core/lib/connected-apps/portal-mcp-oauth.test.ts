@@ -322,4 +322,121 @@ describe('portal MCP OAuth flow (P-325)', () => {
     h.setAnswer((request) => ({ type: 'mint.issued', requestId: request.requestId, key: APP_KEY, scopes: request.scopes }));
     expect((await token(h, clientId, code)).status).toBe(400);
   });
+
+  it('never delivers a short-lived pcat_ token as the key a consented grant mints', async () => {
+    const h = harness();
+    const clientId = await register(h);
+    const code = await approve(h, await authorize(h, clientId));
+    h.setAnswer((request) => ({ type: 'mint.issued', requestId: request.requestId, key: ACCESS_TOKEN, scopes: request.scopes }));
+    const refused = await token(h, clientId, code);
+    expect(refused.status).toBe(502);
+    expect(await refused.json()).toMatchObject({ error: 'server_error' });
+  });
+});
+
+// ── the client-credentials grant, relayed to the machine (P-016, D-022) ───────────────────────
+
+const ACCESS_TOKEN = `pcat_${'b'.repeat(16)}_${'t'.repeat(43)}`;
+const TOKEN_ENDPOINT = `${ISSUER}/oauth/token`;
+type TokenRequest = { type: string; requestId: string; fields: Record<string, string>; basic: unknown; audience: string };
+
+function clientCredentials(h: Harness, fields: Record<string, string>, headers: Record<string, string> = {}) {
+  return h.call(`/api/workspaces/${WS}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+    body: new URLSearchParams({ grant_type: 'client_credentials', ...fields }).toString(),
+  });
+}
+
+function answerToken(h: Harness, status: number, body: Record<string, unknown>) {
+  h.setAnswer((request) => ({ type: 'token.answer', requestId: request.requestId, status, body }));
+}
+
+const sentTokenRequests = (h: Harness) => h.state.mints as unknown as TokenRequest[];
+
+describe('portal client-credentials grant (P-016)', () => {
+  it('advertises client_credentials and signed-JWT client authentication at the workspace issuer', async () => {
+    const h = harness();
+    const server = await (await h.call(`/.well-known/oauth-authorization-server/api/workspaces/${WS}`)).json();
+    expect(server.grant_types_supported).toEqual(['authorization_code', 'client_credentials']);
+    expect(server.token_endpoint_auth_methods_supported).toEqual(expect.arrayContaining(['client_secret_basic', 'private_key_jwt']));
+    expect(server.token_endpoint_auth_signing_alg_values_supported).toEqual(['RS256', 'PS256', 'ES256', 'EdDSA']);
+  });
+
+  it('relays only the grant fields, with the portal token endpoint as audience, and returns the machine answer', async () => {
+    const h = harness();
+    const issued = { access_token: ACCESS_TOKEN, token_type: 'Bearer', expires_in: 3600, scope: 'tool:plans:get' };
+    answerToken(h, 200, issued);
+    const response = await clientCredentials(h, {
+      client_id: 'c'.repeat(16),
+      client_secret: APP_KEY,
+      scope: 'tool:plans:get',
+      resource: 'https://evil.example/mcp',
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual(issued);
+    const [sent, ...more] = sentTokenRequests(h);
+    expect(more).toEqual([]);
+    expect(sent).toEqual({
+      type: 'token.request',
+      requestId: expect.any(String),
+      fields: { grant_type: 'client_credentials', client_id: 'c'.repeat(16), client_secret: APP_KEY, scope: 'tool:plans:get' },
+      basic: null,
+      audience: TOKEN_ENDPOINT,
+    });
+    expect(h.state.closed).toEqual(['token_complete']);
+  });
+
+  it('relays Basic credentials, and passes a refused client back as 401 with a Basic challenge', async () => {
+    const h = harness();
+    answerToken(h, 401, { error: 'invalid_client', error_description: 'client authentication failed' });
+    const basic = Buffer.from(`${'c'.repeat(16)}:${APP_KEY}`).toString('base64');
+    const response = await clientCredentials(h, {}, { authorization: `Basic ${basic}` });
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe('Basic realm="papercusp"');
+    expect(await response.json()).toMatchObject({ error: 'invalid_client' });
+    expect(sentTokenRequests(h)[0]!.basic).toEqual({ id: 'c'.repeat(16), secret: APP_KEY });
+  });
+
+  it('refuses a long-lived key, or any answer that is not an OAuth token answer, as a token', async () => {
+    for (const [status, body] of [
+      [200, { access_token: APP_KEY, token_type: 'Bearer' }],
+      [200, { token_type: 'Bearer' }],
+      [500, { error: 'server_error' }],
+      [400, { message: 'no error field' }],
+    ] as const) {
+      const h = harness();
+      answerToken(h, status, body);
+      const response = await clientCredentials(h, { client_id: 'c'.repeat(16), client_secret: APP_KEY });
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: 'server_error' });
+    }
+  });
+
+  it('answers 503 when the workspace is offline or silent, and relays nothing when offline', async () => {
+    const h = harness();
+    h.state.live = false;
+    const offline = await clientCredentials(h, { client_id: 'c'.repeat(16), client_secret: APP_KEY });
+    expect(offline.status).toBe(503);
+    expect(sentTokenRequests(h)).toEqual([]);
+    h.state.live = true;
+    h.setAnswer(() => null);
+    expect((await clientCredentials(h, { client_id: 'c'.repeat(16), client_secret: APP_KEY })).status).toBe(503);
+  });
+
+  it('refuses an oversized field without relaying it, and still refuses an unknown grant type', async () => {
+    const h = harness();
+    const big = await clientCredentials(h, { client_assertion: 'x'.repeat(9000) });
+    expect(big.status).toBe(400);
+    expect(await big.json()).toMatchObject({ error: 'invalid_request' });
+    expect(sentTokenRequests(h)).toEqual([]);
+    const password = await h.call(`/api/workspaces/${WS}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'password', username: 'u', password: 'p' }).toString(),
+    });
+    expect(password.status).toBe(400);
+    expect(await password.json()).toMatchObject({ error: 'unsupported_grant_type' });
+  });
 });

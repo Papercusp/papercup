@@ -29,6 +29,7 @@ import {
   clientSecretMatches,
   formatOAuthScope,
   isAuthorizationCode,
+  isRelayableTokenAnswer,
   isRequestHandle,
   isValidCodeChallenge,
   newAuthorizationCode,
@@ -39,6 +40,7 @@ import {
   readBasicCredentials,
   readFormOrJson,
   redirectWithParams,
+  relayedTokenFields,
   sha256Hex,
   validateRegistration,
   type OAuthClient,
@@ -55,13 +57,11 @@ import {
 import type { AppKeyScopes } from './store';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
-import {
-  isRelayableTokenAnswer,
-  relayedTokenFields,
-  type AppRelayConnector,
-  type AppRelayPort,
-  type AppRelayServiceRunner,
-  type AppRelayWorkspace,
+import type {
+  AppRelayConnector,
+  AppRelayPort,
+  AppRelayServiceRunner,
+  AppRelayWorkspace,
 } from '../workspace-host/hosted-app-relay';
 
 // ── URLs ─────────────────────────────────────────────────────────────────────────────────────

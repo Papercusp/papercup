@@ -1143,12 +1143,13 @@ export class HostedWorkspaceHostSessionAdapter {
       else this.send(channelId, { type: 'http.error', code: 'channel_kind_mismatch', requestType: type });
       return;
     }
-    // Same rule for the mint channel: it carries `mint.request` and nothing else.
+    // Same rule for the key channel: it carries one `mint.request` or `token.request` and nothing
+    // else (AppKeyMintChannel.accept refuses any other type).
     if (channel.kind === 'app-key-mint') {
       await channel.mint.accept(type, payload);
       return;
     }
-    if (type.startsWith('http.') || type.startsWith('mint.')) return;
+    if (type.startsWith('http.') || type.startsWith('mint.') || type.startsWith('token.')) return;
 
     // HOST-level operations, answered on ANY authenticated channel.
     //
