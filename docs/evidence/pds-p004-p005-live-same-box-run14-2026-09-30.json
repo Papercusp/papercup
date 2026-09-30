@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PDS P-004/P-005: the physical scenario phases A-D pass end to end against the same-box two-instance rig through the physical-rig entry point, bracketed by the verification harness, with every producer exiting and every remote read converging (live, run 14, 2026-09-30)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "physical-drill-iteration-speed-2026-09-29",
+  "workItem": "WI-10003976",
+  "workItems": ["WI-10003976", "WI-10003975"],
+  "specs": [
+    "AUTO-BAR-R-4-P-005@2",
+    "AUTO-BAR-R-6-P-004@3",
+    "AUTO-BAR-R-7-P-004@2",
+    "AUTO-BAR-R-9-P-004@2"
+  ],
+  "observer": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+  "outcome": "passed",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T11:20:37Z",
+  "finishedAt": "2026-09-30T11:41:55Z",
+  "codeUnderTest": {
+    "superprojectHead": "de2870099d",
+    "papercuspDesktopGitlink": "c5d44568c3a15b54df4d2cf7572754460418748e",
+    "driftSinceRun": "Checked 12:33Z: papercusp-desktop c5d44568..HEAD touches only bin/dev-operator-ifneeded.sh and bin/lib/federation-asserts.selftest.sh; no bound source path changed."
+  },
+  "summary": "Same-box rehearsal run 14. `.papercusp/scratch/r15-drill14.sh` pinned the papercusp-desktop gitlink c5d44568 (superproject de2870099d) at 11:20:37Z and brought the same-box rig up: tower owner :18471, VM owner :18571, a testnet DHT, pot hello-world-pot, repo key gh-1296269. Rig-up exited 0 at 11:28:12Z after the VM answered, the tower held both device namespaces and every member head was in canonical staging. The drill then ran `hive-git-drill.sh --rig same-box --only-phase` for phases A,B,C,D. That goes through the same chain as the physical rig: hive-git-drill.sh -> hive-git-physical-probe.sh -> hive-git-physical-scenario.sh, with rig-profile.sh retargeting the host variables. The verification harness bracketed the run (run 20260930T112812Z-1916007): the physical phase passed in 819812 ms (11:28:13Z-11:41:53Z), and the drill printed one HARNESS_RESULT line with verdict=pass and first_failure=none. DRILL-EXIT=0 at 11:41:54Z. The rig came down cleanly (RIG-DOWN-EXIT=0 at 11:41:55Z).",
+  "assertions": [
+    {
+      "id": "same-box-through-physical-entry-point",
+      "spec": "AUTO-BAR-R-4-P-005@2",
+      "criteria": "The physical scenario runs against the same-box two-instance rig from the same entry point used for the physical rig.",
+      "observed": "Log line `SAME_BOX_REHEARSAL phases=A,B,C,D rig=~/.papercusp-same-box-rigs/r15-20260930T112037Z`, then the scenario's own lines `hive-git-physical-scenario: PHASE_SKIP E..J (not selected)` and `PARTIAL_RUN phases=A,B,C,D passed 2026-09-30T11:28:54.310Z..2026-09-30T11:41:50.474Z`. Probe stdout `{\"schemaVersion\":\"hive-git-physical-partial/v1\",\"phases\":\"A,B,C,D\",\"releaseEvidence\":false}`. The scenario file was not forked: the same-box run executed papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh through hive-git-physical-probe.sh.",
+      "evidence": "~/.papercusp-drill-physical-runs/20260930T114153Z-1916007-rc0/physical-probe.{stdout,stderr}"
+    },
+    {
+      "id": "harness-bracketed-one-result-line",
+      "spec": "AUTO-BAR-R-9-P-004@2",
+      "criteria": "Every drill run is bracketed by vh.sh, each phase declared through vh_phase/vh_begin, and one HARNESS_RESULT line names the first failing phase.",
+      "observed": "`VH_RUN harness=hive-git-drill run=20260930T112812Z-1916007 plan=setup:skip,mode:skip,leg-a:skip,leg-b:skip,leg-c:skip,physical:run,leg-d:skip,leg-f:skip`, `VH_BEGIN phase=physical`, `VH_PHASE phase=physical status=passed`, and exactly one `HARNESS_RESULT harness=hive-git-drill verdict=pass run=20260930T112812Z-1916007 first_failure=none passed=1 failed=0 blocked=0 skipped=7 reused=0`. The harness wrote contract.json, plan.json, phases.jsonl and result.json.",
+      "evidence": "~/.local/state/verification-harness/hive-git-drill/20260930T112812Z-1916007/result.json"
+    },
+    {
+      "id": "producers-exit",
+      "spec": "AUTO-BAR-R-7-P-004@2",
+      "criteria": "Every ssh producer mode exits as soon as it has written its result.",
+      "observed": "Phases A-D invoke the phase-a..d observe/drive producer modes and rig-preflight many times over ssh-equivalent calls; the physical phase completed in 13m40s with no stalled producer, and the drill exited 0 one second after the scenario's PARTIAL_RUN line (11:41:50Z -> 11:41:54Z). On the real physical VM, a standalone rig-preflight producer exited in 7.1 s wall time (docs/evidence/pds-p003-live-rig-preflight-six-checks-2026-09-30.json).",
+      "evidence": ".papercusp/scratch/r15-drill14.log"
+    },
+    {
+      "id": "remote-reads-converge",
+      "spec": "AUTO-BAR-R-6-P-004@3",
+      "criteria": "No drill step decides on a single read of remote state after an async action; no drill failure is a transient read.",
+      "observed": "Phases A-D decided every post-action remote observation through converging waits and passed. Across the same-box window (runs 8-14), the attempt audit on WI-10003976 (posts 1151165 and 1151167) lists each failure fingerprint with its cause; none was a read that a re-read of the same remote state would have passed.",
+      "evidence": "WI-10003976 thread posts 1151165, 1151167, 1151186"
+    }
+  ],
+  "falsifier": "The physical scenario cannot run against the same-box rig, or runs through a different entry point; a drill run without exactly one HARNESS_RESULT line; a producer mode that stays running after writing its result; a drill failure whose immediate re-read of the same remote state passes.",
+  "command": [
+    "bash .papercusp/scratch/r15-drill14.sh  (same-box-rig.sh up -> papercusp-desktop/bin/hive-git-drill.sh --rig same-box --only-phase A,B,C,D -> same-box-rig.sh down)"
+  ],
+  "note": "Same-box results are diagnostic for the drill's own release gate (D-005): they are never release evidence for P-301, and the drill says so itself (releaseEvidence:false). For AUTO-BAR-R-4-P-005 the same-box rig is exactly the plane the clause names. For the P-004 clauses this is a real two-instance execution of the shipped drill code; the physical-rig rig-preflight evidence covers the producer-exit property on the real VM. Unit guards bound separately: hive-git-drill-rehearsal.test.ts, hive-git-drill-single-read-guard.test.ts, physical-drill-producer.test.ts, hive-git-drill-phase-select.test.ts.",
+  "sourcePaths": [
+    "papercusp-desktop/bin/hive-git-drill.sh",
+    "papercusp-desktop/bin/vm-rig/lib/rig-profile.sh",
+    "papercusp-desktop/bin/vm-rig/same-box-rig.sh",
+    "papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh",
+    "papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh",
+    "packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts",
+    "packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.ts"
+  ]
+}
