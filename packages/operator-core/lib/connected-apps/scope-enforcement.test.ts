@@ -261,8 +261,14 @@ async function withMcpClient<T>(run: (client: InstanceType<typeof Client>) => Pr
   }
 }
 
-const mcpText = (r: { content?: unknown }): string =>
-  ((r.content as Array<{ text?: string }> | undefined) ?? []).map((c) => c.text ?? '').join('');
+// `unknown`, not `{ content?: unknown }`: callTool() returns a union whose compat
+// member has no `content`, and an all-optional parameter type trips TS's weak-type check.
+const mcpText = (r: unknown): string => {
+  const content = (r as { content?: unknown } | null | undefined)?.content;
+  return (Array.isArray(content) ? (content as Array<{ text?: unknown }>) : [])
+    .map((c) => (typeof c?.text === 'string' ? c.text : ''))
+    .join('');
+};
 
 describe('MCP /api/mcp — app key scope (R-5, R-6)', () => {
   it('R-5 + R-6: tools/list shows exactly the in-scope tool — no out-of-scope or hard-denied tool', async () => {
