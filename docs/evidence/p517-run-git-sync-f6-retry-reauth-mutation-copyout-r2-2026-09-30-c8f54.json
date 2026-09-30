@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P517 F6 fencing mutation probe (copy-out, r2): submodule non-fast-forward retry must reauthorize (run-git-sync.ts)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+    "--fake-destructive --expect caught",
+    "--mutate 's/await opts\\.beforePush\\(args, cwd\\);/await opts.beforePush(args, cwd).catch(() => undefined);/'",
+    "--test 'D=$(dirname {}); if [ -L \"$D/run-git-sync.test.ts\" ]; then cp --remove-destination <repo>/packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts \"$D/run-git-sync.test.ts\" || exit 3; echo MATERIALIZED_TEST_COPY; fi; cd \"${D%/lib/harness/git-sync}\" && pwd && npx vitest run lib/harness/git-sync/run-git-sync.test.ts -t \"F6: submodule non-fast-forward retry reauthorizes\" --reporter=dot'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T21:25:17Z",
+  "finishedAt": "2026-09-30T21:26:23Z",
+  "summary": "Copy-out (default tier) mutation probe; the tracked tree was never mutated, so no file lock or git-sync lease was needed. The mutant lives only in the probe's repo mirror. The --test materializes a real copy of run-git-sync.test.ts beside the mirrored mutant, but only when the mirrored test is a symlink, so the real-tree baseline runs unchanged. Materializing the copy stops Vite from realpathing the symlinked test back into the real tree and importing the real module. Mutated control: 'F6: submodule non-fast-forward retry reauthorizes before another push'. The real-tree baseline passed 1 (159 skipped) and so did the unmutated-mirror baseline. The mutant swallows a beforePush (publication authority) refusal instead of refusing the push. That let the retry push proceed after the owner key became unavailable, and the test failed: expected 2 to be 1 (the push count). The probe reported MUTANT CAUGHT and verified run-git-sync.ts byte-identical afterwards. The unmutated mirror copy passed and the mutant failed on the push-count assertion, so the mutated module was the one loaded. This regenerates binding 16317, which went stale when run-git-sync.ts changed. The r1 probe (21:15-21:17Z, docs/evidence/p517-run-git-sync-f6-retry-reauth-mutation-copyout-2026-09-30-c8f54.json) measured blob af38742a, which a peer commit (12135961, EI-24712906810240170 post-stage guard) superseded before binding. This r2 probe measured the current committed bytes, which were clean and unchanged from before to after the probe.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real-tree baseline ({} = tracked path, no copy step): Tests 1 passed | 159 skipped (160), exit 0."
+    },
+    {
+      "id": "unmutated-mirror-baseline-passed",
+      "passed": true,
+      "evidence": "Unmutated-copy baseline in the repo mirror printed MATERIALIZED_TEST_COPY, then Tests 1 passed | 159 skipped (160), exit 0."
+    },
+    {
+      "id": "reauth-refusal-swallow-caught",
+      "passed": true,
+      "evidence": "Mutant (run-git-sync.ts `await opts.beforePush(args, cwd);` -> `await opts.beforePush(args, cwd).catch(() => undefined);`, blob 31086bb9 -> changed, copy-out): AssertionError: expected 2 to be 1 // Object.is equality; Tests 1 failed | 159 skipped (160). MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1."
+    },
+    {
+      "id": "tree-integrity",
+      "passed": true,
+      "evidence": "[mutation-probe] tree integrity: VERIFIED — run-git-sync.ts byte-identical to its pre-probe state. Subject blob 31086bb9 and test blob 973310d3 were clean (git status empty) and equal to HEAD before and after the probe."
+    }
+  ],
+  "workItemId": "WI-2144478",
+  "specId": "ENDGAME-P-517-contract",
+  "testFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+  "sourceFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-517",
+    "refreshWorkItemId": "WI-10004432",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 16317,
+    "probeTier": "copy-out",
+    "superprojectHead": "5b483a0d0a9f4d535e8de5839beb79763911679e",
+    "subjectCommit": "12135961feffd617ea95951fc54e82f13d533c3b",
+    "subjectBlob": "31086bb9e030d1d64fe62f1d32ac4ff46c853340",
+    "subjectSha256": "22cbeba29fa9a87f332c9c13a65947beedff90382e2067ccfe3075d90e2bf91c",
+    "testBlob": "973310d36af082d9412f66f82354eed6626323f0",
+    "testSha256": "55e8c3abf5114fa52a79305a272d96dff0688c7d37779d5cf6a211cf26c4daae",
+    "subjectAndTestCleanAtHead": true
+  }
+}
