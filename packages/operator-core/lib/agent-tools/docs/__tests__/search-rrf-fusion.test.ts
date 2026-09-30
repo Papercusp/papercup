@@ -162,13 +162,34 @@ describe('docs:search RRF fusion (WI-5690, on the engine per P-016)', () => {
 
   it('a page found by BOTH legs keeps its lexical excerpt and is not marked semantic-only', async () => {
     semanticReturns([
-      { slug: 'noise-one', url: '/noise-one', title: 'Gadget noise', anchor: '', similarity: 0.5, excerpt: 'gadget gadget' },
+      { slug: 'noise-one', url: '/noise-one', title: 'Gadget noise', anchor: 'rollout', similarity: 0.5, excerpt: 'gadget gadget' },
     ]);
     const { hits } = await runSearch('gadget');
     const n1 = hits.find((h) => h.slug === 'noise-one');
     expect(n1).toBeTruthy();
     expect(n1?.semantic).toBeUndefined();
     expect(n1?.similarity).toBe(0.5);
+    // ...and still names the section the semantic leg matched (generic-rag-chunking
+    // P-013): dropping it made a harness doc matched by both legs return only its page.
+    expect(n1?.anchor).toBe('rollout');
+  });
+
+  it('a section whose vector hit was floored away lends its page no anchor', async () => {
+    semanticReturns([
+      { slug: 'noise-one', url: '/noise-one', title: 'Gadget noise', anchor: 'rollout', similarity: 0.5, excerpt: 'gadget gadget' },
+    ]);
+    // The ranker's sink records the anchor before the engine applies its floor;
+    // a floor above 0.5 then drops that vector hit, leaving a lexical-only page.
+    const actual = runHybridSearch.getMockImplementation();
+    if (!actual) throw new Error('runHybridSearch lost its pass-through implementation');
+    runHybridSearch.mockImplementationOnce((sources: unknown, opts: Record<string, unknown>) =>
+      actual(sources, { ...opts, minScore: { embeddings: 0.9 } }),
+    );
+    const { hits } = await runSearch('gadget');
+    const n1 = hits.find((h) => h.slug === 'noise-one');
+    expect(n1).toBeTruthy();
+    expect(n1?.similarity).toBeUndefined();
+    expect(n1?.anchor).toBeUndefined();
   });
 
   it('reports BOTH legs as having run on a healthy hybrid search', async () => {

@@ -115,6 +115,7 @@ interface DocsSearchHit {
   slug: string;
   anchor?: string;
   semantic?: true;
+  similarity?: number;
 }
 
 async function search(slug: string): Promise<{ hits: DocsSearchHit[]; legs: { semantic?: { status?: string } } }> {
@@ -216,15 +217,17 @@ describe('harness docs → doc_sections → docs:search (live SQL)', () => {
     expect(legs.semantic?.status).toBe('ran');
     const hit = hits.find((x) => x.slug === LONG_SLUG);
     expect(hit, JSON.stringify(hits)).toBeDefined();
-    // Only the semantic leg carries an anchor: a lexical-only page match would
-    // leave it unset, so this pins the hit to the doc_sections row itself.
-    expect(hit?.semantic).toBe(true);
-    expect(hit?.anchor).toBe(sectionAnchorBase(expected.anchor));
+    // The lexical leg reads the whole file, so it finds this page too and the
+    // hit is correctly NOT `semantic: true` (that means vector-only). What only
+    // the semantic leg can supply is a similarity and the matched section's
+    // anchor, so those pin the hit to the doc_sections row itself.
+    expect(hit?.similarity, JSON.stringify(hit)).toBeGreaterThan(0.9);
+    expect(hit?.anchor, JSON.stringify(hit)).toBe(sectionAnchorBase(expected.anchor));
   }, 120_000);
 
   it('control: the same doc cut at 2,000 characters yields no section for that query', async () => {
     const { hits, legs } = await search(SLUG_CUT);
     expect(legs.semantic?.status).toBe('ran');
-    expect(hits.filter((x) => x.slug === LONG_SLUG && x.semantic)).toEqual([]);
+    expect(hits.filter((x) => x.slug === LONG_SLUG && (x.anchor || x.similarity !== undefined))).toEqual([]);
   }, 120_000);
 });
