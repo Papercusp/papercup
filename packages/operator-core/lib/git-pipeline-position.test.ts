@@ -3083,6 +3083,7 @@ describe('computeStages: position x health', () => {
       comparison: `git rev-parse <candidate>:${path} vs <repairHead>:${path}`,
       candidateBlob: 'a'.repeat(40),
       repairHeadBlob: fixInRepairHead === null ? null : fixInRepairHead ? 'b'.repeat(40) : 'a'.repeat(40),
+      atRepairHead: null,
       reading: 'fixture row',
     });
 
@@ -3093,6 +3094,7 @@ describe('computeStages: position x health', () => {
       distinctFailingFiles: [],
       failingFileCount: 0,
       alreadyFixedCount: 0,
+      passedAtRepairHeadCount: 0,
       stillBrokenCount: 0,
       stillBrokenNeedsRunCount: 0,
       changedBetweenRefs: null,

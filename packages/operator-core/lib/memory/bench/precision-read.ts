@@ -13,6 +13,13 @@
  */
 import type { Sql } from 'postgres';
 
+/**
+ * Ceiling on one isolated bench worker run (precision-monitor.ts kills it past this).
+ * Lives here, in the light module, so the learning-loop health read can size its
+ * since-fire grace from it without importing the heavy runner (WI-10004117).
+ */
+export const PRECISION_BENCH_WORKER_TIMEOUT_MS = 30 * 60 * 1_000;
+
 /** One recorded memory-precision-bench run (newest-first in a trend). */
 export interface MemoryPrecisionRun {
   ranAt: string;

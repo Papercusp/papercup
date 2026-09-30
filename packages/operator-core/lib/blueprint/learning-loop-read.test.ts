@@ -18,11 +18,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SCOUT_CYCLE_TIMEOUT_MS } from '../scout/scheduler';
 
-const h = vi.hoisted(() => ({ routineRows: [] as unknown[], scoutTickRows: [] as unknown[] }));
+const h = vi.hoisted(() => ({
+  routineRows: [] as unknown[],
+  scoutTickRows: [] as unknown[],
+  precisionRows: [] as unknown[] | Error,
+  precisionFlagOn: true,
+}));
 
 vi.mock('./seed-learning-singletons', () => ({
-  LEARNING_SINGLETONS: [{ blueprintId: 'scout', legacyRoutine: 'scout-legacy' }],
+  LEARNING_SINGLETONS: [
+    { blueprintId: 'scout', legacyRoutine: 'scout-legacy' },
+    { blueprintId: 'memory-precision', legacyRoutine: 'memory-precision-bench' },
+  ],
 }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => h.precisionFlagOn) }));
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: vi.fn(() => 'acme-home') }));
 vi.mock('./materialize-triggers', () => ({
   platformImprovementLoopsEnabled: vi.fn(async () => true),
@@ -35,7 +44,8 @@ vi.mock('./learning-loop-health', async (orig) => ({
 
 import { computeLearningLoopHealth } from './learning-loop-health';
 const computeM = vi.mocked(computeLearningLoopHealth);
-import { readLearningLoopHealth } from './learning-loop-read';
+import { readLearningLoopHealth, PRECISION_ACTIVITY_GRACE_MS } from './learning-loop-read';
+import { PRECISION_BENCH_WORKER_TIMEOUT_MS } from '../memory/bench/precision-read';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -50,22 +60,29 @@ beforeEach(() => {
     },
   ];
   h.scoutTickRows = [{ last_tick_at: new Date('2026-08-03T00:12:10.846Z') }];
+  h.precisionRows = [{ last_ran_at: new Date('2026-08-02T08:02:11.000Z') }];
+  h.precisionFlagOn = true;
 });
 
-// Same dual-shape sql mock as learning-loops.test.ts: a tagged-template call (first
-// arg has .raw) resolves rows in call order; sql([...]) IN-clause helper calls return
-// an opaque fragment.
+// Dual-shape sql mock: a tagged-template call (first arg has .raw) resolves the rows
+// for the table its text names; sql([...]) IN-clause helper calls return an opaque
+// fragment.
 function fakeSql() {
-  let call = 0;
   const fn = (first: unknown) => {
-    if (first && (first as { raw?: unknown }).raw) {
-      call += 1;
-      return Promise.resolve(call === 1 ? h.routineRows : h.scoutTickRows);
+    const raw = (first as { raw?: readonly string[] } | null)?.raw;
+    if (raw) {
+      const text = raw.join('?');
+      if (text.includes('memory_precision_bench')) {
+        return h.precisionRows instanceof Error ? Promise.reject(h.precisionRows) : Promise.resolve(h.precisionRows);
+      }
+      return Promise.resolve(text.includes('scout_ticks') ? h.scoutTickRows : h.routineRows);
     }
     return { __frag: first };
   };
   return fn as unknown as import('postgres').Sql;
 }
+
+type ActivityOpts = { activityByBlueprintId?: Record<string, Record<string, unknown>> };
 
 describe('readLearningLoopHealth wiring', () => {
   it('widens activityLagGraceMs past the generic 5min default to cover a full Scout cycle', async () => {
@@ -95,5 +112,42 @@ describe('readLearningLoopHealth wiring', () => {
       lastActivityAt: '2026-08-03T00:12:10.846Z',
       source: 'scout_ticks',
     });
+  });
+
+  // WI-10004117: the weekly precision monitor fired with no bench row recorded and
+  // nothing noticed. Its bench ledger now feeds the classifier in since-fire mode.
+  it('passes the precision bench ledger in since-fire mode with a grace past one worker run', async () => {
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    const opts = computeM.mock.calls[0]![2] as ActivityOpts;
+    expect(opts.activityByBlueprintId?.['memory-precision']).toEqual({
+      lastActivityAt: '2026-08-02T08:02:11.000Z',
+      source: 'memory_precision_bench',
+      mode: 'since-fire',
+      graceMs: PRECISION_ACTIVITY_GRACE_MS,
+    });
+    expect(PRECISION_ACTIVITY_GRACE_MS).toBeGreaterThan(PRECISION_BENCH_WORKER_TIMEOUT_MS);
+  });
+
+  it('passes null activity when the bench ledger has no row, so a fired monitor pages', async () => {
+    h.precisionRows = [{ last_ran_at: null }];
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    const opts = computeM.mock.calls[0]![2] as ActivityOpts;
+    expect(opts.activityByBlueprintId?.['memory-precision']?.lastActivityAt).toBeNull();
+  });
+
+  it('does not judge precision on activity while MEMORY_PRECISION_BENCH is off (flag-off records no row by design)', async () => {
+    h.precisionFlagOn = false;
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    const opts = computeM.mock.calls[0]![2] as ActivityOpts;
+    expect(opts.activityByBlueprintId?.['memory-precision']).toBeUndefined();
+    expect(opts.activityByBlueprintId?.scout).toBeDefined();
+  });
+
+  it('degrades to fire-only judging when the bench ledger read fails', async () => {
+    h.precisionRows = new Error('relation "harness_shared.memory_precision_bench" does not exist');
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    expect(computeM).toHaveBeenCalledTimes(1);
+    const opts = computeM.mock.calls[0]![2] as ActivityOpts;
+    expect(opts.activityByBlueprintId?.['memory-precision']).toBeUndefined();
   });
 });

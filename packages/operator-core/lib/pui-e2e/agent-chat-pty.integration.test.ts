@@ -2573,6 +2573,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
   }
 
   const CONVERSATION_PICKER = 'Enter select · Esc close';
+  const CONVERSATION_LOADING = 'Loading earlier conversations';
 
   /** Relaunch pui in the chat's directory and pick the newest conversation. */
   async function resumeNewest(chat: RunningChat): Promise<PuiPane> {
@@ -2582,7 +2583,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     await pane.waitFor('/resume');
     pane.enter();
     // The picker's title, not a row suffix: a one-turn chat reads "· 1 turn".
+    // The title shows while the list is still loading, behind one disabled
+    // "Loading…" row that Enter cannot select, so wait for the real rows.
     await pane.waitFor(CONVERSATION_PICKER, { timeoutMs: 30_000 });
+    await pane.waitForGone(CONVERSATION_LOADING, { timeoutMs: 30_000 });
     pane.enter();
     await pane.waitForGone(CONVERSATION_PICKER, { timeoutMs: 30_000 });
     await pane.waitFor(chat.reply, { timeoutMs: 60_000 });
@@ -2744,13 +2748,16 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     let stage = 'chat';
     let chat: RunningChat | null = null;
     let resumed: PuiPane | null = null;
-    onTestFailed(() => console.info('PUI_P009_DETACH_FAILURE', p009Evidence(stage, chat, resumed)));
+    let lease: ReturnType<typeof sampleLease> | null = null;
+    onTestFailed(() => console.info('PUI_P009_DETACH_FAILURE', p009Evidence(stage, chat, resumed),
+      JSON.stringify({ leaseTimeline: lease?.samples ?? [] })));
     const restoreLease = useShortLease(ttlMs);
     try {
       chat = await chatWithRunningEngine(tag);
       // Control: the sweep that ends an unattended engine is live here, so
       // surviving it below is the detach's doing (see P-009 LEASE).
       expect(suClientLeaseDiagnostics()).toMatchObject({ timersInTest: true, sweepTimer: true });
+      lease = sampleLease(chat.engine.adapter.host.descriptor().identity.advSessionId, chat);
       stage = 'detach';
       chat.pane.write('/detach');
       await chat.pane.waitFor('/detach');
@@ -2781,6 +2788,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
         binary: bin, binarySha256, ttlMs, detachFrame: chat.pane.screen(), exitFrame: resumed.screen(),
       }));
     } finally {
+      lease?.stop();
       restoreLease();
       await disposeChat(chat, resumed);
     }

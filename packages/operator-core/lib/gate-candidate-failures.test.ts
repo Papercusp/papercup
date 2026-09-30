@@ -24,17 +24,20 @@ const REPAIR_HEAD = 'e7bffeac00000000000000000000000000000000';
 type Row = Record<string, unknown>;
 
 /**
- * A fake `sql` tagged template. The module fires exactly two queries; they are told
- * apart by the census aggregate, which is the ONLY thing that distinguishes them
- * structurally — matching on it here means a future refactor that drops the census
- * breaks this fake loudly instead of silently answering the wrong query.
+ * A fake `sql` tagged template. The module fires up to three queries: the census (told apart
+ * by its aggregate), the gate's own runs AT repairHead (told apart by the `repair_head_runs`
+ * CTE, EI-24654779657165409), and the candidate's failing files. Matching on the structural
+ * marker means a refactor that drops one breaks this fake loudly instead of silently
+ * answering the wrong query. `atRepairHead` defaults to NO rows — "the gate has not run it
+ * there" — so every case written before that query existed keeps its blob-only reading.
  */
-function fakeSql(opts: { filesJudged: number; failing: Row[] }) {
+function fakeSql(opts: { filesJudged: number; failing: Row[]; atRepairHead?: Row[] }) {
   const sql = ((strings: TemplateStringsArray) => {
     const text = strings.join(' ');
     if (/count\(DISTINCT file_path\)/.test(text)) {
       return Promise.resolve([{ files_judged: opts.filesJudged }]);
     }
+    if (/repair_head_runs/.test(text)) return Promise.resolve(opts.atRepairHead ?? []);
     return Promise.resolve(opts.failing);
   }) as never;
   return sql;
@@ -125,6 +128,84 @@ describe('readGateCandidateFailures', () => {
     expect(res.distinctFailingFiles[0].fixInRepairHead).toBe(false);
     expect(res.stillBrokenCount).toBe(1);
     expect(res.assessment).toBe('repairs-outstanding');
+  });
+
+  describe("the gate's own run AT repairHead outranks the blob compare (EI-24654779657165409)", () => {
+    // Measured 2026-09-30: 20 files read "still broken" by blob while repairHead's own
+    // verification had passed every one of them, and the only red was a lint leg.
+    const unchangedBlob = fakeGit({
+      [revParse(CANDIDATE, 'libs/a/b.test.ts')]: 'deadbeef',
+      [revParse(REPAIR_HEAD, 'libs/a/b.test.ts')]: 'deadbeef',
+      [`rev-parse ${CANDIDATE}^{tree}`]: 'tree1',
+      [`rev-parse ${REPAIR_HEAD}^{tree}`]: 'tree2',
+      [`diff --name-only ${CANDIDATE} ${REPAIR_HEAD}`]: 'libs/a/b.test.ts\nscripts/helper.mjs',
+    });
+
+    it('a PASS at repairHead is NOT still broken, even with an unchanged test blob', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({
+          filesJudged: 12,
+          failing: [{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }],
+          atRepairHead: [{ file_path: 'libs/a/b.test.ts', status: 'pass', id: 20175905 }],
+        }),
+        git: unchangedBlob,
+      });
+      const row = res.distinctFailingFiles[0];
+      expect(row.fixInRepairHead).toBe(false); // the blob fact is unchanged…
+      expect(row.atRepairHead).toEqual({ status: 'pass', runId: 20175905 }); // …but it was measured
+      expect(res.stillBrokenCount).toBe(0);
+      expect(res.stillBrokenNeedsRunCount).toBe(0);
+      expect(res.passedAtRepairHeadCount).toBe(1);
+      expect(res.assessment).toBe('all-fixes-contained');
+      expect(row.reading).toMatch(/PASSED AT repairHead/);
+      expect(row.reading).not.toMatch(/RUN THIS FILE AT repairHead/);
+    });
+
+    it('a FAIL at repairHead is still broken, even when the test blob changed', async () => {
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql: fakeSql({
+          filesJudged: 12,
+          failing: [{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }],
+          atRepairHead: [{ file_path: 'libs/a/b.test.ts', status: 'fail', id: 7 }],
+        }),
+        git: fakeGit({
+          [revParse(CANDIDATE, 'libs/a/b.test.ts')]: 'deadbeef',
+          [revParse(REPAIR_HEAD, 'libs/a/b.test.ts')]: 'c0ffee00',
+        }),
+      });
+      expect(res.distinctFailingFiles[0].fixInRepairHead).toBe(true);
+      expect(res.alreadyFixedCount).toBe(0);
+      expect(res.stillBrokenCount).toBe(1);
+      expect(res.assessment).toBe('repairs-outstanding');
+      expect(res.distinctFailingFiles[0].reading).toMatch(/STILL FAILING AT repairHead.*did not fix it/);
+    });
+
+    it('an unreadable repairHead read keeps the hedged blob reading, never a verdict', async () => {
+      const sql = ((strings: TemplateStringsArray) => {
+        const text = strings.join(' ');
+        if (/repair_head_runs/.test(text)) return Promise.reject(new Error('connection reset'));
+        if (/count\(DISTINCT file_path\)/.test(text)) return Promise.resolve([{ files_judged: 12 }]);
+        return Promise.resolve([{ file_path: 'libs/a/b.test.ts', status: 'fail', attempts: 1 }]);
+      }) as never;
+      const res = await readGateCandidateFailures({
+        candidateSha: CANDIDATE,
+        repairHeadSha: REPAIR_HEAD,
+        root: '/repo',
+        sql,
+        git: unchangedBlob,
+      });
+      expect(res.unavailable).toBeNull();
+      expect(res.distinctFailingFiles[0].atRepairHead).toBeNull();
+      expect(res.stillBrokenCount).toBe(1);
+      expect(res.stillBrokenNeedsRunCount).toBe(1);
+      expect(res.distinctFailingFiles[0].reading).toMatch(/RUN THIS FILE AT repairHead/);
+    });
   });
 
   it('a single still-broken file OUTRANKS any number of already-fixed siblings', async () => {
@@ -971,13 +1052,17 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
 
   describe('the pure rules, so a future reorder of the branches fails HERE with the case named', () => {
     it('assessCandidateFailures — first match, in this order', () => {
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 1, alreadyFixedCount: 1, outstandingLegs: 1, fixedLegs: 0 })).toBe('repairs-outstanding');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, outstandingLegs: 0, fixedLegs: 0 })).toBe('unmeasured');
-      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 0, fixedLegs: 1 })).toBe('all-fixes-contained');
-      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('none-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 1, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('repairs-outstanding');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      // EI-24654779657165409: every file passed at repairHead, one leg still red → the LEG.
+      expect(assessCandidateFailures({ fileCount: 20, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 20, outstandingLegs: 1, fixedLegs: 0 })).toBe('non-test-leg-failing');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('unmeasured');
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 2, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
+      // A file PASSED at repairHead is resolved, so it never leaves the rest reading unmeasured.
+      expect(assessCandidateFailures({ fileCount: 2, stillBrokenCount: 0, alreadyFixedCount: 1, passedAtRepairHeadCount: 1, outstandingLegs: 0, fixedLegs: 0 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 1 })).toBe('all-fixes-contained');
+      expect(assessCandidateFailures({ fileCount: 0, stillBrokenCount: 0, alreadyFixedCount: 0, passedAtRepairHeadCount: 0, outstandingLegs: 0, fixedLegs: 0 })).toBe('none-failing');
     });
 
     it('outstandingLegIds — the one rule the assessment and the readings share', () => {

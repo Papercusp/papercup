@@ -29,6 +29,7 @@ function appRow(id: string, workspaceId: string, userEmail: string, label: strin
   return {
     id, user_email: userEmail, workspace_id: workspaceId, kind: 'app', label, scopes, limits: {},
     paired_at: new Date(), expires_at: null, paused_at: null, revoked_at: null, last_seen: null, last_ip: null,
+    spend_cap_cents: null, spend_cap_window_sec: null, rotated_at: null, previous_token_valid_until: null,
   };
 }
 
@@ -92,6 +93,8 @@ function setup() {
       const minted = mintAppKey();
       return { key: minted.key, app: appRow(minted.id, opts.workspaceId, opts.userEmail, opts.label, scopes) };
     },
+    // Rotation is covered by connected-apps/service-keys.test.ts; these device-code tests never rotate.
+    rotateKey: async () => null,
     resolveScopes: (req) => resolveAppKeyScopes({ ...req, knownTools: KNOWN_TOOLS }),
     workspaceExists: (id) => id === 'ws-local' || id === 'ws-other',
     listWorkspaces: () => [{ id: 'ws-local', name: 'Local' }, { id: 'ws-other', name: 'Other' }],

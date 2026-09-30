@@ -140,6 +140,53 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     expect(scout.daysSinceActivity).toBe(0);
   });
 
+  describe("activity mode 'since-fire' (a weekly loop; WI-10004117)", () => {
+    const WEEKLY: LearningLoopSpec = { blueprintId: 'memory-precision', legacyRoutine: 'memory-precision-bench' };
+    const HOUR = 3_600_000;
+    const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+    const judge = (
+      fire: Partial<LearningRoutineRow>,
+      lastActivityAt: string | null,
+      mode?: 'lag' | 'since-fire',
+    ) =>
+      computeLearningLoopHealth([WEEKLY], [sRow('memory-precision', fire)], {
+        nowMs: NOW,
+        staleAfterDays: 3,
+        activityByBlueprintId: {
+          'memory-precision': { lastActivityAt, source: 'memory_precision_bench', mode, graceMs: HOUR },
+        },
+      })[0]!;
+
+    it('stays firing between weekly runs, where lag mode would page it', () => {
+      // Fired 6 days ago, recorded its row 20 minutes later, next fire tomorrow.
+      const fire = { lastFiredAt: daysAgo(6), nextFireAt: daysAgo(-1) };
+      const activity = at(6 * 86_400_000 - 20 * 60_000);
+      expect(judge(fire, activity, 'since-fire').status).toBe('firing');
+      // Control: the default lag test misfires on exactly this healthy shape.
+      expect(judge(fire, activity).status).toBe('stale');
+    });
+
+    it('pages a fire that recorded nothing once the grace has passed (the 09-29 shape)', () => {
+      const h = judge({ lastFiredAt: at(2 * HOUR), nextFireAt: daysAgo(-6) }, daysAgo(58), 'since-fire');
+      expect(h.status).toBe('stale');
+      expect(h.activitySource).toBe('memory_precision_bench');
+    });
+
+    it('does not page a fire still inside its grace (a run in flight)', () => {
+      expect(judge({ lastFiredAt: at(10 * 60_000), nextFireAt: daysAgo(-7) }, daysAgo(7), 'since-fire').status).toBe(
+        'firing',
+      );
+    });
+
+    it('pages a fired loop that has never recorded any activity', () => {
+      expect(judge({ lastFiredAt: at(2 * HOUR), nextFireAt: daysAgo(-6) }, null, 'since-fire').status).toBe('stale');
+    });
+
+    it('leaves a never-fired loop to the routine verdict (pending, not stale)', () => {
+      expect(judge({ lastFiredAt: null, nextFireAt: daysAgo(-1) }, null, 'since-fire').status).toBe('pending');
+    });
+  });
+
   it('an active loop NEVER fired but with its first fire still ahead is "pending" (just armed, not a wedge)', () => {
     const [cal] = computeLearningLoopHealth(
       [LOOPS[0]],

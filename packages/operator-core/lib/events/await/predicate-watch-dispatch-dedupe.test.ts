@@ -45,6 +45,7 @@ function row(overrides: Partial<PredicateWatchRow> = {}): PredicateWatchRow {
     once: true,
     lastEval: null,
     lastValue: null,
+    evaluatorBaselines: {},
     lastPolledAt: null,
     lastError: null,
     consecutiveErrors: 0,

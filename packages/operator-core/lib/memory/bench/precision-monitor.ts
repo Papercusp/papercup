@@ -32,14 +32,19 @@ import { pushSearchFloors } from '../injection';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
-import { recordMemoryPrecisionRun, readMemoryPrecision, type MemoryPrecisionMetrics } from './precision-read';
+import {
+  recordMemoryPrecisionRun,
+  readMemoryPrecision,
+  PRECISION_BENCH_WORKER_TIMEOUT_MS,
+  type MemoryPrecisionMetrics,
+} from './precision-read';
 import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type RecallDropEvaluation } from './precision-alert';
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 import { tsxBin } from '../../harness-paths';
 
 const PRECISION_BENCH_WORKER_PATH = fileURLToPath(new URL('./precision-bench-worker.ts', import.meta.url));
 export const PRECISION_BENCH_RESULT_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_RESULT:';
-const DEFAULT_WORKER_TIMEOUT_MS = 30 * 60 * 1_000;
+const DEFAULT_WORKER_TIMEOUT_MS = PRECISION_BENCH_WORKER_TIMEOUT_MS;
 
 /** Test/seam injection — swap the bench, the DB write, the flag, the invalidation. */
 export interface MemoryPrecisionBenchDeps {

@@ -2,7 +2,8 @@
  * Connect an app — credential issuance on a LOCAL install
  * (external-app-access-to-workspaces-2026-09-29 P-005).
  *
- *   POST /connected-apps                    local-only  create an app key directly ("Connect an app")
+ *   POST /connected-apps                    local-only  create an app key or a service key directly ("Connect an app")
+ *   POST /connected-apps/rotate             local-only  rotate a key: new secret, old one kept for an overlap window (P-015)
  *   POST /connected-apps/device/code        public      an app starts a device-code sign-in (RFC 8628)
  *   GET  /connected-apps/device             local-only  the approval page (server-rendered)
  *   GET  /connected-apps/device/pending     local-only  pending sign-ins, for the desktop UI
@@ -17,6 +18,11 @@
  *
  * The code and token routes are public on purpose: an app on another host reaches them through
  * the user's tunnel. Creating a grant grants nothing; only a local approval does.
+ *
+ * Service keys (P-015) are for unattended apps: `kind: "service"` on the create route. They need a
+ * spending cap (`spendCapCents`; refused without one, R-13), have no expiry unless `expiresAt` is
+ * given, and belong to the workspace rather than to whoever created them (D-007). Device-code
+ * sign-in always issues a plain app key — a service key is only ever created deliberately here.
  */
 import { createHash, randomBytes as nodeRandomBytes } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,11 +33,15 @@ import {
   AppKeyScopeError,
   createAppKey,
   resolveAppKeyScopes,
+  rotateAppKey,
+  type AppKeyRow,
   type AppKeyScopeRequest,
   type AppKeyScopes,
   type CreatedAppKey,
   type CreateAppKeyOptions,
+  type RotatedAppKey,
 } from '../../../connected-apps/store';
+import { RotationOverlapError, SpendCapError } from '../../../connected-apps/service-keys';
 import { PostgresDeviceGrantStore, type DeviceGrantStore } from '../../../connected-apps/device-grants';
 import { normalizeUserCode, sanitizeClientLabel } from '../hosted-cli';
 
@@ -49,6 +59,12 @@ type AnyRoute = RouteDefinition<any>;
 export interface ConnectedAppRouteDependencies {
   readonly grants: DeviceGrantStore;
   readonly createKey: (opts: CreateAppKeyOptions) => Promise<CreatedAppKey>;
+  /** Rotate a key (new secret, old one valid for the overlap); null when no live key has that id. */
+  readonly rotateKey: (
+    workspaceId: string,
+    id: string,
+    opts: { overlapSec?: number | null },
+  ) => Promise<RotatedAppKey | null>;
   /** Normalize + validate requested scopes; throws AppKeyScopeError. */
   readonly resolveScopes: (req: AppKeyScopeRequest) => AppKeyScopes;
   readonly workspaceExists: (id: string) => boolean;
@@ -146,9 +162,26 @@ export function connectionSnippets(baseUrl: string, key: string) {
   };
 }
 
-function keyView(created: CreatedAppKey) {
-  const { app } = created;
-  return { id: app.id, label: app.label, workspaceId: app.workspace_id, scopes: app.scopes, expiresAt: app.expires_at };
+function keyView(app: AppKeyRow) {
+  return {
+    id: app.id,
+    kind: app.kind,
+    label: app.label,
+    workspaceId: app.workspace_id,
+    scopes: app.scopes,
+    expiresAt: app.expires_at,
+    spendCap: app.spend_cap_cents === null ? null : { cents: app.spend_cap_cents, windowSec: app.spend_cap_window_sec },
+    rotatedAt: app.rotated_at,
+    previousKeyValidUntil: app.previous_token_valid_until,
+  };
+}
+
+/** A JSON number field: undefined when absent, null when explicitly null, NaN when present but not a number. */
+function numberField(body: Record<string, unknown>, field: string): number | null | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return typeof value === 'number' ? value : Number.NaN;
 }
 
 export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): ReadonlyArray<AnyRoute> {
@@ -167,6 +200,7 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
   }
   function scopeRefusal(err: unknown): Response {
     if (err instanceof AppKeyScopeError) return jsonError('invalid_scope', 400, { problems: err.problems });
+    if (err instanceof SpendCapError) return jsonError('invalid_spend_cap', 400, { problems: err.problems });
     throw err;
   }
 
@@ -182,19 +216,67 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
       const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : '';
       const scopes = scopeRequestOf(body);
       const expiresAt = typeof body.expiresAt === 'string' ? new Date(body.expiresAt) : null;
-      if (!label || !workspaceId || !scopes || (expiresAt && Number.isNaN(expiresAt.getTime()))) {
+      const kind = body.kind === undefined ? 'app' : body.kind === 'app' || body.kind === 'service' ? body.kind : null;
+      // A cap value of the wrong JSON type is passed through as NaN so the cap policy names it.
+      const spendCapCents = numberField(body, 'spendCapCents');
+      const spendCapWindowSec = numberField(body, 'spendCapWindowSec');
+      if (!label || !workspaceId || !scopes || !kind || (expiresAt && Number.isNaN(expiresAt.getTime()))) {
         return jsonError('invalid_request', 400);
       }
       if (!deps.workspaceExists(workspaceId)) return jsonError('workspace_not_found', 400);
       let created: CreatedAppKey;
       try {
-        created = await deps.createKey({ workspaceId, userEmail: LOCAL_OWNER_EMAIL, label, ...scopes, expiresAt });
+        created = await deps.createKey({
+          workspaceId,
+          userEmail: LOCAL_OWNER_EMAIL,
+          label,
+          kind,
+          ...scopes,
+          expiresAt,
+          spendCapCents,
+          spendCapWindowSec,
+        });
       } catch (err) {
         return scopeRefusal(err);
       }
       return Response.json(
-        { ok: true, app: keyView(created), key: created.key, snippets: connectionSnippets(new URL(req.url).origin, created.key) },
+        { ok: true, app: keyView(created.app), key: created.key, snippets: connectionSnippets(new URL(req.url).origin, created.key) },
         { status: 201, headers: noStore },
+      );
+    },
+  });
+
+  const rotateKey = defineTool({
+    method: 'POST',
+    path: '/connected-apps/rotate',
+    auth: 'public',
+    async handler(req) {
+      if (!deps.isLocal(req)) return jsonError('local_only', 403);
+      if (!isSameOriginOrNonBrowser(req)) return jsonError('cross_origin_blocked', 403);
+      const body = await readJson(req);
+      if (!body) return jsonError('invalid_json', 400);
+      const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : '';
+      const id = typeof body.id === 'string' ? body.id : '';
+      const overlapSec = numberField(body, 'overlapSeconds');
+      if (!workspaceId || !id) return jsonError('invalid_request', 400);
+      if (!deps.workspaceExists(workspaceId)) return jsonError('workspace_not_found', 400);
+      let rotated: RotatedAppKey | null;
+      try {
+        rotated = await deps.rotateKey(workspaceId, id, { overlapSec });
+      } catch (err) {
+        if (err instanceof RotationOverlapError) return jsonError('invalid_overlap', 400, { value: err.value });
+        throw err;
+      }
+      if (!rotated) return jsonError('key_not_found', 404);
+      return Response.json(
+        {
+          ok: true,
+          app: keyView(rotated.app),
+          key: rotated.key,
+          previousKeyValidUntil: rotated.previousKeyValidUntil,
+          snippets: connectionSnippets(new URL(req.url).origin, rotated.key),
+        },
+        { headers: noStore },
       );
     },
   });
@@ -357,7 +439,7 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
               ok: true,
               accessToken: result.issued.key,
               tokenType: 'Bearer',
-              app: keyView(result.issued),
+              app: keyView(result.issued.app),
               snippets: connectionSnippets(new URL(req.url).origin, result.issued.key),
             },
             { headers: noStore },
@@ -378,12 +460,13 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
     },
   });
 
-  return [connectApp, deviceCode, devicePage, devicePending, deviceDecision, deviceToken];
+  return [connectApp, rotateKey, deviceCode, devicePage, devicePending, deviceDecision, deviceToken];
 }
 
 const routes: ReadonlyArray<AnyRoute> = createConnectedAppRoutes({
   grants: new PostgresDeviceGrantStore(),
   createKey: createAppKey,
+  rotateKey: rotateAppKey,
   resolveScopes: resolveAppKeyScopes,
   workspaceExists: (id) => Boolean(workspaceById(id)),
   listWorkspaces: () => readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name ?? w.id })),
