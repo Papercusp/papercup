@@ -2936,6 +2936,7 @@ export const bootstrapSu = defineTool({
           // the gateway auto-selects). False whenever a pin resolved or routing is off.
           codexGatewayAuto: accountPin.provider === 'codex' && !!accountPin.gatewayAuto,
           codexGatewayPriority: accountPin.provider === 'codex' ? 'su' : null,
+          headless,
           // Seed launch-dir trust so a fresh CODEX_HOME doesn't block at codex's
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
