@@ -190,3 +190,37 @@ export async function dropBenchSchema(client: Client, schema: string = BENCH_SCH
     }
   }
 }
+
+/**
+ * END-OF-RUN cleanup drop. A run's results are already written by the time it
+ * drops its schema, so losing the drop to a foreign lock holder must not fail the
+ * run. Measured 2026-09-30 (P-005 battery run 3): the hourly host backup's
+ * pg_dump (application_name `pcbackup`) holds AccessShareLock on every table it
+ * dumps, the bench schema included, for its whole ~10+ min transaction. The three
+ * short retries above cannot outlast it, so the drop 55P03'd AFTER the report was
+ * written and the run exited 1.
+ *
+ * Only a lock timeout is downgraded: the schema is pid-named, and the next bench
+ * run's {@link reapOrphanBenchSchemas} drops it once this process is gone. Any
+ * other failure still throws. Returns whether the schema was dropped.
+ *
+ * Setup-time drops ({@link ensureBenchSchema}) must keep throwing: a run cannot
+ * start on a schema it failed to reset.
+ */
+export async function releaseBenchSchema(
+  client: Client,
+  schema: string = BENCH_SCHEMA,
+  warn: (m: string) => void = (m) => console.warn(m),
+): Promise<boolean> {
+  try {
+    await dropBenchSchema(client, schema);
+    return true;
+  } catch (e) {
+    if ((e as { code?: string }).code !== '55P03') throw e;
+    warn(
+      `[bench] could not drop ${schema}: another transaction still holds locks on it (e.g. a running pg_dump); ` +
+        `left for the next bench run's orphan reaper`,
+    );
+    return false;
+  }
+}
