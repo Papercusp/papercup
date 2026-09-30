@@ -1,6 +1,7 @@
 /** Generation-bound relay between one outbound workspace connector and browser sessions. */
 import { randomUUID } from 'node:crypto';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
 import type {
   HostedConnectorBinding,
   HostedConnectorTicketBinding,
@@ -86,7 +87,15 @@ type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding 
  * traffic to the workspace machine's OWN loopback operator. Its client is the
  * portal backend acting for the ticket's user; nothing ever dials a VM address.
  */
-export type HostedWorkspaceChannelKind = 'pty' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint';
+export type HostedWorkspaceChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint';
+
+/**
+ * A terminal channel: the customer's shell (`pty`), or psu started by the host (`psu`, D-002).
+ * Both carry the same PTY frames, so role election and control claims treat them alike.
+ */
+function isTerminalKind(kind: HostedWorkspaceChannelKind): boolean {
+  return kind === 'pty' || kind === 'psu';
+}
 
 /**
  * Client→host frames an `app-key-mint` channel may carry: the one mint request of a consented MCP
@@ -122,6 +131,12 @@ export interface HostedWorkspaceAttachRequest {
    * arrival order — see the role note in `attachBrowser`.
    */
   desktopMode?: 'watch' | 'takeover';
+  /**
+   * `kind:'psu'` only: psu's arguments, as the client sent them. Unparsed on purpose: the broker
+   * checks them against the D-002 allowlist and refuses the attach, rather than a malformed list
+   * quietly becoming an empty one.
+   */
+  argv?: unknown;
 }
 
 type BrowserSession = {
@@ -446,8 +461,15 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       return () => {};
     }
     const kind: HostedWorkspaceChannelKind =
-      attach.kind === 'desktop' ? 'desktop' : attach.kind === 'operator-http' ? 'operator-http' : 'pty';
+      attach.kind === 'desktop' || attach.kind === 'operator-http' || attach.kind === 'psu' ? attach.kind : 'pty';
     const desktopSessionId = kind === 'desktop' ? attach.desktopSessionId : undefined;
+    // The host checks the same allowlist again; refusing here too means a bad argument never
+    // reaches the machine, and the client learns why on the socket it opened.
+    const psuArgv = kind === 'psu' ? parseHostedPsuCustomerArgv(attach.argv) : null;
+    if (psuArgv && !psuArgv.ok) {
+      socket.close(4403, 'psu_argv_refused');
+      return () => {};
+    }
     // Refused rather than defaulted: a desktop channel with no session id can never
     // carry pixels, and opening one anyway would surface as a blank viewer instead
     // of an error the user can act on.
@@ -496,7 +518,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       closed: false,
     };
     this.sessions.set(channelId, session);
-    if (kind === 'pty' && role === 'controller') this.controllers.set(controlKey, channelId);
+    if (isTerminalKind(kind) && role === 'controller') this.controllers.set(controlKey, channelId);
     this.touch(session);
     this.watchLiveness(socket, null);
     sendJson(socket, {
@@ -527,7 +549,15 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       // `kind` as 'pty', and a workspace host runs on a pinned generation in the
       // customer's VM, so an envelope this control plane mints must keep opening
       // terminals on a host that predates the discriminator.
-      ...(kind === 'desktop' ? { kind, desktopSessionId } : kind === 'operator-http' ? { kind } : {}),
+      // A psu open is sent with its kind; a host that predates it answers `channel_kind_unknown`
+      // (or, older still, nothing), never a shell.
+      ...(kind === 'desktop'
+        ? { kind, desktopSessionId }
+        : kind === 'operator-http'
+          ? { kind }
+          : psuArgv?.ok
+            ? { kind, argv: psuArgv.argv }
+            : {}),
     });
     this.audit(binding, 'browser_attached', channelId, role);
 
@@ -551,7 +581,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         // control while KasmVNC went on dropping its input — a viewer that believes it
         // has the keyboard and does not. A takeover is a FRESH channel, which is also
         // what mints its own audit event.
-        if (session.kind !== 'pty') {
+        if (!isTerminalKind(session.kind)) {
           sendJson(socket, {
             type: 'session.denied',
             reason: session.kind === 'desktop' ? 'desktop_role_fixed_at_open' : 'operator_http_role_fixed',
