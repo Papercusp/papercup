@@ -1791,6 +1791,17 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   } catch (err) {
     console.warn('[embed-backfill] doc-sections sync failed:', (err as Error).message);
   }
+  // generic-rag-chunking P-013 (EI-24580496022910673): backfill every
+  // registered harness's docs into doc_sections (source_key harness:<slug>) —
+  // before this, only the write-time queue wrote them, so docs:search's
+  // semantic leg had zero harness rows. Throttled inside; caught separately so
+  // it can never cost the engineering sync or the sweep.
+  try {
+    const { runHarnessDocSectionsSweep } = await import('./doc-embed-sync');
+    await runHarnessDocSectionsSweep();
+  } catch (err) {
+    console.warn('[embed-backfill] harness doc-sections sweep failed:', (err as Error).message);
+  }
   // P-034: derive chunk rows for long turns before the sweep, same reason —
   // the session_turn_chunks target needs rows to embed. Unlike doc-sections
   // this runs EVERY tick: its source is a continuously-growing table, not a

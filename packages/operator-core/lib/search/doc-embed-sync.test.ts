@@ -7,7 +7,7 @@
  * and queueHarnessDocSectionSync are VITEST-inert by design and asserted so.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { DocSource, DocPage } from '@papercusp/docs-engine';
@@ -18,6 +18,11 @@ import {
   refreshDocPageSectionsWithSql,
   runDocSectionsSyncOnce,
   queueHarnessDocSectionSync,
+  syncHarnessDocSections,
+  harnessDocSource,
+  harnessDocSourceKey,
+  harnessDocSyncHealth,
+  runHarnessDocSectionsSweep,
 } from './doc-embed-sync';
 
 function fakeSql(existing: Array<{ slug: string; page_sha: string }> = []) {
@@ -171,8 +176,102 @@ describe('syncDocSourceSections', () => {
       { page: page('boom', 'Boom'), body: '<<THROW>>' },
       { page: page('fine', 'Fine'), body: 'body long enough to keep around.' },
     ]);
-    const stats = await syncDocSourceSections(sql, src);
-    expect(stats).toMatchObject({ errors: 1, changed: 1 });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stats = await syncDocSourceSections(sql, src);
+      expect(stats).toMatchObject({ errors: 1, changed: 1 });
+      // P-013 (b): the failure is named and logged, not only counted.
+      expect(stats.firstError).toBe('boom: render exploded');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain('test-src: 1/2 page(s) failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+/**
+ * generic-rag-chunking P-013 (EI-24580496022910673): docs:search's semantic leg
+ * reads doc_sections under source_key `harness:<slug>`, and before this sweep
+ * nothing but the write-time queue wrote those rows — so live doc_sections held
+ * zero harness rows. These pin the sweep core the embed-backfill tick drives.
+ */
+describe('syncHarnessDocSections (harness docs sweep)', () => {
+  const PRUNE = "source_key LIKE 'harness:%'";
+  function sweepSql(pruned = 0) {
+    const calls: Array<{ q: string; params: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params: unknown[] = []) => {
+        calls.push({ q, params });
+        if (q.includes(PRUNE)) return [{ n: pruned }];
+        return [];
+      },
+    };
+    return { calls, sql: sql as unknown as Sql };
+  }
+  const body = 'harness doc body long enough to keep around.';
+  const srcFor = (slug: string) => fakeSource([{ page: page(`${slug}/readme`, 'Readme'), body }], harnessDocSourceKey(slug));
+
+  it('writes each registered harness under harness:<slug> and prunes rows of unregistered ones', async () => {
+    const { calls, sql } = sweepSql(4);
+    const res = await syncHarnessDocSections(sql, ['alpha', 'beta'], srcFor);
+    expect(res).toMatchObject({ harnesses: 2, synced: 2, failed: 0, changed: 2, prunedUnregistered: 4 });
+    const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
+    expect(inserts.map((c) => c.params[0])).toEqual(['harness:alpha', 'harness:beta']);
+    const prune = calls.find((c) => c.q.includes(PRUNE));
+    expect(prune!.params[0]).toEqual(['harness:alpha', 'harness:beta']);
+  });
+
+  it('never prunes off an empty registry read', async () => {
+    const { calls, sql } = sweepSql(9);
+    const res = await syncHarnessDocSections(sql, [], srcFor);
+    expect(res.prunedUnregistered).toBe(0);
+    expect(calls.some((c) => c.q.includes(PRUNE))).toBe(false);
+  });
+
+  it('counts and names a harness whose adapter throws, then syncs the rest', async () => {
+    const { calls, sql } = sweepSql();
+    const res = await syncHarnessDocSections(sql, ['broken', 'fine'], (slug) => {
+      if (slug === 'broken') throw new Error('no such directory');
+      return srcFor(slug);
+    });
+    expect(res).toMatchObject({ synced: 1, failed: 1, firstError: 'broken: no such directory' });
+    expect(calls.filter((c) => c.q.includes('INSERT INTO')).map((c) => c.params[0])).toEqual(['harness:fine']);
+  });
+
+  it('skips a harness whose slot is held and runs one catch-up pass when a resync was requested mid-sync', async () => {
+    const { sql } = sweepSql();
+    const log: string[] = [];
+    const pending = new Set(['gamma']);
+    const slot = {
+      acquire: (s: string) => (log.push(`acquire:${s}`), s !== 'busy'),
+      takePending: (s: string) => pending.delete(s),
+      release: (s: string) => void log.push(`release:${s}`),
+    };
+    let listed = 0;
+    const res = await syncHarnessDocSections(sql, ['busy', 'gamma'], (slug) => {
+      listed += 1;
+      return srcFor(slug);
+    }, { slot });
+    expect(res).toMatchObject({ skippedBusy: 1, synced: 1 });
+    expect(listed).toBe(2); // gamma synced twice: the pass plus its catch-up
+    expect(log).toEqual(['acquire:busy', 'acquire:gamma', 'release:gamma']);
+  });
+
+  it('builds the source docs:search reads: resolved content path first, else the project path', () => {
+    const roots: Array<[string, string]> = [];
+    const factory = (root: string, opts: { name: string }) => {
+      roots.push([root, opts.name]);
+      return fakeSource([], opts.name);
+    };
+    const reg = { projects: [{ slug: 'a', path: '/p/a' }, { slug: 'b', path: '/p/b' }] } as unknown as Parameters<
+      typeof harnessDocSource
+    >[0];
+    const resolve = (_r: unknown, slug: string) => (slug === 'a' ? '/content/a' : undefined);
+    expect(harnessDocSource(reg, 'a', factory, resolve)?.name).toBe('harness:a');
+    expect(harnessDocSource(reg, 'b', factory, resolve)?.name).toBe('harness:b');
+    expect(harnessDocSource(reg, 'missing', factory, resolve)).toBeNull();
+    expect(roots).toEqual([['/content/a', 'harness:a'], ['/p/b', 'harness:b']]);
   });
 });
 
@@ -200,6 +299,10 @@ describe('vitest inertness (WI-3792 load-scar class)', () => {
   });
   it('queueHarnessDocSectionSync is a no-op under vitest', () => {
     expect(queueHarnessDocSectionSync('any-harness')).toBeUndefined();
+    expect(harnessDocSyncHealth().queuedSyncs).toBe(0);
+  });
+  it('runHarnessDocSectionsSweep is a no-op under vitest', async () => {
+    expect(await runHarnessDocSectionsSweep({ force: true })).toEqual({ skipped: 'vitest' });
   });
 });
 
