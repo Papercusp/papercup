@@ -8,7 +8,7 @@
  */
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
@@ -59,6 +59,10 @@ describe('P-521 Phase J: real fault, production read-merge, durable cursor, exac
     await tower.unsafe(WORK_ITEMS);
   }, 180_000);
   afterAll(async () => { await Promise.all([vmDb?.cleanup(), towerDb?.cleanup()]); });
+  // A test that fails between install and remove leaves its outage trigger on the VM, and
+  // install refuses over ANY existing p521 outage trigger, so the next test would fail for
+  // that reason instead of its own. Sweep after every test so each starts fault-free.
+  afterEach(async () => { if (vm) await sweepPhysicalPhaseJFaults({ sql: vm }); });
 
   it('holds the cursor at the missing write across the retired budget and a restart, then replays it exactly', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
