@@ -116,6 +116,10 @@ export type ClaudeFailureKind =
   | 'usage-cap'
   /** 403 org/subscription disqualification → pause the account, rotate. */
   | 'org-disallowed'
+  /** Credit exhaustion (402 billing_error, 400 API usage limit, 429 enforced spend
+   *  limit) — a billing WALL, never a transient: pause the account to its reset and
+   *  rotate immediately (plan anthropic-credits-gateway-2026-09-30 D-004). */
+  | 'credit-wall'
   /** Per-IP edge throttle (no window headers) → sibling egress IP first, else rotate. */
   | 'bare-429'
   /** A window/`retry-after` 429 → rotate after a backoff; never a sibling-IP retry. */
@@ -408,7 +412,7 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
    * destination may still be inside the same sub-minute burst window.
    */
   const rotateDelayFor = (kind: ClaudeFailureKind | null, status: number | null): number => {
-    if (kind === 'usage-cap' || kind === 'org-disallowed') return 0;
+    if (kind === 'usage-cap' || kind === 'org-disallowed' || kind === 'credit-wall') return 0;
     return status === 429 ? opts.transientBackoffMs : 0;
   };
 

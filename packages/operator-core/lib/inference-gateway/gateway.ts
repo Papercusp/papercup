@@ -59,6 +59,7 @@ import {
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
+import { classifyClaudeCreditWall, CREDIT_WALL_DEFAULT_PAUSE_MS, type ClaudeCreditWall } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
@@ -5917,6 +5918,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       /** D-013: the Anthropic predicates stay HERE, where they already live; the
        *  adapter contributes only the peek, the replay and the branch. */
       const classifyClaudeResponse = (input: ClaudeClassifyInput): ClaudeResponseClassification => {
+        // Credit exhaustion is checked FIRST: a 429 enforced-spend-limit or a 400
+        // API-usage-limit would otherwise read as a rate 429 / a forwardable 400.
+        const wall = classifyClaudeCreditWall(input);
+        if (wall) {
+          return {
+            kind: 'credit-wall',
+            resetAt: wall.resetAt ?? Date.now() + CREDIT_WALL_DEFAULT_PAUSE_MS,
+            detail: wall,
+          };
+        }
         if (input.status === 529) return { kind: 'overload' };
         if (input.status === 429) {
           // A 429 may be a hard usage/session CAP, which ONLY the body names —
@@ -6091,7 +6102,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           classifyResponse: classifyClaudeResponse,
           // The live peek set exactly: only these three statuses have a
           // body-derived branch, so nothing else pays for a peek.
-          shouldPeek: (status) => status === 429 || status === 529 || status === 403,
+          // 400 and 402 are peeked so a credit wall (400 API-usage-limit, 402
+          // billing_error) is recognized from its body instead of forwarded.
+          shouldPeek: (status) => status === 429 || status === 529 || status === 403 || status === 400 || status === 402,
           peekBytes: USAGE_LIMIT_PEEK_BYTES,
           // The peek reader is not wired to the attempt abort, so an
           // acknowledged-but-undelivered error body must not hold the slot.
@@ -6287,7 +6300,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const peeked = response.metadata.peekedBody ?? '';
                 lastExhaustResetAt = 0;
 
-                if (status === 429 || status === 529) {
+                if (classification?.kind === 'credit-wall') {
+                  // Credit exhaustion (402 billing_error, 400 "specified API usage
+                  // limits", 429 enforced_spend_limit_reached) is a billing WALL on
+                  // THIS account, not a transient (plan anthropic-credits-gateway
+                  // D-004): pause it until its reset so the selector skips it, then
+                  // rotate. The cause is logged; the body and credential are not.
+                  const wallResetAt = classification.resetAt ?? Date.now() + CREDIT_WALL_DEFAULT_PAUSE_MS;
+                  accountGov.penalize({ resetAt: wallResetAt });
+                  lastExhaustResetAt = wallResetAt;
+                  const cause = (classification.detail as ClaudeCreditWall | undefined)?.cause ?? 'unknown';
+                  log(
+                    'warn',
+                    `inference-gateway: account '${account.accountId}' hit a credit wall (${cause}, HTTP ${status}) → paused until ${new Date(wallResetAt).toISOString()}, failing over`,
+                  );
+                } else if (status === 429 || status === 529) {
                   upstream429++;
                   if (status === 429) recordRoutingUpstream429('claude', account.accountId);
                   throttled429AccountId = account.accountId;
