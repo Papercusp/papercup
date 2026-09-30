@@ -2745,6 +2745,61 @@ describe('GOAL owner-report operation boundary (P-006 / A-05)', () => {
     expect(opts.extra?.goalOwnerReportValidation).toMatchObject({ status: 'unknown' });
   });
 
+  describe('an over-cap report is judged WHOLE, never per chunk (EI-23793424529287793)', () => {
+    // Each section alone fits a part; together they exceed the 600-char inbox cap,
+    // so the send is chunked. Per-part judging refused every part that lacked a
+    // sibling's heading and delivered the rest — the orphan fragments the owner saw.
+    const longBody = [
+      { text: `MOVED: ${'plan placed and fleet live; '.repeat(12)}` },
+      { text: `COST: ${'lineage 7d measured 102.78 usd; '.repeat(10)}` },
+      { text: `OWNER-WALLED: ${'none this round; '.repeat(16)}` },
+      { text: `KILLED: ${'nothing killed; '.repeat(18)}` },
+    ];
+
+    it('delivers a complete report as ordered parts, all ok, stamped once on the final part', async () => {
+      getModeSubjectMock.mockImplementation(async () => goalId);
+      try {
+        const b = await body({ to: ['human'], summary: 'Goal owner report', expects: 'none', body: longBody });
+
+        const calls = sendM.mock.calls.map((call) => call[1] as { extra?: Record<string, any> });
+        expect(calls.length).toBeGreaterThan(1);
+        expect(b.counts).toEqual({ ok: calls.length, failed: 0 });
+        expect(b.results.every((r: { ok: boolean }) => r.ok)).toBe(true);
+        // Judged once, on the whole message.
+        expect(getModeSubjectMock).toHaveBeenCalledTimes(1);
+        const stamped = calls.map((c) => c.extra?.goalOwnerReport ?? null);
+        expect(stamped.slice(0, -1).every((s) => s === null)).toBe(true);
+        expect(stamped.at(-1)).toMatchObject({ schemaVersion: 'goal-owner-report-v1', goalId });
+        expect(b.results.at(-1)).toMatchObject({ goalOwnerReport: { status: 'stamped', goalId } });
+      } finally {
+        getModeSubjectMock.mockImplementation(async () => null);
+      }
+    });
+
+    it('refuses an incomplete over-cap report as ONE message — no part persists', async () => {
+      getModeSubjectMock.mockImplementation(async () => goalId);
+      try {
+        const b = await body({
+          to: ['human'],
+          summary: 'Goal owner report',
+          expects: 'none',
+          body: longBody.filter((s) => !s.text.startsWith('OWNER-WALLED')),
+        });
+
+        expect(sendM).not.toHaveBeenCalled();
+        expect(b.results).toHaveLength(1);
+        expect(b.results[0]).toMatchObject({
+          ok: false,
+          error: 'goal-owner-report-incomplete',
+          goalId,
+          missing: ['ownerWalled'],
+        });
+      } finally {
+        getModeSubjectMock.mockImplementation(async () => null);
+      }
+    });
+  });
+
   it('keeps an inactive sender report-shaped note usable without manufacturing a stamp', async () => {
     mockResolvedOnceTyped(getModeSubjectMock, null);
     const b = await body({

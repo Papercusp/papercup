@@ -840,6 +840,83 @@ export const itemSpec = z.object({
  * A recipient-resolve miss is this message's { ok:false } (it does NOT throw), so
  * one bad address never fails the other messages in the batch.
  */
+/**
+ * The GOAL owner-report verdict for ONE logical message (P-006 / A-05).
+ *
+ * `skip` marks a chunk CONTINUATION: the report was judged (and stamped) on the
+ * whole message, and the stamp rides the final part only.
+ */
+export type GoalOwnerReportVerdict =
+  | { kind: 'none' }
+  | { kind: 'skip' }
+  | { kind: 'warning'; warning: string }
+  | { kind: 'stamped'; stamp: GoalOwnerReportStamp }
+  | { kind: 'refused'; result: BulkItemResult };
+
+/**
+ * Judge a message against the GOAL owner-report contract.
+ *
+ * EI-23793424529287793: must be called with the WHOLE authored message. It used
+ * to run only inside sendOne, i.e. AFTER send-chunking had split an over-cap
+ * report into inbox-sized parts, so each part was judged alone: a part carrying
+ * only MOVED was refused for missing COST / OWNER-WALLED / KILLED while its
+ * siblings were delivered, and the owner received orphan fragments of a report
+ * that was complete as authored (and an incomplete one was half-delivered
+ * instead of refused). The handler now calls this once per original message and
+ * threads the verdict to every part, so a report is delivered whole or not at all.
+ */
+export async function evaluateGoalOwnerReport(
+  msg: Pick<SendMsg, 'to' | 'body'>,
+  identity: Pick<AgentIdentity, 'workspaceId' | 'ownerId'>,
+): Promise<GoalOwnerReportVerdict> {
+  if (!msg.to.includes('human')) return { kind: 'none' };
+  const parsed = parseGoalOwnerReport(msg.body);
+  if (!parsed.attempted) return { kind: 'none' };
+  let goalId: string | null = null;
+  if (!identity.workspaceId || identity.workspaceId === '*') {
+    return {
+      kind: 'warning',
+      warning:
+        'GOAL owner-report validation was unavailable because this sender has no concrete workspace; the message was delivered but does not carry canonical report evidence.',
+    };
+  }
+  try {
+    const { getModeSubject } = await import('../../../modes/store');
+    goalId = await getModeSubject(identity.workspaceId, identity.ownerId, 'goal');
+  } catch (error) {
+    return {
+      kind: 'warning',
+      warning:
+        'GOAL owner-report validation was unavailable at send time; the message was delivered without canonical report evidence. ' +
+        `Retry after the active GOAL subject is readable (${error instanceof Error ? error.message : String(error)}).`,
+    };
+  }
+  // No active GOAL row means this is ordinary owner-facing prose, even if
+  // its headings resemble the GOAL contract. Do not manufacture authority.
+  if (!goalId) return { kind: 'none' };
+  if (!parsed.complete) {
+    return {
+      kind: 'refused',
+      result: {
+        ok: false,
+        to: msg.to,
+        error: 'goal-owner-report-incomplete',
+        goalId,
+        missing: parsed.missing,
+        empty: parsed.empty,
+        duplicate: parsed.duplicate,
+        message:
+          `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
+          'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+          'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
+          `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
+          `duplicate: ${parsed.duplicate.join(', ') || 'none'}.`,
+      },
+    };
+  }
+  return { kind: 'stamped', stamp: stampGoalOwnerReport(goalId, parsed) };
+}
+
 async function sendOne(
   msg: SendMsg,
   identity: AgentIdentity,
@@ -868,6 +945,12 @@ async function sendOne(
   observeCensus?: (census: DerivedSignalCensus) => void,
   idempotencyKey?: string,
   itemIndex?: number,
+  /**
+   * EI-23793424529287793: the GOAL owner-report verdict for the WHOLE message
+   * this part belongs to, computed by the handler before chunking. Absent for an
+   * unchunked message, which is judged here as before.
+   */
+  goalReportPreVerdict?: GoalOwnerReportVerdict,
 ): Promise<BulkItemResult> {
   // EI-21826596284846555: a normal inbox read exposes at most the first
   // 600 characters of one message body (and less on a crowded page). For a
@@ -917,49 +1000,16 @@ async function sendOne(
   // cannot stamp evidence for another subject. The mode import stays lazy: the
   // dominant ordinary-send path must not acquire a DB/module dependency merely
   // because this optional evidence class exists.
-  let goalOwnerReport: GoalOwnerReportStamp | null = null;
-  let goalOwnerReportWarning: string | null = null;
-  if (msg.to.includes('human')) {
-    const parsed = parseGoalOwnerReport(msg.body);
-    if (parsed.attempted) {
-      let goalId: string | null = null;
-      if (!identity.workspaceId || identity.workspaceId === '*') {
-        goalOwnerReportWarning =
-          'GOAL owner-report validation was unavailable because this sender has no concrete workspace; the message was delivered but does not carry canonical report evidence.';
-      } else {
-        try {
-          const { getModeSubject } = await import('../../../modes/store');
-          goalId = await getModeSubject(identity.workspaceId, identity.ownerId, 'goal');
-        } catch (error) {
-          goalOwnerReportWarning =
-            'GOAL owner-report validation was unavailable at send time; the message was delivered without canonical report evidence. ' +
-            `Retry after the active GOAL subject is readable (${error instanceof Error ? error.message : String(error)}).`;
-        }
-      }
-      // No active GOAL row means this is ordinary owner-facing prose, even if
-      // its headings resemble the GOAL contract. Do not manufacture authority.
-      if (goalId) {
-        if (!parsed.complete) {
-          return {
-            ok: false,
-            to: msg.to,
-            error: 'goal-owner-report-incomplete',
-            goalId,
-            missing: parsed.missing,
-            empty: parsed.empty,
-            duplicate: parsed.duplicate,
-            message:
-              `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
-              'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
-              'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
-              `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
-              `duplicate: ${parsed.duplicate.join(', ') || 'none'}.`,
-          };
-        }
-        goalOwnerReport = stampGoalOwnerReport(goalId, parsed);
-      }
-    }
-  }
+  //
+  // EI-23793424529287793: a CHUNKED message arrives with its verdict already
+  // computed over the whole authored body (see evaluateGoalOwnerReport); only an
+  // unchunked message is judged here.
+  const goalReportVerdict = goalReportPreVerdict ?? (await evaluateGoalOwnerReport(msg, identity));
+  if (goalReportVerdict.kind === 'refused') return goalReportVerdict.result;
+  const goalOwnerReport: GoalOwnerReportStamp | null =
+    goalReportVerdict.kind === 'stamped' ? goalReportVerdict.stamp : null;
+  const goalOwnerReportWarning: string | null =
+    goalReportVerdict.kind === 'warning' ? goalReportVerdict.warning : null;
 
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
@@ -2920,19 +2970,39 @@ export default defineTool({
     const expanded: Array<{
       msg: SendMsg;
       chunk?: ChunkPartMeta;
-      refusal?: { error: string; message: string };
+      refusal?: { error: string; message: string } & Record<string, unknown>;
+      goalReportPreVerdict?: GoalOwnerReportVerdict;
     }> = [];
     for (const original of list) {
       const plan = chunkOverCapMessage(original);
       if (plan.kind === 'single') expanded.push({ msg: original });
       else if (plan.kind === 'refused') {
         expanded.push({ msg: original, refusal: { error: plan.error, message: plan.message } });
-      } else for (const part of plan.parts) expanded.push({ msg: part.message, chunk: part.meta });
+      } else {
+        // EI-23793424529287793: judge a GOAL owner report on the WHOLE authored
+        // body, never per part. An incomplete report is refused as one message
+        // (no part persists); a complete one is stamped once, on the final part,
+        // and its continuations skip the check they would each fail alone.
+        const verdict = await evaluateGoalOwnerReport(original, identity);
+        if (verdict.kind === 'refused') {
+          const { ok: _ok, to: _to, ...refusal } = verdict.result;
+          expanded.push({ msg: original, refusal: refusal as { error: string; message: string } });
+          continue;
+        }
+        for (const part of plan.parts) {
+          const isFinal = part.meta.part === part.meta.of;
+          expanded.push({
+            msg: part.message,
+            chunk: part.meta,
+            goalReportPreVerdict: isFinal ? verdict : { kind: 'skip' },
+          });
+        }
+      }
     }
 
     const env = await runBulk(
       expanded,
-      async ({ msg, refusal }, itemIndex) => {
+      async ({ msg, refusal, goalReportPreVerdict }, itemIndex) => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
@@ -3003,6 +3073,7 @@ export default defineTool({
           observeCensus,
           idempotencyKey,
           itemIndex,
+          goalReportPreVerdict,
         );
       },
       {
