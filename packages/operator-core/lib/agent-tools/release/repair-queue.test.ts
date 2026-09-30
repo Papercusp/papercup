@@ -85,6 +85,12 @@ const mocks = vi.hoisted(() => ({
   canonicalRoot: vi.fn(),
   transition: vi.fn(),
   gateOwnership: vi.fn(),
+  // WI-10004151 part 2: the admit door's dependency-generation prediction seam.
+  predict: vi.fn(),
+}));
+vi.mock('../../release/dependency-admission-prediction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release/dependency-admission-prediction')>()),
+  predictDependencyGeneration: mocks.predict,
 }));
 vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../coord/gate-ownership')>()),
@@ -254,6 +260,7 @@ beforeEach(() => {
   mocks.containment.mockImplementation((paths: string[], judgedSha: string) =>
     paths.map((path) => ({ path, containedInJudgedSha: judgedSha === NEW_HEAD, judgedBlob: null, stagingBlob: null })),
   );
+  mocks.predict.mockReset();
 });
 
 describe('release:repair-queue', () => {
@@ -2126,6 +2133,103 @@ describe('release:repair-queue', () => {
         reason: 'source-commit-not-integrated',
       });
       expect(mocks.admit).not.toHaveBeenCalled();
+    });
+  });
+
+  // WI-10004151 part 2: a lockfile admission moved repairHead 5955f82b onto dependency inputs no
+  // installed tree could produce, and verification parked an hour later with no cause named. The
+  // door now asks dependency-generation.sh --predict-ref about the BUILT commit before publishing.
+  describe('WI-10004151: admit-time dependency-generation prediction', () => {
+    const LOCK = 'package-lock.json';
+    const prediction = (verdict: string, extra: Record<string, unknown> = {}) => ({
+      verdict,
+      ref: NEW_HEAD,
+      paths: [LOCK],
+      inputFingerprint: '1'.repeat(64),
+      liveFingerprint: '2'.repeat(64),
+      droppedLinks: verdict === 'buildable' ? 2 : 0,
+      reasons: verdict === 'refused' ? ['node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)'] : [],
+      durationMs: 5,
+      ...extra,
+    });
+    const lockAdmit = (extra: Record<string, unknown> = {}) =>
+      tool.handler({ op: 'admit', paths: [LOCK], ...extra } as never, { role: 'su' } as never);
+
+    beforeEach(() => {
+      mocks.hunkExact.mockReturnValue(hunkExactOf([LOCK]));
+    });
+
+    it('asks about the BUILT commit on a dry run and warns that a confirmed admit will be refused', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false, [LOCK]));
+      mocks.predict.mockResolvedValue(prediction('refused'));
+      const result = body(await lockAdmit());
+      expect(mocks.predict).toHaveBeenCalledWith({ integrationRoot: '/repo', ref: NEW_HEAD, paths: [LOCK] });
+      expect(result).toMatchObject({
+        ok: true,
+        verdict: 'would-admit',
+        dependencyGeneration: { verdict: 'refused', ref: NEW_HEAD },
+      });
+      expect(result.note).toContain('A confirmed admit will be REFUSED (dependency-generation-unbuildable)');
+      expect(result.note).toContain('version "1.0.0" (ref) vs "2.0.0" (live)');
+    });
+
+    it('refuses a confirmed admit of an unbuildable lock BEFORE publishing anything', async () => {
+      mocks.admit.mockReturnValue(admissionOf(false, [LOCK]));
+      mocks.predict.mockResolvedValue(prediction('refused'));
+      const result = body(await lockAdmit({ confirm: true }));
+      expect(result).toMatchObject({
+        ok: false,
+        admitted: false,
+        refused: true,
+        verdict: 'refused',
+        reason: 'dependency-generation-unbuildable',
+        builtCommit: NEW_HEAD,
+        judgedSha: queue.repairHead,
+      });
+      expect(result.detail).toContain('NO installed tree can produce');
+      expect(result.note).toContain('npm run install:safe');
+      // Only the unpublished build ran; no publish, no queue write.
+      expect(mocks.admit.mock.calls.every(([input]) => input.dryRun === true)).toBe(true);
+      expect(mocks.write).not.toHaveBeenCalled();
+    });
+
+    it('skipPrecheck + precheckReason overrides the refusal loudly', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true, [LOCK]));
+      mocks.predict.mockResolvedValue(prediction('refused'));
+      const result = body(
+        await lockAdmit({ confirm: true, skipPrecheck: true, precheckReason: 'installing the lock in step two' }),
+      );
+      expect(result).toMatchObject({ ok: true, admitted: true, dependencyGeneration: { verdict: 'refused' } });
+      expect(result.nextAction).toContain('Admitted PAST an unbuildable-dependency prediction');
+      const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
+      expect(auditDetails.dependencyGeneration).toMatchObject({ verdict: 'refused' });
+    });
+
+    it.each([
+      ['buildable', "the gate's --ensure-ref builds it from the live trees (2 live-only link(s) dropped)"],
+      ['unknown', 'buildability could not be predicted'],
+    ])('publishes a %s prediction and says so in nextAction', async (verdict, phrase) => {
+      mocks.admit.mockReturnValue(admissionOf(true, [LOCK]));
+      mocks.predict.mockResolvedValue(prediction(verdict, verdict === 'unknown' ? { detail: 'timed out' } : {}));
+      const result = body(await lockAdmit({ confirm: true }));
+      expect(result).toMatchObject({ ok: true, admitted: true, dependencyGeneration: { verdict } });
+      expect(result.nextAction).toContain(phrase);
+    });
+
+    it('stays silent for prewarmed inputs and never asks for a non-dependency admission', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true, [LOCK]));
+      mocks.predict.mockResolvedValue(prediction('prewarmed'));
+      const prewarmed = body(await lockAdmit({ confirm: true }));
+      expect(prewarmed.dependencyGeneration).toMatchObject({ verdict: 'prewarmed' });
+      expect(prewarmed.nextAction).not.toContain('Dependency inputs changed');
+
+      mocks.predict.mockClear();
+      mocks.hunkExact.mockReturnValue(hunkExactOf());
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const plain = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));
+      expect(plain.verdict).toBe('would-admit');
+      expect(mocks.predict).not.toHaveBeenCalled();
+      expect(plain).not.toHaveProperty('dependencyGeneration');
     });
   });
 });
