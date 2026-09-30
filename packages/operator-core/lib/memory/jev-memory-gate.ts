@@ -26,7 +26,7 @@
 import type { DecisionClient } from '@papercusp/decision-model';
 
 import { activeWorkspaceId } from '../workspace-registry';
-import { admissionPYes, buildAdmissionRequest, type AdmissionEncoding } from './jev-admission-request';
+import { admissionPYes, buildAdmissionRequest, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
 import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
 
 /** The ledger consumer label for push-path calls (the bench uses `memory-bench`). */
@@ -41,6 +41,12 @@ export const JEV_MEMORY_CONSUMER = 'memory-injection';
  */
 export const JEV_MEMORY_ADMIT_THRESHOLD = 0.3;
 export const JEV_MEMORY_ENCODING: AdmissionEncoding = 'instructions';
+/**
+ * The question variant production asks. Plan jev-performance-improvements-2026-09-30
+ * replaces v1 only with a variant that clears its D-001 bar in a same-run comparison
+ * (P-007 records the verdict, P-008 adopts it together with its threshold).
+ */
+export const JEV_MEMORY_VARIANT: AdmissionVariant = 'v1';
 
 export interface JevGateCandidate {
   readonly id: string;
@@ -108,7 +114,12 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
     return effective === 'shadow' ? { effective, fired: false } : { effective, outcome: 'inconclusive', reason: 'no-candidates' };
   }
 
-  const { request, questionIds } = buildAdmissionRequest(input.message, candidates, JEV_MEMORY_ENCODING);
+  const { request, questionIds, substanceIds } = buildAdmissionRequest(
+    input.message,
+    candidates,
+    JEV_MEMORY_ENCODING,
+    JEV_MEMORY_VARIANT,
+  );
   const options = { consumer: input.consumer ?? JEV_MEMORY_CONSUMER, subjectIds: candidates.map((c) => c.id) };
 
   if (effective === 'shadow') {
@@ -122,7 +133,7 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
 
   try {
     const outcome = await deps.client().decide(request, options);
-    const p = admissionPYes(outcome, questionIds);
+    const p = admissionPYes(outcome, questionIds, substanceIds);
     if ('failure' in p) return { effective, outcome: 'inconclusive', reason: p.failure };
     // `candidates` may be shorter than `input.candidates` (empty texts were never
     // asked about); map back so `keep` stays aligned with the caller's list.

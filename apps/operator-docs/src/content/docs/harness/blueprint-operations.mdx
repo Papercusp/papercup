@@ -15,6 +15,7 @@ documents:
   - "packages/operator-core/lib/agent-tools/blueprint/*-operation.ts"
 plans:
   - "blueprint-backed-work-item-execution-2026-09-23"
+  - "external-app-access-to-workspaces-2026-09-29"
 ---
 
 A **blueprint operation** is a typed, durable unit of work that a harness blueprint
@@ -205,6 +206,29 @@ await client.signal(handle, { channel: 'note', payload: { text: 'hi' }, requestK
 
 Here `invoke(toolName, args)` must return the tool's decoded structured result and
 throw on a refusal.
+
+## Calling from outside apps
+
+The seven tools are also reachable from apps that run somewhere else: another server, a CI
+job, a laptop on another network, or a chat product such as Claude.ai or ChatGPT. Such an app
+never uses an owner sign-in; it uses a limited **app key** (`pcapp_…`) whose scope lists the
+operations it may call (`blueprint:*`), and every call is attributed to that app.
+
+- **Through the Papercusp portal** (a hosted workspace, or your own computer linked through the
+  opt-in relay): the HTTP projection is at
+  `https://<portal>/api/workspaces/<workspaceId>/agent-tools/blueprint/<verb>` and MCP at
+  `…/<workspaceId>/mcp`.
+- **Through your own tunnel**: only MCP is served, at `https://<your-tunnel>/api/mcp`.
+  Plain-HTTP tool routes answer `404 not_served_on_external_ingress` there.
+- **From a provider event**: a signed webhook (`triggers:create-webhook`) starts whatever
+  operation its armed trigger binding names; see [External-event triggers](#external-event-triggers).
+
+The handle, request-key idempotency, results and refusals are the same as for a local caller,
+plus the app-access refusals (`403 remote_access_off`, `spend_cap_reached`, the relay's
+`429` and `503`). The [External-app quickstart](/internal/docs/harness/external-app-quickstart)
+has curl, MCP-client and TypeScript examples; the
+[Remote access guide](/internal/docs/harness/remote-access-guide) covers keys, tunnels, the relay
+and alerts from the owner's side.
 
 ## Plan-target operations
 

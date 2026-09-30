@@ -58,17 +58,19 @@ Bar-specific notes:
 - **R-5 (bounded synchronous contributions).** The Claude-and-Codex-sinks token needs both host shapes. `identity-hook-sinks.test.ts` has a case that sends a Codex call and asserts it gets the verdict a Claude call gets. Check that it asserts the verdict, not only that the call returns.
 - **R-10 (fail-closed worn deny predicates).** This bar was split from R-5 in rubric rev 3. The floor is that an unevaluable deny predicate refuses the call **and the refusal names the identity and the rule**. A refusal that names neither is broken, not degraded.
 - **R-11 (exactly-once reactions per wearer).** This bar was split from R-6 in rev 3. Check two-wearer dedupe *and* attribution: two wearers of one event must each get one dispatch attributed to themselves, not one shared dispatch.
+- **R-5 and R-10 unit layer.** From rev 5 both bars list `requiredTestLayers: ['integration','unit']`. Some of their scope cases are covered only by unit files: `state-template-reader.test.ts`, `identity-hook-sinks.test.ts`, `dispatcher.test.ts` and `sync-hook-rules.test.ts`. Run those files and rate them. They are not optional extras beside the integration files.
+- **R-1 vs R-8 on attach.** R-1 owns parity between launch and mid-session attach. From rev 5, R-8 marker (3) covers only features missing **at launch**. A declared feature that is present at launch but missing after a mid-session attach fails R-1, not R-8.
 - **R-8 (independent portability).** `cupboard/third-party-portability.integration.test.ts` installs a package authored outside the first-party tree into a clean workspace, with no registry pre-seeding. Check that the fixture's author is not first-party and that the async-hook leg fires. D-042 and D-044 record why a bundled event key must be claimed at install; without that claim, the async hook is inert.
 
 ## 4. The deployed-plane bar (R-9)
 
-R-9 has no test. Follow the criterion's method exactly:
+R-9 has no test, and no test result can satisfy it. From rubric rev 5 its `check` is a `kind:'probe'` that `scorecards:emit` runs for you when you rate R-9. Follow the criterion's method exactly:
 
-1. `dev:pipeline_position { path:'packages/operator-core/lib/blueprint/compile-packages.ts', marker:"resolveInstalledEvent(request.ref, only('event'))" }`. The release operator must read `serving.startedSinceCodeChange: true` with the marker judged present.
-2. `state:read { cell:'deploy.3070.sha' }` names the serving sha. For each accepted path, `git rev-parse <sha>:<path>` must equal the accepted blob. Blob equality is the containment test. Ancestry (`merge-base --is-ancestor`) is not.
+1. `dev:pipeline_position { path:'packages/operator-core/lib/blueprint/compile-packages.ts', marker:"resolveInstalledEvent(request.ref, only('event'))" }`. `servingRuntimes[0]` must be the `release-operator` row, and it must read `containsChange: true` with `method: 'blob'`. This is the value the probe checks. Do **not** use `serving.startedSinceCodeChange`. It compares the process start time with the file's mtime, so it turns false as soon as anyone edits the file after the deploy, even while the accepted code is still live.
+2. `state:read { cell:'deploy.3070.sha' }` names the serving sha. For each accepted path, `git rev-parse <sha>:<path>` must equal the accepted blob. This blob equality is the rating basis. Ancestry (`merge-base --is-ancestor`) is not a containment test.
 3. `state:read { cell:'gate.greenCheckpoint.verdict' }` must be green for a candidate that contains those blobs, and `plans:get` must show no force or waiver on the plan.
 
-If the deploy has not landed yet, R-9 is unknown, not broken. Say so in the evidence.
+If the deploy has not landed yet, R-9 is unknown, not broken. Say so in the evidence. `scorecards:emit` refuses a rating it cannot check: an `error` or `unknown` probe result (for example `result_too_large`, which applies above 16,000 bytes) blocks the emit. A `stale` result means `containsChange` is not yet true.
 
 ## 5. Traps
 

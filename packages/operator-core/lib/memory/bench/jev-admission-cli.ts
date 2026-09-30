@@ -2,7 +2,8 @@
  * Jev admission bench CLI (plan jev-decision-model-integration-2026-09-29, P-004).
  *
  *   npx tsx packages/operator-core/lib/memory/bench/jev-admission-cli.ts \
- *     [--encoding state|instructions] [--floor-c 0.52] [--thresholds 0.3,0.4,…] \
+ *     [--encoding state|instructions] [--variant v1|v2-content|substance] \
+ *     [--floor-c 0.52] [--thresholds 0.3,0.4,…] \
  *     [--fresh] [--no-rerank] [--concurrency 4] [--keep]
  *
  * Seeds ONE isolated bench store (hybrid-pg, the production backend) with the
@@ -54,6 +55,7 @@ import {
   evaluateFilterArm,
   gradeDocId,
   parseAdmissionEncoding,
+  parseAdmissionVariant,
   readCachedScores,
   renderAdmissionMarkdown,
   scoresFromDecision,
@@ -76,6 +78,7 @@ function argValue(flag: string): string | undefined {
 }
 
 const encoding: AdmissionEncoding = parseAdmissionEncoding(argValue('--encoding'));
+const variant = parseAdmissionVariant(argValue('--variant'));
 const floorC = argValue('--floor-c') ? Number(argValue('--floor-c')) : ARM_C_FLOOR;
 const thresholds =
   argValue('--thresholds')?.split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 1) ?? [...ADMISSION_THRESHOLDS];
@@ -164,19 +167,19 @@ async function jevScores(outcomes: readonly QueryOutcome[], floor: number): Prom
   const scope: GradeCacheScope = {
     workspaceId,
     judgeModel: `typesafe/${JEV_PINNED_MODEL}`,
-    rubricVersion: admissionRubricVersion(encoding, floor),
+    rubricVersion: admissionRubricVersion(encoding, floor, variant),
   };
   return mapPool(outcomes, concurrency, async (o, i) => {
     const cands = o.candidates ?? [];
     if (cands.length === 0) return undefined; // nothing admitted, nothing to judge, no call
     const query = gold[i].query;
     return cachedOr(scope, query, cands, o.queryId, async () => {
-      const { request, questionIds } = buildAdmissionRequest(query, cands, encoding);
+      const { request, questionIds, substanceIds } = buildAdmissionRequest(query, cands, encoding, variant);
       const outcome = await client.decide(request, {
         consumer: 'memory-bench',
         subjectIds: cands.map(gradeDocId),
       });
-      return scoresFromDecision(outcome, questionIds);
+      return scoresFromDecision(outcome, questionIds, substanceIds);
     });
   });
 }
@@ -331,6 +334,7 @@ try {
       replayLimit: REPLAY_LIMIT,
       jevModel: JEV_PINNED_MODEL,
       encoding,
+      variant,
       filterTimeoutMs: JEV_MEMORY_TIMEOUT_MS,
       thresholds,
       cacheReads: fresh ? 'bypassed (--fresh)' : 'on',

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "clause": "AUTO-BAR-R-30-P-013",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004026",
+  "measuredAt": "2026-09-30T15:42:50.273Z",
+  "measuredBy": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "method": "docs:search called through the live operator MCP (:3070) with node scripts/mcp-call.mjs; the quickstart page body then checked for each example kind",
+  "request": {
+    "tool": "docs:search",
+    "args": {
+      "query": "external app quickstart curl MCP TypeScript",
+      "limit": 3,
+      "harness": "engineering"
+    }
+  },
+  "response": {
+    "surface": "engineering",
+    "hitCount": 926,
+    "hits": [
+      {
+        "rank": 1,
+        "slug": "harness/external-app-quickstart",
+        "title": "External-app quickstart: call a workspace with curl, an MCP client or TypeScript"
+      },
+      {
+        "rank": 2,
+        "slug": "agent-insights/su-box-dns-hijack-not-sandbox-synthesis",
+        "title": "A workspace domain resolving to a wrong IP in the su Bash tool is a LOCAL DNS hijack, not a sandbox feature — verify via an external path before ever reporting an outage"
+      },
+      {
+        "rank": 3,
+        "slug": "agent-insights/mcp-client-drop-curl-recovery",
+        "title": "Stranded after your papercusp-su MCP tools vanished? Recover in seconds via curl"
+      }
+    ]
+  },
+  "verdict": {
+    "quickstartReturned": true,
+    "rank": 1,
+    "examples": {
+      "curl": true,
+      "mcpClientConfig": true,
+      "typescript": true
+    },
+    "pass": true
+  }
+}

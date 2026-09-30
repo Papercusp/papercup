@@ -2356,7 +2356,10 @@ export async function readGoalLaunchSettings(
       budget: {
         budgetCents: asFiniteCents(row.budget_cents),
         spentCents: asFiniteCents(row.spent_cents),
-        unmeasuredPricedSpend: hasUnmeasuredPricedSpend(row.spent_cents_breakdown, asFiniteCents(row.spent_cents)),
+        unmeasuredPricedSpend: hasUnmeasuredPricedSpend(
+          row.spent_cents_unmeasured_reason,
+          asFiniteCents(row.spent_cents),
+        ),
         spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
         spentCentsSource: typeof row.spent_cents_source === 'string' ? row.spent_cents_source : null,
       },
@@ -2897,14 +2900,12 @@ export async function resolveGoalLaunchForGoal(args: {
       degradedReasons.push(`budget ceiling not enforced — flag read failed: ${gate.infraError}`);
     } else if (gate.enabled) {
       if (budget.spentCents == null && budget.unmeasuredPricedSpend) {
-        // WI-10002052 (D-004 clause 1): a ceiling that cannot MEASURE must not
+        // WI-10002052 / D-011 clause 3: a ceiling that cannot MEASURE must not
         // silently fail open. A null spentCents has two populations behind it,
-        // and only this one is a hole: the goal has priced, goal-tagged spend
-        // that the pot leg structurally cannot see (INNER JOIN on goal_pots,
-        // zero attached pots), so failing open means this ceiling never binds
-        // for this goal — not once, ever. That is not the transient read error
-        // the module header's fail-open stance was written for; it is permanent,
-        // so the asymmetry argument that justifies failing open does not apply.
+        // and only this one is a hole: the goal's window holds attributed
+        // samples with no price, so the total is unknown and any figure would
+        // be a floor. Failing open here admits launches past a ceiling nobody
+        // can check, for as long as those samples stay in the window.
         //
         // `current: null` is load-bearing: the gate refuses BECAUSE the number
         // is unknown, and a 0 here would assert the very figure it is refusing
@@ -2917,15 +2918,12 @@ export async function resolveGoalLaunchForGoal(args: {
           currentScope: REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
           message:
             `goal ${goalId} declares budget_cents=${budget.budgetCents}, but its spend CANNOT BE MEASURED: the ` +
-            `platform snapshot (metadata.spentCents) is null because the authoritative pot leg is an INNER JOIN ` +
-            `on goal_pots and this goal has no attached pots — while the diagnostic session leg shows that priced, ` +
-            `goal-tagged spend does exist. Refusing rather than admitting: an unmeasurable ceiling that fails open ` +
-            `never binds at all. HOW MUCH has been spent is deliberately not asserted here — the session leg is ` +
-            `diagnostic-only and may not control a ceiling. Repair the authoritative goal spend measurement and ` +
-            `its provenance; do not infer available headroom from the missing value or raise/clear the ceiling ` +
-            `merely to get a launch admitted. Wind the goal down or seek an explicit owner decision if the ` +
-            `existing measurement repair cannot proceed. ⚠ Do NOT attach a pot to make this measurable — that fabricates ` +
-            `measurability without repairing anything, turning this loud refusal into a confident wrong number.`,
+            `platform snapshot (metadata.spentCents) is null because usage samples attributed to this goal in its ` +
+            `budget window carry no price, so any total would only be a floor. Refusing rather than admitting: a ` +
+            `ceiling that fails open on a partial measurement never binds. Repair the pricing of those samples ` +
+            `(the model or provider that produced them has no cost), or wait for them to leave the window; do not ` +
+            `infer headroom from the missing value or raise/clear the ceiling merely to get a launch admitted. ` +
+            `⚠ Do NOT attach a pot to change this — goal spend is measured from goal-attributed samples, not pots.`,
         };
         // Refusing without telling anyone would trade a silent fail-OPEN for a
         // silent fail-CLOSED — the same invisibility defect pointed the other
@@ -2938,19 +2936,19 @@ export async function resolveGoalLaunchForGoal(args: {
           refusal,
         });
       } else if (budget.spentCents == null) {
-        // The other population: no rollup tick has ever run for this goal, and
-        // nothing indicates spend exists. Nothing is being let past a ceiling,
-        // so the original fail-open stance stands unchanged here.
+        // The other population: no rollup tick has run yet, or nothing was
+        // attributed to this goal in its window. Nothing is being let past a
+        // ceiling, so the original fail-open stance stands unchanged here.
         degradedReasons.push(
           `budget ceiling not enforced — goal ${goalId} declares budget_cents=${budget.budgetCents} but has no ` +
-            `platform spend snapshot yet (metadata.spentCents is written by the goal-spend-rollup tick; D-003 ` +
-            `forbids inventing one)`,
+            `measured spend in its budget window yet (metadata.spentCents is written by the goal-spend-rollup ` +
+            `tick from goal-attributed usage; D-003 forbids inventing one)`,
         );
-      } else if (budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_POT) {
+      } else if (budgetSpendScope(budget.spentCentsSource) !== REFUSAL_SCOPES.BUDGET_LINEAGE) {
         degradedReasons.push(
           `budget ceiling not enforced — goal ${goalId} has spentCents=${budget.spentCents} but no recognized ` +
-            `platform spend provenance marker (metadata.spentCentsSource must be 'goal-pots-rollup' or ` +
-            `'goal-spend-tick'; D-003 forbids treating an unmarked legacy value as authoritative)`,
+            `platform spend provenance marker (metadata.spentCentsSource must be '${GOAL_SPEND_SNAPSHOT_SOURCE}'; ` +
+            `D-003 forbids treating an unmarked or retired-marker value as authoritative)`,
         );
       } else if (budget.spentCents >= budget.budgetCents) {
         const spendScope = budgetSpendScope(budget.spentCentsSource);
@@ -2961,16 +2959,14 @@ export async function resolveGoalLaunchForGoal(args: {
           requested: count,
           currentScope: spendScope,
           message:
-            // NAME THE POPULATION (P-004). Unqualified, this line reads as the
-            // goal's total cost. It is the pot subset — which is why the scope
-            // travels in the sentence, not just in the structured field a human
-            // reading the refusal will never see.
+            // NAME THE POPULATION (P-004). The scope travels in the sentence, not
+            // just in the structured field a human reading the refusal never sees.
             `goal ${goalId} has spent ${budget.spentCents} of its ${budget.budgetCents} cent budget ` +
             `[measured over ${spendScope}` +
             `${
               spendScope === REFUSAL_SCOPES.BUDGET_UNVERIFIED
                 ? ' — this figure carries no provenance marker, so what it counted is unknown'
-                : "; spend billed OUTSIDE this goal's pots is not in this number"
+                : ' — usage attributed to this goal within its budget window'
             }]` +
             `${budget.spentCentsAt ? ` (platform snapshot at ${budget.spentCentsAt})` : ''}; further agent/fleet ` +
             `launches are refused. Review spend and raise budget_cents on the goal, or wind the goal down. ` +
