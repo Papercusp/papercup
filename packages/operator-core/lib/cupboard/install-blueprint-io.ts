@@ -35,7 +35,7 @@ import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
 import { validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
-import type { RecipeProviderConsent } from './capability-grant-resolver';
+import type { CapabilityGrantResolverDeps, RecipeProviderConsent } from './capability-grant-resolver';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -203,6 +203,37 @@ export async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
   }
 }
 
+/** The pot's capability-grant resolver: its exact bindings and active
+ *  candidates. The install path and the identity preview resolve through it. */
+export function capabilityGrantDepsForPot(
+  capabilityScope: { workspaceId: string; potSlug: string },
+): CapabilityGrantResolverDeps {
+  return {
+    async getPotBinding(classRef: string) {
+      const parsed = parseCapabilityClassRef(classRef);
+      if (!parsed) return null;
+      return getPotCapabilityProviderBinding(getOrgPg().sql, {
+        ...capabilityScope,
+        classId: parsed.id,
+        classVersion: parsed.version,
+        providerKinds: INSTALL_PROVIDER_KINDS,
+      });
+    },
+    async listCandidates(classRef: string) {
+      const parsed = parseCapabilityClassRef(classRef);
+      if (!parsed) return [];
+      const rows = await listActiveCapabilityProviderCandidates(
+        getOrgPg().sql,
+        capabilityScope.workspaceId,
+        parsed.id,
+        parsed.version,
+        { providerKinds: INSTALL_PROVIDER_KINDS },
+      );
+      return rows.map((row) => ({ ...row, price: null }));
+    },
+  };
+}
+
 /** Install-core deps (clone + dirs + resolver + host sets), shared by the
  *  top-level install and the recursive spawned-blueprint closure install so both
  *  resolve `dependencies.blueprints` against the same built-in/installed/Cupboard
@@ -234,30 +265,7 @@ function makeInstallCoreDeps(
         const { validateIdentityInstallGrants } = await import('../capability-envelope/identity-grants-port');
         return validateIdentityInstallGrants({ ...capabilityScope, role: context.role, resolution });
       },
-      capabilityGrantDeps: {
-        async getPotBinding(classRef: string) {
-          const parsed = parseCapabilityClassRef(classRef);
-          if (!parsed) return null;
-          return getPotCapabilityProviderBinding(getOrgPg().sql, {
-            ...capabilityScope,
-            classId: parsed.id,
-            classVersion: parsed.version,
-            providerKinds: INSTALL_PROVIDER_KINDS,
-          });
-        },
-        async listCandidates(classRef: string) {
-          const parsed = parseCapabilityClassRef(classRef);
-          if (!parsed) return [];
-          const rows = await listActiveCapabilityProviderCandidates(
-            getOrgPg().sql,
-            capabilityScope.workspaceId,
-            parsed.id,
-            parsed.version,
-            { providerKinds: INSTALL_PROVIDER_KINDS },
-          );
-          return rows.map((row) => ({ ...row, price: null }));
-        },
-      },
+      capabilityGrantDeps: capabilityGrantDepsForPot(capabilityScope),
       reviewCapabilityProviderPackages: (selections) =>
         reviewCapabilityProviderPackageClosure(selections, {
           deriveCatalog: () => derivePackCatalog({}),

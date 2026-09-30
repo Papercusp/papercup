@@ -218,8 +218,8 @@ async function loadIdentity(input: IdentityPreviewInput) {
       return { errors: [{ source: 'source' as const, code: 'parse', message: inspection.error }], warnings };
     }
   }
-  for (const issue of inspection.errors) errors.push({ source: 'source', code: issue.code, message: issue.message });
-  for (const issue of inspection.warnings) warnings.push({ source: 'source', code: issue.code, message: issue.message });
+  for (const issue of inspection.errors ?? []) errors.push({ source: 'source', code: issue.code, message: issue.message });
+  for (const issue of inspection.warnings ?? []) warnings.push({ source: 'source', code: issue.code, message: issue.message });
   const sourcePath = inspection.sourcePath ?? undefined;
   const merged = resolveBlueprintSource(raw, { sourcePath, resolve });
   const document = BlueprintSourceDocumentSchema.parse(merged.merged);
@@ -245,6 +245,16 @@ async function loadIdentity(input: IdentityPreviewInput) {
     const scope = { workspaceId: input.workspaceId, potSlug: input.potSlug };
     try {
       const resolution = await resolveCapabilityGrants(document.grants, capabilityGrantDepsForPot(scope), { mode: 'agent' });
+      // The install path refuses these before it judges the grants themselves.
+      for (const ref of resolution.missingRequired) {
+        errors.push({ source: 'grants', code: 'required_capability_provider_absent', message: `${ref}: no conformant provider in this pot`, ref });
+      }
+      for (const ref of resolution.requiresChoice) {
+        errors.push({ source: 'grants', code: 'capability_provider_choice_required', message: `${ref}: several providers conform; the installer must choose`, ref });
+      }
+      for (const ref of resolution.missingOptional) {
+        warnings.push({ source: 'grants', code: 'optional_capability_provider_absent', message: `${ref}: optional, no provider in this pot`, ref });
+      }
       for (const failure of await validateIdentityInstallGrants({ ...scope, role: IDENTITY_WEARER_ROLE, resolution })) {
         errors.push({ source: 'grants', code: failure.cause,
           message: `${failure.classRef ?? '(unresolved)'}: ${failure.cause}${failure.toolName ? ` (${failure.toolName})` : ''}`,
@@ -494,6 +504,40 @@ export async function describeIdentity(input: Omit<IdentityPreviewInput, 'sample
     loaded,
     declared: loaded.document && loaded.inspection ? declaredSurface(loaded.inspection, loaded.document, loaded.artifact ?? null, pins) : null,
   };
+}
+
+/**
+ * What blueprint:validate and identities:validate add for an identity when the
+ * caller has a pot to compile against: the compile and grant issues and the
+ * declared surface. Source issues are already in the inspection they return.
+ * Null without a workspace and pot. Never throws.
+ */
+export async function identityPackageValidation(input: {
+  workspaceId: string | undefined;
+  potSlug: string | undefined;
+  identityId?: string;
+  source?: Record<string, unknown>;
+  repoDir?: string;
+}) {
+  if (!input.workspaceId || !input.potSlug) return null;
+  try {
+    const { loaded, declared } = await describeIdentity({
+      workspaceId: input.workspaceId, potSlug: input.potSlug,
+      ...(input.identityId ? { identityId: input.identityId } : { source: input.source ?? {} }),
+      ...(input.repoDir ? { repoDir: input.repoDir } : {}),
+    });
+    const beyondSource = (issue: PreviewIssue) => issue.source !== 'source';
+    return {
+      potSlug: input.potSlug,
+      ok: !loaded.errors.some(beyondSource),
+      errors: loaded.errors.filter(beyondSource),
+      warnings: loaded.warnings.filter(beyondSource),
+      declared,
+    };
+  } catch (error) {
+    return { potSlug: input.potSlug, ok: false, errors: [{ source: 'compile' as const, code: 'preview-failed',
+      message: error instanceof Error ? error.message : String(error) }], warnings: [], declared: null };
+  }
 }
 
 /** The full author preview. Never throws for an authoring error; they are validation issues. */

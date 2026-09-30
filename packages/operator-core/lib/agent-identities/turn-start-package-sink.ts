@@ -287,7 +287,7 @@ export async function resolvePackageSinkRecipeWearer(input: {
   signal: AbortSignal;
 }, deps: {
   readWearer: TurnStartPackageSinkDeps['readWearer'];
-  readCeiling: NonNullable<PackageSinkRecipeHost['readCeiling']>;
+  readCeiling: NonNullable<PackageSinkHost['readCeiling']>;
 }): Promise<IdentityTemplateWearer> {
   const wearer = await deps.readWearer(input.ownerId, input.workspaceId);
   if (!wearer || !wearer.stack.some((ref) => stackRefIdentity(ref) === input.identityId)) {
@@ -308,16 +308,23 @@ export async function resolvePackageSinkRecipeWearer(input: {
   };
 }
 
-/** The recipe path's host seams. Production passes none: the P-013 runtime's
- * own defaults and the live pot/role ceiling read. */
-export interface PackageSinkRecipeHost {
+/** The provider path's host seams. Production passes none: the P-013 runtime's
+ * own defaults, the live pot/role ceiling read and a real dispatch. */
+export interface PackageSinkHost {
   readonly runtime?: IdentityRecipeRuntimeDeps;
   readonly readCeiling?: (input: { workspaceId: string; harnessSlug: string; role: string }) =>
     Promise<Pick<IdentityReactionCeiling, 'ceilings' | 'protectedAdditions'>>;
+  /**
+   * P-015 (D-033): the author preview's substitute for the provider's RAW
+   * output. When set, nothing is dispatched and no recipe runs; the value goes
+   * through the same resolution, contract validation and provenance envelope
+   * as that provider kind's real output.
+   */
+  readonly readProviderValue?: (input: { call: ProduceContextInput; providerKind: 'tool' | 'recipe' }) => Promise<unknown>;
 }
 
 /** Production wiring: the control anchor, the identity source catalog, the class registry and the read-only dispatcher. */
-export function defaultTurnStartPackageSinkDeps(recipeHost: PackageSinkRecipeHost = {}): TurnStartPackageSinkDeps {
+export function defaultTurnStartPackageSinkDeps(host: PackageSinkHost = {}): TurnStartPackageSinkDeps {
   const readWearer: TurnStartPackageSinkDeps['readWearer'] = async (ownerId, workspaceId) => {
     const rows = await getOrgPg().sql<{ control_state: unknown; control_generation: string | number | null }[]>`
       SELECT control_state, control_generation
@@ -364,12 +371,34 @@ export function defaultTurnStartPackageSinkDeps(recipeHost: PackageSinkRecipeHos
         classRef: call.contribution.ref, verb: call.contribution.verb,
       });
       if (!resolved.ok) throw new Error(`capability-class:${resolved.code}`);
+      /** The contract check and provenance envelope a provider kind's real output gets. */
+      const envelope = (value: unknown, outputSchema: typeof resolved.contract.outputSchema): string => {
+        const checked = validateIdentityProviderOutput({
+          json: typeof value === 'string' ? value : JSON.stringify(value ?? null),
+          outputSchema,
+          provenance: {
+            author: resolved.provider.providerPackage, identityRef: call.identityId,
+            providerRef: `${resolved.provider.providerPackage}@${resolved.provider.providerVersion}`,
+            classRef: resolved.classRef,
+          },
+          maxBytes: PACKAGE_CONTEXT_OUTPUT_MAX_BYTES,
+        });
+        if (checked.status === 'omitted') throw new Error(`capability-output:${checked.reason}`);
+        return checked.text;
+      };
       if (resolved.provider.providerKind === 'recipe') {
         // A recipe binding names a saved recipe, not a tool: the P-013 runtime
         // re-inspects it against its recorded pin and runs it as the wearer
         // (D-020, D-031). Its declared needs are what that inspection recorded.
         const inspections = resolved.provider.recipeInspections;
         const evidence = inspections && Object.hasOwn(inspections, resolved.verb) ? inspections[resolved.verb] : undefined;
+        if (host.readProviderValue) {
+          // The runtime's own availability check, then its output contract.
+          if (!evidence?.ok || evidence.recipe.id !== resolved.provider.verbBindings[resolved.verb]) {
+            throw new Error('capability-class:recipe-recipe-unavailable');
+          }
+          return envelope(await host.readProviderValue({ call, providerKind: 'recipe' }), evidence.outputSchema);
+        }
         const declaredNeeds = evidence?.ok ? evidence.requiredCapabilities : [];
         const run = await runIdentityRecipeProvider({
           resolution: resolved, identityRef: call.identityId, signal: call.signal,
@@ -377,8 +406,8 @@ export function defaultTurnStartPackageSinkDeps(recipeHost: PackageSinkRecipeHos
           resolveWearer: () => resolvePackageSinkRecipeWearer({
             ownerId: call.ownerId, workspaceId: call.workspaceId, identityId: call.identityId,
             requiredCapabilities: declaredNeeds, signal: call.signal,
-          }, { readWearer, readCeiling: recipeHost.readCeiling ?? readIdentityReactionCeiling }),
-        }, recipeHost.runtime);
+          }, { readWearer, readCeiling: host.readCeiling ?? readIdentityReactionCeiling }),
+        }, host.runtime);
         if (run.status === 'value') return run.text;
         throw new Error(run.status === 'refused' ? `capability-class:recipe-${run.code}` : `capability-output:${run.reason}`);
       }
@@ -387,22 +416,13 @@ export function defaultTurnStartPackageSinkDeps(recipeHost: PackageSinkRecipeHos
       }
       const tool = resolved.provider.verbBindings[resolved.verb];
       if (typeof tool !== 'string' || !tool.trim()) throw new Error('capability-class:verb-unbound');
-      const value = await dispatchReadOnlyTool(tool.trim(), {}, {
-        workspaceId: call.workspaceId, harnessSlug: call.potSlug, role: 'su',
-        onBehalfOf: call.ownerId, spawnId: PACKAGE_SINK_SPAWN_ID, signal: call.signal,
-      });
-      const providerRef = `${resolved.provider.providerPackage}@${resolved.provider.providerVersion}`;
-      const checked = validateIdentityProviderOutput({
-        json: typeof value === 'string' ? value : JSON.stringify(value ?? null),
-        outputSchema: resolved.contract.outputSchema,
-        provenance: {
-          author: resolved.provider.providerPackage, identityRef: call.identityId,
-          providerRef, classRef: resolved.classRef,
-        },
-        maxBytes: PACKAGE_CONTEXT_OUTPUT_MAX_BYTES,
-      });
-      if (checked.status === 'omitted') throw new Error(`capability-output:${checked.reason}`);
-      return checked.text;
+      const value = host.readProviderValue
+        ? await host.readProviderValue({ call, providerKind: 'tool' })
+        : await dispatchReadOnlyTool(tool.trim(), {}, {
+          workspaceId: call.workspaceId, harnessSlug: call.potSlug, role: 'su',
+          onBehalfOf: call.ownerId, spawnId: PACKAGE_SINK_SPAWN_ID, signal: call.signal,
+        });
+      return envelope(value, resolved.contract.outputSchema);
     },
     // Loaded on call: sync-hook-rules imports this module for its own defaults.
     readRuleRequests: async (call) => (await import('./sync-hook-rules')).turnStartSyncRuleRequests(call),
