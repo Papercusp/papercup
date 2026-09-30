@@ -2,7 +2,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { GitProbe } from '@papercusp/operator-core/lib/release/judged-sha-containment';
-import { judgePrecutSet, renderReport, type PrecutDeps, type PrecutSet } from './precut-containment-cli';
+import {
+  judgePrecutSet,
+  renderReport,
+  superprojectRoot,
+  type PrecutDeps,
+  type PrecutSet,
+} from './precut-containment-cli';
 
 // Blobs per ref, keyed by superproject-relative path. The fake exposes no submodule
 // methods, so containmentForPaths falls back to blobAt, which is all this layer needs.
@@ -116,6 +122,16 @@ describe('judgePrecutSet (WI-10002524 pre-cut go/no-go)', () => {
     expect(text).toContain('pre-cut containment for 9.9.9: NO-GO');
     expect(text).toMatch(/UNCOMMITTED\s+c\.ts/);
     expect(text).not.toMatch(/IN-MAIN\s+a\.ts/);
+  });
+});
+
+describe('superprojectRoot', () => {
+  // The package script runs the CLI from apps/operator; the verdicts must not depend on that.
+  const repoRoot = resolve(__dirname, '../../../..');
+
+  it('resolves the superproject from a subdirectory and from inside a submodule', () => {
+    expect(superprojectRoot(resolve(repoRoot, 'apps/operator'))).toBe(repoRoot);
+    expect(superprojectRoot(resolve(repoRoot, 'papercusp-desktop/bin'))).toBe(repoRoot);
   });
 });
 
