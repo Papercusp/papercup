@@ -50,7 +50,7 @@ vi.mock('@/app/harness/ConfirmModal', () => ({
     ) : null,
 }));
 
-import RemoteAccessSettingsPage, { entryTags, type RemoteAccessEntryView } from './page';
+import RemoteAccessSettingsPage, { entryTags, type PortalRelayStatusView, type RemoteAccessEntryView } from './page';
 
 function entry(over: Partial<RemoteAccessEntryView>): RemoteAccessEntryView {
   return {
@@ -193,6 +193,122 @@ describe('Remote access screen', () => {
     fireEvent.click(phone.querySelector('[data-action="pause"]')!);
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.body).toEqual({ workspaceId: 'ws1', id: 'dev-phone', kind: 'mobile', paused: true });
+  });
+});
+
+/** A relay status as relay-opt-in.ts reports it (external-app-access P-008, D-031). */
+function relay(over: Partial<PortalRelayStatusView>): PortalRelayStatusView {
+  return {
+    state: 'off',
+    available: true,
+    unavailableReason: null,
+    portalOrigin: 'https://papercusp.example',
+    notice: { version: 2, text: 'Traffic to this computer passes through Papercusp servers.' },
+    consent: { agreed: false, version: null, at: null },
+    pending: null,
+    linked: null,
+    health: 'off',
+    lastError: null,
+    ...over,
+  };
+}
+
+function withRelay(r: PortalRelayStatusView | null, portalRelayError: string | null = null) {
+  H.rows = [{ ...overview(), portalRelay: r, portalRelayError }];
+  render(<RemoteAccessSettingsPage />);
+  return r ? screen.getByTestId('portal-relay') : null;
+}
+
+describe('Papercusp relay card (P-008)', () => {
+  it('shows the notice and offers no Connect until it is agreed to (R-20)', async () => {
+    const card = withRelay(relay({}))!;
+    expect(card.dataset.state).toBe('off');
+    expect(within(card).getByTestId('portal-relay-notice').textContent).toContain('passes through Papercusp servers');
+    expect(within(card).queryByTestId('portal-relay-connect')).toBeNull();
+    const agree = within(card).getByTestId('portal-relay-accept') as HTMLButtonElement;
+    expect(agree.disabled).toBe(true);
+    fireEvent.click(within(card).getByTestId('portal-relay-understand'));
+    expect(agree.disabled).toBe(false);
+    fireEvent.click(agree);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // The agreement names the notice version the user actually saw.
+    expect(posts[0]).toEqual({ url: '/api/remote-access/portal-relay/consent', body: { noticeVersion: 2 } });
+  });
+
+  it('once agreed, Connect starts the device sign-in', async () => {
+    const card = withRelay(relay({ consent: { agreed: true, version: 2, at: '2026-09-30T10:00:00Z' } }))!;
+    expect(within(card).queryByTestId('portal-relay-notice')).toBeNull();
+    fireEvent.click(within(card).getByTestId('portal-relay-connect'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({ url: '/api/remote-access/portal-relay/connect', body: {} });
+  });
+
+  it('while linking, shows the code and the address to approve it, and can cancel', async () => {
+    const card = withRelay(
+      relay({
+        state: 'linking',
+        health: 'linking',
+        consent: { agreed: true, version: 2, at: '2026-09-30T10:00:00Z' },
+        pending: { userCode: 'WXYZ-1234', verificationUri: 'https://papercusp.example/device', expiresAt: '2026-09-30T10:15:00Z' },
+      }),
+    )!;
+    expect(card.dataset.state).toBe('linking');
+    expect(within(card).getByTestId('portal-relay-code').textContent).toBe('WXYZ-1234');
+    expect(within(card).getByTestId('portal-relay-link').getAttribute('href')).toBe('https://papercusp.example/device');
+    expect(within(card).queryByTestId('portal-relay-connect')).toBeNull();
+    fireEvent.click(within(card).getByText('Cancel'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.url).toBe('/api/remote-access/portal-relay/cancel');
+  });
+
+  it('when linked, shows health, the app address and the MCP URL, and can disconnect', async () => {
+    const card = withRelay(
+      relay({
+        state: 'linked',
+        health: 'up',
+        consent: { agreed: true, version: 2, at: '2026-09-30T10:00:00Z' },
+        linked: {
+          appBaseUrl: 'https://papercusp.example/api/workspaces/lw_1',
+          mcpUrl: 'https://papercusp.example/api/workspaces/lw_1/mcp',
+          linkedAt: '2026-09-30T10:05:00Z',
+        },
+      }),
+    )!;
+    expect(within(card).getByTestId('portal-relay-health').textContent).toBe('Connected');
+    expect(within(card).getByTestId('portal-relay-address').textContent).toBe('https://papercusp.example/api/workspaces/lw_1');
+    expect(within(card).getByTestId('portal-relay-mcp').textContent).toBe('https://papercusp.example/api/workspaces/lw_1/mcp');
+    fireEvent.click(within(card).getByTestId('portal-relay-disconnect'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.url).toBe('/api/remote-access/portal-relay/disconnect');
+  });
+
+  it('names a link that is down and its last error', () => {
+    const card = withRelay(
+      relay({
+        state: 'linked',
+        health: 'down',
+        consent: { agreed: true, version: 2, at: null },
+        linked: { appBaseUrl: null, mcpUrl: null, linkedAt: null },
+        lastError: 'connector refused: workspace_suspended',
+      }),
+    )!;
+    expect(within(card).getByTestId('portal-relay-health').textContent).toBe('Not connected');
+    expect(within(card).getByTestId('portal-relay-error').textContent).toBe('connector refused: workspace_suspended');
+    expect(within(card).queryByTestId('portal-relay-address')).toBeNull();
+  });
+
+  it('on a machine Papercusp hosts, offers no relay controls at all', () => {
+    const card = withRelay(relay({ available: false, unavailableReason: 'hosted_machine' }))!;
+    expect(card.dataset.state).toBe('unavailable');
+    for (const id of ['portal-relay-notice', 'portal-relay-accept', 'portal-relay-connect', 'portal-relay-disconnect']) {
+      expect(within(card).queryByTestId(id), id).toBeNull();
+    }
+  });
+
+  it('says when the relay status could not be read, and shows no card', () => {
+    withRelay(null, 'relay store unreachable');
+    expect(screen.queryByTestId('portal-relay')).toBeNull();
+    expect(screen.getByText('Relay status unavailable: relay store unreachable')).toBeTruthy();
   });
 });
 
