@@ -1674,6 +1674,8 @@ import './events/status';
 // installation, explicit arm/disarm, and health/run visibility.
 import './triggers/list';
 import './triggers/create';
+import './triggers/create-webhook';
+import './triggers/rotate-webhook-secret';
 import './triggers/bind';
 import './triggers/arm';
 import './triggers/disarm';

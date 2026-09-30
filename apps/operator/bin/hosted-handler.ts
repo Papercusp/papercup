@@ -182,6 +182,8 @@ export function createHostedHandler(
 
   app.all("/api/workspaces/:workspaceId/agent-tools/*", (context) => handleHostedAppRelay(context.req.raw, appRelay));
   app.all("/api/workspaces/:workspaceId/mcp", (context) => handleHostedAppRelay(context.req.raw, appRelay));
+  // P-017 (D-032 #4): a signed webhook, relayed without an app key; the machine checks the signature.
+  app.all("/api/workspaces/:workspaceId/hooks/:sourceId", (context) => handleHostedAppRelay(context.req.raw, appRelay));
 
   // `/api/*` terminates at the audited hosted plane. A miss stays a JSON/HTTP
   // 404 and can never fall through to the SPA shell.

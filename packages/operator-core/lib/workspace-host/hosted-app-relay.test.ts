@@ -297,3 +297,68 @@ describe('P-328 — the machine learns the relay usage it needs for the relay-li
     expect(JSON.stringify(opens[0])).not.toContain(BODY_MARKER);
   });
 });
+
+describe('P-017 — a signed webhook is relayed without an app key (D-032 #4)', () => {
+  const HOOK = '0b9f3c2e-4d51-4a7e-9c0f-2f8d6a1b3e57';
+  const RAW = '{"ref":"refs/heads/main","n":1}';
+  const hookCall = (workspace = 'ws-1', init: RequestInit = {}): Request =>
+    new Request(`https://app.papercusp.com/api/workspaces/${workspace}/hooks/${HOOK}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'papercusp-signature': `t=1790000000,v1=${'c'.repeat(64)}`,
+        'papercusp-event': 'push',
+        'papercusp-delivery': 'd-1',
+        cookie: 'session=owner',
+      },
+      body: RAW,
+      ...init,
+    });
+
+  it('forwards the exact body and the signature headers to the machine /api/hooks/<id>, with no key', async () => {
+    const response = await handleHostedAppRelay(hookCall(), deps());
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(machineFetch).toHaveBeenCalledTimes(1);
+    const [url, init] = machineFetch.mock.calls[0];
+    expect(url).toBe(`http://machine.test/api/hooks/${HOOK}`);
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['papercusp-signature']).toBe(`t=1790000000,v1=${'c'.repeat(64)}`);
+    expect(headers['papercusp-event']).toBe('push');
+    expect(headers['papercusp-delivery']).toBe('d-1');
+    expect(headers['x-papercusp-ingress']).toBe('app-relay');
+    expect(headers.authorization).toBeUndefined();
+    expect(headers.cookie).toBeUndefined();
+    expect(Buffer.from(init.body as Uint8Array).toString()).toBe(RAW);
+  });
+
+  it('admits only POST on the hooks path', async () => {
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      const response = await handleHostedAppRelay(hookCall('ws-1', { method, body: method === 'GET' ? undefined : RAW }), deps());
+      expect(response.status, method).toBe(405);
+      expect(response.headers.get('allow')).toBe('POST');
+    }
+    expect(machineFetch).not.toHaveBeenCalled();
+  });
+
+  it('still refuses an offline machine at once with 503 and Retry-After (D-008)', async () => {
+    const response = await handleHostedAppRelay(hookCall('ws-2'), deps());
+    expect(response.status).toBe(503);
+    expect(response.headers.get('retry-after')).toBe('30');
+    expect(machineFetch).not.toHaveBeenCalled();
+  });
+
+  it('the machine end admits POST /api/hooks/<uuid> and nothing else under /api/hooks', () => {
+    expect(decideAppHttpRoute('POST', `/api/hooks/${HOOK}`)).toMatchObject({ ok: true });
+    expect(decideAppHttpRoute('GET', `/api/hooks/${HOOK}`)).toMatchObject({ ok: false });
+    expect(decideAppHttpRoute('POST', '/api/hooks/not-a-uuid')).toMatchObject({ ok: false });
+    expect(decideAppHttpRoute('POST', `/api/hooks/${HOOK}/x`)).toMatchObject({ ok: false });
+  });
+
+  it('a hooks path that is not a uuid is not a relay path at all', async () => {
+    const response = await handleHostedAppRelay(new Request('https://app.papercusp.com/api/workspaces/ws-1/hooks/nope', { method: 'POST', body: RAW }), deps());
+    expect(response.status).toBe(404);
+    expect(machineFetch).not.toHaveBeenCalled();
+  });
+});

@@ -51,9 +51,9 @@ describe('external-ingress listener (WI-10004174)', () => {
       headers: { host: PUBLIC_HOST, 'x-forwarded-proto': 'https', 'content-type': 'application/json' },
       body: '[1,2,3]',
     }));
-    expect(res.status).toBe(400);
-    const body = (await res.json()) as { error?: unknown };
-    expect(body.error).toBe('invalid_body');
+    const text = await res.text();
+    expect(res.status, text).toBe(400);
+    expect((JSON.parse(text) as { error?: unknown }).error, text).toBe('invalid_body');
   });
 
   it('leaves the loopback listener refusing a public Host (the rebinding guard still applies there)', async () => {

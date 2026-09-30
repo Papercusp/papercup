@@ -80,6 +80,11 @@ const APP_FORWARDED_REQUEST_HEADERS = new Set([
   'last-event-id',
   'mcp-session-id',
   'mcp-protocol-version',
+  // P-017: the signed-webhook headers (lib/external-triggers/webhook.ts). The signature covers the
+  // raw body, which the channel carries byte-for-byte, so it verifies on the machine unchanged.
+  'papercusp-signature',
+  'papercusp-event',
+  'papercusp-delivery',
 ]);
 export const APP_HTTP_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   'content-type',
@@ -486,8 +491,10 @@ export interface HostedAppRelayDependencies {
   onAudit?: (event: HostedAppRelayAuditEvent) => void;
 }
 
-/** `/api/workspaces/<id>/(agent-tools/… | mcp)`. */
-const APP_RELAY_PATH = /^\/api\/workspaces\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/(agent-tools\/[^?#]+|mcp)$/;
+/** `/api/workspaces/<id>/(agent-tools/… | mcp | hooks/<source id>)`. */
+const APP_RELAY_PATH = new RegExp(
+  `^/api/workspaces/([A-Za-z0-9][A-Za-z0-9_-]{0,127})/(agent-tools/[^?#]+|mcp|hooks/${WEBHOOK_SOURCE_ID_PATTERN})$`,
+);
 
 export function parseAppRelayPath(pathname: string): { customerWorkspaceId: string; machinePath: string } | null {
   const match = APP_RELAY_PATH.exec(pathname);
@@ -529,9 +536,18 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
   const audit = (action: HostedAppRelayAuditEvent['action'], detail: string) =>
     deps.onAudit?.({ action, customerWorkspaceId: target.customerWorkspaceId, detail });
 
+  // P-017 (D-032 #4): a signed webhook carries no app key. The MACHINE checks its HMAC
+  // signature, so the portal skips the key check here, and admits only POST. Every other
+  // portal rule below (offline refusal, rate and bandwidth limits) still applies.
+  const webhook = isWebhookPath(target.machinePath);
+  if (webhook && request.method.toUpperCase() !== 'POST') {
+    audit('app_relay_refused', 'method_not_allowed');
+    return refuse(405, 'method_not_allowed', { allow: 'POST' });
+  }
+
   // D-005: app routes take a limited key and nothing else. Read from Authorization
   // alone, so an owner or admin ticket, a JWT or a cookie session is never accepted.
-  if (!readAppKeyBearer(request.headers.get('authorization'))) {
+  if (!webhook && !readAppKeyBearer(request.headers.get('authorization'))) {
     audit('app_relay_refused', 'app_key_required');
     // P-325: an MCP client that has no key yet learns from this header where the portal's
     // authorization server for THIS workspace is (RFC 9728 §5.1), and gets one by OAuth.
