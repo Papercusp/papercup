@@ -150,6 +150,53 @@ exit 4
     expect(r.stderr).toMatch(/VH_DISABLED harness=linear reason=evidence-root-unwritable/);
   });
 
+  // WI-10004050: cli.ts gated main() on argv[1] === import.meta.url's path. Reached through a
+  // symlinked checkout those differ (link vs real file), so the CLI exited 0 printing nothing:
+  // an empty plan, then a finalize that never wrote a result.
+  it('reached through a symlinked checkout, the CLI still plans and finalizes', () => {
+    const libDir = path.resolve(path.dirname(vh), '..');
+    let tsx = '';
+    for (let d = libDir; d !== path.dirname(d); d = path.dirname(d)) {
+      if (existsSync(path.join(d, 'node_modules', '.bin', 'tsx'))) { tsx = path.join(d, 'node_modules', '.bin', 'tsx'); break; }
+    }
+    expect(tsx, 'repo tsx must be locatable').not.toBe('');
+    const root = tmp();
+    mkdirSync(path.join(root, 'link'));
+    symlinkSync(libDir, path.join(root, 'link', 'verification-harness'));
+    const linked = path.join(root, 'link', 'verification-harness', 'bin', 'vh.sh');
+    const file = path.join(root, 'h.sh');
+    writeFileSync(file, `set -euo pipefail\nsource ${JSON.stringify(linked)}\n${chain.replaceAll('$ROOT', root)}
+vh_begin prep
+vh_begin build
+vh_begin ship
+exit 0
+`);
+    const r = spawnSync('bash', [file], { encoding: 'utf8', env: { ...process.env, VH_TSX: tsx } });
+    expect(r.stderr).not.toMatch(/was not declared/);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/VH_RUN harness=linear .* plan=prep:run,build:run,ship:run/);
+    const result = JSON.parse(readFileSync(path.join(root, 'ev', 'latest', 'result.json'), 'utf8'));
+    expect(result.phases.map((p: { phase: string; status: string }) => [p.phase, p.status])).toEqual([
+      ['prep', 'passed'],
+      ['build', 'passed'],
+      ['ship', 'passed'],
+    ]);
+  });
+
+  it('a plan that leaves a declared phase without an action is refused, never recorded as empty', () => {
+    const root = tmp();
+    const silent = path.join(root, 'silent-cli');
+    writeFileSync(silent, '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    const closed = run(`${chain}\necho unreachable\n`, { VH_TSX: silent });
+    expect(closed.code).toBe(2);
+    expect(closed.stderr).toMatch(/vh_init: plan-incomplete:no-action-for-prep/);
+    expect(closed.stdout).not.toMatch(/unreachable/);
+    const open = run(`${chain}\necho ran\n`, { VH_TSX: silent, VH_FAIL_OPEN: '1' });
+    expect(open.code).toBe(0);
+    expect(open.stdout).toMatch(/ran/);
+    expect(open.stderr).toMatch(/VH_DISABLED harness=linear reason=plan-incomplete:no-action-for-prep/);
+  });
+
   it('without VH_FAIL_OPEN a contract that cannot start is fatal', () => {
     const r = run(`
 vh_phase prep ""

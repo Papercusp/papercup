@@ -12,8 +12,10 @@
  *     writes <dir>/guard-rails.json, prints a VH_GUARD_RAIL line per probe; exit 0 when every
  *     rail holds, 1 otherwise (with a final VH_GUARD_RAILS_FAILED reason=… detail=… line)
  */
+import { realpathSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { type HarnessContract, type HarnessRunResult, type PhaseResult, validateContract } from './contract.js';
 import type { GuardRailReport } from './guard-rails.js';
 import {
@@ -169,7 +171,22 @@ async function main(): Promise<number> {
   return 2;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+/**
+ * Whether this module is the process entry point. Compared by REAL path: reached through a
+ * symlinked checkout, argv[1] is the link while import.meta.url is the resolved file, and a
+ * plain path comparison silently skipped main() — exit 0, no plan, no finalize (WI-10004050).
+ */
+function invokedAsEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(path.resolve(entry)) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (invokedAsEntryPoint()) {
   main().then(
     (code) => process.exit(code),
     (err: unknown) => {

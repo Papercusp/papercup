@@ -185,6 +185,13 @@ vh_init() {
     VH_ACTION[$p]="$a"
     VH_REUSE_FROM[$p]="$r"
   done <<< "$plan"
+  # Every declared phase must have come back with an action. A plan command that printed
+  # nothing (e.g. an entry-point check that silently skipped main) would otherwise leave the
+  # harness reporting nothing while looking like it ran (WI-10004050).
+  local id
+  for id in ${VH_PHASE_IDS[@]+"${VH_PHASE_IDS[@]}"}; do
+    [ -n "${VH_ACTION[$id]:-}" ] || { _vh_init_failed "plan-incomplete:no-action-for-$id"; return $?; }
+  done
   _vh_say "VH_RUN harness=$name run=$VH_RUN_ID evidence=$VH_RUN_DIR plan=$(echo "$plan" | awk -F'\t' '{printf "%s%s:%s", (NR>1 ? "," : ""), $1, $2}')"
 }
 
