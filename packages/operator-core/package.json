@@ -135,6 +135,7 @@
     "@papercusp/coordination": "*",
     "@papercusp/db-org": "*",
     "@papercusp/debounce-coalesce": "*",
+    "@papercusp/decision-model": "*",
     "@papercusp/deployment-driver": "*",
     "@papercusp/desktop-ipc": "*",
     "@papercusp/docs-engine": "*",
