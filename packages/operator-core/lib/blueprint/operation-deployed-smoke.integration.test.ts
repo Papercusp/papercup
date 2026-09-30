@@ -13,7 +13,9 @@
  *   • every documented HTTP route is served (a validation refusal, never a 404);
  *   • a neutral harness is created through the public `harness:create` door
  *     with the DOCUMENTED declaration (plus the documented plan-target
- *     operation), then:
+ *     operation), inside a dedicated local pot (`pot:create` + `pot:add-member`),
+ *     because plans are Hive-scoped and the plan-target template must live in
+ *     the harness's Hive; then:
  *       – agent op: submit → replay → conflict → status → pending result →
  *         signal (+ replay) → events → cancel → terminal `cancelled`;
  *       – program op: submit → terminal `ready` whose output validates against
@@ -25,8 +27,9 @@
  * it is bound with details.evidencePlane:'deployed' only for a run against the
  * shipped build (P015_EXPECTED_SHA pins that).
  *
- * The run writes real state to the target workspace: one harness (reused on
- * later runs), one work item per agent/program submission, and one plan run.
+ * The run writes real state to the target workspace: one local pot and one
+ * harness (both reused on later runs), one work item per agent/program
+ * submission, and one plan run.
  * The agent op is cancelled within seconds of admission.
  */
 import { randomUUID } from 'node:crypto';
@@ -45,13 +48,21 @@ import {
   BlueprintOperationStatusSchema,
   SubmitResultSchema,
 } from './operation-contract';
-import { P013B_OPERATION, P013B_TEMPLATE, P013B_TEMPLATE_CONTENT } from './operation-performance-b-driver';
+import { P013B_OPERATION, P013B_TEMPLATE_CONTENT } from './operation-performance-b-driver';
 
 const BASE = process.env.P015_DEPLOYED_OPERATOR_URL?.replace(/\/+$/, '');
 const EXPECTED_SHA = process.env.P015_EXPECTED_SHA?.trim() || null;
 const WORKSPACE = process.env.P015_SMOKE_WORKSPACE?.trim() || 'papercusp-workspace';
 const CLIENT = process.env.P015_SMOKE_CLIENT?.trim() || process.env.PAPERCUSP_SID?.trim() || 'p015-deployed-smoke';
-const SMOKE_HARNESS = process.env.P015_SMOKE_HARNESS?.trim() || 'p015-deployed-smoke';
+const SMOKE_HARNESS = process.env.P015_SMOKE_HARNESS?.trim() || 'p015-smoke-operations';
+// Plans are Hive-scoped (resolvePlanScope refuses a harness outside a Hive), so the
+// plan-target operation needs its harness inside a Hive. The in-process suites fake
+// that scope; only this smoke exercises it, through the public pot doors.
+const SMOKE_POT = process.env.P015_SMOKE_POT?.trim() || 'p015-deployed-smoke-pot';
+// The harness's blueprint pins this template at create time and the harness is reused,
+// so the pin must never move: a FIXED slug that already ends in a date (plans:new
+// appends -YYYY-MM-DD to any slug that does not), with fixed content.
+const SMOKE_TEMPLATE = process.env.P015_SMOKE_TEMPLATE?.trim() || 'p015-smoke-fork-join-2026-09-30';
 const SMOKE_PARENT = process.env.P015_SMOKE_PARENT_DIR?.trim() || join(homedir(), '.papercusp', 'smoke-harnesses');
 const PROGRAM_SETTLE_MS = Number(process.env.P015_PROGRAM_SETTLE_MS ?? 180_000);
 
@@ -134,10 +145,19 @@ async function submit(operationId: string, requestKey: string, input: Record<str
 const status = async (handle: Handle) => BlueprintOperationStatusSchema.parse(await mcp(T.status, { handle }));
 const result = async (handle: Handle) => BlueprintOperationResultSchema.parse(await mcp(T.result, { handle }));
 
-/** The documented declaration plus the documented plan-target operation. */
-function smokeDeclaration(): Record<string, unknown> {
+interface TemplatePin { ref: string; revision: string; contentHash: string }
+
+/**
+ * The documented declaration plus the documented plan-target operation, whose template
+ * pin is re-pointed at the smoke's own template in the harness's Hive. The documented
+ * pin names the P-013 B suite's template, which that suite seeds by SQL under an undated
+ * slug no public door can create.
+ */
+function smokeDeclaration(pin: TemplatePin): Record<string, unknown> {
   const declaration = runnable<{ operations: unknown[] } & Record<string, unknown>>('declaration');
-  return { ...declaration, id: SMOKE_HARNESS, operations: [...declaration.operations, runnable('plan-target')] };
+  const planTarget = runnable<{ target: { template: Record<string, unknown> } } & Record<string, unknown>>('plan-target');
+  const pinned = { ...planTarget, target: { ...planTarget.target, template: { ...planTarget.target.template, ...pin } } };
+  return { ...declaration, id: SMOKE_HARNESS, operations: [...declaration.operations, pinned] };
 }
 
 describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deployed plane)', () => {
@@ -167,9 +187,31 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     // harness:create requires an existing parentDir. The smoke runs on the
     // operator's own host (P015_DEPLOYED_OPERATOR_URL is loopback), so make it here.
     mkdirSync(SMOKE_PARENT, { recursive: true });
+    // A dedicated local pot, so the smoke's template and plan runs never land in
+    // another Hive's plan store. local-only: no GitHub remote; no wake.
+    try {
+      await mcp('pot:create', { slug: SMOKE_POT, parentDir: SMOKE_PARENT, repoRemote: 'local-only', knowledgePack: 'none' });
+    } catch (err) {
+      if (!/slug_exists|slug already exists/i.test((err as Error).message)) throw err;
+    }
+    // The plan-target template lives in the pot's plan store, and must exist before the
+    // harness whose blueprint pins it. Left in draft: activation needs a conversation
+    // audit, and the run pins revision + content hash, not status.
+    try {
+      await mcp('plans:new', { harness: SMOKE_POT, slug: SMOKE_TEMPLATE, title: 'P-015 smoke fork/join', content: P013B_TEMPLATE_CONTENT });
+    } catch (err) {
+      // plans:new's reuse refusal is the exact code slug_exists (new.ts NewPlanValue).
+      if (!/slug_exists/i.test((err as Error).message)) throw err;
+    }
+    const got = await mcp('plans:get', { harness: SMOKE_POT, slug: SMOKE_TEMPLATE }) as {
+      results?: Array<{ version?: number; contentHash?: string }>;
+    };
+    const template = got.results?.[0];
+    expect(template?.contentHash, `plans:get ${SMOKE_TEMPLATE} returned no contentHash`).toMatch(/^[0-9a-f]{64}$/);
+    const pin: TemplatePin = { ref: SMOKE_TEMPLATE, revision: String(template!.version), contentHash: template!.contentHash! };
     try {
       await mcp('harness:create', {
-        slug: SMOKE_HARNESS, parentDir: SMOKE_PARENT, folderName: SMOKE_HARNESS, blueprint: smokeDeclaration(),
+        slug: SMOKE_HARNESS, parentDir: SMOKE_PARENT, folderName: SMOKE_HARNESS, blueprint: smokeDeclaration(pin), pot: SMOKE_POT,
       });
     } catch (err) {
       // A prior run left the harness in place; anything else is a real failure.
@@ -177,14 +219,8 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
       // swallowed "does not exist" and hid a create that never happened.
       if (!/slug already exists|destination already exists/i.test((err as Error).message)) throw err;
     }
-    // The plan-target operation needs its pinned template in this harness.
-    try {
-      await mcp('plans:new', {
-        harness: SMOKE_HARNESS, slug: P013B_TEMPLATE, title: 'P-013 fork/join', content: P013B_TEMPLATE_CONTENT, status: 'active',
-      });
-    } catch (err) {
-      if (!/exist|already|taken|duplicate/i.test((err as Error).message)) throw err;
-    }
+    // Idempotent: joins a harness reused from a run that predates its pot.
+    await mcp('pot:add-member', { pot: SMOKE_POT, member: SMOKE_HARNESS });
   }, 120_000);
 
   it('runs the documented agent operation lifecycle and cancels it', async () => {
