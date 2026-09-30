@@ -35,7 +35,7 @@ const { createMcpOAuthRoutes, createClientCredentialsRoutes } = await import('..
 const { isLoopbackHost } = await import('../endpoint-route/routes/device/_shared');
 const { PostgresOAuthStore } = await import('./mcp-oauth');
 const { MCP_OAUTH_WELL_KNOWN } = await import('./mcp-oauth-discovery');
-const { PostgresClientCredentialsStore, CLIENT_CREDENTIALS_TOKEN_TTL_SEC, JWT_BEARER_ASSERTION_TYPE } = await import('./client-credentials');
+const { PostgresClientCredentialsStore, JWT_BEARER_ASSERTION_TYPE } = await import('./client-credentials');
 const { createAppKey, createServiceKey, resolveAppKeyScopes, revokeAppKey, setAppKeyPaused, setClientCredentialsMode, verifyAppKey } =
   await import('./store');
 const { resolveAppKeyPrincipal } = await import('./principal');
@@ -49,6 +49,12 @@ const LOCAL = 'http://127.0.0.1:3070';
 /** A portal token endpoint (D-021): the audience the portal relays for an assertion. */
 const PORTAL_AUDIENCE = 'https://portal.example.com/api/workspaces/ws_portal/oauth/token';
 const WS = `cc_ws_${randomBytes(3).toString('hex')}`;
+/**
+ * R-15's own bound (D-022: a leaked access token stops working within the hour). Written as a
+ * literal on purpose: comparing against the implementation's TTL constant would let a longer TTL
+ * pass this test unchanged.
+ */
+const ONE_HOUR_SEC = 3600;
 
 type AnyRoute = { method: string; path: string; handler: (req: Request, ctx: never) => Promise<Response> | Response };
 
@@ -184,7 +190,7 @@ describe('OAuth client-credentials on a local install (real PG + real RLS)', () 
     const answer = await requestToken({}, client);
     expect(answer.status).toBe(200);
     expect(answer.headers.get('cache-control')).toContain('no-store');
-    expect(answer.body).toMatchObject({ token_type: 'Bearer', expires_in: CLIENT_CREDENTIALS_TOKEN_TTL_SEC });
+    expect(answer.body).toMatchObject({ token_type: 'Bearer', expires_in: ONE_HOUR_SEC });
     const token = String(answer.body.access_token);
     expect(token).toMatch(/^pcat_[A-Za-z0-9]{16}_[A-Za-z0-9_-]{43}$/);
 
@@ -195,7 +201,7 @@ describe('OAuth client-credentials on a local install (real PG + real RLS)', () 
     expect(token).not.toContain(rows[0]!.token_hash);
     const lifetimeMs = rows[0]!.expires_at.getTime() - rows[0]!.created_at.getTime();
     expect(lifetimeMs).toBeGreaterThan(0);
-    expect(lifetimeMs).toBeLessThanOrEqual(CLIENT_CREDENTIALS_TOKEN_TTL_SEC * 1000);
+    expect(lifetimeMs).toBeLessThanOrEqual(ONE_HOUR_SEC * 1000);
 
     const verdict = await verifyAppKey(token);
     expect(verdict.ok).toBe(true);
