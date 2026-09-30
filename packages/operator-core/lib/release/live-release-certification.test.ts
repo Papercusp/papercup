@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  LIVE_CERTIFICATION_BUILD_END_DIRT_FILE,
+  LIVE_CERTIFICATION_SOURCE_DIRT_REPEAT_LIMIT,
   LIVE_RELEASE_CERTIFICATION_SCHEMA_VERSION,
   assessLiveReleaseCertification,
+  readBuildEndDirtyPaths,
   readLiveReleaseCertification,
   type LiveFederationVerdictRecord,
 } from './live-release-certification';
@@ -222,6 +227,152 @@ describe('assessLiveReleaseCertification', () => {
     );
 
     expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+  });
+});
+
+describe('deterministic source dirt (EI-24610020645182418) — a repeat is a verdict, not a retry', () => {
+  // The observed 93f1c720 shape: every functional leg passed, but the build rewrote the
+  // lockfile, so the run ended `certification-source-dirty-at-build-end`.
+  const dirtyRun = (work: string, overrides: Partial<LiveFederationVerdictRecord> = {}) =>
+    record({ verdict: 'RED', terminal_dirty_files: 1, work, ...overrides });
+  const lockDirt = (r: LiveFederationVerdictRecord) =>
+    typeof r.work === 'string' && r.work.startsWith('/tmp/live-fed-gate-') ? [' M package-lock.json'] : null;
+
+  it('THE BUG: a second identical dirty run of the same sha is failed, which stops the relaunch', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a'), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+      null,
+      lockDirt,
+    );
+
+    expect(verdict).toMatchObject({ status: 'failed', certified: false });
+    expect(verdict.reason).toContain(`on ${LIVE_CERTIFICATION_SOURCE_DIRT_REPEAT_LIMIT} consecutive certification runs`);
+    expect(verdict.reason).toContain('M package-lock.json');
+  });
+
+  it('keeps ONE retry for dirt that may be transient', () => {
+    const verdict = assessLiveReleaseCertification(bank(dirtyRun('/tmp/live-fed-gate-a')), TARGET, NOW, null, lockDirt);
+
+    expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+    expect(verdict.reason).toContain(`run 1 of ${LIVE_CERTIFICATION_SOURCE_DIRT_REPEAT_LIMIT}`);
+  });
+
+  it('judges the dirt, not the verdict word: a storm-skipped dirty run counts toward the streak', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a', { verdict: 'SKIPPED-STORM' }), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+      null,
+      lockDirt,
+    );
+
+    expect(verdict.status).toBe('failed');
+  });
+
+  it('different dirty paths are not the same failure', () => {
+    const paths = (r: LiveFederationVerdictRecord) =>
+      r.work === '/tmp/live-fed-gate-a' ? [' M package-lock.json'] : [' M apps/operator/package.json'];
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a'), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+      null,
+      paths,
+    );
+
+    expect(verdict.status).toBe('unqualified');
+  });
+
+  it('different dirty counts are not the same failure', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a', { terminal_dirty_files: 2 }), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+    );
+
+    expect(verdict.status).toBe('unqualified');
+  });
+
+  it('a clean run in between ends the streak', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a'), record({ verdict: 'RED' }), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+      null,
+      lockDirt,
+    );
+
+    expect(verdict.status).toBe('unqualified');
+  });
+
+  it('a freshness token in between is not a run and does not end the streak', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(
+        dirtyRun('/tmp/live-fed-gate-a'),
+        record({ verdict: 'FRESH', source_mode: 'unmeasured' }),
+        dirtyRun('/tmp/live-fed-gate-b'),
+      ),
+      TARGET,
+      NOW,
+      null,
+      lockDirt,
+    );
+
+    expect(verdict.status).toBe('failed');
+  });
+
+  it('dirty runs of ANOTHER sha do not count', () => {
+    const other = 'fedcba9876543210fedcba9876543210fedcba98';
+    const verdict = assessLiveReleaseCertification(
+      bank(
+        dirtyRun('/tmp/live-fed-gate-a', {
+          head: other.slice(0, 12),
+          source_head: other.slice(0, 12),
+          certification_target_sha: other,
+        }),
+        dirtyRun('/tmp/live-fed-gate-b'),
+      ),
+      TARGET,
+      NOW,
+      null,
+      lockDirt,
+    );
+
+    expect(verdict.status).toBe('unqualified');
+  });
+
+  it('a pruned work directory degrades to comparing counts', () => {
+    const verdict = assessLiveReleaseCertification(
+      bank(dirtyRun('/tmp/live-fed-gate-a'), dirtyRun('/tmp/live-fed-gate-b')),
+      TARGET,
+      NOW,
+    );
+
+    expect(verdict.status).toBe('failed');
+  });
+});
+
+describe('readBuildEndDirtyPaths', () => {
+  it("reads the run's build-end dirt list from its gate work directory", () => {
+    const work = mkdtempSync('/tmp/live-fed-gate-test-');
+    try {
+      writeFileSync(join(work, LIVE_CERTIFICATION_BUILD_END_DIRT_FILE), ' M package-lock.json\n\n');
+      expect(readBuildEndDirtyPaths(record({ work }))).toEqual([' M package-lock.json']);
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when the work directory is pruned', () => {
+    expect(readBuildEndDirtyPaths(record({ work: '/tmp/live-fed-gate-pruned-000000' }))).toBeNull();
+  });
+
+  it('refuses to read outside a gate work directory', () => {
+    expect(readBuildEndDirtyPaths(record({ work: '/etc' }))).toBeNull();
+    expect(readBuildEndDirtyPaths(record({ work: '/tmp/live-fed-gate-x/../../etc' }))).toBeNull();
+    expect(readBuildEndDirtyPaths(record())).toBeNull();
   });
 });
 
