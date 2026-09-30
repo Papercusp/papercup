@@ -5049,9 +5049,15 @@ describe("runGreenCheckpoint", () => {
           killProcessGroupOnTimeout: true,
         }),
       ).rejects.toThrow(/timed out/);
-      await new Promise((r) => setTimeout(r, 200));
       const pid = Number(readFileSync(pidfile, "utf8").trim());
       // The backgrounded grandchild must be dead too — the group-kill reached it.
+      // SIGKILL delivery is not instant under a loaded or throttled cgroup, so poll
+      // for death within a bound far below the orphan's 20s sleep: a group-kill
+      // that missed the grandchild still fails, a slow exit no longer does.
+      const deadline = Date.now() + 5_000;
+      while (grandchildStillRunning(pid) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
       expect(grandchildStillRunning(pid)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
