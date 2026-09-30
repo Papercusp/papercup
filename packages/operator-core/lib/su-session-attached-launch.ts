@@ -101,7 +101,7 @@ export function claudeEngineIdentityForCwd(cwd: string, checkoutRoots: readonly 
 /** Recomputed from the same inputs on launch and on resume, so a resumed chat
  * keeps its identity without persisted state. An unreadable registry keeps the
  * SU identity: dropping the rails is the choice that needs positive evidence. */
-async function claudeEngineIdentityForLaunch(workspaceId: string, cwd: string | null | undefined): Promise<ClaudeEngineIdentity> {
+async function engineIdentityForLaunch(workspaceId: string, cwd: string | null | undefined): Promise<ClaudeEngineIdentity> {
   if (!cwd) return 'su';
   try {
     const registry = await loadHarnessRegistry(workspaceId);
@@ -240,9 +240,10 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
                 { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
                 { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact,
-                  identity: await claudeEngineIdentityForLaunch(workspaceId, resume.boot.cwd) })
+                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) })
               : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
-                { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
+                { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }>,
+                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) });
             state.engines.set(key, active);
             await persistSuSessionDescriptor(record.advSessionId, active.adapter.host.descriptor());
           } catch (error) { await active?.close(); await resume.release(); throw error; }
@@ -370,8 +371,9 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
           { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
-          { ...options, identity: await claudeEngineIdentityForLaunch(workspaceId, result.cwd) })
-        : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
+          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) })
+        : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
+          { ...options, identity: await engineIdentityForLaunch(workspaceId, result.cwd) });
       state.engines.set(key, engine);
       const unsupervise = superviseAttendance(result.sessionId, engine);
       trace?.stage('persist-descriptor');
