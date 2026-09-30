@@ -4336,13 +4336,16 @@ describe("psu-launcher arg parsing", () => {
 
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await launchTrackedFork(claudeSource, {}, account, null, {
+      await launchTrackedFork(claudeSource, { headless: true }, account, null, {
         api: postBootstrap,
         launchResume,
       });
       expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("UNTRACKED fork"));
       expect(launchResume).toHaveBeenCalledOnce();
-      expect(launchResume).toHaveBeenCalledWith(claudeSource, expect.objectContaining({ fork: true }));
+      expect(launchResume).toHaveBeenCalledWith(
+        claudeSource,
+        expect.objectContaining({ fork: true, headless: true }),
+      );
 
       const codexSource = { ...claudeSource, agent: "codex" };
       await expect(
@@ -13385,6 +13388,17 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(authRepair).toBeGreaterThan(authGuard);
     expect(route).toBeGreaterThan(authRepair);
     expect(spawn).toBeGreaterThan(route);
+  });
+
+  it("uses the resolved headless option before resume argv exists (Codex native-fork TDZ regression)", () => {
+    const signature = body.slice(0, body.indexOf(") {"));
+    const homeRepair = body.slice(
+      body.indexOf("await ensureCodexHomeViaOperator("),
+      body.indexOf("applyCodexGatewayRoute(env.CODEX_HOME"),
+    );
+    expect(signature).toContain("headless = false");
+    expect(homeRepair).toContain("headless,");
+    expect(homeRepair).not.toContain("args.headless");
   });
 
   it("exits immediately when the ended-session resume claim is lost", () => {
