@@ -17,7 +17,9 @@ import {
   installBlueprintFromCupboardCore,
   InstallBlueprintError,
   type InstallBlueprintCoreDeps,
+  type InstallBlueprintCoreInput,
 } from './install-blueprint-core';
+import type { IdentityInstallConsent } from './identity-install-consent';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle, snapshotBlueprintReleaseSource } from './blueprint-release';
 import type {
   CapabilityProviderCandidate,
@@ -112,6 +114,19 @@ function makeDeps(over: Partial<InstallBlueprintCoreDeps> = {}): InstallBlueprin
   };
 }
 
+/** Consent to exactly the subject the D-034 seat returns, then install — for
+ * tests about the seats after it. The seat precedes every write, so the first
+ * refused attempt leaves nothing behind. */
+async function installConsented(input: InstallBlueprintCoreInput, deps: InstallBlueprintCoreDeps) {
+  try {
+    return await installBlueprintFromCupboardCore(input, deps);
+  } catch (error) {
+    if (!(error instanceof InstallBlueprintError) || error.code !== 'identity_install_consent_required') throw error;
+    const { consentSubject } = error.data as { consentSubject: IdentityInstallConsent };
+    return installBlueprintFromCupboardCore({ ...input, identityInstallConsent: consentSubject }, deps);
+  }
+}
+
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), 'install-bp-core-'));
   fixtureRepo = join(root, 'remote');
@@ -199,7 +214,7 @@ describe('installBlueprintFromCupboardCore', () => {
     const leaf = pinPackageInput({ packageKind: 'rubric', ref: 'judge', revision: '1', files: [{ path: 'rubric.json', bytes: '{}' }] });
     const job = pinPackageInput({ packageKind: 'recipe', ref: 'job', revision: '1.0.0', files: [{ path: 'recipe.json', bytes: '{}' }],
       dependencies: [{ packageKind: leaf.packageKind, ref: leaf.ref, revision: leaf.revision, contentHash: leaf.contentHash }] });
-    const res = await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps({
+    const res = await installConsented({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps({
       resolveExtends: (id) => id === 'parent' ? join(baseDir, 'blueprint.yaml') : null,
       resolvePackage: async ({ ref }) => ref === 'job' ? job : leaf,
     }));
@@ -457,7 +472,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { optional: [crm.email@1.0.0] }',
     );
-    const result = await installBlueprintFromCupboardCore(
+    const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -492,7 +507,7 @@ describe('installBlueprintFromCupboardCore', () => {
     );
     const rollback = vi.fn(async () => {});
     const commitCapabilitySelections = vi.fn(async () => ({ rollback }));
-    const result = await installBlueprintFromCupboardCore(
+    const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -571,7 +586,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
     const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
-    const result = await installBlueprintFromCupboardCore(
+    const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -612,7 +627,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
     const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
-    const result = await installBlueprintFromCupboardCore(
+    const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -669,7 +684,7 @@ describe('installBlueprintFromCupboardCore', () => {
     const recipeInstall = (
       recipeProviderConsent?: RecipeProviderConsent,
       commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} })),
-    ) => installBlueprintFromCupboardCore(
+    ) => installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -765,7 +780,7 @@ describe('installBlueprintFromCupboardCore', () => {
       )).rejects.toMatchObject({ code: 'required_capability_provider_absent' });
 
       const commit = vi.fn(async () => ({ rollback: async () => {} }));
-      await installBlueprintFromCupboardCore(
+      await installConsented(
         {
           githubUrl: 'https://github.com/acme/neat-bp',
           capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
@@ -822,7 +837,7 @@ describe('installBlueprintFromCupboardCore', () => {
       rounds: 2,
     };
 
-    await expect(installBlueprintFromCupboardCore(
+    await expect(installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -883,7 +898,7 @@ describe('installBlueprintFromCupboardCore', () => {
       rounds: 1,
       receipts: review.units,
     };
-    const result = await installBlueprintFromCupboardCore(
+    const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
         capabilityContext: {
@@ -922,10 +937,12 @@ describe('installBlueprintFromCupboardCore', () => {
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
     const rollback = vi.fn(async () => {});
-    await expect(installBlueprintFromCupboardCore(
+    // The release verifies before any write, so the post-binding failure here is
+    // the activation slot conflict the release commit detects.
+    await expect(installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
-        expectedRelease: { contentHash: 'sha256:' + 'f'.repeat(64) },
+        activationStack: [{ id: 'other-domain', slots: ['domain'] }],
         capabilityContext: {
           workspaceId: 'workspace-1',
           potSlug: 'sales-ops',
