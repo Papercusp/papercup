@@ -331,6 +331,47 @@ describe('corpus-digest — synthesizeStateOfHive', () => {
       expect(lock.detail).toContain('2 row(s), 4 report(s)');
     });
 
+    // ── EI-24726268610417103: a MIXED cluster is labelled by its dominant member ──
+    //
+    // The cluster LABEL + ref used to come from the most-recently-seen member while
+    // `recurred N×` is the SUM over every member, so a lexical group spanning two tools'
+    // failures was named by whichever member was newest even when that member held a
+    // sliver of the reports (live: 152 of 66,044). EI-1 is the newest member of the lock
+    // cluster (1d ago), EI-2 the older one (5d ago); the two share a title, so the REF is
+    // what tells the heads apart.
+    it('labels a mixed cluster by the member holding the reports, not the newest one', async () => {
+      const { recurringFriction } = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-1': 1, 'EI-2': 40 })),
+        { nowMs: NOW },
+      );
+      const lock = recurringFriction.find((p) => p.summary === 'lock contention blocks file edits')!;
+      expect(lock.ref).toBe('wi:EI-2'); // the OLDER member carries 40 of the 41 reports
+      expect(lock.detail).toContain('recurred 41×');
+      expect(lock.detail).toContain('mixed cluster: labelled by its dominant member (40 of 41 report(s), last 5d ago)');
+      // The decay clock is still the NEWEST member's, and the suffix says so, so the
+      // reader is never left wondering why "last 1d ago" sits beside a 5d-old label.
+      expect(lock.detail).toContain('last 1d ago');
+      expect(lock.detail).toContain('the newest member "lock contention blocks file edits" (last 1d ago)');
+    });
+
+    it('keeps the newest label and stays byte-identical when no member dominates', async () => {
+      const equal = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-1': 3, 'EI-2': 3 })),
+        { nowMs: NOW },
+      );
+      const newestDominates = await synthesizeStateOfHive(
+        fixtureReaders(flowReader({ 'EI-1': 9, 'EI-2': 1 })),
+        { nowMs: NOW },
+      );
+      const ledgerless = await synthesizeStateOfHive(fixtureReaders(), { nowMs: NOW });
+      for (const digest of [equal, newestDominates, ledgerless]) {
+        const lock = digest.recurringFriction.find((p) => p.summary === 'lock contention blocks file edits')!;
+        // A tie breaks to the newest member, and a newest-and-dominant member is not "mixed".
+        expect(lock.ref).toBe('wi:EI-1');
+        expect(lock.detail).not.toContain('mixed cluster');
+      }
+    });
+
     it('degrades to stock counting — never to zero — when the occurrence reader throws', async () => {
       // A ledger blip may cost this cycle's EXTRA signal; it may not cost the cycle.
       const { recurringFriction } = await synthesizeStateOfHive(
