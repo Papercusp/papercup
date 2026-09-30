@@ -56,6 +56,19 @@ vi.mock('../../memory/memory-pause', () => ({
 vi.mock('../../memory/ref-expand', () => ({
   expandRefsForEmbed: vi.fn(async () => undefined),
 }));
+// P-009: remember.ts now asks resolveConflictJudge(); route it through the
+// anthropic-judge mocks below so these cases keep their meaning and never touch
+// the real Jev key store. The factory itself is pinned in conflict-judge.test.ts.
+vi.mock('../../memory/conflict-judge', async () => {
+  const aj = await import('../../memory/anthropic-judge');
+  return {
+    resolveConflictJudge: vi.fn(async () =>
+      aj.conflictJudgeAvailable()
+        ? { available: true, backend: 'anthropic', judge: aj.createAnthropicJudge() }
+        : { available: false, reason: 'test: no judge' },
+    ),
+  };
+});
 vi.mock('../../memory/anthropic-judge', () => ({
   createAnthropicJudge: vi.fn(),
   conflictJudgeAvailable: vi.fn(() => false),
