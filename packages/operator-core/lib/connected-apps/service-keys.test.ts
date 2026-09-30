@@ -136,6 +136,7 @@ function serviceRow(tokenHash: string, id: string, over: Record<string, unknown>
     paired_at: new Date('2026-09-29T00:00:00Z'), expires_at: null, paused_at: null, revoked_at: null,
     last_seen: null, last_ip: null, spend_cap_cents: 5000, spend_cap_window_sec: DEFAULT_SPEND_CAP_WINDOW_SEC,
     rotated_at: null, previous_token_valid_until: null, token_hash: tokenHash, previous_token_hash: null,
+    remote_access_enabled: true,
     ...over,
   };
 }
