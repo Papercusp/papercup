@@ -21,7 +21,14 @@ import {
   parseConflictResponse,
 } from './conflict-check';
 
-const MODEL = 'claude-haiku-4-5';
+/**
+ * The Anthropic model every narrow LLM judge here uses — this one and the
+ * doc-contradiction judge (search/doc-contradiction-scan.ts). One constant so
+ * the two cannot drift: the doc judge pinned `claude-3-5-haiku-latest` after it
+ * was retired, and every call 404'd into a judge error (WI-10004165).
+ */
+export const ANTHROPIC_JUDGE_MODEL = 'claude-haiku-4-5';
+const MODEL = ANTHROPIC_JUDGE_MODEL;
 const MAX_TOKENS = 256;
 const TIMEOUT_MS = 5_000;
 
