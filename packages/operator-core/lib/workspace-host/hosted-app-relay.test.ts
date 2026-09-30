@@ -282,3 +282,18 @@ describe('R-39 — the monthly relay bandwidth limit is enforced', () => {
     expect((await handleHostedAppRelay(appCall(), limited)).status).toBe(200);
   });
 });
+
+describe('P-328 — the machine learns the relay usage it needs for the relay-limit alert', () => {
+  it("sends this month's usage and limit on each app call's relay.open, counts only", async () => {
+    const month = appRelayMonth(new Date(clock));
+    await usage.add(BINDING, month, { bytes: 700, requests: 3 });
+    const response = await handleHostedAppRelay(appCall(), deps({ requestsPerMinute: 100, monthlyBandwidthBytes: 1000 }));
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const opens = connector.frames.filter((frame) => frame.type === 'relay.open');
+    expect(opens).toHaveLength(1);
+    expect(opens[0].relayUsage).toEqual({ month, bytes: 700, limitBytes: 1000 });
+    expect(JSON.stringify(opens[0])).not.toContain(BODY_MARKER);
+  });
+});
