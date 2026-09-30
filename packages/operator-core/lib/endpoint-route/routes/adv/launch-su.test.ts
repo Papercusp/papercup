@@ -209,6 +209,27 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
+  // WI-10004158 / D-011: an OMP gateway model runs only on the gateway, so an
+  // omitted account follows it to `auto`; the default account would refuse it.
+  it.each([
+    ['papercusp-gateway/claude-sonnet-4-6', 'auto'],
+    ['openai-codex/gpt-5.6-terra', 'default'],
+  ])('an omitted OMP account follows model %s to %s', async (model, account) => {
+    vi.stubEnv('PAPERCUSP_OMP_MODEL_SELECTOR', '');
+    try {
+      const result = await launch({ attached_engine: true, agent: 'omp', agent_chat_id: 'chat', harness_slug: 'papercusp', model, carry: 'warm' });
+      expect(result).toMatchObject({ status: 200, json: { transport: 'structured' } });
+      expect(attachedMock).toHaveBeenCalledWith(expect.any(Request), expect.objectContaining({ agent: 'omp', model, account }));
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('keeps an explicit default account even for an OMP gateway model', async () => {
+    const model = 'papercusp-gateway/claude-sonnet-4-6';
+    const result = await launch({ attached_engine: true, agent: 'omp', agent_chat_id: 'chat', harness_slug: 'papercusp', model, account: 'default', carry: 'warm' });
+    expect(result).toMatchObject({ status: 200 });
+    expect(attachedMock).toHaveBeenCalledWith(expect.any(Request), expect.objectContaining({ agent: 'omp', model, account: 'default' }));
+  });
+
   it.each([{ defer_spawn: true }, { headless: true }, { resume_session_id: 'native-id' }])('rejects conflicting attached/native launch modes %j', async (conflict) => {
     expect((await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', ...conflict })).status).toBe(400);
     expect(attachedMock).not.toHaveBeenCalled();

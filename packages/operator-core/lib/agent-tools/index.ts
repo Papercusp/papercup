@@ -1749,6 +1749,13 @@ import './lexicon/active_pack';
 import './storage/usage';
 import './storage/prune';
 
+// access:* (external-app-access-to-workspaces-2026-09-29 P-012) — local-only list /
+// create / pause / revoke of the keys outside apps use. Hard-denied to every app key.
+import './access/list';
+import './access/create';
+import './access/pause';
+import './access/revoke';
+
 // reports-library-2026-09-15 (P-003) — the owner-facing Reports library verbs:
 // publish / get / list / search / retire. Origin is stamped from ctx inside
 // publish (never caller-supplied) and every read composes the store's single

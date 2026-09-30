@@ -226,6 +226,10 @@ describe('session-turn engine parity: re-sync rebuilds nothing (R-21)', () => {
     // file (the engine's included) must run on the one connection that holds it.
     sql = postgres(dsn, { max: 1, onnotice: () => {} });
     await sql`SELECT pg_advisory_lock(hashtext(${FILE_LOCK}))`;
+    // Holding the lock, no other run of this file is live, so any fixture turns
+    // left here were stranded by a run killed before its afterAll. Left in
+    // place, their 2099 stamps would win the freshest-first scan over ours.
+    await sql`DELETE FROM harness_shared.session_turns WHERE harness_slug LIKE 'r21-h-%'`;
     for (const t of UNCHANGED) {
       await insertTurn(t.idx, t.text);
       await oldWriterWrite(t.idx, t.text);

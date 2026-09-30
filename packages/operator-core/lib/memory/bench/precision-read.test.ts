@@ -67,6 +67,39 @@ describe('readMemoryPrecision', () => {
     const snap = await readMemoryPrecision(sql, 'ws-1');
     expect(snap.fpAt5Delta).toBeNull();
   });
+
+  // P-008 (jev-decision-model-integration): turning the Jev switch On changes
+  // what the bench measures; that step must not read as drift.
+  it('computes the delta only against an earlier run of the SAME admission shape, and exposes the Jev gate', async () => {
+    const gated = 'fusionMode:cosine-gated;jev:jev-1.13.0/instructions@0.3';
+    const floorOnly = 'fusionMode:cosine-gated';
+    const sql = fakeSql((text) =>
+      text.includes('count(')
+        ? [{ n: 3 }]
+        : [
+            { ...benchRow('c', 0.02, 0.81), notes: gated },
+            { ...benchRow('b', 0.17, 0.82), notes: floorOnly },
+            { ...benchRow('a', 0.05, 0.8), notes: gated },
+          ],
+    );
+    const snap = await readMemoryPrecision(sql, 'ws-1');
+    expect(snap.latest?.jevGate).toEqual({ model: 'jev-1.13.0', encoding: 'instructions', threshold: 0.3 });
+    expect(snap.trend[1].jevGate).toBeNull();
+    // 0.02 - 0.05 (the earlier GATED run), not 0.02 - 0.17 (the floor-only run between them)
+    expect(snap.fpAt5Delta).toBeCloseTo(-0.03, 5);
+  });
+
+  it('has no delta when the latest shape has no earlier run (the switch was just flipped)', async () => {
+    const sql = fakeSql((text) =>
+      text.includes('count(')
+        ? [{ n: 2 }]
+        : [
+            { ...benchRow('b', 0.02, 0.81), notes: 'fusionMode:cosine-gated;jev:jev-1.13.0/instructions@0.3' },
+            { ...benchRow('a', 0.17, 0.82), notes: 'fusionMode:cosine-gated' },
+          ],
+    );
+    expect((await readMemoryPrecision(sql, 'ws-1')).fpAt5Delta).toBeNull();
+  });
 });
 
 describe('recordMemoryPrecisionRun', () => {

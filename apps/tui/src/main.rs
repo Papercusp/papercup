@@ -5773,12 +5773,24 @@ async fn open_su_session_task(
     let binding = match client.open_su_session(&request).await {
         Ok(binding) => binding,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!("{error:#}")));
+            let _ = tx.send(su_open_failure(&error));
             return;
         }
     };
     let _ = tx.send(Event::SuSessionOpened(binding.clone()));
     stream_su_session_events(client, harness, chat_id, binding, initial_turn, tx).await;
+}
+
+/// A refusal the operator answered with keeps its reason (WI-10004158); any
+/// other open failure is a transport or protocol error.
+fn su_open_failure(error: &anyhow::Error) -> Event {
+    match error.downcast_ref::<crate::client::SuLaunchRefused>() {
+        Some(refused) => Event::SuSessionRefused {
+            code: refused.code.clone(),
+            message: refused.message.clone(),
+        },
+        None => Event::SuSessionError(format!("{error:#}")),
+    }
 }
 
 async fn attach_su_session_task(
@@ -5806,7 +5818,7 @@ async fn attach_su_session_task(
     let binding = match client.open_su_session(&request).await {
         Ok(binding) => binding,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!("{error:#}")));
+            let _ = tx.send(su_open_failure(&error));
             return;
         }
     };

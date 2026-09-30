@@ -2631,6 +2631,9 @@ pub struct App {
     /// A failed connection can precede the binding. Keep its diagnostic with
     /// the selected conversation until reconnect succeeds or selection changes.
     pub su_connection_error: Option<String>,
+    /// The operator's reason when launch-su answered and refused to start the
+    /// engine (WI-10004158); cleared with `su_connection_error`.
+    pub su_launch_refusal: Option<String>,
     /// All durable SU sessions discovered for the active harness.  This
     /// inventory is kept independently of the selected stream so ended and
     /// archived sessions remain available for inspection after a restart.
@@ -3010,6 +3013,7 @@ impl App {
             su_last_dispatch: None,
             su_session: None,
             su_connection_error: None,
+            su_launch_refusal: None,
             su_session_inventory: Vec::new(),
             agent_chats_loaded_for: None,
             launch_cwd: crate::su_session::launch_cwd(),
@@ -3667,6 +3671,7 @@ impl App {
         self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
         self.su_session = None;
         self.su_connection_error = None;
+        self.su_launch_refusal = None;
         self.su_rendered_owner_turns.clear();
         self.su_card_prompts.clear();
         self.su_skipped_prompts.clear();
@@ -3712,6 +3717,7 @@ impl App {
     /// the host snapshot/stream remains authoritative for lifecycle state.
     pub fn set_su_session_binding(&mut self, binding: crate::su_session::SuSessionBinding) {
         self.su_connection_error = None;
+        self.su_launch_refusal = None;
         self.su_backend = Some(binding.backend);
         self.su_session = Some(crate::su_session::SuSessionState::from_binding(binding));
     }
@@ -6304,14 +6310,12 @@ impl App {
             seat: self.su_launch_seat.clone(),
             model: self.chat_model.clone(),
             effort: self.chat_effort.clone(),
-            // launch-su must always receive an account value: psu without
-            // --account opens an interactive picker, which a PUI-spawned host
-            // cannot answer. The platform launch default is the system account.
-            account: Some(
-                self.chat_account
-                    .clone()
-                    .unwrap_or_else(|| "default".to_string()),
-            ),
+            // Only an account the owner CHOSE is sent. launch-su resolves an
+            // omitted one (D-014: never an argv without --account), and it can
+            // pick the route the engine's model needs: an OMP gateway model
+            // runs on `auto`, where `default` would refuse it (WI-10004158,
+            // plan pui-chat-first-ux-2026-09-28 D-011).
+            account: self.chat_account.clone(),
             mode: self.chat_mode.clone(),
             kickoff: None,
             kickoff_prompt: None,
@@ -6696,6 +6700,12 @@ impl App {
             || raw.contains("401")
         {
             format!("{engine} is not signed in; sign in to {engine}, then {retry}.")
+        } else if let Some(reason) = self.su_launch_refusal.as_deref() {
+            // The operator answered and refused to start the engine
+            // (WI-10004158): not a lost connection, and its reason names the
+            // owner's next step (an account or model to choose).
+            let reason = reason.trim().trim_end_matches('.');
+            format!("{engine} could not start: {reason}. Then {retry}.")
         } else if self.su_connection_error.is_some()
             || raw.contains("connection refused")
             || raw.contains("error sending request")
@@ -11606,6 +11616,11 @@ impl App {
                 }
                 self.fail_su_turn(&format!("SU-session: {error}"), false);
                 Action::Render
+            }
+            Event::SuSessionRefused { code, message } => {
+                let action = self.update(Event::SuSessionError(format!("{code}: {message}")));
+                self.su_launch_refusal = Some(message);
+                action
             }
             Event::SuSessionStreamError { chat_id, message } => {
                 // A late EOF from a previously selected chat must not poison
@@ -17409,9 +17424,8 @@ mod tests {
             ("omp", SuSessionBackend::Omp),
         ] {
             let mut a = setup_app();
-            a.operator_config.agent = Some(
-                serde_json::from_value(json!({ "effectiveBackend": configured })).unwrap(),
-            );
+            a.operator_config.agent =
+                Some(serde_json::from_value(json!({ "effectiveBackend": configured })).unwrap());
             assert_eq!(a.configured_su_backend(), Some(expected));
             // The status line names the engine the first message will run on.
             assert_eq!(a.chat_engine_label(), expected.label());
@@ -17887,6 +17901,42 @@ mod tests {
         assert!(a
             .chat_raw_failure()
             .is_some_and(|raw| raw.contains("event stream closed unexpectedly")));
+    }
+
+    /// WI-10004158: a launch the operator answered and refused is not a lost
+    /// connection. The owner sees the operator's reason, which names the fix;
+    /// a transport failure still reads as a lost connection.
+    #[test]
+    fn chat_first_refused_launch_shows_the_operators_reason() {
+        let reason = "OMP default account cannot use gateway model 'papercusp-gateway/x'; choose auto or a named gateway account, or choose a direct-provider model.";
+        let mut a = chat_first_app();
+        a.chat_input = "hello".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.update(Event::SuSessionRefused {
+            code: "attached_engine_start_failed".into(),
+            message: reason.into(),
+        });
+        assert_eq!(
+            a.chat_failure_sentence().as_deref(),
+            Some("Claude could not start: OMP default account cannot use gateway model 'papercusp-gateway/x'; choose auto or a named gateway account, or choose a direct-provider model. Then press Enter to send your message again.")
+        );
+        assert!(a
+            .chat_raw_failure()
+            .is_some_and(|raw| raw.contains("attached_engine_start_failed")));
+
+        let mut b = chat_first_app();
+        b.chat_input = "hello".into();
+        b.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        b.update(Event::SuSessionError(
+            "open SU session: error sending request".into(),
+        ));
+        assert_eq!(
+            b.chat_failure_sentence().as_deref(),
+            Some("PUI lost its connection to Claude; press Enter to send your message again.")
+        );
+        // A later successful open clears the refusal with the connection error.
+        a.update(Event::SuSessionOpened(su_binding()));
+        assert!(a.su_launch_refusal.is_none());
     }
 
     /// A message typed before the operator answered waits on the form (which
@@ -22653,10 +22703,12 @@ mod tests {
                 backend, launch, ..
             } => {
                 assert_eq!(backend, crate::su_session::PUI_DEFAULT_SU_BACKEND);
+                // WI-10004158 / D-011: an unchosen account is omitted; launch-su
+                // resolves it (D-014, pinned by launch-su.test.ts 'an omitted OMP
+                // account follows model'), so psu never waits on its picker.
                 assert_eq!(
-                    launch.account.as_deref(),
-                    Some("default"),
-                    "fresh launches must never leave psu waiting on its account picker"
+                    launch.account, None,
+                    "an account the owner never chose must not be sent as an explicit choice"
                 );
             }
             other => panic!("a new conversation must default to the SU host, got {other:?}"),
@@ -23439,6 +23491,26 @@ mod tests {
             ambiguous.su_session_launch_options().plan_slug,
             None,
             "a multi-plan list filter is not launch authority"
+        );
+    }
+
+    /// WI-10004158 / D-011: an account the owner never chose is not sent as
+    /// `default`, so launch-su can route an OMP gateway model to `auto`. A
+    /// chosen account, `default` included, is sent exactly as chosen.
+    #[test]
+    fn an_unchosen_account_is_omitted_and_a_chosen_one_is_sent() {
+        let mut a = composing("hello");
+        assert_eq!(a.chat_account, None);
+        assert_eq!(a.su_session_launch_options().account, None);
+        a.chat_account = Some("default".into());
+        assert_eq!(
+            a.su_session_launch_options().account.as_deref(),
+            Some("default")
+        );
+        a.chat_account = Some("auto".into());
+        assert_eq!(
+            a.su_session_launch_options().account.as_deref(),
+            Some("auto")
         );
     }
 

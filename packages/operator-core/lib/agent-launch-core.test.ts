@@ -18,6 +18,7 @@ import {
   claimAgentLaunch,
   composeMemberLaunchContext,
   composeModelSpec,
+  defaultLaunchAccountFor,
   foldMemberSpec,
   injectAccountArg,
   injectKickoffAfterResume,
@@ -1282,5 +1283,30 @@ describe('stale headless recovery guard', () => {
     expect(isStaleHeadlessAgentHost({ bridgeTty: false, launchedBy: 'su-launcher' }, { now })).toBe(false);
     expect(isStaleHeadlessAgentHost({ bridgeTty: true, launchedBy: 'su-launcher', lastActivityAt: stale }, { now })).toBe(false);
     expect(isStaleHeadlessAgentHost({ bridgeTty: false, launchedBy: 'su-launcher', lastActivityAt: now - 5 * 60_000 }, { now })).toBe(false);
+  });
+});
+
+describe('defaultLaunchAccountFor (WI-10004158 / D-011)', () => {
+  const gateway = 'papercusp-gateway/claude-sonnet-4-6';
+  const direct = 'openai-codex/gpt-5.6-terra:xhigh';
+
+  it('routes an OMP gateway model to auto, from each source the engine reads', () => {
+    expect(defaultLaunchAccountFor({ agent: 'omp', model: gateway })).toBe('auto');
+    expect(defaultLaunchAccountFor({ agent: 'omp', ompNativeDefault: () => gateway })).toBe('auto');
+    expect(defaultLaunchAccountFor({ agent: 'omp', model: direct, ompSelector: gateway })).toBe('auto');
+  });
+
+  it('uses the engine precedence: selector, then requested model, then native default', () => {
+    expect(defaultLaunchAccountFor({ agent: 'omp', model: gateway, ompSelector: direct })).toBe('default');
+    const nativeDefault = vi.fn(() => gateway);
+    expect(defaultLaunchAccountFor({ agent: 'omp', model: direct, ompNativeDefault: nativeDefault })).toBe('default');
+    expect(nativeDefault).not.toHaveBeenCalled();
+  });
+
+  it('keeps the default account for direct models, no model, and other backends', () => {
+    expect(defaultLaunchAccountFor({ agent: 'omp', ompNativeDefault: () => direct })).toBe('default');
+    expect(defaultLaunchAccountFor({ agent: 'omp', ompNativeDefault: () => null })).toBe('default');
+    expect(defaultLaunchAccountFor({ agent: 'claude', model: gateway })).toBe('default');
+    expect(defaultLaunchAccountFor({ agent: 'codex', ompNativeDefault: () => gateway })).toBe('default');
   });
 });

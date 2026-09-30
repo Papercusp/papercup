@@ -5,12 +5,20 @@
  * the recall-drop baseline read + escalation wiring on top of it.
  */
 import { describe, it, expect } from 'vitest';
+import type { QueryOutcome } from '@papercusp/memory/bench';
+import type { JevMemoryGateInput } from '../jev-memory-gate';
 import {
+  gateReplayWithJev,
+  jevGatedShape,
   parsePrecisionBenchWorkerOutput,
+  PRECISION_BENCH_JEV_CONSUMER,
+  PRECISION_BENCH_JEV_GATE_ENV,
   PRECISION_BENCH_RESULT_MARKER,
+  runBenchInWorker,
   runMemoryPrecisionMonitor,
+  type PrecisionBenchRunOptions,
 } from './precision-monitor';
-import type { MemoryPrecisionMetrics } from './precision-read';
+import { parseJevGateShape, type MemoryPrecisionMetrics } from './precision-read';
 import type { RecallDropEvaluation } from './precision-alert';
 
 const METRICS: MemoryPrecisionMetrics = {
@@ -45,6 +53,9 @@ const noEscalate = async () => {};
 // it. That dragged the whole sync-sse graph into this suite (~7s on the first test to reach it) and
 // made it flake against the 5s timeout under host load. Inject it, like every other dep here.
 const noInvalidate = () => {};
+// P-008: the default reads the workspace's Jev setting from PG. Inject it for the
+// same reason as `invalidate` above; the Jev-specific cases pass their own.
+const jevOff = async () => 'off' as const;
 
 describe('runMemoryPrecisionMonitor', () => {
   it('uses the isolated worker route by default while keeping the direct bench seam explicit', async () => {
@@ -62,6 +73,7 @@ describe('runMemoryPrecisionMonitor', () => {
         escalateRecall: noEscalate,
         invalidate: noInvalidate,
         log: silent,
+        jevEffective: jevOff,
       },
     );
     expect(out).toMatchObject({ ran: true, rowId: 11 });
@@ -82,6 +94,7 @@ describe('runMemoryPrecisionMonitor', () => {
         history: noHistory,
         escalateRecall: noEscalate,
         log: silent,
+        jevEffective: jevOff,
       },
     );
     expect(out).toEqual({ ran: false, skipReason: 'flag-off' });
@@ -106,6 +119,7 @@ describe('runMemoryPrecisionMonitor', () => {
         history: noHistory,
         escalateRecall: noEscalate,
         log: silent,
+        jevEffective: jevOff,
       },
     );
     expect(out.ran).toBe(true);
@@ -129,6 +143,7 @@ describe('runMemoryPrecisionMonitor', () => {
         history: noHistory,
         escalateRecall: noEscalate,
         log: silent,
+        jevEffective: jevOff,
       },
     );
     expect(out.ran).toBe(false);
@@ -150,6 +165,7 @@ describe('runMemoryPrecisionMonitor', () => {
         history: noHistory,
         escalateRecall: noEscalate,
         log: silent,
+        jevEffective: jevOff,
       },
     );
     expect(out.ran).toBe(false);
@@ -175,6 +191,7 @@ describe('runMemoryPrecisionMonitor', () => {
           },
           invalidate: noInvalidate,
           log: silent,
+          jevEffective: jevOff,
         },
       );
       expect(out.ran).toBe(true);
@@ -204,6 +221,7 @@ describe('runMemoryPrecisionMonitor', () => {
           },
           invalidate: noInvalidate,
           log: silent,
+          jevEffective: jevOff,
         },
       );
       expect(out.ran).toBe(true); // the bench+record path succeeds — a bad METRIC is not a tool failure
@@ -226,6 +244,7 @@ describe('runMemoryPrecisionMonitor', () => {
           },
           invalidate: noInvalidate,
           log: silent,
+          jevEffective: jevOff,
         },
       );
       expect(out.ran).toBe(true);
@@ -249,6 +268,7 @@ describe('runMemoryPrecisionMonitor', () => {
           },
           invalidate: noInvalidate,
           log: silent,
+          jevEffective: jevOff,
         },
       );
       expect(out.ran).toBe(true);
@@ -268,6 +288,7 @@ describe('runMemoryPrecisionMonitor', () => {
           },
           invalidate: noInvalidate,
           log: silent,
+          jevEffective: jevOff,
         },
       );
       expect(out.ran).toBe(true);
@@ -291,5 +312,150 @@ describe('precision bench worker protocol', () => {
 
   it('fails loudly when the child exits without a result marker', () => {
     expect(() => parsePrecisionBenchWorkerOutput('seed failed\n')).toThrow(/no result marker/);
+  });
+
+  it('tells the worker explicitly whether to gate, so an inherited value can never gate a floor-only run', async () => {
+    const seen: Array<string | undefined> = [];
+    const spawnProcess = ((_cmd: string, _args: string[], o: { env: NodeJS.ProcessEnv }) => {
+      seen.push(o.env[PRECISION_BENCH_JEV_GATE_ENV]);
+      throw new Error('stop before spawning');
+    }) as unknown as typeof import('node:child_process').spawn;
+    const prior = process.env[PRECISION_BENCH_JEV_GATE_ENV];
+    process.env[PRECISION_BENCH_JEV_GATE_ENV] = '1';
+    try {
+      await expect(runBenchInWorker({ spawnProcess })).rejects.toThrow(/stop before spawning/);
+      await expect(runBenchInWorker({ spawnProcess, jevGate: true })).rejects.toThrow(/stop before spawning/);
+    } finally {
+      if (prior === undefined) delete process.env[PRECISION_BENCH_JEV_GATE_ENV];
+      else process.env[PRECISION_BENCH_JEV_GATE_ENV] = prior;
+    }
+    expect(seen).toEqual(['0', '1']);
+  });
+});
+
+// ─── P-008: the monitor measures the Jev-GATED push path when the switch is On ───
+
+describe('runMemoryPrecisionMonitor — which path it measures (P-008)', () => {
+  const runWith = async (jevEffective: () => Promise<'off' | 'shadow' | 'on'>) => {
+    const asked: PrecisionBenchRunOptions[] = [];
+    await runMemoryPrecisionMonitor(
+      { workspaceId: 'ws-jev', installSlug: 'op' },
+      {
+        flag: async () => true,
+        jevEffective,
+        runBench: async (o) => {
+          asked.push(o);
+          return METRICS;
+        },
+        record: async () => 1,
+        history: noHistory,
+        escalateRecall: noEscalate,
+        invalidate: noInvalidate,
+        log: silent,
+      },
+    );
+    return asked;
+  };
+
+  it('gates only when the EFFECTIVE mode is On (mode on AND a key stored)', async () => {
+    expect(await runWith(async () => 'on')).toEqual([{ jevGate: true }]);
+  });
+
+  it('measures the floor alone in Log only and Off, because that is what the injector admits there', async () => {
+    expect(await runWith(async () => 'shadow')).toEqual([{ jevGate: false }]);
+    expect(await runWith(async () => 'off')).toEqual([{ jevGate: false }]);
+  });
+
+  it('an unreadable Jev setting measures the floor alone and still records', async () => {
+    expect(
+      await runWith(async () => {
+        throw new Error('pg down');
+      }),
+    ).toEqual([{ jevGate: false }]);
+  });
+});
+
+function outcome(queryId: string, ids: string[], expected: string[] = []): QueryOutcome {
+  const candidates = ids.map((id) => ({ id, key: `k-${id}`, text: `memory ${id}`, score: 0.6 }));
+  return {
+    queryId,
+    class: expected.length === 0 ? 'hard-negative' : 'paraphrase',
+    expected,
+    rankedKeys: candidates.map((c) => c.key),
+    rawHits: candidates.length,
+    candidates,
+    ms: 3,
+  } as QueryOutcome;
+}
+
+describe('gateReplayWithJev (P-008)', () => {
+  const texts = new Map([
+    ['q1', 'where does deploy run'],
+    ['q2', 'an off-topic question'],
+    ['q3', 'nothing came back'],
+  ]);
+
+  it('keeps exactly the candidates the gate keeps, in retrieval order, and labels its calls memory-bench', async () => {
+    const calls: JevMemoryGateInput[] = [];
+    const gate = async (input: JevMemoryGateInput) => {
+      calls.push(input);
+      return { effective: 'on', outcome: 'answered', model: 'jev-1.13.0', scores: [0.9, 0.1, 0.8], keep: [true, false, true] } as const;
+    };
+    const r = await gateReplayWithJev([outcome('q1', ['a', 'b', 'c'], ['k-a'])], texts, gate);
+    expect(r.outcomes[0].candidates?.map((c) => c.id)).toEqual(['a', 'c']);
+    expect(r.outcomes[0].rankedKeys).toEqual(['k-a', 'k-c']);
+    expect(r.outcomes[0].rawHits).toBe(2);
+    expect(calls).toEqual([
+      { message: 'where does deploy run', consumer: PRECISION_BENCH_JEV_CONSUMER, candidates: ['a', 'b', 'c'].map((id) => ({ id, text: `memory ${id}` })) },
+    ]);
+    expect(r.stats).toMatchObject({ model: 'jev-1.13.0', judged: 1, answered: 1, inconclusive: 0, dropped: 1 });
+  });
+
+  it('fails OPEN on an inconclusive verdict (keeps today\'s set) and counts the reason', async () => {
+    const gate = async () => ({ effective: 'on', outcome: 'inconclusive', reason: 'timeout' }) as const;
+    const input = outcome('q2', ['x', 'y']);
+    const r = await gateReplayWithJev([input], texts, gate);
+    expect(r.outcomes[0]).toBe(input);
+    expect(r.stats).toMatchObject({ model: null, judged: 1, answered: 0, inconclusive: 1, reasons: { timeout: 1 }, dropped: 0 });
+  });
+
+  it('makes no call for a query the floor admitted nothing for', async () => {
+    let called = 0;
+    const gate = async () => {
+      called += 1;
+      return { effective: 'off' } as const;
+    };
+    const r = await gateReplayWithJev([outcome('q3', [])], texts, gate);
+    expect(called).toBe(0);
+    expect(r.stats.judged).toBe(0);
+  });
+
+  it('refuses a verdict whose keep list does not line up with the candidates', async () => {
+    const gate = async () => ({ effective: 'on', outcome: 'answered', model: 'jev-1.13.0', scores: [0.9], keep: [true] }) as const;
+    await expect(gateReplayWithJev([outcome('q1', ['a', 'b'], ['k-a'])], texts, gate)).rejects.toThrow(/1 verdicts for 2 candidates/);
+  });
+
+  it('names every model that answered, so a served-model change inside one run is visible', async () => {
+    let n = 0;
+    const gate = async () => {
+      n += 1;
+      return { effective: 'on', outcome: 'answered', model: n === 1 ? 'jev-1.14.0' : 'jev-1.13.0', scores: [0.9], keep: [true] } as const;
+    };
+    const r = await gateReplayWithJev([outcome('q1', ['a'], ['k-a']), outcome('q2', ['b'])], texts, gate, 1);
+    expect(r.stats.model).toBe('jev-1.13.0+jev-1.14.0');
+  });
+});
+
+describe('the gated shape tag (P-008)', () => {
+  it('round-trips through parseJevGateShape, which the Learning tab reads', () => {
+    const notes = jevGatedShape('cosine-gated', 'jev-1.13.0');
+    expect(notes).toBe('fusionMode:cosine-gated;jev:jev-1.13.0/instructions@0.3');
+    expect(parseJevGateShape(notes)).toEqual({ model: 'jev-1.13.0', encoding: 'instructions', threshold: 0.3 });
+  });
+
+  it('reads every floor-only and pre-P-008 tag as not gated', () => {
+    expect(parseJevGateShape('fusionMode:cosine-gated')).toBeNull();
+    expect(parseJevGateShape(null)).toBeNull();
+    expect(parseJevGateShape('')).toBeNull();
   });
 });

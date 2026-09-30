@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 918,
+  "count": 922,
   "tools": [
     {
       "name": "ablation:report",
@@ -38,6 +38,94 @@
         "when": "Reviewing which SU-playbook governance rules earn their tokens: \"which rules survived repeated ablation with zero behavioral delta?\" — the owner review queue for prompt slimming, or checking what last week's shadow cycle measured.",
         "notWhen": "You want prompt MUTATION history (who changed what) — change_ledger:list. You want to RUN an ablation — the system:prompt-ablation routine (dark until the frontier P-001 arming gate).",
         "chaining": "ablation:report → for a candidate rule, read its ruleKey rows ({ ruleKey }) for the per-scenario evidence → an actual removal is a normal reviewed playbook edit (rides the change ledger + the su llm-test suite)."
+      }
+    },
+    {
+      "name": "access:create",
+      "http": {
+        "path": "/api/agent-tools/access/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create an app key (or a service key for an unattended app, which needs a spending cap) scoped to named tools. The secret is written once to a private file whose path is returned, never into the chat. Local-only: refused for app-key callers and tunnelled requests.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user asks to let an outside app, script or MCP client call this workspace, and has said what it may do.",
+        "notWhen": "Scopes unclear: ask which tools the app needs. Default-deny: a key with no tools can call nothing. Shell, file, admin and credential tools are never grantable.",
+        "chaining": "access:create { label, tools, kind? , spendCapCents? } → give the user secretFile → access:list to confirm."
+      }
+    },
+    {
+      "name": "access:list",
+      "http": {
+        "path": "/api/agent-tools/access/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List the app and service keys that let outside apps call this workspace: label, kind, creator, scopes, status (active/paused/revoked/expired), last use and spending cap. Never shows a key's secret. Local-only: refused for app-key callers and tunnelled requests.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user asks which outside apps can reach this workspace, or you need a key id before pausing or revoking it.",
+        "notWhen": "To see what an app DID, read its activity instead; this lists keys, not calls.",
+        "chaining": "access:list → access:pause / access:revoke { id }."
+      }
+    },
+    {
+      "name": "access:pause",
+      "http": {
+        "path": "/api/agent-tools/access/pause",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Pause an app or service key so every call with it is refused until resumed (paused:false resumes). Reversible; the key's scopes and secret are kept. Local-only: refused for app-key callers and tunnelled requests.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user wants to stop an outside app temporarily, e.g. while investigating unexpected activity.",
+        "notWhen": "To cut an app off for good use access:revoke. To pause every app at once use the Remote access kill switch.",
+        "chaining": "access:list → access:pause { id } → later access:pause { id, paused: false }."
+      }
+    },
+    {
+      "name": "access:revoke",
+      "http": {
+        "path": "/api/agent-tools/access/revoke",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Revoke an app or service key permanently: every secret it ever had, including one still inside a rotation overlap, is refused from then on. Cannot be undone; the app needs a new key. Local-only: refused for app-key callers and tunnelled requests.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "operator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The user wants an outside app cut off for good, or a key may have leaked.",
+        "notWhen": "For a temporary stop use access:pause, which can be resumed.",
+        "chaining": "access:list → access:revoke { id } → access:list { includeRevoked: true } to confirm."
       }
     },
     {

@@ -53,18 +53,20 @@ class MachineConnector implements HostedWorkspaceRelaySocket {
   readonly OPEN = 1;
   readyState = 1;
   readonly frames: Array<Record<string, unknown>> = [];
-  private readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  // `never[]` so the interface's overloaded listeners (message: (data, isBinary); close/pong: ())
+  // are both assignable here; `emit` widens once at the call site.
+  private readonly listeners = new Map<string, Array<(...args: never[]) => void>>();
   private readonly channels = new Map<string, OperatorHttpChannel>();
 
   constructor(private readonly machineFetch: (url: string, init: RequestInit) => Promise<Response>) {}
 
-  on(event: string, listener: (...args: unknown[]) => void): unknown {
+  on(event: string, listener: (...args: never[]) => void): unknown {
     this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
     return this;
   }
 
   emit(event: string, ...args: unknown[]): void {
-    for (const listener of this.listeners.get(event) ?? []) listener(...args);
+    for (const listener of this.listeners.get(event) ?? []) (listener as (...a: unknown[]) => void)(...args);
   }
 
   close(): void {
