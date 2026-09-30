@@ -809,15 +809,14 @@ const POST_TOOL_RULE_BUDGET_MS = 1000;
  * worn-rule reads as well as the evaluation, because `respond` waits on this and
  * a slow read must not cost the batch its recall too. Never throws.
  */
-async function postToolRuleContextText(ownerId: string, workspace: string, tools: string[]): Promise<string> {
+async function postToolRuleContextText(ownerId: string, workspace: Promise<string>, tools: string[]): Promise<string> {
   if (tools.length === 0) return '';
   try {
-    const [{ evaluateHookContextSink }, { activeWorkspaceId }, { withBoundedTimeout }] = await Promise.all([
+    const [{ evaluateHookContextSink }, { withBoundedTimeout }, workspaceId] = await Promise.all([
       import('../../../agent-identities/sync-hook-rules'),
-      import('../../../workspace-registry'),
       import('../../../bounded-timeout'),
+      workspace,
     ]);
-    const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
     const bounded = await withBoundedTimeout(
       (signal) => evaluateHookContextSink({ ownerId, workspaceId, sink: 'post-tool', tools, signal }),
       { fallback: { text: '', result: null }, timeoutMs: POST_TOOL_RULE_BUDGET_MS, label: 'mid-turn:post-tool-rules' },
@@ -1056,7 +1055,16 @@ const midTurnContext = defineTool({
       : [body.tool])
       .map((tool) => (typeof tool === 'string' ? tool.trim() : ''))
       .filter(Boolean);
-    const ruleContextText = postToolRuleContextText(owner, (body.workspace ?? '').trim(), batchTools);
+    // Resolved once, for the rules and the recall alike.
+    const workspaceIdResolved = (async () => {
+      const workspace = (body.workspace ?? '').trim();
+      if (workspace && workspace !== '*') return workspace;
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      return activeWorkspaceId();
+    })();
+    // Awaited inside the try below; an early throw there must not leave it unhandled.
+    workspaceIdResolved.catch(() => undefined);
+    const ruleContextText = postToolRuleContextText(owner, workspaceIdResolved, batchTools);
     const respond = async (memoryBlock = ''): Promise<Response> => {
       const [failureHint, ruleContext] = await Promise.all([failureHintText, ruleContextText]);
       return Response.json({
@@ -1080,9 +1088,7 @@ const midTurnContext = defineTool({
       // Resolved BEFORE the first coverage write, not at the recall site, so a
       // miss row and a recall row for the same session key on the same
       // workspace. Split keys would make per-workspace coverage unreadable.
-      const workspace = (body.workspace ?? '').trim();
-      const { activeWorkspaceId } = await import('../../../workspace-registry');
-      const workspaceId = workspace && workspace !== '*' ? workspace : activeWorkspaceId();
+      const workspaceId = await workspaceIdResolved;
 
       const coverage = {
         port: 'mid-turn' as const,

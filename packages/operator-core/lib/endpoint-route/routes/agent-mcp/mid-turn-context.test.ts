@@ -411,8 +411,11 @@ describe('mid-turn-context — worn post-tool rules (portable-identity-packages 
 
   it('fails open: a throwing sink costs the batch its rules, never its recall', async () => {
     evaluateHookContextSinkMock.mockRejectedValueOnce(new Error('store down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const out = await post({ owner: 'sess-rules-throw', tool: 'Grep', toolInput: { pattern: 'harness required' } });
     expect(out.text).toBe('MEM');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('mid-turn:post-tool-rules failed: store down'));
+    warn.mockRestore();
   });
 
   it('fails open inside the wall: a sink that never settles still lets recall through', async () => {

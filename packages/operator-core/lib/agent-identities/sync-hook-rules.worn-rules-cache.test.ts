@@ -16,11 +16,16 @@ const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock
   appliedIdentityArtifactMock: vi.fn(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     // The one query: the owner's applied revision from session_briefs.
-    sql: async (_strings: TemplateStringsArray, ownerId: string) =>
-      appliedRows.has(ownerId) ? [{ applied: appliedRows.get(ownerId) }] : [],
+    sql: Object.assign(
+      async (_strings: TemplateStringsArray, ownerId: string) =>
+        appliedRows.has(ownerId) ? [{ applied: appliedRows.get(ownerId) }] : [],
+      // Transaction-capable like the production org client (WI-40234); unused on this path.
+      { begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined) },
+    ),
   }),
 }));
 vi.mock('../agent-tools/coordination/control-anchor', () => ({
