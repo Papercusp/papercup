@@ -196,6 +196,9 @@ export async function prepareProviderBindingResource(
   const driver = packageProviderBindingDriver(sql, planned.address, planned.binding);
   return preparePackageResource(sql, planned.address, input.dependentId, {
     ...driver,
+    // Recovery below refuses any usable foreign choice, so a binding detached
+    // by an administrator's re-point can be re-bound once that choice is gone.
+    readmitsChanged: true,
     async recover(writeKey) {
       const refs = await driver.recover(writeKey);
       // Admission and cleanup share recovery, but only admission refuses a
