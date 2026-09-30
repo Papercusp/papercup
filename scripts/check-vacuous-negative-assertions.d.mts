@@ -207,6 +207,72 @@ export function judgeFile({ file, text, includes, subjectIncludes }: {
     findings: VacuousFinding[];
 };
 /**
+ * One tolerated DRIFTED finding. Keyed without the line number on purpose.
+ *
+ * @typedef {object} BaselineEntry
+ * @property {string} file
+ * @property {string} kind
+ * @property {string} lit
+ */
+/**
+ * @param {{ file: string, kind: string, lit: string }} f
+ * @returns {string}
+ */
+export function baselineKey(f: {
+    file: string;
+    kind: string;
+    lit: string;
+}): string;
+/**
+ * Split the DRIFTED findings against the baseline. Pure, so the gate decision is
+ * unit-testable without building the ~110M-char corpus.
+ *
+ * `fresh` findings gate. `baselined` ones are tolerated. `stale` entries match no
+ * current finding (the assertion was fixed or deleted) and never gate: a red for an
+ * improvement would freeze the queue on good news; `--update` removes them.
+ * `overWatermark` is true when the baseline holds more entries than the cap allows.
+ *
+ * @param {{ drifted: VacuousFinding[], baseline: BaselineEntry[], watermark?: number }} args
+ * @returns {{ fresh: VacuousFinding[], baselined: VacuousFinding[], stale: BaselineEntry[], overWatermark: boolean }}
+ */
+export function partitionAgainstBaseline({ drifted, baseline, watermark }: {
+    drifted: VacuousFinding[];
+    baseline: BaselineEntry[];
+    watermark?: number;
+}): {
+    fresh: VacuousFinding[];
+    baselined: VacuousFinding[];
+    stale: BaselineEntry[];
+    overWatermark: boolean;
+};
+/**
+ * The process exit code for a partition: 1 when any finding is new or the baseline is
+ * over its cap, else 0. Stale entries never affect it. `main` returns exactly this.
+ *
+ * @param {{ fresh: readonly unknown[], overWatermark: boolean }} partition
+ * @returns {0 | 1}
+ */
+export function gateExitCode({ fresh, overWatermark }: {
+    fresh: readonly unknown[];
+    overWatermark: boolean;
+}): 0 | 1;
+/**
+ * Parse the baseline file's text. An ABSENT file is an empty baseline (the strictest
+ * reading: every finding gates). A present but malformed file is an error, never an
+ * empty baseline, because silently tolerating nothing would hide the corruption and
+ * silently tolerating everything would hide the findings.
+ *
+ * @param {string | null} text - File contents, or null when the file does not exist.
+ * @returns {{ ok: true, entries: BaselineEntry[] } | { ok: false, error: string }}
+ */
+export function parseBaseline(text: string | null): {
+    ok: true;
+    entries: BaselineEntry[];
+} | {
+    ok: false;
+    error: string;
+};
+/**
  * A prompt (a `blueprints/**\/prompts/*.md` agent brief) told every release-fixer agent
  * to grep a reply for `⚠ quiet-cut EXCLUDED` — a banner `checkpoint-run.ts` had already
  * stopped emitting. Front-end 1 above only ever scans TEST files for assertions and
@@ -233,6 +299,7 @@ export function judgeFile({ file, text, includes, subjectIncludes }: {
  * SHOULD have caught it with — this is that quick-check for prompt drift, not yet a gate).
  */
 export const DOC_PROMPT_RE: RegExp;
+export const BASELINE_HIGH_WATERMARK: 0;
 /**
  * DRIFTED gates: a prose literal that exists nowhere emittable, while a long fragment of
  * it IS in the source — the guard is pinned to that string's OLD wording.
@@ -284,5 +351,13 @@ export type VacuousFinding = {
 export type IncludesFn = (needle: string) => boolean;
 export type DocLiteral = {
     line: number;
+    lit: string;
+};
+/**
+ * One tolerated DRIFTED finding. Keyed without the line number on purpose.
+ */
+export type BaselineEntry = {
+    file: string;
+    kind: string;
     lit: string;
 };

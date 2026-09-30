@@ -23,8 +23,10 @@
  * are the same story: this class specifically disarms the guards we wrote *because we
  * already got burned once*.
  *
- *   node scripts/check-vacuous-negative-assertions.mjs            # gate
+ *   node scripts/check-vacuous-negative-assertions.mjs            # gate (green-checkpoint leg, D-099)
  *   node scripts/check-vacuous-negative-assertions.mjs --report   # + the non-gating bucket
+ *   node scripts/check-vacuous-negative-assertions.mjs --list     # current DRIFTED set, baseline-shaped
+ *   node scripts/check-vacuous-negative-assertions.mjs --update   # shrink the baseline (never grows it)
  *
  * THE RULE
  * A negative assertion on a STATIC literal is vacuous when that literal appears
@@ -76,7 +78,7 @@
  * rather than multiplying a full-corpus scan by every assertion.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, statSync, realpathSync } from 'node:fs';
+import { readFileSync, statSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve, dirname, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { coverageOf, describeUnscanned, presentOnDisk } from './lib/tracked-files.mjs';
@@ -760,8 +762,138 @@ function trackedFiles() {
 const MIN_EXPECTED_CORPUS = 2000;
 const MIN_EXPECTED_TESTS = 500;
 
+/**
+ * SHRINK-ONLY BASELINE (WI-10004205, D-097/D-099). This lint is a green-checkpoint leg,
+ * so a DRIFTED finding already in the tree when it was wired must not red-pin `main`,
+ * while a NEW one must. The baseline lists the tolerated findings by `file + kind + lit`
+ * (never by line number, which moves on every unrelated edit above the assertion).
+ *
+ * Shrink-only has two halves, and both are mechanical:
+ *   - `--update` rewrites the file to baseline ∩ current findings. It removes entries
+ *     whose assertion was fixed and NEVER adds one, so it cannot launder new drift.
+ *   - `BASELINE_HIGH_WATERMARK` caps the file's size. Growing the baseline by hand then
+ *     needs this constant raised in the same diff, where review can see it.
+ * `--list` prints the current DRIFTED set in baseline form without writing anything:
+ * the measuring run a re-seed starts from.
+ *
+ * Wired at 0 findings (after WI-10004204's pragmas), so today it is a hard zero with a
+ * ratchet ready for the day a finding must be tolerated deliberately.
+ */
+const BASELINE_FILE = 'scripts/vacuous-negative-baseline.json';
+export const BASELINE_HIGH_WATERMARK = 0;
+
+/**
+ * One tolerated DRIFTED finding. Keyed without the line number on purpose.
+ *
+ * @typedef {object} BaselineEntry
+ * @property {string} file
+ * @property {string} kind
+ * @property {string} lit
+ */
+
+/**
+ * @param {{ file: string, kind: string, lit: string }} f
+ * @returns {string}
+ */
+export function baselineKey(f) {
+  return `${f.file}\u0000${f.kind}\u0000${f.lit}`;
+}
+
+/**
+ * Split the DRIFTED findings against the baseline. Pure, so the gate decision is
+ * unit-testable without building the ~110M-char corpus.
+ *
+ * `fresh` findings gate. `baselined` ones are tolerated. `stale` entries match no
+ * current finding (the assertion was fixed or deleted) and never gate: a red for an
+ * improvement would freeze the queue on good news; `--update` removes them.
+ * `overWatermark` is true when the baseline holds more entries than the cap allows.
+ *
+ * @param {{ drifted: VacuousFinding[], baseline: BaselineEntry[], watermark?: number }} args
+ * @returns {{ fresh: VacuousFinding[], baselined: VacuousFinding[], stale: BaselineEntry[], overWatermark: boolean }}
+ */
+export function partitionAgainstBaseline({ drifted, baseline, watermark = BASELINE_HIGH_WATERMARK }) {
+  const allowed = new Set(baseline.map(baselineKey));
+  const seen = new Set(drifted.map(baselineKey));
+  const fresh = [];
+  const baselined = [];
+  for (const f of drifted) (allowed.has(baselineKey(f)) ? baselined : fresh).push(f);
+  const stale = baseline.filter((e) => !seen.has(baselineKey(e)));
+  return { fresh, baselined, stale, overWatermark: baseline.length > watermark };
+}
+
+/**
+ * The process exit code for a partition: 1 when any finding is new or the baseline is
+ * over its cap, else 0. Stale entries never affect it. `main` returns exactly this.
+ *
+ * @param {{ fresh: readonly unknown[], overWatermark: boolean }} partition
+ * @returns {0 | 1}
+ */
+export function gateExitCode({ fresh, overWatermark }) {
+  return overWatermark || fresh.length > 0 ? 1 : 0;
+}
+
+/**
+ * Parse the baseline file's text. An ABSENT file is an empty baseline (the strictest
+ * reading: every finding gates). A present but malformed file is an error, never an
+ * empty baseline, because silently tolerating nothing would hide the corruption and
+ * silently tolerating everything would hide the findings.
+ *
+ * @param {string | null} text - File contents, or null when the file does not exist.
+ * @returns {{ ok: true, entries: BaselineEntry[] } | { ok: false, error: string }}
+ */
+export function parseBaseline(text) {
+  if (text === null) return { ok: true, entries: [] };
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, error: `not valid JSON (${e instanceof Error ? e.message : String(e)})` };
+  }
+  const entries = parsed?.entries;
+  if (!Array.isArray(entries)) return { ok: false, error: 'missing an "entries" array' };
+  for (const [i, e] of entries.entries()) {
+    if (typeof e?.file !== 'string' || typeof e?.kind !== 'string' || typeof e?.lit !== 'string') {
+      return { ok: false, error: `entries[${i}] needs string file, kind and lit` };
+    }
+  }
+  return { ok: true, entries };
+}
+
+/** @param {BaselineEntry[]} entries */
+function renderBaseline(entries) {
+  const sorted = [...entries].sort((a, b) => baselineKey(a).localeCompare(baselineKey(b)));
+  return (
+    JSON.stringify(
+      {
+        _comment:
+          'Shrink-only baseline for scripts/check-vacuous-negative-assertions.mjs (WI-10004205, D-099). ' +
+          'Entries are tolerated DRIFTED findings keyed by file + kind + lit. `--update` only removes ' +
+          'entries; growing this file also requires raising BASELINE_HIGH_WATERMARK in the script.',
+        entries: sorted.map(({ file, kind, lit }) => ({ file, kind, lit })),
+      },
+      null,
+      2,
+    ) + '\n'
+  );
+}
+
 function main(argv) {
   const report = argv.includes('--report');
+  const listMode = argv.includes('--list');
+  const update = argv.includes('--update');
+  const baselinePath = resolve(ROOT, BASELINE_FILE);
+  let baselineText = null;
+  try {
+    baselineText = readFileSync(baselinePath, 'utf8');
+  } catch (e) {
+    if (/** @type {NodeJS.ErrnoException} */ (e).code !== 'ENOENT') throw e;
+  }
+  const baselineRead = parseBaseline(baselineText);
+  if (!baselineRead.ok) {
+    // Checked BEFORE the expensive scan: a corrupt baseline is a verdict on its own.
+    console.error(`✗ vacuous-negative-assertions: ${BASELINE_FILE} is unreadable: ${baselineRead.error}.`);
+    return 1;
+  }
   const list = trackedFiles();
   const corpusFiles = list.filter(
     (p) => !TEST_RE.test(p) && !BINARY_RE.test(p) && !PROSE_RE.test(p) && !isExcluded(p),
@@ -909,10 +1041,41 @@ function main(argv) {
   const cov = coverageOf(list, ROOT);
   const coverageNote = describeUnscanned(cov, ROOT);
 
-  if (drifted.length === 0) {
+  if (listMode) {
+    // The measuring run: the full current DRIFTED set, baselined or not, in the file's
+    // own shape. It writes nothing, so it cannot widen the baseline by itself.
+    process.stdout.write(renderBaseline(drifted));
+    return 0;
+  }
+
+  const partition = partitionAgainstBaseline({ drifted, baseline: baselineRead.entries });
+  const { fresh, baselined, stale, overWatermark } = partition;
+  if (update && stale.length > 0) {
+    const kept = baselineRead.entries.filter((e) => !stale.some((s) => baselineKey(s) === baselineKey(e)));
+    writeFileSync(baselinePath, renderBaseline(kept));
+    console.log(`baseline shrunk: removed ${stale.length} fixed entr${stale.length === 1 ? 'y' : 'ies'}, ${kept.length} remain.`);
+  } else if (stale.length > 0) {
+    console.log(
+      `⚠ ${stale.length} baseline entr${stale.length === 1 ? 'y matches' : 'ies match'} no current finding ` +
+        `(fixed or deleted). Non-gating; shrink the baseline with --update:`,
+    );
+    for (const e of stale) console.log(`    ${e.file}  ${e.kind}  ${JSON.stringify(e.lit)}`);
+  }
+  if (overWatermark) {
+    console.error(
+      `✗ vacuous-negative-assertions: ${BASELINE_FILE} holds ${baselineRead.entries.length} entr` +
+        `${baselineRead.entries.length === 1 ? 'y' : 'ies'}, above BASELINE_HIGH_WATERMARK=${BASELINE_HIGH_WATERMARK}.\n` +
+        '  The baseline is shrink-only. Fix the new drift instead, or raise the watermark in the\n' +
+        '  script in the same diff so review sees the baseline grow.',
+    );
+    return 1;
+  }
+
+  if (gateExitCode(partition) === 0) {
     console.log(
       `✓ vacuous negative assertions: none of ${considered} static-literal negative assertion(s) ` +
-        `pins a reworded string (${orphaned.length} non-gating: orphaned/coincident/renamed). Corpus: ${corpusFiles.length} file(s) ` +
+        `pins a reworded string (${orphaned.length} non-gating: orphaned/coincident/renamed` +
+        `${baselined.length ? `; ${baselined.length} DRIFTED tolerated by the baseline` : ''}). Corpus: ${corpusFiles.length} file(s) ` +
         `across the superproject + ${cov.scanned.length}/${cov.declared.length} submodule(s).` +
         coverageNote,
     );
@@ -926,13 +1089,14 @@ function main(argv) {
       "  source. The string it guards still exists; the guard is pinned to that string's OLD\n" +
       '  wording, so it passes unconditionally no matter what the code does.\n',
   );
-  for (const f of drifted) {
+  for (const f of fresh) {
     console.error(`    ${f.file}:${f.line}  ${f.kind}`);
     console.error(`      pins:      ${JSON.stringify(f.lit)}`);
     console.error(`      source has: ${JSON.stringify(f.fragment)}\n`);
   }
   console.error(
-    `  ${drifted.length} finding(s). Re-point each assertion at the CURRENT wording, or delete it\n` +
+    `  ${fresh.length} new finding(s)${baselined.length ? ` (${baselined.length} more tolerated by ${BASELINE_FILE})` : ''}. ` +
+      `Re-point each assertion at the CURRENT wording, or delete it\n` +
       `  if the guard is obsolete. If the absence is deliberate, annotate the line with\n` +
       `  "// ${PRAGMA} <reason>". See EI-18765867705399052.`,
   );

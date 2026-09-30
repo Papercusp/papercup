@@ -74,6 +74,8 @@ import {
   GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB,
   GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY,
   runPostSuiteLegs,
+  VACUOUS_NEGATIVE_BASELINE_FILE,
+  VACUOUS_NEGATIVE_PRE_RATCHET_SKIP_REASON,
   summarizeTargetedPostSuiteLegs,
   checkpointFailureSignature,
   historicalFlakeAnnotations,
@@ -7623,6 +7625,12 @@ describe("runGreenCheckpoint", () => {
         "lint:plane-integrity",
       ]);
     });
+
+    it("lint:vacuous-negatives is a recognised gate signature (WI-10004205), so it cannot veto a sibling's rescue", () => {
+      expect(
+        nonTestGateIdsFrom(["lint:tsc", "lint:vacuous-negatives"]),
+      ).toEqual(["lint:tsc", "lint:vacuous-negatives"]);
+    });
   });
 
   /* EI-19992136440423793 path (a), pure half. `rescueGateIdsFrom` subtracts what the FILE rescue
@@ -13699,6 +13707,8 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
         "lint:timer-classification",
         "lint:no-raw-setinterval",
         "lint:plane-integrity",
+        // WI-10004205 / D-099: runs once per candidate, after the plane probes.
+        "lint:vacuous-negatives",
         "spa-build",
       ]);
       const executed = result.records.filter(
@@ -13720,6 +13730,79 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("WI-10004205 / D-099: lint:vacuous-negatives skips a candidate that predates its ratchet", () => {
+  // The gate code runs from the working tree, but a resumed frozen candidate can be an OLDER
+  // tree whose script has no baseline. That script judges a corpus it was never made precise
+  // for, so its red must not hold promotion: the leg skips when the baseline file is absent.
+  const runVacuousLeg = async (opts: { baseline: boolean; code: number }) => {
+    const dir = mkdtempSync(join(tmpdir(), "green-vacuous-leg-"));
+    const calls: string[][] = [];
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: {
+            "lint:vacuous-negatives":
+              "node scripts/check-vacuous-negative-assertions.mjs",
+          },
+        }),
+      );
+      if (opts.baseline) {
+        mkdirSync(join(dir, "scripts"), { recursive: true });
+        writeFileSync(
+          join(dir, VACUOUS_NEGATIVE_BASELINE_FILE),
+          JSON.stringify({ entries: [] }),
+        );
+      }
+      const exec = (async (_cmd: string, args: string[]) => {
+        calls.push(args);
+        return args.includes("lint:vacuous-negatives")
+          ? { code: opts.code, stdout: "DRIFTED fixture\n", stderr: "" }
+          : { code: 0, stdout: "", stderr: "" };
+      }) as unknown as Parameters<typeof runPostSuiteLegs>[2];
+      const result = await runPostSuiteLegs(
+        dir,
+        { NODE_ENV: "test" },
+        exec,
+        "apps/operator",
+      );
+      const ranScript = calls.some((a) => a.includes("lint:vacuous-negatives"));
+      return { result, ranScript };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("no baseline file: the leg is skipped with the pre-ratchet reason, the script never runs, and a red script cannot hold promotion", async () => {
+    const { result, ranScript } = await runVacuousLeg({ baseline: false, code: 1 });
+    expect(result.lintVacuousNegatives).toEqual({
+      status: "skipped",
+      skipReason: VACUOUS_NEGATIVE_PRE_RATCHET_SKIP_REASON,
+    });
+    expect(ranScript).toBe(false);
+    expect(result.failingSignatures).not.toContain("lint:vacuous-negatives");
+    expect(result.output).toContain(
+      `POST_SUITE_LEG id=lint:vacuous-negatives status=skipped`,
+    );
+  });
+
+  it("calibration: WITH the baseline file the same red script runs and fails the leg", async () => {
+    // Without this control the skip test above would also pass if the leg were deleted or
+    // skipped unconditionally.
+    const { result, ranScript } = await runVacuousLeg({ baseline: true, code: 1 });
+    expect(ranScript).toBe(true);
+    expect(result.lintVacuousNegatives).toEqual({ status: "failed" });
+    expect(result.failingSignatures).toContain("lint:vacuous-negatives");
+  });
+
+  it("calibration: WITH the baseline file a clean script passes the leg", async () => {
+    const { result, ranScript } = await runVacuousLeg({ baseline: true, code: 0 });
+    expect(ranScript).toBe(true);
+    expect(result.lintVacuousNegatives).toEqual({ status: "passed" });
   });
 });
 

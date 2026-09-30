@@ -333,6 +333,22 @@ export async function revokeAppKey(workspaceId: string, id: string): Promise<boo
   return rows.length > 0;
 }
 
+/**
+ * Replace a live key's scopes (the Remote access screen's "edit scope", P-010). `scopes` must come
+ * from `resolveAppKeyScopes`, so an edit can never grant what creation would refuse. Takes effect
+ * on the key's next call: the dispatch seat reads the row per call (`loadAppScopeRow`), and access
+ * tokens are evaluated against their parent's scopes too. Returns null when no live key has that id.
+ */
+export async function setAppKeyScopes(workspaceId: string, id: string, scopes: AppKeyScopes): Promise<AppKeyRow | null> {
+  const rows = await withWorkspace(workspaceId, async (tx) => tx<AppKeyRow[]>`
+    UPDATE harness_shared.connected_apps
+       SET scopes = ${JSON.stringify(scopes)}::jsonb
+     WHERE id = ${id} AND ${tx.unsafe(KEY_KINDS_SQL)} AND revoked_at IS NULL
+    RETURNING ${tx.unsafe(APP_COLUMNS)}
+  `);
+  return rows[0] ?? null;
+}
+
 export interface RotatedAppKey extends CreatedAppKey {
   /** The instant the previous key stops authenticating (== rotation time for a zero overlap). */
   previousKeyValidUntil: Date;

@@ -5029,6 +5029,10 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // — but nothing measured that, and the streak reached 19 consecutive reds. Same bar as its
   // siblings: one fast, deterministic, repo-wide node script, no PG or network.
   "lint:no-raw-setinterval": ["lint:no-raw-setinterval"],
+  // WI-10004205 / D-099: deterministic, repo-wide, no PG or network. Slower than its siblings
+  // (~50s, still far below the suite), and registering it keeps one unregistered leg from
+  // vetoing the rescue for every registered leg beside it (see lint:tsc:papercusp-libs above).
+  "lint:vacuous-negatives": ["lint:vacuous-negatives"],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
@@ -16018,6 +16022,13 @@ interface PostSuiteLegs {
    *  while unwatched). */
   lintNoRawSetinterval: LegOutcome;
   lintPlane: LegOutcome;
+  /** WI-10004205 / D-099: `lint:vacuous-negatives` (dead NEGATIVE assertions pinned to
+   *  reworded wording). It ran in no gate, so its findings regrew 0 → 31 unseen. Gated
+   *  HERE, once per candidate, and deliberately NOT in test:affected's repo-wide guards:
+   *  one run costs ~50s and ~1.4 GB, and nearly every change touches its corpus, so an
+   *  `appliesTo` predicate could not narrow it for every lane's local run. It is a
+   *  shrink-only ratchet (scripts/vacuous-negative-baseline.json), wired at 0 findings. */
+  lintVacuousNegatives: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
   output: string;
@@ -16070,6 +16081,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintTimerClassification: skipped,
     lintNoRawSetinterval: skipped,
     lintPlane: skipped,
+    lintVacuousNegatives: skipped,
     build: skipped,
     output: "",
     failingSignatures: [],
@@ -16147,6 +16159,15 @@ interface PostSuiteRunOptions {
  * hasNpmScript. The ORDER is deliberate and asserted by green-checkpoint-real-deps.test.ts:
  * cheapest-and-most-diagnostic first, the expensive SPA build last.
  */
+/** WI-10004205 / D-099: the shrink-only baseline `lint:vacuous-negatives` reads. A candidate
+ *  WITHOUT it predates the ratchet (and the WI-10004204 pragmas the ratchet was seeded
+ *  against), so its older script would judge a corpus it was never made precise for. The
+ *  gate code runs from the working tree while the candidate may be an older frozen tree, so
+ *  the leg skips such a candidate instead of letting a pre-ratchet red hold promotion. */
+export const VACUOUS_NEGATIVE_BASELINE_FILE = "scripts/vacuous-negative-baseline.json";
+export const VACUOUS_NEGATIVE_PRE_RATCHET_SKIP_REASON =
+  "candidate predates the vacuous-negatives ratchet (no baseline file)";
+
 export async function runPostSuiteLegs(
   treeDir: string,
   envIn: NodeJS.ProcessEnv,
@@ -17039,6 +17060,55 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // WI-10004205 / D-099: dead NEGATIVE assertions. Not in the low-memory group above: one run
+  // was measured at ~50s wall and 1.37 GB max RSS (it builds a ~110M-char corpus), well past
+  // that group's 768-MiB child pin. It runs once per candidate here instead of in every lane's
+  // test:affected. The script owns its shrink-only baseline and fails closed on a corrupt one.
+  if (haltedBy) {
+    legs.lintVacuousNegatives = { status: "skipped", skipReason: haltedBy };
+  } else {
+    const script = "lint:vacuous-negatives";
+    const check = checkNpmScript(treeDir, script);
+    if (check === "unreadable") {
+      // WI-6056: an unreadable package.json is a failure, never a silent opt-out.
+      legs.lintVacuousNegatives = { status: "failed" };
+      softFailures.push(script);
+      failingSignatures.push(script);
+      outputs.push(
+        `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${script} (VACUOUS NEGATIVES) ===\n`,
+      );
+    } else if (check === "absent") {
+      legs.lintVacuousNegatives = {
+        status: "skipped",
+        skipReason: `candidate provides no ${script} script`,
+      };
+    } else if (!existsSync(path.join(treeDir, VACUOUS_NEGATIVE_BASELINE_FILE))) {
+      legs.lintVacuousNegatives = {
+        status: "skipped",
+        skipReason: VACUOUS_NEGATIVE_PRE_RATCHET_SKIP_REASON,
+      };
+    } else {
+      const out = await exec("npm", ["run", script], {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      });
+      legs.lintVacuousNegatives = {
+        status: out.code === 0 ? "passed" : "failed",
+      };
+      if (out.code !== 0) {
+        softFailures.push(script);
+        failingSignatures.push(script);
+        outputs.push(
+          `\n\n=== VACUOUS NEGATIVE ASSERTIONS FAILED (npm run ${script}) — a negative assertion pins wording its subject no longer emits, so it can never fail (WI-10004205) ===\n` +
+            out.stdout +
+            out.stderr,
+        );
+      }
+    }
+  }
+
   // P-005: the SPA build is PART of "green". A build break (a bad import, a type error in a
   // bundled module) passes the Vitest suite, then fails at the deploy's swap step
   // (`--build-spa`) and rolls back — needlessly draining + restarting the live :3070
@@ -17162,6 +17232,7 @@ export async function runPostSuiteLegs(
     legs.lintTimerClassification,
     legs.lintNoRawSetinterval,
     legs.lintPlane,
+    legs.lintVacuousNegatives,
     legs.build,
   ].some((l) => l.status === "failed");
   const record = (
@@ -17300,6 +17371,9 @@ export async function runPostSuiteLegs(
       "lint:plane-adoption",
       "lint:derived-signal-firings",
       "lint:plane-guards",
+    ]),
+    record("lint:vacuous-negatives", legs.lintVacuousNegatives, [
+      "lint:vacuous-negatives",
     ]),
     record("spa-build", legs.build, ["spa:conflict-markers", "build"]),
   ];

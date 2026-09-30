@@ -38,6 +38,80 @@ function settingOf(workspaceId: string, row: SettingRow | undefined): RemoteAcce
   return { workspaceId, enabled: row.enabled, changedAt: row.changed_at, changedBy: row.changed_by };
 }
 
+/**
+ * One entry of the Remote access screen's list (R-26, D-007): a paired phone ('mobile'), an app key
+ * ('app') or a service key ('service'). Revoked entries are not listed — revoke is permanent and
+ * the screen manages what can still act.
+ */
+export interface RemoteAccessEntry {
+  id: string;
+  kind: 'mobile' | 'app' | 'service';
+  label: string | null;
+  /** Who created it (display only: a service key keeps working after its creator leaves, D-007). */
+  creator: string;
+  scopes: { capabilities?: string[]; tools?: string[]; harnesses?: string[] };
+  pairedAt: Date;
+  lastSeen: Date | null;
+  lastIp: string | null;
+  expiresAt: Date | null;
+  pausedAt: Date | null;
+  spendCapCents: number | null;
+  spendCapWindowSec: number | null;
+  rotatedAt: Date | null;
+  previousKeyValidUntil: Date | null;
+  /** 'client_secret' | 'private_key_jwt' when the service key is an OAuth client (P-016). */
+  clientAuth: string | null;
+}
+
+interface EntryRow {
+  id: string;
+  kind: RemoteAccessEntry['kind'];
+  label: string | null;
+  user_email: string;
+  scopes: RemoteAccessEntry['scopes'] | null;
+  paired_at: Date;
+  last_seen: Date | null;
+  last_ip: string | null;
+  expires_at: Date | null;
+  paused_at: Date | null;
+  spend_cap_cents: number | null;
+  spend_cap_window_sec: number | null;
+  rotated_at: Date | null;
+  previous_token_valid_until: Date | null;
+  client_auth: string | null;
+}
+
+/** Every phone, app key and service key of the workspace that is not revoked, newest first. */
+export async function listRemoteAccessEntries(workspaceId: string): Promise<RemoteAccessEntry[]> {
+  const rows = await withWorkspace(workspaceId, async (tx) => tx<EntryRow[]>`
+    SELECT id, kind, label, user_email, scopes, paired_at, last_seen, last_ip, expires_at, paused_at,
+           spend_cap_cents::float8 AS spend_cap_cents, spend_cap_window_sec, rotated_at,
+           previous_token_valid_until, client_auth
+      FROM harness_shared.connected_apps
+     WHERE workspace_id = ${workspaceId}
+       AND kind IN ('mobile', 'app', 'service')
+       AND revoked_at IS NULL
+     ORDER BY paired_at DESC
+  `);
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    label: r.label,
+    creator: r.user_email,
+    scopes: r.scopes ?? {},
+    pairedAt: r.paired_at,
+    lastSeen: r.last_seen,
+    lastIp: r.last_ip,
+    expiresAt: r.expires_at,
+    pausedAt: r.paused_at,
+    spendCapCents: r.spend_cap_cents,
+    spendCapWindowSec: r.spend_cap_window_sec,
+    rotatedAt: r.rotated_at,
+    previousKeyValidUntil: r.previous_token_valid_until,
+    clientAuth: r.client_auth,
+  }));
+}
+
 /** The workspace's switch. A workspace that never set it is on. */
 export async function getRemoteAccess(workspaceId: string): Promise<RemoteAccessSetting> {
   const rows = await withWorkspace(workspaceId, async (tx) => tx<SettingRow[]>`

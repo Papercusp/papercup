@@ -14,7 +14,9 @@ import {
   DRILL_TOWER_SOURCE_ENV,
   drillSourceViolation,
   gitBlobId,
+  integrationBaselineViolation,
   observeDrillSource,
+  observeIntegrationBaseline,
   PHYSICAL_DRILL_PREFLIGHT_CHECKS,
   PHYSICAL_DRILL_PREFLIGHT_FAILED,
   parseBuildStamp,
@@ -24,6 +26,7 @@ import {
   runPhysicalDrillPreflight,
   vmPayloadProbeCommand,
   type DrillSourceObservation,
+  type IntegrationBaselineObservation,
   type PhysicalDrillPreflightDeps,
   type VmPayloadProbe,
 } from './physical-drill-preflight';
@@ -79,6 +82,20 @@ function pinnedSource(
 }
 
 /** A healthy rig; each test breaks exactly one thing. */
+const STAGING = 'e6ef2827d75e4045e7095c96b05bfb94d13fe6cb';
+const TOWER_KEY = '3DCu5+PUoj6hPu0mXDWXhad9c5/OCAj7VGDhoeIXpUM=';
+
+function baseline(overrides: Partial<IntegrationBaselineObservation> = {}): IntegrationBaselineObservation {
+  return {
+    target: 'hello-world-3-pot/gh-1303510992',
+    canonicalStagingOid: STAGING,
+    worktreeHeadOid: STAGING,
+    worktreeContained: true,
+    blockedHeads: [],
+    ...overrides,
+  };
+}
+
 function healthy(overrides: Partial<PhysicalDrillPreflightDeps> = {}): Required<PhysicalDrillPreflightDeps> {
   return {
     listTrust: vi.fn(async () => [trust(), trust({ githubUserId: TOWER_USER })]),
@@ -87,6 +104,7 @@ function healthy(overrides: Partial<PhysicalDrillPreflightDeps> = {}): Required<
     probeVm: vi.fn(async () => vmProbe()),
     readTowerStamp: vi.fn(async () => ({ serveSha256: SERVE, harnessSuSha256: HARNESS, composedAt: '2026-09-29T01:12:18Z' })),
     towerHealthStatus: vi.fn(async () => 200),
+    observeIntegrationBaseline: vi.fn(async () => baseline()),
     nowMs: () => NOW,
     ...overrides,
   } as Required<PhysicalDrillPreflightDeps>;
@@ -510,5 +528,102 @@ describe('hold-note single source', () => {
   it('the hold Phase D writes carries the prefix the preflight recognises', () => {
     const phaseD = readFileSync(fileURLToPath(new URL('./physical-drill-phase-d.ts', import.meta.url)), 'utf8');
     expect(phaseD).toContain('note: `${PHASE_D_TIER_HOLD_NOTE_PREFIX} ${input.runId};');
+  });
+});
+
+// Same-box run 12 (WI-10003976): both owners' rig-up heads sat in the tower's ratify
+// queue as below-steer-tier, so Phase D's tower convergence burned its whole budget.
+describe('integration-queue-clear', () => {
+  const HEAD = '1'.repeat(40);
+
+  it('passes a baseline whose member heads are all in staging', () => {
+    expect(integrationBaselineViolation(baseline())).toBeNull();
+  });
+
+  it('refuses a queued member head, naming the device, the head and the reason', async () => {
+    const failure = await refusal(
+      healthy({
+        observeIntegrationBaseline: vi.fn(async () =>
+          baseline({ blockedHeads: [{ devicePubkey: TOWER_KEY, headSha: HEAD, reason: 'below-steer-tier' }] }),
+        ),
+      }),
+    );
+    expect(failure.check).toBe('integration-queue-clear');
+    expect(failure.reason).toContain('ratify queue');
+    expect(failure.reason).toContain(`${TOWER_KEY.slice(0, 12)}@${HEAD.slice(0, 12)} (below-steer-tier)`);
+    expect(failure.reason).toContain('trust:comms set');
+  });
+
+  it('refuses a tower worktree that staging does not contain', () => {
+    const reason = integrationBaselineViolation(baseline({ worktreeHeadOid: HEAD, worktreeContained: false }));
+    expect(reason).toContain(`worktree HEAD ${HEAD.slice(0, 12)} is not contained in canonical staging ${STAGING.slice(0, 12)}`);
+  });
+
+  it('refuses a store whose integrator never advanced staging', () => {
+    expect(integrationBaselineViolation(baseline({ canonicalStagingOid: null }))).toContain('has no canonical staging');
+  });
+
+  describe('observeIntegrationBaseline on a real store (the run-12 shape)', () => {
+    let root: string;
+    const g = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
+    const commitFile = (cwd: string, file: string, body: string) => {
+      writeFileSync(join(cwd, file), body);
+      g(cwd, 'add', file);
+      g(cwd, 'commit', '-q', '-m', file);
+      return g(cwd, 'rev-parse', 'HEAD');
+    };
+
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'pds-baseline-'));
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    it('reports the unabsorbed tower head and worktree, ignores absorbed and unpublished rows, and clears once integrated', async () => {
+      const store = join(root, 'store.git');
+      const work = join(root, 'work');
+      execFileSync('git', ['init', '-q', '--bare', store]);
+      execFileSync('git', ['init', '-q', work]);
+      g(work, 'config', 'user.email', 'pds@test.invalid');
+      g(work, 'config', 'user.name', 'pds');
+      const base = commitFile(work, 'README', 'hello\n');
+      const towerHead = commitFile(work, 'blueprint.yaml', 'tower rig-up\n');
+      g(work, 'checkout', '-q', '-b', 'vm', base);
+      const vmHead = commitFile(work, 'shared.json', '{}\n');
+      const staging = commitFile(work, 'p505-phase-d-overlap.txt', 'below-steer\n');
+      g(work, 'push', '-q', store, `${towerHead}:refs/namespaces/tower/refs/heads/master`);
+      g(work, 'push', '-q', store, `${vmHead}:refs/namespaces/vm/refs/heads/master`);
+      g(work, 'push', '-q', store, `${staging}:refs/hive/staging`);
+      g(work, 'checkout', '-q', towerHead);
+      const unpublished = '2'.repeat(40);
+      const request = (devicePubkey: string, headSha: string) => ({
+        workspaceId: 'papercusp-workspace',
+        potSlug: 'hello-world-pot',
+        repoKey: 'gh-1296269',
+        devicePubkey,
+        headSha,
+        authorGithubUserId: null,
+        reason: 'below-steer-tier' as const,
+        state: 'pending' as const,
+        createdTs: NOW,
+        ratifiedTs: null,
+      });
+      const pending = [request(TOWER_KEY, towerHead), request('CIVgFN1u9IhA', vmHead), request('stale-device', unpublished)];
+
+      const observed = await observeIntegrationBaseline({ repoPath: store, worktreePath: work, listPending: async () => pending });
+      expect(observed.canonicalStagingOid).toBe(staging);
+      expect(observed.worktreeHeadOid).toBe(towerHead);
+      expect(observed.worktreeContained).toBe(false);
+      expect(observed.blockedHeads).toEqual([{ devicePubkey: TOWER_KEY, headSha: towerHead, reason: 'below-steer-tier' }]);
+      expect(integrationBaselineViolation(observed)).toContain('ratify queue');
+
+      // The integrator absorbs the tower head: staging now contains everything.
+      g(work, 'checkout', '-q', staging);
+      g(work, 'merge', '-q', '--no-edit', towerHead);
+      g(work, 'push', '-q', '-f', store, 'HEAD:refs/hive/staging');
+      const settled = await observeIntegrationBaseline({ repoPath: store, worktreePath: work, listPending: async () => pending });
+      expect(settled.worktreeContained).toBe(true);
+      expect(settled.blockedHeads).toEqual([]);
+      expect(integrationBaselineViolation(settled)).toBeNull();
+    });
   });
 });

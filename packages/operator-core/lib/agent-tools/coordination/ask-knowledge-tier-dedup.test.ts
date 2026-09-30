@@ -74,8 +74,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// No real embedder: the reduction is under test, not ranking, and acquiring the
+// real model loads it onto the host GPU, whose device-fallback warning (a CUDA OOM
+// under gate load, run 77cbe327) is exactly the unrelated noise the afterEach
+// console check rejects.
 function deps(backend: MemoryBackend): KnowledgeTierDeps {
-  return { sql: throwingSql, backend };
+  return { sql: throwingSql, backend, buildEmbedder: async () => null };
 }
 
 describe('runKnowledgeTier — dedup by ref, cross-source ordering, top-N', () => {
