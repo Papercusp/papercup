@@ -102,6 +102,9 @@ export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDesc
   runtimeReady?: () => boolean;
   ownerTurnCorrelation?: 'command' | 'transport';
   cardSource?: 'transcript' | 'transport';
+  /** Saved owner turns for this session (production: loadSuOwnerTurnReceipts).
+   * A replayed prompt takes its saved turn id; without them it gets a fresh one. */
+  ownerTurnReceipts?: (identity: SuSessionDescriptor<'claude'>['identity']) => Promise<readonly SuOwnerTurnReceiptRef[]>;
 }
 
 export interface OpenClaudeSuSessionOptions extends CreateClaudeSuSessionAdapterOptions {
@@ -419,6 +422,8 @@ export class ClaudeSuSessionAdapter {
   private streamingMessageId: string | null = null;
   private readonly textStreams = new Map<string, Map<number, ClaudeTextStream>>();
   private readonly servedAccountReader: SuSessionServedAccountReader;
+  private readonly receiptMatcher = new SuOwnerTurnReceiptMatcher();
+  private readonly ownerTurnReceipts: CreateClaudeSuSessionAdapterOptions['ownerTurnReceipts'] | null;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'claude' },
@@ -429,7 +434,8 @@ export class ClaudeSuSessionAdapter {
     this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
     this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
     this.transportHandlesCards = options.cardSource === 'transport';
-    this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
+    this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
+    this.controls ={ ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
       executeCommand: (command: SuSessionCommand<'claude'>, context: SuSessionCommandContext<'claude'>) => this.execute(command, context),
@@ -468,6 +474,14 @@ export class ClaudeSuSessionAdapter {
   /** The structured transport calls this when a queued owner turn is sent. */
   correlateOwnerTurn(turnId: string): void {
     this.currentTurnId = turnId;
+    this.receiptMatcher.markUsed(turnId);
+  }
+
+  /** A replayed prompt opens its own turn: Claude's saved transcript has no
+   * `result` records, so the live end-of-turn reset never runs on replay and
+   * every restored prompt would share the first one's id (WI-10004252). */
+  private replayTurnId(content: string, recordId: string | null): string {
+    return this.receiptMatcher.take(content) ?? this.nextTurnId(recordId);
   }
 
   private nextTurnId(hint?: string | null): string {
@@ -633,7 +647,9 @@ export class ClaudeSuSessionAdapter {
     const parsed = this.parser.parseLine(JSON.stringify(record));
     for (const entry of parsed) {
       const turnId = entry.kind === 'prompt'
-        ? (this.currentTurnId ??= this.nextTurnId(recordId))
+        ? (replay
+          ? (this.currentTurnId = this.replayTurnId(entry.text ?? '', recordId))
+          : (this.currentTurnId ??= this.nextTurnId(recordId)))
         : this.ensureTurn(recordId);
       if (entry.kind === 'prompt') {
         if (!preserveLifecycle) this.host.transition('running', 'Claude owner turn persisted');
@@ -723,6 +739,11 @@ export class ClaudeSuSessionAdapter {
     if (!this.runtimeValue.transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
+    // Best-effort: without the saved receipts a restored prompt still gets its
+    // own (fresh) turn id, so a failed read degrades the id, never the replay.
+    if (this.ownerTurnReceipts) {
+      this.receiptMatcher.load(await this.ownerTurnReceipts(this.host.descriptor().identity).catch(() => []));
+    }
     for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
   }
 
@@ -768,6 +789,7 @@ export class ClaudeSuSessionAdapter {
     switch (command.type) {
       case 'owner_turn':
         if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
+        this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
         verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);

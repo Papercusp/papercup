@@ -16,7 +16,7 @@ vi.mock('./su-session-host', async (original) => (process.env.SU_SESSION_HOST_SU
   : original<object>()));
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const { pgSuSessionCommandStore } = await import('./su-session-commands');
+const { loadSuOwnerTurnReceipts, pgSuSessionCommandStore } = await import('./su-session-commands');
 const { SuSessionHost, _resetSuSessionHostsForTest, registerSuSessionHost } = await import('./su-session-host');
 const { suSessionRoutes } = await import('./endpoint-route/routes/agent-chats/su-session');
 const { registerRoute } = await import('./endpoint-route/define-route');
@@ -182,6 +182,33 @@ describe('SU command acceptance through real PostgreSQL', () => {
     const reservations = await Promise.all(Array.from({ length: 6 }, () => store.reserve(ownerTurn(), 'exact-payload')));
     expect(reservations.filter((r) => r.created)).toHaveLength(1);
     expect(await storedTurns()).toHaveLength(1);
+  });
+
+  it('WI-10004252: lists this session\'s saved owner turns in acceptance order, and nothing else', async () => {
+    const store = pgSuSessionCommandStore({ sql });
+    const turn = (commandId: string, content: string) => ({ ...ownerTurn(commandId), content });
+    await store.reserve(turn('first', 'hi'), 'fp-1');
+    // Turns that are not this session's receipts: a plain chat turn, and a
+    // receipt saved for a different native session in the same conversation.
+    const foreign = { ...turn('foreign', 'hi'), target: { ...descriptor().identity, nativeSessionId: 'another-native-session' } };
+    await sql`
+      UPDATE harness_shared.agent_chats_consolidated
+         SET transcript = transcript || ${JSON.stringify([
+           { role: 'user', content: 'typed elsewhere', source: 'operator' },
+           { role: 'user', content: 'hi', source: 'su-session', su_command: { fingerprint: 'fp-x', command: foreign } },
+         ])}::jsonb
+       WHERE workspace_id = ${workspaceId} AND id = ${agentChatId}`;
+    await store.reserve(turn('second', 'continue'), 'fp-2');
+    await store.reserve(turn('third', 'continue'), 'fp-3');
+
+    expect(await loadSuOwnerTurnReceipts(descriptor().identity, { sql })).toEqual([
+      { turnId: 'turn-first', content: 'hi' },
+      { turnId: 'turn-second', content: 'continue' },
+      { turnId: 'turn-third', content: 'continue' },
+    ]);
+    // Calibration: the same read scoped to the other native session finds
+    // exactly the foreign receipt, so the filter above excluded a real row.
+    expect(await loadSuOwnerTurnReceipts(foreign.target, { sql })).toEqual([{ turnId: 'turn-foreign', content: 'hi' }]);
   });
 
   it('survives a restart between reservation and dispatch without silently re-executing', async () => {

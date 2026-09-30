@@ -280,6 +280,80 @@ describe('Claude SU-session backend — PUI entry and native transcript translat
     }
   });
 
+  it('replays each restored prompt as its own turn, under its saved owner-turn receipt id (WI-10004252)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-su-replay-turns-'));
+    tempDirs.push(dir);
+    const transcriptPath = join(dir, `${CLAUDE_SESSION_A}.jsonl`);
+    const line = (value: Record<string, unknown>) => JSON.stringify(value);
+    const user = (uuid: string, content: string) => line({ type: 'user', uuid, message: { role: 'user', content } });
+    const reply = (uuid: string, text: string) => line({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    // Claude's saved transcript: three owner turns and no `result` records.
+    const records = [
+      user('u-1', 'hi'), reply('a-1', 'Hello'),
+      user('u-2', 'look around'), reply('a-2', 'Nothing here'),
+      user('u-3', 'hi'), reply('a-3', 'Hello again'),
+    ];
+    writeFileSync(transcriptPath, records.join('\n') + '\n');
+    const turnsOf = (adapter: ReturnType<typeof createClaudeSuSessionAdapter>, role: string, content: string) => events(adapter)
+      .flatMap((event) => event.type === 'transcript' && event.phase === 'delta' && event.role === role && event.content === content
+        ? [event.turnId] : []);
+
+    // 'turn-live' was already shown live on this host, so no replayed prompt
+    // may take it; 'hi' then takes turn-a and turn-b in order, and the prompt
+    // typed natively (no receipt) gets a fresh id of its own.
+    const receipts = vi.fn(async () => [
+      { turnId: 'turn-live', content: 'hi' },
+      { turnId: 'turn-a', content: ' hi\n' },
+      { turnId: 'turn-b', content: 'hi' },
+    ]);
+    const adapter = createClaudeSuSessionAdapter(binding(), runtime(CLAUDE_SESSION_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-claude-replay-turns', register: false, ownerTurnReceipts: receipts,
+    });
+    try {
+      adapter.correlateOwnerTurn('turn-live');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(receipts).toHaveBeenCalledWith(expect.objectContaining({ nativeSessionId: CLAUDE_SESSION_A }));
+      expect(turnsOf(adapter, 'owner', 'hi')).toEqual(['turn-a', 'turn-b']);
+      expect(turnsOf(adapter, 'assistant', 'Hello')).toEqual(['turn-a']);
+      expect(turnsOf(adapter, 'assistant', 'Hello again')).toEqual(['turn-b']);
+      const [native] = turnsOf(adapter, 'owner', 'look around');
+      expect(native).toMatch(/^claude:u-2:/);
+      expect(turnsOf(adapter, 'assistant', 'Nothing here')).toEqual([native]);
+    } finally {
+      adapter.dispose();
+    }
+
+    // Without receipts (or when reading them fails) every restored prompt
+    // still opens its own turn.
+    const unmatched = createClaudeSuSessionAdapter(binding(), runtime(CLAUDE_SESSION_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-claude-replay-turns-unmatched', register: false,
+      ownerTurnReceipts: async () => { throw new Error('receipt read failed'); },
+    });
+    try {
+      await unmatched.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      const owners = [...turnsOf(unmatched, 'owner', 'hi'), ...turnsOf(unmatched, 'owner', 'look around')];
+      expect(owners).toHaveLength(3);
+      expect(new Set(owners).size).toBe(3);
+    } finally {
+      unmatched.dispose();
+    }
+
+    // Calibration: the same records ingested WITHOUT replay (the pre-fix
+    // replay path) share one turn id, because nothing ends a turn without a
+    // `result` record. So the distinct ids above measure the replay fix.
+    const calibration = createClaudeSuSessionAdapter(binding(), runtime(CLAUDE_SESSION_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-claude-replay-turns-calibration', register: false,
+    });
+    try {
+      for (const record of records) calibration.ingestNativeLine(record);
+      const owners = [...turnsOf(calibration, 'owner', 'hi'), ...turnsOf(calibration, 'owner', 'look around')];
+      expect(owners).toHaveLength(3);
+      expect(new Set(owners).size).toBe(1);
+    } finally {
+      calibration.dispose();
+    }
+  });
+
   it('maps interrupt/resume, preserves identity across replacement, and converges unexpected exit', async () => {
     const interrupt = vi.fn<ClaudeSuSessionControls['interrupt']>(async () => ({ ok: true }));
     const resume = vi.fn<ClaudeSuSessionControls['resume']>(async () => ({ ok: true }));
