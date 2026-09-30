@@ -595,7 +595,7 @@ interface CorpusLegResult {
   lines: string[];
   refs: string[];
   /**
-   * P-001 — FALSE means the corpus search ran BM25-ONLY: no query vector, so
+   * P-001 — FALSE on a completed (`outcome: 'ok'`) search means BM25-ONLY: no query vector, so
    * every line below it is a lexical match and nothing semantic was reachable.
    * `recallCorpusContext` has always computed this; the injection path dropped
    * it on the floor, which left injection unable to tell "semantic ran and
@@ -719,7 +719,9 @@ const warnSuppressedByTestRunner = (): boolean =>
 let _corpusWarnOptedInByTest = false;
 
 function noteCorpusLegHealth(corpus: CorpusLegResult | null): void {
-  if (!corpus || corpus.embedderAvailable) return;
+  // Disabled, empty-query and failed legs never reached fusion. Their absent
+  // query vector cannot establish that lexical retrieval ran.
+  if (!corpus || corpus.outcome !== 'ok' || corpus.embedderAvailable) return;
   if (warnSuppressedByTestRunner()) return;
   _corpusDegradedSinceWarn += 1;
   const now = Date.now();
@@ -874,10 +876,13 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // coverage samples the alarm already persists — one indexed read,
       // TTL-memoised, fail-open to `unknown` (never to healthy).
       //
-      // Evaluated even when nothing was admitted: an empty section under a
+      // Evaluated even when an enabled search admitted nothing: an empty section under a
       // degraded index and an empty section under a healthy one are different
       // facts, and the observability path must be able to tell them apart.
-      const gate = await deadline.run(() => assessCorpusGate(input.workspaceId, res), 'corpus coverage');
+      // Disabled retrieval made no claim about this index. Loading coverage
+      // for it can consume the shared prompt budget after memory is rendered.
+      const gate = res.outcome === 'disabled' ? null
+        : await deadline.run(() => assessCorpusGate(input.workspaceId, res), 'corpus coverage');
       const baseTelemetry = {
         outcome: res.outcome ?? 'ok',
         selected: res.lines.length,

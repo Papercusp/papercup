@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as recallStats from './recall-stats';
 import * as corpusRecallIo from './corpus-recall-io';
+import * as coverageGate from '../search/coverage-gate';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -1932,6 +1933,30 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     }
   });
 
+  it.each(['disabled', 'no-query', 'timed-out', 'failed'] as const)(
+    'does not claim BM25 ran for a %s corpus leg or consume its warning window',
+    async (outcome) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        corpusIoResult = oneLine({
+          lines: [], candidateCount: 0, embedderAvailable: false, outcome,
+        });
+        const block = await run();
+        expect(block).toContain('alpha');
+        expect(block?.includes('Memory retrieval was DEGRADED'))
+          .toBe(outcome === 'timed-out' || outcome === 'failed');
+        expect(warn).not.toHaveBeenCalled();
+
+        corpusIoResult = oneLine({ embedderAvailable: false });
+        await run();
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0]![0]).toContain('BM25-ONLY');
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   /**
    * THE REGRESSION THIS ITEM IS REALLY ABOUT. Pre-P-001 the leg returned a bare
    * `null` when nothing was admitted, so an empty pointer section and a leg
@@ -2161,6 +2186,35 @@ describe('coverage-gated degradation reaches the block (P-003)', () => {
       queryContext: 'why did the corpus leg return that',
     });
   };
+
+  it('delivers memory without waiting on index coverage when corpus retrieval is disabled', async () => {
+    corpusIoResult = oneLine({ lines: [], candidateCount: 0, embedderAvailable: false, outcome: 'disabled' });
+    const coverage = vi.spyOn(coverageGate, 'loadCoverageSnapshotCached')
+      .mockImplementation(() => new Promise(() => {})).mockClear();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deadline = createMemoryWorkDeadline(1000);
+    try {
+      useBackend(mockBackend([{ id: 'm1', text: 'useful disabled-corpus recall' }]));
+      const block = await buildMemoryContextBlock({
+        userId: 'u1', workspaceId: 'ws', queryContext: 'disabled corpus recall', deadline,
+      });
+      expect(block).toContain('useful disabled-corpus recall');
+      expect(block).not.toContain('DEGRADED');
+      expect(warn).not.toHaveBeenCalled();
+      expect(deadline.signal.aborted).toBe(false);
+      expect(coverage).not.toHaveBeenCalled();
+      expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+      expect(recordRecallStatsMock.mock.calls[0]?.[1]).toMatchObject({
+        admission: { corpus: { outcome: 'disabled', gate: null } },
+      });
+    } finally {
+      deadline.close();
+      coverage.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
 
   it('renders unchanged when the gate cannot be evaluated (FAIL-OPEN)', async () => {
     corpusIoResult = oneLine();

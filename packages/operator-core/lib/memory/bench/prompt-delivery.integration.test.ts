@@ -230,7 +230,11 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
         blockBuilds += 1;
         const buildStarted = performance.now();
         build = buildMemoryContextBlock({
-          deadline,
+          deadline: {
+            signal: deadline.signal,
+            run: (start, label, capMs) => traceWork(`deadline:${label}`, () => deadline.run(start, label, capMs)),
+            close: () => deadline.close(),
+          },
           workspaceId,
           harnessSlugs: ['delivery-corpus'],
           potSlugs: [],
@@ -255,7 +259,7 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
       .map(([, key]) => key);
     row.delivered = [...new Set([...row.delivered, ...row.corpusDelivered])];
     row.relevantDelivered = row.delivered.filter((key) => query.expected.includes(key));
-    if (result.status !== 'ready') {
+    if (result.status !== 'ready' || row.callerMs > MEMORY_BLOCK_COLD_DEADLINE_MS) {
       console.log('[P-006 unfinished-work]', JSON.stringify({ queryId: row.queryId, phase,
         callerStatus: result.status, work: row.work, pending: unfinishedWork(row) }));
     }
@@ -287,7 +291,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockImplementation(async (input) => {
         const row = context.getStore();
         if (!row?.phase.includes('combined')) return {
-          block: null, lines: [], dropped: [], embedderAvailable: true,
+          block: null, lines: [], dropped: [], embedderAvailable: false,
           candidateCount: 0, outcome: 'disabled', rerank: 'nothing-to-reorder',
           legs: null, retrievalDepth: 0,
         };
@@ -482,6 +486,10 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
               const index = cursor++;
               if (warm) await measure(queries[index], `${name}-prime`);
               rows[index] = await measure(queries[index], name);
+              if (name === 'normal-cold' && index === 0) {
+                expect(rows[index].callerMs, JSON.stringify(rows[index])).toBeLessThanOrEqual(MEMORY_BLOCK_COLD_DEADLINE_MS);
+                expect(rows[index].error).toBeUndefined();
+              }
             }
           }),
         );
