@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P517 F6 fencing mutation probe: submodule non-fast-forward retry must reauthorize (run-git-sync.ts)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=120",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+    "--in-tree --sweep-lock-held --fake-destructive --expect caught",
+    "--mutate 's/await opts\\.beforePush\\(args, cwd\\);/await opts.beforePush(args, cwd).catch(() => undefined);/'",
+    "--test 'cd packages/operator-core && npx vitest run lib/harness/git-sync/run-git-sync.test.ts -t \"F6: submodule non-fast-forward retry reauthorizes\" --reporter=dot'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:33:12Z",
+  "finishedAt": "2026-09-30T04:33:47Z",
+  "summary": "In-tree (tier 3) mutation probe under a 'mutation probe' file lock plus an exclusive git-sync:papercusp lease (ttl 300s). Mutated control: 'F6: submodule non-fast-forward retry reauthorizes before another push'. The baseline ran 1 test (150 skipped) and passed. The mutant swallows a beforePush (publication authority) refusal instead of refusing the push. That let the retry push proceed after the owner key became unavailable, and the test failed: expected 2 to be 1 (the push count). The probe reported MUTANT CAUGHT and verified run-git-sync.ts byte-identical afterwards. This proves the one control that stale counterexample binding 9318 cited.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Vitest baseline: Tests 1 passed | 150 skipped (151), exit 0."
+    },
+    {
+      "id": "reauth-refusal-swallowed-mutant-killed",
+      "passed": true,
+      "evidence": "Changing `await opts.beforePush(args, cwd);` (the only occurrence) to `await opts.beforePush(args, cwd).catch(() => undefined);` made the F6 retry test fail: AssertionError expected 2 to be 1 (pushes); Tests 1 failed | 150 skipped; guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1; tree integrity VERIFIED for run-git-sync.ts."
+    }
+  ],
+  "workItemId": "WI-2144478",
+  "specId": "ENDGAME-P-517-contract",
+  "testFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+  "sourceFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-517",
+    "refreshWorkItemId": "WI-10004126",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 9318,
+    "superprojectHead": "dee89bb9857df6469797840be266668fa2c4f1d4",
+    "subjectBlob": "616e6a1bc6c13db1af57a0a2d1fd48bcc47dba97",
+    "testBlob": "a3b4b4a9398a1d1e25fa8b43832982be6674460f",
+    "subjectAndTestCleanAtHead": true
+  }
+}

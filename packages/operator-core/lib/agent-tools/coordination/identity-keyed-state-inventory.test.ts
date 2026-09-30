@@ -258,6 +258,12 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'seat accounting is boot-time-consume / explicit-release (consumeSeatAtBoot / releaseSeatConsumption), not presence-reap-tied as far as this sweep found — flagged for a follow-up audit of its release path (no reaper caller found; TTL/explicit-release only), not a confirmed WI-3642-class bug.',
   },
+  // Migrations 1251 + 1253 (portable-identity-packages-2026-09-26 P-011, D-024).
+  'identity_hook_turns.owner_id': {
+    status: 'exempt',
+    reason:
+      "a session's CURRENT identity-hook turn and what its sinks spent in it — per-turn budget scratch, replaced wholesale at every turn start. A rebound id simply opens a fresh turn at its first sink; a stranded row only means the old id's last turn is never charged again.",
+  },
   'session_briefs.owner_id': {
     status: 'exempt',
     reason: "the session's own carry-brief snapshot, written by and read back by the SAME id at each of its own turns — a rebind moves the loop carry-note (a separate surface) which is what a cold successor actually reads.",

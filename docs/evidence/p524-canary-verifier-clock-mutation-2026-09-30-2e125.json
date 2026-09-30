@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P524 post-GO canary mutation probe: evaluatedAt cannot be in the future relative to the verifier clock (post-go-release-canary.ts)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "MUTATION_PROBE_WINDOW_MAX_SEC=120",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/sync/pot-git/post-go-release-canary.ts",
+    "--in-tree --sweep-lock-held --fake-destructive --expect caught",
+    "--mutate 's/^    Number\\.isFinite\\(evaluatedAt\\) && evaluatedAt <= Date\\.now\\(\\),$/    true,/'",
+    "--test 'cd packages/operator-core && npx vitest run lib/sync/pot-git/post-go-release-canary.test.ts -t \"does not accept future-dated elapsed time\" --reporter=dot'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:34:51Z",
+  "finishedAt": "2026-09-30T04:35:45Z",
+  "summary": "In-tree (tier 3) mutation probe under a 'mutation probe' file lock plus an exclusive git-sync:papercusp lease (ttl 300s). Mutated control: 'does not accept future-dated elapsed time from a caller-supplied receipt'. The baseline ran 1 test (11 skipped) and passed. The mutant replaces the verifier-clock predicate with `true`, which let a receipt whose evaluatedAt is after Date.now() validate, and the test failed: expected true to be false (premature.ok). The probe reported MUTANT CAUGHT and verified post-go-release-canary.ts byte-identical afterwards. This proves the future verifier-clock control that stale counterexample binding 4694 cited, not its other controls.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Vitest baseline: Tests 1 passed | 11 skipped (12), exit 0."
+    },
+    {
+      "id": "verifier-clock-mutant-killed",
+      "passed": true,
+      "evidence": "Changing the pushError predicate line `Number.isFinite(evaluatedAt) && evaluatedAt <= Date.now(),` (the only occurrence) to `true,` made the test fail: AssertionError expected true to be false; Tests 1 failed | 11 skipped; guard exit 1."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=in-tree:lock-held baseline_exit=0 guard_exit=1; tree integrity VERIFIED for post-go-release-canary.ts."
+    }
+  ],
+  "workItemId": "WI-2147010",
+  "specId": "ENDGAME-P-524-contract",
+  "testFile": "packages/operator-core/lib/sync/pot-git/post-go-release-canary.test.ts",
+  "sourceFile": "packages/operator-core/lib/sync/pot-git/post-go-release-canary.ts",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-524",
+    "refreshWorkItemId": "WI-10004126",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 4694,
+    "superprojectHead": "dee89bb9857df6469797840be266668fa2c4f1d4",
+    "subjectBlob": "07d63ce05fb7bb60de968cac26484b8be775d979",
+    "testBlob": "c77036726fd06e6f00dd5a9f5029c465a82a792f",
+    "subjectAndTestCleanAtHead": true
+  }
+}
