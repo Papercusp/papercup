@@ -10322,7 +10322,7 @@ impl App {
             Event::Tick => self.on_tick(),
             // A signal is a quit (P-009): the run loop's teardown then ends the
             // attached conversation's engine, exactly as /exit does.
-            Event::Terminate(_) => {
+            Event::Terminate => {
                 self.should_quit = true;
                 Action::Quit
             }
@@ -11719,10 +11719,17 @@ impl App {
                 //    live pane is never displaced;
                 //  - only for the chat the inventory frame is about, which the
                 //    guard above already pinned to `self.agent_chat_id`;
-                //  - only for `Attached` non-terminal rows. `EndedArchived` /
+                //  - only for `Attached` non-terminal rows, plus (below) an
+                //    `EndedArchived` row that can resume from its transcript.
                 //    `FailedOrphaned` rows are preserved for inspection but
                 //    must NOT be respawned, and `RuntimeReplaced` is handled by
                 //    the rebind path above rather than by a fresh attach;
+                //  - pui-chat-first-ux P-009 / D-008: quitting a PUI now ends
+                //    its engine, so a restored chat's session is normally
+                //    `EndedArchived`. Reopening the workbench on that chat is
+                //    the owner coming back to it — exactly what picking it in
+                //    Sessions does — so it resumes from its native transcript
+                //    (a row with no native session id has nothing to resume);
                 //  - at most once per advSessionId (see `su_adopted_sessions`);
                 //  - never while this pane's own open is in flight, since the
                 //    row it would adopt is the session that open is creating.
@@ -11732,9 +11739,15 @@ impl App {
                         .iter()
                         .find(|entry| {
                             Some(entry.agent_chat_id.as_str()) == self.agent_chat_id.as_deref()
-                                && entry.reconciliation
-                                    == crate::su_session::SuSessionReconciliation::Attached
-                                && !entry.terminal
+                                && match entry.reconciliation {
+                                    crate::su_session::SuSessionReconciliation::Attached => {
+                                        !entry.terminal
+                                    }
+                                    crate::su_session::SuSessionReconciliation::EndedArchived => {
+                                        !entry.native_session_id.is_empty()
+                                    }
+                                    _ => false,
+                                }
                         })
                         .map(|entry| {
                             (
@@ -18044,7 +18057,7 @@ mod tests {
     #[test]
     fn a_quit_signal_quits_like_exit() {
         let mut a = app_with_running_su_session();
-        assert_eq!(a.update(Event::Terminate("SIGHUP")), Action::Quit);
+        assert_eq!(a.update(Event::Terminate), Action::Quit);
         assert!(a.should_quit);
         assert!(
             matches!(a.su_session_exit(), Some(crate::su_session::SuSessionExit::End { .. })),
@@ -18893,13 +18906,61 @@ mod tests {
         assert_eq!(second, Action::Render, "adoption must not re-fire");
     }
 
-    /// P-010: ended/failed rows are "preserved for inspection" and converged to
-    /// an explicit state — they must never be respawned. Only `Attached`
-    /// asserts a still-present runtime.
+    /// pui-chat-first-ux P-009 / D-008: quitting a PUI ends its engine, so the
+    /// restored chat's row is normally `EndedArchived`. Reopening the workbench
+    /// resumes it from its transcript, like picking it in Sessions. A row with
+    /// no native session id has nothing to resume and stays unadopted.
+    #[test]
+    fn su_inventory_resumes_the_restored_chat_after_its_engine_ended() {
+        let mut ended = inventory_row_for(
+            "chat-1",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        ended.lifecycle = crate::su_session::SuSessionLifecycleState::Ended;
+        ended.terminal = true;
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![ended.clone()],
+        });
+        assert_eq!(
+            action,
+            Action::AttachSuSession {
+                harness: "papercup".into(),
+                chat_id: "chat-1".into(),
+                adv_session_id: 42,
+                backend: crate::su_session::SuSessionBackend::Codex,
+            }
+        );
+        // Only the restored chat resumes; another chat's ended row does not.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-2".into());
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-2".into()),
+            entries: vec![ended.clone()],
+        });
+        assert_eq!(action, Action::Render, "another chat's ended row must not adopt");
+        // Nothing native to resume from.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        ended.native_session_id.clear();
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![ended],
+        });
+        assert_eq!(action, Action::Render, "an ended row with no native id must not adopt");
+    }
+
+    /// P-010: failed rows are "preserved for inspection" and converged to an
+    /// explicit state — they must never be respawned. `Attached` asserts a
+    /// still-present runtime; an ended row resumes only as above (P-009).
     #[test]
     fn su_inventory_never_adopts_non_attached_or_terminal_rows() {
         for reconciliation in [
-            crate::su_session::SuSessionReconciliation::EndedArchived,
             crate::su_session::SuSessionReconciliation::FailedOrphaned,
             crate::su_session::SuSessionReconciliation::Pending,
             crate::su_session::SuSessionReconciliation::RuntimeReplaced,

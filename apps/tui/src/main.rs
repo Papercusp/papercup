@@ -676,10 +676,11 @@ async fn terminate_signal_listener(tx: UnboundedSender<Event>) {
     };
     let mut received = false;
     loop {
-        let (name, code) = tokio::select! {
-            _ = hangup.recv() => ("SIGHUP", 129),
-            _ = terminate.recv() => ("SIGTERM", 143),
-            _ = interrupt.recv() => ("SIGINT", 130),
+        // The exit code a shell expects for each signal: 128 + its number.
+        let code = tokio::select! {
+            _ = hangup.recv() => 129,
+            _ = terminate.recv() => 143,
+            _ = interrupt.recv() => 130,
         };
         if received {
             std::process::exit(code);
@@ -691,7 +692,7 @@ async fn terminate_signal_listener(tx: UnboundedSender<Event>) {
         });
         // A closed channel means the run loop already ended; main's teardown
         // is running and the watchdog above bounds it.
-        let _ = tx.send(Event::Terminate(name));
+        let _ = tx.send(Event::Terminate);
     }
 }
 
