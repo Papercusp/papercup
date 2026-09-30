@@ -375,7 +375,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     // from the repo it is standing in, not copied from a doc that can drift.
     expect(out).toContain("paths: ['subject.txt']");
     expect(out).toContain('locks:acquire');
-    expect(out).toContain('locks:acquire_resource');
+    // EI-24712906810240170: the file lock alone is the fence; the refusal must not send
+    // agents to take the fleet-wide git-sync lease, which froze every commit.
+    expect(out).not.toContain('locks:acquire_resource');
+    expect(out).toContain('re-checks locks after staging');
     expect(out).toContain("intent: 'mutation probe'");
     expect(out).toContain('locks:heartbeat');
     expect(out).toContain('locks:release');
@@ -529,7 +532,8 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('target=in-tree:lock-held');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat', 'locks:list']);
+    // No locks:list: the git-sync lease is not consulted unless opted in (EI-24712906810240170).
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
     expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
     expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
     // Every call must send a projection the real dispatch accepts (WI-10002758).
@@ -549,7 +553,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
       '--test', 'grep -q GOOD {}',
       '--in-tree',
       '--sweep-lock-held',
-    ], 'resource-short');
+    ], 'resource-short', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
 
     expect(code).toBe(2);
     expect(out).toMatch(/lock is held but expires in 2[67]\ds/);
@@ -579,32 +583,38 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
-  it.each(['superproject', 'submodule'] as const)('requires an exclusive harness git-sync lock when probing a %s', (kind) => {
+  // EI-24712906810240170: git-sync re-checks file locks after staging, so the file lock
+  // alone fences the sweep in the superproject AND a submodule. The fleet-wide lease is
+  // required only when explicitly opted back in.
+  it.each(['superproject', 'submodule'] as const)('needs only the file lock for a %s probe; the git-sync lease is opt-in', (kind) => {
     const nestedSubject = kind === 'submodule' ? join(scratch, 'nested', 'subject.txt') : subject;
-    const refused = runLockedProbe([
+    const probeArgs = [
       '--file', nestedSubject,
       '--mutate', 's/GOOD/BAD/',
       '--test', 'grep -q GOOD {}',
       '--in-tree',
       '--sweep-lock-held',
-    ], 'no-resource');
+    ];
 
+    // Default: no lease held anywhere, and the probe still runs on the file lock alone.
+    const fileLockOnly = runLockedProbe(probeArgs, 'no-resource');
+    expect(fileLockOnly.code).toBe(0);
+    expect(fileLockOnly.out).not.toContain("must hold an exclusive 'git-sync:probe-harness' lock");
+    expect(readFileSync(lockLog, 'utf8')).not.toContain('locks:list');
+    expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
+
+    // Opted in: the old double fence still refuses without the lease...
+    const refused = runLockedProbe(probeArgs, 'no-resource', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
     expect(refused.code).toBe(2);
     expect(refused.out).toContain("must hold an exclusive 'git-sync:probe-harness' lock");
     expect(refused.out).toContain('none is held by probe-owner');
     expect(refused.out).not.toContain('mutant applied:');
     expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
 
-    const accepted = runLockedProbe([
-      '--file', nestedSubject,
-      '--mutate', 's/GOOD/BAD/',
-      '--test', 'grep -q GOOD {}',
-      '--in-tree',
-      '--sweep-lock-held',
-    ]);
-
-    expect(accepted.code).toBe(0);
-    expect(accepted.out).toContain("verified this session's exclusive git-sync:probe-harness lock");
+    // ...and accepts with it.
+    const withLease = runLockedProbe(probeArgs, 'all', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
+    expect(withLease.code).toBe(0);
+    expect(withLease.out).toContain("verified this session's exclusive git-sync:probe-harness lock");
     expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
   });
 

@@ -1254,13 +1254,7 @@ For a file in the top-level repository, omit `coordination_domain`. For a submod
 locks:release { lock_id: '<returned lock_id>' }
 ```
 
-For a file under a submodule, also hold the enclosing harness's exclusive git-sync resource lock:
-
-```
-locks:acquire_resource { resource: 'git-sync:<harness>', mode: 'exclusive', ttl_sec: 1200 }
-```
-
-The probe verifies that this session owns the lease and that it outlasts the dirty window. Release the resource lock immediately after restoration. Evidence binders refuse to fingerprint a path while its `mutation probe` file lock is live.
+The file lock is the whole fence, in the superproject and in every submodule. Do **not** take the exclusive `git-sync:<harness>` resource lease: it freezes every agent's commits for the whole probe. git-sync re-reads the lock census AFTER staging and unstages any late-locked or drifted path before each commit (EI-24712906810240170), so a lock taken mid-tick, or a probe restored and released before the commit, still keeps the mutant out. That guarantee needs the lock taken BEFORE the mutation and released only AFTER the verified restore, which is the order the probe enforces. Evidence binders refuse to fingerprint a path while its `mutation probe` file lock is live.
 
 `--accept-sweep-race` is only for a checkout known not to be swept or a consciously accepted risk. Prefer copy-out mode, which has no dirty window at all.
 

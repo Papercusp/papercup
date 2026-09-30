@@ -3317,7 +3317,10 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     expect(logs.join('\n')).toContain('libs/subA: post-stage guard held back');
     expect(git(subAOrigin, 'show', 'main:subA.txt')).toBe('subA-v1');
     expect(git(subAOrigin, 'log', '-p', 'main')).not.toContain('MUTANT');
-    expect(git(subAOrigin, 'ls-tree', '-r', '--name-only', 'main'), logs.join('\n')).toContain('subA-other.txt');
+    // The unlocked remainder still commits in the same tick (the COMMIT hop; publication is
+    // exercised by the superproject tests above).
+    expect(git(join(repo, 'libs/subA'), 'show', 'HEAD:subA-other.txt'), logs.join('\n')).toBe('ordinary submodule work');
+    expect(git(join(repo, 'libs/subA'), 'log', '-p', 'HEAD')).not.toContain('MUTANT');
     expect(out.skippedPaths).toContainEqual({ scope: 'libs/subA', path: 'subA.txt', owner: 'su-probe', intent: 'mutation probe' });
     expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('MUTANT\n');
   });

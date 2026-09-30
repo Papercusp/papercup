@@ -160,9 +160,10 @@
 #                            this session owns it and extends its lease
 #       --accept-sweep-race  you consciously accept the race (an unswept
 #                            checkout, or a run short enough that you judged it)
-#   For EVERY repository, --sweep-lock-held also requires this session's exclusive
-#   git-sync:<harness> resource lock. A file-lock census cannot atomically exclude
-#   a mutation starting after git-sync reads that census. Evidence binders refuse paths carrying the
+#   The file lock is the whole fence, in every repository: git-sync re-reads the
+#   lock census AFTER staging and unstages late-locked or drifted paths before each
+#   commit (EI-24712906810240170), so no fleet-wide git-sync lease is needed
+#   (MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE=1 restores that old second fence). Evidence binders refuse paths carrying the
 #   active 'mutation probe' file-lock intent. A bare acknowledgement never opens
 #   the gate; the verified lock state is echoed into MUTATION_PROBE_RESULT.
 #
@@ -434,8 +435,18 @@ verify_sweep_fence() {
     || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
   log "verified this session's live file lock for $lock_path"
 
-  # EI-24386061509279889: superproject probes need the same atomic sweep fence
-  # as submodules; a live file lock alone allowed a mutant into a real commit.
+  # EI-24712906810240170: the file lock IS the whole sweep fence, in every repository.
+  # EI-24386061509279889 once let a mutant through a live file lock: git-sync read its
+  # lock census before `git add`, so a lock taken (or a probe restored and released)
+  # between that read and the commit was invisible. That was mitigated by also
+  # requiring the fleet-wide exclusive git-sync:<harness> lease, which froze every
+  # agent's commits for the whole probe. git-sync now re-reads the census AFTER staging
+  # and unstages any late-locked or drifted path before each commit
+  # (guardStagedIndexBeforeCommit in run-git-sync.ts, superproject and submodules), so
+  # the lease is no longer required. The lock must be held BEFORE the mutation and
+  # released only AFTER the restore, which is exactly the order this script enforces.
+  # Opt back into the old double fence with MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE=1.
+  [ "${MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE:-0}" = "1" ] || return 0
   {
     harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
     [ -n "$harness_scope" ] || die "an in-tree probe requires a harness slug to verify the git-sync resource lock; use copy-out mode or set PAPERCUSP_TEST_RUN_HARNESS."
@@ -615,22 +626,14 @@ if [ "$IN_TREE" -eq 1 ] && [ -z "$SWEEP_ACK" ]; then
 
       git-sync excludes actively file-locked paths from its staging pathspecs,
       so unrelated files and probes on disjoint paths keep moving. The probe
-      verifies the current-session lock and heartbeats it to 1200 seconds. For
-      a submodule, also hold the exclusive per-harness git-sync resource:
-
-          locks:acquire_resource { resource: 'git-sync:<harness>',
-                                   mode: 'exclusive', ttl_sec: 1200 }
-
-      Keep the resource lock alive for the entire probe and release both locks
-      after the restored file is verified:
+      verifies the current-session lock and heartbeats it to 1200 seconds.
+      git-sync also re-checks locks after staging, so a lock taken mid-tick
+      still holds the mutant back (EI-24712906810240170); no git-sync resource
+      lease is needed, in the superproject or a submodule. Release the lock
+      only after the restored file is verified:
 
           locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 1200 }
           locks:release  { lock_id: '<returned lock_id>' }
-
-      A file lock alone is insufficient for an in-tree submodule probe because
-      the git-sync tick can publish a nested-repo commit under its per-harness
-      lease. The probe refuses that case unless both fences are held by this
-      session.
 
       OR --accept-sweep-race, if this checkout is not swept (a scratch repo, a
       fork) or you have judged the exposure yourself. Either choice is recorded
@@ -1466,7 +1469,7 @@ if [ "$IN_TREE" = "1" ]; then
   if [ "$SWEEP_ACK" = "lock-held" ]; then
     log "⚠️  Sweep: you declared a file lock on $(sweep_lock_path) HELD — git-sync will exclude that path."
     log "⚠️  The lock owner and path will be verified immediately before mutation."
-    log "⚠️  Every repository additionally requires the exclusive git-sync resource lock."
+    log "⚠️  git-sync re-checks locks after staging, so the file lock alone fences the sweep."
   else
     log "⚠️  Sweep: race ACCEPTED — nothing is holding git-sync off. If a tick lands"
     log "⚠️  during this run, the mutant is committed to the shared tree."
