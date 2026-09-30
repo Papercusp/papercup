@@ -296,15 +296,24 @@ export function blueprintInstallJournal(
 
   return {
     async recover(activeContentHash) {
+      // With no active release, an applied install is one an interrupted
+      // uninstall left behind: its file tier is gone, so it is cleaned too.
+      const phases = activeContentHash === null
+        ? ['preparing', 'releasing', 'cleanup_failed', 'applied'] : ['preparing', 'releasing', 'cleanup_failed'];
       const rows = await sql<Array<{ dependent_id: string; owner_id: string; specification_revision: string; phase: string }>>`
         SELECT dependent_id, owner_id, specification_revision, phase FROM harness_shared.blueprint_package_installations
          WHERE workspace_id = ${workspaceId} AND state_revision = ${state}
-           AND starts_with(owner_id, ${OWNER_PREFIX}) AND phase IN ('preparing', 'releasing', 'cleanup_failed')
+           AND starts_with(owner_id, ${OWNER_PREFIX}) AND phase IN ${sql(phases)}
          ORDER BY updated_at, dependent_id`;
       const recovered: BlueprintJournalReport['recovered'] = [];
       for (const row of rows) {
         const potSlug = potOf(row.owner_id);
         const dependentId = row.dependent_id;
+        if (row.phase === 'applied') {
+          const residue = await release(dependentId, {});
+          recovered.push({ dependentId, potSlug, outcome: 'cleaned', ...(residue.length ? { error: residue[0]!.error } : {}) });
+          continue;
+        }
         if (row.phase !== 'preparing') {
           const residue = await release(dependentId, { onlyReleasing: true });
           recovered.push({ dependentId, potSlug, outcome: 'cleaned', ...(residue.length ? { error: residue[0]!.error } : {}) });
