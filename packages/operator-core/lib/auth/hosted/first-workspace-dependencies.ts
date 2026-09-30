@@ -96,6 +96,9 @@ export function createHostedFirstWorkspaceDependencies(
            WHERE workspace_id = ${controlPlaneWorkspaceId}
              AND organization_id = ${organizationId}
              AND state <> 'deleted'
+             -- A relay-linked local install (kind 'linked', EAA D-031) is not the organization's
+             -- Papercusp workspace: it must neither block the first one nor be selected as it.
+             AND kind = 'hosted'
         `;
         return rows.map((row) => row.id);
       });

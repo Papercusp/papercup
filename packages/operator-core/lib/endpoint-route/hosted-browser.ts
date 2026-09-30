@@ -351,6 +351,8 @@ async function readCustomerWorkspaceHostId(
      WHERE workspace_id = ${controlPlaneWorkspaceId}
        AND id = ${customerWorkspaceId}
        AND state <> 'deleted'
+       -- A relay-linked install (EAA D-031) has only a synthetic host id; it is never provisioned.
+       AND kind = 'hosted'
   `;
   return rows[0]?.workspace_host_id ?? null;
 }
