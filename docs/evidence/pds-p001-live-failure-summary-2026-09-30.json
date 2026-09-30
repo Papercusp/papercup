@@ -7,14 +7,55 @@
   "evidencePlane": "live",
   "plan": "physical-drill-iteration-speed-2026-09-29",
   "workItem": "WI-10003972",
-  "specs": ["AUTO-BAR-R-1-P-001@3"],
+  "specs": ["AUTO-BAR-R-1-P-001@3", "AUTO-BAR-R-2-P-001@1", "AUTO-BAR-R-9-P-001@1"],
   "observer": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
   "outcome": "passed",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T04:45:46Z",
+  "finishedAt": "2026-09-30T05:06:53Z",
+  "summary": "Three real, unplanned failures of the physical scenario (same-box rig, drill entry point hive-git-drill.sh). Every summary line names where it failed and the cause the failing step printed, never the EXIT-trap trailer that is the last stderr line; the latest (run 20260930T050610Z-2442636) names 'phase A (phase_a_storage_join)' and the readiness-gate reason. Every log carries the adapter stderr tail header with the full-file path, every run kept its own UTC-time/pid/exit-code directory under $HOME/.papercusp-drill-physical-runs, and every run printed one HARNESS_RESULT line whose first_failure names the failing phase and step.",
+  "assertions": [
+    {
+      "id": "PDS-P001-L1-summary-names-phase-and-reason",
+      "criteria": ["AUTO-BAR-R-1-P-001@3"],
+      "passed": true,
+      "evidence": "Run 20260930T050610Z-2442636 summary line: '✗ physical E/G adapter failed (exit 1) in phase A (phase_a_storage_join): phase A VM substrate readiness gate failed: exact topic has no live, recent remote content peer'. The phase (A), the step (phase_a_storage_join) and the reason the scenario printed are all on that one line.",
+      "observed": {"run": "20260930T050610Z-2442636", "phase": "A", "step": "phase_a_storage_join", "reason": "phase A VM substrate readiness gate failed: exact topic has no live, recent remote content peer"}
+    },
+    {
+      "id": "PDS-P001-L2-summary-skips-exit-trap-trailer",
+      "criteria": ["AUTO-BAR-R-1-P-001@3"],
+      "passed": true,
+      "evidence": "In all three runs the last adapter stderr line is the EXIT trap's 'hive-git-physical-probe: preserved failed-run diagnostics at ...' trailer, and in all three the summary line names the cause printed before it instead of the trailer (the falsifier's trap).",
+      "observed": {"runs": ["20260930T044546Z-1148330", "20260930T045308Z-1685924", "20260930T050610Z-2442636"], "lastStderrLineIsTrailer": true, "summaryNamesTrailer": false}
+    },
+    {
+      "id": "PDS-P001-L3-stderr-tail-with-full-path",
+      "criteria": ["AUTO-BAR-R-1-P-001@3"],
+      "passed": true,
+      "evidence": "Each run log contains '--- adapter stderr (last 25 lines; full: $HOME/.papercusp-drill-physical-runs/<run>-rc1/physical-probe.stderr) ---' followed by the '|'-prefixed tail.",
+      "observed": {"headers": 3}
+    },
+    {
+      "id": "PDS-P001-L4-per-run-directory",
+      "criteria": ["AUTO-BAR-R-2-P-001@1"],
+      "passed": true,
+      "evidence": "Three consecutive runs against the same work directory left three distinct directories, each named <UTC time>-<pid>-rc<exit code>; no run overwrote an earlier one.",
+      "observed": {"dirs": ["20260930T044642Z-1148330-rc1", "20260930T045352Z-1685924-rc1", "20260930T050651Z-2442636-rc1"]}
+    },
+    {
+      "id": "PDS-P001-L5-harness-result-names-first-failure",
+      "criteria": ["AUTO-BAR-R-9-P-001@1"],
+      "passed": true,
+      "evidence": "Each run is bracketed by the verification harness (VH_RUN ... plan=..., VH_BEGIN phase=physical, VH_STEP, VH_PHASE) and prints exactly one HARNESS_RESULT line; run 20260930T050610Z-2442636 reports first_failure=physical/phase-A-(phase_a_storage_join)/adapter-exit-1.",
+      "observed": {"harnessResultLines": 3, "latestFirstFailure": "physical/phase-A-(phase_a_storage_join)/adapter-exit-1"}
+    }
+  ],
   "falsifier": "A physical failure whose summary line is only the generic 'physical E/G adapter command failed', names a trailer line (such as the EXIT trap's 'preserved failed-run diagnostics') instead of the cause, or whose log omits the adapter stderr tail.",
   "command": [
     "HIVE_GIT_SAME_BOX_RIG=$HOME/.papercusp-same-box-rigs/r5-20260930T043313Z bash papercusp-desktop/bin/hive-git-drill.sh --rig same-box --only-phase A,B,C,D"
   ],
-  "note": "Both runs are real, unplanned failures of the physical scenario, driven through the drill's single entry point (hive-git-drill.sh -> hive-git-physical-probe.sh -> hive-git-physical-scenario.sh) against the same-box rig (D-003/D-005: diagnostic, never release evidence). In both, the EXIT trap's trailer line ('preserved failed-run diagnostics') is the LAST stderr line, and the summary names the real cause printed before it, which is exactly the falsifier's trap. Each run kept its own evidence directory (R-2).",
+  "note": "All three runs are real, unplanned failures of the physical scenario, driven through the drill's single entry point (hive-git-drill.sh -> hive-git-physical-probe.sh -> hive-git-physical-scenario.sh) against the same-box rig (D-003/D-005: diagnostic, never release evidence). In all three, the EXIT trap's trailer line ('preserved failed-run diagnostics') is the LAST stderr line, and the summary names the real cause printed before it, which is exactly the falsifier's trap. Each run kept its own evidence directory (R-2).",
   "observations": [
     {
       "run": "20260930T044546Z-1148330",
@@ -35,6 +76,16 @@
       "stderrLastLine": "hive-git-physical-probe: preserved failed-run diagnostics at $HOME/.papercusp-drill-p301/hive-git-physical-evidence.json.failure-diagnostics",
       "harnessResult": "HARNESS_RESULT harness=hive-git-drill verdict=fail run=20260930T045308Z-1685924 first_failure=physical/before-any-phase/adapter-exit-1 passed=0 failed=1 blocked=0 skipped=7 reused=0",
       "causeWasReal": "yes: the scenario identity contract required two machines on the same-box rig (fixed in hive-git-physical-scenario.sh, WI-10003976 post 1150919)"
+    },
+    {
+      "run": "20260930T050610Z-2442636",
+      "sourceCommit": "c63cddfa8d5a3499475d6cd5c98ae4d1d43c91da",
+      "log": ".papercusp/scratch/r5-drill4.log (local, gitignored; excerpt below verbatim)",
+      "summaryLine": "✗ physical E/G adapter failed (exit 1) in phase A (phase_a_storage_join): phase A VM substrate readiness gate failed: exact topic has no live, recent remote content peer — evidence kept in $HOME/.papercusp-drill-physical-runs/20260930T050651Z-2442636-rc1",
+      "stderrTailHeader": "--- adapter stderr (last 25 lines; full: $HOME/.papercusp-drill-physical-runs/20260930T050651Z-2442636-rc1/physical-probe.stderr) ---",
+      "stderrLastLine": "hive-git-physical-probe: preserved failed-run diagnostics at $HOME/.papercusp-drill-p301/hive-git-physical-evidence.json.failure-diagnostics",
+      "harnessResult": "HARNESS_RESULT harness=hive-git-drill verdict=fail run=20260930T050610Z-2442636 first_failure=physical/phase-A-(phase_a_storage_join)/adapter-exit-1 passed=0 failed=1 blocked=0 skipped=7 reused=0",
+      "causeWasReal": "yes: the phase A status query targeted the pot home while the readiness gate matched the git-sync member slug on the same-box rig (fixed in hive-git-physical-scenario.sh phase_a_status_args, WI-10003976 attempt-audit post 1150936)"
     }
   ],
   "sourcePaths": [
