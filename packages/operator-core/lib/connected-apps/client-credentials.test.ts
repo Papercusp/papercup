@@ -53,6 +53,7 @@ function clientRow(over: Partial<ClientKeyRow> = {}): { row: ClientKeyRow; key: 
     token_hash: minted.tokenHash,
     previous_token_hash: null,
     client_jwk: null,
+    remote_access_enabled: true,
     ...over,
   };
   return { row, key: minted.key };
