@@ -351,6 +351,8 @@ describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)',
     await h.adapter.accept({
       type: 'relay.open', channelId: 'x', userId: 'u', hostedSessionId: 's', audience: 'workspace-operator', role: 'controller', kind: 'operator-admin',
     });
-    expect(h.sent).toEqual([]);
+    // The host answers an unknown kind with a close the client can act on (it falls back), and
+    // never opens anything for it (D-002, P-006).
+    expect(h.sent).toEqual([{ type: 'relay.close', channelId: 'x', reason: 'channel_kind_unknown' }]);
   });
 });
