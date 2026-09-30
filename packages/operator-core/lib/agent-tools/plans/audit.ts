@@ -171,15 +171,13 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
   z.object({
     itemId: itemIdSchema,
     kind: z.literal('derived'),
-    from: z.array(z.string().min(1).max(500)).min(1).max(50).describe(
-      'Owner-backed plan targets this item follows from (P-NNN, D-NNN, R-N or section:<heading>). At least one must itself be owner-backed.',
-    ),
+    from: z.array(z.string().min(1).max(500)).min(1).max(50).describe('Owner-backed P-NNN/D-NNN/R-N/section:<heading> targets.'),
     note: z.string().min(1).max(2000).optional(),
   }),
   z.object({
     itemId: itemIdSchema,
     kind: z.literal('agent-added'),
-    reason: z.string().min(1).max(2000).describe('Why the agent added an item the owner did not ask for. Shown to the owner.'),
+    reason: z.string().min(1).max(2000).describe('Why the agent added it; shown to the owner.'),
   }),
 ]);
 
@@ -206,7 +204,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
     'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current R-N acceptance bars, P-NNN items, D-NNN decisions, or section:<heading> targets. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior mappings forward.',
   ),
   itemProvenance: z.array(itemProvenanceSchema).max(200).optional().describe(
-    'Activation phase: declare each current item no owner-turn mapping backs — `derived` (from owner-backed targets) or `agent-added` (with a reason). Carried forward across re-audits; the first audit refuses item_provenance_missing while any item is unresolved.',
+    'Activation: items no owner-turn mapping backs, as `derived` or `agent-added`. Carried across re-audits.',
   ),
   repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
   rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),
@@ -311,7 +309,7 @@ export default defineTool({
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
     returns:
-      "Activation returns auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, BAR status, and readiness. Pending amendment/repair preserves the audit and requires rubrics:amend. Completion returns auditSeq, counts, coverage, and uncoveredItems; mixed errors return partial/problems/rejectedItemIds; batch-wide errors record nothing.",
+      "Activation returns auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance { enforced, counts, unresolved }, BAR status, and readiness. An item no owner-typed turn backs, and not declared in itemProvenance, refuses item_provenance_missing; a bad declaration refuses item_provenance_invalid; both name each item and record nothing. A plan whose earlier audits predate provenance records enforced:false instead, until every item resolves. Pending amendment/repair preserves the audit and requires rubrics:amend. Completion returns auditSeq, counts, coverage, and uncoveredItems; mixed errors return partial/problems/rejectedItemIds; batch-wide errors record nothing.",
     notWhen: "Not mid-implementation; grade rubrics with scorecards:emit, decisions with plans:add-decision, and repair open activation mappings first.",
     chaining:
       `Activation: sessions:search/read → repair omissions → audit → ready. Later edits preserve audit and return audited/current revision id/seq/contentHash. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: audit → rubric/scorecard → shipped.`,
