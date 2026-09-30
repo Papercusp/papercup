@@ -4112,12 +4112,25 @@ impl App {
                 }
                 if let Some(text) = content.filter(|text| !text.is_empty()) {
                     if role == "owner" && phase == "completed" {
-                        if self.su_rendered_owner_turns.insert(turn_id) {
+                        if self.su_rendered_owner_turns.contains(&turn_id) {
+                            if replayed {
+                                // Already on screen from the saved record: the
+                                // replayed reply that follows belongs under it.
+                                self.anchor_su_replay_at_owner_turn(&text);
+                            }
+                        } else if replayed && self.anchor_su_replay_at_owner_turn(&text) {
+                            // WI-10004247: a replacement runtime re-reads the
+                            // native transcript and mints its own turn ids
+                            // (Claude `claude:<record>:N`, OMP per record), so
+                            // a replayed turn can carry an id the saved record
+                            // never held. The saved owner turn with the same
+                            // words, past the replay floor, IS this turn;
+                            // pushing it again showed it twice and dropped its
+                            // reply when the next turn held the tail aside.
+                            self.su_rendered_owner_turns.insert(turn_id);
+                        } else {
+                            self.su_rendered_owner_turns.insert(turn_id);
                             self.chat_messages.push(ChatMessage::user(&text));
-                        } else if replayed {
-                            // Already on screen from the saved record: the
-                            // replayed reply that follows belongs under it.
-                            self.anchor_su_replay_at_owner_turn(&text);
                         }
                     } else if role == "assistant" && phase == "completed" {
                         // Completion carries the final value, repeating the
@@ -4379,14 +4392,15 @@ impl App {
     /// messages after it wait aside, so the replayed reply lands under its own
     /// question instead of after every saved question. No match (a native
     /// transcript that words the turn differently) keeps the old behaviour.
-    fn anchor_su_replay_at_owner_turn(&mut self, text: &str) {
+    /// Returns whether a saved owner turn with these words was found.
+    fn anchor_su_replay_at_owner_turn(&mut self, text: &str) -> bool {
         let is_turn = |m: &ChatMessage| m.role == "user" && m.content.trim() == text.trim();
         if let Some(pos) = self.su_replay_tail.iter().position(is_turn) {
             let rest = self.su_replay_tail.split_off(pos + 1);
             let released = std::mem::replace(&mut self.su_replay_tail, rest);
             self.chat_messages.extend(released);
             self.su_replay_floor = self.chat_messages.len();
-            return;
+            return true;
         }
         let floor = self.su_replay_floor.min(self.chat_messages.len());
         let Some(pos) = self.chat_messages[floor..]
@@ -4394,7 +4408,7 @@ impl App {
             .position(is_turn)
             .map(|offset| floor + offset)
         else {
-            return;
+            return false;
         };
         self.su_replay_floor = pos + 1;
         if pos + 1 < self.chat_messages.len()
@@ -4410,6 +4424,7 @@ impl App {
             held.append(&mut self.su_replay_tail);
             self.su_replay_tail = held;
         }
+        true
     }
 
     /// Put every held saved message back, after the replayed history.
