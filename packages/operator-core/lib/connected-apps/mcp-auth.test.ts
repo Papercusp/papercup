@@ -59,6 +59,9 @@ function appRow(tokenHash: string, id: string, over: Record<string, unknown> = {
     last_seen: null,
     last_ip: null,
     token_hash: tokenHash,
+    // P-010 (D-025): verifyAppKey reads the workspace's Remote access switch with the key and
+    // fails closed without it; this fixture's workspace has remote access on.
+    remote_access_enabled: true,
     ...over,
   };
 }

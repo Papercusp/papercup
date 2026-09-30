@@ -16,7 +16,7 @@ const SETTINGS_PAGES = [
   '/settings/voice',
   '/settings/shortcuts',
   '/settings/personalization',
-  '/settings/mobile',
+  '/settings/remote-access',
   '/settings/agent',
   '/settings/plugins',
   '/settings/plugins/tools',
