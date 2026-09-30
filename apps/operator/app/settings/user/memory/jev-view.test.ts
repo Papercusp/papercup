@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  JEV_KEY_CONFLICT_USE,
   JEV_KEY_MIN_LENGTH,
   JEV_MEASURED_VERDICT,
   JEV_MODE_OPTIONS,
@@ -59,6 +60,14 @@ describe('jevView', () => {
 
   it('offers exactly the three server modes, Off first', () => {
     expect(JEV_MODE_OPTIONS.map((o) => o.value)).toEqual(['off', 'shadow', 'on']);
+  });
+});
+
+describe('the key also drives contradiction checks (P-009 / D-016)', () => {
+  it('says the key checks new memories, that this runs even under Off, and that a contradiction is refused', () => {
+    expect(JEV_KEY_CONFLICT_USE).toContain('check each new memory for contradictions');
+    expect(JEV_KEY_CONFLICT_USE).toContain('in every mode including Off');
+    expect(JEV_KEY_CONFLICT_USE).toContain('is refused unless it is saved with force or the older memory is removed first');
   });
 });
 
