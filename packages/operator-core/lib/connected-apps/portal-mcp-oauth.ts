@@ -499,7 +499,9 @@ const words = (value: unknown): string[] =>
 /**
  * The approver's grant from the consent form, or why it is refused. The approver may only NARROW:
  * every granted tool or harness must have been requested, and a list the app restricted may not be
- * emptied (an empty list means "any", which would widen it).
+ * emptied. For harnesses an empty list means "any", which would widen the grant; for tools it means
+ * "none", a key that can do nothing, so the approver is asked to deny instead. When the app named
+ * no tools at all, the approver lists the ones to allow (an empty tool list is default-deny).
  */
 export function narrowedGrant(
   requested: AppKeyScopes,
@@ -541,7 +543,8 @@ function page(title: string, body: string, status = 200): Response {
 }
 
 function scopeSummary(scopes: AppKeyScopes): string {
-  const tools = scopes.tools?.length ? scopes.tools.map(escapeHtml).join(', ') : 'every tool an app key may call';
+  // An empty tool list grants NO tool (scope-policy.ts: default-deny), so say so rather than "all".
+  const tools = scopes.tools?.length ? scopes.tools.map(escapeHtml).join(', ') : 'none yet (the app named no tools)';
   const harnesses = scopes.harnesses?.length ? scopes.harnesses.map(escapeHtml).join(', ') : 'any';
   return `<p>Tools: <b>${tools}</b><br>Harnesses: <b>${harnesses}</b></p>`;
 }
@@ -553,7 +556,7 @@ function consentForm(id: string, handle: string, client: OAuthClient, request: P
 ${scopeSummary(request.requestedScopes)}
 <form method="post" action="/api/workspaces/${escapeHtml(id)}/oauth/consent">
 <input type="hidden" name="request" value="${escapeHtml(handle)}">
-<p><label>Tools it may call (remove any you do not want to allow${tools ? '' : '; leave empty for every tool'})<br>
+<p><label>Tools it may call (${tools ? 'remove any you do not want to allow' : 'it can call none until you list them, for example plans:get or work_items:*'})<br>
 <input name="tools" value="${escapeHtml(tools)}" placeholder="plans:get work_items:*"></label></p>
 <p><label>Harnesses (remove any you do not want to allow${harnesses ? '' : '; leave empty for any'})<br>
 <input name="harnesses" value="${escapeHtml(harnesses)}"></label></p>
