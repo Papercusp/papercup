@@ -1299,6 +1299,11 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     const gatewayReady = expectedGateway.root.length
       ? current.includes(expectedGateway.root.join('\n')) && current.includes(expectedGateway.tables.join('\n'))
       : !current.includes('PAPERCUSP_CODEX_GATEWAY_ROOT') && !current.includes('PAPERCUSP_CODEX_GATEWAY_PROVIDER');
+    const hasHeadlessPluginsPolicy = current.includes('plugins = false');
+    const hasHeadlessAuthPolicy = current.includes('auth_elicitation = false');
+    const headlessPolicyReady = opts.headless === true
+      ? hasHeadlessPluginsPolicy && hasHeadlessAuthPolicy
+      : !hasHeadlessPluginsPolicy && !hasHeadlessAuthPolicy;
     configReady =
       current.includes('[mcp_servers.papercusp-su]') &&
       current.includes(expectedProjectMcp) &&
@@ -1306,7 +1311,8 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       contextMatches &&
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
-      gatewayReady;
+      gatewayReady &&
+      headlessPolicyReady;
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
