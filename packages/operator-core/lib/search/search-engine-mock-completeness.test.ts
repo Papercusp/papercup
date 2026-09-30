@@ -48,6 +48,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import {
+  probeStringLiteralBlindness,
+  stripCommentsAndStrings,
+  stripCommentsOnly,
+} from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const LIB_ROOT = process.env.PROBE_SEARCH_MOCK_LIB_ROOT ?? path.resolve(HERE, '..');
@@ -76,19 +81,22 @@ const POLICY_BINDINGS: PolicyBinding[] = [
 ];
 
 /**
- * Comments are stripped BEFORE scanning, not just inside a matched factory.
+ * Comments AND string contents are masked BEFORE scanning, not just inside a
+ * matched factory — via the shared offset-preserving AST masker, never a regex.
  *
- * Both directions matter, and the second is the one that bit: a MENTION of an
- * export must never satisfy the check, and a `vi.mock(...)` written in PROSE —
- * this file's own docblock, or a commented-out mock — must never be scanned as
- * if it were code. Omitting the second made this guard fail on its own
- * documentation the first time it ran.
+ * Both directions matter. A MENTION of an export must never satisfy the check,
+ * and a `vi.mock(...)` that is not live code must never be scanned as if it
+ * were: this file's own docblock, a commented-out mock, and — the one that
+ * red-pinned the tip pre-flight (WI-10004152) — a mock written as a STRING
+ * fixture, e.g. the negative control in `search/chunks/library-placement.test.ts`.
  *
- * The `[^:]` guard keeps a `https://` inside a string literal from being eaten,
- * which would unbalance the paren scan below.
+ * Two masks, same offsets: `masked` (comments + string contents blanked) finds
+ * the live `vi.mock(` anchors and balances parens without being fooled by a
+ * paren inside a string; `commentless` (comments only) supplies the argument
+ * text, because the mock TARGET is itself a string literal we must read.
  */
-function stripComments(s: string): string {
-  return s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+function stripComments(s: string, fileName = 'policy.ts'): string {
+  return stripCommentsOnly(s, fileName);
 }
 
 /** Is `name` imported as a VALUE (not `type`) from `engine` in `src`? */
@@ -148,31 +156,51 @@ interface Offender {
   missing: string;
 }
 
-function scan(): Offender[] {
-  const offenders: Offender[] = [];
-  const byEngine = new Map(POLICY_BINDINGS.map((b) => [b.engine, b.installs]));
+const MOCK_CALL = /vi\.(?:do)?mock\s*\(/gi;
+const BY_ENGINE = new Map(POLICY_BINDINGS.map((b) => [b.engine, b.installs]));
 
-  for (const file of walkTests(LIB_ROOT)) {
-    const src = stripComments(readFileSync(file, 'utf8'));
-    const re = /vi\.(?:do)?mock\s*\(/gi;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(src))) {
-      const openIdx = src.indexOf('(', m.index);
-      if (openIdx < 0) continue;
-      const args = callArgs(src, openIdx);
-      const target = args.match(/^\s*['"]([^'"]+)['"]\s*,/);
-      if (!target) continue; // no factory supplied — nothing to be incomplete
-      const installs = byEngine.get(target[1]);
-      if (!installs) continue;
-      // A spread of the real module carries every export by construction.
-      if (args.includes('importOriginal')) continue;
-      if (!declaresKey(args, installs)) {
-        offenders.push({ file: path.relative(LIB_ROOT, file), engine: target[1], missing: installs });
-      }
-    }
+/**
+ * The detector for ONE source text. Exported shape (source in, offenders out)
+ * so the controls below can feed it planted sources without touching the tree.
+ */
+function scanSource(raw: string, fileName: string): Array<Omit<Offender, 'file'>> {
+  // Cheap prefilter: most test files never mock anything; skip the AST pass.
+  MOCK_CALL.lastIndex = 0;
+  if (!MOCK_CALL.test(raw)) return [];
+  const masked = stripCommentsAndStrings(raw, fileName);
+  const commentless = stripCommentsOnly(raw, fileName);
+  const found: Array<Omit<Offender, 'file'>> = [];
+  const re = new RegExp(MOCK_CALL.source, MOCK_CALL.flags);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(masked))) {
+    const openIdx = masked.indexOf('(', m.index);
+    if (openIdx < 0) continue;
+    // Balance on the MASK (a paren inside a string cannot unbalance it), then
+    // read the same span from the comment-only text, where the target survives.
+    const span = callArgs(masked, openIdx).length;
+    const args = commentless.slice(openIdx + 1, openIdx + 1 + span);
+    const target = args.match(/^\s*['"]([^'"]+)['"]\s*,/);
+    if (!target) continue; // no factory supplied — nothing to be incomplete
+    const installs = BY_ENGINE.get(target[1]);
+    if (!installs) continue;
+    // A spread of the real module carries every export by construction.
+    if (args.includes('importOriginal')) continue;
+    if (!declaresKey(args, installs)) found.push({ engine: target[1], missing: installs });
   }
-  return offenders;
+  return found;
 }
+
+function scan(): Offender[] {
+  return walkTests(LIB_ROOT).flatMap((file) =>
+    scanSource(readFileSync(file, 'utf8'), file).map((o) => ({
+      file: path.relative(LIB_ROOT, file),
+      ...o,
+    })),
+  );
+}
+
+/** A mock of a self-installed engine that omits its installed export. */
+const OFFENDING_MOCK = "vi.mock('@papercusp/search', () => ({ chunkAwareVectorLeg: vi.fn() }));";
 
 describe('inline mocks of self-installed engines stay load-complete', () => {
   // CALIBRATION: each row must still describe a real module-load-time install.
@@ -190,6 +218,27 @@ describe('inline mocks of self-installed engines stay load-complete', () => {
       `${binding.policy} has no module-load-time call — if the self-install was ` +
         `removed, drop its row from POLICY_BINDINGS.`,
     ).toBe(true);
+  });
+
+  // POSITIVE CONTROL: the planted offender, written as LIVE code, must be
+  // flagged — otherwise the blindness control below passes vacuously (a dead
+  // detector reports no phantom either).
+  it('flags an incomplete inline mock written as live code', () => {
+    expect(scanSource(`${OFFENDING_MOCK}\n`, 'planted.test.ts')).toEqual([
+      { engine: '@papercusp/search', missing: 'configureSearchDefaults' },
+    ]);
+    // …and a complete / importOriginal-spreading one is not an offender.
+    const complete = "vi.mock('@papercusp/search', () => ({ configureSearchDefaults: vi.fn() }));\n";
+    const spread = "vi.mock('@papercusp/search', async (importOriginal) => ({ ...(await importOriginal()) }));\n";
+    expect(scanSource(complete + spread, 'planted.test.ts')).toEqual([]);
+  });
+
+  // NEGATIVE CONTROL: the same mock appearing only in a string, a template
+  // literal or a comment is a fixture/prose, not a mock (WI-10004152 — the
+  // library-placement negative control red-pinned the tip pre-flight).
+  it('does not flag a mock that appears only in a string, template or comment', () => {
+    const probe = probeStringLiteralBlindness((src: string) => scanSource(src, 'probe.test.ts'), OFFENDING_MOCK);
+    expect(probe.ok, probe.detail).toBe(true);
   });
 
   it('every inline-factory mock declares the installed export', () => {

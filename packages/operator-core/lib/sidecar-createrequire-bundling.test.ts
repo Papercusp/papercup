@@ -30,6 +30,12 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isBuiltin } from 'node:module';
+import {
+  isLiveCodeAt,
+  probeStringLiteralBlindness,
+  stripCommentsAndStrings,
+  stripCommentsOnly,
+} from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const LIB_DIR = import.meta.dirname ?? __dirname;
 // operator-core/lib → operator-core → packages → repo root
@@ -77,21 +83,37 @@ function isThirdPartyBare(spec: string): boolean {
  * Extract every bare specifier loaded via a createRequire-derived require in one
  * source file — both the inline form `createRequire(import.meta.url)('x')` and
  * the aliased form `const NAME = createRequire(import.meta.url); NAME('x')`.
+ *
+ * Only LIVE CODE counts (WI-10004152): the regexes run over the comment-masked
+ * text (the specifier is a string literal, so strings must survive), and every
+ * match's anchor must be live code in the comment+string mask. Without this the
+ * doc comment `createRequire(u)('lit')` in
+ * lib/agent-tools/testing/create-require-specifiers.ts read as a real loader of
+ * a package named `lit` and red-pinned the tip pre-flight.
+ *
+ * Why not reuse that module's AST extractor: it answers a different question
+ * (can the mutation-probe fence FOLLOW every loader?) and is all-or-nothing per
+ * file — `design-compare/corpus/harness.ts` is `unfollowable` there, which
+ * would silently drop pixelmatch/pngjs/lost-pixel from THIS guard's coverage.
  */
-function createRequireSpecifiers(src: string): string[] {
+function createRequireSpecifiers(src: string, fileName = 'source.ts'): string[] {
+  if (!src.includes('createRequire')) return [];
+  const code = stripCommentsOnly(src, fileName);
+  const masked = stripCommentsAndStrings(src, fileName);
+  const live = (index: number) => isLiveCodeAt(src, masked, index);
   const specs: string[] = [];
 
   // Inline: createRequire(<anything>)('<spec>')
   const inline = /createRequire\s*\([^)]*\)\s*\(\s*['"]([^'"]+)['"]/g;
-  for (let m = inline.exec(src); m; m = inline.exec(src)) specs.push(m[1]);
+  for (let m = inline.exec(code); m; m = inline.exec(code)) if (live(m.index)) specs.push(m[1]);
 
   // Aliased: capture identifiers bound to createRequire(...), then their calls.
   const bind = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*createRequire\s*\(/g;
   const names = new Set<string>();
-  for (let m = bind.exec(src); m; m = bind.exec(src)) names.add(m[1]);
+  for (let m = bind.exec(code); m; m = bind.exec(code)) if (live(m.index)) names.add(m[1]);
   for (const name of names) {
     const call = new RegExp(`\\b${name}\\s*\\(\\s*['"]([^'"]+)['"]`, 'g');
-    for (let m = call.exec(src); m; m = call.exec(src)) specs.push(m[1]);
+    for (let m = call.exec(code); m; m = call.exec(code)) if (live(m.index)) specs.push(m[1]);
   }
 
   return specs;
@@ -135,7 +157,7 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
   const found = new Map<string, string[]>(); // spec -> source files
   for (const file of files) {
     const src = readFileSync(file, 'utf8');
-    for (const spec of createRequireSpecifiers(src)) {
+    for (const spec of createRequireSpecifiers(src, file)) {
       if (!isThirdPartyBare(spec)) continue;
       const rel = file.slice(REPO_ROOT.length + 1);
       const list = found.get(spec) ?? [];
@@ -149,6 +171,27 @@ describe.skipIf(!existsSync(BUILD_SCRIPT))('desktop sidecar createRequire bundli
     // a no-op — fail loudly instead. rrule + luxon both live in
     // harness/routines/schedule-next.ts.
     expect([...found.keys()].sort()).toEqual(expect.arrayContaining(['luxon', 'rrule']));
+  });
+
+  // POSITIVE CONTROL: live loaders in both forms are extracted — without it the
+  // blindness control below passes vacuously on a dead extractor.
+  it('extracts inline and aliased createRequire loaders written as live code', () => {
+    const live = [
+      "const a = createRequire(import.meta.url)('left-pad');",
+      'const req = createRequire(import.meta.url);',
+      "const b = req('right-pad');",
+    ].join('\n');
+    expect(createRequireSpecifiers(live, 'planted.ts').sort()).toEqual(['left-pad', 'right-pad']);
+  });
+
+  // NEGATIVE CONTROL (WI-10004152): a loader quoted in a comment, string or
+  // template literal is documentation or a fixture, not a loader.
+  it('ignores a createRequire loader that appears only in a comment, string or template', () => {
+    const probe = probeStringLiteralBlindness(
+      (src: string) => createRequireSpecifiers(src, 'probe.ts').filter(isThirdPartyBare),
+      "createRequire(import.meta.url)('left-pad')",
+    );
+    expect(probe.ok, probe.detail).toBe(true);
   });
 
   it('every createRequire third-party dep is copied into the .deb sidecar', () => {
