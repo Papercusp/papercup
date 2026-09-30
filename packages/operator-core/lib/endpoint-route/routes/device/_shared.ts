@@ -16,6 +16,7 @@ import type { Principal } from '@papercusp/agent-mcp';
 import type { PrincipalRequirements } from '../../../auth/require-principal';
 import type { RouteContext } from '../../define-route';
 import { currentLoopbackPeerIsForeign } from '../../../auth/loopback-peer-trust';
+import { requestIsExternal } from '../../../auth/forwarded-request-trust';
 
 /**
  * Auth gate for a device-JWT route. The route-stack's auth step rejects
@@ -50,6 +51,9 @@ export const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']
  */
 export function isLoopbackHost(req: Request): boolean {
   if (currentLoopbackPeerIsForeign()) return false;
+  // external-app-access P-004 / R-7: a tunnel/relay request never mints desktop
+  // pair tokens, whatever Host it presents.
+  if (requestIsExternal(req.headers)) return false;
   const host = (req.headers.get('host') ?? '').split(':')[0].toLowerCase();
   return LOOPBACK_HOSTS.has(host);
 }

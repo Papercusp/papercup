@@ -1782,9 +1782,10 @@ export async function tryBuildSpawnContext(
   // Bare /api/mcp with no params at all isn't trying to escalate
   // anything — it's a probe / health check / pre-spawn discovery — so
   // we shouldn't audit-log it as a sig-missing failure in strict mode.
-  // (Calling tools/list on it returns an empty list per the handler
-  // above; tools/call falls through to the "none" path which rejects
-  // with invalid_request_context.)
+  // (Calling tools/list on it lists the catalog for a LOCAL caller only —
+  // an outside caller gets mcp_auth_failed, see resolveVisibleToolListings;
+  // tools/call falls through to the "none" path which rejects with
+  // invalid_request_context.)
   const claimsSpawn =
     url.searchParams.has('role') || url.searchParams.has('spawn') || url.searchParams.has('workspace');
 
@@ -2803,6 +2804,13 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
   if (spawnRes.kind === 'failed') return { kind: 'failed', reason: spawnRes.reason };
+  // external-app-access P-004 (D-012 side finding): a bare, unauthenticated probe
+  // lists the catalog only for a LOCAL caller. Outside traffic (a tunnel, a relay, a
+  // non-loopback Host) with no auth context gets the loud auth failure instead of a
+  // pre-auth catalog disclosure.
+  if (spawnRes.kind === 'none' && !isLoopbackRequest(headersFromExtra(extra))) {
+    return { kind: 'failed', reason: 'unauthenticated_non_local' };
+  }
   const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
   const rawProfile = spawnRes.kind === 'ok' ? spawnRes.ctx.profile : undefined;
   // GENERIC profile (P-025) → engineer-like tool visibility (the manifest filter only gates

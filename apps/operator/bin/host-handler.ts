@@ -25,6 +25,7 @@ import { Hono } from 'hono';
 import type { Http2Bindings, HttpBindings } from '@hono/node-server';
 import { app } from './host-app';
 import { apiCors } from './host-cors';
+import { hostRebindingGuard } from './host-rebinding-guard';
 import { docsRoutes } from './host-docs';
 import { publicDocsRoutes } from './host-docs-public';
 import { pageRoutes } from './page-routes';
@@ -54,6 +55,11 @@ const host = new Hono();
 //    If this host is ever fronted by a real network hop, compression belongs
 //    at the edge proxy (see infra/defguard/Caddyfile `encode gzip`), not in
 //    the app. Guarded by scripts/check-no-wire-compression.mjs.
+
+// 1.5. DNS-rebinding guard (open-source-release P-010): a loopback-bound
+//      operator refuses any /api request whose Host is not a loopback name.
+//      Runs first so a rebinding page is refused before CORS/handlers.
+host.use('/api/*', hostRebindingGuard);
 
 // 2. Broad `/api/*` CORS (proxy.ts port). Handles OPTIONS preflight and
 //    decorates downstream responses with the standard headers.

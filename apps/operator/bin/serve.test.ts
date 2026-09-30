@@ -77,6 +77,22 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 });
 
+describe("bind host (open-source-release P-010)", () => {
+  it("never reads the generic HOSTNAME var for the listen address", () => {
+    expect(serveSrc).not.toMatch(/process\.env\.HOSTNAME/);
+    expect(serveSrc).toContain("const hostname = resolveBindHost();");
+  });
+
+  it("validates the remote-auth policy before any listen", () => {
+    const resolved = serveSrc.indexOf("const hostname = resolveBindHost();");
+    const policy = serveSrc.indexOf("assertRemoteAuthReady(hostname);", resolved);
+    const listen = serveSrc.indexOf("serve({ fetch: requestHandler, port, hostname }");
+    expect(resolved).toBeGreaterThan(-1);
+    expect(policy).toBeGreaterThan(resolved);
+    expect(listen).toBeGreaterThan(policy);
+  });
+});
+
 describe("hosted control-plane serve profile (D-051 / P-037)", () => {
   it("is selected only by the explicit distribution profile", () => {
     expect(

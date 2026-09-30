@@ -19,6 +19,7 @@
 import { getSessionUser, getSessionUserOrDefault, type User } from '../auth';
 import { isLoopbackHost } from './loopback-guard';
 import { currentLoopbackPeerIsForeign } from '../auth/loopback-peer-trust';
+import { requestIsExternal } from '../auth/forwarded-request-trust';
 
 /** The request's effective host: the Host header when present, else the URL's
  *  host — under @hono/node-server the URL host IS derived from the client's
@@ -48,6 +49,9 @@ export async function getSessionUserOrLocalDefault(req: Request): Promise<User |
   // the customer account shares the interface. A foreign loopback peer gets no
   // default-user fallback, exactly like an off-loopback caller.
   if (currentLoopbackPeerIsForeign()) return null;
+  // external-app-access P-004 / R-7: a tunnel or relay request whose Host was
+  // rewritten to localhost gets no default-user fallback either.
+  if (requestIsExternal(req.headers)) return null;
   try {
     return await getSessionUserOrDefault(req.headers);
   } catch {

@@ -811,19 +811,48 @@ export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote, t
 }
 
 /**
+ * Render `Co-authored-by:` trailers for the public sync commit (open-source-release P-011).
+ * Accepted outside pull requests are ported into the private development tree, whose
+ * commits are swept under one automation identity, so the contributor's credit has to
+ * ride on the public commit that first ships their change. Each entry must be exactly
+ * `Name <email>`: one line, no control characters, one angle-bracketed address — anything
+ * else is refused rather than written into a commit message verbatim.
+ * @param {string[]} [coAuthors]
+ * @returns {string} '' when there are none, else a blank line plus one trailer per author
+ */
+export function coAuthorTrailers(coAuthors = []) {
+  const seen = new Set();
+  const lines = [];
+  for (const raw of coAuthors) {
+    const value = String(raw ?? '').trim();
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u001f\u007f]/.test(value) || !/^[^<>@]+ <[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+>$/.test(value)) {
+      throw new PreviewError(`--co-author must be "Name <email>" on one line (got ${JSON.stringify(value)})`, 2);
+    }
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    lines.push(`Co-authored-by: ${value}`);
+  }
+  return lines.length ? `\n\n${lines.join('\n')}` : '';
+}
+
+/**
  * Re-export, re-gate, and (with confirm) publish. The preview target is REPLACED by one
  * parentless commit (force push); the public target gets a new commit on top of its current
  * main, pushed without --force, so a concurrent push is refused rather than overwritten.
  * The gate runs before anything is committed; a failing gate pushes nothing.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] }, coAuthors?: string[] }} [opts]
  */
 export async function pushSnapshot({
   repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, confirm = false,
-  env = process.env, selectScript, gate = runGate, log = () => {}, thirdPartyNotices,
+  env = process.env, selectScript, gate = runGate, log = () => {}, thirdPartyNotices, coAuthors = [],
 } = {}) {
   const t = resolveTarget(target);
   remote = remote ?? defaultRemote(t);
   assertRemoteMatchesTarget(t, remote);
+  // Validate credit BEFORE any export work, so a malformed --co-author costs nothing.
+  const trailers = coAuthorTrailers(coAuthors);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-push-'));
   try {
     const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log, thirdPartyNotices });
@@ -852,9 +881,10 @@ export async function pushSnapshot({
       if (parent !== current.head) throw new PreviewError(`public main moved during the push (${current.head} → ${parent}); re-run`);
       parentArgs.push('-p', parent);
     }
-    const message = append
+    const message = (append
       ? `Sync from ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json, LICENSE and NOTICE.`
-      : `Source preview of ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json and NOTICE.`;
+      : `Source preview of ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json and NOTICE.`)
+      + trailers;
     const commit = run('git', ['--git-dir', gitDir, 'commit-tree', written, ...parentArgs, '-m', message], { env: { ...process.env, ...identity } }).trim();
     run('git', ['--git-dir', gitDir, 'push', '-q', ...(append ? [] : ['--force']), remote, `${commit}:refs/heads/main`]);
     const after = remoteTrees(remote);
@@ -867,10 +897,11 @@ export async function pushSnapshot({
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
-  const opts = { _: [] };
+  const opts = { _: [], coAuthors: [] };
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
+    else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
     else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json' || a === '--target') opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
@@ -917,7 +948,7 @@ async function main(argv) {
     return r.inSync ? 0 : 1;
   }
   if (cmd === 'push') {
-    const r = await pushSnapshot({ ref: opts.ref ?? DEFAULT_REF, remote, target: target.key, confirm: Boolean(opts.confirm), log });
+    const r = await pushSnapshot({ ref: opts.ref ?? DEFAULT_REF, remote, target: target.key, confirm: Boolean(opts.confirm), log, coAuthors: opts.coAuthors });
     printGate(r.verdict);
     if (r.reason === 'gate') { console.log('REFUSED: the gate found problems — nothing was pushed'); return r.verdict.exitCode; }
     if (r.reason === 'in-sync') { console.log(`already in sync: ${REPO} (snapshot of ${r.previewCommit}) ships the same content as ${SOURCE_REPO}@${r.commit} — nothing to push`); return 0; }
@@ -925,7 +956,7 @@ async function main(argv) {
     console.log(`pushed ${r.pushedCommit}${r.parent ? ` (parent ${r.parent})` : ''} (tree ${r.tree}) = ${SOURCE_REPO}@${r.commit} → ${REPO}`);
     return 0;
   }
-  console.error('usage: source-preview.mjs export|gate|check|push [--target preview|public] [--ref <ref>] [--out <dir>] [--remote <url>] [--confirm]');
+  console.error('usage: source-preview.mjs export|gate|check|push [--target preview|public] [--ref <ref>] [--out <dir>] [--remote <url>] [--confirm] [--co-author "Name <email>"]...');
   return 2;
 }
 

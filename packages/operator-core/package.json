@@ -28,6 +28,7 @@
     "lint:su-splice-markers": "tsx ../../scripts/check-su-splice-markers.ts",
     "lint:launch-prose-budget": "tsx ../../scripts/check-launch-prose-budget.ts",
     "lint:federation-assert-nounset": "vitest run lib/federation-asserts-merge-probe-nounset.test.ts",
+    "lint:vh-contract": "vitest run lib/verification-harness/contract-lint.test.ts lib/verification-harness/adoption.test.ts",
     "lint:mutation-probe-example": "vitest run lib/doc-claims/mutation-probe-example-is-runnable.test.ts",
     "lint:git-log-utc-claim": "vitest run lib/doc-claims/git-log-utc-timestamp.test.ts",
     "lint:headless-verify-entrypoint": "vitest run lib/doc-claims/headless-verify-entrypoint.test.ts",

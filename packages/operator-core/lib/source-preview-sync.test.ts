@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkDrift, pushSnapshot, remoteTrees } from '../../../scripts/source-preview.mjs';
+import { checkDrift, coAuthorTrailers, pushSnapshot, remoteTrees } from '../../../scripts/source-preview.mjs';
 import { childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 
 let tmp: string;
@@ -145,5 +145,37 @@ describe('source-preview sync — a confirmed push publishes one orphan commit',
     expect(remoteGit(['rev-parse', 'main'])).not.toBe(first);
     expect(remoteGit(['show', 'main:apps/operator/src/index.ts'])).toBe('export const x = 2;');
     expect(await checkDrift(opts())).toMatchObject({ inSync: true });
+  }, 180_000);
+});
+
+describe('source-preview sync — contributor credit (open-source-release P-011)', () => {
+  it('renders one Co-authored-by trailer per distinct author', () => {
+    expect(coAuthorTrailers([])).toBe('');
+    expect(coAuthorTrailers(['Ada Lovelace <ada@example.org>', 'ada lovelace <ADA@example.org>', 'Grace Hopper <grace@example.org>']))
+      .toBe('\n\nCo-authored-by: Ada Lovelace <ada@example.org>\nCo-authored-by: Grace Hopper <grace@example.org>');
+  });
+
+  it.each([
+    'ada@example.org',
+    'Ada Lovelace',
+    'Ada <ada@example.org> <evil@example.org>',
+    'Ada <ada@example.org>\nSigned-off-by: Mallory <m@example.org>',
+    'Ada <not-an-email>',
+    '',
+  ])('refuses a malformed co-author %j', (value) => {
+    expect(() => coAuthorTrailers([value])).toThrow(/--co-author must be/);
+  });
+
+  it('credits the contributor on the pushed commit, and refuses a malformed one before pushing anything', async () => {
+    const before = remoteGit(['rev-parse', 'main']);
+    await expect(pushSnapshot(opts({ confirm: true, gate: passing, coAuthors: ['no email here'] })))
+      .rejects.toThrow(/--co-author must be/);
+    expect(remoteGit(['rev-parse', 'main'])).toBe(before);
+
+    commitChange('apps/operator/src/index.ts', 'export const x = 3;\n', 'port an outside pull request');
+    const r = await pushSnapshot(opts({ confirm: true, gate: passing, coAuthors: ['Ada Lovelace <ada@example.org>'] }));
+    expect(r).toMatchObject({ pushed: true });
+    expect(remoteGit(['log', '-1', '--format=%(trailers:key=Co-authored-by,valueonly)', 'main']))
+      .toBe('Ada Lovelace <ada@example.org>');
   }, 180_000);
 });

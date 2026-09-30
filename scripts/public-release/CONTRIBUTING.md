@@ -11,8 +11,12 @@ a private monorepo and publish public-safe snapshots here as new commits on top 
 requests stay valid.
 
 When we accept a pull request, we apply the change in the development tree. It then
-arrives here in a later export, with you credited as co-author, and the pull request
-is closed with a link to that commit. The pull request itself is not merged directly.
+arrives here in a later export, with you credited through a `Co-authored-by:` line on
+that commit (the name and email from your pull request's commits), and the pull
+request is closed with a link to it. The pull request itself is not merged directly.
+
+Issues are tracked here, on this repository. We mirror actionable ones into our
+internal tracker and close them here, with a link to the commit, when the fix ships.
 
 ## Contributor License Agreement
 

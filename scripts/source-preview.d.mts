@@ -194,13 +194,24 @@ export function checkDrift({ repoRoot, ref, remote, target, licensePath, env, se
     previewCommit: string | null;
 }>;
 /**
+ * Render `Co-authored-by:` trailers for the public sync commit (open-source-release P-011).
+ * Accepted outside pull requests are ported into the private development tree, whose
+ * commits are swept under one automation identity, so the contributor's credit has to
+ * ride on the public commit that first ships their change. Each entry must be exactly
+ * `Name <email>`: one line, no control characters, one angle-bracketed address — anything
+ * else is refused rather than written into a commit message verbatim.
+ * @param {string[]} [coAuthors]
+ * @returns {string} '' when there are none, else a blank line plus one trailer per author
+ */
+export function coAuthorTrailers(coAuthors?: string[]): string;
+/**
  * Re-export, re-gate, and (with confirm) publish. The preview target is REPLACED by one
  * parentless commit (force push); the public target gets a new commit on top of its current
  * main, pushed without --force, so a concurrent push is refused rather than overwritten.
  * The gate runs before anything is committed; a failing gate pushes nothing.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] }, coAuthors?: string[] }} [opts]
  */
-export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confirm, env, selectScript, gate, log, thirdPartyNotices, }?: {
+export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confirm, env, selectScript, gate, log, thirdPartyNotices, coAuthors, }?: {
     repoRoot?: string;
     ref?: string;
     remote?: string;
@@ -215,6 +226,7 @@ export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confi
         text: string;
         undetermined: string[];
     };
+    coAuthors?: string[];
 }): Promise<{
     pushed: boolean;
     reason: string;

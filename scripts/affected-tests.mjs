@@ -2849,6 +2849,25 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => f === "papercusp-desktop/bin/lib/federation-asserts.sh",
   },
   {
+    // EVL P-006 (expensive-verification-loops-2026-09-29, R-10/R-11) — the verification-harness
+    // contract lint and the adoption test live in operator-core, but their SUBJECTS are the slow
+    // harness scripts under scripts/ and papercusp-desktop/bin/ (plus llm-test.ts and the
+    // contract lib). Those route to other workspaces, so without this entry a NEW slow harness
+    // added without the contract (the R-10 falsifier) would never run the lint that forbids it.
+    // Cheap: file reads, plus one bash + tsx planner dry-run per adopted shell harness.
+    // NO hostSuiteRatchet, same reasoning as the entries above: subject and host suite are
+    // selected by disjoint changes.
+    workspace: "@papercusp/operator-core",
+    script: "lint:vh-contract",
+    appliesTo: (f) =>
+      /^scripts\/[^/]+\.(sh|mjs|mts|ts)$/.test(f) ||
+      /^papercusp-desktop\/bin\/(vm-rig\/)?[^/]+\.(sh|mjs|mts|ts)$/.test(f) ||
+      f === "apps/operator/bin/llm-test.ts" ||
+      f.startsWith("libs/generic/verification-harness/") ||
+      f.startsWith("packages/operator-core/lib/verification-harness/") ||
+      f === "packages/operator-core/lib/llm-testing/battery-harness.ts",
+  },
+  {
     // goal-live-holder-guarantee-2026-08-18 P-001 / D-003 — lint:no-raw-goal-holder-read.
     // The guard scans EVERY tracked .ts/.mjs in the repo for a raw read of "who holds this
     // goal" that skips the liveness fold, but its enforcing test lives in

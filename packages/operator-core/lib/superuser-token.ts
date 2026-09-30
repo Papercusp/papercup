@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import { currentLoopbackPeerIsForeign } from './auth/loopback-peer-trust';
+import { externalIngressReason, forwardedRequestVerdict } from './auth/forwarded-request-trust';
 
 function tokenPath(): string {
   return join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
@@ -91,22 +92,20 @@ export function isLoopbackRequest(headers: Headers): boolean {
   // whose socket is not owned by the service uid gets NO loopback trust here — this
   // withdraws the `'*'` principalFromLoopback fallback and every ad-hoc caller at once.
   if (currentLoopbackPeerIsForeign()) return false;
-  const host = hostnameOf(headers.get('host') ?? '');
-  if (LOOPBACK_HOSTS.has(host)) {
-    return true;
-  }
-  const fwd = (headers.get('x-forwarded-for') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
-  if (fwd.length > 0) {
-    return fwd.every((ip) => ip === '127.0.0.1' || ip === '::1' || ip === 'localhost');
-  }
-  // Fail closed: a request whose Host is non-loopback and that carries no
-  // x-forwarded-for is NOT provably loopback. The previous `return true`
-  // here contradicted this function's contract ("refuses unless loopback")
-  // and would admit a direct connection to a non-loopback interface. The
-  // desktop's local superuser path always carries a loopback Host
-  // (127.0.0.1/localhost) or rides the separate IPC server, so this does
-  // not affect it. (Bearer validation is a second gate either way.)
-  return false;
+  // external-app-access P-004 / R-7 (D-010): outside traffic — the external-ingress
+  // listener, the relay's deny-only marker, an edge header, or forwarding headers
+  // that name a non-loopback client — is never loopback, whatever its Host says.
+  // This check used to run AFTER the Host check, so a tunnel that rewrote Host to
+  // localhost got the full '*' loopback principal.
+  if (externalIngressReason(headers) !== null) return false;
+  // A local proxy (every forwarded client is loopback) keeps local trust; the Host it
+  // presents is the proxy's upstream name, not evidence either way.
+  if (forwardedRequestVerdict(headers).kind === 'local-proxy') return true;
+  // Direct connection (no forwarding headers): the Host header decides. Fail closed on
+  // a non-loopback or missing Host — the desktop's local superuser path always carries
+  // a loopback Host (127.0.0.1/localhost) or rides the separate IPC server. (Bearer
+  // validation is a second gate either way.)
+  return LOOPBACK_HOSTS.has(hostnameOf(headers.get('host') ?? ''));
 }
 
 export const SUPERUSER_TOKEN_PATH = tokenPath();

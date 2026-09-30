@@ -53,6 +53,18 @@ const SHELL_HARNESSES: ShellHarness[] = [
   },
 ];
 
+/**
+ * VH_ADOPTION_OVERRIDE=<repo-relative harness path>=<absolute copy> reads a copy instead of the
+ * tracked file, so scripts/mutation-probe.sh can prove this test falsifiable in copy-out mode
+ * (a mutant never touches the shared tree).
+ */
+function harnessSource(file: string): string {
+  const override = process.env.VH_ADOPTION_OVERRIDE ?? '';
+  const eq = override.indexOf('=');
+  const target = eq > 0 && override.slice(0, eq) === file ? override.slice(eq + 1) : path.join(REPO_ROOT, file);
+  return readFileSync(target, 'utf8');
+}
+
 const tmpRoots: string[] = [];
 afterAll(() => {
   for (const d of tmpRoots) rmSync(d, { recursive: true, force: true });
@@ -86,7 +98,7 @@ function dryRunPhaseListing(h: ShellHarness, src: string) {
 }
 
 describe.each(SHELL_HARNESSES)('$file adopts the contract', (h) => {
-  const src = readFileSync(path.join(REPO_ROOT, h.file), 'utf8');
+  const src = harnessSource(h.file);
 
   it('sources the shared vh.sh and names itself with vh_init', () => {
     expect(src).toMatch(/^[^#\n]*libs\/generic\/verification-harness\/bin\/vh\.sh/m);
@@ -139,7 +151,7 @@ describe('the LLM scenario battery adopts the contract', () => {
   });
 
   it('llm-test.ts runs its scenarios through runScenarioBattery', () => {
-    const src = readFileSync(path.join(REPO_ROOT, 'apps/operator/bin/llm-test.ts'), 'utf8');
+    const src = harnessSource('apps/operator/bin/llm-test.ts');
     expect(src).toMatch(/import\s*\{[^}]*\brunScenarioBattery\b[^}]*\}\s*from\s*'@papercusp\/operator-core\/lib\/llm-testing\/battery-harness'/);
     const calls = src.match(/await runScenarioBattery\(\{\s*scenarios\b/g) ?? [];
     expect(calls).toHaveLength(1);

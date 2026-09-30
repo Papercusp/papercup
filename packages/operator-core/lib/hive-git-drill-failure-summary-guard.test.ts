@@ -173,4 +173,47 @@ describe('the drill wiring', () => {
     // The archive happens for every run, before the pass/fail branch.
     expect(block.indexOf('cp -p')).toBeLessThan(block.indexOf('if [ "$physical_probe_rc" -ne 0 ]'));
   });
+
+  // R-2 (plan physical-drill-iteration-speed-2026-09-29): two physical runs in sequence leave two
+  // distinct per-run directories, and the second does not overwrite the first's adapter output.
+  // Runs the drill's REAL archive block (extracted, not re-typed) twice, as two processes, the
+  // way two drill attempts run, with stub adapter output. No probe, no rig.
+  it('two sequential runs keep separate evidence; the second never overwrites the first (R-2)', () => {
+    const archive = block.slice(
+      block.indexOf('physical_runs_dir="${HIVE_GIT_PHYSICAL_RUNS_DIR'),
+      block.indexOf('if [ "$physical_probe_rc" -ne 0 ]'),
+    );
+    expect(archive).toContain('mkdir -p "$physical_run_dir"');
+    const runs = join(scratch, 'physical-runs');
+    const runOnce = (n: number, rc: number): string => {
+      const work = join(scratch, `work-${n}`);
+      const script = [
+        'set -u',
+        `WORK=${JSON.stringify(work)}`,
+        'mkdir -p "$WORK"',
+        `echo "adapter stdout of run ${n}" > "$WORK/physical-probe.stdout"`,
+        `echo "adapter stderr of run ${n}" > "$WORK/physical-probe.stderr"`,
+        `physical_probe_rc=${rc}`,
+        archive,
+        'echo "RUN_DIR=$physical_run_dir"',
+      ].join('\n');
+      const res = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, HIVE_GIT_PHYSICAL_RUNS_DIR: runs, HOME: scratch },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      const dir = res.stdout.match(/^RUN_DIR=(.+)$/m)?.[1];
+      expect(dir, res.stdout).toBeDefined();
+      return dir!;
+    };
+    const first = runOnce(1, 3);
+    const second = runOnce(2, 0);
+    expect(second).not.toBe(first);
+    expect(dirname(first)).toBe(runs);
+    expect(dirname(second)).toBe(runs);
+    // The first run's evidence survives the second run intact.
+    expect(readFileSync(join(first, 'physical-probe.stdout'), 'utf8')).toBe('adapter stdout of run 1\n');
+    expect(readFileSync(join(first, 'physical-probe.stderr'), 'utf8')).toBe('adapter stderr of run 1\n');
+    expect(readFileSync(join(second, 'physical-probe.stderr'), 'utf8')).toBe('adapter stderr of run 2\n');
+  });
 });

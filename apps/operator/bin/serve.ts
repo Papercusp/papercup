@@ -28,7 +28,7 @@
  *
  * Env knobs (all optional):
  *   PAPERCUSP_HONO_PORT / PORT    HTTP port (default 3070)
- *   PAPERCUSP_BIND_HOST / HOSTNAME bind host (default 127.0.0.1)
+ *   PAPERCUSP_BIND_HOST           bind host (default 127.0.0.1; HOSTNAME is ignored)
  *   PAPERCUSP_PG_PORT             embedded-pg port (default 5532)
  *   PAPERCUSP_PG_DATA_DIR         embedded-pg data dir (default ~/.papercusp/embedded-pg-data)
  *   PAPERCUSP_PG_SQL_DIR          migrations dir (default: repo libs/papercusp/libs/db/sql)
@@ -73,6 +73,8 @@ import {
 import { execFileSync } from "node:child_process";
 import { isRequestOnlyIdentityProcess } from "@papercusp/operator-core/lib/identity/keychain";
 import { ensureToolPathEnv } from "@papercusp/operator-core/lib/tool-path";
+import { resolveBindHost } from "@papercusp/operator-core/lib/resolve-bind-host";
+import { assertRemoteAuthReady } from "@papercusp/operator-core/lib/remote-auth-policy";
 import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
 import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
 import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
@@ -1613,8 +1615,14 @@ async function main(): Promise<void> {
     ensureToolPathEnv();
   }
 
-  const hostname =
-    process.env.PAPERCUSP_BIND_HOST ?? process.env.HOSTNAME ?? "127.0.0.1";
+  // The bind host is NEVER read from the generic `HOSTNAME` var: several
+  // distros' /etc/profile export it as the machine name, which silently turned
+  // this default into an off-box-reachable listen (open-source-release P-010;
+  // same class as hono-host's audit P-027). Off-loopback is an explicit
+  // PAPERCUSP_BIND_HOST opt-in, and it must carry a complete remote-auth policy
+  // before any listen().
+  const hostname = resolveBindHost();
+  assertRemoteAuthReady(hostname);
   // EI-11342: an env-sidecar (ENV_OPERATOR_ID set) must never fall back to the
   // baked 3070 default — it would squat the prod operator's port on this box.
   const honoPortHint = resolveHonoPortHint(process.env, ENV_OPERATOR_ID);

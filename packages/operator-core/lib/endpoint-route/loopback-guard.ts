@@ -23,6 +23,7 @@
  */
 
 import { foreignLoopbackPeerResponse } from '../auth/loopback-peer-trust';
+import { externalIngressResponse } from '../auth/forwarded-request-trust';
 
 /** Host names that resolve to the local machine (incl. the QEMU + Tauri aliases). */
 export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
@@ -66,6 +67,11 @@ export function requireLoopbackOr403(req: Request): Response | null {
   const foreignPeer = foreignLoopbackPeerResponse();
   if (foreignPeer) return foreignPeer;
   if (process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN === '1') return null;
+  // external-app-access P-004 / R-7: tunnel and relay traffic is never local, even
+  // when a tunnel rewrote its Host to localhost. (After the remote-admin opt-out,
+  // which is the operator's explicit choice to serve these routes to off-box callers.)
+  const external = externalIngressResponse(req.headers);
+  if (external) return external;
   // Prefer the host from req.url (set by @hono/node-server from the Host header,
   // and always present on app.request() Requests in tests — unlike the raw
   // `host` header, which the Fetch spec forbids setting); fall back to the
