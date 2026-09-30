@@ -55,6 +55,7 @@ import type { RecipeProviderConsent, RecipeProviderConsentSubject } from './capa
 import { capabilityGrantDepsForPot } from './install-blueprint-io';
 import { installBlueprintFromCupboardCore, servedBlueprintSource, type InstallBlueprintCoreDeps } from './install-blueprint-core';
 import type { IdentityInstallConsent } from './identity-install-consent';
+import { blueprintListingFacet, parseIdentityListingSurface, type ListedBlueprintFacet } from './identity-listing-surface';
 import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null, appSql: null as Sql | null }));
@@ -282,10 +283,11 @@ describe('P-020 third-party identity portability into a clean destination (real 
 
   const install = (overrides: {
     classConsent?: ClassContractConsent; recipeConsent?: RecipeProviderConsent; identityConsent?: IdentityInstallConsent;
+    listing?: ListedBlueprintFacet;
   } = {}) =>
     installBlueprintFromCupboardCore({
       githubUrl: `https://github.com/${PUBLISHER}/${ID}`,
-      expectedRelease: { manifest },
+      expectedRelease: { manifest, ...(overrides.listing ? { listing: overrides.listing } : {}) },
       ...(overrides.classConsent ? { classContractConsent: overrides.classConsent } : {}),
       ...(overrides.identityConsent ? { identityInstallConsent: overrides.identityConsent } : {}),
       capabilityContext: { workspaceId: WS, potSlug: POT, mode: 'agent',
@@ -355,8 +357,35 @@ describe('P-020 third-party identity portability into a clean destination (real 
     identityConsent = (identityAsk as { data: { consentSubject: IdentityInstallConsent } }).data.consentSubject;
     expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toMatchObject({ active: null });
 
-    // 6. Consented: installed, bound by the release's journal.
-    const ok = await install({ classConsent, recipeConsent, identityConsent });
+    // 6. P-016: the listing's facet carries the surface publish derived from the signed
+    // closure. A listing that describes less, or hides the facet, refuses before anything lands.
+    const facet = blueprintListingFacet(published.source);
+    const listedSurface = parseIdentityListingSurface(facet.identity_surface)!;
+    expect(facet.blueprint_kind).toBe('identity');
+    expect(listedSurface).toMatchObject({
+      identity: { id: ID, version: '1.0.0', slots: ['domain'] },
+      hooks: { sync: [{ id: RULE, sink: 'pre-tool', kind: 'guard', tools: ['capability:bash'] }], async: [], unreadable: [] },
+      knowledge: [{ ref: PACK, version: '1.0.0', memories: 1,
+        docs: [{ id: 'review-steps', title: 'Review steps', section: 'Review' }] }],
+      classContracts: [{ ref: CLASS_REF }],
+      grants: { requires: [CLASS_REF], optional: [] },
+      consent: 'required',
+    });
+    // What a shopper previews is what the signed manifest lists and install asks consent for.
+    expect(listedSurface.permissions).toEqual([...manifest.permissions].sort());
+    expect(listedSurface.permissions).toEqual([`grant:${CLASS_REF}`, `rule:${RULE} (guard at pre-tool)`, `shared:recipe:${RECIPE}`]);
+    const consents = { classConsent, recipeConsent, identityConsent };
+    const quieter = JSON.stringify({ ...listedSurface, hooks: { ...listedSurface.hooks, sync: [] } });
+    await expect(install({ ...consents, listing: { blueprintKind: 'identity', identitySurface: quieter } }))
+      .rejects.toMatchObject({ code: 'identity_surface_mismatch', data: { reason: 'differs', carried: listedSurface } });
+    await expect(install({ ...consents, listing: { blueprintKind: 'harness', identitySurface: null } }))
+      .rejects.toMatchObject({ code: 'identity_surface_mismatch', data: { reason: 'facet', listedKind: 'harness' } });
+    expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toMatchObject({ active: null });
+
+    // 7. Consented and listed with exactly its surface: installed, bound by the release's journal.
+    const ok = await install({ ...consents,
+      listing: { blueprintKind: facet.blueprint_kind, identitySurface: facet.identity_surface ?? null } });
+    expect(ok.identitySurface).toEqual(listedSurface);
     expect(ok.capabilityGrants?.selected).toMatchObject([{ classRef: CLASS_REF, providerPackage: ID }]);
     expect(await getPotCapabilityProviderBinding(db.adminSql, {
       workspaceId: WS, potSlug: POT, classId: CLASS_ID, classVersion: '1.0.0', providerKinds: ['recipe'],
