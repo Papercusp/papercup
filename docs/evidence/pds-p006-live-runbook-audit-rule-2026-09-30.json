@@ -19,24 +19,21 @@
       "id": "runbook-states-rule",
       "criteria": "The runbook states that after two drill failures with different causes the driver stops re-running and audits the harness first.",
       "observed": "Line 31 of the committed runbook states the rule verbatim ('After two drill failures with different causes, stop re-running the drill. Before the next run, audit the harness ...'). The page title is 'Driving the hive-git physical drill - reading a failure, re-running one phase, and when to stop re-running'.",
-      "evidence": ["apps/operator-docs/src/content/docs/agent-insights/hive-git-physical-drill-driver-runbook.mdx line 31 (git blob 6639385df296d18de66ed402fe6667350a8347cc, last commit a188b898d399 2026-09-30T00:55:51Z)"],
+      "evidence": "apps/operator-docs/src/content/docs/agent-insights/hive-git-physical-drill-driver-runbook.mdx line 31 (git blob 6639385df296d18de66ed402fe6667350a8347cc, last commit a188b898d399 2026-09-30T00:55:51Z)",
       "passed": true
     },
     {
       "id": "runbook-names-marker",
       "criteria": "The runbook names the attempt-audit marker.",
       "observed": "Line 31 contains the literal '[attempt-audit]', equal to ATTEMPT_AUDIT_MARKER exported by the loop gate. The doc-claims guard drill-driver-audit-rule.test.ts pins both (4/4 at test run 20227300) and fails on a runbook without the rule paragraph (copy-out mutation probe recorded on WI-10003977).",
-      "evidence": [
-        "packages/operator-core/lib/verification-attempts/loop-gate.ts (ATTEMPT_AUDIT_MARKER)",
-        "packages/operator-core/lib/doc-claims/drill-driver-audit-rule.test.ts"
-      ],
+      "evidence": "packages/operator-core/lib/verification-attempts/loop-gate.ts (ATTEMPT_AUDIT_MARKER); packages/operator-core/lib/doc-claims/drill-driver-audit-rule.test.ts",
       "passed": true
     },
     {
       "id": "rule-followed-in-real-loop",
       "criteria": "A real driver following the runbook audits before re-running after different-cause failures.",
       "observed": "coord_thread_posts 1151047 (2026-09-30T08:03:04Z) '[attempt-audit] 08:05Z su-d18cd980, before run 9. The attempt window, read from the task_ledger verificationAttempt rows: ...' and 1151086 (2026-09-30T08:43:08Z) '[attempt-audit] ... Audit of every distinct failure fingerprint since the last pass (06:11Z), before PDS run 10.' Run 10 (task 0munuyzonr9vulx1viy) was launched only after the second audit and got past the phase-A VM git-sync call that failed run 9, the defect class that audit named.",
-      "evidence": ["harness_shared.coord_thread_posts ids 1151047, 1151086 (WI-10003976 thread)"],
+      "evidence": "harness_shared.coord_thread_posts ids 1151047, 1151086 (WI-10003976 thread)",
       "passed": true
     }
   ],

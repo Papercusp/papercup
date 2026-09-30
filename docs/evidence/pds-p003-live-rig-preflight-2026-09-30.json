@@ -19,27 +19,21 @@
       "id": "all-five-checks-measured-fast",
       "criteria": "On the real rig the preflight measures its five checks and completes in under a minute.",
       "observed": "Report schemaVersion hive-git-physical-rig-preflight/v1, checks=[drill-source-committed, canary-mode-baseline, vm-trust-hold-ready, vm-payload-current, hosts-answering], ok=true, firstFailure=null, elapsedMs=2023; process wall 7960 ms (09:06:34.597Z-09:06:42.559Z).",
-      "evidence": [
-        "command: PAPERCUSP_REPO_DIR=<repo> PCUSP_VM_SSH=aviweiss@172.31.44.2 tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts rig-preflight --vm-github-user-id 1567022 (the exact call hive-git-physical-probe.sh line 369 makes, run standalone)",
-        ".papercusp/scratch/pds-r5-live-preflight.json"
-      ],
+      "evidence": "command: PAPERCUSP_REPO_DIR=<repo> PCUSP_VM_SSH=aviweiss@172.31.44.2 tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts rig-preflight --vm-github-user-id 1567022 (the exact call hive-git-physical-probe.sh line 369 makes, run standalone); .papercusp/scratch/pds-r5-live-preflight.json",
       "passed": true
     },
     {
       "id": "refusal-names-check-before-any-phase",
       "criteria": "A violated check refuses the run before the first phase and names the check.",
       "observed": "Run 20260930T020304Z-3605465 (verification-harness start 02:03:04.978Z): stderr 'PHYSICAL_PREFLIGHT_FAILED drill-source-committed: uncommitted drill source (the VM stages HEAD via git archive, so it would run different code): packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.ts, packages/operator-core/lib/sync/pot-git/physical-drill-phase-e.ts' then 'hive-git-physical-probe: rig preflight refused the run (the PHYSICAL_PREFLIGHT_FAILED line above names the check)'. Evidence dir stamped 02:03:24Z (rc1); physical-probe.stdout is empty and no PHASE_START line exists. Harness result verdict=fail.",
-      "evidence": [
-        "~/.papercusp-drill-physical-runs/20260930T020324Z-3605465-rc1/physical-probe.stderr",
-        "~/.local/state/verification-harness/hive-git-drill/20260930T020304Z-3605465/result.json"
-      ],
+      "evidence": "~/.papercusp-drill-physical-runs/20260930T020324Z-3605465-rc1/physical-probe.stderr; ~/.local/state/verification-harness/hive-git-drill/20260930T020304Z-3605465/result.json",
       "passed": true
     },
     {
       "id": "preflight-before-first-rig-ssh",
       "criteria": "The probe runs rig-preflight before its first rig ssh and fails closed.",
       "observed": "hive-git-physical-probe.sh calls `$TSX $PRODUCER rig-preflight` (line 369) and `fail`s on a non-zero exit (line 372) before `run_dir` is created (line 374) and before any phase's rig ssh; the rc1 run above shows the fail-closed path on the real rig. Unit guard: physical-drill-preflight.test.ts (33/33, test run 20227298).",
-      "evidence": ["papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh lines 361-372"],
+      "evidence": "papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh lines 361-372",
       "passed": true
     }
   ],
