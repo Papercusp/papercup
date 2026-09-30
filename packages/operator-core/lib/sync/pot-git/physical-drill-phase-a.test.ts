@@ -14,8 +14,11 @@ import {
   quarantineAndObservePhysicalPhaseAAbsence,
   quarantinePhysicalPhaseARepo,
   validatePhysicalPhaseA,
+  validatePhysicalPhaseATowerBefore,
   type PhysicalPhaseAInput,
 } from './physical-drill-phase-a';
+import { writeFileSync } from 'node:fs';
+import { PHYSICAL_DRILL_INCOMPLETE_EXIT, cli, runPhysicalDrillCliToExit } from './physical-drill-producer';
 import { deviceNamespaceKey } from './storage';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { SIGREFS_REF, sigrefsSigningBytes, type SignedSigrefs } from './sigrefs';
@@ -355,5 +358,87 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
     expect(verdict.errors).toContain(
       'VM own-namespace signature must be created after cold bootstrap starts and before VM observation',
     );
+  });
+
+  // Same-box run 20260930T085016Z-2629813: the tower baseline lacked the VM's namespace (a
+  // fresh rig had never had the VM announce), and the scenario only learned it from the
+  // convergence wait's verifier, which retried that unclearable rejection for 20 minutes.
+  function towerOnlyBaseline(input: PhysicalPhaseAInput): PhysicalPhaseAInput {
+    const towerNamespace = deviceNamespaceKey(towerKey);
+    input.observations.towerBefore.refs = input.observations.towerBefore.refs.filter((ref) =>
+      ref.name.startsWith(`refs/namespaces/${towerNamespace}/`),
+    );
+    return input;
+  }
+
+  it('reports a tower baseline without the VM namespace as a FROZEN rejection, which the precheck catches up front', () => {
+    const input = towerOnlyBaseline(fixture());
+    const missing = `tower is missing physical device namespace ${deviceNamespaceKey(vmKey)}`;
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.frozenErrors).toContain(missing);
+    expect(validatePhysicalPhaseATowerBefore(input.observations.towerBefore, input.identities)).toEqual([missing]);
+    // Calibration: the full baseline passes the same precheck and has no frozen error.
+    const full = fixture();
+    expect(validatePhysicalPhaseATowerBefore(full.observations.towerBefore, full.identities)).toEqual([]);
+    expect(validatePhysicalPhaseA(full).frozenErrors).toEqual([]);
+  });
+
+  it('keeps a not-yet-converged rejection retryable: no frozen error when only the after-observations differ', () => {
+    const input = fixture();
+    input.observations.vmAfter.refs[0]!.oid = 'a'.repeat(40);
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('tower and vm namespaced ref OIDs must match exactly after bootstrap');
+    expect(verdict.frozenErrors).toEqual([]);
+  });
+
+  async function runCli(argv: string[]): Promise<{ code: number; stderr: string }> {
+    let code = -1;
+    let stderr = '';
+    const sink = (onWrite: (chunk: string) => void) => ({
+      write: (chunk: string, callback?: (error?: Error | null) => void) => {
+        onWrite(chunk);
+        callback?.();
+        return true;
+      },
+    });
+    await runPhysicalDrillCliToExit(argv, {
+      run: cli,
+      stdout: sink(() => {}),
+      stderr: sink((chunk) => {
+        stderr += chunk;
+      }),
+      exit: (exitCode) => {
+        code = exitCode;
+      },
+    });
+    return { code, stderr };
+  }
+
+  it('phase-a-verify exits 3 (retry) only for a converging rejection and 1 for a frozen one', async () => {
+    const root = newRoot('verify-cli');
+    const converging = fixture();
+    converging.observations.vmAfter.refs[0]!.oid = 'a'.repeat(40);
+    writeFileSync(join(root, 'converging.json'), JSON.stringify(converging));
+    writeFileSync(join(root, 'frozen.json'), JSON.stringify(towerOnlyBaseline(fixture())));
+    expect((await runCli(['phase-a-verify', join(root, 'converging.json')])).code).toBe(
+      PHYSICAL_DRILL_INCOMPLETE_EXIT,
+    );
+    const frozen = await runCli(['phase-a-verify', join(root, 'frozen.json')]);
+    expect(frozen.code).toBe(1);
+    expect(frozen.stderr).toContain('frozen input');
+  });
+
+  it('phase-a-precheck refuses a tower baseline without the VM namespace, naming the precondition', async () => {
+    const root = newRoot('precheck-cli');
+    const bad = towerOnlyBaseline(fixture());
+    const good = fixture();
+    writeFileSync(join(root, 'bad.json'), JSON.stringify(bad.observations.towerBefore));
+    writeFileSync(join(root, 'good.json'), JSON.stringify(good.observations.towerBefore));
+    const refused = await runCli(['phase-a-precheck', join(root, 'bad.json'), towerKey, vmKey]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('PHASE_A_PRECONDITION_FAILED tower-baseline');
+    expect((await runCli(['phase-a-precheck', join(root, 'good.json'), towerKey, vmKey])).code).toBe(0);
   });
 });

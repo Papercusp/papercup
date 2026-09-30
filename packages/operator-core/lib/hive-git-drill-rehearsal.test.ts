@@ -158,6 +158,10 @@ const RIG_AGNOSTIC_VARS = new Map<string, string>([
   ['VM_SOURCE', 'the probe hands in its run-private pinned snapshot (HIVE_GIT_PHYSICAL_VM_SOURCE)'],
   ['TOWER_SOURCE', 'the probe hands in its run-private pinned snapshot (HIVE_GIT_PHYSICAL_TOWER_SOURCE)'],
   ['VM_PRODUCER', 'derived from the run-private VM source snapshot, never from a host constant'],
+  [
+    'VM_GIT_SYNC_CALL_TIMEOUT_SEC',
+    "a client deadline over the server's 60s git-sync:run budget, the same on every rig (WI-10004195)",
+  ],
 ]);
 /** Top-level rig variables of a real script, selected by name. */
 function namedRigVars(source: string): string[] {
@@ -525,6 +529,23 @@ describe("rig-profile.sh — UP waits until the VM owner answers phase A's first
     const src = readFileSync(sameBoxRigPath, 'utf8');
     expect(src).toMatch(/rig_profile_vm_answering "\$dir" "\$remaining" \|\| exit 1/);
     expect(src).not.toMatch(/dev:dogfood_substrate_status/);
+  });
+
+  // Run 20260930T085016Z-2629813: a fresh rig's tower had never received the VM's namespace,
+  // Phase A's precondition, and the drill learned it only after a 20-minute wait.
+  it('same-box-rig.sh gates UP on the tower holding the VM namespace, via the scenario precheck', () => {
+    const src = readFileSync(sameBoxRigPath, 'utf8');
+    expect(src).toMatch(/steady_namespaces \|\| exit 1\n\s*exit 0/);
+    expect(src).toMatch(/phase-a-precheck "\$dir\/steady-tower-baseline\.json"/);
+  });
+
+  it('the scenario checks the Phase A tower baseline before the quarantine and retries the verify only on exit 3', () => {
+    const scenario = readFileSync(scenarioPath, 'utf8');
+    const precheck = scenario.indexOf('phase-a-precheck "$phase_dir/tower-before.json"');
+    const quarantine = scenario.indexOf('phase-a-quarantine-observe');
+    expect(precheck).toBeGreaterThan(0);
+    expect(precheck).toBeLessThan(quarantine);
+    expect(scenario).toMatch(/if \[ "\$verify_rc" -ne 3 \]; then[\s\S]{0,120}fail "phase A verifier rejected a frozen input/);
   });
 });
 

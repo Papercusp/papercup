@@ -17,6 +17,8 @@ import {
   quarantineAndObservePhysicalPhaseAAbsence,
   quarantinePhysicalPhaseARepo,
   validatePhysicalPhaseA,
+  validatePhysicalPhaseATowerBefore,
+  type PhysicalPhaseARepoObservation,
   type PhysicalPhaseAInput,
 } from './physical-drill-phase-a';
 
@@ -274,7 +276,7 @@ function writeOutputsAtomically(
   renameSync(evidenceTmp, evidencePath);
 }
 
-async function cli(argv: string[]): Promise<unknown> {
+export async function cli(argv: string[]): Promise<unknown> {
   const [mode, ...args] = argv;
   if (mode === 'identity') {
     const [hostId, cachePath] = args;
@@ -349,9 +351,32 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     const verdict = validatePhysicalPhaseA(readJson(inputPath) as PhysicalPhaseAInput);
     if (!verdict.ok) {
-      throw new Error(`physical-drill-producer: Phase A rejected: ${verdict.errors.join('; ')}`);
+      const message = `physical-drill-producer: Phase A rejected: ${verdict.errors.join('; ')}`;
+      // Only a rejection the hosts can still clear by converging is worth a retry
+      // (exit 3). A frozen-input rejection exits 1 so the scenario's wait stops at once.
+      if (verdict.frozenErrors.length === 0) throw new PhysicalDrillIncompleteEvidenceError(message, verdict);
+      throw new Error(`${message} (frozen input — re-observing the hosts cannot clear it)`);
     }
     return verdict;
+  }
+  if (mode === 'phase-a-precheck') {
+    const [towerBeforePath, towerDeviceKey, vmDeviceKey] = args;
+    if (!towerBeforePath || !towerDeviceKey || !vmDeviceKey) {
+      throw new Error(
+        'usage: physical-drill-producer phase-a-precheck <tower-before.json> <tower-device-key> <vm-device-key>',
+      );
+    }
+    const errors = validatePhysicalPhaseATowerBefore(
+      readJson(towerBeforePath) as PhysicalPhaseARepoObservation,
+      { towerDeviceKey, vmDeviceKey },
+    );
+    if (errors.length > 0) {
+      throw new Error(
+        `physical-drill-producer: PHASE_A_PRECONDITION_FAILED tower-baseline: ${errors.join('; ')} ` +
+          '(the tower must already hold the VM device namespace before phase A quarantines the VM store)',
+      );
+    }
+    return { schemaVersion: 'hive-git-physical-phase-a-precheck/v1', ok: true };
   }
   if (mode === 'phase-b-observe') {
     const [hostId, direction, state, repoPath, sourceDeviceKey, runId, ...rest] = args;
