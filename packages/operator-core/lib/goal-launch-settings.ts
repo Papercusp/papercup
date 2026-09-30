@@ -60,7 +60,7 @@
  */
 import { z } from 'zod';
 import type { Sql } from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 // Re-exported below for the public surface; imported here because this module
 // uses both internally (the schema's role enum + the resolver signatures).
 import {
@@ -539,7 +539,7 @@ export interface GoalLaunchRefusal {
 /**
  * Population labels for {@link GoalLaunchRefusal.currentScope}.
  *
- * ⚠ `BUDGET_POT` deliberately DUPLICATES `GOAL_SPEND_POT_SCOPE` from
+ * ⚠ `BUDGET_LINEAGE` deliberately DUPLICATES `GOAL_SPEND_LINEAGE_SCOPE` from
  * `./goals/spend-rollup` rather than importing it. That module reaches
  * `@papercusp/agent-mcp`, which imports THIS file, so the import would close a
  * runtime cycle. Duplication is the lesser evil here, but only because it is
@@ -548,8 +548,12 @@ export interface GoalLaunchRefusal {
  * derived.
  */
 export const REFUSAL_SCOPES = {
-  /** Mirrors GOAL_SPEND_POT_SCOPE — see the cycle note above. */
-  BUDGET_POT: 'inside-goal-pots:authoritative',
+  /**
+   * Mirrors GOAL_SPEND_LINEAGE_SCOPE — see the cycle note above. The goal's
+   * write-time-attributed spend over its budget window (D-011), the one figure
+   * the snapshot, this gate and the breach check share.
+   */
+  BUDGET_LINEAGE: 'attributed-by-lineage:authoritative',
   /**
    * The value carried no provenance marker, so its population is UNKNOWN. Not a
    * synonym for the pot scope: the gate's SELECT filters on nothing, so an
@@ -559,55 +563,46 @@ export const REFUSAL_SCOPES = {
    */
   BUDGET_UNVERIFIED: 'unverified-provenance:unmarked-snapshot',
   /**
-   * NOTHING was measured (WI-10002052 / D-004). Distinct from BUDGET_UNVERIFIED,
+   * NOTHING could be measured (WI-10002052). Distinct from BUDGET_UNVERIFIED,
    * which labels a number whose POPULATION is unknown: here there is no number at
-   * all, because the pot leg is an INNER JOIN on goal_pots and a goal with zero
-   * attached pots yields no measurement to scope. The refusal carries
-   * `current: null` and this label says why — so a reader is never invited to
-   * infer that the goal spent nothing.
+   * all, because the goal's window holds attributed samples the ledger could not
+   * price, so any total would be a floor. The refusal carries `current: null`
+   * and this label says why — so a reader is never invited to infer that the
+   * goal spent nothing.
    */
-  BUDGET_UNMEASURABLE: 'unmeasurable:no-pot-leg-measurement',
+  BUDGET_UNMEASURABLE: 'unmeasurable:unpriced-lineage-samples',
   LIVE_AGENTS_IN_GOAL: 'live-agents-in-goal',
   LIVE_AGENTS_IN_FLEET: 'live-agents-in-fleet',
 } as const;
 
 /**
- * The population a stored `spentCents` actually describes, judged from the
- * marker beside it rather than assumed. Both known writers
- * (`spend-rollup.ts`'s tick and `goals:update`'s verified rollup) persist a
- * pot-leg figure; anything unmarked is reported as unverified instead of being
- * granted their standing.
- */
-/**
- * WI-10002052 / D-004: decide whether a goal carries PRICED, goal-tagged spend
- * that the authoritative pot leg did not measure.
+ * WI-10002052 / D-011: does the snapshot say this goal SPENT in its window but
+ * the spend could not be measured?
  *
- * Reads the diagnostic session leg for EXISTENCE only (`> 0`), never as a
- * quantity — see {@link GoalBudgetTruth.unmeasuredPricedSpend} for why the cents
- * deliberately do not travel with this answer.
+ * The rollup writes `spentCents: null` for two different reasons and names
+ * which one in `spentCentsUnmeasuredReason`. Only `unpriced-lineage-samples` is
+ * a hole: attributed samples exist but some carry no price, so the true total is
+ * unknown and failing open would let a launch past a ceiling nobody can check.
+ * `no-lineage-samples` means nothing was spent in the window, which is safe to
+ * admit.
  *
- * Returns false whenever `spentCents` is non-null: if the pot leg measured, the
- * gate has an authoritative number and this signal has no business overriding
- * it. So this can only ever ADD a refusal where the gate previously failed
- * open; it can never suppress or soften an existing measured refusal.
+ * Returns false whenever `spentCents` is non-null, so a stale reason can never
+ * contradict a live measurement.
  */
-export function hasUnmeasuredPricedSpend(breakdown: unknown, spentCents: number | null): boolean {
-  // A measured goal is not an unmeasured one. Guard first so a stale breakdown
-  // can never contradict a live measurement.
+export function hasUnmeasuredPricedSpend(unmeasuredReason: unknown, spentCents: number | null): boolean {
   if (spentCents != null) return false;
-  if (!breakdown || typeof breakdown !== 'object' || Array.isArray(breakdown)) return false;
-  const b = breakdown as Record<string, unknown>;
-  // Both must hold: cents alone could be a rounding artifact, samples alone
-  // could be entirely unpriced. Together they mean real priced spend exists.
-  const cents = Number(b.sessionCents);
-  const samples = Number(b.sessionSamples);
-  return Number.isFinite(cents) && cents > 0 && Number.isFinite(samples) && samples > 0;
+  return unmeasuredReason === 'unpriced-lineage-samples';
 }
 
+/**
+ * The population a stored `spentCents` actually describes, judged from the
+ * marker beside it rather than assumed. The spend-rollup tick is the only
+ * writer (D-003) and stamps GOAL_SPEND_SNAPSHOT_SOURCE; anything else, including
+ * the retired pot-rollup markers, is reported as unverified instead of being
+ * granted its standing.
+ */
 export function budgetSpendScope(source: string | null): string {
-  return source === 'goal-pots-rollup' || source === 'goal-spend-tick'
-    ? REFUSAL_SCOPES.BUDGET_POT
-    : REFUSAL_SCOPES.BUDGET_UNVERIFIED;
+  return source === GOAL_SPEND_SNAPSHOT_SOURCE ? REFUSAL_SCOPES.BUDGET_LINEAGE : REFUSAL_SCOPES.BUDGET_UNVERIFIED;
 }
 
 /**
@@ -624,27 +619,19 @@ export interface GoalBudgetTruth {
   budgetCents: number | null;
   spentCents: number | null;
   /**
-   * WI-10002052 / D-004: does this goal demonstrably carry PRICED, goal-tagged
-   * spend that the pot leg could not measure?
+   * WI-10002052 / D-011: did this goal spend in its window in a way that could
+   * not be priced?
    *
-   * This is an EXISTENCE signal and nothing more. It exists because a null
-   * `spentCents` conflates two populations the gate must treat oppositely:
-   *   - a goal that has simply never been ticked (nothing spent yet) — fail open
-   *     is harmless, nothing is being let past a ceiling; and
-   *   - a POT-LESS goal whose spend is real, priced and tagged, but structurally
-   *     invisible to `goalSpend()` (an INNER JOIN on goal_pots). Failing open
-   *     there means the ceiling never binds for that goal, ever.
+   * An EXISTENCE signal. It exists because a null `spentCents` covers two
+   * populations the gate must treat oppositely:
+   *   - nothing attributed in the window (or no tick yet): failing open is
+   *     harmless, nothing is being let past a ceiling; and
+   *   - attributed samples WITHOUT a price: the total is unknown, so failing
+   *     open would let launches past a ceiling that cannot be checked.
    *
-   * ⚠ DELIBERATELY A BOOLEAN, NOT THE CENTS. The session leg it is derived from
-   * is marked diagnostic-only at the writer (`spend-rollup.ts`) and "must never
-   * be read as the authoritative spend snapshot or a terminal-control input".
-   * Carrying the number here would put the tempting value in the gate's hand and
-   * invite `sessionCents >= budgetCents`, which would breach that invariant and
-   * silently change what the ceiling measures. D-004 clause 3 forbids folding
-   * the session leg into the authoritative total without explicitly amending the
-   * invariant; this does not fold it — the gate learns only THAT unmeasured
-   * priced spend exists, never HOW MUCH, and so refuses as unmeasurable rather
-   * than pretending to a figure it may not use.
+   * ⚠ DELIBERATELY A BOOLEAN, NOT THE PRICED FLOOR. A floor below the ceiling
+   * says nothing about headroom, so carrying it here would invite exactly the
+   * comparison that makes a partial measurement look like a pass.
    */
   unmeasuredPricedSpend: boolean;
   spentCentsAt: string | null;
@@ -852,7 +839,7 @@ export interface GoalOperatingInputs {
   status: 'ready' | 'incomplete' | 'blocked';
   canExecute: boolean;
   budgetWindow: 'undeclared' | 'lifetime' | 'rolling';
-  spendCoverage: 'no-ceiling' | 'measured-pot' | 'not-yet-measured' | 'unmeasurable' | 'unverified';
+  spendCoverage: 'no-ceiling' | 'measured' | 'not-yet-measured' | 'unmeasurable' | 'unverified';
   issues: Array<{
     code:
       | 'missing-kill-criterion'
@@ -924,8 +911,8 @@ export function evaluateGoalOperatingInputs(args: {
     } else if (args.spentCents == null) {
       spendCoverage = 'not-yet-measured';
       add('spend-not-yet-measured', false, 'Check the first goal spend rollup before claiming measured headroom.');
-    } else if (budgetSpendScope(args.spentCentsSource) === REFUSAL_SCOPES.BUDGET_POT) {
-      spendCoverage = 'measured-pot';
+    } else if (budgetSpendScope(args.spentCentsSource) === REFUSAL_SCOPES.BUDGET_LINEAGE) {
+      spendCoverage = 'measured';
     } else {
       spendCoverage = 'unverified';
       add('spend-provenance-unverified', requiredForOutcome, 'Repair the spend provenance marker before relying on the ceiling.');
@@ -2337,9 +2324,9 @@ export async function readGoalLaunchSettings(
       SELECT title, body, kill_criterion, standing,
              launch_settings, budget_cents, budget_window_sec,
              metadata->'spentCents' AS spent_cents,
-             -- WI-10002052: the breakdown travels so the gate can tell "never ticked"
-             -- from "pot-less goal with real priced spend" — both store spentCents NULL.
-             metadata->'spentCentsBreakdown' AS spent_cents_breakdown,
+             -- WI-10002052 / D-011: the rollup names WHY spentCents is null, so the gate
+             -- can tell "nothing attributed in the window" from "spent, but unpriced".
+             metadata->>'spentCentsUnmeasuredReason' AS spent_cents_unmeasured_reason,
              metadata->>'spentCentsAt' AS spent_cents_at,
              metadata->>'spentCentsSource' AS spent_cents_source,
              metadata->>'drainFleet' AS drain_fleet
@@ -2356,7 +2343,7 @@ export async function readGoalLaunchSettings(
       budget_cents?: unknown;
       budget_window_sec?: unknown;
       spent_cents?: unknown;
-      spent_cents_breakdown?: unknown;
+      spent_cents_unmeasured_reason?: unknown;
       spent_cents_at?: unknown;
       spent_cents_source?: unknown;
       drain_fleet?: unknown;
