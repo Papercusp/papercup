@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-010: the Settings -> Remote access screen in the headless Tauri desktop lists every app and phone with its controls, its Revoke refuses that app's next MCP call by name, and its switch refuses every app key (live, 2026-09-30)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004023",
+  "specs": ["AUTO-BAR-R-26-P-010@4", "AUTO-BAR-R-40-P-010@2", "AUTO-BAR-R-41-P-010@2"],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=remote-access-entry-actions scripts/verify-tauri-headless.sh -- bash docs/evidence/p010-remote-access-live-2026-09-30/p010-headless-assert.sh"
+  ],
+  "assertions": [
+    { "id": "R-26-list-matches-db", "passed": true, "evidence": "P010_R26_RESULT verdict=pass entries=4 db=4: the sync-backed list converged in 1 s (no reload) to 4 entries equal to the 4 unrevoked connected_apps rows; with_all_controls=4 (Pause, Rotate, Revoke), mobile=1, apps=3, creator_and_last_use=4. r26-entries.json, r26-list-screen.png." },
+    { "id": "R-26-layout", "passed": true, "evidence": "P010_R26_LAYOUT verdict=pass: in the real webview at 188 px wide, 0 of 4 entries have controls overlapping the label or outside the row (getBoundingClientRect). r26-layout.json." },
+    { "id": "R-40-revoked-named", "passed": true, "evidence": "P010_R40_RESULT verdict=pass status=401 code=connected_app_invalid_key:revoked control_B=200: after Revoke + dialog confirm on the screen, key A's next POST /api/mcp got 401 with the named code; key B still 200. a-after-revoke.body.json." },
+    { "id": "R-41-switch-off", "passed": true, "evidence": "P010_R41_RESULT verdict=pass B=401:connected_app_invalid_key:remote_access_off C=401:connected_app_invalid_key:remote_access_off after clicking Turn off now. b-off.body.json, c-off.body.json, r41-off-screen.png." },
+    { "id": "R-41-control-switch-on", "passed": true, "evidence": "Switch back on: B=200, revoked A still 401 connected_app_invalid_key:revoked, so the switch alone refused B and C. a-on-again.body.json." }
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T11:44:04Z",
+  "finishedAt": "2026-09-30T11:48:05Z",
+  "rig": {
+    "command": "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='remote-access-entry-actions' scripts/verify-tauri-headless.sh -- bash docs/evidence/p010-remote-access-live-2026-09-30/p010-headless-assert.sh",
+    "run": "verify-tauri-headless 20260930T114404Z-2660051",
+    "snapshotContainment": "found 'remote-access-entry-actions' in the frozen SPA bundle (the layout fix is in the build under test)",
+    "sidecarSource": "mcp-auth-challenge.ts in the frozen operator source was byte-identical to the tree (named refusal code present in dist-verify/hono-host.mjs)",
+    "treeHead": "a992ff4ef5",
+    "blobs": {
+      "apps/operator/app/settings/remote-access/page.tsx": "eecfaa749cc481b6a1ba8169461b6eeef0c656ea",
+      "packages/operator-core/lib/endpoint-route/routes/transport/mcp-auth-challenge.ts": "d3d54206f56bc854fa1e4314ab46fc532a7bb61d"
+    },
+    "isolation": "throwaway migrated Postgres and WebView profile; workspace verify-tauri-isolated-90"
+  },
+  "results": {
+    "R-26": {
+      "verdict": "pass",
+      "observed": "Three app keys created through the same POST the Connect-an-app wizard makes, and one phone paired (desktop mint, then POST /api/device/pair as the phone would, 200). Without a reload the sync-backed list converged in 1 s to 4 entries, equal to the 4 unrevoked connected_apps rows for the workspace. All 4 carry Pause, Rotate and Revoke; 1 is a phone and 3 are app keys; each shows 'Added by <creator> on <date> - last used <when>'. In the real webview (188 px wide pane) no entry's controls overlap its label or leave the row.",
+      "artifacts": ["r26-entries.json", "r26-layout.json", "r26-dom.txt", "r26-screen.png", "r26-list-screen.png"]
+    },
+    "R-40": {
+      "verdict": "pass",
+      "observed": "Baseline: all three keys got 200 from POST /api/mcp initialize. Clicking Revoke on key A and confirming in the dialog removed A from the list; A's next /api/mcp call got 401 with code connected_app_invalid_key:revoked (and 'app key refused: revoked' on a REST route); control key B still got 200.",
+      "artifacts": ["a-after-revoke.body.json", "a-after-revoke-named.body.json"]
+    },
+    "R-41": {
+      "verdict": "pass",
+      "observed": "Clicking 'Turn off now' set the switch off; the next /api/mcp call of both remaining keys B and C got 401 with code connected_app_invalid_key:remote_access_off (and 'app key refused: remote_access_off' on a REST route). Control: turning the switch back on restored B to 200 while revoked A stayed refused as revoked, so the switch, not a side effect, refused them.",
+      "artifacts": ["b-off.body.json", "c-off.body.json", "b-off-named.body.json", "a-on-again.body.json", "r41-off-screen.png"]
+    }
+  },
+  "earlierRun": "A run at 11:41Z against a rig booted before the layout fix also passed R-26/R-40/R-41 on 7 entries, and its screenshot showed the defect this run guards: in the narrow pane the Pause button was drawn over the key's name and Rotate/Revoke were clipped. page.tsx now wraps the row and the control group; page.test.tsx pins it and this run measures it.",
+  "summary": "Live in the headless Tauri desktop, recorded in docs/evidence/p010-remote-access-live-2026-09-30/p010-headless-assert.sh"
+}
