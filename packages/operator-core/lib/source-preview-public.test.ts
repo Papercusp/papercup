@@ -113,6 +113,11 @@ describe('public target — licensed export', () => {
     expect(readme).toContain('Elastic License 2.0');
     expect(readme).not.toMatch(/replaced wholesale/);
     expect(readme).toContain('## Contributing, security and telemetry');
+    // P-008: a stranger's clean-machine build path, each step measured on a clean copy.
+    expect(readme).toContain('## Build and run from source');
+    for (const step of ['postgresql-18-pgvector', 'npm --workspace @papercusp/operator-vite run build', 'cd papercusp-desktop && npm ci && npm run dev', 'scripts/install-embedded-pgvector.mjs']) {
+      expect(readme, step).toContain(step);
+    }
     // P-004: the public cut carries the desktop shell, minus generated/internal paths.
     for (const p of PUBLIC_DESKTOP_SHIPPED) expect(existsSync(join(out, p)), p).toBe(true);
     for (const p of PUBLIC_DESKTOP_DROPPED) expect(existsSync(join(out, p)), p).toBe(false);
