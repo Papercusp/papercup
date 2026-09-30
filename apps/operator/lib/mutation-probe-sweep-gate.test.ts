@@ -140,6 +140,8 @@ function runLockedProbe(
     ...process.env,
     PATH: fakeBin + ':' + (process.env.PATH ?? ''),
     PAPERCUSP_SID: 'mutation-probe-test-session',
+    PAPERCUSP_WORKSPACE_ID: '',
+    PAPERCUSP_WORKSPACE: 'probe-workspace',
     PAPERCUSP_TEST_RUN_HARNESS: 'probe-harness',
     MUTATION_PROBE_WINDOW_MAX_SEC: '600',
     MUTATION_PROBE_LOCK_MODE: mode,
@@ -214,7 +216,9 @@ beforeAll(() => {
     'process.stdin.on("data", (chunk) => input += chunk);',
     'process.stdin.on("end", () => {',
     '  const argv = process.argv.slice(2);',
-    '  const tool = argv[0];',
+    '  const workspace = argv.find((arg) => arg.startsWith("--workspace="))?.slice("--workspace=".length) ?? "";',
+    '  const harness = argv.find((arg) => arg.startsWith("--harness="))?.slice("--harness=".length) ?? "";',
+    '  const tool = argv.find((arg) => !arg.startsWith("--") && arg.includes(":"));',
     '  const args = input ? JSON.parse(input) : {};',
     '  const mode = process.env.MUTATION_PROBE_LOCK_MODE;',
     "  const projectionAt = argv.indexOf('--projection');",
@@ -222,7 +226,16 @@ beforeAll(() => {
     '  const explicitUrl = argv.find((arg) => arg.startsWith("--url="));',
     '  const targetUrl = explicitUrl ? explicitUrl.slice("--url=".length) : (process.env.PAPERCUSP_HONO_PORT ? "http://127.0.0.1:" + process.env.PAPERCUSP_HONO_PORT : (process.env.PAPERCUSP_OPERATOR_URL || "http://127.0.0.1:3070"));',
     '  if (process.env.MUTATION_PROBE_LOCK_LOG) {',
-    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw, targetUrl }) + "\\n");',
+    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw, targetUrl, workspace, harness }) + "\\n");',
+    '  }',
+    // Mirror the auth boundary: a fleet member must scope each call explicitly;
+    // relying on a stale session claim can produce harness_scope_stale.
+    '  const expectedWorkspace = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || "";',
+    '  const expectedHarness = process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || "";',
+    '  if (!workspace || !harness || workspace !== expectedWorkspace || harness !== expectedHarness) {',
+    '    process.stderr.write("mcp_auth_failed: harness_scope_stale: ptool requires explicit matching --workspace and --harness");',
+    '    process.exitCode = 1;',
+    '    return;',
     '  }',
     // Mirror the real dispatch contract (WI-10002758): a projection must name
     // pick or pipe. The fake used to ignore --projection, so a probe sending
@@ -543,6 +556,25 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     }
   });
 
+  it('passes explicit workspace and harness scope to every sweep-fence ptool call', () => {
+    const { code, out } = runLockedProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ]);
+
+    expect(code).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    for (const call of calls) {
+      expect(call.workspace, call.tool).toBe('probe-workspace');
+      expect(call.harness, call.tool).toBe('probe-harness');
+    }
+  });
+
   // WI-10004155: a git-sync lease that IS held but ends before the window plus
   // its 120s margin used to refuse with the same text as "not held", which read
   // as operator error. It must name the seconds left and the seconds required.
@@ -666,6 +698,61 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
  * verdict. Asserting only the refusal would pass equally against a script
  * that had started refusing everything.
  */
+describe('mutation-probe.sh assertion-evidence gate', () => {
+  const setupFailure = [
+    // The reporter count below includes the failed setup hook, though no assertion ran.
+    'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "FAIL setup hook: Hook timed out in 120000ms\\n"; printf "Tests 2 skipped (2)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=2\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
+    'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+  ].join('; ');
+
+  it('does not report a setup-hook timeout with skipped tests as caught', () => {
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', setupFailure,
+    ]);
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=inconclusive');
+    expect(out).toContain('assertion_evidence=no-assertion-failure-evidence');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('still reports a Papercusp test:file assertion failure as caught', () => {
+    const assertionFailure = [
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "TEST_FILE_ASSERTION_FAILURE file=\\\"guard.test.ts\\\" name=\\\"guard rejects mutation\\\" message=\\\"expected failure\\\"\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=0\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
+      'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+    ].join('; ');
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', assertionFailure,
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('still recognizes a direct Vitest failed-test summary', () => {
+    const vitestFailure = [
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "Tests 1 failed (1)\\n"; else printf "Tests 1 passed (1)\\n"; fi',
+      'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+    ].join('; ');
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', vitestFailure,
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('assertion_evidence=vitest-failed-tests');
+  });
+});
+
 describe('mutation-probe.sh unparseable-mutant gate', () => {
   it('REFUSES a mutant that no longer parses, instead of scoring it as caught', () => {
     // The exact shape from the field report: the pattern matches the function
