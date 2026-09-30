@@ -12,6 +12,7 @@ import {
   evaluatePlanAcceptanceGate,
   findDurableDeliverableCompanions,
   planAcceptanceRepairAction,
+  receiverHeldAcceptanceRefusal,
   unfinishedItemsAreAuditedNonCode,
 } from './plan-acceptance-gate';
 import { ACCEPTANCE_GRADING_NO_CLAIM_FACT } from './consult/grading-cascade';
@@ -1998,5 +1999,106 @@ describe('the spec-proof check (first-class-spec-clauses-2026-08-20 P-008)', () 
     expect(v.satisfied).toBe(true);
     expect(v.specCoverage).toBeUndefined();
     expect(mockSpecCoverage).not.toHaveBeenCalled();
+  });
+});
+
+// WI-10004178 / p2p-public-release-endgame-2026-09-01 D-095 — ship and grade are
+// authoring-node acts in v1. A federated receiver must refuse loudly, naming that
+// node, instead of reading the authoring node's cards against its own counter.
+describe('evaluatePlanAcceptanceGate — federated receiver node (WI-10004178, D-095)', () => {
+  const receiverRubric = {
+    rubricId: 'acceptance-some-plan-2026-08-11',
+    origin: 'remote',
+    authorPubkey: null,
+    proposedBy: 'su-author',
+  };
+
+  it('refuses only when BOTH receiver signals hold', () => {
+    const base = { planSlug: 'some-plan-2026-08-11', verifiedRevision: 7, rubric: receiverRubric };
+    expect(receiverHeldAcceptanceRefusal(base)?.code).toBe('acceptance_authored_on_other_node');
+    // The authoring node: no receiver verification, even with a remote-origin rubric
+    // (a peer's supersede federating back — measured live on shipped plans here).
+    expect(receiverHeldAcceptanceRefusal({ ...base, verifiedRevision: null })).toBeNull();
+    // The authoring node after a peer's plan write federated back and the receiver
+    // seed ran here: the rubric content is still this node's own.
+    expect(receiverHeldAcceptanceRefusal({ ...base, rubric: { ...receiverRubric, origin: 'local' } })).toBeNull();
+    expect(receiverHeldAcceptanceRefusal({ ...base, rubric: null })).toBeNull();
+  });
+
+  it('names the authoring node by pot member, by device key, or says it cannot', () => {
+    const key = 'a'.repeat(64);
+    const member = receiverHeldAcceptanceRefusal({
+      planSlug: 'p', verifiedRevision: 3, rubric: { ...receiverRubric, authorPubkey: key }, memberHandle: 'aviynw',
+    });
+    expect(member?.authoringNode).toMatchObject({ labelSource: 'pot-member', pubkey: key, verifiedRevision: 3 });
+    expect(member?.message).toMatch(/^Ship from the authoring node aviynw \(device a{12}…\)\./);
+
+    const device = receiverHeldAcceptanceRefusal({
+      planSlug: 'p', verifiedRevision: 3, rubric: receiverRubric, planOwnerPubkey: key,
+    });
+    expect(device?.authoringNode).toMatchObject({ labelSource: 'pubkey', pubkey: key });
+    expect(device?.message).toContain(`Ship from the authoring node device ${'a'.repeat(12)}…`);
+
+    const unnamed = receiverHeldAcceptanceRefusal({ planSlug: 'p', verifiedRevision: 3, rubric: receiverRubric });
+    expect(unnamed?.authoringNode).toMatchObject({ labelSource: 'unresolved', pubkey: null, proposedBy: 'su-author' });
+    expect(unnamed?.message).toContain('cannot name it');
+    expect(unnamed?.message).toContain('proposed there by su-author');
+    expect(unnamed?.message).toContain('D-095');
+  });
+
+  /** Route each gate query by its text: the subject read, then the rubric-origin read. */
+  const receiverPg = (subject: Record<string, unknown>, rubricRows: unknown[]) => {
+    const sql = ((strings: TemplateStringsArray) => Promise.resolve(
+      strings.join('?').includes('AS proposed_by') ? rubricRows : [subject],
+    )) as unknown as ReturnType<typeof getOrgPg>['sql'];
+    return { sql } as ReturnType<typeof getOrgPg>;
+  };
+  const subjectRow = {
+    plan_slug: 'some-plan-2026-08-11', harness_slug: 'papercusp', template: null, template_slug: null,
+    acceptance_bar_epoch: null, content: '# plan\n', status: 'ready', owner_author_pubkey: null,
+  };
+  const rubricRow = {
+    plan_slug: 'acceptance-some-plan-2026-08-11', origin: 'remote', author_pubkey: null, proposed_by: 'su-author',
+  };
+
+  it('B: returns the typed refusal before any rubric-family read, so no grader is recruited here', async () => {
+    mockPg.mockReturnValue(receiverPg({ ...subjectRow, acceptance_bar_verified_revision: '12' }, [rubricRow]));
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_authored_on_other_node',
+      authoringNode: { rubricId: 'acceptance-some-plan-2026-08-11', verifiedRevision: 12, labelSource: 'unresolved' },
+    });
+    expect(v.message).toMatch(/^Ship from the authoring node /);
+    // Not a grader gap: acceptance_ungraded is what the recruiter would act on.
+    expect(v.code).not.toBe('acceptance_ungraded');
+    expect(mockBarLifecycle).not.toHaveBeenCalled();
+    expect(mockRubrics).not.toHaveBeenCalled();
+    expect(mockScorecards).not.toHaveBeenCalled();
+  });
+
+  it('A: the authoring node is unchanged — no verified receiver revision, ordinary verdict', async () => {
+    mockPg.mockReturnValue(receiverPg({ ...subjectRow, acceptance_bar_verified_revision: null }, [rubricRow]));
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v.code).not.toBe('acceptance_authored_on_other_node');
+    expect(v.authoringNode).toBeUndefined();
+    expect(mockRubrics).toHaveBeenCalled();
+  });
+
+  it('is not waivable by force: force waives code truth, never who may grade', async () => {
+    mockPg.mockReturnValue(receiverPg({ ...subjectRow, acceptance_bar_verified_revision: 4 }, [rubricRow]));
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'try to push it through' } });
+
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_authored_on_other_node' });
+    expect(v.forcedPast).toBeUndefined();
   });
 });

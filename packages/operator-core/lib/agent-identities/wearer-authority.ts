@@ -49,8 +49,14 @@ export function identityCeilingRefusal(
  * PURE: the dispatcher context identity work runs under. The wearer is both
  * principal and coordination owner, so `resolveAgentIdentity` and the identity
  * grant kernel judge the wearer. There is no `gateBypass`: capability, role and
- * quota all apply.
+ * quota all apply, and quota is charged to the wearer: every dispatch gets its
+ * own `runId`, so the window is the wearer's `quotaSubject` (D-032).
  */
+export function wearerQuotaSubject(ownerId: string): string {
+  return `wearer:${ownerId}`;
+}
+
+/** See {@link wearerQuotaSubject}. */
 export function buildWearerToolContext(input: {
   workspaceId: string;
   ownerId: string;
@@ -70,6 +76,7 @@ export function buildWearerToolContext(input: {
     spawnId: input.spawnId,
     parentSpawnId: null,
     uiClientId: input.ownerId,
+    quotaSubject: wearerQuotaSubject(input.ownerId),
     isSuperuser: false,
     profile: 'engineer',
     transport: 'in_process',

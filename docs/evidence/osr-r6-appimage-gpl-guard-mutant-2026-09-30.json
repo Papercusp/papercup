@@ -10,26 +10,27 @@
     "node --test $T/test/appimage-gpl-guard.test.js"
   ],
   "exitCode": 1,
-  "startedAt": "2026-09-30T03:51:01Z",
-  "finishedAt": "2026-09-30T03:51:01Z",
-  "summary": "Copy-out counterexample, so the shared tree was never mutated. The test resolves ../bin/build-appimage.sh from its own directory, so both files were copied to a temp tree and only the copy was mutated. The mutation turns the GPL-library guard (if [ -n \"$_gpl_hits\" ]) into if false, which lets a GPL-only library reach the AppDir without failing the build. The suite goes red (7 tests, 5 pass, 2 fail, exit 1). The failing tests are 'the guard fails the build when a GPL codec library reaches the AppDir' and 'D-013: the guard fails on each newly covered GPL library'. The unmutated copy in the same run passed 7/7, which gives a matched baseline. The mutant parses (bash -n ok).",
+  "startedAt": "2026-09-30T07:25:53Z",
+  "finishedAt": "2026-09-30T07:25:54Z",
+  "summary": "Re-measured at 07:25Z after WI-10004186 edited build-appimage.sh (sha256 30ed36c53c987778baecef345f4f82f561e34a3959d3f61508298566871b3e2c) for the pipefail early-consumer fix. The first measurement was at 03:51Z against the earlier bytes. This is a copy-out counterexample, so the shared tree was never mutated. The test resolves ../bin/build-appimage.sh relative to its own location, so both files were copied into a temp tree and only that copy was mutated. The mutation replaces the GPL-library guard `if [ -n \"$_gpl_hits\" ]` with `if false`, which lets a GPL-only library reach the AppDir without failing the build. Against the mutant the suite goes red: 7 tests, 5 pass, 2 fail, exit 1. The two failures are 'the guard fails the build when a GPL codec library reaches the AppDir' and 'D-013: the guard fails on each newly covered GPL library'. A matched baseline in the same run, using the unmutated copy, passed 7/7. The mutant still parses (bash -n ok).",
   "assertions": [
     {
       "id": "mutant-killed",
       "passed": true,
-      "evidence": "node --test on the mutant: # tests 7, # pass 5, # fail 2, exit 1. not ok 2 and not ok 6 are the guard tests."
+      "evidence": "node --test on the mutant reported tests 7, pass 5, fail 2 and exited 1. The two failures were 'the guard fails the build when a GPL codec library reaches the AppDir' and 'D-013: the guard fails on each newly covered GPL library'."
     },
     {
       "id": "matched-baseline-passed",
       "passed": true,
-      "evidence": "Same temp layout, unmutated copy: 7 pass, 0 fail, exit 0."
+      "evidence": "The unmutated copy in the same temp layout passed 7, failed 0, exit 0."
     },
     {
       "id": "mutation-not-a-no-op",
       "passed": true,
-      "evidence": "cmp reported the mutant differs from the original, and bash -n parsed the mutant."
+      "evidence": "cmp found the mutant differs from the original (no NOOP-MUTATION), and bash -n parsed the mutant."
     }
   ],
+  "sourceSha256": "30ed36c53c987778baecef345f4f82f561e34a3959d3f61508298566871b3e2c",
   "workItemId": "WI-10003960",
   "specId": "R-6",
   "testFile": "papercusp-desktop/test/appimage-gpl-guard.test.js",

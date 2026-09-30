@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "jev-decision-model-integration-2026-09-29 AUTO-BAR-R-15-P-001: the first Jev key store follows owner directive #1002",
+  "framework": "operational",
+  "command": [
+    "orders:get { id: 1002 }",
+    "dev:pg_query: SELECT invoked_at, args_json->>'name', status FROM harness_shared.tool_invocations WHERE tool_name='setup:save_integration_key' AND invoked_at > '2026-09-28' ORDER BY invoked_at",
+    "dev:pg_query: SELECT method, path, count(*) FROM harness_shared.route_invocations WHERE invoked_at > '2026-09-29' AND (path ILIKE '%user%' OR path ILIKE '%settings%' OR resolved_path ILIKE '%jev%') GROUP BY 1, 2",
+    "dev:pg_query: SELECT min(created_at), min(started_at), count(*) FROM harness_shared.decision_model_calls"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T07:18:20Z",
+  "finishedAt": "2026-09-30T07:21:10Z",
+  "summary": "Owner directive #1002 was recorded at 2026-09-30T00:49:38.863Z. Since 2026-09-28 there is exactly one setup:save_integration_key call: 2026-09-30T01:39:05.753Z, name TYPESAFE_API_KEY, status ok, 49 minutes after the directive. route_invocations holds 355,146 rows between 2026-09-29T00:00Z and 2026-09-30T03:30Z, and settings-shaped paths are recorded (GET /harness/:slug/claude-settings/effective, 1,181 since 2026-09-29), but no request of any method reached /user/jev-settings. Every Jev client path reads the stored key and makes zero network calls without it (jev-settings.test.ts 'with no key stored ... makes ZERO network calls'), so 01:39:05Z bounds the first possible live call. Cross-check: harness_shared.decision_model_calls holds 4,879 rows; the earliest started_at is 2026-09-30T03:21:10.435Z and the earliest created_at 03:21:10.806Z, both after the directive.",
+  "assertions": [
+    {
+      "id": "key-store-after-directive",
+      "passed": true,
+      "evidence": "First TYPESAFE_API_KEY store 2026-09-30T01:39:05.753Z > directive createdAt 2026-09-30T00:49:38.863Z."
+    },
+    {
+      "id": "no-route-key-store",
+      "passed": true,
+      "evidence": "0 requests to /user/jev-settings since 2026-09-29 while the same table recorded 355,146 other requests in the window."
+    },
+    {
+      "id": "first-ledger-row-after-directive",
+      "passed": true,
+      "evidence": "min(decision_model_calls.started_at) 2026-09-30T03:21:10.435Z > 2026-09-30T00:49:38.863Z."
+    }
+  ],
+  "workItemId": "WI-10004172",
+  "specId": "AUTO-BAR-R-15-P-001",
+  "planSlug": "jev-decision-model-integration-2026-09-29"
+}

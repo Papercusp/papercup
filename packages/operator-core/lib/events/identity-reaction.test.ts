@@ -238,6 +238,16 @@ describe('buildWearerReactionCtx', () => {
     expect([...(ctx.principal?.capabilities ?? [])]).toEqual(['tasks:create']);
     expect(ctx.reactionCause).toEqual({ depth: 1, chain: [PIN], ruleId: PIN, rootRunId: FIRE_ID });
   });
+
+  it('charges quota to the wearer: one quota subject across reactions, a fresh runId each (D-032)', () => {
+    const again = buildWearerReactionCtx({
+      workspaceId: WS, ownerId: OWNER, role: 'su', harnessSlug: 'papercusp', capabilities: ['tasks:create'],
+      cause: { depth: 1, chain: [PIN], ruleId: PIN, rootRunId: FIRE_ID },
+    });
+    expect(ctx.quotaSubject).toBe(`wearer:${OWNER}`);
+    expect(again.quotaSubject).toBe(ctx.quotaSubject);
+    expect(again.runId).not.toBe(ctx.runId);
+  });
 });
 
 describe('executeIdentityReaction', () => {

@@ -4360,6 +4360,12 @@ impl App {
             && !self.chat_messages[pos + 1..].iter().any(|m| m.streaming)
         {
             let mut held = self.chat_messages.split_off(pos + 1);
+            // WI-10004184: a reply already on screen after this turn came from
+            // the same history the replay is now re-rendering. Held aside and
+            // put back after the replay, it showed that reply twice (measured
+            // in the P-005 review after /resume). Only saved owner turns and
+            // local notes wait aside; the replay re-renders the replies.
+            held.retain(|m| m.role != "assistant");
             held.append(&mut self.su_replay_tail);
             self.su_replay_tail = held;
         }
@@ -18794,6 +18800,62 @@ mod tests {
                 ("user", "never delivered"),
             ],
             "each replayed reply belongs under its own question"
+        );
+        assert!(app.su_replay_tail.is_empty());
+    }
+
+    /// WI-10004184 (measured in the real-engine review frame 05 after
+    /// /resume): a chat that already shows its replies is replayed again. The
+    /// replies on screen must not be held aside and put back after the
+    /// replayed copies, which showed a reply twice once the next turn began.
+    #[test]
+    fn su_replay_over_rendered_replies_shows_each_reply_once() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.chat_messages = vec![
+            ChatMessage::user("first question"),
+            ChatMessage::assistant("reply one"),
+            ChatMessage::user("second question"),
+            ChatMessage::assistant("reply two"),
+        ];
+        app.su_rendered_owner_turns = ["t1", "t2"].map(String::from).into_iter().collect();
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 6, Some(su_rematerialize_verdict())));
+        let mut sequence = 0;
+        let mut send = |app: &mut App, phase: &str, turn: &str, role: &str, content: Option<&str>| {
+            sequence += 1;
+            let mut event = su_event_base("transcript", sequence);
+            event["phase"] = json!(phase);
+            event["turnId"] = json!(turn);
+            event["role"] = json!(role);
+            event["channel"] = json!(if role == "owner" { "primary" } else { "text" });
+            if let Some(content) = content {
+                event["content"] = json!(content);
+            }
+            app.apply_su_session_event(su_event(event));
+        };
+        for (turn, question, reply) in [("t1", "first question", "reply one"), ("t2", "second question", "reply two")] {
+            send(&mut app, "completed", turn, "owner", Some(question));
+            send(&mut app, "started", turn, "assistant", None);
+            send(&mut app, "completed", turn, "assistant", Some(reply));
+        }
+        // The next owner turn is live, past the replayed history.
+        send(&mut app, "completed", "t3", "owner", Some("third question"));
+        let rendered: Vec<(&str, &str)> = app
+            .chat_messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                ("user", "first question"),
+                ("assistant", "reply one"),
+                ("user", "second question"),
+                ("assistant", "reply two"),
+                ("user", "third question"),
+            ],
+            "each reply shows once, in conversation order"
         );
         assert!(app.su_replay_tail.is_empty());
     }

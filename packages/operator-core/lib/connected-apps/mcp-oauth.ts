@@ -286,10 +286,11 @@ export class PostgresOAuthStore implements OAuthStore {
     const { sql } = getOrgPg();
     const clientId = `${OAUTH_CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
     const clientSecret = input.tokenEndpointAuthMethod === 'none' ? null : `pcos_${randomBytes(32).toString('base64url')}`;
-    // The URIs travel as JSON, not `sql.array()`: postgres.js types an array parameter from the
-    // array OIDs a connection fetches on connect, so the FIRST query on a fresh client sends it as
-    // scalar text and Postgres refuses it ("redirect_uris is of type text[] but expression is of
-    // type text"). JSON is typed by the query itself.
+    // The URIs travel as JSON, typed by the query itself, so this insert does not depend on the
+    // client having seeded postgres.js's array-type OIDs. Production clients seed them
+    // (buildClient, WI-41207); the org TEST fixture once did not, and a `sql.array()` here then
+    // failed on a fresh client's first query (WI-10004177, fixed in the fixture). Keeping JSON
+    // means no client setup can bring that failure back for this row (WI-10004187).
     const rows = await sql<ClientRow[]>`
       INSERT INTO harness_shared.connected_app_oauth_clients
         (client_id, client_name, redirect_uris, token_endpoint_auth_method, client_secret_hash, created_at)
@@ -412,4 +413,46 @@ export function newRequestHandle(random: (size: number) => Uint8Array = randomBy
 
 export function newAuthorizationCode(random: (size: number) => Uint8Array = randomBytes): string {
   return `pac_${Buffer.from(random(32)).toString('base64url')}`;
+}
+
+// ── HTTP helpers shared by the local (P-006) and portal (P-325) authorization servers ────────
+
+export const OAUTH_NO_STORE: Readonly<Record<string, string>> = { 'cache-control': 'no-store', pragma: 'no-cache' };
+
+/** An RFC 6749 §5.2 error body. */
+export function oauthErrorResponse(error: string, description: string, status = 400, extra: Record<string, string> = {}): Response {
+  return Response.json({ error, error_description: description }, { status, headers: { ...OAUTH_NO_STORE, ...extra } });
+}
+
+/** Append OAuth response parameters to a registered redirect URI (RFC 6749 §4.1.2, RFC 9207 iss). */
+export function redirectWithParams(redirectUri: string, params: Record<string, string | null>): Response {
+  const target = new URL(redirectUri);
+  for (const [k, v] of Object.entries(params)) if (v !== null) target.searchParams.set(k, v);
+  return new Response(null, { status: 302, headers: { location: target.toString(), ...OAUTH_NO_STORE } });
+}
+
+/** A form-urlencoded or JSON object body, or null. */
+export async function readFormOrJson(req: Request): Promise<Record<string, unknown> | null> {
+  const type = req.headers.get('content-type') ?? '';
+  try {
+    if (type.includes('application/x-www-form-urlencoded')) return Object.fromEntries(new URLSearchParams(await req.text()));
+    const v = await req.json();
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** client_secret_basic credentials (RFC 6749 §2.3.1: form-urlencoded, then base64). */
+export function readBasicCredentials(req: Request): { id: string; secret: string } | null {
+  const header = req.headers.get('authorization') ?? '';
+  if (!/^basic /i.test(header)) return null;
+  try {
+    const decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8');
+    const colon = decoded.indexOf(':');
+    if (colon < 0) return null;
+    return { id: decodeURIComponent(decoded.slice(0, colon)), secret: decodeURIComponent(decoded.slice(colon + 1)) };
+  } catch {
+    return null;
+  }
 }

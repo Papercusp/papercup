@@ -53,6 +53,18 @@ describe('papercuspComputeQuotaWindow', () => {
     ).toEqual({ key: 'power-user:pus-abc', limit: 9 });
   });
 
+  it('keys a named quota subject on subject:<id>, not the per-dispatch runId (D-032)', () => {
+    const wearer = (runId: string) => MAKE_CTX({ role: 'su', uiClientId: 'w1', quotaSubject: 'wearer:w1', runId, chunkId: null });
+    expect(papercuspComputeQuotaWindow(wearer('run_1'), Q)).toEqual({ key: 'subject:wearer:w1', limit: 9 });
+    expect(papercuspComputeQuotaWindow(wearer('run_2'), Q).key).toBe('subject:wearer:w1');
+    // The worker chunk window and the power-user session window keep precedence.
+    expect(papercuspComputeQuotaWindow(MAKE_CTX({ role: 'worker', chunkId: 'ck_A', quotaSubject: 'wearer:w1' }), Q).key)
+      .toBe('chunk:ck_A');
+    expect(papercuspComputeQuotaWindow(
+      MAKE_CTX({ role: 'operator', isPowerUser: true, uiClientId: 'pus-abc', quotaSubject: 'wearer:w1', chunkId: null }), Q,
+    ).key).toBe('power-user:pus-abc');
+  });
+
   it('falls back to run:<id> for a power-user ctx missing uiClientId', () => {
     expect(
       papercuspComputeQuotaWindow(

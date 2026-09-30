@@ -274,12 +274,19 @@ export interface AppRelayChannel {
   close(reason: string): void;
 }
 
+/**
+ * The in-process channels the portal itself opens: `app-http` carries one relayed app call (P-007);
+ * `app-key-mint` carries one key mint for a consented MCP OAuth grant (P-325, D-021).
+ */
+export type AppRelayChannelKind = 'app-http' | 'app-key-mint';
+
 /** What the relay needs from the connector broker (`HostedWorkspaceSessionBroker` implements it). */
 export interface AppRelayPort {
   appConnector(customerWorkspaceId: string): AppRelayConnector | null;
   openAppChannel(
     connector: AppRelayConnector,
     handlers: { onFrame: (payload: Record<string, unknown>) => void; onClose: (reason: string) => void },
+    kind?: AppRelayChannelKind,
   ): AppRelayChannel | null;
 }
 

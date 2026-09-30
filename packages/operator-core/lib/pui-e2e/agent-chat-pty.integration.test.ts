@@ -3748,6 +3748,19 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write('\u000f');
       await pane.waitFor('reconciliation: ');
       expect(pane.screen()).toMatch(/\badv \d/);
+      // R-02: the session the UI shows is the backend's own: the same adv row,
+      // run in the launch directory, live, in the lifecycle state the UI names.
+      await vi.waitFor(async () => {
+        const shown = /SU session · (\S+) · adv (\d+)/.exec(pane.screen());
+        expect(shown, 'the details line names the session').not.toBeNull();
+        const [row] = await db.adminSql<{ cwd: string | null; ended: boolean; chat: string | null; lifecycle: string | null }[]>`
+          SELECT cwd, ended_at IS NOT NULL AS ended, su_agent_chat_id AS chat,
+                 su_session_descriptor->>'lifecycle' AS lifecycle
+            FROM harness_shared.adv_sessions WHERE id = ${Number(shown![2])}`;
+        expect(row, `adv_sessions row ${shown![2]}`).toMatchObject({ cwd: launchDir, ended: false, lifecycle: shown![1] });
+        expect(row.chat).toBeTruthy();
+      }, { timeout: 10_000, interval: 250 });
+      expect(pane.screen()).toContain('reconciliation: attached');
       pane.write('\u000f');
       await vi.waitFor(() => expect(chatJargonIn(pane.screen())).toEqual([]), { timeout: 10_000, interval: 100 });
       console.info('PUI_P001_CHAT_FIRST_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: ready }));
@@ -3880,10 +3893,19 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const gatewayModel = 'papercusp-gateway/claude-sonnet-4-6';
     let replyText = '';
     let stage = 'config';
+    // The operator runs in this process and caches operator_account_pool
+    // (operator-state-pg, 2 s TTL). A direct SQL write does not invalidate that
+    // cache, so a pool read just before the seed hid the seeded account from
+    // the launch in a full-file run. Every write here invalidates it.
+    const { invalidateOperatorStateCache } = await import('../operator-state-pg');
+    const { loadAccountPool } = await import('../deployment/account-pool-store');
+    const poolAsOperatorSees = async () => (await loadAccountPool(WORKSPACE)).accounts
+      .map((account) => ({ id: account.id, provider: account.provider }));
+    let poolAtLaunch: unknown = null;
     onTestFailed(() => console.info('PUI_WI164_FAILURE', JSON.stringify({
       stage, launches: launchRequests.slice(-2), engines: scriptedEngine.rpcLaunches.slice(-2),
       events: scriptedEngine.events.slice(-6).map((event) => JSON.stringify(event).slice(0, 400)),
-      selector: process.env.PAPERCUSP_OMP_MODEL_SELECTOR ?? null,
+      selector: process.env.PAPERCUSP_OMP_MODEL_SELECTOR ?? null, poolAtLaunch,
     })));
     // The refused start leaves an adv row with no native identity, so its
     // end-of-session archive has nothing named to archive and says so once,
@@ -3921,6 +3943,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
         VALUES (${WORKSPACE}, ${JSON.stringify(seeded)}::text::jsonb, ${Date.now()})
         ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
+      invalidateOperatorStateCache('operator_account_pool', WORKSPACE);
+      poolAtLaunch = await poolAsOperatorSees();
+      expect(poolAtLaunch, 'the operator reads the seeded account').toContainEqual({ id: 'wi164-claude', provider: 'claude' });
 
       stage = 'unchosen';
       const tag = randomUUID().slice(0, 8);
@@ -3995,6 +4020,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       } else {
         await db.adminSql`DELETE FROM harness_shared.operator_account_pool WHERE workspace_id = ${WORKSPACE}`;
       }
+      invalidateOperatorStateCache('operator_account_pool', WORKSPACE);
       if (savedOmpModel === undefined) delete process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
       else process.env.PAPERCUSP_OMP_MODEL_SELECTOR = savedOmpModel;
       await writeAgentConfig(saved);

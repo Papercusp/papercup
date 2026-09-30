@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "jev-decision-model-integration-2026-09-29 AUTO-BAR-R-13-P-011: docs:search for Jev returns an agent-insights page that lists every D-001 surface",
+  "framework": "operational",
+  "command": [
+    "docs:search { query: 'Jev typed decisions', harness: 'engineering', limit: 3 }",
+    "plans:get { slug: 'jev-decision-model-integration-2026-09-29', harness: 'papercusp', decisionId: 'D-001' }",
+    "grep -ci <term> apps/operator-docs/src/content/docs/agent-insights/jev-typed-decisions-where-and-how.mdx, for each D-001 surface"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T07:21:30Z",
+  "finishedAt": "2026-09-30T07:22:30Z",
+  "summary": "docs:search 'Jev typed decisions' on the engineering surface returns agent-insights/jev-typed-decisions-where-and-how as hit 1 (score 156.3; hit 2 scores 16.1). The page, committed in 023df66c19, has a section 'Where Jev must never be used (D-001)'. D-001 forbids Jev from deciding: PreToolUse gates, file locks, mode or authority, turn provenance, owner-directive capture, acceptance grading or scorecards, and any permission or final-authorization decision. Each of these terms occurs in the page (case-insensitive counts: PreToolUse 1, file lock 2, authority 3, turn provenance 1, owner-directive capture 1, acceptance grading 1, scorecard 1, permission 1, final-authorization 1), and the never-list opens with 'PreToolUse gates, or any other tool-call gate', 'file locks', 'modes or authority', 'turn provenance', 'owner-directive capture'. The search ran with the semantic leg degraded (query embed exceeded 4000 ms), so the hit came from the lexical leg alone.",
+  "assertions": [
+    {
+      "id": "search-returns-page",
+      "passed": true,
+      "evidence": "docs:search hit 1: slug agent-insights/jev-typed-decisions-where-and-how, title 'Jev typed decisions: where papercusp uses them, where it never may, and how to re-check them'."
+    },
+    {
+      "id": "every-d001-surface-listed",
+      "passed": true,
+      "evidence": "All seven D-001 surfaces appear in the page's D-001 section; per-term counts are in the summary."
+    },
+    {
+      "id": "page-covers-ledger-and-rerun",
+      "passed": true,
+      "evidence": "Page description names how to read harness_shared.decision_model_calls and the bench commands to re-run on a Jev version change (D-004), which P-011 also asks for."
+    }
+  ],
+  "workItemId": "WI-10004172",
+  "specId": "AUTO-BAR-R-13-P-011",
+  "planSlug": "jev-decision-model-integration-2026-09-29"
+}

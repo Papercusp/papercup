@@ -7,6 +7,7 @@ import type {
 } from './hosted-workspace-connector';
 import type {
   AppRelayChannel,
+  AppRelayChannelKind,
   AppRelayConnector,
   AppRelayPort,
 } from '../workspace-host/hosted-app-relay';
@@ -84,7 +85,10 @@ type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding 
  * traffic to the workspace machine's OWN loopback operator. Its client is the
  * portal backend acting for the ticket's user; nothing ever dials a VM address.
  */
-export type HostedWorkspaceChannelKind = 'pty' | 'desktop' | 'operator-http' | 'app-http';
+export type HostedWorkspaceChannelKind = 'pty' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint';
+
+/** Client→host frames an `app-key-mint` channel may carry (P-325, D-021): the one mint request. */
+export const APP_KEY_MINT_CLIENT_TYPES: ReadonlySet<string> = new Set(['mint.request']);
 
 /**
  * Client→host frames an `operator-http` channel may carry; everything else is refused.
@@ -354,7 +358,11 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   openAppChannel(
     connector: AppRelayConnector,
     handlers: { onFrame: (payload: Record<string, unknown>) => void; onClose: (reason: string) => void },
+    kind: AppRelayChannelKind = 'app-http',
   ): AppRelayChannel | null {
+    // Each kind carries only its own client frames: an app call's http.* pair, or the one
+    // mint.request of a consented MCP OAuth grant (P-325). The machine fences both too.
+    const clientTypes = kind === 'app-key-mint' ? APP_KEY_MINT_CLIENT_TYPES : OPERATOR_HTTP_CLIENT_TYPES;
     const key = connectorKey(connector.binding);
     const connectorSocket = this.connectors.get(key);
     const state = this.connectorState.get(key);
@@ -383,7 +391,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       binding: state.binding,
       socket,
       role: 'controller',
-      kind: 'app-http',
+      kind,
       desktopSessionId: null,
       desktopStartAudited: false,
       connectorKey: key,
@@ -393,12 +401,18 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     };
     this.sessions.set(channelId, session);
     this.touch(session);
-    sendJson(connectorSocket, { type: 'relay.open', channelId, kind: 'app-http', audience: 'app', role: 'controller' });
+    sendJson(connectorSocket, {
+      type: 'relay.open',
+      channelId,
+      kind,
+      audience: kind === 'app-key-mint' ? 'portal-oauth' : 'app',
+      role: 'controller',
+    });
     this.audit(state.binding, 'app_relay_opened', channelId);
     return {
       send: (payload) => {
         const type = payloadType(payload);
-        if (session.closed || !type || !OPERATOR_HTTP_CLIENT_TYPES.has(type)) return false;
+        if (session.closed || !type || !clientTypes.has(type)) return false;
         const live = this.connectors.get(key);
         if (!live) return false;
         this.touch(session);

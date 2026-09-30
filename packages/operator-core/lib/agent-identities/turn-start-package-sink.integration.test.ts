@@ -66,9 +66,10 @@ const LIMITS = {
 // A real read-only tool and a saved recipe over it. The recipe provider's
 // evidence comes from the canonical inspector, never hand-written.
 const RECIPE_REVISION = 'a'.repeat(64);
+const readNotes = vi.fn(async () => ({ notes: 'from the recipe' }));
 const notesTool: ProjectedTool = { pluginName: 'notes-plugin', description: 'read notes', effect: 'read',
   expose: { mcp: { name: 'notes:read' } }, capabilities: ['notes:read'], inputSchema: {},
-  fn: vi.fn(async () => ({ notes: 'from the recipe' })) };
+  fn: readNotes as unknown as ProjectedTool['fn'] };
 const recipes: SavedRecipeAdapter = { inspect: vi.fn(async () => ({ ok: true as const,
   recipe: { id: 'notes-recipe:read', script: 'return tools.notes.read({});' },
   continuation: { id: 'notes-recipe:read', revision: RECIPE_REVISION, authority: { version: 1 as const,
@@ -114,12 +115,7 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     if (!provider) return;
     const run = `run-${id}`;
     // A recipe row carries the inspected evidence class-provider.ts requires to admit it.
-    const report = kind === 'recipe'
-      ? { schemaVersion: 'capability-class-recipe-v1', recipes: { read: {
-        ok: true, recipe: { id: `${provider}:read`, revision: 'a'.repeat(64) },
-        inspectionPin: { sourceSha256: 'b'.repeat(64), bindingsSha256: 'c'.repeat(64), recipeRevision: 'a'.repeat(64) },
-        toolNames: ['notes:read'], requiredCapabilities: ['notes:read'], outputSchema: NOTES_SCHEMA } } }
-      : {};
+    const report = kind === 'recipe' ? JSON.parse(JSON.stringify(await inspectRecipe(id))) : {};
     await sql`
       INSERT INTO harness_shared.capability_class_conformance_runs
         (id, workspace_id, class_id, class_version, provider_package, provider_version, registry_revision,
@@ -176,13 +172,15 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
       due('later', 'context.notes@1', 99, 300, 'on-demand'),
     ]);
     writeIdentity('pkg-unbound', [due('ghost', 'context.unbound@1', 40, 100)]);
-    writeIdentity('pkg-recipe', [due('pinned', 'context.recipe@1', 40, 100)]);
+    writeIdentity('pkg-recipe', [due('pinned', 'context.recipe@1', 40, 300)]);
   }, 180_000);
 
   beforeEach(() => {
     resetSinkEvaluatorForTests();
     dispatch.calls = [];
     dispatch.impl = async () => ({ notes: 'x'.repeat(4_000) });
+    recipeCalls.length = 0;
+    readNotes.mockClear();
   });
 
   afterAll(async () => {
@@ -272,21 +270,67 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     expect(rows).toEqual(['- ⟦pkg-unbound/ghost omitted: provider-error⟧']);
   }, 120_000);
 
-  it('omits an inspected recipe binding visibly and dispatches nothing until the wearer resolver exists (P-013 D-020)', async () => {
+  it('runs an inspected recipe binding as the live wearer, never a system principal (P-018 D-020, D-031)', async () => {
     await wear('owner-recipe', ['domain:pkg-recipe']);
-    const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-recipe', workspaceId: WS, deps: { limits: LIMITS }, turnId:'r1' });
+    const sink = await evaluateTurnStartPackageSink({
+      ownerId: 'owner-recipe', workspaceId: WS, deps: { ...recipeSinkDeps(), limits: LIMITS }, turnId: 'r1',
+    });
+    // The recipe path never reaches the tool-provider dispatcher.
     expect(dispatch.calls).toEqual([]);
+    expect(sink.result!.omissions).toEqual([]);
+    const pinned = sink.result!.deliveries.find((row) => row.contributionId === 'pinned')!;
+    expect(pinned.text).toContain('from the recipe');
+    expect(pinned.text).toContain('"providerRef":"notes-recipe@1.0.0"');
+    expect(readNotes).toHaveBeenCalledTimes(1);
+    // The one call the recipe made ran as the wearer: no bypass, no superuser, only
+    // the inspected requirement the ceiling admitted.
+    expect(recipeCalls).toHaveLength(1);
+    expect(recipeCalls[0]).toMatchObject({
+      role: 'su', harnessSlug: POT, uiClientId: 'owner-recipe', spawnId: PACKAGE_SINK_SPAWN_ID,
+      isSuperuser: false, gateBypass: undefined,
+    });
+    expect(recipeCalls[0]!.principal).toMatchObject({ slug: 'owner-recipe', workspaceId: WS });
+    expect([...recipeCalls[0]!.principal!.capabilities]).toEqual(['notes:read']);
+    expect(sink.classes.map((cls) => cls.id)).toEqual(['package:pkg-recipe/pinned']);
+  }, 120_000);
+
+  it('omits a recipe whose requirement the live pot/role ceiling refuses, before it makes any call', async () => {
+    await wear('owner-recipe', ['domain:pkg-recipe']);
+    const sink = await evaluateTurnStartPackageSink({
+      ownerId: 'owner-recipe', workspaceId: WS, turnId: 'r2',
+      deps: { ...recipeSinkDeps({ ceilings: [{ denyCapabilities: ['notes:*'] }], protectedAdditions: [] }), limits: LIMITS },
+    });
+    expect(readNotes).not.toHaveBeenCalled();
+    expect(recipeCalls).toEqual([]);
     expect(sink.result!.omissions).toEqual([expect.objectContaining({
-      contributionId: 'pinned', reason: 'provider-error', detail: 'capability-class:recipe-wearer-unavailable',
+      contributionId: 'pinned', reason: 'provider-error', detail: 'capability-class:recipe-capability-denied',
     })]);
     const rows = projectPackageOrientationRows(sink.classes, 'turn-start').map((row) => row.text);
     expect(rows).toEqual(['- ⟦pkg-recipe/pinned omitted: provider-error⟧']);
   }, 120_000);
 
+  it('resolves the recipe wearer from the live anchor on every call and refuses one that no longer wears the identity', async () => {
+    const readCeiling = vi.fn(async () => ({ ceilings: [{ allowCapabilities: ['notes:*'] }], protectedAdditions: [] }));
+    const resolve = (stack: string[] | null, potSlug: string | null = POT) => resolvePackageSinkRecipeWearer({
+      ownerId: 'owner-live', workspaceId: WS, identityId: 'pkg-recipe',
+      requiredCapabilities: ['notes:read', 'status:read'], signal: new AbortController().signal,
+    }, { readWearer: async () => (stack ? { stack, attachmentRevision: 'r', potSlug } : null), readCeiling });
+    const wearer = await resolve(['domain:pkg-recipe']);
+    // Outside the ceiling means absent, so re-inspection refuses a recipe that needs it.
+    expect([...wearer.capabilityCeiling]).toEqual(['notes:read']);
+    expect([...wearer.context.principal!.capabilities]).toEqual(['notes:read']);
+    expect(readCeiling).toHaveBeenCalledWith({ workspaceId: WS, harnessSlug: POT, role: 'su' });
+    await expect(resolve(['domain:pkg-other'])).rejects.toThrow('capability-class:recipe-wearer-detached');
+    await expect(resolve(null)).rejects.toThrow('capability-class:recipe-wearer-detached');
+    await expect(resolve(['domain:pkg-recipe'], null)).rejects.toThrow('capability-class:recipe-wearer-unscoped');
+  });
+
   it('is a no-op for a wearer that declares nothing due, and for an unknown session', async () => {
     await wear('owner-builtin', ['autonomy:su.mode-auto']);
-    expect(await evaluateTurnStartPackageSink({ ownerId: 'owner-builtin', workspaceId: WS, deps: { limits: LIMITS }, turnId:'n1' }))
-      .toEqual({ result: null, classes: [] });
+    const builtin = await evaluateTurnStartPackageSink({ ownerId: 'owner-builtin', workspaceId: WS, deps: { limits: LIMITS }, turnId:'n1' });
+    // The fixture anchor names an applied revision with no stored artifact, so the
+    // worn-rule half reports it visibly instead of reading it as "wears nothing".
+    expect(builtin).toEqual({ result: null, classes: [], rulesError: 'applied identity artifact unreadable' });
     expect(await evaluateTurnStartPackageSink({ ownerId: 'owner-nobody', workspaceId: WS, deps: { limits: LIMITS }, turnId:'n2' }))
       .toEqual({ result: null, classes: [] });
     expect(dispatch.calls).toEqual([]);
