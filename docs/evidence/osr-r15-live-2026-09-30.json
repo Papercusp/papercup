@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-15: the Syft installer scan of a distributed build has no UNREVIEWED finding and every disallowed license has a recorded disposition",
+  "framework": "operational",
+  "command": [
+    "fresh VM osr18b: clone b98518640b8d (git status: 14 locally patched files, see stand-ins), papercusp-desktop build (log ~/r18/linux-local-build8.log, EXIT=0 2026-09-30T09:57:01Z)",
+    "PATH=~/.local/bin:$PATH (syft 1.51.0) PAPERCUSP_RELEASE_OWNER_NAME/EMAIL=<from build-box git config, not stored> python3 bin/audit-release-bundle.py --scan-artifact --licenses <GUI deb> <Server deb> <AppImage> > ~/r18/lic-audit8c.log",
+    "after fix #10 (installer-components.json GTK/gdk-pixbuf plugin paths): same command on the AppImage > ~/r18/lic-audit8d.log"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T10:19:00Z",
+  "finishedAt": "2026-09-30T10:23:43Z",
+  "summary": "All three finished Linux installers from build8 pass the installer license leg with 0 UNREVIEWED and 0 denied. GUI deb (sha256 b3a92c1a…): 2,076 files, 4/4 payloads covered. Server deb (6001f44f…): 14,173 files, 648 Syft packages, 818 covered. AppImage (f32f6189…): 2,498 files, 338 payloads, 341 covered. The only non-permissive license outside the LGPL/MPL runtime is GNU readline linked into the bundled psql tools. It ships as a recorded aggregate component in scripts/installer-components.json (component, license PostgreSQL AND GPL-3.0-or-later, reason, obligations). GPL-only AppImage libraries are removed per D-013. The first AppImage scan reported 26 UNREVIEWED GTK/gdk-pixbuf plugin modules, so the check can fail. The cause was a path-layout mismatch (the component listed them only under usr/lib/x86_64-linux-gnu/). It was fixed with a regression test and a caught mutation probe (test_run 20228054), and the re-scan is clean. Stand-ins disclosed: the build ran b98518640b8d plus fixes from staging that the public cut does not yet carry (audit-release-bundle.py, identity-leak-patterns.mjs, build-*.sh pipefail fixes, transformers-models.sh, README, installer-components.json), the goal-packages copy, VM-installed kopia 0.22.3 and libasound2-dev, fetched embedding models, and a tester-generated updater pubkey. The next public re-sync carries these fixes.",
+  "assertions": [
+    {
+      "id": "gui-deb-clean",
+      "passed": true,
+      "evidence": "lic-audit8c: LICENSE_GATE ... Papercusp GUI_0.0.25_amd64.deb files=2076 payloads=4 covered=4 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass; RC=0."
+    },
+    {
+      "id": "server-deb-clean",
+      "passed": true,
+      "evidence": "lic-audit8c: Papercusp Server_0.0.25_amd64.deb files=14173 syftPackages=648 payloads=172 covered=818 denied=0 unreviewed=0; status=pass; RC=0."
+    },
+    {
+      "id": "appimage-clean",
+      "passed": true,
+      "evidence": "lic-audit8d: Papercusp_GUI_0.0.25_amd64.AppImage files=2498 syftPackages=3 payloads=338 covered=341 denied=0 unreviewed=0; status=pass; RC=0."
+    },
+    {
+      "id": "disallowed-has-disposition",
+      "passed": true,
+      "evidence": "Server deb 'component aggregate PostgreSQL client tools linked with GNU readline — PostgreSQL AND GPL-3.0-or-later (6 item(s))' with obligations (offer readline/psql source); matches an installer-components.json entry."
+    },
+    {
+      "id": "before-fix-control",
+      "passed": true,
+      "evidence": "lic-audit8c AppImage: unreviewed=26, LICENSE_GATE_RESULT status=fail (GTK printbackends/immodules, gdk-pixbuf loaders). The instrument does report UNREVIEWED findings."
+    },
+    {
+      "id": "identity-clean",
+      "passed": true,
+      "evidence": "All three: '✓ CLEAN — no sensitive/build-box identity or credential in the assembled bundle'."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-15",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

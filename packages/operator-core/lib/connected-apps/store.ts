@@ -497,8 +497,9 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
     `;
     const row = tokens[0];
     const parents = row
-      ? await sql<AppKeyRow[]>`
-          SELECT ${sql.unsafe(APP_COLUMNS)} FROM harness_shared.connected_apps
+      ? await sql<(AppKeyRow & RemoteAccessState)[]>`
+          SELECT ${sql.unsafe(APP_COLUMNS)}, ${sql.unsafe(REMOTE_ACCESS_COLUMN)}
+            FROM harness_shared.connected_apps
            WHERE id = ${row.app_id} AND ${sql.unsafe(KEY_KINDS_SQL)} LIMIT 1`
       : [];
     return accessTokenVerdictOf(row, parents[0], key, now);
@@ -506,7 +507,7 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
   const parsed = parseAppKey(key);
   if (!parsed) return { ok: false, reason: 'malformed' };
   const rows = await sql<StoredAppKeyRow[]>`
-    SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash
+    SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash, ${sql.unsafe(REMOTE_ACCESS_COLUMN)}
       FROM harness_shared.connected_apps
      WHERE id = ${parsed.id} AND ${sql.unsafe(KEY_KINDS_SQL)}
      LIMIT 1
@@ -524,7 +525,8 @@ export async function loadClientKeyRow(
 ): Promise<(StoredAppKeyRow & { client_jwk: Record<string, unknown> | null }) | null> {
   const { sql } = getOrgPg();
   const rows = await sql<(StoredAppKeyRow & { client_jwk: Record<string, unknown> | null })[]>`
-    SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash, client_jwk
+    SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash, client_jwk,
+           ${sql.unsafe(REMOTE_ACCESS_COLUMN)}
       FROM harness_shared.connected_apps
      WHERE id = ${id} AND ${sql.unsafe(KEY_KINDS_SQL)}
      LIMIT 1

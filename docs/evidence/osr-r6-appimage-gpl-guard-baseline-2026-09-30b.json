@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "open-source-release R-6: AppImage GPL guard node:test suite passes against the real build-appimage.sh",
+  "framework": "node",
+  "command": [
+    "node --test papercusp-desktop/test/appimage-gpl-guard.test.js"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T10:40:42Z",
+  "finishedAt": "2026-09-30T10:40:42Z",
+  "summary": "The seven AppImage GPL guard tests pass (7 pass, 0 fail). They run the real GST_GPL_PLUGINS drop loop and the GST_GPL_LIB_ERE guard block extracted from papercusp-desktop/bin/build-appimage.sh (sha256 25544975aac753e8553425e06df7f11299e279c6e26f9b59a6d0a83b13181eae, papercusp-desktop HEAD 93c498aa21c021ba98d736269df985777c8bf2c2) against fixture AppDirs. The build drops every GPL-only GStreamer plugin and fails when a library on the GPL-only list reaches the AppDir. Re-run 2026-09-30T10:40:42Z against papercusp-desktop@e54ad781bbdf after build-appimage.sh changed: exit 0, pass 7 fail 0.",
+  "assertions": [
+    {
+      "id": "suite-passed",
+      "passed": true,
+      "evidence": "node --test: # tests 7, # pass 7, # fail 0, exit 0."
+    },
+    {
+      "id": "real-script-under-test",
+      "passed": true,
+      "evidence": "The test slices GST_GPL_PLUGINS= ... done and GST_GPL_LIB_ERE= ... 'GPL library guard: no GPL codec/media libraries in the AppDir' out of bin/build-appimage.sh at run time. There is no re-implementation."
+    }
+  ],
+  "workItemId": "WI-10003960",
+  "specId": "R-6",
+  "testFile": "papercusp-desktop/test/appimage-gpl-guard.test.js",
+  "sourceFile": "papercusp-desktop/bin/build-appimage.sh"
+}
