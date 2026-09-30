@@ -539,6 +539,31 @@ describe("rig-profile.sh — UP waits until the VM owner answers phase A's first
     expect(src).toMatch(/phase-a-precheck "\$dir\/steady-tower-baseline\.json"/);
   });
 
+  // Run 20260930T092722Z: device_key read a `deviceKey` field the announce-identity cache never
+  // has, so rig-up failed after 19 minutes. Execute the real definition on a real cache shape.
+  it('same-box-rig.sh device_key reads the key field the announce-identity cache actually stores', () => {
+    const src = readFileSync(sameBoxRigPath, 'utf8');
+    const def = src.split('\n').find((l) => /^\s*device_key\(\) \{/.test(l));
+    expect(def, 'device_key() definition').toBeTruthy();
+    // The field physical-drill-host-receipt.ts turns into the scenario's deviceKey.
+    const receipt = readFileSync(join(root, 'packages/operator-core/lib/sync/pot-git/physical-drill-host-receipt.ts'), 'utf8');
+    expect(receipt).toMatch(/deviceKey: identity\.devicePubkeyBase64/);
+    const dir = mkdtempSync(join(tmpdir(), 'same-box-device-key-'));
+    try {
+      const cache = join(dir, 'local-announce-identity.json');
+      const key = 'LxxvB13xN5kwGLy0G0faakuSUALwgY/o5q6zLyq4AAA=';
+      writeFileSync(cache, `${JSON.stringify({
+        version: '1', savedAt: '1790761143523', keychainId: '279242982:tower', devicePubkeyBase64: key,
+        githubUserId: '279242982', githubLogin: 'papercupai', attestationGistId: '4d11721a873e4ab4904311c7ee816d8e',
+      })}\n`);
+      const r = spawnSync('bash', ['-c', `${def!.trim()}\ndevice_key "$1"`, 'device-key', cache], { encoding: 'utf8', timeout: 30_000 });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe(key);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('the scenario checks the Phase A tower baseline before the quarantine and retries the verify only on exit 3', () => {
     const scenario = readFileSync(scenarioPath, 'utf8');
     const precheck = scenario.indexOf('phase-a-precheck "$phase_dir/tower-before.json"');
