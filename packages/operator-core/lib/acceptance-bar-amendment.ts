@@ -549,6 +549,15 @@ export async function synchronizeAcceptanceBarRevision(
     const currentPair = effectiveBarKey !== null && currentProjectionPairs.has(
       projectionPairKey(effectiveBarKey, clause.plan_item_id),
     );
+    // A projection an EARLIER amendment already retired (terminal lifecycle, pair absent
+    // from the current map) has nothing left to retire or re-project. Its BAR is usually
+    // absent from the PREVIOUS rubric as well, which is exactly what made the branches
+    // below read it as `unmapped` and refuse every later amendment of any plan that had
+    // ever dropped a BAR (WI-10004061). A terminal clause whose pair IS current still
+    // falls through, so a re-added BAR is re-projected rather than silently skipped.
+    if ((clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired') && !currentPair) {
+      continue;
+    }
     // AUTO-BAR identity is the full (bar key, plan-item) pair. When an approved
     // rubric/map amendment moves a bar to another item, re-projecting by bar key
     // alone rewrites the old item's active clause with the new item's behavior.

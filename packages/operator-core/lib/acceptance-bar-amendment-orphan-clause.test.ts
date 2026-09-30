@@ -301,3 +301,56 @@ describe('AUTO-BAR clause whose bar linkage was lost (EI-23816909807579931)', ()
     });
   });
 });
+
+// WI-10004061: an amendment that DROPS a BAR supersedes its generated projection. The
+// NEXT amendment must treat that row as finished business. Its BAR is absent from both
+// the current and the previous rubric, and the retire branch used to read that as
+// `unmapped`, so any plan that had ever dropped a BAR could never be amended again.
+describe('generated projection retired by an EARLIER amendment (WI-10004061)', () => {
+  // R-9 is in neither the current nor the previous fixture rubric (both carry only R-1).
+  const retiredEarlier = (overrides: Record<string, unknown> = {}) => clauseRow({
+    spec_id: 'AUTO-BAR-R-9-P-001',
+    plan_item_id: 'P-001',
+    current_revision: 4,
+    source_bar_key: null,
+    source_bar_hash: null,
+    lifecycle_status: 'superseded',
+    behavior: 'RETIRED with acceptance bar R-9 (rubric acceptance-subject-plan rev 3).',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    h.setSpecClause.mockReset();
+    h.setSpecClause.mockImplementation(async (write: Record<string, unknown>) => ({
+      status: 'revised', specId: write.specId, revision: 2,
+    }));
+  });
+
+  it.each(['superseded', 'retired'])('leaves an already-%s projection alone instead of refusing the amendment', async (status) => {
+    const sql = sqlStub([clauseRow(), retiredEarlier({ lifecycle_status: status })]);
+
+    await expect(runAmendment(sql, { previousTemplateData: seedTemplateData() })).resolves.toBeDefined();
+
+    expect(writeFor('AUTO-BAR-R-9-P-001')).toBeUndefined();
+  });
+
+  it('still refuses a LIVE generated projection whose BAR is unknown to both rubrics', async () => {
+    // Calibration: the skip must be about the terminal lifecycle, not about the unknown
+    // BAR. Without this the fix could pass by swallowing every unmapped projection.
+    const sql = sqlStub([clauseRow(), retiredEarlier({ lifecycle_status: 'active' })]);
+
+    await expect(runAmendment(sql, { previousTemplateData: seedTemplateData() }))
+      .rejects.toThrow('acceptance_bar_revision_projection_unmapped:AUTO-BAR-R-9-P-001');
+  });
+
+  it('still re-projects a terminal clause whose (BAR, item) pair is back in the current map', async () => {
+    // A re-added BAR must not be skipped merely because its old projection was retired.
+    const sql = sqlStub([orphaned({ lifecycle_status: 'superseded', current_revision: 3 })]);
+
+    await runAmendment(sql, { previousTemplateData: seedTemplateData() });
+
+    const write = writeFor('AUTO-BAR-R-1-P-001');
+    expect(write).toBeDefined();
+    expect(write!.expectedRevision).toBe(3);
+  });
+});
