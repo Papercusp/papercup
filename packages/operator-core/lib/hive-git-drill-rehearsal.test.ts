@@ -87,6 +87,7 @@ function stubRig(overrides: Record<string, string> = {}, extraLines: string[] = 
     SB_TSX: tsx,
     SB_POT_HOME: 'same-box-pot',
     SB_REPO_KEY: 'gh-1296269',
+    SB_GITHUB_REMOTE: 'https://github.com/octocat/Hello-World',
     SB_WORKSPACE: 'same-box-ws',
     SB_PHYSICAL_ONLY_PHASES: "'E:needs the GitHub remote only the physical rig owns'",
     ...overrides,
