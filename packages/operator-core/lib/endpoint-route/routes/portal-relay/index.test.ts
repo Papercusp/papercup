@@ -61,12 +61,16 @@ describe('Papercusp relay routes', () => {
 
   it('a call relayed in from outside (external-ingress marker) cannot reach the controls, even on a loopback Host', async () => {
     const { find, deps } = routes({}, isLoopbackHost);
-    const res = await find('POST', '/remote-access/portal-relay/disconnect')({ headers: { [EXTERNAL_INGRESS_MARKER_HEADER]: '1' } });
+    // A fetch Request carries no Host header of its own; set the loopback Host so the only
+    // difference between the two requests is the marker.
+    const host = { host: '127.0.0.1:3070' };
+    const res = await find('POST', '/remote-access/portal-relay/disconnect')({ headers: { ...host, [EXTERNAL_INGRESS_MARKER_HEADER]: '1' } });
     expect(res.status).toBe(403);
     expect(deps.disconnect).not.toHaveBeenCalled();
     // The same request without the marker is this computer.
-    const local = await find('GET', '/remote-access/portal-relay')();
+    const local = await find('POST', '/remote-access/portal-relay/disconnect')({ headers: host });
     expect(local.status).toBe(200);
+    expect(deps.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a cross-site browser write', async () => {
