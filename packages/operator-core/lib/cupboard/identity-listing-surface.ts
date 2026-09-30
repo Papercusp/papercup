@@ -27,53 +27,21 @@ import { wornRulePins } from '../agent-identities/sync-hook-rules';
 import type { KnowledgePack } from '../knowledge-packs/pack-format';
 import type { BlueprintReleaseArchive, BlueprintReleaseSourceSnapshot } from './blueprint-release';
 import { identityConsentSubjects, identityPermissionLines } from './identity-install-consent';
+import {
+  IDENTITY_LISTING_SURFACE_MAX_CHARS,
+  IDENTITY_LISTING_SURFACE_SCHEMA_VERSION,
+  parseIdentityListingSurface,
+  type IdentityListingSurface,
+  type IdentitySurfaceTiming,
+} from './identity-listing-surface-wire';
 
-export const IDENTITY_LISTING_SURFACE_SCHEMA_VERSION = 1 as const;
-/** The worker stores the canonical JSON in one bounded TEXT column (migration 035). */
-export const IDENTITY_LISTING_SURFACE_MAX_CHARS = 16_000;
-
-/** When a contribution acts; the same vocabulary as the author preview. */
-export type IdentitySurfaceTiming = 'every-turn' | 'mode-change' | 'on-demand' | `on event ${string}`;
-
-export interface IdentityListingSurface {
-  readonly schemaVersion: typeof IDENTITY_LISTING_SURFACE_SCHEMA_VERSION;
-  readonly identity: { readonly id: string; readonly version: string; readonly slots: readonly string[] };
-  readonly contributions: readonly {
-    readonly id: string;
-    readonly inputKind: string;
-    readonly ref: string;
-    readonly verb?: string;
-    readonly refresh: string;
-    readonly injection?: {
-      readonly sinks: readonly string[];
-      readonly timing: IdentitySurfaceTiming;
-      readonly tokenBudget: number;
-      readonly priority: number;
-      readonly overBudget: string;
-    };
-  }[];
-  readonly hooks: {
-    readonly sync: readonly {
-      readonly id: string; readonly rule: string; readonly sink: string;
-      readonly kind: 'context' | 'guard'; readonly tools?: readonly string[];
-    }[];
-    readonly async: readonly { readonly id: string; readonly rule: string; readonly on: string; readonly fire: string }[];
-    /** A bundled rule the closure carries but this build cannot parse. */
-    readonly unreadable: readonly string[];
-  };
-  /** Every pinned package in the closure except the identity itself. */
-  readonly packages: readonly { readonly kind: string; readonly ref: string; readonly version: string; readonly contentHash: string }[];
-  readonly knowledge: readonly {
-    readonly ref: string; readonly version: string; readonly memories: number;
-    readonly docs: readonly { readonly id: string; readonly title: string; readonly section: string }[];
-  }[];
-  readonly classContracts: readonly { readonly ref: string; readonly contractHash: string }[];
-  readonly grants: { readonly requires: readonly string[]; readonly optional: readonly string[] };
-  /** Exactly the signed manifest's `permissions` (identityPermissionLines). */
-  readonly permissions: readonly string[];
-  /** 'content-only' installs with no administrator consent (D-034). */
-  readonly consent: 'content-only' | 'required';
-}
+export {
+  IDENTITY_LISTING_SURFACE_MAX_CHARS,
+  IDENTITY_LISTING_SURFACE_SCHEMA_VERSION,
+  parseIdentityListingSurface,
+  type IdentityListingSurface,
+  type IdentitySurfaceTiming,
+};
 
 export interface IdentityListingSurfaceInput {
   readonly id: string;
@@ -201,26 +169,6 @@ export function serializeIdentityListingSurface(surface: IdentityListingSurface)
     throw new Error(`identity listing surface is ${text.length} chars; the Cupboard stores at most ${IDENTITY_LISTING_SURFACE_MAX_CHARS}`);
   }
   return text;
-}
-
-/**
- * Read a listing's `identity_surface` column (canonical JSON TEXT). Null when
- * absent or unreadable; the install gate treats an unreadable surface on an
- * identity listing as a mismatch, never as permission to skip the check.
- */
-export function parseIdentityListingSurface(value: unknown): IdentityListingSurface | null {
-  let parsed: unknown = value;
-  if (typeof value === 'string') {
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const surface = parsed as Partial<IdentityListingSurface>;
-  if (typeof surface.schemaVersion !== 'number' || !surface.identity || typeof surface.identity.id !== 'string') return null;
-  return parsed as IdentityListingSurface;
 }
 
 export type IdentityListingSurfaceMismatchReason = 'missing' | 'unreadable' | 'schema-version' | 'differs';

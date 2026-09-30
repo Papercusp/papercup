@@ -659,6 +659,21 @@ describe('Cupboard ListingCard — D-002 pot-template badge (single Blueprints t
     expect(badge.textContent).toContain('blueprint');
   });
 
+  it('an identity blueprint (blueprint_kind=identity) badges as an identity (portable-identity-packages P-016)', () => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'identity', title: 'Reviewer' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    const badge = screen.getByTestId('cupboard-kind-badge');
+    expect(badge.getAttribute('data-kind')).toBe('blueprint');
+    expect(badge.getAttribute('data-identity')).toBe('true');
+    expect(badge.getAttribute('data-pot-template')).toBeNull();
+    expect(badge.textContent).toContain('identity');
+  });
+
   it('renders a repo slug derived from worker fields when github_repo is absent', () => {
     render(
       <ListingCard
