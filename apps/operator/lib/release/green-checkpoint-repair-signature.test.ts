@@ -757,4 +757,17 @@ describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold"
     expect(described.endsWith("…")).toBe(true);
     expect(describeRepairHeadRunnerFailure("plain string")).toBe("plain string");
   });
+
+  // Part (3): --ensure-ref now builds from the head's own lockfiles when install-equivalent,
+  // so a remaining miss means a real install is needed — the hold must say which package.
+  it("carries dependency-generation's exact-ref refusal reason into the hold", () => {
+    const raw =
+      "[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint abcd1234; " +
+      "exact-ref build refused: ref r dependency inputs are not install-equivalent to the live tree's:\n" +
+      '[dependency-generation]   node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)';
+    const described = describeRepairHeadRunnerFailure(new Error(raw));
+    expect(described).toContain("fingerprint abcd1234");
+    expect(described).toContain('needs a real install: node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)');
+    expect(described).not.toContain("\n");
+  });
 });
