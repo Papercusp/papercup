@@ -304,6 +304,24 @@ describe('native turn-end policy observation', () => {
     expect(f.deps.sleep).toHaveBeenCalledTimes(2);
     expect(f.deps.append).toHaveBeenCalledOnce();
   });
+  it('waits out the flush race when a tool-only turn leaves the user request last in the tail', async () => {
+    const f = endFixture();
+    const request = { ...turn('current', 2), speaker: 'user' as const, responseDisposition: null };
+    f.setTail([turn('prior', 1), request]);
+    let polls = 0;
+    f.deps.sleep = vi.fn(async () => { polls += 1; if (polls === 3) f.setTail([turn('prior', 1), request, turn('current', 3)]); });
+    expect(await recordGoalPlacementTurnEnd(f.endInput, f.deps)).toMatchObject({ recorded: true });
+    expect(f.deps.sleep).toHaveBeenCalledTimes(3);
+    expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEnd:
+      expect.objectContaining({ completedTurnRef: 'codex:native-1:current' }) } }));
+  });
+  it('polls a trailing user request only within the settle bound, then refuses', async () => {
+    const f = endFixture();
+    f.setTail([turn('prior', 1), { ...turn('current', 2), speaker: 'user', responseDisposition: null }]);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('native-decision-not-complete');
+    expect(f.deps.sleep).toHaveBeenCalledTimes(GOAL_PLACEMENT_TURN_END_SETTLE_POLLS);
+    expect(f.deps.agenda).not.toHaveBeenCalled();
+  });
   it('refuses a newer user request or an unattributed tail, including a request starting during the policy read', async () => {
     const f = endFixture();
     for (const last of [{ ...turn('next', 4), speaker: 'user' as const }, { ...turn('next', 4), requestId: null }]) {

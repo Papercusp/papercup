@@ -198,8 +198,14 @@ export async function recordGoalPlacementTurnEnd(input: {
   }
   let tail = await deps.tail(session);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // The Stop hook can read the transcript before the final response flushes. The unflushed
+  // tail then ends on a progress response, or — when the turn's assistant entries were
+  // tool-only — on the user request itself (measured live: final at 00:33:17.925Z, hook read
+  // at 00:33:18.226Z, tail ended on the wake prompt). Both settle; nothing else is polled.
+  const unflushed = (last: TranscriptTailTurn | undefined) => last?.speaker === 'user' ||
+    (last?.speaker === 'assistant' && last.responseDisposition === 'progress');
   for (let poll = 0; poll < GOAL_PLACEMENT_TURN_END_SETTLE_POLLS && !latestCompletedDecision(session, tail) &&
-    tail[tail.length - 1]?.speaker === 'assistant' && tail[tail.length - 1]?.responseDisposition === 'progress'; poll++) {
+    unflushed(tail[tail.length - 1]); poll++) {
     await sleep(GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS);
     tail = await deps.tail(session);
   }
