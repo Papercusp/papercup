@@ -1815,6 +1815,60 @@ const dbIndexBloatReindexWorkflow = idempotentRegisterWorkflow('dbIndexBloatRein
 );
 DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex', crontab: '0 50 4 * * *' });
 
+// Every 15 min: the DEFERRED online build of the session transcript search indexes + term
+// vocabulary (session-transcript-exact-fuzzy-search-2026-09-14 P-002; plan D-004/D-005).
+// Migration 1273 creates only the two small vocabulary tables on a populated database — the
+// 744 MB exact-tier trigram GIN (358 s) and the vocabulary's first full build (352 s) are far too
+// slow for the migration transaction, so this durable tick issues CREATE INDEX CONCURRENTLY IF NOT
+// EXISTS outside any transaction, drops invalid leftovers of an interrupted build, and keeps each
+// workspace's vocabulary current with a watermark-incremental refresh. Every step is idempotent and
+// a no-op once current, so the steady-state cost is three catalog reads + one index-backed EXISTS
+// probe per workspace. The read path degrades (skips the tier, reports why) while a build is
+// pending — it never falls back to a sequential scan. Never throws: a thrown step would mark the
+// workflow permanently dead.
+async function sessionSearchIndexBuildTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('session-search-index-build')) return;
+      try {
+        const { runSessionSearchIndexBuildOnce } = await import('../session-search-index-build');
+        const { sql } = getOrgPg();
+        const r = await runSessionSearchIndexBuildOnce(sql);
+        if (r.skipped) {
+          console.log(`[session-search-index-build] skipped: ${r.skipped}`);
+          return;
+        }
+        const built = r.indexes.filter((x) => x.action === 'built').length;
+        const failed =
+          r.indexes.filter((x) => x.action === 'failed').length +
+          r.vocab.filter((x) => x.action === 'failed').length;
+        const vocabBuilt = r.vocab.filter((x) => x.action === 'full' || x.action === 'incremental');
+        if (built > 0 || vocabBuilt.length > 0 || r.invalidDropped.length > 0 || failed > 0) {
+          console.log(
+            `[session-search-index-build] built ${built} index(es), refreshed ${vocabBuilt.length} vocabulary(ies)` +
+              `${r.invalidDropped.length > 0 ? `, dropped ${r.invalidDropped.length} invalid leftover(s)` : ''}` +
+              `${failed > 0 ? `, ${failed} failed` : ''}` +
+              `${r.truncated ? ' (truncated by budget)' : ''}`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[session-search-index-build] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'session-search-index-build' },
+  );
+}
+const sessionSearchIndexBuildWorkflow = idempotentRegisterWorkflow('sessionSearchIndexBuild', () =>
+  DBOS.registerWorkflow(sessionSearchIndexBuildTick, {
+    name: 'sessionSearchIndexBuild',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(sessionSearchIndexBuildWorkflow, {
+  name: 'sessionSearchIndexBuild',
+  crontab: '0 7,22,37,52 * * * *',
+});
+
 // pg_stat_statements has no DROP DATABASE hook: entries keyed to a dropped dbid are
 // retained forever, and backups/dumps run against TRANSIENT databases, so every dump
 // permanently consumes entry slots. Measured 2026-08-03: 3,303 of 9,791 entries (33.7%)
