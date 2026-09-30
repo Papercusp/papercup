@@ -41,7 +41,7 @@ import {
   type SeedManifest,
 } from '@papercusp/memory/bench';
 
-import { benchPgClient, dropBenchSchema, ensureBenchSchema, setupBenchMemoryHost } from './bench-host';
+import { benchPgClient, releaseBenchSchema, ensureBenchSchema, setupBenchMemoryHost } from './bench-host';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import {
@@ -114,7 +114,7 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         // pooled connection holds locks on bench tables and 55P03s the
         // DROP (fire-and-forget invalidate still raced it; killed a run).
         await disposeMemoryClient();
-        if (!keep) await dropBenchSchema(pg);
+        if (!keep) await releaseBenchSchema(pg);
         await pg.end();
       },
       reach: {
@@ -170,7 +170,7 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
         // Awaited pool-close before drop — same 55P03 protection as the mem0 ctx.
         await disposeMemoryClient();
         if (!keep) {
-          await dropBenchSchema(pg);
+          await releaseBenchSchema(pg);
           fs.rmSync(dir, { recursive: true, force: true });
         }
         await pg.end();
@@ -210,7 +210,7 @@ export async function makeBackendCtx(name: BenchBackendName, keep: boolean): Pro
       cleanup: async () => {
         // Awaited pool-close before drop — same 55P03 protection as the mem0 ctx.
         await disposeMemoryClient();
-        if (!keep) await dropBenchSchema(pg);
+        if (!keep) await releaseBenchSchema(pg);
         await pg.end();
       },
       reach: {
