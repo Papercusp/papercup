@@ -41,6 +41,7 @@ import {
   validateClassContractPayload,
   type ClassContractPayloadEntry,
 } from './class-contract-payload';
+import { identityConsentSubjects, identityPermissionLines } from './identity-install-consent';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const INDEX_SCHEMA_VERSION = 1 as const;
@@ -156,6 +157,8 @@ export interface BlueprintReleaseSourceSnapshot {
   raw: Record<string, unknown>;
   slots: string[];
   dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] };
+  /** The resolved source's capability-class grants — install consents to these. */
+  grants: { requires: string[]; optional: string[] };
   archive: BlueprintReleaseArchive;
 }
 
@@ -386,6 +389,7 @@ export async function snapshotBlueprintReleaseSource(input: {
       plugins: dependencies?.plugins ?? [],
       blueprints: dependencies?.blueprints ?? [],
     },
+    grants: { requires: resolved.grants?.requires ?? [], optional: resolved.grants?.optional ?? [] },
     archive,
   };
 }
@@ -434,7 +438,11 @@ export async function prepareBlueprintPublicRelease(input: {
       .filter((pin) => pin !== source.archive.root)
       .map((pin) => `${pin.packageKind}:${pin.ref}@${pin.revision}#${pin.contentHash}`),
     compatibility: {},
-    permissions: [],
+    // D-034: the signed listing declares what install will ask consent for;
+    // install refuses a non-empty list that differs from its own computation.
+    permissions: identityPermissionLines(identityConsentSubjects({
+      grants: source.grants, providerBindings: [], inputs: source.archive.pins,
+    })),
     capabilities: [...source.dependencies.tools].sort(),
     license: input.license?.trim() || 'NOASSERTION',
     publisher: {
