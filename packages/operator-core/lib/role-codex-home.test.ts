@@ -443,6 +443,41 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('suppresses browser-capable plugin auth in headless role and SU homes without changing visible homes', async () => {
+    const { writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
+    const role = writeRoleCodexHome({
+      sessionKey: 'headless-role-auth',
+      mcpUrl: 'http://x/api/mcp?role=worker',
+      promptText: 'P',
+      model: RESOLVED_CODEX_DEFAULT,
+      headless: true,
+    });
+    const su = writeSuCodexHome({
+      sessionKey: 'headless-su-auth',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-headless-auth',
+      model: RESOLVED_CODEX_DEFAULT,
+      headless: true,
+    });
+    const visible = writeSuCodexHome({
+      sessionKey: 'visible-su-auth',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-visible-auth',
+      model: RESOLVED_CODEX_DEFAULT,
+    });
+
+    for (const configPath of [role.configPath, su.configPath]) {
+      const config = readFileSync(configPath, 'utf8');
+      expect(config).toContain('plugins = false');
+      expect(config).toContain('auth_elicitation = false');
+    }
+    const visibleConfig = readFileSync(visible.configPath, 'utf8');
+    expect(visibleConfig).not.toContain('plugins = false');
+    expect(visibleConfig).not.toContain('auth_elicitation = false');
+  });
+
   it('rejects an omitted model at fresh/repair boundaries and honors an explicitly resolved Sol xhigh default', async () => {
     mkdirSync(join(fakeHome, '.codex'), { recursive: true });
     writeFileSync(join(fakeHome, '.codex', 'config.toml'), 'model = "gpt-5.6-luna"\n');
