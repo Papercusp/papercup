@@ -15,7 +15,8 @@ import {
   rollbackBlueprintRelease,
   uninstallBlueprintRelease,
 } from './blueprint-release';
-import { installBlueprintFromCupboardCore, type InstallBlueprintCoreDeps } from './install-blueprint-core';
+import { InstallBlueprintError, installBlueprintFromCupboardCore, type InstallBlueprintCoreDeps } from './install-blueprint-core';
+import type { IdentityInstallConsent } from './identity-install-consent';
 import { listingManifestSigningBytes, unsignedListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 
@@ -58,14 +59,33 @@ async function fixture() {
     signer,
     license: 'MIT',
   });
-  const install = (
+  // The bundled recipe is shared content, so every install is a two-step
+  // review: the refusal names the subject, and the administrator echoes it
+  // (portable identities P-014, D-034). Any other refusal passes through.
+  const install = async (
     sourceDir: string,
     manifest: CupboardReleaseManifest,
     activationStack?: Array<{ id: string; slots: string[] }>,
+  ) => {
+    try {
+      return await installWith(sourceDir, manifest, activationStack);
+    } catch (error) {
+      if (!(error instanceof InstallBlueprintError) || error.code !== 'identity_install_consent_required') throw error;
+      const review = error.data as { consentSubject: IdentityInstallConsent; subjects: { sharedContent: string[] } };
+      expect(review.subjects.sharedContent).toEqual(['recipe:identity-recipe']);
+      return installWith(sourceDir, manifest, activationStack, review.consentSubject);
+    }
+  };
+  const installWith = (
+    sourceDir: string,
+    manifest: CupboardReleaseManifest,
+    activationStack?: Array<{ id: string; slots: string[] }>,
+    identityInstallConsent?: IdentityInstallConsent,
   ) => installBlueprintFromCupboardCore({
     githubUrl: 'https://github.com/acme/identity',
     expectedRelease: { manifest },
     activationStack,
+    ...(identityInstallConsent ? { identityInstallConsent } : {}),
   }, {
     cloneRepo: async (_url, destination) => fs.cp(sourceDir, destination, { recursive: true }),
     installedBlueprintsDir: () => installedDir,
