@@ -38,6 +38,7 @@ export const PHASE_E_PLAN_ITEM = 'P-306' as const;
 const RUN_ID = /^[A-Za-z0-9._-]{8,120}$/;
 const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const DEVICE_KEY = /^[A-Za-z0-9+/]{43}=$/;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const GIT_SYNC_WATCHDOG_PHASE = 'git-sync-watchdog';
 
 export type PhysicalPhaseEHost = PhysicalPhaseDHost;
@@ -91,6 +92,20 @@ export type PhysicalPhaseEModeChange = {
   observedAt: string;
 };
 
+/**
+ * The writer-backed whole-fire marker (`routines.metadata.git_sync_activity`).
+ * git-sync writes `active:false` + a terminal phase only after the GitHub
+ * bridge and P2P post-legs, so it is the one field that says a fire's effects,
+ * including `github_bridge`, are all persisted. Epoch ms on the writer's clock.
+ */
+export type PhysicalPhaseEFire = {
+  active: boolean;
+  phase: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  outcomeStatus: string | null;
+};
+
 export type PhysicalPhaseERoutine = {
   active: boolean;
   lastFiredAt: string | null;
@@ -112,6 +127,7 @@ export type PhysicalPhaseERoutine = {
     needsOwner: boolean;
     errors: string[];
   };
+  fire: PhysicalPhaseEFire | null;
 };
 
 export type PhysicalPhaseEObservation = {
@@ -130,6 +146,8 @@ export type PhysicalPhaseEObservation = {
   };
   bridgeEscalation: Record<string, unknown> | null;
   watchdogEscalation: Record<string, unknown> | null;
+  /** Present when the observation waited for a fire started at/after `since` to finish. Diagnostic only. */
+  waitedForFire?: { since: string; reached: boolean; waitedMs: number };
 };
 
 export type PhysicalPhaseERemoteMutation = {
@@ -415,8 +433,13 @@ async function routine(sql: OrgSql): Promise<PhysicalPhaseERoutine> {
   const bridge = metadata.github_bridge && typeof metadata.github_bridge === 'object'
     ? metadata.github_bridge as Record<string, unknown>
     : null;
+  const activity = metadata.git_sync_activity && typeof metadata.git_sync_activity === 'object'
+    ? metadata.git_sync_activity as Record<string, unknown>
+    : null;
   const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
   const integer = (value: unknown): number => Number.isSafeInteger(Number(value)) ? Number(value) : 0;
+  const epoch = (value: unknown): number | null =>
+    value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
   return {
     active: row?.active === true,
     lastFiredAt: row?.last_fired_at ? new Date(row.last_fired_at).toISOString() : null,
@@ -438,7 +461,27 @@ async function routine(sql: OrgSql): Promise<PhysicalPhaseERoutine> {
       needsOwner: bridge.needs_owner === true,
       errors: strings(bridge.errors),
     } : null,
+    fire: activity ? {
+      active: activity.active !== false,
+      phase: typeof activity.phase === 'string' ? activity.phase : null,
+      startedAt: epoch(activity.started_at),
+      completedAt: epoch(activity.completed_at),
+      outcomeStatus: typeof activity.outcome_status === 'string' ? activity.outcome_status : null,
+    } : null,
   };
+}
+
+/**
+ * True when the routine row shows a FINISHED git-sync fire that started at or
+ * after `sinceMs`. `git-sync:run` answers `in_progress` after 45s while the fire
+ * keeps running, and the bridge leg persists `github_bridge` near the end of it,
+ * so a single read right after the call can capture the previous fire's verdict.
+ * The 0.0.25 shakedown did exactly that: divergence-after read `divergence:clear`
+ * about 20ms before the triggered fire wrote `escalate` (WI-10004055).
+ */
+export function finishedFireStartedSince(routineRow: PhysicalPhaseERoutine, sinceMs: number): boolean {
+  const fire = routineRow.fire;
+  return !!fire && !fire.active && fire.startedAt !== null && fire.startedAt >= sinceMs;
 }
 
 async function escalation(sql: OrgSql, phase: string): Promise<Record<string, unknown> | null> {
@@ -619,21 +662,71 @@ export async function ensurePhysicalPhaseEMode(
   };
 }
 
-/** Capture fixed production routine/ref/escalation state on one physical host. */
+/**
+ * Poll the fixed routine row until a git-sync fire that started at or after
+ * `sinceMs` has finished, or the deadline passes. A timeout is not an error:
+ * the observation records what the host saw and validatePhysicalPhaseE judges it.
+ */
+async function awaitFinishedFireSince(
+  sql: OrgSql,
+  sinceMs: number,
+  deadline: number,
+  deps: Pick<PhaseEDeps, 'sleep' | 'now'>,
+): Promise<boolean> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? Date.now;
+  let reached = finishedFireStartedSince(await routine(sql), sinceMs);
+  while (!reached) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(PHASE_E_MODE_POLL_MS, remaining));
+    reached = finishedFireStartedSince(await routine(sql), sinceMs);
+  }
+  return reached;
+}
+
+/**
+ * Capture fixed production routine/ref/escalation state on one physical host.
+ * `afterFireStartedAt` (the ISO start of the git-sync:run call this stage
+ * judges) makes the capture wait, within the same `waitMs` budget as the mode
+ * wait, until a fire started at or after it has finished, so the observation
+ * shows that fire's verdict and not the previous one (WI-10004055).
+ */
 export async function capturePhysicalPhaseEObservation(
-  input: { runId: string; hostId: PhysicalPhaseEHost; deviceKey: string; stage: PhysicalPhaseEObservationStage; waitMs?: number },
+  input: {
+    runId: string;
+    hostId: PhysicalPhaseEHost;
+    deviceKey: string;
+    stage: PhysicalPhaseEObservationStage;
+    waitMs?: number;
+    afterFireStartedAt?: string;
+  },
   deps: PhaseEDeps = {},
 ): Promise<PhysicalPhaseEObservation> {
   assertRunId(input.runId);
   assertDeviceKey(input.deviceKey);
+  const fireSinceMs = input.afterFireStartedAt === undefined ? null : Date.parse(input.afterFireStartedAt);
+  if (fireSinceMs !== null && (!ISO_INSTANT.test(input.afterFireStartedAt ?? '') || !Number.isFinite(fireSinceMs))) {
+    throw new Error('physical Phase E afterFireStartedAt must be an ISO-8601 UTC instant (the git-sync:run trigger start)');
+  }
   const sql = deps.sql ?? getOrgPg().sql;
   const runGit = deps.runGit ?? defaultRunGit;
+  const now = deps.now ?? Date.now;
+  const waitStartedAt = now();
+  const waitMs = input.waitMs ?? 0;
   // Only the tower is the bridge writer. A member joined by invite carries no
   // fork remote, and validatePhysicalPhaseE never reads a member's remote refs,
   // so the VM records them as null instead of requiring bridge config.
   const context = input.hostId === 'tower' ? await fixedRemoteContext(deps) : null;
   const repoPath = context?.repoPath ?? fixedRepoPath(deps);
-  const mode = await awaitPhysicalPhaseEStageMode({ stage: input.stage, waitMs: input.waitMs ?? 0 }, { ...deps, sql });
+  const mode = await awaitPhysicalPhaseEStageMode({ stage: input.stage, waitMs }, { ...deps, sql });
+  const waitedForFire = fireSinceMs === null
+    ? undefined
+    : {
+        since: new Date(fireSinceMs).toISOString(),
+        reached: await awaitFinishedFireSince(sql, fireSinceMs, waitStartedAt + waitMs, deps),
+        waitedMs: now() - waitStartedAt,
+      };
   return {
     schemaVersion: PHASE_E_OBSERVATION_SCHEMA,
     runId: input.runId,
@@ -652,6 +745,7 @@ export async function capturePhysicalPhaseEObservation(
     },
     bridgeEscalation: await escalation(sql, GITHUB_BRIDGE_ESCALATION_PHASE),
     watchdogEscalation: await escalation(sql, GIT_SYNC_WATCHDOG_PHASE),
+    ...(waitedForFire ? { waitedForFire } : {}),
   };
 }
 
@@ -798,6 +892,31 @@ function validateObservation(
   }
 }
 
+/**
+ * A stage judged on a tower fire's verdict must show THAT fire: a finished
+ * git-sync fire started at/after the trigger, and a github_bridge row written
+ * at/after it. Otherwise the observation raced the in-flight fire, and the
+ * product assertions below would judge the previous fire's row (WI-10004055).
+ */
+function validateObservedTriggeredFire(
+  observation: PhysicalPhaseEObservation,
+  trigger: PhysicalPhaseETrigger,
+  errors: string[],
+): void {
+  const since = Date.parse(trigger.startedAt);
+  const bridgeAt = observation.routine.githubBridge?.at;
+  if (
+    !Number.isFinite(since) || !finishedFireStartedSince(observation.routine, since) ||
+    typeof bridgeAt !== 'number' || bridgeAt < since
+  ) {
+    errors.push(
+      `Phase E ${observation.stage} must be read after the ${trigger.role} git-sync fire finished ` +
+        '(git_sync_activity inactive, started at/after the trigger, github_bridge written at/after it); ' +
+        'this read raced the in-flight fire and shows an earlier verdict',
+    );
+  }
+}
+
 function hasSignal(escalation: Record<string, unknown> | null, kind: string): boolean {
   const signals = Array.isArray(escalation?.signals) ? escalation.signals : [];
   return signals.some((value) => value && typeof value === 'object' && (value as Record<string, unknown>).kind === kind);
@@ -834,6 +953,7 @@ export function validatePhysicalPhaseE(input: PhysicalPhaseEInput): PhysicalPhas
   validateTrigger(input.activation.vmTrigger, 'vm-member', 'vm', window, errors);
   validateObservation(input.activation.tower, { runId: input.runId, host: 'tower', key: tower, stage: 'bridged-member', mode: 'bridged' }, window, errors);
   validateObservation(input.activation.vm, { runId: input.runId, host: 'vm', key: vm, stage: 'bridged-member', mode: 'bridged' }, window, errors);
+  validateObservedTriggeredFire(input.activation.tower, input.activation.towerTrigger, errors);
   for (const [label, observation] of [['tower', input.activation.tower], ['vm', input.activation.vm]] as const) {
     if (observation.routine.pushMode !== 'commit-only:bridged' || observation.routine.lastPushed.length !== 0 || !observation.routine.active) {
       errors.push(`Phase E ${label} member must be active, commit-only:bridged, and record no direct pushes`);
@@ -850,6 +970,7 @@ export function validatePhysicalPhaseE(input: PhysicalPhaseEInput): PhysicalPhas
   validateTrigger(input.healthy.integrateTrigger, 'healthy-integrate', 'tower', window, errors);
   validateTrigger(input.healthy.egressTrigger, 'healthy-egress', 'tower', window, errors);
   validateObservation(input.healthy.observation, { runId: input.runId, host: 'tower', key: tower, stage: 'healthy-egress', mode: 'bridged' }, window, errors);
+  validateObservedTriggeredFire(input.healthy.observation, input.healthy.egressTrigger, errors);
   const healthy = input.healthy.observation;
   const admitted = healthy.routine.githubBridge?.lastAdmitted;
   const canonical = healthy.refs.canonicalStaging;
@@ -890,6 +1011,7 @@ export function validatePhysicalPhaseE(input: PhysicalPhaseEInput): PhysicalPhas
   ) errors.push('Phase E divergence must arm one fresh fork-ahead commit from the observed canonical head');
   validateTrigger(input.divergence.trigger, 'divergence-egress', 'tower', window, errors);
   validateObservation(input.divergence.after, { runId: input.runId, host: 'tower', key: tower, stage: 'divergence-after', mode: 'bridged' }, window, errors);
+  validateObservedTriggeredFire(input.divergence.after, input.divergence.trigger, errors);
   const after = input.divergence.after;
   if (
     after.refs.canonicalStaging !== mutation.canonicalOid || after.refs.remoteStaging !== mutation.headOid ||
