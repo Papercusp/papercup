@@ -13,6 +13,18 @@ export const MCP_OAUTH_BASE = '/api/connected-apps/oauth';
 export const MCP_RESOURCE_PATH = '/api/mcp';
 
 /**
+ * Root well-known path → the OAuth route that serves it. MCP clients look at the ROOT: the
+ * resource-suffixed RFC 9728 form for `/api/mcp` first, then the bare one, then RFC 8414. The host
+ * (apps/operator/bin/host-handler.ts) maps exactly these paths; the integration test uses the same
+ * map, so a client that finds the documents there finds them on a real install too.
+ */
+export const MCP_OAUTH_WELL_KNOWN: Readonly<Record<string, string>> = {
+  [`/.well-known/oauth-protected-resource${MCP_RESOURCE_PATH}`]: `${MCP_OAUTH_BASE}/protected-resource`,
+  '/.well-known/oauth-protected-resource': `${MCP_OAUTH_BASE}/protected-resource`,
+  '/.well-known/oauth-authorization-server': `${MCP_OAUTH_BASE}/authorization-server`,
+};
+
+/**
  * The origin the client used. Behind the user's tunnel the request reaches us over plain http
  * with the public Host, and the tunnel states the scheme in X-Forwarded-Proto. Used ONLY to build
  * URLs the client already addressed — never for a trust decision (that is the loopback verdict).

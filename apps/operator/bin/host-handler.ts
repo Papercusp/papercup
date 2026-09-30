@@ -40,15 +40,9 @@ import { backpressureMiddleware } from './host-backpressure';
 import { requestDeadlineMiddleware } from './host-request-deadline';
 import { runWithLoopbackPeerVerdict } from '@papercusp/operator-core/lib/auth/loopback-peer-trust';
 import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
+import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 
 const host = new Hono();
-
-/** Root well-known path → the connected-apps OAuth route that serves it (P-006). */
-export const MCP_OAUTH_WELL_KNOWN: Readonly<Record<string, string>> = {
-  '/.well-known/oauth-protected-resource/api/mcp': '/api/connected-apps/oauth/protected-resource',
-  '/.well-known/oauth-protected-resource': '/api/connected-apps/oauth/protected-resource',
-  '/.well-known/oauth-authorization-server': '/api/connected-apps/oauth/authorization-server',
-};
 
 // 1. NO RESPONSE COMPRESSION — deliberate, do not re-add.
 //    Papercusp ships as a Tauri DESKTOP app: this host binds 127.0.0.1
