@@ -28,6 +28,7 @@
   "assertions": [
     {
       "id": "same-box-through-physical-entry-point",
+      "passed": true,
       "spec": "AUTO-BAR-R-4-P-005@2",
       "criteria": "The physical scenario runs against the same-box two-instance rig from the same entry point used for the physical rig.",
       "observed": "Log line `SAME_BOX_REHEARSAL phases=A,B,C,D rig=~/.papercusp-same-box-rigs/r15-20260930T112037Z`, then the scenario's own lines `hive-git-physical-scenario: PHASE_SKIP E..J (not selected)` and `PARTIAL_RUN phases=A,B,C,D passed 2026-09-30T11:28:54.310Z..2026-09-30T11:41:50.474Z`. Probe stdout `{\"schemaVersion\":\"hive-git-physical-partial/v1\",\"phases\":\"A,B,C,D\",\"releaseEvidence\":false}`. The scenario file was not forked: the same-box run executed papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh through hive-git-physical-probe.sh.",
@@ -35,6 +36,7 @@
     },
     {
       "id": "harness-bracketed-one-result-line",
+      "passed": true,
       "spec": "AUTO-BAR-R-9-P-004@2",
       "criteria": "Every drill run is bracketed by vh.sh, each phase declared through vh_phase/vh_begin, and one HARNESS_RESULT line names the first failing phase.",
       "observed": "`VH_RUN harness=hive-git-drill run=20260930T112812Z-1916007 plan=setup:skip,mode:skip,leg-a:skip,leg-b:skip,leg-c:skip,physical:run,leg-d:skip,leg-f:skip`, `VH_BEGIN phase=physical`, `VH_PHASE phase=physical status=passed`, and exactly one `HARNESS_RESULT harness=hive-git-drill verdict=pass run=20260930T112812Z-1916007 first_failure=none passed=1 failed=0 blocked=0 skipped=7 reused=0`. The harness wrote contract.json, plan.json, phases.jsonl and result.json.",
@@ -42,6 +44,7 @@
     },
     {
       "id": "producers-exit",
+      "passed": true,
       "spec": "AUTO-BAR-R-7-P-004@2",
       "criteria": "Every ssh producer mode exits as soon as it has written its result.",
       "observed": "Phases A-D invoke the phase-a..d observe/drive producer modes and rig-preflight many times over ssh-equivalent calls; the physical phase completed in 13m40s with no stalled producer, and the drill exited 0 one second after the scenario's PARTIAL_RUN line (11:41:50Z -> 11:41:54Z). On the real physical VM, a standalone rig-preflight producer exited in 7.1 s wall time (docs/evidence/pds-p003-live-rig-preflight-six-checks-2026-09-30.json).",
@@ -49,6 +52,7 @@
     },
     {
       "id": "remote-reads-converge",
+      "passed": true,
       "spec": "AUTO-BAR-R-6-P-004@3",
       "criteria": "No drill step decides on a single read of remote state after an async action; no drill failure is a transient read.",
       "observed": "Phases A-D decided every post-action remote observation through converging waits and passed. Across the same-box window (runs 8-14), the attempt audit on WI-10003976 (posts 1151165 and 1151167) lists each failure fingerprint with its cause; none was a read that a re-read of the same remote state would have passed.",
