@@ -5,6 +5,7 @@ const m = vi.hoisted(() => ({
   row: vi.fn(), spec: vi.fn(), acquire: vi.fn(), finalize: vi.fn(), release: vi.fn(), pid: vi.fn(), ended: vi.fn(),
   live: vi.fn(), holder: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
+  ensureCodex: vi.fn(),
 }));
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
@@ -18,7 +19,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   normalizeCodexResumeLocalLivenessEvidence: m.witness,
   ensureResumeTranscriptPresent: m.transcript,
   tryRematerializeFromArchive: m.archive,
-  ensureCodexHomeViaOperator: vi.fn(), ensureInteractiveConfigViaOperator: vi.fn(),
+  ensureCodexHomeViaOperator: m.ensureCodex, ensureInteractiveConfigViaOperator: vi.fn(),
   isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true,
   rehealResumeCredentials: vi.fn(), rehealResumeCodexAuth: vi.fn(),
   applyCodexGatewayRoute: m.codexRoute, applyOmpResumeAccountRoute: m.ompRoute,
@@ -48,6 +49,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
     agent: backend, coordOwnerId: 'saved-owner', cwd: '/project', pid: null, sessionId: 'saved-native' });
   m.spec.mockResolvedValue({ agent: backend, workspaceId: 'workspace', harnessSlug: 'project',
     profile: 'engineer', model: 'saved-model:high', planSlug: 'saved-plan',
+    headless: true,
     specificationRevision: 'spec-1', stateRevision: 'state-2' });
   return { advSessionId: 42, workspaceId: 'workspace', agentChatId: 'saved-chat', backend,
     nativeSessionId: 'saved-native', ownerId: 'saved-owner', harnessSlug: 'project',
@@ -84,6 +86,12 @@ describe('structured exact resume preparation', () => {
       accountRoute: 'named-account', carry: 'cold', modes: ['auto', 'ideate'], runtimeGeneration: 4 });
     expect(resume.boot.envelopeEnv).toMatchObject({ PAPERCUSP_SID: 'saved-owner', PAPERCUSP_ADV_SESSION_ID: '42',
       PAPERCUSP_WORKSPACE: 'workspace', RESTORED_ROUTE: 'named-account' });
+    if (backend === 'codex') {
+      expect(m.ensureCodex).toHaveBeenCalledWith(
+        'saved-owner', '/saved/codex', 42,
+        expect.objectContaining({ headless: true }),
+      );
+    }
     expect(m.finalize).not.toHaveBeenCalled();
     await expect(resume.beforeReady(null)).rejects.toThrow('no native process');
     await resume.beforeReady(12345);

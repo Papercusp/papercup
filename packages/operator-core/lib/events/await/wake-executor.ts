@@ -552,6 +552,8 @@ export interface EnsureCodexHomeForWakeInput {
   advSessionId: number;
   owner: string;
   codexHome: string;
+  /** Channel-2 wake resumes are detached/headless and must retain that config policy. */
+  headless: true;
   sessionRow?: CodexRepairSessionRow | null;
   /** The launcher passes this when the rollout is bound to the gateway provider. */
   requireGatewayProvider?: boolean;
@@ -623,6 +625,7 @@ async function defaultEnsureCodexHomeForWake(
         token: readSuperuserToken(),
         codexGatewayAuto: input.requireGatewayProvider === true,
         codexGatewayPriority: input.requireGatewayProvider === true ? 'su' : null,
+        headless: input.headless,
         trustDir: null,
         projectDir: input.sessionRow?.cwd,
       }),
@@ -4073,6 +4076,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           advSessionId: handle.advSessionId,
           owner: fresh?.coordOwnerId ?? d.subscriberId,
           codexHome: home,
+          headless: true,
           sessionRow: fresh,
         }).catch((err) => {
           console.warn(

@@ -16606,6 +16606,7 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
         advSessionId,
         {
           model: "gpt-5.6-sol:xhigh",
+          headless: true,
           env: { PAPERCUSP_HONO_PORT: "3271" },
           probe: async (candidate: string) => {
             probed.push(candidate);
@@ -16635,6 +16636,7 @@ describe("EI-23153687450001394: Codex home repair heals a stale runtime port", (
         advSessionId,
         requireGatewayProvider: false,
         model: "gpt-5.6-sol:xhigh",
+        headless: true,
       });
     } finally {
       rmSync(codexHome, { recursive: true, force: true });

@@ -674,6 +674,17 @@ export async function runScheduledPlanFire(
         (promotion.dependencyDiagnostics ?? []).map((diagnostic) => diagnostic.message).join('; '),
     );
   }
+  // WI-10004234: both refusals below return promoted:0 with workItems:[], so without
+  // their own names they surfaced as `plan_run_promotion_incomplete 0/N` and sent the
+  // reader hunting for missing work-items instead of a blocked BAR contract or an
+  // unreadable plan.
+  if (promotion.acceptanceBarBlocked) {
+    const codes = promotion.acceptanceBarLifecycle?.codes ?? [];
+    throw new Error(`plan_run_acceptance_bar_blocked:${prepared.instanceSlug}:${codes.join(',') || 'unknown'}`);
+  }
+  if (promotion.planUnreadable) {
+    throw new Error(`plan_run_plan_unreadable:${prepared.instanceSlug}`);
+  }
   const expectedOpenItems = promotion.promoted + promotion.skipped;
   if (promotion.workItems.length !== expectedOpenItems) {
     throw new Error(

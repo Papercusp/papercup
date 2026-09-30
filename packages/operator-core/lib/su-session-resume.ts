@@ -164,8 +164,11 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       env.CLAUDE_CONFIG_DIR = native.configDir;
     } else if (native.backend === 'codex') {
       if (!native.codexHome) throw new Error('The saved Codex home is unavailable');
-      await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id,
-        { operatorUrl, requireGatewayProvider: accountRoute.mode !== 'default' });
+      await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id, {
+        operatorUrl,
+        requireGatewayProvider: accountRoute.mode !== 'default',
+        headless: spec.headless ?? row.launchArgv?.includes('--headless') === true,
+      });
       if (!isCodexHomeLaunchReady(native.codexHome, record.ownerId)) throw new Error('The saved Codex SU configuration is not ready');
       if (accountRoute.mode === 'default') rehealResumeCodexAuth(native.codexHome);
       applyCodexGatewayRoute(native.codexHome, { ...accountRoute, ownerId: record.ownerId,

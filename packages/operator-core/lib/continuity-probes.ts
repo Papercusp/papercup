@@ -12,7 +12,7 @@ import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 import { listAllProjectedTools, projectedToolRegistryRevision, type ProjectedTool } from '@papercusp/agent-mcp';
 import { checkAgainstJsonSchema } from './json-schema-validation';
-import { parseProjection } from './result-projection';
+import { classifyProjectionBody, parseProjection } from './result-projection';
 import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
 import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
@@ -540,19 +540,22 @@ function decodeToolResult(result: unknown): unknown {
   if ('structuredContent' in row) return row.structuredContent;
   const content = row.content;
   if (!Array.isArray(content)) return result;
-  const texts = content.flatMap((entry) => {
+  const textItems = content.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     const text = (entry as { text?: unknown }).text;
-    return typeof text === 'string' ? [text] : [];
+    return typeof text === 'string' ? [{ text }] : [];
   });
-  if (texts.length === 1) {
-    try {
-      return JSON.parse(texts[0]);
-    } catch {
-      return texts[0];
-    }
-  }
-  return texts;
+  if (textItems.length === 0) return [];
+  // WI-10004343: a structured result is routinely NOT one text item — the JSON
+  // payload is followed by advisory text items (a tool's guidance.seeAlso
+  // "See also: …"). Parsing only a lone item handed the predicate a string[]
+  // whenever an advisory was present, so every path read undefined (a true
+  // value read `stale`) and the byte budget was charged for the prose too.
+  // Use the SAME classifier projection uses (D-012), so the probe and `pick`
+  // agree on which item is the payload.
+  const { json } = classifyProjectionBody(textItems);
+  if (json) return json.parsed;
+  return textItems.length === 1 ? textItems[0].text : textItems.map((item) => item.text);
 }
 
 function observedScalar(value: unknown): unknown {

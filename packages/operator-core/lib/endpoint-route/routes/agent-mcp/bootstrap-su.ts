@@ -3178,6 +3178,7 @@ export const bootstrapSu = defineTool({
         autoMode,
         drainMode,
         loopArmed,
+        headless,
         fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
         stack: spec.stack,
         ...(body.selected_identity_revision && body.stack?.length === 1

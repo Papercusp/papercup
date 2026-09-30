@@ -16,7 +16,7 @@ const savedRecord = {
   harnessSlug: null, profile: 'generic', contextSize: 'trimmed',
   personaTier: 'full', model: 'gpt-6-sol', planSlug: null,
   launchedBy: null, autoMode: false, drainMode: false,
-  loopArmed: false, fleet: null, stack: ['domain:research'],
+  loopArmed: false, headless: true, fleet: null, stack: ['domain:research'],
   selectedIdentity: { ref: 'domain:research', sourceRevision: REVISION },
   specificationRevision: REVISION,
   specificationArtifact: { specificationRevision: REVISION },
@@ -84,6 +84,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
     expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
       sid: OWNER, promptText: 'PINNED V1 INSTRUCTIONS',
       mcpUrl: 'http://localhost:3170/api/mcp?superuser=1',
+      headless: true,
     }));
     expect(mocks.buildLaunchSpec).toHaveBeenCalledWith(expect.objectContaining({ stack: [], modes: [] }));
     expect(mocks.recordLaunchSpec).not.toHaveBeenCalled();

@@ -217,6 +217,7 @@ describe('parseSuLaunchSpecRecord', () => {
     autoMode: true,
     drainMode: false,
     loopArmed: true,
+    headless: true,
     fleet: { slug: 'ops', role: 'member' },
     stack: [],
   };
@@ -267,6 +268,7 @@ describe('parseSuLaunchSpecRecord', () => {
       autoMode: false, drainMode: false, loopArmed: false,
       profile: 'engineer', fleet: null, planSlug: null, harnessSlug: null,
     });
+    expect(bare).not.toHaveProperty('headless');
   });
 });
 

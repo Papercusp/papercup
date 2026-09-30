@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "plan-decision-snapshot",
+  "name": "Jev variant verdict against D-001 (bar R-1): snapshot of Decision D-004",
+  "planSlug": "jev-performance-improvements-2026-09-30",
+  "planVersion": 35,
+  "planContentHash": "2500a63dcc789d2843de811ecfbd6633443e8875d7b5b09364e9a172f876c82a",
+  "decisionId": "D-004",
+  "decisionTitle": "P-007 verdict against D-001: v2-content at t=0.35 passes and replaces v1; substance passes but improves less",
+  "recheck": "plans:get { slug: 'jev-performance-improvements-2026-09-30', harness: 'papercusp', decisionId: 'D-004' } returns the verbatim body; its sha256 is verbatimBodySha256. The only difference from this body is the redaction below.",
+  "verbatimBodySha256": "6349c22998e87185c9a361affeda62598e95f36cea5ffa6670e0f8f5a6fe599a",
+  "redaction": "The owner's name is removed from the one owner-provenance tag ([owner:<name> 2026-09-30 directive #1049] -> [owner 2026-09-30 directive #1049]) because shipped files may not carry names (identity lint). Nothing else is changed.",
+  "itemsInScope": ["P-003", "P-004", "P-005", "P-006"],
+  "built": [
+    { "variant": "v2-content", "item": "P-003" },
+    { "variant": "substance", "item": "P-005" }
+  ],
+  "dropped": [
+    { "item": "P-004", "decisionId": "D-003" },
+    { "item": "P-006", "decisionId": "D-003" }
+  ],
+  "body": "Date: 2026-09-30\nDate: 2026-09-30\n[self-imposed, su-f7ad1084, AUTO] Verdict recorded under the D-001 bar ([owner 2026-09-30 directive #1049] asked for Jev better than shipped). Variants built: v2-content (P-003), substance (P-005); pair (P-004) and score (P-006) were dropped before measuring (D-003). All numbers are arm B (production floor 0.58 + Jev), v1 at t=0.3, jev-1.13.0, instructions encoding, same-run v1 baselines.\n\nRuns: admission on gold-set.v2 (210 queries, 90 hard negatives, P-002), fresh, LLM-judged negatives 656/656 graded with 0 judged relevant: v1 .papercusp/bench-reports/jev-admission-2026-09-30T16-53-16-130Z, v2-content T16-56-25-178Z, substance T16-59-10-000Z (one battery, background task 0muobppq8dvfxj1mntu). Robustness (150 questions x self-promoters, 3 repeats): v1 jev-robustness-2026-09-30T16-12-15-336Z, v2-content T16-17-20-328Z, substance T16-23-50-131Z. Paired stats: .papercusp/scratch/jev-paired-v2.mts.\n\nv2-content, at the threshold its admission run selects (0.35):\n(1a) self-promoter conditional admit 31.4% (216/687) -> 1.8% (12/683) at 0.35 [2.3% at 0.3; paired bootstrap diff at 0.3 29.1pt, 95% CI 26.5 to 32.1]; questions admitting a self-promoter 149/150 -> 11/150 (exact McNemar at 0.3 134/0, p=4.6e-41). PASS.\n(1b) off-topic: hard-negative questions admitting anything 12/90 -> 7/90, McNemar onlyV1=5 onlyV2=0, one-sided p=0.0625. Better but not significant, so (1b) does not count as the improvement; it passes the (2) no-regression check.\n(2) R@10 91.4% -> 91.4%, exact-id MRR 0.888 -> 0.897 on the 120 positives (no loss on any query). PASS.\n(3) meets-measured-bar 3/3 repeats (gold v1) and again on gold v2; selected t 0.35/0.35/0.40 and 0.35 on gold v2. PASS.\n(4) order flip 1.8% (noise floor 1.7%), p95 260 ms, timeouts 0.0%, cost 1.46e-4 vs 1.39e-4 USD/query (1.05x). PASS.\n\nsubstance at its selected t: (1a) 31.4% -> 7.3% at 0.35 (9.3% at 0.3), (1b) 12/90 -> 9/90 at 0.35, R@10 unchanged, cost 1.92x, p95 255 ms. Passes, but its (1) improvement is smaller than v2-content's, so D-001's tie rule picks v2-content.\n\nOutcome: production adopts v2-content at threshold 0.35 (P-008). The substance question lives on as the save-time block (P-010), where it is asked of a single memory.\nRelated: P-007, P-008"
+}

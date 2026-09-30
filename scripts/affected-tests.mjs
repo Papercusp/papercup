@@ -3756,6 +3756,23 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: () => true,
   },
   {
+    // WI-10002095 — the GENERAL form of the two guards above. WI-39630 and WI-10002064 each
+    // closed ONE class of "tracked path that a repo .gitignore rule also matches"; measuring
+    // the whole population found 1,969 superproject paths across four more classes
+    // (`.papercup-console-active.*`, `.next/`, `**/.papercusp/scratch/`, `**/.tmp-claude/`)
+    // that no class-specific guard could see. The rule is inert while the file behaves as
+    // tracked content, and once churn deletes it git-sync hands git an explicit pathspec for
+    // an ignored path, git refuses, and that repo's whole sync leg dies every tick.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-tracked-ignored",
+    // Deliberately NO hostSuiteRatchet (same fail-safe reasoning as the siblings: a ratchet
+    // would make the standalone leg depend on one test case continuing to exist).
+    // Deliberately EVERY changed path: the violation is armed by `git add -f`, by a build
+    // or scratch dir swept into a commit, or by a NEW .gitignore rule landing over
+    // already-tracked files — none of which need touch a file this run would select.
+    appliesTo: () => true,
+  },
+  {
     // EI-22201289307647151 — the same D-034 shape as lint:no-tracked-node-modules just
     // above, one boundary over: a superproject .gitignore rule does not reach inside a
     // submodule, so 22 of 38 coverage-capable submodules had no local `coverage/` ignore

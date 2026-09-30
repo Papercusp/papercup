@@ -95,6 +95,18 @@ describe('plans:new workspaceId opt-in (EI-1543)', () => {
     expect(withPlanLockM).not.toHaveBeenCalled();
   });
 
+  it('WI-10004345: an exact-slug re-create reaches the locked create (slug_exists), not similar_exists naming itself', async () => {
+    vi.mocked(listPlanIndexRows).mockResolvedValue([{
+      planSlug: 'demo-plan', title: 'Demo plan', status: 'draft', archived: false,
+    }] as Awaited<ReturnType<typeof listPlanIndexRows>>);
+    const exists: WithPlanLockResult<NewPlanValue> = { ...appliedResult(), value: { ok: false, code: 'slug_exists' } };
+    withPlanLockM.mockResolvedValueOnce(exists);
+    const result = await call({ force: false });
+    expect(result.content[0]!.text).not.toContain('similar_exists');
+    expect(withPlanLockM).toHaveBeenCalledTimes(1);
+    expect(result.content[0]!.text).toContain('slug_exists');
+  });
+
   it('omits workspaceId from withPlanLock opts when not passed (unchanged default behavior)', async () => {
     await call();
     const opts = withPlanLockM.mock.calls[0]?.[1] as unknown as Record<string, unknown>;

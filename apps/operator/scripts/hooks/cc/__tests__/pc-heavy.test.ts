@@ -3505,18 +3505,23 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     await new Promise((r) => setTimeout(r, 2300)); // past the 2s coalescing window — lock now stale
 
     const follower = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
-      env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
+      // A follower that does NOT reclaim waits PC_HEAVY_COALESCE_MAX_WAIT_SEC
+      // before recreating anything. Pin it far above the poll budget below so
+      // that budget stays discriminating whatever the script's default becomes.
+      env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2', PC_HEAVY_COALESCE_MAX_WAIT_SEC: '600' }),
       cwd: dir,
       detached: true,
     });
     try {
-      // Poll briefly for the lock to be RECREATED (a fresh mtime) — proving
-      // the stale lock was reclaimed promptly, not waited-out for the full
-      // window (which would itself eventually also just run uncached, but
-      // only after paying the whole PC_HEAVY_COALESCE_SEC again).
+      // Poll for the lock to be RECREATED (a fresh mtime) — proving the stale
+      // lock was reclaimed promptly, not waited-out for the full window (which
+      // would itself eventually also just run uncached, but only after paying
+      // the whole max wait). The budget covers bash startup plus pc-heavy's
+      // pre-coalesce work (tree token, key hash), which a loaded gate box
+      // stretched past a 1.5s budget.
       const t0 = Date.now();
       let reclaimed = false;
-      while (Date.now() - t0 < 1500) {
+      while (Date.now() - t0 < 10_000) {
         const mt = lockMtime();
         if (mt !== null && mt > (staleMtime as number)) { reclaimed = true; break; }
         await new Promise((r) => setTimeout(r, 100));

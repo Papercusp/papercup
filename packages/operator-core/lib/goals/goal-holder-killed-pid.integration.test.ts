@@ -123,9 +123,14 @@ function expectProbeDead(pid: number): void {
 }
 
 async function seedGoal(opts: { status?: string; launchSettings?: unknown } = {}): Promise<void> {
+  // Keep this outcome goal eligible for the real operating-input gate. The
+  // subject is holder loss/relaunch, so a missing kill criterion or ceiling
+  // must not mask the liveness result before the launch seam is exercised.
   await admin`
-    INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, status, launch_settings)
+    INSERT INTO harness_shared.goals
+      (id, workspace_id, install_slug, title, status, kill_criterion, budget_cents, launch_settings)
     VALUES (${GOAL}, ${WS}, ${HARNESS}, ${'killed-holder goal'}, ${opts.status ?? 'active'},
+            ${'The lost holder is replaced once and the original goal reads dormant.'}, ${1000},
             ${opts.launchSettings === undefined ? null : admin.json(opts.launchSettings as never)})`;
 }
 

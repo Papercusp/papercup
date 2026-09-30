@@ -2086,6 +2086,10 @@ pub struct App {
     /// Highlighted row of the composer's `/` command menu. Reset whenever the
     /// typed text changes, clamped against the current matches when used.
     pub chat_slash_selected: usize,
+    /// pui-chat-first-ux P-021: the chat-first composer's shortcut list, opened
+    /// by `?` on an empty message box (Claude Code's `? for shortcuts`). The
+    /// next key closes it and then does its usual job.
+    pub chat_shortcuts_open: bool,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
@@ -2839,6 +2843,7 @@ impl App {
             chat_details: None,
             chat_tools_expanded: false,
             chat_slash_selected: 0,
+            chat_shortcuts_open: false,
             plans: Vec::new(),
             plan_sel: 0,
             goals: Vec::new(),
@@ -6834,6 +6839,11 @@ impl App {
             fields.push(format!("${:.2}", cents / 100.0));
         }
         fields.join(" · ")
+    }
+
+    /// pui-chat-first-ux P-021: the dim text an empty message box shows.
+    pub fn chat_placeholder(&self) -> String {
+        format!("Message {}", self.chat_engine_label())
     }
 
     /// The engine this conversation runs on, in product words ("Claude").
@@ -13371,6 +13381,42 @@ impl App {
             if code == KeyCode::Char('z') && mods.contains(KeyModifiers::CONTROL) {
                 return self.chat_undo();
             }
+            // pui-chat-first-ux P-021: `?` on an empty message box opens the
+            // shortcut list instead of typing a `?` (Claude Code's behaviour);
+            // with text in the box it types as usual. Any other key closes the
+            // list and then does its own job; Esc only closes it.
+            if self.chat_first
+                && code == KeyCode::Char('?')
+                && self.chat_input.is_empty()
+                && !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                self.chat_shortcuts_open = !self.chat_shortcuts_open;
+                return Action::Render;
+            }
+            if std::mem::take(&mut self.chat_shortcuts_open) && code == KeyCode::Esc {
+                return Action::Render;
+            }
+            // P-018: Up/Down belong to the message history while typing, so
+            // PgUp/PgDn are how the conversation scrolls without leaving the
+            // box. PgUp at the top loads earlier messages, as outside the box.
+            match code {
+                KeyCode::PageUp => {
+                    self.chat_scroll = self.chat_scroll.saturating_add(10);
+                    if self.chat_has_more_earlier
+                        && !self.chat_loading_earlier
+                        && self.conversation_id.is_some()
+                    {
+                        self.chat_loading_earlier = true;
+                        return Action::LoadEarlierChat;
+                    }
+                    return Action::Render;
+                }
+                KeyCode::PageDown => {
+                    self.chat_scroll = self.chat_scroll.saturating_sub(10);
+                    return Action::Render;
+                }
+                _ => {}
+            }
             // Alt-Enter, Ctrl-J and Shift-Enter (where the terminal reports it —
             // kitty keyboard protocol, main.rs) are the explicit multiline
             // affordances; plain Enter remains send, even when the cursor sits
@@ -17560,6 +17606,69 @@ mod tests {
         a.update(key('s', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Sessions, "`s` must navigate, not open a picker");
         assert!(a.session_picker.is_none());
+    }
+
+    /// pui-chat-first-ux P-021: `?` on an empty chat-first message box opens
+    /// the shortcut list (Claude Code's `? for shortcuts`) instead of typing;
+    /// the next key closes it AND does its own job, and with text in the box
+    /// `?` is an ordinary character.
+    #[test]
+    fn question_mark_on_an_empty_chat_first_box_toggles_the_shortcuts() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.chat_composing = true;
+        assert_eq!(a.update(key('?', KeyModifiers::NONE)), Action::Render);
+        assert!(a.chat_shortcuts_open);
+        assert!(a.chat_input.is_empty(), "`?` must not be typed");
+        a.update(key('h', KeyModifiers::NONE));
+        assert!(!a.chat_shortcuts_open);
+        assert_eq!(a.chat_input, "h", "the closing key still types");
+        a.update(key('?', KeyModifiers::NONE));
+        assert_eq!(a.chat_input, "h?");
+        assert!(!a.chat_shortcuts_open);
+        // The workbench chat keeps `?` as a plain character.
+        let mut w = App::new();
+        w.chat_composing = true;
+        w.update(key('?', KeyModifiers::NONE));
+        assert_eq!(w.chat_input, "?");
+        assert!(!w.chat_shortcuts_open);
+    }
+
+    #[test]
+    fn esc_closes_the_shortcut_list_without_leaving_the_message_box() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.chat_composing = true;
+        a.update(key('?', KeyModifiers::NONE));
+        assert!(a.chat_shortcuts_open);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.chat_shortcuts_open);
+        assert!(a.chat_composing, "the first Esc only closes the list");
+        a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(!a.chat_composing);
+    }
+
+    /// P-018: Up/Down are message history while typing, so PgUp/PgDn scroll
+    /// the conversation without leaving the box (they used to do nothing).
+    #[test]
+    fn page_keys_scroll_the_conversation_while_composing() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.chat_composing = true;
+        a.chat_input = "draft".into();
+        let page_up = Event::Key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let page_down = Event::Key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(a.update(page_up.clone()), Action::Render);
+        assert_eq!(a.chat_scroll, 10);
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_input, "draft", "scrolling leaves the draft alone");
+        a.update(page_down.clone());
+        assert_eq!(a.chat_scroll, 0);
+        // At the top of a partial history, PgUp asks for earlier messages.
+        a.chat_has_more_earlier = true;
+        a.conversation_id = Some("c1".into());
+        assert_eq!(a.update(page_up), Action::LoadEarlierChat);
+        assert!(a.chat_loading_earlier);
     }
 
     /// The conversation switcher moved to `l` so it cannot shadow a mnemonic.

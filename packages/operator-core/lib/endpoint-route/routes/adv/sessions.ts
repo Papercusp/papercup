@@ -1473,7 +1473,13 @@ const ensureCodexHome = defineTool({
   path: '/adv/sessions/ensure-codex-home',
   auth: 'loopback',
   async handler(req) {
-    let body: { owner?: unknown; advSessionId?: unknown; requireGatewayProvider?: unknown; model?: unknown } = {};
+    let body: {
+      owner?: unknown;
+      advSessionId?: unknown;
+      requireGatewayProvider?: unknown;
+      model?: unknown;
+      headless?: unknown;
+    } = {};
     try {
       const text = await req.text();
       if (text.trim()) body = JSON.parse(text);
@@ -1538,6 +1544,11 @@ const ensureCodexHome = defineTool({
     // throws before it can restore a missing home or prompt.
     const requestedModel = typeof body.model === 'string' ? body.model.trim() : '';
     const repairModel = requestedModel ? resolveCodexModel(requestedModel) : record.model ?? CODEX_DEFAULT_MODEL;
+    const repairHeadless = typeof body.headless === 'boolean'
+      ? body.headless
+      : typeof record.headless === 'boolean'
+        ? record.headless
+        : sessionRow?.launchArgv?.includes('--headless') === true;
     const repairRecord = requestedModel || !record.model ? {
       ...record,
       model: repairModel,
@@ -1551,6 +1562,7 @@ const ensureCodexHome = defineTool({
       token: readSuperuserToken(),
       codexGatewayAuto: body.requireGatewayProvider === true,
       codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
+      headless: repairHeadless,
       trustDir: null, // the home's inherited trust tables already cover the cwd
       projectDir: sessionRow?.cwd,
       promptText,

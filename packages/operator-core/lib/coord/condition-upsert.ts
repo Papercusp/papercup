@@ -230,19 +230,31 @@ export async function settleConditionClaim(
   // A peer won the race: refresh THEIR row with this reading, settle ours.
   const winner = await findConditionKeyHolder(key, { workspaceId: input.workspaceId });
   if (winner) await refreshIncumbent(winner, key, input);
+  // WI-10004234: a single failed stand-down write used to leave the loser OPEN
+  // beside the winner, and most callers ignore `duplicateLeftOpen`, so one
+  // transient write error became a silent second open lane. Retry the write
+  // (throws only) before reporting the duplicate.
   let droppedOk = false;
-  try {
-    await setWorkItemState(itemId, 'dropped', {
-      harness: input.harness,
-      by: CONDITION_UPSERT_ACTOR,
-      completionRef: `superseded by ${winner ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
-    });
-    droppedOk = true;
-  } catch {
-    // Reported, never swallowed silently — the caller can see the duplicate.
+  for (let attempt = 0; attempt < STAND_DOWN_ATTEMPTS && !droppedOk; attempt += 1) {
+    if (attempt > 0) await sleep(STAND_DOWN_BACKOFF_MS[attempt - 1] ?? 250);
+    try {
+      await setWorkItemState(itemId, 'dropped', {
+        harness: input.harness,
+        by: CONDITION_UPSERT_ACTOR,
+        completionRef: `superseded by ${winner ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
+      });
+      droppedOk = true;
+    } catch {
+      // Retried above; a persistent failure is reported, never swallowed.
+    }
   }
   return { won: false, winnerId: winner ?? null, ...(droppedOk ? {} : { duplicateLeftOpen: itemId }) };
 }
+
+/** Stand-down write attempts before a lost-race row is reported as `duplicateLeftOpen`. */
+const STAND_DOWN_ATTEMPTS = 3;
+const STAND_DOWN_BACKOFF_MS = [50, 250] as const;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * File-or-refresh the work-item owning `conditionKey`.

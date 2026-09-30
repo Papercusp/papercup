@@ -11720,6 +11720,7 @@ export function runWrapper(options) {
               routeMode: env[ACCOUNT_ROUTING_MODE_ENV] || null,
               accountId: env.PAPERCUSP_ACCOUNT_ID || null,
               priority: env.PAPERCUSP_AGENT_ROLE || "su",
+              headless: env.PAPERCUSP_PSU_HEADLESS === "1",
             },
           ),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
@@ -12849,6 +12850,7 @@ async function launchResume(
         {
           requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
           model: resumeModel || lastActiveModelFor(session) || null,
+          headless: args.headless === true,
         },
       );
       // An exact resume reuses an older per-session CODEX_HOME. If that home
@@ -14462,7 +14464,7 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -14471,6 +14473,7 @@ export async function ensureCodexHomeViaOperator(
   {
     requireGatewayProvider = false,
     model = null,
+    headless = null,
     routeMode = null,
     accountId = null,
     priority = null,
@@ -14519,6 +14522,7 @@ export async function ensureCodexHomeViaOperator(
           advSessionId,
           requireGatewayProvider,
           ...(model ? { model } : {}),
+          ...(typeof headless === "boolean" ? { headless } : {}),
         }),
       },
     );

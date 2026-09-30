@@ -3777,11 +3777,12 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
  */
-export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
+export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean;
     model?: string | null;
+    headless?: boolean;
     routeMode?: string | null;
     accountId?: string | null;
     priority?: string | null;

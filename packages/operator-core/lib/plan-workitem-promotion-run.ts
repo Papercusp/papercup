@@ -118,6 +118,8 @@ export interface PromotePlanResult {
   specQualityBlocked?: true;
   /** Report-only or enforced exact specSetHash verdict evaluated before minting. */
   specQuality?: PlanSpecQualityGateVerdict;
+  /** WI-10004234: the plan could not be read, so nothing was evaluated or minted. */
+  planUnreadable?: true;
   /** P-003: the shared BAR contract was not ready for promotion. */
   acceptanceBarBlocked?: true;
   acceptanceBarLifecycle?: AcceptanceBarLifecycleVerdict;
@@ -445,7 +447,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     harnessSlug: opts.harnessSlug,
     workspaceId: opts.workspaceId,
   });
-  if (!read) return { promoted: 0, skipped: 0, ...NO_EDGES };
+  if (!read) return { promoted: 0, skipped: 0, ...NO_EDGES, planUnreadable: true };
 
   // P-003: promotion is independently callable (scout/autostart and routine
   // paths invoke this function directly), so plans:start cannot be its sole
@@ -719,6 +721,12 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         // NO assignee — placeable, UNCLAIMED; the Queen places it.
       },
     );
+    // WI-10004234: a lost claim race whose stand-down failed even after retries left a
+    // second OPEN lane for this plan item. Fail the promotion loudly instead of reporting
+    // success over a duplicate.
+    if (minted.duplicateLeftOpen) {
+      throw new Error(`plan_promotion_duplicate_left_open:${opts.planSlug}#${itemId}:${minted.duplicateLeftOpen}`);
+    }
     if (!minted.id) {
       // The winner settled/vanished between the claim settlement and the holder read — a
       // narrow re-race. Never link against a null id; the next promotion run re-resolves.
@@ -829,6 +837,9 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         createdBy: opts.createdBy,
       },
     );
+    if (adopted.duplicateLeftOpen) {
+      throw new Error(`plan_promotion_duplicate_left_open:${opts.planSlug}#${item.id}:${adopted.duplicateLeftOpen}`);
+    }
     if (!adopted.id) continue;
     workItemByPlanItem.set(item.id, adopted.id);
     if (adopted.created) {

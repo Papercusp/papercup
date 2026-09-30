@@ -2789,6 +2789,7 @@ describe('executeWake — the liveness ladder', () => {
           advSessionId,
           owner: 'su-archive-repair',
           codexHome: home,
+          headless: true,
         }),
       );
       const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];

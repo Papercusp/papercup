@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
+import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCache } from '@papercusp/cache';
 import {
@@ -80,7 +81,10 @@ vi.mock('../recall-stats', async (original) => {
     recordRecallStats: (...args: Parameters<typeof actual.recordRecallStats>) => {
       recallStatsCalls += 1;
       const row = context.getStore();
-      if (row) recallStatsCallsByQuery.set(row.queryId, (recallStatsCallsByQuery.get(row.queryId) ?? 0) + 1);
+      if (row) {
+        row.telemetryCalls += 1;
+        recallStatsCallsByQuery.set(row.queryId, (recallStatsCallsByQuery.get(row.queryId) ?? 0) + 1);
+      }
       if (process.env.PAPERCUSP_P006_RECALL_STATS === 'off') return Promise.resolve();
       const p = actual.recordRecallStats(...args);
       writes.add(p);
@@ -92,6 +96,8 @@ vi.mock('../recall-stats', async (original) => {
 
 interface Reading {
   queryId: string;
+  phase: string;
+  telemetryCalls: number;
   className: string;
   expected: string[];
   status: string;
@@ -108,6 +114,7 @@ interface Reading {
   error?: string;
 }
 const context = new AsyncLocalStorage<Reading>();
+const attempts: Reading[] = [];
 const profiles: Array<{ name: string; concurrency: number; rows: Reading[] }> = [];
 let manifest: SeedManifest;
 let setupError: unknown;
@@ -164,10 +171,12 @@ function summarize(rows: Reading[]) {
   };
 }
 
-async function measure(query: GoldQuery): Promise<Reading> {
+async function measure(query: GoldQuery, phase: string): Promise<Reading> {
   measuredCalls += 1;
   const row: Reading = {
     queryId: query.id,
+    phase,
+    telemetryCalls: 0,
     className: query.class,
     expected: query.expected,
     status: 'unmeasured',
@@ -215,8 +224,9 @@ async function measure(query: GoldQuery): Promise<Reading> {
     // Preserve the caller outcome BEFORE joining late work. Joining drains the
     // current bounded burst and makes teardown unable to erase its evidence.
     await build?.catch((error) => {
-      row.error = String(error);
+      row.error = inspect(error);
     });
+    attempts.push(row);
     return row;
   });
 }
@@ -357,13 +367,19 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
           Array.from({ length: concurrency }, async () => {
             while (cursor < queries.length) {
               const index = cursor++;
-              if (warm) await measure(queries[index]);
-              rows[index] = await measure(queries[index]);
+              if (warm) await measure(queries[index], `${name}-prime`);
+              rows[index] = await measure(queries[index], name);
             }
           }),
         );
         profiles.push({ name, concurrency, rows });
-        console.log('[P-006 result]', JSON.stringify({ name, concurrency, ...summarize(rows), rows }));
+        // Keep aggregate evidence readable through the router's stdout/stderr
+        // merge. Printing every hit of 150 rows made a single JSON line larger
+        // than a pipe write, letting stderr split it before it could be parsed.
+        const misses = rows.filter((row) => row.expected.length > 0 && (
+          row.status !== 'ready' || row.callerMs > MEMORY_BLOCK_COLD_DEADLINE_MS || row.relevantDelivered.length === 0
+        ));
+        console.log('[P-006 result]', JSON.stringify({ name, concurrency, ...summarize(rows), misses }));
       }
       // The warm profile intentionally primes each query once, so the three
       // measured profiles issue four recalls per gold query. Wait until every
@@ -378,14 +394,21 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       // import/corpus join and invoked the writer yet. Join that scheduling
       // boundary explicitly before snapshotting `writes`, otherwise a fast
       // profile can misclassify pending rows as dropped rows.
-      await vi.waitFor(() => expect(recallStatsCalls).toBe(expectedRecallStatsCalls), { timeout: 5_000 });
-      const missingTelemetry = queries
-        .map((query) => ({ queryId: query.id, calls: recallStatsCallsByQuery.get(query.id) ?? 0 }))
-        .filter((entry) => entry.calls !== 4);
-      console.log(
-        '[P-006 telemetry-scheduling]',
-        JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry }),
-      );
+      let missingTelemetry: Array<{ queryId: string; calls: number }> = [];
+      try {
+        await vi.waitFor(() => expect(recallStatsCalls).toBe(expectedRecallStatsCalls), { timeout: 5_000 });
+      } finally {
+        // The diagnostic must survive the failing assertion it explains,
+        // including warm-prime failures that are not measured profile rows.
+        missingTelemetry = queries
+          .map((query) => ({ queryId: query.id, calls: recallStatsCallsByQuery.get(query.id) ?? 0 }))
+          .filter((entry) => entry.calls !== 4);
+        console.log(
+          '[P-006 telemetry-scheduling]',
+          JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry,
+            missingAttempts: attempts.filter((row) => row.telemetryCalls !== 1) }),
+        );
+      }
       expect(
         recallStatsCalls,
         JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry }),

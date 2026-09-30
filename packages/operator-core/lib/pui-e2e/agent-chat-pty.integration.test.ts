@@ -673,6 +673,26 @@ function ensurePuiBinary(): string {
 const NATIVE_APPROVAL_HEADLINE = /^Allow ([A-Z][A-Za-z ]*?)(?:\(.*\))?\?$/;
 const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
 
+/** The composer is ready to send. pui-chat-first-ux P-021 made the full-screen
+ * chat's composer quiet: its footer reads `? for shortcuts` on an empty box and
+ * `Enter to send` with a draft, while the details view and the workbench keep
+ * the boxed `Message — Enter send` title. All three mean the same state, so one
+ * suite drives builds from before and after P-021. */
+const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter to send'] as const;
+
+function isSendReady(screen: string): boolean {
+  return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));
+}
+
+/** An open question card on screen. P-020 heads the card with its question;
+ * a build from before P-020 heads it `▾ Needs your answer`. A question too
+ * long for the border falls back to the plain `Question` heading. */
+function isQuestionCardOpen(screen: string, question: string): boolean {
+  return screenContains(screen, 'Needs your answer')
+    || screenContains(screen, `┌ ${question}`)
+    || screenContains(screen, '┌ Question ');
+}
+
 class PuiPane {
   readonly pty: IPty;
   private raw = '';
@@ -894,6 +914,22 @@ class PuiPane {
     );
   }
 
+  /** Wait until the composer is ready to send (see SEND_READY_MARKERS). */
+  async waitForSendReady(opts: { timeoutMs?: number } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 25_000;
+    const { ok, maxLateMs } = await pollUntil(() => isSendReady(this.screen()), {
+      timeoutMs,
+      onMiss: () => { this.settleSuToolApproval(); },
+    });
+    this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
+    if (ok) return;
+    throw new Error(
+      `timed out after ${timeoutMs}ms waiting for the composer to be ready to send`
+        + ` (${SEND_READY_MARKERS.join(' | ')})${describeObserverBlock(maxLateMs)}:\n` + this.screen(),
+      { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
+    );
+  }
+
   /**
    * Wait for a needle to LEAVE the rendered screen.
    *
@@ -934,7 +970,7 @@ class PuiPane {
       }));
       throw new Error(`Correlated reply was not rendered:\n${this.screen()}\nProduction traffic: ${JSON.stringify(sessionTraffic)}\nEngine state: ${JSON.stringify(engineState)}`, { cause });
     }
-    await this.waitFor('Message — Enter send', { timeoutMs: 120_000 });
+    await this.waitForSendReady({ timeoutMs: 120_000 });
   }
 
   async stop(): Promise<void> {
@@ -2079,7 +2115,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       // No retyping: the draft entered before navigating to Sessions must
       // survive the linked continuation and reach only its new successor.
       pane.write('i');
-      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitForSendReady({ timeoutMs: 60_000 });
       await pane.waitFor(draft.trim());
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
@@ -2280,8 +2316,8 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       assertNoUnrelated();
 
       stage = 'compose';
-      if (!pane.screen().includes('Message — Enter send')) pane.write('i');
-      await pane.waitFor('Message — Enter send');
+      if (!isSendReady(pane.screen())) pane.write('i');
+      await pane.waitForSendReady();
       pane.write(draft);
       await pane.waitFor(draft);
 
@@ -2292,7 +2328,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.waitForGone('Context · Ctrl-T');
       await pane.waitFor('┌ Agent Chat');
       await pane.waitFor(draft);
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(pane.screen()).not.toContain('Terminal too small');
       assertNoUnrelated();
 
@@ -2537,7 +2573,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       await vi.waitFor(() => {
         const frame = pane.screen();
         expect(frame).toMatch(cause);
-        expect(frame).toContain('Message — Enter send');
+        expect(isSendReady(frame), frame).toBe(true);
         expect(frame).not.toContain('Sending — awaiting acceptance');
       }, { timeout: RECOVERY_DEADLINE_MS, interval: 100 });
       recoveredAfterMs = Date.now() - acceptedAt;
@@ -3009,7 +3045,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // composer journey below does; its short DB deadline is not a startup
       // deadline. No refusal or reconnect assertion is relaxed.
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       try {
         saved = await waitForSavedTurn(prompt);
       } catch (cause) {
@@ -3209,7 +3245,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter();
       await pane.waitFor('Connection: Connected');
       await completeNewSessionSetup(pane);
-      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitForSendReady({ timeoutMs: 60_000 });
       expect(launchRequests).toHaveLength(1);
       expect(scriptedEngine.requests).toEqual([]);
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
@@ -3254,7 +3290,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(pane.screen()).toContain(projectSlug);
       expect(pane.screen()).toContain('Permissions: native approval prompts');
       pane.enter();
-      await pane.waitFor('Message — Enter send', { timeoutMs: 60_000 });
+      await pane.waitForSendReady({ timeoutMs: 60_000 });
       expect(launchRequests).toEqual([expect.objectContaining({ harness_slug: projectSlug, account: null })]);
       expect(scriptedEngine.requests).toEqual([]);
       expect(nativeTerminalLaunch).not.toHaveBeenCalled();
@@ -3328,7 +3364,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(prompt);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(pane.screen()).toContain('Read');
       expect(pane.screen().split('PUI exact Unicode draft')).toHaveLength(2);
       expect(pane.screen().split(scriptedEngine.successText)).toHaveLength(2);
@@ -3738,7 +3774,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.requests).toHaveLength(0);
       releaseInitialization();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(commandPosts).toHaveLength(1);
       expect(commandPosts[0]).toMatchObject({ type: 'owner_turn', content: prompt });
       expect(scriptedEngine.requests).toEqual([prompt]);
@@ -3749,7 +3785,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(followup);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText);
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(scriptedEngine.requests).toEqual([prompt, followup]);
       expect(commandPosts).toHaveLength(2);
       expect((await waitForSavedTurn(followup)).transcript.filter((turn) => turn.role === 'user')).toHaveLength(2);
@@ -4613,20 +4649,20 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // queuing made Enter QUEUE the next message instead of being swallowed
       // (ui.rs:3126, pinned there by `assert!(!text.contains("input locked"))`).
       // This waits for the running state; the assertion that input is not
-      // send-ready is the `not.toContain('Message — Enter send')` below.
+      // send-ready is the `isSendReady(...)).toBe(false)` below.
       await pane.waitFor('Running — Enter queues your next message');
       await pane.waitFor('Bash');
-      expect(pane.screen()).not.toContain('Message — Enter send');
+      expect(isSendReady(pane.screen()), pane.screen()).toBe(false);
       await waitForSavedTurn(prompt);
       pane.interrupt();
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true);
       scriptedEngine.mode = 'success';
       const followup = 'PUI continued after interrupt';
       pane.write(followup);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText);
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       expect(scriptedEngine.requests).toEqual([prompt, followup]);
     } finally { await pane.stop(); }
   });
@@ -4719,7 +4755,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(chat.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
         transportFault = 'none';
         pane.enter();
-        await pane.waitFor('Message — Enter send');
+        await pane.waitForSendReady();
         expect(pane.screen()).not.toContain(`> ${prompt}`);
         expect(commandPosts).toHaveLength(2);
         expect(commandPosts[1]).toEqual(commandPosts[0]);
@@ -4981,7 +5017,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       pane.write(prompt);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       // The scripted engine's Read tool result is the block under test; if it
       // never rendered, the copy assertion below would be vacuous.
       expect(pane.screen()).toContain('Read');
@@ -5237,7 +5273,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         pane.write(prompt);
         pane.enter();
         await pane.waitFor(reply, { timeoutMs: 60_000 });
-        await pane.waitFor('Message — Enter send');
+        await pane.waitForSendReady();
         // Assert per ITERATION, not once at the end: a dispatch that silently
         // never happened is then attributed to the turn that dropped it.
         expect(commandPosts, pane.screen()).toHaveLength(index + 1);
@@ -5603,7 +5639,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       pane.write(prompt);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
 
       // Non-vacuity: the diff must not already be on screen. Without this, a
       // transcript that happened to print the tool arguments inline would
@@ -5634,7 +5670,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
           opened = true;
           break;
         }
-        if (pane.screen().includes('Message — Enter send')) {
+        if (isSendReady(pane.screen())) {
           pane.escape();
           await pane.waitFor('i type · v speak');
         }
@@ -5734,7 +5770,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       // until it timed out — and the stream would finish while it waited,
       // quietly turning this into an after-the-turn test instead of the
       // during-the-turn one the clause requires.
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       pane.write(`\x1b[200~${draft}\x1b[201~`);
       // Then EDIT it, as the spec's probe says: append after the paste.
       const appended = ' ⟵ edited';
@@ -6252,7 +6288,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       const chunks = scriptedEngine.streamChunks.map((chunk) => chunk.trim());
       for (const [cols, rows] of [[80, 24], [120, 40], [200, 60]] as const) {
         pane.resize(cols, rows);
-        await pane.waitFor('Message — Enter send');
+        await pane.waitForSendReady();
         // The reply wraps at narrow widths, so read it in screen order: every
         // chunk exactly once, in the order it streamed.
         await vi.waitFor(() => {
@@ -6284,7 +6320,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       pane.reviewNextNewSession();
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor('Message — Enter send');
+      await pane.waitForSendReady();
       const second = `P13 send ${randomUUID().slice(0, 8)}`;
       pane.write(second);
       await pane.waitFor(second);
@@ -6363,7 +6399,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         const received = scriptedEngine.requests[turn - 1] ?? '';
         expect(received).toContain(prompt);
         expect(received.match(/P13 long \d+/g) ?? []).toHaveLength(1);
-        await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
+        await pane.waitForSendReady({ timeoutMs: 30_000 });
         if (turn === 1) rssAfterFirstMiB = rssMiB(pane);
       }
       expect(new Set(scriptedEngine.requests).size).toBe(turns);
@@ -6484,7 +6520,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
         expect(choiceIndex).toBeGreaterThanOrEqual(0);
         await pane.waitFor(question);
-        await pane.waitFor('Needs your answer');
+        await vi.waitFor(() => {
+          const screen = pane.screen();
+          expect(isQuestionCardOpen(screen, question), screen).toBe(true);
+        }, { timeout: 25_000, interval: 100 });
         await pane.waitFor('Change');
         const questionFrame = pane.screen();
         expect(
@@ -6971,7 +7010,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       pane.write(fileRequest);
       pane.enter();
       await pane.waitFor(fileResult, { timeoutMs: 120_000 });
-      await pane.waitFor('Message — Enter send', { timeoutMs: 120_000 });
+      await pane.waitForSendReady({ timeoutMs: 120_000 });
       frames.file = pane.screen();
       const readStart = scriptedEngine.events.find(
         (event): event is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
@@ -7015,7 +7054,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       // footer can legitimately be replaced by a higher-priority pending-ack,
       // card or approval branch while the same native turn is already running.
       // P-007's focused case above separately pins the queue-affordance text;
-      // the `not.toContain('Message — Enter send')` assertion below keeps this
+      // the `isSendReady(...)).toBe(false)` assertion below keeps this
       // journey's input-lock contract independent of which footer branch owns.
       await pane.waitFor('Agent Chat · Running · Ctrl+X cancel');
       await vi.waitFor(
@@ -7093,7 +7132,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         timeout: 15_000,
         interval: 100,
       });
-      await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
+      await pane.waitForSendReady({ timeoutMs: 30_000 });
       frames.interrupted = pane.screen();
       pane.write(followup);
       pane.enter();

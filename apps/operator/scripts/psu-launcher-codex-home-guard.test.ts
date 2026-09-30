@@ -417,6 +417,7 @@ describe('Codex resume reconciles project MCP servers', () => {
       const result = await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
         operatorUrl: 'http://operator',
         token: 'test-token',
+        headless: true,
         fetchImpl: async (url: string, opts: { body: string }) => {
           calls.push({ url, body: JSON.parse(opts.body) });
           return { json: async () => ({ ok: true, repaired: true }) };
@@ -427,7 +428,7 @@ describe('Codex resume reconciles project MCP servers', () => {
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('repaired this session'));
       expect(calls).toEqual([{
         url: 'http://operator/api/adv/sessions/ensure-codex-home',
-        body: { owner, advSessionId, requireGatewayProvider: false },
+        body: { owner, advSessionId, requireGatewayProvider: false, headless: true },
       }]);
     } finally {
       errorSpy.mockRestore();

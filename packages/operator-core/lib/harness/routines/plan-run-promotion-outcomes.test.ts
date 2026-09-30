@@ -14,18 +14,11 @@
  * of a blocked or unreadable BAR contract.
  *
  * The table below is the CLASS guard: each refusal flag the promotion result can
- * carry is listed, and none of them may surface as "incomplete".
- *
- * KNOWN BUG until the WI-10004234 fix lands (staged in
- * .papercusp/scratch/wi-10004234/STAGED-FIX.md, applied after the P-013 R-10 matrix
- * because plan-run-action.ts is in that benchmark's import graph): the
- * acceptanceBarBlocked case runs as `it.fails`, so the fleet gate stays green while
- * it still documents the defect. `WI_10004234_EXPECT_FIXED=1` runs it as a plain `it`
- * (the red check). When the fix lands, `it.fails` FAILS; delete `knownBug` then.
+ * carry is listed, and none of them may surface as "incomplete". An unreadable plan
+ * (`planUnreadable`) is the second promoted:0 / workItems:[] early return and is
+ * covered the same way.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const knownBug = process.env.WI_10004234_EXPECT_FIXED === '1' ? it : it.fails;
 
 const promoteMock = vi.hoisted(() => vi.fn());
 
@@ -116,6 +109,7 @@ describe('runScheduledPlanFire promotion outcome classification (WI-10004234)', 
     ['specTriadBlocked', { specTriadBlocked: true, specTriadMissing: ['Design'] }, /^plan_run_spec_triad_blocked:/],
     ['specQualityBlocked', { specQualityBlocked: true }, /^plan_run_spec_quality_blocked:/],
     ['dependencyBlocked', { dependencyBlocked: true, dependencyDiagnostics: [] }, /^plan_run_invalid_dependencies:/],
+    ['planUnreadable', { planUnreadable: true, skipped: 0 }, /^plan_run_plan_unreadable:p013-fork-join@run-491$/],
   ];
 
   it.each(refusals)('%s surfaces as its own error, never as promotion_incomplete', async (_name, flags, expected) => {
@@ -124,7 +118,7 @@ describe('runScheduledPlanFire promotion outcome classification (WI-10004234)', 
     expect(err.message).not.toMatch(/promotion_incomplete/);
   });
 
-  knownBug('acceptanceBarBlocked surfaces as its own error, never as promotion_incomplete', async () => {
+  it('acceptanceBarBlocked surfaces as its own error, never as promotion_incomplete', async () => {
     const err = await refusalError({
       acceptanceBarBlocked: true,
       acceptanceBarLifecycle: {

@@ -2848,13 +2848,23 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Keep each selected setting together when the Presence rail or a narrow
     // terminal leaves too little room for the complete configuration row.
     let width = area.width.saturating_sub(side_borders).max(1) as usize;
+    // pui-chat-first-ux P-021: the full-screen chat's composer is quiet, the
+    // way Claude Code's is: no shortcut list in its border and no status row
+    // inside it. Model · directory · cost move to one dim footer line under
+    // the box, beside `? for shortcuts`. The details view keeps the old box.
+    let quiet = inline && !details;
     let mut selection_rows: Vec<String> = Vec::new();
     let selection = if details {
         app.agent_chat_selection_label()
     } else {
         app.chat_status_line()
     };
-    for field in selection.split(" · ") {
+    let footer_status = if quiet {
+        selection.clone()
+    } else {
+        String::new()
+    };
+    for field in selection.split(" · ").filter(|_| !quiet) {
         if let Some(last) = selection_rows.last_mut() {
             if Line::from(last.as_str()).width() + 3 + Line::from(field).width() <= width {
                 last.push_str(" · ");
@@ -2892,6 +2902,20 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+    // P-021: `?` on an empty box lists the shortcuts in the same place the `/`
+    // menu opens, so the box grows and the cursor moves the same way.
+    if quiet
+        && app.chat_composing
+        && app.chat_shortcuts_open
+        && app.chat_input.is_empty()
+        && app.pending_approvals.is_empty()
+    {
+        let room = area
+            .height
+            .saturating_sub(card_h + turn_error.len() as u16 + 6)
+            .max(1) as usize;
+        selection_rows.extend(chat_shortcut_rows(width).into_iter().take(room));
+    }
     // Attachments occupy one row each ABOVE the draft, so the composer has to
     // grow by exactly that many or the draft line is pushed out of its own box.
     // The draft is a real multiline editor now. Reserve one row per logical
@@ -2902,7 +2926,8 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         + ctext_line_count(app)
         + selection_rows.len() as u16
         + app.attachments.len() as u16
-        + turn_error.len() as u16;
+        + turn_error.len() as u16
+        + u16::from(quiet); // P-021 footer line under the box
     let constraints = if card_h > 0 {
         vec![
             Constraint::Min(1),
@@ -2921,6 +2946,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         (Some(rows[1]), rows[2])
     } else {
         (None, rows[1])
+    };
+    let (composer_area, footer_area) = if quiet && composer_area.height > 1 {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(composer_area);
+        (split[0], Some(split[1]))
+    } else {
+        (composer_area, None)
     };
 
     let inner_w = transcript_area.width.saturating_sub(side_borders).max(1) as usize;
@@ -3363,6 +3397,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         1 => "  · 1 queued".to_string(),
         n => format!("  · {n} queued"),
     };
+    // P-021: set only by the quiet composing branch below.
+    let mut placeholder: Option<String> = None;
+    let mut footer_hint: &str = "";
     let (ctitle, ctext, cstyle) = if app.card_state.focused_answered().is_some() {
         // P-015: the answer is sent; the card is waiting for the agent to take it.
         (
@@ -3535,6 +3572,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             ),
             Theme::notify(),
         )
+    } else if app.chat_composing && quiet {
+        // P-021: an empty box shows a dim placeholder and the footer says
+        // `? for shortcuts`; with a draft the footer says how to send it. The
+        // border carries no title at all.
+        if app.chat_input.is_empty() {
+            placeholder = Some(app.chat_placeholder());
+            footer_hint = QUIET_SHORTCUTS_HINT;
+        } else {
+            footer_hint = QUIET_SEND_HINT;
+        }
+        ("", format!("> {}", app.chat_input), Theme::selected())
     } else if app.chat_composing {
         (
             // Chat-first names the Ctrl-O details view (P-003): the ids and raw
@@ -3614,7 +3662,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         } else {
             format!("  {text}")
         };
-        Line::from(Span::styled(rendered, cstyle))
+        match placeholder.as_ref().filter(|_| row == 0) {
+            Some(hint) => Line::from(vec![
+                Span::styled(rendered, cstyle),
+                Span::styled(hint.clone(), Theme::dim()),
+            ]),
+            None => Line::from(Span::styled(rendered, cstyle)),
+        }
     }));
     composer_lines.extend(
         turn_error
@@ -3631,6 +3685,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             .title(Line::from(ctitle)),
     );
     f.render_widget(cpara, composer_area);
+    if let Some(footer) = footer_area {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                quiet_footer_line(footer_hint, &footer_status, footer.width as usize),
+                Theme::dim(),
+            ))),
+            footer,
+        );
+    }
 
     // Ratatui 0.29 exposes the terminal cursor on Frame. Keep it in the same
     // coordinate system as the rendered draft: composer border + settings /
@@ -3672,6 +3735,80 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 /// and the workbench's Agent Chat tab keep their boxed layout.
 fn chat_is_inline(app: &App) -> bool {
     app.chat_first && app.tab == Tab::Operator
+}
+
+/// pui-chat-first-ux P-021: the quiet composer's footer hint on an empty box.
+pub const QUIET_SHORTCUTS_HINT: &str = "? for shortcuts";
+/// The footer hint while a draft is in the box.
+pub const QUIET_SEND_HINT: &str = "Enter to send";
+
+/// The keys the chat-first message box answers to, listed by `?` (P-021).
+/// Each one is a real binding of the composing arm in `App::on_key`.
+const CHAT_SHORTCUTS: &[(&str, &str)] = &[
+    ("Enter", "send"),
+    ("Shift+Enter", "new line (or \\ then Enter)"),
+    ("/", "commands"),
+    ("@", "attach a file"),
+    ("↑ ↓", "messages you sent before"),
+    ("PgUp PgDn", "scroll the conversation"),
+    ("Esc", "stop a reply, or leave the box"),
+    ("Ctrl+R", "show tool output"),
+    ("Ctrl+O", "details"),
+    ("Ctrl+Z", "undo"),
+    ("Ctrl+C", "quit"),
+];
+
+/// The shortcut list as rows: two columns when both fit, else one.
+fn chat_shortcut_rows(width: usize) -> Vec<String> {
+    let cells: Vec<String> = CHAT_SHORTCUTS
+        .iter()
+        .map(|(key, what)| format!("{key:<11} {what}"))
+        .collect();
+    let cell_w = cells
+        .iter()
+        .map(|c| Line::from(c.as_str()).width())
+        .max()
+        .unwrap_or(0)
+        + 3;
+    if width >= 2 + 2 * cell_w {
+        let rows = cells.len().div_ceil(2);
+        (0..rows)
+            .map(|i| {
+                let left = &cells[i];
+                let pad = cell_w.saturating_sub(Line::from(left.as_str()).width());
+                let right = cells.get(i + rows).map(String::as_str).unwrap_or("");
+                trunc(
+                    &format!("  {left}{}{right}", " ".repeat(pad))
+                        .trim_end()
+                        .to_string(),
+                    width,
+                )
+            })
+            .collect()
+    } else {
+        cells
+            .iter()
+            .map(|c| trunc(&format!("  {c}"), width))
+            .collect()
+    }
+}
+
+/// The quiet composer's footer: the hint on the left, model · directory ·
+/// cost on the right. When both do not fit, the status is shortened first.
+fn quiet_footer_line(hint: &str, status: &str, width: usize) -> String {
+    let left = if hint.is_empty() {
+        String::new()
+    } else {
+        format!("  {hint}")
+    };
+    let left_w = Line::from(left.as_str()).width();
+    let room = width.saturating_sub(left_w + 2);
+    if status.is_empty() || room < 8 {
+        return trunc(&left, width);
+    }
+    let status = trunc(status, room);
+    let pad = width.saturating_sub(left_w + Line::from(status.as_str()).width());
+    format!("{left}{}{status}", " ".repeat(pad))
 }
 
 /// pui-chat-first-ux P-019: one turn printed the way Claude Code prints it: no
@@ -9528,7 +9665,9 @@ mod tests {
         let frame = render(&app, 120, 24);
         assert_no_chat_jargon(&frame);
         assert!(frame.contains("Claude · /work/demo"), "{frame}");
-        assert!(frame.contains("Ctrl+O details"), "{frame}");
+        // P-021: the way to the details view is `?` (which lists Ctrl+O),
+        // not a shortcut list packed into the composer border.
+        assert!(frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
         assert!(
             !frame.contains('$'),
             "no cost before one is measured:\n{frame}"
@@ -9538,6 +9677,114 @@ mod tests {
         let priced = render(&app, 120, 24);
         assert_no_chat_jargon(&priced);
         assert!(priced.contains("Claude · /work/demo · $0.12"), "{priced}");
+    }
+
+    /// pui-chat-first-ux P-021: the full-screen chat's message box is quiet,
+    /// the way Claude Code's is. No shortcut list in its border, a dim
+    /// placeholder in the empty box, and ONE footer line under the bottom rule:
+    /// `? for shortcuts` on the left, model · directory on the right.
+    #[test]
+    fn chat_first_composer_is_quiet_with_a_placeholder_and_one_footer_line() {
+        let app = chat_first_bound_app();
+        let (rows, cursor) = render_rows(&app, 100, 24);
+        let frame = rows.join("\n");
+        for noisy in [
+            "Enter send ·",
+            "/ commands",
+            "@ files",
+            "↑↓ history",
+            "Ctrl+O details",
+        ] {
+            assert!(
+                !frame.contains(noisy),
+                "`{noisy}` is still on screen:\n{frame}"
+            );
+        }
+        let draft = rows
+            .iter()
+            .position(|r| r.starts_with("> Message Claude"))
+            .unwrap_or_else(|| panic!("no placeholder row:\n{frame}"));
+        // The status moved out of the box: nothing sits between the top rule
+        // and the draft row.
+        assert!(rows[draft - 1].starts_with('─'), "{frame}");
+        assert!(rows[draft + 1].starts_with('─'), "{frame}");
+        let footer = &rows[draft + 2];
+        assert!(
+            footer.starts_with(&format!("  {QUIET_SHORTCUTS_HINT}")),
+            "{frame}"
+        );
+        assert!(
+            footer.trim_end().ends_with("Claude · /work/demo"),
+            "{frame}"
+        );
+        // The cursor sits where typing lands, at the start of the placeholder.
+        assert_eq!((cursor.x, cursor.y), (2, draft as u16), "{frame}");
+    }
+
+    #[test]
+    fn a_draft_replaces_the_placeholder_and_the_footer_says_how_to_send() {
+        let mut app = chat_first_bound_app();
+        app.chat_input = "fix the bug".into();
+        app.chat_cursor = app.chat_input.len();
+        let frame = render(&app, 100, 24);
+        assert!(frame.contains("> fix the bug"), "{frame}");
+        assert!(!frame.contains("Message Claude"), "{frame}");
+        assert!(frame.contains(QUIET_SEND_HINT), "{frame}");
+        assert!(!frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+    }
+
+    #[test]
+    fn question_mark_lists_every_composer_shortcut_above_the_box() {
+        let mut app = chat_first_bound_app();
+        app.chat_shortcuts_open = true;
+        let (rows, _) = render_rows(&app, 100, 30);
+        let frame = rows.join("\n");
+        for (key, what) in CHAT_SHORTCUTS {
+            assert!(
+                frame.contains(&format!("{key:<11} {what}")),
+                "`{key}` is missing:\n{frame}"
+            );
+        }
+        // Two columns at this width, all of them inside the box, above the draft.
+        let draft = rows.iter().position(|r| r.starts_with("> ")).unwrap();
+        let first = rows
+            .iter()
+            .position(|r| r.contains("Enter       send"))
+            .unwrap();
+        assert!(first < draft, "{frame}");
+        assert_eq!(draft - first, CHAT_SHORTCUTS.len().div_ceil(2), "{frame}");
+        // A narrow terminal gets one column, each row within the width.
+        let narrow = chat_shortcut_rows(40);
+        assert_eq!(narrow.len(), CHAT_SHORTCUTS.len());
+        assert!(narrow.iter().all(|r| Line::from(r.as_str()).width() <= 40));
+    }
+
+    #[test]
+    fn details_view_keeps_the_boxed_composer_and_its_key_list() {
+        let mut app = chat_first_bound_app();
+        app.chat_details = Some(true);
+        let frame = render(&app, 120, 24);
+        assert!(frame.contains("Message — Enter send"), "{frame}");
+        assert!(!frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+    }
+
+    #[test]
+    fn quiet_footer_shortens_the_status_before_the_hint() {
+        let line = quiet_footer_line(
+            QUIET_SHORTCUTS_HINT,
+            "Claude · ~/a/very/long/project/path",
+            40,
+        );
+        assert!(
+            line.starts_with(&format!("  {QUIET_SHORTCUTS_HINT}")),
+            "{line}"
+        );
+        assert!(Line::from(line.as_str()).width() <= 40, "{line}");
+        // No room for the status at all: the hint alone.
+        assert_eq!(
+            quiet_footer_line(QUIET_SHORTCUTS_HINT, "Claude · ~/x", 20).trim_end(),
+            format!("  {QUIET_SHORTCUTS_HINT}")
+        );
     }
 
     /// The frame as rows of cells, for assertions about columns and rules.
@@ -9578,18 +9825,13 @@ mod tests {
             .iter()
             .position(|r| r.starts_with("> hey"))
             .unwrap_or_else(|| panic!("{text}"));
-        // One rule under the composer (the last row) and one above it, which
-        // carries the composer's title.
-        assert!(rows[23].chars().all(|c| c == '─'), "{text}");
-        let rule_above = rows[..draft]
-            .iter()
-            .rposition(|r| r.trim_end().ends_with('─'))
-            .unwrap_or_else(|| panic!("{text}"));
-        assert!(rows[rule_above].contains("Message"), "{text}");
+        // One plain rule directly above the draft and one directly under it;
+        // the last row is the quiet footer line (P-021), outside the rules.
+        assert!(rows[draft - 1].chars().all(|c| c == '─'), "{text}");
+        assert!(rows[draft + 1].chars().all(|c| c == '─'), "{text}");
+        assert_eq!(draft + 2, 23, "{text}");
         assert!(
-            rows[rule_above + 1..draft]
-                .iter()
-                .all(|r| !r.contains('─')),
+            rows[23].starts_with(&format!("  {QUIET_SEND_HINT}")),
             "{text}"
         );
         // The cursor sits after `> hey` in the first column's coordinates.

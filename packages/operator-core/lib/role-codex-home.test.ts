@@ -443,8 +443,8 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
-  it('suppresses browser-capable plugin auth in headless role and SU homes without changing visible homes', async () => {
-    const { writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
+  it('suppresses browser-capable plugin auth in fresh and repaired headless homes without changing visible homes', async () => {
+    const { ensureSuCodexHomeConfig, writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
     const role = writeRoleCodexHome({
       sessionKey: 'headless-role-auth',
       mcpUrl: 'http://x/api/mcp?role=worker',
@@ -476,6 +476,34 @@ describe('writeSuCodexHome', () => {
     const visibleConfig = readFileSync(visible.configPath, 'utf8');
     expect(visibleConfig).not.toContain('plugins = false');
     expect(visibleConfig).not.toContain('auth_elicitation = false');
+
+    writeFileSync(
+      su.configPath,
+      readFileSync(su.configPath, 'utf8')
+        .replace('plugins = false\n', '')
+        .replace('auth_elicitation = false\n', ''),
+    );
+    const repairedHeadless = ensureSuCodexHomeConfig({
+      sessionKey: 'headless-su-auth',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-headless-auth',
+      model: RESOLVED_CODEX_DEFAULT,
+      headless: true,
+    });
+    expect(repairedHeadless.repaired).toBe(true);
+    expect(readFileSync(su.configPath, 'utf8')).toContain('auth_elicitation = false');
+
+    const repairedVisible = ensureSuCodexHomeConfig({
+      sessionKey: 'headless-su-auth',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: 'su-headless-auth',
+      model: RESOLVED_CODEX_DEFAULT,
+      headless: false,
+    });
+    expect(repairedVisible.repaired).toBe(true);
+    const repairedVisibleConfig = readFileSync(su.configPath, 'utf8');
+    expect(repairedVisibleConfig).not.toContain('plugins = false');
+    expect(repairedVisibleConfig).not.toContain('auth_elicitation = false');
   });
 
   it('rejects an omitted model at fresh/repair boundaries and honors an explicitly resolved Sol xhigh default', async () => {

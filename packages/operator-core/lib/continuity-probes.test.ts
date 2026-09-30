@@ -293,6 +293,51 @@ describe('continuity probe wake replay', () => {
     expect(batch.results.map((result) => result.status)).toEqual(['error', 'fresh']);
     expect(batch.results[0].diagnostic?.code).toBe('result_too_large');
   });
+
+  // WI-10004343: the in-process dispatcher returns the JSON payload item PLUS
+  // separate advisory text items (a tool's guidance.seeAlso "See also: …"). The
+  // decoder used to JSON-parse only a SINGLE text item and otherwise hand the
+  // predicate a string[], so every path read undefined — a true value read
+  // `stale`, and a scorecard criterion rated healthy was refused
+  // probe_contradicted. Measured live on rubrics:get during acceptance grading.
+  it('judges the JSON payload item when the result also carries advisory text items', async () => {
+    const payload = { results: [{ rubric: { status: 'active', revision: 30 } }] };
+    const dispatchTool = vi.fn(async () => ({
+      content: [
+        { type: 'text', text: JSON.stringify(payload) },
+        { type: 'text', text: 'See also: rubrics:propose (author a rubric); scorecards:emit (grade one)' },
+      ],
+    }));
+    const fresh = await runContinuityProbeBatch(
+      [source(readProbe({ expect: { path: '$.results[0].rubric.status', op: 'eq', value: 'active' } }))],
+      { dispatchTool },
+    );
+    expect(fresh.results[0]).toMatchObject({ status: 'fresh', executed: true, observed: 'active' });
+
+    // Falsifier: the same multi-item shape must still read STALE when the value differs,
+    // so the fix cannot pass by treating an unparsed body as a match.
+    const stale = await runContinuityProbeBatch(
+      [source(readProbe({ expect: { path: '$.results[0].rubric.status', op: 'eq', value: 'retired' } }))],
+      { dispatchTool },
+    );
+    expect(stale.results[0]).toMatchObject({ status: 'stale', executed: true, observed: 'active' });
+  });
+
+  it('measures the result budget against the JSON payload, not payload + advisory prose', async () => {
+    // Payload comfortably under budget; the advisory items alone must not push it over.
+    const payload = { ok: false, error: 'evidenceRef missing', filler: 'y'.repeat(CONTINUITY_PROBE_RESULT_MAX_BYTES - 200) };
+    const dispatchTool = vi.fn(async () => ({
+      content: [
+        { type: 'text', text: JSON.stringify(payload) },
+        { type: 'text', text: `See also: ${'z'.repeat(500)}` },
+      ],
+    }));
+    const batch = await runContinuityProbeBatch(
+      [source(readProbe({ expect: { path: '$.ok', op: 'eq', value: false } }))],
+      { dispatchTool },
+    );
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true, observed: false });
+  });
 });
 
 describe('probeDiscriminatorMessage — the refusal must name the REMEDY, not just the shape (EI-21674755057848047)', () => {
