@@ -990,9 +990,28 @@ export async function runPhysicalDrillCliToExit(
     } else {
       code = 1;
     }
-    await writeFlushed(deps.stderr, `${error instanceof Error ? error.message : String(error)}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    await writeFlushed(
+      deps.stderr,
+      `${code === 1 ? physicalDrillFailureLine(argv[0], message) : message}\n`,
+    );
   }
   deps.exit(code);
+}
+
+const PHYSICAL_DRILL_REASON_PREFIX = /^physical-drill-[a-z0-9-]+: /;
+
+/**
+ * The one stderr line a failed mode leaves behind. The drill summary
+ * (papercusp-desktop/bin/lib/physical-failure-summary.sh) finds a producer's
+ * cause by the `physical-drill-<module>: ` prefix. Phase modules throw bare
+ * messages such as `physical Phase A git ... failed`, so without this prefix
+ * same-box run 20260930T054405Z summarised a real Phase A failure as "no
+ * prefixed reason line". Prefixing at this single writer covers every mode.
+ */
+export function physicalDrillFailureLine(mode: string | undefined, message: string): string {
+  if (PHYSICAL_DRILL_REASON_PREFIX.test(message)) return message;
+  return `physical-drill-producer: ${mode || '<no mode>'}: ${message}`;
 }
 
 /** Exit code for "the evidence is valid but the host has not converged yet; retry". */
