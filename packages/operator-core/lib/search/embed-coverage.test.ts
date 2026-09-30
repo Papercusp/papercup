@@ -473,6 +473,9 @@ describe('backlog-stuck (EI-19478208736094798)', () => {
     const history = stranded(BACKLOG_STUCK_SAMPLES + 1, ELIGIBLE, ELIGIBLE - STRANDED);
     const b = detectCoverageBreaches([{ coverage: incidentCoverage, history }]);
     expect(b.some((x) => x.kind === 'backlog-stuck')).toBe(true);
+    const detail = b.find((x) => x.kind === 'backlog-stuck')!.detail;
+    expect(detail).toContain('papercusp-bg-host');
+    expect(detail).not.toContain('papercup-bg-host');
   });
 
   it('CALIBRATION: the three prior legs are genuinely blind to it', () => {

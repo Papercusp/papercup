@@ -138,6 +138,8 @@ describe('sessionPartsWriterSweep', () => {
     // Escalation must point at the RIGHT lever. The whole cost of this incident
     // was reaching for a deploy, which could never have fixed it.
     const body = (d.openEscalation.mock.calls[0] as unknown as [unknown, { body: string }])[1].body;
+    expect(body).toContain('papercusp-bg-host.service');
+    expect(body).not.toContain('papercup-bg-host');
     expect(body).toMatch(/DEPLOY DOES NOT FIX THIS/);
     expect(body).toMatch(/bg-host/);
   });

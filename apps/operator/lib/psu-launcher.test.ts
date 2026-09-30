@@ -14282,6 +14282,28 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     expect(err?.message).not.toMatch(/systemctl/);
   });
 
+  it("server timeout guidance uses coordinated recovery without guessing a service", async () => {
+    const clock = fakeClock();
+    const err = await fetchWithResilience(
+      "http://127.0.0.1:3170/x",
+      {},
+      {
+        fetchImpl: async () => {
+          timeoutErr();
+          return undefined as unknown as Response;
+        },
+        now: clock.now,
+        sleep: clock.sleep,
+        onNotice: () => {},
+        timeoutRetries: 0,
+        target: { url: "http://127.0.0.1:3170", source: "env" },
+      },
+    ).then(() => null, (e: Error) => e);
+    expect(err?.message).toContain("http://127.0.0.1:3170");
+    expect(err?.message).toContain("dev:restart");
+    expect(err?.message).not.toMatch(/systemctl|papercup-dev-api|papercusp-dev-api/);
+  });
+
   it("stale-desktop announce notice names the app and the short check window, once", async () => {
     const clock = fakeClock();
     const staleTarget = {
