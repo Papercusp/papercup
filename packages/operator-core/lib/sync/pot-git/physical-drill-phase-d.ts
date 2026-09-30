@@ -643,6 +643,8 @@ export const PHASE_D_TIER_HOLD_TIER: CommsTier = 'message';
 /** Bounds a hold whose restore never ran: it lapses to the policy default, never to a grant. */
 export const PHASE_D_TIER_HOLD_TTL_MS = 45 * 60_000;
 export const PHASE_D_TIER_ACTOR = 'p505-physical-drill' as const;
+/** Every hold row's note starts with this, so a never-restored hold is recognisable (physical-drill-preflight). */
+export const PHASE_D_TIER_HOLD_NOTE_PREFIX = 'P-505 Phase D below-steer hold' as const;
 
 /** The on-disk restore record, written BEFORE the tier is mutated. */
 export type PhysicalPhaseDTierHoldRecord = {
@@ -782,7 +784,7 @@ export async function holdPhysicalPhaseDBelowSteer(
     {
       githubUserId,
       tier: PHASE_D_TIER_HOLD_TIER,
-      note: `P-505 Phase D below-steer hold ${input.runId}; restore the prior row via phase-d-tier-restore`,
+      note: `${PHASE_D_TIER_HOLD_NOTE_PREFIX} ${input.runId}; restore the prior row via phase-d-tier-restore`,
       expiresAtMs,
       nowMs: now,
       actor: PHASE_D_TIER_ACTOR,
