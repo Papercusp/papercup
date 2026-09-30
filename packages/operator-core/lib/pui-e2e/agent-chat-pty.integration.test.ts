@@ -675,10 +675,11 @@ const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
 
 /** The composer is ready to send. pui-chat-first-ux P-021 made the full-screen
  * chat's composer quiet: its footer reads `? for shortcuts` on an empty box and
- * `Enter to send` with a draft, while the details view and the workbench keep
+ * `Enter sends` with a draft, while the details view and the workbench keep
  * the boxed `Message — Enter send` title. All three mean the same state, so one
- * suite drives builds from before and after P-021. */
-const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter to send'] as const;
+ * suite drives builds from before and after P-021. (Not `Enter to send`: the
+ * failure sentences say "press Enter to send your message again".) */
+const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter sends'] as const;
 
 function isSendReady(screen: string): boolean {
   return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));

@@ -3739,8 +3739,10 @@ fn chat_is_inline(app: &App) -> bool {
 
 /// pui-chat-first-ux P-021: the quiet composer's footer hint on an empty box.
 pub const QUIET_SHORTCUTS_HINT: &str = "? for shortcuts";
-/// The footer hint while a draft is in the box.
-pub const QUIET_SEND_HINT: &str = "Enter to send";
+/// The footer hint while a draft is in the box. Not "Enter to send": the
+/// failure sentences say "press Enter to send your message again", and the
+/// PTY suite reads this hint as the composer being ready to send.
+pub const QUIET_SEND_HINT: &str = "Enter sends";
 
 /// The keys the chat-first message box answers to, listed by `?` (P-021).
 /// Each one is a real binding of the composing arm in `App::on_key`.
@@ -9757,6 +9759,34 @@ mod tests {
         let narrow = chat_shortcut_rows(40);
         assert_eq!(narrow.len(), CHAT_SHORTCUTS.len());
         assert!(narrow.iter().all(|r| Line::from(r.as_str()).width() <= 40));
+    }
+
+    /// The PTY suite reads either footer hint as "the composer is ready to
+    /// send" (agent-chat-pty SEND_READY_MARKERS), so neither may show while a
+    /// reply is running or the session is unavailable.
+    #[test]
+    fn quiet_footer_hints_show_only_while_the_box_is_ready_to_send() {
+        let states: [(&str, fn(&mut App)); 3] = [
+            ("running", |app| app.chat_streaming = true),
+            ("down", |app| {
+                app.su_connection_error = Some("connection refused".into())
+            }),
+            ("left", |app| app.chat_composing = false),
+        ];
+        for (state, set) in states {
+            for draft in ["", "hi"] {
+                let mut app = chat_first_bound_app();
+                set(&mut app);
+                app.chat_input = draft.into();
+                let frame = render(&app, 100, 24);
+                for hint in [QUIET_SHORTCUTS_HINT, QUIET_SEND_HINT] {
+                    assert!(
+                        !frame.contains(hint),
+                        "{state}/{draft:?}: `{hint}`\n{frame}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
