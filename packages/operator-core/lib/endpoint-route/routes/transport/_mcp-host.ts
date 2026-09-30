@@ -129,6 +129,8 @@ import { maybeEmptyMappingHint } from '../../../empty-mapping-hint';
 import { recordBatchNudgeFire } from '../../../code-run-nudge-telemetry';
 import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
+import { isAppKeyShaped } from '../../../connected-apps/key';
+import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
 import {
   admissionCredentialDigest,
   type AdmissionAuthorityContext,
@@ -1653,6 +1655,54 @@ export async function tryBuildSpawnContext(
         // psu into the user-level MCP URL, like `tools=`.
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
         requestOrigin,
+      },
+    };
+  }
+
+  // ── (1-app) Connected-app key ────────────────────────────────────
+  // external-app-access-to-workspaces-2026-09-29 P-002. An external app
+  // authenticates with `Authorization: Bearer pcapp_<id>_<secret>` and nothing
+  // else: the key alone names its workspace and capabilities. A presented key
+  // is TERMINAL — one that does not verify is refused here, never retried as a
+  // signed spawn or a local/loopback caller (plan D-015). Every URL parameter
+  // that would widen or re-point authority is refused outright; an optional
+  // `workspace=` must name the key's own workspace.
+  const appBearer = bearerFromExtra(extra);
+  if (isAppKeyShaped(appBearer)) {
+    const forbidden = ['role', 'spawn', 'harness', 'sig', 'exp', 'superuser', 'power_user', 'principal'].find(
+      (key) => url.searchParams.has(key),
+    );
+    if (forbidden) return { kind: 'failed', reason: `connected_app_forbidden_param:${forbidden}` };
+    const resolved = await resolveAppKeyToken(appBearer, {
+      ip: reportedClientAddress(headersFromExtra(extra)),
+    });
+    if (!resolved || !resolved.ok) {
+      return { kind: 'failed', reason: `connected_app_invalid_key:${resolved?.reason ?? 'malformed'}` };
+    }
+    const principal = resolved.principal;
+    const requestedWorkspace = (url.searchParams.get('workspace') ?? '').trim();
+    if (requestedWorkspace && requestedWorkspace !== principal.workspaceId) {
+      return { kind: 'failed', reason: 'connected_app_workspace_mismatch' };
+    }
+    const clientParam = (url.searchParams.get('client') ?? '').trim();
+    return {
+      kind: 'ok',
+      ctx: {
+        workspaceId: principal.workspaceId,
+        ...(dataPlaneDegradedAtMs ? { dataPlaneDegradedAtMs } : {}),
+        harnessSlug: '*',
+        role: 'papercup' as AgentRole,
+        featureId: null,
+        chunkId: null,
+        runId: globalThis.crypto.randomUUID(),
+        spawnId: principal.slug,
+        parentSpawnId: null,
+        uiClientId: clientParam || null,
+        detectorSessionKey: null,
+        planRunSessionId,
+        profile: 'engineer',
+        requestOrigin,
+        authenticatedPrincipal: principal,
       },
     };
   }
