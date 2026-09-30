@@ -454,6 +454,16 @@ export function startClaudeSuEngine(
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
     if (closed) throw new Error('Claude startup was cancelled');
+    if (options.resume) {
+      // WI-10004162: show the saved conversation now, not after the SDK launch,
+      // its initialization and the SU tool connection (seconds, or never when
+      // startup fails). Best-effort: the replay after the SU tool connection
+      // stays authoritative, adds only what the native runtime wrote since, and
+      // surfaces a missing transcript; the host never shows a record twice.
+      enterStartupStage('transcript restore');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true }).catch(() => undefined);
+      if (closed) throw new Error('Claude connection closed during startup');
+    }
     enterStartupStage('SDK launch');
     sdk = (options.query ?? query)({ prompt: input, options: sdkOptions });
     done = (async () => {
