@@ -18,7 +18,7 @@
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -297,5 +297,61 @@ describe('the drill wiring', () => {
     expect(readFileSync(join(first, 'physical-probe.stdout'), 'utf8')).toBe('adapter stdout of run 1\n');
     expect(readFileSync(join(first, 'physical-probe.stderr'), 'utf8')).toBe('adapter stderr of run 1\n');
     expect(readFileSync(join(second, 'physical-probe.stderr'), 'utf8')).toBe('adapter stderr of run 2\n');
+  });
+
+  // WI-10004228: on a failed run the probe banks a sanitized bundle of the failing
+  // phase's files at "<evidence file>.failure-diagnostics". The evidence file lives in
+  // $WORK, so that bundle was wiped by the next drill; the per-run archive kept only
+  // stdout/stderr (same-box PDS runs 09:11Z, 11:01Z, 17:51Z, 18:12Z on 2026-09-30).
+  // Runs the drill's REAL archive block, then wipes $WORK the way the next drill does.
+  it('archives the probe failure-diagnostics bundle so it survives the next $WORK wipe (WI-10004228)', () => {
+    const archive = block.slice(
+      block.indexOf('physical_runs_dir="${HIVE_GIT_PHYSICAL_RUNS_DIR'),
+      block.indexOf('if [ "$physical_probe_rc" -ne 0 ]'),
+    );
+    const runs = join(scratch, 'physical-runs-diagnostics');
+    const runOnce = (n: number, rc: number, withDiagnostics: boolean): string => {
+      const work = join(scratch, `diag-work-${n}`);
+      const bundle = join(work, 'hive-git-physical-evidence.json.failure-diagnostics');
+      if (withDiagnostics) {
+        mkdirSync(join(bundle, 'phase-a'), { recursive: true });
+        writeFileSync(join(bundle, 'phase-a', 'verify-input.json'), `{"run":${n}}\n`);
+        writeFileSync(join(bundle, 'manifest.json'), `{"exitStatus":${rc}}\n`);
+      }
+      const script = [
+        'set -u',
+        `WORK=${JSON.stringify(work)}`,
+        'mkdir -p "$WORK"',
+        'physical_evidence_file="$WORK/hive-git-physical-evidence.json"',
+        'echo out > "$WORK/physical-probe.stdout"',
+        'echo err > "$WORK/physical-probe.stderr"',
+        `physical_probe_rc=${rc}`,
+        archive,
+        // The next drill's first act (drill line `rm -rf "$WORK"`).
+        'rm -rf "$WORK"',
+        'echo "RUN_DIR=$physical_run_dir"',
+      ].join('\n');
+      const res = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, HIVE_GIT_PHYSICAL_RUNS_DIR: runs, HOME: scratch },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      const dir = res.stdout.match(/^RUN_DIR=(.+)$/m)?.[1];
+      expect(dir, res.stdout).toBeDefined();
+      return dir!;
+    };
+
+    const failed = runOnce(1, 1, true);
+    expect(existsSync(join(scratch, 'diag-work-1'))).toBe(false);
+    expect(readFileSync(join(failed, 'failure-diagnostics', 'phase-a', 'verify-input.json'), 'utf8')).toBe(
+      '{"run":1}\n',
+    );
+    expect(readFileSync(join(failed, 'failure-diagnostics', 'manifest.json'), 'utf8')).toBe('{"exitStatus":1}\n');
+    expect(readFileSync(join(failed, 'physical-probe.stderr'), 'utf8')).toBe('err\n');
+
+    // A passing run banks no bundle, and the archive must not invent one.
+    const passed = runOnce(2, 0, false);
+    expect(existsSync(join(passed, 'failure-diagnostics'))).toBe(false);
+    expect(readFileSync(join(passed, 'physical-probe.stdout'), 'utf8')).toBe('out\n');
   });
 });
