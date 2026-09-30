@@ -16,6 +16,7 @@ import {
   isSlotId,
   resolveBlueprintSource,
   validateAgentInputClosure,
+  type BlueprintSourceDocument,
   type ResolveExtendsPath,
   type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
@@ -157,8 +158,9 @@ export interface BlueprintReleaseSourceSnapshot {
   raw: Record<string, unknown>;
   slots: string[];
   dependencies: { tools: string[]; packs: string[]; plugins: string[]; blueprints: string[] };
-  /** The resolved source's capability-class grants — install consents to these. */
+  /** The resolved source's grants and context contributions — install consents to these. */
   grants: { requires: string[]; optional: string[] };
+  contributions: BlueprintSourceDocument['contributions'];
   archive: BlueprintReleaseArchive;
 }
 
@@ -390,6 +392,7 @@ export async function snapshotBlueprintReleaseSource(input: {
       blueprints: dependencies?.blueprints ?? [],
     },
     grants: { requires: resolved.grants?.requires ?? [], optional: resolved.grants?.optional ?? [] },
+    contributions: resolved.contributions,
     archive,
   };
 }
@@ -441,7 +444,7 @@ export async function prepareBlueprintPublicRelease(input: {
     // D-034: the signed listing declares what install will ask consent for;
     // install refuses a non-empty list that differs from its own computation.
     permissions: identityPermissionLines(identityConsentSubjects({
-      grants: source.grants, providerBindings: [], inputs: source.archive.pins,
+      grants: source.grants, providerBindings: [], contributions: source.contributions, inputs: source.archive.pins,
     })),
     capabilities: [...source.dependencies.tools].sort(),
     license: input.license?.trim() || 'NOASSERTION',

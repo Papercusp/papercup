@@ -18,6 +18,7 @@ import { z } from 'zod';
 import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { wornRulePins } from '../agent-identities/sync-hook-rules';
+import type { CapabilityGrantResolutionVerdict } from './capability-grant-resolver';
 
 /** Everything beyond package-private content, each list sorted and unique. */
 export interface IdentityConsentSubjects {
@@ -25,6 +26,9 @@ export interface IdentityConsentSubjects {
   readonly grants: readonly string[];
   /** `classRef → package@version` for each binding the install resolves in the pot. */
   readonly providerBindings: readonly string[];
+  /** `class@major verb` for each context contribution that reads through the
+   * pot's provider for that class, whichever provider the pot has bound. */
+  readonly contextReads: readonly string[];
   readonly rules: readonly string[];
   readonly events: readonly string[];
   readonly operations: readonly string[];
@@ -42,7 +46,7 @@ export type IdentityInstallConsent = IdentityInstallConsentSubject;
 
 /** The tool/route shape: the consentSubject echoed back verbatim. */
 export const identityInstallConsentSchema = z.object({
-  artifactContentHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  artifactContentHash: z.string().regex(/^(sha256:)?[a-f0-9]{64}$/i),
   subjectsHash: z.string().regex(/^[a-f0-9]{64}$/i),
 }).strict();
 
@@ -52,9 +56,22 @@ function sorted(values: Iterable<string>): string[] {
   return [...new Set(values)].sort();
 }
 
+/** Every pot binding the identity will run through: the existing ones it reuses
+ * and the ones install writes. Both are consent subjects. */
+export function resolvedProviderBindings(
+  resolution: Pick<CapabilityGrantResolutionVerdict, 'requirements' | 'selected'> | null | undefined,
+): Array<{ classRef: string; providerPackage: string; providerVersion: string }> {
+  if (!resolution) return [];
+  return [
+    ...resolution.requirements.flatMap((item) => item.binding ? [item.binding] : []),
+    ...resolution.selected,
+  ];
+}
+
 export function identityConsentSubjects(input: {
   readonly grants: { readonly requires?: readonly string[]; readonly optional?: readonly string[] } | undefined;
   readonly providerBindings: readonly { readonly classRef: string; readonly providerPackage: string; readonly providerVersion: string }[];
+  readonly contributions: readonly { readonly inputKind?: string; readonly ref?: string; readonly verb?: string }[] | undefined;
   readonly inputs: ResolvedAgentSpecification['inputs'];
 }): IdentityConsentSubjects {
   const packages = input.inputs.flatMap((entry) => entry.kind === 'package' ? [entry] : []);
@@ -63,6 +80,8 @@ export function identityConsentSubjects(input: {
     grants: sorted([...(input.grants?.requires ?? []), ...(input.grants?.optional ?? [])]),
     providerBindings: sorted(input.providerBindings.map((binding) =>
       `${binding.classRef} → ${binding.providerPackage}@${binding.providerVersion}`)),
+    contextReads: sorted((input.contributions ?? []).flatMap((entry) =>
+      entry.inputKind === 'capability-provider' && entry.ref && entry.verb ? [`${entry.ref} ${entry.verb}`] : [])),
     rules: sorted(rules.flatMap(({ rule }) => rule.delivery !== 'sync' ? []
       : [`${rule.id} (${rule.guard ? 'guard' : 'context'} at ${rule.sink})`])),
     events: sorted(rules.flatMap(({ rule }) => rule.delivery !== 'async' ? [] : [`${rule.id} on ${rule.on}`])),
@@ -107,6 +126,7 @@ export function identityInstallConsentRefusal(
 export function identityPermissionLines(subjects: IdentityConsentSubjects): string[] {
   return [
     ...subjects.grants.map((value) => `grant:${value}`),
+    ...subjects.contextReads.map((value) => `context:${value}`),
     ...subjects.rules.map((value) => `rule:${value}`),
     ...subjects.events.map((value) => `event:${value}`),
     ...subjects.operations.map((value) => `operation:${value}`),

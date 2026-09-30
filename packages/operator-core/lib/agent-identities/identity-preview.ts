@@ -40,7 +40,11 @@ import type {
   PackageResourceDriver,
 } from '../blueprint/package-resource-receipts';
 import { resolveCapabilityGrants } from '../cupboard/capability-grant-resolver';
-import { identityConsentSubjects, type IdentityConsentSubjects } from '../cupboard/identity-install-consent';
+import {
+  identityConsentSubjects,
+  resolvedProviderBindings,
+  type IdentityConsentSubjects,
+} from '../cupboard/identity-install-consent';
 import { capabilityGrantDepsForPot } from '../cupboard/install-blueprint-io';
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { getIdentitySource, inspectIdentitySource, localDirs } from './source';
@@ -240,7 +244,7 @@ async function loadIdentity(input: IdentityPreviewInput) {
     try {
       const resolution = await resolveCapabilityGrants(document.grants, capabilityGrantDepsForPot(scope), { mode: 'agent' });
       // The bindings install would write or reuse: its consent subjects (D-034).
-      bindings = resolution.selected;
+      bindings = resolvedProviderBindings(resolution);
       // The install path refuses these before it judges the grants themselves.
       for (const ref of resolution.missingRequired) {
         errors.push({ source: 'grants', code: 'required_capability_provider_absent', message: `${ref}: no conformant provider in this pot`, ref });
@@ -548,7 +552,8 @@ export async function previewIdentity(input: IdentityPreviewInput): Promise<Iden
     declared,
     injection,
     consent: declared && loaded.document ? identityConsentSubjects({
-      grants: loaded.document.grants, providerBindings: loaded.bindings ?? [], inputs: loaded.artifact?.inputs ?? [],
+      grants: loaded.document.grants, providerBindings: loaded.bindings ?? [],
+      contributions: loaded.document.contributions, inputs: loaded.artifact?.inputs ?? [],
     }) : null,
     lifecycle,
   };

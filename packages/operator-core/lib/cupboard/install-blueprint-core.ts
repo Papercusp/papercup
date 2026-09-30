@@ -25,7 +25,13 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import { BlueprintSourceDocumentSchema, blueprintPackageInputs, resolveBlueprintSource, type ResolveExtendsPath } from '@papercusp/orchestrator/blueprint';
+import {
+  BlueprintSourceDocumentSchema,
+  blueprintPackageInputs,
+  resolveBlueprintSource,
+  type BlueprintSourceDocument,
+  type ResolveExtendsPath,
+} from '@papercusp/orchestrator/blueprint';
 import {
   resolveAndValidateBlueprint,
   validateBlueprintDependencies,
@@ -77,6 +83,7 @@ import {
   identityInstallConsentRefusal,
   identityInstallConsentSubject,
   identityPermissionLines,
+  resolvedProviderBindings,
   type IdentityConsentSubjects,
   type IdentityInstallConsent,
 } from './identity-install-consent';
@@ -376,6 +383,7 @@ export async function installBlueprintFromCupboardCore(
       blueprints: [],
     };
     let declaredCapabilityGrants: CapabilityGrantSet = {};
+    let declaredContributions: BlueprintSourceDocument['contributions'];
     if (!abstract) {
       // P-002: register a PROXY CoordOp per harness-provided op this blueprint
       // declares (`ops:` manifest), BEFORE the resolve+validate snapshots the op
@@ -427,6 +435,7 @@ export async function installBlueprintFromCupboardCore(
         optional: resolved.grants?.optional ?? [],
         suggestedProviders: resolved.grants?.suggestedProviders ?? {},
       };
+      declaredContributions = resolved.contributions;
       const bundles = resolved.bundles ?? [];
       const requests: Array<{ kind: string; ref: string; version?: string }> = [...bundles];
       const knowledge = resolveSeedPackKey(resolved).packId;
@@ -503,7 +512,8 @@ export async function installBlueprintFromCupboardCore(
     const listedPermissions = input.expectedRelease?.manifest?.signature
       ? [...input.expectedRelease.manifest.permissions].sort() : [];
     const carriedPermissions = identityPermissionLines(identityConsentSubjects({
-      grants: declaredCapabilityGrants, providerBindings: [], inputs: releaseArchive.pins,
+      grants: declaredCapabilityGrants, providerBindings: [], contributions: declaredContributions,
+      inputs: releaseArchive.pins,
     }));
     if (listedPermissions.length > 0 && listedPermissions.join('\n') !== carriedPermissions.join('\n')) {
       throw new InstallBlueprintError(
@@ -645,7 +655,8 @@ export async function installBlueprintFromCupboardCore(
     // this artifact, before any provider package, binding or byte is written.
     const consent = identityConsentSubjects({
       grants: declaredCapabilityGrants,
-      providerBindings: capabilityGrantResolution?.selected ?? [],
+      providerBindings: resolvedProviderBindings(capabilityGrantResolution),
+      contributions: declaredContributions,
       inputs: releaseArchive.pins,
     });
     if (!consent.contentOnly) {

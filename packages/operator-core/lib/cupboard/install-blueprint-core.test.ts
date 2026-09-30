@@ -19,8 +19,15 @@ import {
   type InstallBlueprintCoreDeps,
   type InstallBlueprintCoreInput,
 } from './install-blueprint-core';
-import type { IdentityInstallConsent } from './identity-install-consent';
-import { buildBlueprintReleaseArchive, readBlueprintLifecycle, snapshotBlueprintReleaseSource } from './blueprint-release';
+import { identityInstallConsentSchema, type IdentityInstallConsent } from './identity-install-consent';
+import {
+  buildBlueprintReleaseArchive,
+  prepareBlueprintPublicRelease,
+  readBlueprintLifecycle,
+  snapshotBlueprintReleaseSource,
+} from './blueprint-release';
+import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 import type {
   CapabilityProviderCandidate,
   RecipeProviderConsent,
@@ -960,6 +967,128 @@ describe('installBlueprintFromCupboardCore', () => {
 
     expect(rollback).toHaveBeenCalledOnce();
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
+  describe('identity install consent (P-014, D-034)', () => {
+    const GRANTED_YAML = RUNNABLE_YAML + '\nslots: [{ slot: domain }]' + '\ngrants: { requires: [crm.email@1.0.0] }';
+    const agentInput = (over: Partial<InstallBlueprintCoreInput> = {}): InstallBlueprintCoreInput => ({
+      githubUrl: 'https://github.com/acme/neat-bp',
+      capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
+      ...over,
+    });
+    const writes = () => {
+      const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+      const installCapabilityProviderPackages = vi.fn();
+      return { commitCapabilitySelections, installCapabilityProviderPackages };
+    };
+    const grantDeps = (spies: ReturnType<typeof writes>, over: Partial<InstallBlueprintCoreDeps> = {}) => makeDeps({
+      capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] },
+      ...spies,
+      ...over,
+    });
+    const refusalOf = (promise: Promise<unknown>) => promise.then(
+      () => { throw new Error('expected a refusal'); },
+      (error: unknown) => error as InstallBlueprintError & {
+        data: { consentSubject: IdentityInstallConsent; subjects: Record<string, unknown> };
+      },
+    );
+
+    it('installs package-private content without asking and reports it content-only', async () => {
+      await writeBlueprint(fixtureRepo, RUNNABLE_YAML);
+      const result = await installBlueprintFromCupboardCore({ githubUrl: 'https://github.com/acme/neat-bp' }, makeDeps());
+      expect(result.consent).toMatchObject({ contentOnly: true, grants: [], providerBindings: [], sharedContent: [] });
+    });
+
+    it('refuses an unconsented grant before any package, binding or byte is written, and names every subject', async () => {
+      await writeBlueprint(fixtureRepo, GRANTED_YAML);
+      const spies = writes();
+      const refusal = await refusalOf(installBlueprintFromCupboardCore(agentInput(), grantDeps(spies)));
+      expect(refusal).toMatchObject({
+        status: 409,
+        code: 'identity_install_consent_required',
+        data: { subjects: {
+          contentOnly: false,
+          grants: ['crm.email@1.0.0'],
+          providerBindings: ['crm.email@1.0.0 → acme-crm@2.0.0'],
+        } },
+      });
+      // Exactly what the tool and route accept back as `identityInstallConsent`.
+      expect(identityInstallConsentSchema.parse(refusal.data.consentSubject)).toEqual(refusal.data.consentSubject);
+      expect(refusal.data.consentSubject.artifactContentHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      expect(spies.installCapabilityProviderPackages).not.toHaveBeenCalled();
+      expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+
+      const result = await installBlueprintFromCupboardCore(
+        agentInput({ identityInstallConsent: refusal.data.consentSubject }), grantDeps(spies));
+      expect(result.consent.providerBindings).toEqual(['crm.email@1.0.0 → acme-crm@2.0.0']);
+      expect(spies.commitCapabilitySelections).toHaveBeenCalledOnce();
+    });
+
+    it('refuses consent given for a different artifact or a different binding set', async () => {
+      await writeBlueprint(fixtureRepo, GRANTED_YAML);
+      const spies = writes();
+      const { data: { consentSubject } } = await refusalOf(installBlueprintFromCupboardCore(agentInput(), grantDeps(spies)));
+      await expect(installBlueprintFromCupboardCore(
+        agentInput({ identityInstallConsent: { ...consentSubject, artifactContentHash: '0'.repeat(64) } }), grantDeps(spies),
+      )).rejects.toMatchObject({ status: 409, code: 'identity_install_consent_mismatch' });
+      // The same artifact resolving to a different provider in this pot is a different subject set.
+      await expect(installBlueprintFromCupboardCore(
+        agentInput({ identityInstallConsent: consentSubject }),
+        grantDeps(spies, { capabilityGrantDeps: {
+          getPotBinding: async () => null, listCandidates: async () => [rivalCapabilityCandidate()],
+        } }),
+      )).rejects.toMatchObject({ status: 409, code: 'identity_install_consent_mismatch' });
+      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+    });
+
+    it('names a pot binding the identity reuses, though install writes none', async () => {
+      await writeBlueprint(fixtureRepo, GRANTED_YAML);
+      const spies = writes();
+      const existing = {
+        ...capabilityCandidate(), potSlug: 'sales-ops', boundBy: 'admin', boundAt: '2026-09-07T00:00:00.000Z',
+      };
+      const refusal = await refusalOf(installBlueprintFromCupboardCore(agentInput(), grantDeps(spies, {
+        capabilityGrantDeps: { getPotBinding: async () => existing, listCandidates: async () => [] },
+      })));
+      expect(refusal.data.subjects).toMatchObject({ providerBindings: ['crm.email@1.0.0 → acme-crm@2.0.0'] });
+    });
+
+    it('checks a signed listing\'s declared permissions against what its closure carries', async () => {
+      await writeBlueprint(fixtureRepo, GRANTED_YAML);
+      const keypair = generateEd25519KeypairDer();
+      const sign = (bytes: Uint8Array) => signWithPrivateKeyDer(keypair.privateKeyDer, Buffer.from(bytes));
+      const published = await prepareBlueprintPublicRelease({
+        blueprintFile: join(fixtureRepo, 'blueprint.yaml'),
+        listingRef: 'neat-bp',
+        resolveExtends: () => null,
+        signer: { githubUserId: 7, githubLogin: 'publisher', devicePubkey: keypair.pubkeyBase64, sign: async (bytes) => sign(bytes) },
+      });
+      const manifest = published.manifest.release;
+      expect(manifest.permissions).toEqual(['grant:crm.email@1.0.0']);
+      const resign = (permissions: string[]): CupboardReleaseManifest => {
+        const { signature: _signature, ...unsigned } = { ...manifest, permissions };
+        return { ...unsigned, signature: sign(listingManifestSigningBytes(unsigned)).toString('base64') };
+      };
+      const spies = writes();
+
+      // A listing advertising less than it carries is refused before consent is even asked.
+      await expect(installBlueprintFromCupboardCore(
+        agentInput({ expectedRelease: { manifest: resign(['shared:recipe:other']) } }), grantDeps(spies),
+      )).rejects.toMatchObject({
+        status: 422, code: 'identity_permissions_mismatch',
+        data: { listed: ['shared:recipe:other'], carried: ['grant:crm.email@1.0.0'] },
+      });
+      // The published list, and an empty legacy list, both reach the consent seat.
+      for (const listed of [manifest, resign([])]) {
+        await expect(installBlueprintFromCupboardCore(agentInput({ expectedRelease: { manifest: listed } }), grantDeps(spies)))
+          .rejects.toMatchObject({ code: 'identity_install_consent_required' });
+      }
+      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      const installed = await installConsented(agentInput({ expectedRelease: { manifest } }), grantDeps(spies));
+      expect(installed.release.contentHash).toBe(published.manifest.rootHash);
+    });
   });
 
   it('rejects an invalid github_url', async () => {

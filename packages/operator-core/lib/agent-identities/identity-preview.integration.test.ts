@@ -205,7 +205,9 @@ describe('identity preview (runtime sink, worn guard and package receipts side b
     expect(preview.declared!.classPins).toEqual([expect.objectContaining({
       providerPackage: 'notes-tool', providerVersion: '1.0.0', conformanceRunId: 'run-context.notes', verbs: ['read'],
     })]);
-    expect(preview.consent!.providerBindings).toEqual([expect.stringContaining('notes-tool@1.0.0')]);
+    // Consent names what install asks, destination-independently: the class read
+    // through whichever provider the pot binds (D-034). No grant, so no binding is written.
+    expect(preview.consent).toMatchObject({ contentOnly: false, contextReads: ['context.notes@1 read'], providerBindings: [] });
   }, 120_000);
 
   it('names a required grant the pot cannot satisfy, in validation, the declared surface and consent', async () => {

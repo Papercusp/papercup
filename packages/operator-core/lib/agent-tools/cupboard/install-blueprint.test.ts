@@ -122,7 +122,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           contentOnly: false,
           grants: ['crm.email@1.0.0'],
           providerBindings: ['crm.email@1.0.0 → crm-email-tool@1.0.0'],
-          rules: [], events: [], operations: [], pluginCode: [], sharedContent: [],
+          contextReads: [], rules: [], events: [], operations: [], pluginCode: [], sharedContent: [],
         },
         capabilityGrants: {
           ok: true,
