@@ -14,6 +14,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -2384,6 +2385,50 @@ describe('unified work_items surface (real PG)', () => {
     expect(
       (await db.sql`SELECT goal_id FROM harness_shared.work_items WHERE feature_id = ${bug.id}`)[0].goal_id,
     ).toBeNull();
+  });
+
+  it('goal-start source attribution stamps only an unowned same-harness item and clears conditionally', async () => {
+    const harness = 'papercup';
+    const issue = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'Resolve this source item',
+      harness,
+      createdBy: 'agA',
+    });
+    const opts = {
+      id: issue.id,
+      workspaceId: h.activeWorkspace,
+      harness,
+      goalId: 'resolve-ei-test',
+    };
+
+    const stamped = await db.sql.begin(async (tx) =>
+      wi.stampWorkItemGoalAtStart(tx as unknown as GoalSqlTag, opts),
+    );
+    expect(stamped).toEqual({ ok: true, changed: true });
+    expect((await wi.getWorkItem(issue.id))?.goalId).toBe(opts.goalId);
+
+    const sameGoal = await db.sql.begin(async (tx) =>
+      wi.stampWorkItemGoalAtStart(tx as unknown as GoalSqlTag, opts),
+    );
+    expect(sameGoal).toEqual({ ok: true, changed: false });
+
+    const otherGoal = await db.sql.begin(async (tx) =>
+      wi.stampWorkItemGoalAtStart(tx as unknown as GoalSqlTag, { ...opts, goalId: 'another-goal' }),
+    );
+    expect(otherGoal).toEqual({ ok: false, reason: 'already_attributed' });
+    const wrongHarness = await db.sql.begin(async (tx) =>
+      wi.stampWorkItemGoalAtStart(tx as unknown as GoalSqlTag, { ...opts, harness: 'other-harness' }),
+    );
+    expect(wrongHarness).toEqual({ ok: false, reason: 'wrong_harness' });
+    expect(await wi.clearWorkItemGoalAtStart(db.sql as unknown as GoalSqlTag, { ...opts, goalId: 'another-goal' })).toBe(false);
+    expect((await wi.getWorkItem(issue.id))?.goalId).toBe(opts.goalId);
+
+    const cleared = await db.sql.begin(async (tx) =>
+      wi.clearWorkItemGoalAtStart(tx as unknown as GoalSqlTag, opts),
+    );
+    expect(cleared).toBe(true);
+    expect((await wi.getWorkItem(issue.id))?.goalId).toBeNull();
   });
 
   it('claim/release dispatch: feature → taken_by; issue → assignee', async () => {
