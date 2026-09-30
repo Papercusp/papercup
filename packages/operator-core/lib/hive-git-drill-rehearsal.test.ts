@@ -140,14 +140,47 @@ function physicalHostVars(source: string): string[] {
   return [...names].sort();
 }
 
+/**
+ * A value need not LOOK physical to be host-specific: VM_CALL='/tmp/vmcall.sh', TOWER_REPO and
+ * TOWER_CALL under the caller's $HOME, and VM_OWNER_PORT=3070 all name the LIVE operator on this
+ * box. Selecting by value let a profile that dropped the VM_CALL retarget pass (R-4-P-005 mutation
+ * probe, 2026-09-30), so rig variables are also selected by NAME: every top-level VM* / TOWER*
+ * assignment plus DEPLOY.
+ */
+const RIG_VAR_NAME = /^(?:VM|TOWER)(?:_[A-Z0-9_]+)?$|^DEPLOY$/;
+/** Rig-agnostic by construction, so the profile rightly leaves them alone. Each needs a reason. */
+const RIG_AGNOSTIC_VARS = new Map<string, string>([
+  ['VM_SOURCE', 'the probe hands in its run-private pinned snapshot (HIVE_GIT_PHYSICAL_VM_SOURCE)'],
+  ['TOWER_SOURCE', 'the probe hands in its run-private pinned snapshot (HIVE_GIT_PHYSICAL_TOWER_SOURCE)'],
+  ['VM_PRODUCER', 'derived from the run-private VM source snapshot, never from a host constant'],
+]);
+/** Top-level rig variables of a real script, selected by name. */
+function namedRigVars(source: string): string[] {
+  const names = new Set<string>();
+  for (const line of source.split('\n')) {
+    const m = /^([A-Z][A-Z0-9_]*)=/.exec(line);
+    if (m && RIG_VAR_NAME.test(m[1]) && !RIG_AGNOSTIC_VARS.has(m[1])) names.add(m[1]);
+  }
+  return [...names].sort();
+}
+
 describe('rig-profile.sh — one profile owns every host value', () => {
   const scenario = readFileSync(scenarioPath, 'utf8');
   const probe = readFileSync(probePath, 'utf8');
-  const hostVars = [...new Set([...physicalHostVars(scenario), ...physicalHostVars(probe)])].sort();
+  const hostVars = [
+    ...new Set([...physicalHostVars(scenario), ...physicalHostVars(probe), ...namedRigVars(scenario), ...namedRigVars(probe)]),
+  ].sort();
 
   it('finds the physical host variables it must cover (calibration)', () => {
     // If this ever reads empty, the drift guard below would pass vacuously.
     expect(hostVars).toEqual(expect.arrayContaining(['VM', 'VM_NODE', 'VM_REPO', 'VM_IDENTITY_DIR']));
+    // The value-invisible ones: none carries a physical marker, and each names the live operator.
+    expect(hostVars).toEqual(
+      expect.arrayContaining(['VM_CALL', 'VM_MCP_CALL', 'VM_OWNER_PORT', 'TOWER_CALL', 'TOWER_REPO', 'TOWER_CACHE']),
+    );
+    // Every rig-agnostic exclusion must still name a real variable, or it is dead weight hiding nothing.
+    const assigned = new Set([...`${scenario}\n${probe}`.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map((m) => m[1]));
+    for (const name of RIG_AGNOSTIC_VARS.keys()) expect(assigned.has(name), `${name} is no longer assigned`).toBe(true);
   });
 
   it('same-box retargets every physical host variable of the real probe and scenario at the stub rig', () => {
