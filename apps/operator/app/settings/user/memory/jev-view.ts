@@ -87,7 +87,11 @@ export function jevView(env: JevSettingsEnvelopeView): JevView {
       ? `Jev's decision (${env.model}). The current system is used whenever Jev can't answer.`
       : env.effective === 'shadow'
         ? `The current system. Jev (${env.model}) is asked alongside it and its answers are only logged.`
-        : 'The current system. Jev makes no calls.';
+        : env.keyPresent
+          ? // WI-10004278: a saved key still makes Jev the contradiction checker in
+            // every mode (JEV_KEY_CONFLICT_USE), so "no calls" would be false here.
+            "The current system. Jev isn't asked during memory lookups; the saved key is still used for contradiction checks (below)."
+          : 'The current system. Jev makes no calls.';
 
   const missingKeyWarning =
     env.mode !== 'off' && env.effective === 'off'

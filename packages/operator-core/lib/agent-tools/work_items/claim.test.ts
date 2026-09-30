@@ -100,7 +100,29 @@ vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
 import { claimWorkItem, classifyClaimFailure, commentWorkItem, explainIssueClaimFloors, getWorkItem, type WorkItem } from '../../work-items';
 import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
-import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
+import { mockImplementationTyped, mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
+
+/**
+ * A COMPLETE `WorkItem` with a `Partial` override seam, so a fixture is checked against the
+ * real interface instead of cast past it with `as never`. That cast is what defeats
+ * `vi.mocked()`: it stops the fixture being typechecked, so when `WorkItem` gains a required
+ * field the stale fixture fails at RUNTIME, in the fleet's green gate, in a file whose author
+ * never touched it (`lint:mock-cast-escape`, baseline shrink-only). The 29 pre-existing casts
+ * in this file are out of scope here; new tests should use this and the seam is here to adopt.
+ */
+const issueItem = (over: Partial<WorkItem> = {}): WorkItem => ({
+  id: 'EI-FIXTURE', kind: 'bug', family: 'issue', harness: 'papercup',
+  title: 'fixture', summary: '', state: 'open',
+  assignee: null, takenAt: null, lastProgressAt: null, assignedBy: null, createdBy: null,
+  severity: null, goalId: null, parent: null, payload: null, origin: 'local',
+  auditVerdict: null, verifiedAuthorGithubUserId: null,
+  rank: null, rankWriter: null, rankUpdatedAt: null, priority: null,
+  terminalOwner: null, terminalCompletionRef: null, terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-08-31T12:37:57.000Z', updatedAt: '2026-08-31T12:37:57.000Z', closedAt: null,
+  ...over,
+});
+
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
@@ -765,27 +787,6 @@ describe('work_items:claim handler (keyed-array)', () => {
   });
 
   /**
-   * A COMPLETE `WorkItem` with a `Partial` override seam, so a fixture is checked against the
-   * real interface instead of cast past it with `as never`. That cast is what defeats
-   * `vi.mocked()`: it stops the fixture being typechecked, so when `WorkItem` gains a required
-   * field the stale fixture fails at RUNTIME, in the fleet's green gate, in a file whose author
-   * never touched it (`lint:mock-cast-escape`, baseline shrink-only). The 29 pre-existing casts
-   * in this file are out of scope here; new tests should use this and the seam is here to adopt.
-   */
-  const issueItem = (over: Partial<WorkItem> = {}): WorkItem => ({
-    id: 'EI-FIXTURE', kind: 'bug', family: 'issue', harness: 'papercup',
-    title: 'fixture', summary: '', state: 'open',
-    assignee: null, takenAt: null, lastProgressAt: null, assignedBy: null, createdBy: null,
-    severity: null, goalId: null, parent: null, payload: null, origin: 'local',
-    auditVerdict: null, verifiedAuthorGithubUserId: null,
-    rank: null, rankWriter: null, rankUpdatedAt: null, priority: null,
-    terminalOwner: null, terminalCompletionRef: null, terminalCompletionEvidence: null,
-    completionAuthority: null,
-    createdAt: '2026-08-31T12:37:57.000Z', updatedAt: '2026-08-31T12:37:57.000Z', closedAt: null,
-    ...over,
-  });
-
-  /**
    * EI-21973318733042066 — a launched independent reviewer was briefed to claim a review
    * work-item created seconds earlier as its first act, and `work_items:claim` refused twice
    * with this floor. MEASURED: the admission promoter is a 30-minute cron, and that item stayed
@@ -930,8 +931,8 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
   it("re-claims the caller's OWN legacy short-form hold, widening the CAS by the RAW stored string", async () => {
     identity.ownerId = ME;
     OWNER_REGISTRY.ids = [ME];
-    getM.mockResolvedValue({ id: 'WI-LEGACY', assignee: 'su-851c1a7a' } as never);
-    claimM.mockResolvedValue({ id: 'WI-LEGACY', assignee: ME } as never);
+    mockResolvedTyped(getM, issueItem({ id: 'WI-LEGACY', assignee: 'su-851c1a7a' }));
+    mockResolvedTyped(claimM, issueItem({ id: 'WI-LEGACY', assignee: ME }));
 
     const b = await body({ id: 'WI-LEGACY' });
 
@@ -944,7 +945,7 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
   it("does NOT treat an AMBIGUOUS legacy short hold as the caller's own", async () => {
     identity.ownerId = ME;
     OWNER_REGISTRY.ids = [ME, PEER_SAME_PREFIX];
-    getM.mockResolvedValue({ id: 'WI-AMB-HOLD', assignee: 'su-851c1a7a' } as never);
+    mockResolvedTyped(getM, issueItem({ id: 'WI-AMB-HOLD', assignee: 'su-851c1a7a' }));
 
     await body({ id: 'WI-AMB-HOLD' });
 
@@ -953,7 +954,7 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
 
   it('expands a short-form assignee ARG to the unique full id before claiming', async () => {
     OWNER_REGISTRY.ids = [ME];
-    claimM.mockImplementation(async (id: string, who: string) => ({ id, assignee: who }) as never);
+    mockImplementationTyped(claimM, async (id, who) => issueItem({ id, assignee: who }));
 
     const b = await body({ id: 'WI-SHORT', assignee: 'su-851c1a7a' });
 

@@ -122,6 +122,30 @@ describe('Work on everything scorecard contract', () => {
     })).toThrow(/measurement limitation/);
   });
 
+  // P-002: a deployed-generation mismatch is a measurement limit of the environment,
+  // not subject conduct. It must be recordable as an unknown gap, keep its enumerated
+  // reason through the canonical reader, and never be accepted as a downgrade.
+  it('keeps a generation mismatch an unknown environment gap, never a subject downgrade', () => {
+    const gap = rating({
+      rating: 'unknown',
+      attribution: 'environment',
+      unknownReason: 'generation-mismatch',
+      nextEvidenceAction: 'Re-grade after the running operator serves the graded generation.',
+    });
+    expect(() =>
+      validateWorkOnEverythingEvidenceEnvelope(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, { key: gap }),
+    ).not.toThrow();
+    expect(
+      asStructuredObservation({ rubricRef: WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, ratings: { key: gap } })
+        ?.ratings?.key?.unknownReason,
+    ).toBe('generation-mismatch');
+    expect(() =>
+      validateWorkOnEverythingEvidenceEnvelope(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, {
+        key: rating({ rating: 'fail', attribution: 'environment', evidence: 'deployed generation differs from the tree' }),
+      }),
+    ).toThrow(/measurement limitation/);
+  });
+
   it('preserves evidence metadata through the canonical observation reader', () => {
     const ratings = { key: rating({
       rating: 'unknown',
@@ -173,6 +197,22 @@ describe('registered scorecard instrument provenance', () => {
     expect(snapshots?.['woe.goal-mode-base-scorecard']).toMatchObject({
       verdict: 'pass', provenance: 'platform-computed', evidenceRef: 'EI-base',
       value: { baseCard: 'EI-base', rubricRevision: 42, ratings: card.ratings },
+    });
+  });
+
+  // P-006 / R-8: a stored platform-computed snapshot must say WHICH resolver produced
+  // it, so a later reader can tell resolver output from a caller assertion.
+  it('stamps the resolver identity on every platform-computed snapshot', async () => {
+    const measured = await resolveScorecardInstrumentSnapshots({ rubric, subject }, read([card]));
+    expect(measured?.['woe.goal-mode-base-scorecard']).toMatchObject({
+      provenance: 'platform-computed',
+      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 1 },
+    });
+    const unknown = await resolveScorecardInstrumentSnapshots({ rubric, subject }, read([]));
+    expect(unknown?.['woe.goal-mode-base-scorecard']).toMatchObject({
+      verdict: 'unknown',
+      provenance: 'platform-computed',
+      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 1 },
     });
   });
 

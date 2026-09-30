@@ -48,7 +48,9 @@ vi.mock('../locks/identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../locks/identity')>()),
   readIdentity: () => ({ ownerId: 'o', ownerLabel: 'tester', coordinationDomain: 'd' }) as never,
 }));
-const notifyM = vi.fn();
+// Hoisted like the spies above: '../cell-registrations-wiring' now reaches attention-notify
+// during static import, so this factory runs before a plain top-level `const` is initialised.
+const notifyM = vi.hoisted(() => vi.fn());
 vi.mock('../../attention-notify', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../attention-notify')>()),
   notifyAttention: notifyM,

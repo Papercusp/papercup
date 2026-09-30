@@ -27,6 +27,16 @@ describe('jevView', () => {
     expect(v.keyLine).toBe('No key saved');
   });
 
+  // WI-10004278: with a key saved, Off still sends new memories to Jev for the
+  // contradiction check, so the card must not claim that Jev makes no calls.
+  it('off with a key saved: the current system, and it does not claim Jev makes no calls', () => {
+    const v = jevView(envelope({ mode: 'off', keyPresent: true, maskedKey: 'ab1...cd34', effective: 'off' }));
+    expect(v.inUse).toContain('The current system.');
+    expect(v.inUse).not.toContain('makes no calls');
+    expect(v.inUse).toContain('contradiction checks');
+    expect(v.missingKeyWarning).toBeNull();
+  });
+
   it('a chosen mode with no key saved reads as the current system and warns, whatever the stored choice', () => {
     for (const mode of ['shadow', 'on'] as const) {
       const v = jevView(envelope({ mode, keyPresent: false, effective: 'off' }));

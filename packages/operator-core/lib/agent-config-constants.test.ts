@@ -134,10 +134,10 @@ describe('modelWindowForSpec (keys on the [1m] MARKER only)', () => {
     expect(modelWindowForSpec(undefined)).toBe(MODEL_WINDOW_DEFAULT);
   });
   it('official/extended Codex families resolve to exact 1M without widening mini/nano', () => {
-    for (const spec of ['gpt-5.6-sol', 'terra:xhigh', 'luna', 'gpt-5.4', 'gpt-6-astra:max']) {
+    for (const spec of ['gpt-5.6-sol', 'terra:xhigh', 'luna', 'gpt-5.4', 'gpt-6-astra:max', 'gpt-6-sol', 'gpt-6-luna:max', 'gpt-6.1-sol:max']) {
       expect(modelWindowForSpec(spec), spec).toBe(MODEL_WINDOW_1M);
     }
-    for (const spec of ['gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.5']) {
+    for (const spec of ['gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.5', 'gpt-6.1-sol-mini', 'gpt-6.1-sol-nano']) {
       expect(modelWindowForSpec(spec), spec).toBe(MODEL_WINDOW_DEFAULT);
     }
   });
@@ -336,13 +336,13 @@ describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
  */
 describe('codex extended-window specs seed the SAME role caps as claude [1m]', () => {
   it('seeds 450k for an ad-hoc su / fleet leader', () => {
-    for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'gpt-5.6-terra:xhigh', 'sol', 'luna:max', 'gpt-5.4', 'gpt-6-astra:max']) {
+    for (const spec of ['gpt-5.6-sol', 'gpt-5.6-sol:high', 'gpt-5.6-terra:xhigh', 'sol', 'luna:max', 'gpt-5.4', 'gpt-6-astra:max', 'gpt-6.1-sol:max']) {
       expect(defaultCompactionLimitForSpec(spec), spec).toBe(450_000);
     }
   });
 
   it('seeds 250k for a fleet member', () => {
-    for (const spec of ['gpt-5.6-sol:high', 'terra', 'gpt-5.4', 'gpt-6-astra:high']) {
+    for (const spec of ['gpt-5.6-sol:high', 'terra', 'gpt-5.4', 'gpt-6-astra:high', 'gpt-6.1-sol:max', 'gpt-6-luna:max']) {
       expect(defaultCompactionLimitForSpec(spec, { fleetMember: true }), spec).toBe(250_000);
     }
   });

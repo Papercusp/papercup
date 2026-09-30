@@ -605,6 +605,17 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(openaiUpstream!.last.method).toBeUndefined();
   });
 
+  it('forwards explicit ChatGPT GPT-6.1 Sol with max reasoning without substituting the default', async () => {
+    await bootCodex(ok);
+    const res = await postResponses({ model: 'chatgpt:6.1-sol:max', input: 'use the requested model' });
+    expect(res.status).toBe(200);
+    expect(JSON.parse(openaiUpstream!.last.body)).toMatchObject({
+      model: 'gpt-6.1-sol',
+      reasoning: { effort: 'max' },
+      input: 'use the requested model',
+    });
+  });
+
   it('honors an x-papercusp-account pin to a specific codex account (cache affinity)', async () => {
     await bootCodex(ok);
     const res = await postResponses({ model: 'gpt-x', input: 'hi' }, { [ACCOUNT_HEADER]: 'cdx-2' });
@@ -621,8 +632,13 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'cdx-2' } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      models?: Array<{ slug: string; supported_reasoning_levels?: Array<{ effort: string }> }>;
+      models?: Array<{ slug: string; max_context_window?: number; supported_reasoning_levels?: Array<{ effort: string }> }>;
     };
+    const sol = body.models?.find((m) => m.slug === 'gpt-6.1-sol');
+    expect(sol?.max_context_window).toBe(1_000_000);
+    expect(sol?.supported_reasoning_levels?.map((level) => level.effort)).toEqual([
+      'low', 'medium', 'high', 'xhigh', 'max',
+    ]);
     expect(body.models?.some((m) => m.slug === 'gpt-6-astra')).toBe(true);
     expect(body.models?.find((m) => m.slug === 'gpt-5.6-sol')?.supported_reasoning_levels).toContainEqual(
       expect.objectContaining({ effort: 'max' }),

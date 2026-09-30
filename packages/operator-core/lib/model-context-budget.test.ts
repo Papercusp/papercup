@@ -77,6 +77,18 @@ describe('managed Codex model policy', () => {
       '',
     ]);
   });
+
+  it('preserves GPT-6.1 Sol selection and max effort in the resume config', () => {
+    expect(resolveCodexModelSelection('chatgpt:6.1-sol:max')).toEqual({
+      model: 'gpt-6.1-sol:max',
+      source: 'explicit',
+    });
+    expect(codexModelConfigToml('gpt-6.1-sol:max')).toEqual([
+      'model = "gpt-6.1-sol"',
+      'model_reasoning_effort = "max"',
+      '',
+    ]);
+  });
 });
 
 describe('model-context-budget', () => {
@@ -304,7 +316,7 @@ describe('codex extended-window launch config', () => {
     });
   });
 
-  it.each(['gpt-6-sol', 'gpt-6-luna'])('%s uses the 1M fresh-home fallback and a registry max after discovery', (model) => {
+  it.each(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'])('%s uses the 1M fresh-home fallback and a registry max after discovery', (model) => {
     const noRegistry = mkdtempSync(join(tmpdir(), `psu-codex-${model}-bare-`));
     expect(codexContextWindowConfig(model, { home: noRegistry })).toMatchObject({
       model,
