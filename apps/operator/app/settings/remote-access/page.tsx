@@ -261,8 +261,8 @@ export default function RemoteAccessSettingsPage() {
         </div>
         {error && <p className="pc-settings-note" role="alert">Could not load remote access: {String(error)}</p>}
         {row && (
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-            <div>
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 0, flex: '1 1 220px' }}>
               <div data-testid="remote-access-state" data-enabled={row.remoteAccess.enabled ? 'true' : 'false'} style={{ fontWeight: 600 }}>
                 Remote access is {row.remoteAccess.enabled ? 'on' : 'off'}
               </div>
@@ -316,7 +316,7 @@ export default function RemoteAccessSettingsPage() {
             No route yet. Outside apps reach this computer through a tunnel in your own account (Cloudflare, or one you run).
           </p>
         )}
-        <div className="pc-settings-actions" style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+        <div className="pc-settings-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {tunnel?.configured && (
             <button
               type="button"
@@ -342,9 +342,9 @@ export default function RemoteAccessSettingsPage() {
       </section>
 
       <section className="pc-settings-section" data-testid="remote-access-list">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}>Apps and devices</h2>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" data-testid="remote-access-connect" onClick={() => void setWizard('choose')}>
               Connect an app
             </button>
@@ -360,8 +360,11 @@ export default function RemoteAccessSettingsPage() {
         <ul style={{ marginTop: 12, listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {entries.map((e) => (
             <li key={e.id} data-testid="remote-access-entry" data-entry-id={e.id} data-kind={e.kind} style={entryStyle}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-                <div style={{ minWidth: 0 }}>
+              <div
+                data-testid="remote-access-entry-row"
+                style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}
+              >
+                <div style={{ minWidth: 0, flex: '1 1 220px', overflowWrap: 'anywhere' }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>
                     {e.label ?? '(unnamed)'} <span className="pc-settings-hint">· {KIND_LABEL[e.kind]}</span>
                   </div>
@@ -383,7 +386,7 @@ export default function RemoteAccessSettingsPage() {
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                <div data-testid="remote-access-entry-actions" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <button type="button" data-action="pause" disabled={busy !== null} onClick={() => void setPaused(e, !e.pausedAt)}>
                     {e.pausedAt ? 'Resume' : 'Pause'}
                   </button>

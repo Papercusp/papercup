@@ -134,6 +134,19 @@ describe('Remote access screen', () => {
     expect(within(items[2]!).getByText('Resume')).toBeTruthy();
   });
 
+  it('wraps each entry so its controls never overlap the label in a narrow pane', () => {
+    // Measured in the Tauri shell: in the ~190px settings pane a non-wrapping row with
+    // flexShrink:0 controls drew Pause over the key's name and clipped Rotate/Revoke.
+    render(<RemoteAccessSettingsPage />);
+    const rows = screen.getAllByTestId('remote-access-entry-row');
+    const actions = screen.getAllByTestId('remote-access-entry-actions');
+    expect(rows).toHaveLength(3);
+    for (const el of [...rows, ...actions]) {
+      expect(el.style.flexWrap).toBe('wrap');
+      expect(el.style.flexShrink).not.toBe('0');
+    }
+  });
+
   it('the switch posts the workspace kill switch (R-41)', async () => {
     render(<RemoteAccessSettingsPage />);
     expect(screen.getByTestId('remote-access-state').dataset.enabled).toBe('true');
