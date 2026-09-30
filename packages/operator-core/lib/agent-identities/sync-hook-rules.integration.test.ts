@@ -60,8 +60,11 @@ describe('pre-tool guard (real artifact + launch record + applied revision)', ()
       resolvePackage: async ({ ref }) => RULES[ref as keyof typeof RULES] ?? null });
     revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'state-guarded' };
     await wear('owner-guarded', revision, revision, artifact);
-    // Applied revision the gate-selected launch record cannot resolve: no rule can be named.
-    await wear('owner-unreadable', revision, { ...revision, stateRevision: 'state-elsewhere' }, artifact);
+    // A control-only activation (D-028 §7): the applied STATE revision moved without a
+    // re-render, so no receipt carries it, but the record's specification IS the applied one.
+    await wear('owner-reregistered', revision, { ...revision, stateRevision: 'state-reregistered' }, artifact);
+    // Applied SPECIFICATION the gate-selected launch record cannot resolve: no rule can be named.
+    await wear('owner-unreadable', revision, { ...revision, specificationRevision: 'spec-elsewhere' }, artifact);
   }, 180_000);
 
   afterAll(async () => {
@@ -81,6 +84,12 @@ describe('pre-tool guard (real artifact + launch record + applied revision)', ()
       .resolves.toMatch(/^Refused by identity \S+ rule broken: guard broken failed to evaluate: /);
     await expect(guard('owner-guarded', 'capability:bash', null, true))
       .resolves.toMatch(/^Refused by identity \S+ rule no-rm: tool input exceeds \d+ bytes; guard no-rm cannot see all of it$/);
+  });
+
+  it('keeps a worn guard live across a control-only activation (no receipt carries the new state revision)', async () => {
+    await expect(guard('owner-reregistered', 'capability:bash', { command: 'rm -rf /' }))
+      .resolves.toMatch(/^Refused by identity \S+ rule no-rm: no recursive deletes$/);
+    await expect(guard('owner-reregistered', 'capability:bash', { command: 'ls' })).resolves.toBe('');
   });
 
   it('fails OPEN only where no rule can be named: nothing applied, or an unreadable artifact', async () => {
