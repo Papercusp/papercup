@@ -25,6 +25,7 @@ const SAME_BOX = {
   HIVE_GIT_DRILL_TARGET_POT_HOME: 'hello-world-pot',
   HIVE_GIT_DRILL_TARGET_REPO_KEY: 'gh-1296269',
   HIVE_GIT_DRILL_TARGET_GITHUB_REMOTE: 'https://github.com/octocat/Hello-World',
+  HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG: 'hello-world',
 };
 
 afterEach(() => vi.unstubAllEnvs());
@@ -35,6 +36,7 @@ describe('physicalDrillTarget', () => {
       potHome: PHASE_A_POT_HOME,
       repoKey: PHASE_A_REPO_KEY,
       githubRemote: PHASE_A_GITHUB_REMOTE,
+      gitSyncSlug: PHASE_A_POT_HOME,
       diagnostic: false,
     });
   });
@@ -50,6 +52,7 @@ describe('physicalDrillTarget', () => {
       potHome: 'hello-world-pot',
       repoKey: 'gh-1296269',
       githubRemote: 'https://github.com/octocat/Hello-World',
+      gitSyncSlug: 'hello-world',
       diagnostic: true,
     });
   });
@@ -57,16 +60,23 @@ describe('physicalDrillTarget', () => {
   it('never falls back to the canary when the same-box target is missing or malformed', () => {
     expect(() => physicalDrillTarget({ HIVE_GIT_RIG: 'same-box' })).toThrow(/incomplete or malformed/);
     expect(() => physicalDrillTarget({ ...SAME_BOX, HIVE_GIT_DRILL_TARGET_REPO_KEY: '../x' })).toThrow(/malformed/);
+    const { HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG: _slug, ...noGitSync } = SAME_BOX;
+    expect(() => physicalDrillTarget(noGitSync)).toThrow(/incomplete or malformed/);
     expect(() => physicalDrillTarget({ ...SAME_BOX, HIVE_GIT_DRILL_TARGET_POT_HOME: PHASE_A_POT_HOME })).toThrow(
+      /must not reuse the physical canary/,
+    );
+    expect(() => physicalDrillTarget({ ...SAME_BOX, HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG: PHASE_A_POT_HOME })).toThrow(
       /must not reuse the physical canary/,
     );
   });
 
   it('routes the git-sync install slug through the same target', () => {
     expect(physicalDrillGitSyncSlug('vm')).toBe(PHASE_A_POT_HOME);
+    expect(physicalDrillGitSyncSlug('tower')).toBe(PHASE_A_POT_HOME);
     for (const [k, v] of Object.entries(SAME_BOX)) vi.stubEnv(k, v);
-    expect(physicalDrillGitSyncSlug('tower')).toBe('hello-world-pot');
-    expect(physicalDrillGitSyncSlug('vm')).toBe('hello-world-pot');
+    // A create-from-repo pot: git-sync belongs to the member checkout, not the pot home.
+    expect(physicalDrillGitSyncSlug('tower')).toBe('hello-world');
+    expect(physicalDrillGitSyncSlug('vm')).toBe('hello-world');
   });
 });
 

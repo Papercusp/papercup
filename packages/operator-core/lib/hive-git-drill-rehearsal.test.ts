@@ -86,6 +86,7 @@ function stubRig(overrides: Record<string, string> = {}, extraLines: string[] = 
     SB_NODE: process.execPath,
     SB_TSX: tsx,
     SB_POT_HOME: 'same-box-pot',
+    SB_GIT_SYNC_SLUG: 'same-box-member',
     SB_REPO_KEY: 'gh-1296269',
     SB_GITHUB_REMOTE: 'https://github.com/octocat/Hello-World',
     SB_WORKSPACE: 'same-box-ws',
@@ -133,6 +134,37 @@ describe('rig-profile.sh — one profile owns every host value', () => {
     }
     expect(values.VM).toBe('same-box-vm');
     expect(values.VM_REPO).toBe(join(rig.vmHome, '.papercusp/pot-git/same-box-pot/gh-1296269.git'));
+  });
+
+  it('routes git-sync to the pot member while the pot-git store stays keyed by the pot', () => {
+    // A create-from-repo pot is a pot home plus a member checkout. Targeting git-sync at the
+    // pot home fires a routine that commits nothing, so every phase would wait on a store
+    // that never moves.
+    const rig = stubRig();
+    const dump = ['TOWER_GIT_SYNC_SLUG', 'VM_GIT_SYNC_SLUG', 'TOWER_REPO', 'HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG']
+      .map((v) => `printf '%s=%s\\n' ${v} "\${${v}}"`)
+      .join('; ');
+    const r = spawnSync(
+      'bash',
+      ['-c', `set -u; TOWER_GIT_SYNC_SLUG=hello-world-3-pot; VM_GIT_SYNC_SLUG=hello-world-3-pot; . ${JSON.stringify(profileLib)}; rig_profile_apply >/dev/null || exit 9; ${dump}`],
+      { encoding: 'utf8', env: cleanEnv({ HIVE_GIT_RIG: 'same-box', HIVE_GIT_SAME_BOX_RIG: rig.dir }) },
+    );
+    expect(r.status, r.stderr).toBe(0);
+    const values = Object.fromEntries(r.stdout.trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    expect(values.TOWER_GIT_SYNC_SLUG).toBe('same-box-member');
+    expect(values.VM_GIT_SYNC_SLUG).toBe('same-box-member');
+    expect(values.HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG).toBe('same-box-member');
+    expect(values.TOWER_REPO).toBe(join(rig.towerHome, '.papercusp/pot-git/same-box-pot/gh-1296269.git'));
+  });
+
+  it('refuses a rig.env without the git-sync member slug', () => {
+    const rig = stubRig({ SB_GIT_SYNC_SLUG: '' });
+    const r = spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_apply`], {
+      encoding: 'utf8',
+      env: cleanEnv({ HIVE_GIT_RIG: 'same-box', HIVE_GIT_SAME_BOX_RIG: rig.dir }),
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/does not set SB_GIT_SYNC_SLUG/);
   });
 
   it('points the rig preflight at the rig owners (same-box) and adds nothing on the physical rig', () => {

@@ -318,8 +318,10 @@ export async function porcelainDirtyPaths(worktreePath: string): Promise<string[
 
 async function fixedPaths(deps: PhysicalPhaseDDeps = {}): Promise<{ repoPath: string; worktreePath: string }> {
   const repoPath = deps.repoPath ?? hiveGitRepoPath(physicalDrillTarget().potHome, physicalDrillTarget().repoKey);
-  const worktreePath = deps.worktreePath ?? (await projectDirForSlug(physicalDrillTarget().potHome));
-  if (!worktreePath) throw new Error(`physical Phase D cannot resolve fixed worktree ${physicalDrillTarget().potHome}`);
+  // The working tree belongs to the install that owns git-sync for the repo: the canary pot
+  // itself on the physical rig, the pot's member checkout on the same-box rig.
+  const worktreePath = deps.worktreePath ?? (await projectDirForSlug(physicalDrillTarget().gitSyncSlug));
+  if (!worktreePath) throw new Error(`physical Phase D cannot resolve fixed worktree ${physicalDrillTarget().gitSyncSlug}`);
   if (!isAbsolute(repoPath) || !isAbsolute(worktreePath)) {
     throw new Error('physical Phase D fixed repo and worktree paths must be absolute');
   }
@@ -983,7 +985,7 @@ async function loadCursor(sql: OrgSql): Promise<PhysicalPhaseDObservation['curso
     SELECT metadata->'worktree_bridge' AS worktree_bridge
       FROM harness_shared.routines
      WHERE workspace_id = ${PHASE_D_WORKSPACE}
-       AND install_slug = ${physicalDrillTarget().potHome}
+       AND install_slug = ${physicalDrillTarget().gitSyncSlug}
        AND target_role = 'system:git-sync'
      LIMIT 1
   `;

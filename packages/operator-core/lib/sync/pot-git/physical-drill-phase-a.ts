@@ -45,12 +45,21 @@ export type PhysicalDrillTarget = {
   potHome: string;
   repoKey: string;
   githubRemote: string;
+  /**
+   * The install that owns system:git-sync for the target repo on both hosts, whose registry
+   * path is the working tree. The canary is a self_repo pot, so this is the pot slug. A
+   * same-box pot comes from create-from-repo and is a pot home plus a member checkout: the
+   * pot-git store is still keyed by the pot slug (git-sync resolves it through the member's
+   * hive_slug), but git-sync and the tree belong to the member.
+   */
+  gitSyncSlug: string;
   diagnostic: boolean;
 };
 export const PHYSICAL_DRILL_TARGET_ENV = [
   'HIVE_GIT_DRILL_TARGET_POT_HOME',
   'HIVE_GIT_DRILL_TARGET_REPO_KEY',
   'HIVE_GIT_DRILL_TARGET_GITHUB_REMOTE',
+  'HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG',
 ] as const;
 
 export function physicalDrillTarget(env: NodeJS.ProcessEnv = process.env): PhysicalDrillTarget {
@@ -61,39 +70,49 @@ export function physicalDrillTarget(env: NodeJS.ProcessEnv = process.env): Physi
         `physical drill target cannot come from the environment on the physical rig (${supplied.join(', ')} set without HIVE_GIT_RIG=same-box)`,
       );
     }
-    return { potHome: PHASE_A_POT_HOME, repoKey: PHASE_A_REPO_KEY, githubRemote: PHASE_A_GITHUB_REMOTE, diagnostic: false };
+    return {
+      potHome: PHASE_A_POT_HOME,
+      repoKey: PHASE_A_REPO_KEY,
+      githubRemote: PHASE_A_GITHUB_REMOTE,
+      gitSyncSlug: PHASE_A_POT_HOME,
+      diagnostic: false,
+    };
   }
   const potHome = env.HIVE_GIT_DRILL_TARGET_POT_HOME ?? '';
   const repoKey = env.HIVE_GIT_DRILL_TARGET_REPO_KEY ?? '';
   const githubRemote = env.HIVE_GIT_DRILL_TARGET_GITHUB_REMOTE ?? '';
+  const gitSyncSlug = env.HIVE_GIT_DRILL_TARGET_GIT_SYNC_SLUG ?? '';
+  const SLUG = /^[a-z0-9][a-z0-9-]*$/;
   if (
-    !/^[a-z0-9][a-z0-9-]*$/.test(potHome) ||
+    !SLUG.test(potHome) ||
+    !SLUG.test(gitSyncSlug) ||
     !/^gh-[0-9]+$/.test(repoKey) ||
     !/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+$/.test(githubRemote)
   ) {
     throw new Error(
-      `same-box drill target is incomplete or malformed (pot='${potHome}' repoKey='${repoKey}' remote='${githubRemote}'); apply the same-box rig profile`,
+      `same-box drill target is incomplete or malformed (pot='${potHome}' gitSync='${gitSyncSlug}' repoKey='${repoKey}' remote='${githubRemote}'); apply the same-box rig profile`,
     );
   }
-  if (potHome === PHASE_A_POT_HOME || repoKey === PHASE_A_REPO_KEY) {
+  if (potHome === PHASE_A_POT_HOME || gitSyncSlug === PHASE_A_POT_HOME || repoKey === PHASE_A_REPO_KEY) {
     throw new Error('a same-box drill target must not reuse the physical canary pot or repo');
   }
-  return { potHome, repoKey, githubRemote, diagnostic: true };
+  return { potHome, repoKey, githubRemote, gitSyncSlug, diagnostic: true };
 }
 
 export type PhysicalDrillHost = 'tower' | 'vm';
-/** Both hosts' git-sync install is the target pot slug (see physicalDrillGitSyncSlug). */
+/** The install that owns git-sync for the target repo (see physicalDrillGitSyncSlug). */
 export type PhysicalDrillGitSyncSlug = string;
 
 /**
- * The install that owns system:git-sync for the fixed pot on each host. Both
- * are the pot slug today: the tower is the pot's owner (self_repo home), and the
- * VM's link join registers the same repo under the same slug. Kept as a function
- * so a future per-host divergence stays a one-line change.
+ * The install that owns system:git-sync for the target repo on each host. On the
+ * physical rig both are the canary pot slug: the tower is the pot's owner (self_repo
+ * home), and the VM's link join registers the same repo under the same slug. On the
+ * same-box rig both are the pot's member checkout (PhysicalDrillTarget.gitSyncSlug).
+ * Kept as a function so a future per-host divergence stays a one-line change.
  */
 export function physicalDrillGitSyncSlug(host: PhysicalDrillHost): PhysicalDrillGitSyncSlug {
   const target = physicalDrillTarget();
-  if (target.diagnostic) return target.potHome;
+  if (target.diagnostic) return target.gitSyncSlug;
   return host === 'tower' ? PHASE_A_TOWER_GIT_SYNC_SLUG : PHASE_A_VM_GIT_SYNC_SLUG;
 }
 
