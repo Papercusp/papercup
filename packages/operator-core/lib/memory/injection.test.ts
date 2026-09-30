@@ -27,6 +27,25 @@ vi.mock('./backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
 
+// portable-identity-packages P-007: the session wearer's applied pack pins,
+// driven per-test via `packPins.resolve`. Unset (the default) calls the REAL
+// resolver, so every test that does not set it runs exactly as before.
+const packPins = vi.hoisted(() => ({
+  resolve: null as null | ((input: { workspaceId: string; ownerId: string | null | undefined }) => Promise<ReadonlySet<string>>),
+  calls: [] as Array<{ workspaceId: string; ownerId: string | null | undefined }>,
+}));
+vi.mock('../blueprint/package-memory-visibility', async (orig) => {
+  const actual = await orig<typeof import('../blueprint/package-memory-visibility')>();
+  return {
+    ...actual,
+    wearerPackageResourcesOrEmpty: (...args: Parameters<typeof actual.wearerPackageResourcesOrEmpty>) => {
+      if (!packPins.resolve) return actual.wearerPackageResourcesOrEmpty(...args);
+      packPins.calls.push(args[1]);
+      return packPins.resolve(args[1]);
+    },
+  };
+});
+
 // P-026: the push-path recall telemetry is fire-and-forget behind a dynamic
 // import; mocking it lets the wiring be asserted (see the P-026 describe below).
 const recordRecallStatsMock = vi.hoisted(() => vi.fn(async (_sql: unknown, _input: unknown) => {}));
@@ -210,6 +229,8 @@ beforeEach(() => {
   registryProjects = [];
   corpusIoResult = null;
   coverageReport = null;
+  packPins.resolve = null;
+  packPins.calls = [];
   _resetForTests();
   _resetCorpusLegHealthForTests();
 });
@@ -2118,5 +2139,59 @@ describe('coverage-gated degradation reaches the block (P-003)', () => {
     const block = await run();
     expect(block).toContain('- [work-item WI-6512] a pointer');
     expect(block).toContain('DEGRADED');
+  });
+});
+
+/**
+ * portable-identity-packages P-007 / D-021 — the turn-start push path takes the
+ * package visibility path. The eligibility SQL and hit shaping are proven against
+ * the real canonical store in blueprint/package-memory-visibility.integration.test.ts;
+ * these pin that injection ROUTES through them: the session wearer's applied pins
+ * reach the one multi-scope search as `archivedEligibility`, and pack hits are
+ * deduped to one copy per item (the pinned exact version) before rendering.
+ */
+describe('identity-package eligibility on the push path (P-007)', () => {
+  const ORGANIC = { id: '22222222-2222-4222-8222-222222222222', text: 'organic visibility note' };
+  const packRow = (version: string, id: string) => ({
+    id, text: `visibility pack note ${version}`,
+    metadata: { source: 'pack', pack_id: 'visibility-pack', pack_item_id: 'shared', pack_version: version,
+      identity_package_resource: `res-${version}` },
+  });
+
+  it("passes the session wearer's applied pins to the search and keeps only the pinned copy of an item", async () => {
+    packPins.resolve = async () => new Set(['res-1.0.0']);
+    // A promoted 2.0.0 copy of the same item is pool-wide; the wearer's pinned
+    // 1.0.0 row must win the (pack_id, pack_item_id) dedupe.
+    const backend = mockBackend([ORGANIC, packRow('2.0.0', '33333333-3333-4333-8333-333333333333'),
+      packRow('1.0.0', '44444444-4444-4444-8444-444444444444')]);
+    useBackend(backend);
+
+    const block = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'visibility pack note',
+      harnessSlugs: ['papercusp'], potSlugs: [],
+      session: { sessionId: 'wearer-a', port: 'turn-start' },
+    });
+
+    expect(packPins.calls).toEqual([{ workspaceId: 'ws', ownerId: 'wearer-a' }]);
+    expect(backend.search.mock.calls[0][1]).toMatchObject({
+      archivedEligibility: { key: 'identity_package_resource', values: ['res-1.0.0'] } });
+    expect(block).toContain('organic visibility note');
+    expect(block).toContain('visibility pack note 1.0.0');
+    expect(block).not.toContain('visibility pack note 2.0.0');
+  });
+
+  it('resolves no pins and requests no archived rows without a session wearer', async () => {
+    packPins.resolve = async () => new Set(['res-1.0.0']);
+    const backend = mockBackend([ORGANIC]);
+    useBackend(backend);
+
+    const block = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'visibility pack note',
+      harnessSlugs: ['papercusp'], potSlugs: [],
+    });
+
+    expect(block).toContain('organic visibility note');
+    expect(packPins.calls).toEqual([]);
+    expect(backend.search.mock.calls[0][1]).not.toHaveProperty('archivedEligibility');
   });
 });

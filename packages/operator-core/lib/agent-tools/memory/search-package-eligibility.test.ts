@@ -30,6 +30,18 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 vi.mock('../../memory/configure', () => ({
   isOpenAiEmbedInCooldown: vi.fn(() => false),
 }));
+// The real getOrgPg() throws without an org DB, which lands in the tool's
+// fail-closed catch BEFORE the pin resolver runs, so an unmocked run proves
+// nothing about the wearer path. The handle only has to exist; the pin
+// resolver below never queries it, and any other query fails as before.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: () => { throw new Error('no org pg in this unit test'); } }),
+}));
+vi.mock('../../memory/recall-stats', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../memory/recall-stats')>()),
+  recordRecallStats: async () => {},
+}));
 
 // The wearer and its pins are the two inputs under test; everything else in
 // the visibility module (eligibility fragment, hit shaping) stays REAL.
