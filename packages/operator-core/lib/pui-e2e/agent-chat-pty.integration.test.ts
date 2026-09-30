@@ -373,14 +373,19 @@ vi.mock('../su-session-claude-engine', async (original) => {
                   scriptedEngine.questionVerdicts.push(verdict ?? { behavior: 'no-permission-callback' });
                   const directAnswers = verdict && 'updatedInput' in verdict
                     ? (verdict.updatedInput as { answers?: Record<string, string> } | undefined)?.answers ?? {} : {};
-                  const wrappedAnswer = wrapped && verdict?.behavior === 'deny' && 'message' in verdict
-                    ? String(verdict.message ?? '') : '';
-                  const answerResult = wrapped ? wrappedAnswer : JSON.stringify(directAnswers);
+                  // A denied permission reaches the model the way the real SDK
+                  // sends it: an ERROR tool_result carrying the deny message.
+                  // That is what the wrapped question's answer rides on, and
+                  // what a skipped question (P-014) looks like to the PUI.
+                  const denied = verdict?.behavior === 'deny';
+                  const denyMessage = denied && 'message' in verdict ? String(verdict.message ?? '') : '';
+                  const answerResult = denied ? denyMessage : JSON.stringify(directAnswers);
                   // Only now does the turn finish: the owner's answer is what
                   // un-parks it, which is the half a test cannot see from the
                   // card events alone.
                   output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
-                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: answerResult },
+                    { type: 'tool_result', tool_use_id: scriptedEngine.questionCallId, content: answerResult,
+                      ...(denied ? { is_error: true } : {}) },
                   ] } });
                   output.write({ type: 'assistant', session_id: nativeId, message: { content: [
                     { type: 'text', text: scriptedEngine.successText },
@@ -4757,6 +4762,65 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
           cardEvents: scriptedEngine.events.filter((event) => event.type === 'card'),
         }),
       );
+      throw error;
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  // pui-chat-first-ux-2026-09-28 P-014. P-005 run 2 evidence: the agent
+  // answered "hi" with a question card; Esc rendered "SU-session tool failed /
+  // The PUI response was declined or cancelled". Skipping is a choice, not a
+  // fault: the row must read "skipped", no failure wording may reach the
+  // screen, and the model must be told plainly to carry on without asking again.
+  test.each([
+    { route: 'direct', mode: 'question' as const },
+    { route: 'wrapped', mode: 'wrapped-question' as const },
+  ])('P-014: Esc on a $route question card renders a neutral skipped row and the agent continues', async ({ mode }) => {
+    const tag = randomUUID().slice(0, 8);
+    scriptedEngine.mode = mode;
+    scriptedEngine.questionPrompt = `What would you like to work on ${tag}?`;
+    scriptedEngine.successText = `P14 continued without an answer ${tag}`;
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await openComposer(pane);
+      pane.write(`hi ${tag}`);
+      pane.enter();
+      await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(1), { timeout: 60_000, interval: 100 });
+      const card = pendingNativeCards()[0];
+      await pane.waitFor(scriptedEngine.questionPrompt, { timeoutMs: 30_000 });
+
+      // Skip it the way the owner did: Esc.
+      pane.escape();
+      await vi.waitFor(() => expect(scriptedEngine.questionVerdicts).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      const verdict = scriptedEngine.questionVerdicts[0];
+      expect(verdict.behavior, JSON.stringify(verdict)).toBe('deny');
+      expect(verdict.message).toMatch(/skipped this question/);
+      expect(verdict.message).toMatch(/do not ask the same question again/);
+      expect(verdict.message).not.toMatch(/declined or cancelled/);
+      const closed = scriptedEngine.events.find(
+        (event) => event.type === 'card' && event.phase === 'closed' && event.correlationId === card.correlationId,
+      );
+      expect(closed).toMatchObject({ resolution: 'declined' });
+
+      // The turn resumes, and the frame shows a neutral row for the question.
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('skipped', { timeoutMs: 10_000 });
+      const frame = pane.screen();
+      const skippedRow = frame.split('\n').find((line) => line.includes('⚙') && line.includes('skipped'));
+      expect(skippedRow, frame).toBeDefined();
+      expect(skippedRow, frame).not.toContain('✗');
+      expect(frame).not.toContain('SU-session tool failed');
+      expect(frame).not.toContain('declined or cancelled');
+      expect(frame).not.toContain('skipped this question');
+      console.info('PUI_P014_SKIP_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, route: mode, skippedRow, verdict: verdict.message, frame,
+      }));
+    } catch (error) {
+      console.info('PUI_P014_SKIP_FAILURE', JSON.stringify({
+        ...pane.failureEvidence(), cardReplies, verdicts: scriptedEngine.questionVerdicts,
+        cardEvents: scriptedEngine.events.filter((event) => event.type === 'card'),
+      }));
       throw error;
     } finally {
       await pane.stop().catch(() => {});

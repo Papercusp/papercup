@@ -3076,6 +3076,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     format!("  {} denied", crate::glyph::status::BLOCKED),
                     Theme::warn(),
                 ),
+                // P-014: a question the user chose not to answer. Neutral, not
+                // a warning and never the failure colour.
+                ToolOutcome::Skipped => (
+                    format!("  {} skipped", crate::glyph::status::DROPPED),
+                    Theme::dim(),
+                ),
             };
             // P-008: a readable name + target (`Update(calc.js)`,
             // `papercusp-su · work items claimable (MCP)`), never the wire id.
@@ -3541,6 +3547,10 @@ fn ctext_line_count(app: &App) -> u16 {
 fn card_block_height(app: &App, area: Rect) -> u16 {
     if !app.card_state.has_card() {
         return 0;
+    }
+    // P-015: an answered card is one row until the server closes it.
+    if app.card_state.focused_answered().is_some() {
+        return 1;
     }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
     let lines = card_lines(app, inner_w);
@@ -6180,6 +6190,12 @@ pub(crate) fn tool_detail_lines(
         if hidden > 0 {
             more(hidden, &mut out);
         }
+        return out;
+    }
+    // A skipped question's result is the note the MODEL was sent ("the user
+    // skipped this question…"); the user already knows they skipped it, so
+    // echoing it under the row only repeats the status (P-014).
+    if tc.outcome == crate::models::ToolOutcome::Skipped {
         return out;
     }
     let Some(text) = tc.result.as_ref().and_then(tool_result_text) else {
@@ -9348,6 +9364,41 @@ mod tests {
         let (tool, reply, headers) = rows(&text);
         assert!(tool < reply, "{text}");
         assert_eq!(headers, 1, "an unfocused follow-on block repeats no header:\n{text}");
+    }
+
+    /// pui-chat-first-ux-2026-09-28 P-014: a question the user skipped renders
+    /// as a neutral "skipped" row: no failure glyph, no failure wording, and not
+    /// the note the model was sent about the skip.
+    #[test]
+    fn chat_view_renders_a_skipped_question_as_skipped_not_failed() {
+        use crate::models::{ChatMessage, ChatToolCall};
+
+        let mut asked = ChatMessage::assistant("");
+        asked.tools.push(ChatToolCall {
+            name: "AskUserQuestion".into(),
+            id: Some("call-q".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({ "questions": [{
+                "question": "What would you like to work on?",
+                "options": [{ "label": "Tests" }] }] })),
+            result: Some(serde_json::json!(
+                "The user skipped this question without answering. This is not an error"
+            )),
+            outcome: ToolOutcome::Skipped,
+        });
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.set_chat_history(
+            "c1".into(),
+            vec![ChatMessage::user("hi"), asked],
+            false,
+            None,
+        );
+        let text = render(&app, 100, 30);
+        assert!(text.contains("· skipped"), "{text}");
+        assert!(!text.contains("✗"), "a skip must not render the failure glyph:\n{text}");
+        assert!(!text.contains("failed"), "{text}");
+        assert!(!text.contains("The user skipped this question"), "{text}");
     }
 
     #[test]

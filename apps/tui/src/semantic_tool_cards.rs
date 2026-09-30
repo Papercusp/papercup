@@ -276,6 +276,7 @@ fn completion_card(
         ToolOutcome::Ok => format!("Completed {id}"),
         ToolOutcome::Failed(_) => format!("Completion failed · {id}"),
         ToolOutcome::Denied => format!("Completion denied · {id}"),
+        ToolOutcome::Skipped => format!("Completion skipped · {id}"),
         ToolOutcome::Pending => format!("Completing {id}"),
     };
     let mut rows = Vec::new();

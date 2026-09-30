@@ -130,7 +130,10 @@ describe('native requests through the shared PUI card correlator', () => {
       expect(f.events.at(-1)).toMatchObject({ type: 'card', phase: 'closed', resolution: 'declined' });
       _resetCardCorrelatorForTests();
     }
-    expect(SKIPPED_QUESTION_MESSAGE).not.toMatch(/fail|error:|declined or cancelled/i);
+    // It may say what a skip is NOT ("not an error"); it must not carry the
+    // failure wording P-005 showed the owner.
+    expect(SKIPPED_QUESTION_MESSAGE).not.toMatch(/fail|declined or cancelled/i);
+    expect(SKIPPED_QUESTION_MESSAGE).toMatch(/not an error/);
   });
 
   it('keeps the interrupt denial distinct from a skip', async () => {

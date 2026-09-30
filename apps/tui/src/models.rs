@@ -2750,12 +2750,16 @@ pub struct ToolPaletteRecipe {
 /// `Denied` is deliberately distinct from `Failed`: the tool did not run and
 /// nothing went wrong, the operator said no, and a card that renders a refusal
 /// as an error teaches the user to distrust their own decisions.
+/// `Skipped` is the same rule for a question: the agent asked, the user chose
+/// not to answer (Esc on the question card), and that is a choice, not a fault
+/// (pui-chat-first-ux P-014).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolOutcome {
     Pending,
     Ok,
     Failed(String),
     Denied,
+    Skipped,
 }
 
 /// A tool the operator called mid-turn — rendered as a card under its message.

@@ -171,6 +171,7 @@ impl ChangeCard {
         match &self.outcome {
             ToolOutcome::Failed(_) => t.push_str(" · FAILED"),
             ToolOutcome::Denied => t.push_str(" · DENIED"),
+            ToolOutcome::Skipped => t.push_str(" · skipped"),
             ToolOutcome::Pending => t.push_str(" · pending"),
             ToolOutcome::Ok => {}
         }
