@@ -22,7 +22,21 @@ export const PINNED_PACK_BOOST = 1.15;
 export async function resolveWearerPackageResources(sql: Sql, input: {
   workspaceId: string; ownerId: string;
 }): Promise<ReadonlySet<string>> {
-  if (!input.workspaceId.trim() || !input.ownerId.trim()) return new Set();
+  return new Set(await appliedResourceKeys(sql, input, 'memory'));
+}
+
+/** P-009 / D-022: the doc-part keys of this owner's APPLIED installations —
+ * its `package:<key>` guide tokens. The same exact-version selection as
+ * memory, so a non-wearer holds no token and can reach no part. Sorted. */
+export async function resolveWearerPackageDocKeys(sql: Sql, input: {
+  workspaceId: string; ownerId: string;
+}): Promise<string[]> {
+  return appliedResourceKeys(sql, input, 'doc-part');
+}
+
+async function appliedResourceKeys(sql: Sql, input: { workspaceId: string; ownerId: string },
+  resourceKind: 'memory' | 'doc-part'): Promise<string[]> {
+  if (!input.workspaceId.trim() || !input.ownerId.trim()) return [];
   const rows = await sql<Array<{ resource_key: string }>>`
     SELECT DISTINCT d.resource_key
       FROM harness_shared.blueprint_package_installations i
@@ -30,8 +44,9 @@ export async function resolveWearerPackageResources(sql: Sql, input: {
       JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
      WHERE i.workspace_id = ${input.workspaceId} AND i.owner_id = ${input.ownerId}
        AND i.phase = 'applied' AND d.phase = 'applied'
-       AND r.phase = 'ready' AND r.resource_kind = 'memory'`;
-  return new Set(rows.map((row) => row.resource_key));
+       AND r.phase = 'ready' AND r.resource_kind = ${resourceKind}
+     ORDER BY d.resource_key`;
+  return rows.map((row) => row.resource_key);
 }
 
 /** Fail closed: a resolver error makes no pack row eligible and leaves

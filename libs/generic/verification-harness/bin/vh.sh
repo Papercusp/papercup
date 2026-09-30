@@ -53,6 +53,9 @@
 # block the harness it instruments. VH_KEEP_RUNS bounds the retained run dirs (default 30).
 
 VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# vh_converge: wait for a cross-host observation to converge instead of reading it once.
+# shellcheck source=converge.sh
+source "$VH_LIB_DIR/bin/converge.sh"
 declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=()
 declare -gA VH_DEPS=() VH_REUSABLE=() VH_ACTION=() VH_REUSE_FROM=() VH_STATUS=()
 VH_PREFLIGHT_FAILED=0

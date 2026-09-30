@@ -8,6 +8,7 @@ import { blueprintPackageProvisioners, provisionBlueprintPackages } from './comp
 import { planKnowledgePackageResources, releasePackageInstallation } from './package-knowledge-resources';
 import { planRecipePackageResource } from './package-recipe-resources';
 import { planKnowledgeDocResources } from './package-doc-resources';
+import { resolveWearerPackageDocKeys } from './package-memory-visibility';
 
 /** Package kinds whose rows the installation journal owns. Rubrics are
  * immutable seeds and stay outside it. */
@@ -230,6 +231,43 @@ export async function applySessionPackageResources(tx: TransactionSql, input: {
   const superseded = await fenceSessionPackages(tx, input.ownerId, input.workspaceId, dependentId);
   await applyPackageResourceDependent(tx, input.workspaceId, dependentId, expected);
   return { superseded };
+}
+
+/** P-009 / D-022: the pack-doc keys the wearer holds once `revision` applies —
+ * the SAME decision applySessionPackageResources makes, read-only, so the
+ * turn-start channel can deliver the parts before the next turn acknowledges
+ * the activation. A legacy record (no artifact) or an unprovisioned revision
+ * keeps the applied pins; an identity that wears no journaled package here
+ * holds none. Sorted. */
+export async function sessionPackageDocKeysForRevision(sql: Sql, input: {
+  ownerId: string;
+  workspaceId: string;
+  revision: SessionActivation['desired'];
+  artifact: CompiledAgentSpecification | null;
+}): Promise<string[]> {
+  const applied = () => resolveWearerPackageDocKeys(sql, input);
+  if (!input.artifact) return applied();
+  const artifact = replayAgentSpecification(input.artifact);
+  if (artifact.specificationRevision !== input.revision.specificationRevision) {
+    throw new Error('package activation artifact revision mismatch');
+  }
+  if (!journaledPackages(artifact) || !(await expectedPackageResources(artifact, input.workspaceId)).has(input.workspaceId)) {
+    return [];
+  }
+  const rows = await sql<Array<{ resource_key: string | null }>>`
+    SELECT r.resource_key
+      FROM harness_shared.blueprint_package_installations i
+      LEFT JOIN LATERAL jsonb_object_keys(i.expected_resources) AS k(resource_key) ON true
+      LEFT JOIN harness_shared.blueprint_package_resources r
+        ON r.workspace_id = i.workspace_id AND r.resource_key = k.resource_key
+       AND r.resource_kind = 'doc-part' AND r.phase = 'ready'
+     WHERE i.workspace_id = ${input.workspaceId} AND i.owner_id = ${input.ownerId}
+       AND i.specification_revision = ${input.revision.specificationRevision}
+       AND i.state_revision = ${input.revision.stateRevision}
+       AND i.phase IN ('preparing', 'applied')`;
+  // No live installation: never provisioned, so the prior applied pins keep covering.
+  if (!rows.length) return applied();
+  return [...new Set(rows.flatMap((row) => row.resource_key ? [row.resource_key] : []))].sort();
 }
 
 /** External cleanup for fences that already COMMITTED. Resume-only: an

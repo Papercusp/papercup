@@ -205,4 +205,23 @@ describe('public target — append-only history', () => {
     expect(remoteGit(['merge-base', '--is-ancestor', contributed, 'main']) ).toBe('');
     expect(spawnSync('git', ['--git-dir', bare, 'cat-file', '-e', 'main:CONTRIBUTED.md']).status).not.toBe(0);
   }, 180_000);
+
+  it('refuses to append onto a repository whose main is not export lineage, even as a dry run (D-016)', async () => {
+    // e.g. the private library repo that happened to own the public name.
+    const foreignBare = join(tmp, 'foreign.git');
+    spawnSync('git', ['init', '-q', '--bare', '-b', 'main', foreignBare]);
+    const seed = join(tmp, 'foreign-seed');
+    spawnSync('git', ['clone', '-q', `file://${foreignBare}`, seed]);
+    write(seed, 'lib.ts', 'export const privateLib = 1;\n');
+    git(seed, ['add', 'lib.ts']);
+    git(seed, ['-c', 'user.name=l', '-c', 'user.email=l@example.invalid', 'commit', '-q', '-m', 'library history']);
+    git(seed, ['push', '-q', 'origin', 'HEAD:main']);
+    const foreign = `file://${foreignBare}`;
+    const head = spawnSync('git', ['--git-dir', foreignBare, 'rev-parse', 'main'], { encoding: 'utf8' }).stdout.trim();
+
+    for (const confirm of [false, true]) {
+      await expect(pushSnapshot(opts({ remote: foreign, confirm, gate: passing }))).rejects.toThrow(/not an export commit/);
+    }
+    expect(spawnSync('git', ['--git-dir', foreignBare, 'rev-parse', 'main'], { encoding: 'utf8' }).stdout.trim()).toBe(head);
+  }, 180_000);
 });

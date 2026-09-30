@@ -378,6 +378,31 @@ describe('THIRD-PARTY-NOTICES (P-017 step 5)', () => {
     expect(text).toContain('Elastic License 2.0');
   });
 
+  it('lists installer components with their obligations and a written source offer for GPL/LGPL ones (P-015)', () => {
+    const text = renderThirdPartyNotices({}, {
+      installerComponents: [
+        { name: 'Zeta tool', license: 'MIT' },
+        { name: 'Runtime libs', license: 'LGPL-2.1-or-later', obligations: 'Ship the LGPL text.' },
+        { name: 'psql', license: 'PostgreSQL AND GPL-3.0-or-later', obligations: 'Offer readline source.' },
+      ],
+      sourceOfferRepo: 'Acme/app',
+    });
+    expect(text).toContain('## Components shipped in the desktop installers (3)');
+    expect(text).toContain('### Runtime libs\n\nLicense: LGPL-2.1-or-later\n\nShip the LGPL text.');
+    expect(text.indexOf('### Runtime libs')).toBeLessThan(text.indexOf('### Zeta tool'));
+    const offer = text.slice(text.indexOf('## Written offer for corresponding source'));
+    expect(offer).toContain('- Runtime libs');
+    expect(offer).toContain('- psql');
+    expect(offer).not.toContain('Zeta tool');
+    expect(offer).toContain('https://github.com/Acme/app/issues');
+  });
+
+  it('adds no installer or source-offer section when there are no installer components', () => {
+    const text = renderThirdPartyNotices({ npm: [{ name: 'a', version: '1', effective: 'MIT', tier: TIER.PERMISSIVE }] });
+    expect(text).not.toContain('desktop installers');
+    expect(text).not.toContain('Written offer');
+  });
+
   it('omits an ecosystem with no packages', () => {
     expect(renderThirdPartyNotices({ npm: [{ name: 'a', version: '1', effective: 'MIT', tier: TIER.PERMISSIVE }] }))
       .not.toContain('Rust crates');

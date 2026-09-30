@@ -586,7 +586,7 @@ export const NOTICES_FILE = 'THIRD-PARTY-NOTICES.md';
  * @param {{ npm?: Array<{name:string,version:string,effective:string,tier:number}>, cargo?: Array<{name:string,version:string,effective:string,tier:number}> }} rowsByEco
  * @param {{ installerComponents?: Array<{ name: string, license?: string, allow?: boolean, obligations?: string }>, sourceOfferRepo?: string }} [opts]
  */
-export function renderThirdPartyNotices(rowsByEco, { installerComponents = [], sourceOfferRepo = 'Papercusp/papercusp' } = {}) {
+export function renderThirdPartyNotices(rowsByEco, { installerComponents = [], sourceOfferRepo = 'Papercusp/papercusp-app' } = {}) {
   const lines = [
     '# Third-party notices',
     '',

@@ -294,7 +294,7 @@ export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confi
 }>;
 export const ROOT: string;
 export const PREVIEW_REPO: "Papercusp/papercusp-preview";
-export const PUBLIC_REPO: "Papercusp/papercusp";
+export const PUBLIC_REPO: "Papercusp/papercusp-app";
 export const SOURCE_REPO: "Papercusp/papercup";
 export const DEFAULT_REMOTE: "https://github.com/Papercusp/papercusp-preview.git";
 export const DEFAULT_REF: "main";

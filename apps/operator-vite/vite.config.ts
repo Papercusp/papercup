@@ -6,6 +6,7 @@ import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } f
 import { devDistPrunePlugin, shouldRetainDistChunks } from './dev-dist-prune';
 import { distAtomicWritesPlugin } from './dist-atomic-writes';
 import { distWipeGuardPlugin } from './dist-wipe-guard';
+import { flagsBootstrapPlugin } from './flags-bootstrap';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 import { createDevWatchIgnore } from './dev-watch-ignore';
@@ -101,33 +102,8 @@ const initialLazyStylesheetFilterPlugin: Plugin = {
   },
 };
 
-// Dev-only: seed `window.__PAPERCUSP_FLAGS__` into the served index.html so
-// the SPA paints with real flag state on first load instead of FLAG_DEFAULTS
-// — the same flash the built desktop avoids by injecting the seed in the Hono
-// SPA host (apps/operator/bin/host-spa.ts). In dev the Vite server (:3055) is
-// a SEPARATE process from the Hono host (:3070) that owns the flag backend, so
-// calling getAllFlags() here would see an uninitialized backend and always
-// return defaults. Instead we fetch the exact payload the client would
-// (/api/flags/bootstrap on :3070, the same endpoint the proxy forwards to) and
-// inline it. Best-effort: if the host isn't up yet, inject nothing and let the
-// client bootstrap flags asynchronously (the pre-existing dev behavior).
-const flagsBootstrapPlugin: Plugin = {
-  name: 'papercusp-flags-bootstrap',
-  transformIndexHtml: {
-    order: 'pre',
-    async handler(html) {
-      try {
-        const res = await fetch('http://127.0.0.1:3070/api/flags/bootstrap');
-        if (!res.ok) return html;
-        const payload = await res.json();
-        const seed = `<script>window.__PAPERCUSP_FLAGS__=${JSON.stringify(payload)};</script>`;
-        return html.includes('<head>') ? html.replace('<head>', `<head>${seed}`) : seed + html;
-      } catch {
-        return html;
-      }
-    },
-  },
-};
+// flagsBootstrapPlugin (./flags-bootstrap) seeds dev-server flags. It is
+// `apply: 'serve'`, so a built index.html carries no seed (WI-10004079).
 
 export default defineConfig({
   // Static assets (wordmark.svg, mascot.svg, the Oracle/header icons,

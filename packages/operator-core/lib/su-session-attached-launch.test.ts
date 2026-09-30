@@ -24,7 +24,8 @@ vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
 vi.mock('./harness-registry', () => ({ loadHarnessRegistry: mocks.registry }));
-import { claudeEngineIdentityForCwd, launchAttachedSuSession } from './su-session-attached-launch';
+import { LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
+  launchStageTracer } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
 const input = { agent: 'claude', agent_chat_id: 'chat', harness_slug: 'project', account: 'default', carry: 'warm' as const };
@@ -116,9 +117,14 @@ describe('attached launch authority', () => {
   it('does not conceal a lost executor by creating another session', async () => {
     mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18 });
     mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false, descriptor: { lifecycle: 'ready' } }) });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const response = await launchAttachedSuSession(request(), input);
     expect(response.status).toBe(503);
     expect((await response.json()).error).toMatch(/Reconnect|reconnect/);
+    // The bounded wait for the previous engine's exit is slow on purpose; the
+    // launch tracer names it rather than leaving the delay unexplained.
+    expect(warn.mock.calls.flat().join('\n')).toMatch(/\[su-launch\] .* stage=read-durable-session took \d+ms/);
+    warn.mockRestore();
     expect(mocks.bootstrap).not.toHaveBeenCalled();
     expect(mocks.engine).not.toHaveBeenCalled();
   });
@@ -351,5 +357,37 @@ describe('attached launch authority', () => {
     expect(response.status).toBe(200);
     expect(await (mocks.bootstrap.mock.calls[0][0] as Request).json()).toMatchObject({ model: expected });
     expect(mocks.engine.mock.calls[0][3].model).toBe(expected);
+  });
+});
+
+describe('launch stage tracer (a stalled launch names its step)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('reports the step a launch is stuck in once the stall deadline passes', () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    trace.stage('read-durable-session');
+    trace.stage('bootstrap');
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS - 1);
+    expect(lines).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[su-launch\] ws:h:chat not finished after \d+ms; stalled in stage=bootstrap for \d+ms$/);
+    trace.end();
+  });
+
+  it('reports slow finished steps with their duration and stays quiet for fast ones', () => {
+    vi.useFakeTimers();
+    const lines: string[] = [];
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    vi.advanceTimersByTime(10);
+    trace.stage('bootstrap');
+    vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS);
+    trace.stage('engine-start');
+    trace.end();
+    // The stall report never fires after end(), however long the process lives.
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS * 2);
+    expect(lines).toEqual([`[su-launch] ws:h:chat stage=bootstrap took ${SLOW_LAUNCH_STAGE_MS}ms`]);
   });
 });

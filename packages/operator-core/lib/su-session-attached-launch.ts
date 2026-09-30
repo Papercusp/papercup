@@ -127,6 +127,43 @@ export interface AttachedSuLaunchInput {
   cwd?: string | null;
 }
 
+/** How long one launch may run before it reports the step it is stuck in. */
+export const LAUNCH_STALL_REPORT_MS = 15_000;
+/** A finished step at least this slow is reported with its duration. */
+export const SLOW_LAUNCH_STAGE_MS = 5_000;
+
+export interface LaunchStageTracer {
+  /** Enter the next named step, reporting the previous one if it was slow. */
+  stage(next: string): void;
+  /** The launch settled: report a slow final step and stop the stall report. */
+  end(): void;
+}
+
+/**
+ * A PUI launch that never finishes must say WHICH step it stalled in. The PUI
+ * only sees "SU launch did not finish", and without this the stall left no
+ * server-side evidence at all (pui-chat-first-ux P-007, 2026-09-30).
+ */
+export function launchStageTracer(
+  key: string,
+  log: (line: string) => void = (line) => console.warn(line),
+  now: () => number = Date.now,
+): LaunchStageTracer {
+  const startedAt = now();
+  let stage = 'read-chat';
+  let stageAt = startedAt;
+  const stall = setTimeout(() => {
+    log(`[su-launch] ${key} not finished after ${now() - startedAt}ms; stalled in stage=${stage} for ${now() - stageAt}ms`);
+  }, LAUNCH_STALL_REPORT_MS);
+  stall.unref?.();
+  const close = (next: string | null) => {
+    const at = now();
+    if (at - stageAt >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${at - stageAt}ms`);
+    if (next !== null) { stage = next; stageAt = at; }
+  };
+  return { stage: (next) => close(next), end: () => { close(null); clearTimeout(stall); } };
+}
+
 export async function launchAttachedSuSession(request: Request, input: AttachedSuLaunchInput): Promise<Response> {
   if (!['claude', 'codex', 'omp'].includes(input.agent)) {
     return Response.json({ status: 'error', code: 'attached_engine_unavailable', error: `The ${input.agent} engine does not support PUI's structured connection.` }, { status: 409 });
@@ -134,10 +171,15 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
   const workspaceId = activeWorkspaceId();
   const key = `${workspaceId}:${input.harness_slug}:${input.agent_chat_id}`;
   let start = state.starting.get(key);
+  let trace: LaunchStageTracer | null = null;
   if (!start) {
+    trace = launchStageTracer(key);
     start = create();
     state.starting.set(key, start);
-    void start.finally(() => { if (state.starting.get(key) === start) state.starting.delete(key); }).catch(() => undefined);
+    void start.finally(() => {
+      trace?.end();
+      if (state.starting.get(key) === start) state.starting.delete(key);
+    }).catch(() => undefined);
   }
   try { return Response.json(await start); }
   catch (error) {
@@ -148,6 +190,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
     const chat = await getChat({ slug: input.harness_slug, chatId: input.agent_chat_id });
     if (!chat.ok) throw new Error(chat.error);
     if (chat.data.archived_at) throw new Error('This conversation is archived; restore it before connecting');
+    trace?.stage('read-durable-session');
     if (chat.data.su_runtime_class !== 'su-session') throw new Error('This conversation is not classified as an SU session; its existing history was preserved');
     const previous = await readDurableSuSession({ workspaceId, agentChatId: input.agent_chat_id });
     if (previous) {
@@ -161,6 +204,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         if (state.engines.has(key) && !await previousEngineExited(key, 10_000)) {
           throw new Error('The previous native process is still closing; reconnect after it exits');
         }
+        trace?.stage('resume');
         const restored = host ?? await rehydrateRegisteredSuSessionHost({ workspaceId,
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
@@ -235,6 +279,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         nativeSession: existingEngine && 'nativeSession' in existingEngine ? existingEngine.nativeSession()
           : row ? nativeSessionHandleForAdvSession(row) : null };
     }
+    trace?.stage('bootstrap');
     const { bootstrapSu } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     // PUI owns the visible model picker. Its "server default" choice has the
     // same authority as the PSU picker, even though the native engine has no
@@ -284,6 +329,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         exactResumeSupported: true as const, missingReason: null,
       } : null;
       binding.nativeSession = nativeSession;
+      trace?.stage('bind');
       const bound = await bindSuSessionToAdvSession({ workspaceId, advSessionId: result.sessionId, agentChatId: input.agent_chat_id });
       if (bound.status !== 'bound' && bound.status !== 'already_bound') throw new Error('Could not bind the SU session to this conversation');
       const options = {
@@ -296,12 +342,14 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
         toolApproval: 'prompt' as const,
       };
+      trace?.stage('engine-start');
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
           { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
           { ...options, identity: await claudeEngineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
       state.engines.set(key, engine);
+      trace?.stage('persist-descriptor');
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
       const active = engine;
       // Launch publishes the durable identity; the existing host stream owns

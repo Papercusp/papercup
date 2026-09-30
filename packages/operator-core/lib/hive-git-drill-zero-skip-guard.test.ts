@@ -902,7 +902,14 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain(
       "PAPERCUSP_IDENTITY_DIR='$VM_IDENTITY_DIR' '$VM_NODE' '$VM_TSX' '$VM_PRODUCER' sign '$remote_unsigned' vm '$VM_CACHE'",
     );
-    expect(physicalProbe).not.toContain('PCUSP_VM_SSH');
+    // The probe's VM target is the hardcoded VM= above and must never be env-overridable,
+    // so the probe never READS PCUSP_VM_SSH. Its one legitimate use is handing that
+    // hardcoded target to the rig-preflight producer mode as child env (P-003,
+    // physical-drill-iteration-speed): every occurrence must be exactly that assignment.
+    expect(physicalProbe).not.toMatch(/\$\{?PCUSP_VM_SSH/);
+    for (const use of physicalProbe.matchAll(/PCUSP_VM_SSH\S*/g)) {
+      expect(use[0]).toBe('PCUSP_VM_SSH="$VM"');
+    }
     expect(physicalProbe).not.toContain('PCUSP_VM_PHYSICAL_PRODUCER');
     expect(physicalProbe).toContain('staged VM physical-drill producer does not match the pinned tower snapshot');
     expect(physicalProbe).toContain('tower identity command produced no JSON');

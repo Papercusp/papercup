@@ -32,7 +32,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { projectGuideAtBudget } from '../prompt-assembly';
-import { guideAddressesForWearer, guideAddressMatches, type GuideWearer, type GuideWearerLayer } from './guide-address';
+import { guideAddressesForWearer, guideAddressMatches, isPackageGuideAddress, type GuideWearer, type GuideWearerLayer } from './guide-address';
 
 /**
  * The projector's enforced budget (`PROJECTION_BUDGET_CHARS` in project-doc-parts.mjs),
@@ -69,21 +69,25 @@ export interface ReadAddressedGuidePartsInput {
  * The live, projecting parts addressed to any of `tokens` for this client, in the
  * projector's read order (ordinal, then part_key). The predicate is exactly
  * `partTargetsClient && partReachesAudience` from the projector, expressed in SQL so the
- * partial GIN index on `stack_scope` (migration 1104) serves it.
+ * partial GIN index on `stack_scope` (migration 1104) serves it. A `package:` token names
+ * one workspace-unique installed resource (P-009 / D-022), so it matches in whichever
+ * harness the package installed its part; every other kind stays per guide harness.
  */
 export async function readAddressedGuideParts(input: ReadAddressedGuidePartsInput): Promise<AddressedGuidePart[]> {
   if (input.tokens.length === 0) return [];
+  const packageTokens = input.tokens.filter(isPackageGuideAddress);
+  const harnessTokens = input.tokens.filter((t) => !isPackageGuideAddress(t));
   const s = input.sql ?? getOrgPg().sql;
   const rows = (await s.unsafe(
     `SELECT part_key, body, ordinal, target_section, stack_scope
        FROM harness_shared.harness_doc_parts
-      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
+      WHERE workspace_id = $1 AND doc_id = $3
         AND tombstone = false
         AND cardinality(stack_scope) > 0
-        AND stack_scope && $4::text[]
+        AND ((harness_slug = $2 AND stack_scope && $4::text[]) OR stack_scope && $6::text[])
         AND client_scope && $5::text[]
       ORDER BY ordinal, part_key`,
-    [input.workspaceId, input.harnessSlug, input.docId ?? 'claude-md', [...input.tokens], [input.client, 'all']],
+    [input.workspaceId, input.harnessSlug, input.docId ?? 'claude-md', harnessTokens, [input.client, 'all'], packageTokens],
   )) as unknown as AddressedGuidePart[];
   return rows;
 }
