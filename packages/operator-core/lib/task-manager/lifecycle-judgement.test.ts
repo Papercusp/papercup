@@ -150,6 +150,7 @@ describe('evaluateLifecycleCandidates', () => {
       logPath: null,
       logMtimeMs: null,
       cpuUsec: 100,
+      cpuSampledAtMs: NOW - LIFECYCLE_IDLE_QUIET_MS - 1,
       lastActivityAtMs: NOW - LIFECYCLE_IDLE_QUIET_MS - 1,
     };
     const active = evaluate({
@@ -164,6 +165,93 @@ describe('evaluateLifecycleCandidates', () => {
       launchers: [['su-launcher', 'live']],
     });
     expect(unmeasured.candidates).toEqual([]);
+  });
+
+  it('labels unaccounted cgroup CPU as unknown, idle, or active from timestamped samples', () => {
+    const taskId = 'unaccounted-cpu';
+    const firstAt = NOW - 120_000;
+    const first = evaluate({
+      rows: [row({
+        taskId,
+        rootTaskId: taskId,
+        state: 'unaccounted',
+        logPath: null,
+        cpuUsec: 100,
+        lastSeenAt: new Date(firstAt).toISOString(),
+      })],
+      residue: [taskId],
+      nowMs: NOW,
+    });
+    const baseline = first.probeUpdates[0]!.probe;
+    expect(baseline.cpuSampledAtMs).toBe(firstAt);
+    expect(first.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'unknown',
+      previous: null,
+      current: { cpuUsec: 100, sampledAtMs: firstAt },
+    });
+
+    const idleAt = NOW;
+    const idle = evaluate({
+      rows: [row({
+        taskId,
+        rootTaskId: taskId,
+        state: 'unaccounted',
+        logPath: null,
+        cpuUsec: 100,
+        lastSeenAt: new Date(idleAt).toISOString(),
+        detail: { processLifecycleProbe: baseline },
+      })],
+      residue: [taskId],
+      nowMs: idleAt,
+    });
+    expect(idle.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'idle',
+      previous: { cpuUsec: 100, sampledAtMs: firstAt },
+      current: { cpuUsec: 100, sampledAtMs: idleAt },
+    });
+    expect(idle.probeUpdates).toEqual([]);
+
+    const activeAt = NOW + 120_000;
+    const active = evaluate({
+      rows: [row({
+        taskId,
+        rootTaskId: taskId,
+        state: 'unaccounted',
+        logPath: null,
+        cpuUsec: 101,
+        lastSeenAt: new Date(activeAt).toISOString(),
+        detail: { processLifecycleProbe: baseline },
+      })],
+      residue: [taskId],
+      nowMs: activeAt,
+    });
+    expect(active.candidates[0]!.metrics.cpuActivity).toEqual({
+      state: 'active',
+      previous: { cpuUsec: 100, sampledAtMs: firstAt },
+      current: { cpuUsec: 101, sampledAtMs: activeAt },
+    });
+    expect(active.probeUpdates[0]!.probe).toMatchObject({
+      cpuUsec: 101,
+      cpuSampledAtMs: activeAt,
+      lastActivityAtMs: activeAt,
+    });
+
+    const unknownAt = activeAt + 120_000;
+    const unknown = evaluate({
+      rows: [row({
+        taskId,
+        rootTaskId: taskId,
+        state: 'unaccounted',
+        logPath: null,
+        cpuUsec: null,
+        lastSeenAt: new Date(unknownAt).toISOString(),
+        detail: { processLifecycleProbe: active.probeUpdates[0]!.probe },
+      })],
+      residue: [taskId],
+      nowMs: unknownAt,
+    });
+    expect(unknown.candidates[0]!.metrics.cpuActivity.state).toBe('unknown');
+    expect(unknown.probeUpdates[0]!.probe).toMatchObject({ cpuUsec: null, cpuSampledAtMs: null });
   });
 
   it('selects only confirmed unaccounted/terminal residue and honors the terminal grace', () => {
@@ -226,6 +314,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(summary).toContain('live.exactScopeUnitMatches');
     expect(summary).toContain('taskId-filtered read cannot prove absence');
     expect(summary).toContain('known-present positive control');
+    expect(summary).toContain('Timestamped cgroup CPU activity');
 
     const escaped = lifecycleCandidateSummary({ ...candidate, scopeUnit: 'pc-"quoted.scope' });
     expect(escaped).toContain('scopeUnit:"pc-\\"quoted.scope"');
@@ -240,6 +329,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
     expect(brief).toContain('known-present positive control');
+    expect(brief).toContain('usage_usec changed between its timestamps');
   });
 
   it('excludes agent sessions and human-terminal auto-reap exemptions', () => {
@@ -368,6 +458,8 @@ function depsForRunner(over: Partial<LifecycleJudgementDeps> = {}): LifecycleJud
     persistProbes: async (updates) => updates.length,
     upsertCandidate: async (_key, candidate) => ({ id: `WI-${candidate.taskId}` }),
     listOpenCandidateItems: async () => [],
+    claimOpenCandidateItems: async (items) => items.map((item) => ({ ...item })),
+    releaseCandidateItems: async () => {},
     spawnJudge: async () => ({ ok: true, spawnId: 'spawn-1' }),
     ...over,
   };
