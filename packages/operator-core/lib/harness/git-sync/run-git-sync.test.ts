@@ -55,6 +55,7 @@ import {
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
   expandNpmManifestClosure,
+  summarizeFetchFailure,
   isNpmManifestPath,
   runGitBounded,
   censusStrandedSubmodules,
@@ -184,6 +185,32 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
 
 // EI-24649116564770033 / WI-10004077: a withheld manifest must not let the rest of an npm
 // dependency change land alone (observed: operator-core's dep without root entry + lockfile).
+describe('summarizeFetchFailure — a failed fetch keeps its reason (WI-10004103)', () => {
+  it('prefers the disk-headroom refusal over surrounding git noise', () => {
+    const stderr =
+      'remote: Enumerating objects: 5\n' +
+      'git fetch stopped for disk headroom at /home/u/repo/.git/objects: 30064771072 bytes available; critical reserve 43249416192 bytes\n' +
+      'error: some trailing line\n';
+    expect(summarizeFetchFailure(stderr)).toBe(
+      'git fetch stopped for disk headroom at /home/u/repo/.git/objects: 30064771072 bytes available; critical reserve 43249416192 bytes',
+    );
+  });
+
+  it('otherwise uses the last non-empty line, whitespace collapsed', () => {
+    expect(summarizeFetchFailure("From x\n  fatal:   unable to access 'https://github.com/o/r/':  Could not resolve host\n\n")).toBe(
+      "fatal: unable to access 'https://github.com/o/r/': Could not resolve host",
+    );
+  });
+
+  it('is empty for empty stderr and caps a runaway line', () => {
+    expect(summarizeFetchFailure('')).toBe('');
+    expect(summarizeFetchFailure(undefined)).toBe('');
+    const long = summarizeFetchFailure(`fatal: ${'x'.repeat(1000)}`);
+    expect(long.length).toBe(300);
+    expect(long.endsWith('…')).toBe(true);
+  });
+});
+
 describe('expandNpmManifestClosure — npm manifests land together', () => {
   const dirty = [
     'package.json',
