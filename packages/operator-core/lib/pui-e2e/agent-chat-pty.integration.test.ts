@@ -3870,6 +3870,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     let stage = 'config';
     onTestFailed(() => console.info('PUI_WI164_FAILURE', JSON.stringify({
       stage, launches: launchRequests.slice(-2), engines: scriptedEngine.rpcLaunches.slice(-2),
+      events: scriptedEngine.events.slice(-6).map((event) => JSON.stringify(event).slice(0, 400)),
+      selector: process.env.PAPERCUSP_OMP_MODEL_SELECTOR ?? null,
+      engineCount: scriptedEngine.engines.length,
     })));
     const spy = vi.spyOn(stdio, 'startSuStdioPeer')
       .mockImplementation(async (options) => fakeNativePeer('omp', options, () => replyText));
@@ -3949,7 +3952,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           { timeout: 10_000, interval: 100 });
         pane.enter();
         await pane.waitFor('New session — 3 Review');
+        stage = 'chosen-default-review';
         pane.enter();
+        onTestFailed(() => console.info('PUI_WI164_SCREEN', JSON.stringify(pane.screen())));
         await pane.waitFor('OMP could not start:', { timeoutMs: 60_000 });
         const screen = pane.screen().replace(/\s+/g, ' ');
         expect(screen).toContain(`OMP default account cannot use gateway model '${gatewayModel}'`);

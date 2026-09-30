@@ -116,7 +116,10 @@ describe('assessSourceCoverage — absence of evidence is not health', () => {
     const a = assessSourceCoverage('turns', snap(stale));
     // 100% coverage, but nobody has looked recently — that is not evidence.
     expect(a.verdict).toBe('unknown');
-    expect(a.unknownSurfaces).toEqual([TURNS]);
+    // Every turns surface is unknown: the stale operator_turns column and, since
+    // generic-rag-chunking P-010, the shared chunk column its chunks live in (unsampled).
+    expect(a.unknownSurfaces).toContain(TURNS);
+    expect(a.unknownSurfaces).toEqual(SEARCH_SOURCE_SURFACES.turns);
   });
 
   it('a sample one millisecond INSIDE the window still counts (boundary)', () => {

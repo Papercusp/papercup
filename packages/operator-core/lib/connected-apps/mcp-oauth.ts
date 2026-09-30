@@ -286,10 +286,15 @@ export class PostgresOAuthStore implements OAuthStore {
     const { sql } = getOrgPg();
     const clientId = `${OAUTH_CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
     const clientSecret = input.tokenEndpointAuthMethod === 'none' ? null : `pcos_${randomBytes(32).toString('base64url')}`;
+    // The URIs travel as JSON, not `sql.array()`: postgres.js types an array parameter from the
+    // array OIDs a connection fetches on connect, so the FIRST query on a fresh client sends it as
+    // scalar text and Postgres refuses it ("redirect_uris is of type text[] but expression is of
+    // type text"). JSON is typed by the query itself.
     const rows = await sql<ClientRow[]>`
       INSERT INTO harness_shared.connected_app_oauth_clients
         (client_id, client_name, redirect_uris, token_endpoint_auth_method, client_secret_hash, created_at)
-      VALUES (${clientId}, ${input.clientName}, ${sql.array([...input.redirectUris])},
+      VALUES (${clientId}, ${input.clientName},
+              ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify([...input.redirectUris])}::jsonb)),
               ${input.tokenEndpointAuthMethod}, ${clientSecret ? sha256Hex(clientSecret) : null}, ${now})
       RETURNING client_id, client_name, redirect_uris, token_endpoint_auth_method, client_secret_hash, created_at`;
     return { client: clientOf(rows[0]!), clientSecret };
