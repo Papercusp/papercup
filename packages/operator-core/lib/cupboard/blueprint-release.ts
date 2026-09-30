@@ -130,6 +130,7 @@ export interface CommitBlueprintReleaseInput {
   };
   modeApproval?: { listingId: string; policyRef: string; approvedArtifactContentHash: string };
   nowMs?: number;
+  journal?: BlueprintLifecycleJournal;
 }
 
 export interface CommitBlueprintReleaseResult {
@@ -139,16 +140,76 @@ export interface CommitBlueprintReleaseResult {
   historyDir: string;
   diff: BlueprintReleaseDiff;
   activationPreflight: BlueprintActivationPreflight;
+  journal?: BlueprintJournalReport;
+}
+
+/** P-014 / D-034: the Postgres resource journal (pot provider bindings) a
+ * lifecycle operation drives while it holds this blueprint's fs lock. The
+ * file-tier release stays the applied switch; the journal never activates. */
+export interface BlueprintLifecycleJournal {
+  /** First, before anything is written: converge interrupted attempts against
+   * the release that is active now. Reports; never throws for one attempt. */
+  recover(activeContentHash: string | null): Promise<BlueprintJournalReport['recovered']>;
+  /** Journal and write what the release `contentHash` needs (null: uninstall).
+   * Throws, having compensated its own partial writes, to refuse the switch. */
+  prepare(contentHash: string | null): Promise<BlueprintJournalAttempt>;
+}
+
+export interface BlueprintJournalAttempt {
+  /** After the switch: apply, fence what it supersedes, clean that up. Never
+   * throws — the switch stands; an unapplied attempt rolls forward next time. */
+  apply(): Promise<Omit<BlueprintJournalReport, 'recovered'>>;
+  /** The switch failed: release this attempt. Throws if residue remains. */
+  compensate(cause: unknown): Promise<void>;
+}
+
+export interface BlueprintJournalReport {
+  recovered: Array<{ dependentId: string; potSlug: string; outcome: 'rolled-forward' | 'compensated' | 'cleaned'; error?: string }>;
+  pots: Array<{
+    potSlug: string;
+    dependentId: string | null;
+    applied: boolean;
+    /** `classRef → package@version` for each binding the applied install holds. */
+    bindings: string[];
+    superseded: string[];
+    note?: string;
+    error?: string;
+  }>;
+  /** Cleanup that did not converge; durable on its installation, retried by the next lifecycle call. */
+  residue: Array<{ dependentId: string; error: string }>;
 }
 
 export class BlueprintLifecycleError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
     this.name = 'BlueprintLifecycleError';
   }
+}
+
+/** Run `switchRelease` between the journal's prepare and apply; compensate on failure. */
+async function journaledSwitch(
+  journal: BlueprintLifecycleJournal | undefined,
+  activeContentHash: string | null,
+  targetContentHash: string | null,
+  switchRelease: () => Promise<void>,
+): Promise<BlueprintJournalReport | undefined> {
+  if (!journal) {
+    await switchRelease();
+    return undefined;
+  }
+  const recovered = await journal.recover(activeContentHash);
+  const attempt = await journal.prepare(targetContentHash);
+  try {
+    await switchRelease();
+  } catch (error) {
+    await attempt.compensate(error);
+    throw error;
+  }
+  return { recovered, ...(await attempt.apply()) };
 }
 
 export interface BlueprintReleaseSourceSnapshot {
@@ -783,40 +844,43 @@ export async function commitBlueprintRelease(
       ...(modePolicyApproval ? { modePolicyApproval } : {}),
     };
     const historyDir = versionDir(input.installedDir, input.id, archive.root.contentHash);
-    if (!existing) {
-      const stage = `${historyDir}.${process.pid}.${randomUUID()}.tmp`;
-      await fs.mkdir(stage, { recursive: true });
-      await copyPackage(input.sourceDir, join(stage, 'content'));
-      await fs.writeFile(
-        join(stage, 'closure.json'),
-        JSON.stringify({
-          schemaVersion: 1,
-          pins: archive.pins,
-          ...(archive.classContracts.length ? { classContracts: archive.classContracts } : {}),
-        }, null, 2) + '\n',
-      );
-      await fs.writeFile(join(stage, 'release.json'), JSON.stringify(record, null, 2) + '\n');
-      await fs.rename(stage, historyDir);
-      index.releases.push(record);
-    } else if (approvalChanged) {
-      // Moderation can approve an already retained byte-identical release.
-      // Persist its receipt without changing the immutable source closure.
-      await atomicWriteJson(join(historyDir, 'release.json'), record);
-    }
     const operation =
       index.activeContentHash === archive.root.contentHash
         ? ('no-op' as const)
         : index.activeContentHash
           ? ('update' as const)
           : ('install' as const);
-    // Re-materialize even a content no-op: the immutable archive is the source
-    // of truth, so an untracked/stale file in the active compatibility directory
-    // is repaired rather than silently surviving a reinstall.
-    await materializeActive(input.installedDir, input.id, join(historyDir, 'content'));
-    if (operation !== 'no-op' || approvalChanged) {
-      index.activeContentHash = archive.root.contentHash;
-      await atomicWriteJson(indexPath(input.installedDir, input.id), index);
-    }
+    // D-034 order: journaled bindings first, this switch (activation last), then apply.
+    const journal = await journaledSwitch(input.journal, index.activeContentHash, archive.root.contentHash, async () => {
+      if (!existing) {
+        const stage = `${historyDir}.${process.pid}.${randomUUID()}.tmp`;
+        await fs.mkdir(stage, { recursive: true });
+        await copyPackage(input.sourceDir, join(stage, 'content'));
+        await fs.writeFile(
+          join(stage, 'closure.json'),
+          JSON.stringify({
+            schemaVersion: 1,
+            pins: archive.pins,
+            ...(archive.classContracts.length ? { classContracts: archive.classContracts } : {}),
+          }, null, 2) + '\n',
+        );
+        await fs.writeFile(join(stage, 'release.json'), JSON.stringify(record, null, 2) + '\n');
+        await fs.rename(stage, historyDir);
+        index.releases.push(record);
+      } else if (approvalChanged) {
+        // Moderation can approve an already retained byte-identical release.
+        // Persist its receipt without changing the immutable source closure.
+        await atomicWriteJson(join(historyDir, 'release.json'), record);
+      }
+      // Re-materialize even a content no-op: the immutable archive is the source
+      // of truth, so an untracked/stale file in the active compatibility directory
+      // is repaired rather than silently surviving a reinstall.
+      await materializeActive(input.installedDir, input.id, join(historyDir, 'content'));
+      if (operation !== 'no-op' || approvalChanged) {
+        index.activeContentHash = archive.root.contentHash;
+        await atomicWriteJson(indexPath(input.installedDir, input.id), index);
+      }
+    });
     return {
       operation,
       record,
@@ -824,16 +888,20 @@ export async function commitBlueprintRelease(
       historyDir,
       diff: diffBlueprintReleases(priorArchive, archive),
       activationPreflight,
+      ...(journal ? { journal } : {}),
     };
   });
 }
 
-export async function rollbackBlueprintRelease(input: { installedDir: string; id: string; target: string }): Promise<{
+export async function rollbackBlueprintRelease(input: {
+  installedDir: string; id: string; target: string; journal?: BlueprintLifecycleJournal;
+}): Promise<{
   operation: 'rollback';
   record: BlueprintReleaseRecord;
   installedTo: string;
   diff: BlueprintReleaseDiff;
   activationRequired: true;
+  journal?: BlueprintJournalReport;
 }> {
   assertSafeId(input.id);
   return withLifecycleLock(input.installedDir, input.id, async () => {
@@ -848,29 +916,35 @@ export async function rollbackBlueprintRelease(input: { installedDir: string; id
       ? await readArchive(input.installedDir, input.id, index.activeContentHash)
       : null;
     const after = await readArchive(input.installedDir, input.id, record.contentHash);
-    await materializeActive(
-      input.installedDir,
-      input.id,
-      join(versionDir(input.installedDir, input.id, record.contentHash), 'content'),
-    );
-    index.activeContentHash = record.contentHash;
-    await atomicWriteJson(indexPath(input.installedDir, input.id), index);
+    const journal = await journaledSwitch(input.journal, index.activeContentHash, record.contentHash, async () => {
+      await materializeActive(
+        input.installedDir,
+        input.id,
+        join(versionDir(input.installedDir, input.id, record.contentHash), 'content'),
+      );
+      index.activeContentHash = record.contentHash;
+      await atomicWriteJson(indexPath(input.installedDir, input.id), index);
+    });
     return {
       operation: 'rollback',
       record,
       installedTo: activeDir(input.installedDir, input.id),
       diff: diffBlueprintReleases(before, after),
       activationRequired: true,
+      ...(journal ? { journal } : {}),
     };
   });
 }
 
-export async function uninstallBlueprintRelease(input: { installedDir: string; id: string; nowMs?: number }): Promise<{
+export async function uninstallBlueprintRelease(input: {
+  installedDir: string; id: string; nowMs?: number; journal?: BlueprintLifecycleJournal;
+}): Promise<{
   operation: 'uninstall';
   removed: BlueprintReleaseRecord;
   retained: BlueprintReleaseRecord[];
   diff: BlueprintReleaseDiff;
   activationRequired: true;
+  journal?: BlueprintJournalReport;
 }> {
   assertSafeId(input.id);
   return withLifecycleLock(input.installedDir, input.id, async () => {
@@ -880,21 +954,25 @@ export async function uninstallBlueprintRelease(input: { installedDir: string; i
     const before = await readArchive(input.installedDir, input.id, removed.contentHash);
     const target = activeDir(input.installedDir, input.id);
     const tombstone = join(input.installedDir, `.${input.id}.removing-${process.pid}-${randomUUID()}`);
-    try {
-      await fs.rename(target, tombstone);
-      await fs.rm(tombstone, { recursive: true, force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    removed.retiredAtMs = input.nowMs ?? Date.now();
-    index.activeContentHash = null;
-    await atomicWriteJson(indexPath(input.installedDir, input.id), index);
+    // D-034: the file tier goes first; the journal then fences and cleans every pot install.
+    const journal = await journaledSwitch(input.journal, index.activeContentHash, null, async () => {
+      try {
+        await fs.rename(target, tombstone);
+        await fs.rm(tombstone, { recursive: true, force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      removed.retiredAtMs = input.nowMs ?? Date.now();
+      index.activeContentHash = null;
+      await atomicWriteJson(indexPath(input.installedDir, input.id), index);
+    });
     return {
       operation: 'uninstall',
       removed,
       retained: [...index.releases],
       diff: diffBlueprintReleases(before, null),
       activationRequired: true,
+      ...(journal ? { journal } : {}),
     };
   });
 }

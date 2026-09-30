@@ -981,8 +981,19 @@ export async function bindCapabilityProviderToPot(
     /** Omission is the old tool-only selection contract. A typed caller must
      * explicitly select any other kind; the DB proves its run and latency. */
     providerKind?: CapabilityProviderKind;
+    /** Never replace an existing pot choice (the install journal's write, P-014):
+     * a conflicting row refuses exactly like an absent provider. */
+    createOnly?: boolean;
   },
 ): Promise<void> {
+  const onConflict = input.createOnly ? sql`DO NOTHING` : sql`
+    DO UPDATE SET
+      provider_package = EXCLUDED.provider_package,
+      provider_version = EXCLUDED.provider_version,
+      provider_kind = EXCLUDED.provider_kind,
+      latency_class = EXCLUDED.latency_class,
+      bound_by = EXCLUDED.bound_by,
+      updated_at = now()`;
   const rows = await sql<{ pot_slug: string }[]>`
     INSERT INTO harness_shared.pot_capability_class_bindings
       (workspace_id, pot_slug, class_id, class_version, provider_package, provider_version, bound_by,
@@ -995,15 +1006,13 @@ export async function bindCapabilityProviderToPot(
        AND b.provider_version = ${input.providerVersion}
        AND b.provider_kind = ${input.providerKind ?? 'tool'} AND b.status = 'active'
     ON CONFLICT (workspace_id, pot_slug, class_id, class_version)
-    DO UPDATE SET
-      provider_package = EXCLUDED.provider_package,
-      provider_version = EXCLUDED.provider_version,
-      provider_kind = EXCLUDED.provider_kind,
-      latency_class = EXCLUDED.latency_class,
-      bound_by = EXCLUDED.bound_by,
-      updated_at = now()
+    ${onConflict}
     RETURNING pot_slug`;
-  if (rows.length === 0) throw new Error('capability provider is absent, inactive, or has a different execution kind');
+  if (rows.length === 0) {
+    throw new Error(input.createOnly
+      ? 'capability provider is absent, inactive, of a different execution kind, or the pot already binds this class'
+      : 'capability provider is absent, inactive, or has a different execution kind');
+  }
 }
 
 /**
@@ -1020,8 +1029,12 @@ export async function deletePotCapabilityProviderBinding(
     classVersion: string;
     expectedProviderPackage: string;
     expectedProviderVersion: string;
+    /** Also require the writer's stamp, so a re-bind to the same provider by
+     * another owner is never deleted as if it were the original write. */
+    expectedBoundBy?: string;
   },
 ): Promise<boolean> {
+  const boundByClause = input.expectedBoundBy === undefined ? sql`` : sql`AND bound_by = ${input.expectedBoundBy}`;
   const rows = await sql<{ pot_slug: string }[]>`
     DELETE FROM harness_shared.pot_capability_class_bindings
      WHERE workspace_id = ${input.workspaceId}
@@ -1030,6 +1043,7 @@ export async function deletePotCapabilityProviderBinding(
        AND class_version = ${input.classVersion}
        AND provider_package = ${input.expectedProviderPackage}
        AND provider_version = ${input.expectedProviderVersion}
+       ${boundByClause}
     RETURNING pot_slug`;
   return rows.length > 0;
 }

@@ -34,6 +34,7 @@ import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
 import { packageDocDriver } from '../blueprint/package-doc-resources';
 import { packageMemoryDriver } from '../blueprint/package-memory-driver';
 import { packageRecipeDriver } from '../blueprint/package-recipe-resources';
+import { packageProviderBindingDriver, PROVIDER_BINDING_RESOURCE_KIND } from '../blueprint/package-provider-binding-resources';
 import type {
   PackageExternalResource,
   PackageResourceAddress,
@@ -407,6 +408,7 @@ function recoverDriver(sql: Sql, address: PackageResourceAddress, backend: () =>
   if (address.resourceKind === 'code-recipe') return packageRecipeDriver(sql, address, null);
   if (address.resourceKind === 'doc-part') return packageDocDriver(sql, address, null);
   if (address.resourceKind === 'memory') return packageMemoryDriver(backend(), '', { scope: address.memoryScope });
+  if (address.resourceKind === PROVIDER_BINDING_RESOURCE_KIND) return packageProviderBindingDriver(sql, address, null);
   return null;
 }
 
