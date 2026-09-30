@@ -28,7 +28,9 @@ import type {
   YesNoQuestion,
 } from '@papercusp/decision-model';
 import type { ConflictReport, LlmJudge, NeighborMemory } from './conflict-check';
-import { SUBSTANCE_CRITERIA, SUBSTANCE_INSTRUCTIONS } from './jev-admission-request';
+import { JEV_SUBSTANCE_WORDING, substanceQuestion, type SubstanceWording } from './jev-substance-wording';
+
+export { JEV_SUBSTANCE_WORDING } from './jev-substance-wording';
 
 /** Ledger consumer label for write-path calls (the bench uses `memory-conflict-bench`). */
 export const JEV_CONFLICT_CONSUMER = 'memory-conflict';
@@ -134,15 +136,19 @@ export const SUBSTANCE_QUESTION_ID = 'substance';
 
 /**
  * A new memory is content-free, and refused, when Jev's P(it carries concrete
- * information) is below this. Chosen on the P-010 measurement of 2026-09-30
- * (bench/jev-substance-cli.ts, report .papercusp/bench-reports/jev-substance-2026-09-30T16-08-09-078Z.md):
- * the largest grid threshold whose refusal rate on the selection half of a 600-memory
- * sample of the real store stayed within 0.5%. At 0.5: 152/156 bench self-promoters
- * caught; real memories refused 1/300 on the selection half, 2/300 on the confirmation
- * half, 3/600 overall (all three were test markers: "test" and two federation witness
- * strings). Re-measure before changing it.
+ * information) is below this. It is measured TOGETHER with JEV_SUBSTANCE_WORDING
+ * (jev-substance-wording.ts): the wording sets where P lands, so the two change as a pair.
+ *
+ * History: P-010 (2026-09-30) chose 0.5 for the v1 wording, catching 152/156 bench
+ * self-promoters; the four it saved quoted a gold query that read like a fact. WI-10004428
+ * moved to the `trigger` wording at 0.4, confirmed on a third disjoint 600-memory real
+ * sample (seed p010d, report .papercusp/bench-reports/jev-substance-trigger-2026-09-30T21-34-52-720Z.md,
+ * evidence docs/evidence/jev-substance-trigger-2026-09-30.json): 0/156 bench self-promoters
+ * saved, both asked alone and in the memory:remember request shape; real memories refused
+ * 1/300 + 1/300 = 2/600; held-out trigger-only promoters caught 84/96 (v1 at 0.5: 58/96);
+ * held-out quote-plus-content memories refused 0/20. Re-measure before changing it.
  */
-export const CONTENT_FREE_MAX_P_CONCRETE = 0.5;
+export const CONTENT_FREE_MAX_P_CONCRETE = 0.4;
 
 export interface ConflictRequest {
   readonly request: DecisionRequest<QuestionMap>;
@@ -157,14 +163,16 @@ export interface ConflictRequestOptions {
   readonly substance?: boolean;
   /** Which conflict wording to ask; defaults to the production {@link JEV_CONFLICT_WORDING}. */
   readonly wording?: ConflictWording;
+  /** Which substance wording to ask; defaults to the production {@link JEV_SUBSTANCE_WORDING}. */
+  readonly substanceWording?: SubstanceWording;
 }
 
 /**
  * ONE request per write: one choice question per neighbour, plus the substance
- * question when asked. The substance question reuses the admission filter's
- * SUBSTANCE_INSTRUCTIONS (P-005), so the save-time gate, the sweep (P-011) and the
- * filter variant ask the same thing, and it carries the memory text inside the
- * question like the measured `instructions` encoding.
+ * question when asked. The save-time gate and the sweep (P-011) both build it here,
+ * so they ask the same thing (JEV_SUBSTANCE_WORDING). It carries the memory text
+ * inside the question like the measured `instructions` encoding. The admission
+ * filter's `substance` variant keeps the P-005 wording it was measured with.
  */
 export function buildConflictRequest(
   newText: string,
@@ -183,11 +191,7 @@ export function buildConflictRequest(
     };
   });
   if (opts.substance) {
-    questions[SUBSTANCE_QUESTION_ID] = {
-      type: 'yesNo',
-      instructions: `${SUBSTANCE_INSTRUCTIONS}\n\nMemory:\n${newText}`,
-      criteria: SUBSTANCE_CRITERIA,
-    };
+    questions[SUBSTANCE_QUESTION_ID] = substanceQuestion(opts.substanceWording ?? JEV_SUBSTANCE_WORDING, newText);
   }
   return {
     request: { state: { new_memory: newText }, questions },
