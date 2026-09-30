@@ -328,6 +328,9 @@ async function mainComputed(argv: readonly string[]): Promise<number> {
     console.log(
       `evidence: ${result.evidence.bindings.length} journey-declared doc(s), ${result.evidence.unmapped.length} on this candidate but unmapped (${result.evidence.unmapped.map((u) => basename(u.path)).join(', ') || 'none'})`,
     );
+    for (const m of result.evidence.mappings) {
+      console.log(`mapping ${basename(m.path)}: ${m.applied ? 'applied' : 'NOT applied'}: ${redactHome(m.reason)}`);
+    }
     console.log(renderReadinessTable(result.manifest));
     console.log(`artifact ${result.manifest.artifact.id} sha256=${result.manifest.artifact.sha256} go=${result.manifest.current.go}`);
     return result.provenance.provenance.ok ? 0 : 2;

@@ -348,6 +348,133 @@ describe('deriveJourneyEvidence → manifest', () => {
     expect(derived.journeys).toEqual({});
     expect(derived.unmapped).toEqual([{ path: 'run34.json', sha256: h('34'), name: 'journey run' }]);
     expect(derived.ignored.map((i) => i.path)).toEqual(['typo.json', 'notes.json']);
+    expect(derived.mappings).toEqual([]);
+  });
+});
+
+function mappingDoc(evidencePath: string, evidenceSha256: string, journeys: unknown, over: Record<string, unknown> = {}) {
+  return {
+    kind: 'p521-journey-mapping',
+    evidence: { path: evidencePath, sha256: evidenceSha256 },
+    p521Journeys: journeys,
+    decision: 'p2p-public-release-endgame-2026-09-01#D-083',
+    ...over,
+  };
+}
+
+describe('deriveJourneyEvidence with sha-pinned journey mappings', () => {
+  const candidate = () => deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger() });
+  const run34 = { path: 'docs/evidence/run34.json', sha256: h('run34-bytes'), doc: evidenceDoc() };
+
+  it('a mapping pinned to the evidence bytes declares its journeys without touching the evidence', async () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [
+        run34,
+        {
+          path: 'docs/evidence/run34.p521-journeys.json',
+          sha256: h('map'),
+          doc: mappingDoc(run34.path, run34.sha256, ['discovery-join', 'git-consistency-signed-scope']),
+        },
+      ],
+    });
+    expect(Object.keys(derived.journeys).sort()).toEqual(['discovery-join', 'git-consistency-signed-scope']);
+    expect(derived.unmapped).toEqual([]);
+    // the mapping document itself is consumed, not reported as an unusable document
+    expect(derived.ignored).toEqual([]);
+    expect(derived.bindings.map((b) => [b.path, b.declaredBy, b.binding])).toEqual([
+      ['docs/evidence/run34.json', 'docs/evidence/run34.p521-journeys.json', 'this-candidate'],
+    ]);
+    expect(derived.mappings).toEqual([
+      {
+        path: 'docs/evidence/run34.p521-journeys.json',
+        evidencePath: run34.path,
+        evidenceSha256: run34.sha256,
+        journeys: ['discovery-join', 'git-consistency-signed-scope'],
+        decision: 'p2p-public-release-endgame-2026-09-01#D-083',
+        applied: true,
+        reason: 'applied',
+      },
+    ]);
+    const result = derived.journeys['discovery-join'];
+    expect(result?.evidence.map((r) => [r.ref, r.kind])).toEqual([
+      ['docs/evidence/run34.json', 'operational-test-evidence'],
+      ['docs/evidence/run34.p521-journeys.json', 'p521-journey-mapping'],
+    ]);
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys });
+    expect(manifest.current.rows.find((r) => r.capability === 'discovery-join')?.state).toBe('passed-on-this-artifact');
+    // a mapping cannot count an unmapped journey: github-bridge stays unmeasured
+    expect(manifest.current.rows.find((r) => r.capability === 'github-bridge')?.state).toBe('unmeasured');
+  });
+
+  it('a mapping pinned to different bytes does not apply: the evidence stays unmapped', () => {
+    const derived = deriveJourneyEvidence({
+      candidate: candidate(),
+      evidence: [run34, { path: 'm.json', sha256: h('m'), doc: mappingDoc(run34.path, h('edited-bytes'), ['discovery-join']) }],
+    });
+    expect(derived.journeys).toEqual({});
+    expect(derived.unmapped.map((u) => u.path)).toEqual([run34.path]);
+    expect(derived.mappings[0]?.applied).toBe(false);
+    expect(derived.mappings[0]?.reason).toContain(`pinned to evidence sha256 ${h('edited-bytes')}`);
+  });
+
+  it('two mappings for one evidence document are an unresolved call: neither applies', () => {
+    const derived = deriveJourneyEvidence({
+      candidate: candidate(),
+      evidence: [
+        run34,
+        { path: 'm1.json', sha256: h('m1'), doc: mappingDoc(run34.path, run34.sha256, ['discovery-join']) },
+        { path: 'm2.json', sha256: h('m2'), doc: mappingDoc(run34.path, run34.sha256, ['github-bridge']) },
+      ],
+    });
+    expect(derived.journeys).toEqual({});
+    expect(derived.unmapped.map((u) => u.path)).toEqual([run34.path]);
+    expect(derived.mappings.map((m) => [m.path, m.applied])).toEqual([
+      ['m1.json', false],
+      ['m2.json', false],
+    ]);
+    expect(derived.mappings[0]?.reason).toContain('more than one mapping');
+  });
+
+  it('a mapping that contradicts an inline declaration fails closed; one that agrees is recorded', () => {
+    const inline = { path: 'inline.json', sha256: h('inline'), doc: evidenceDoc({ p521Journey: 'discovery-join' }) };
+    const conflict = deriveJourneyEvidence({
+      candidate: candidate(),
+      evidence: [inline, { path: 'm.json', sha256: h('m'), doc: mappingDoc(inline.path, inline.sha256, ['github-bridge']) }],
+    });
+    expect(conflict.journeys).toEqual({});
+    expect(conflict.ignored[0]?.reason).toContain('journey declaration conflict');
+    expect(conflict.mappings[0]?.applied).toBe(false);
+
+    const agree = deriveJourneyEvidence({
+      candidate: candidate(),
+      evidence: [inline, { path: 'm.json', sha256: h('m'), doc: mappingDoc(inline.path, inline.sha256, ['discovery-join']) }],
+    });
+    expect(Object.keys(agree.journeys)).toEqual(['discovery-join']);
+    expect(agree.bindings[0]?.declaredBy).toBe('inline');
+    expect(agree.mappings[0]).toMatchObject({ applied: true, reason: 'agrees with the inline declaration' });
+  });
+
+  it('reports malformed, dangling and unknown-key mappings without counting anything', () => {
+    const derived = deriveJourneyEvidence({
+      candidate: candidate(),
+      evidence: [
+        run34,
+        { path: 'bad-sha.json', sha256: h('b'), doc: mappingDoc('x.json', 'not-a-sha', ['discovery-join']) },
+        { path: 'no-journeys.json', sha256: h('n'), doc: mappingDoc('y.json', h('y'), []) },
+        { path: 'dangling.json', sha256: h('d'), doc: mappingDoc('docs/evidence/absent.json', h('absent'), ['discovery-join']) },
+        { path: 'typo.json', sha256: h('t'), doc: mappingDoc(run34.path, run34.sha256, ['discovery']) },
+      ],
+    });
+    expect(derived.journeys).toEqual({});
+    const byPath = Object.fromEntries(derived.mappings.map((m) => [m.path, m]));
+    expect(byPath['bad-sha.json']?.reason).toMatch(/^malformed mapping: evidence.sha256/);
+    expect(byPath['no-journeys.json']?.reason).toContain('declares no p521Journeys');
+    expect(byPath['dangling.json']?.reason).toBe('no evidence document at this path');
+    expect(byPath['typo.json']).toMatchObject({ applied: false, reason: 'unknown P-521 journey key(s): discovery' });
+    expect(derived.ignored).toEqual([{ path: run34.path, reason: 'unknown P-521 journey key(s): discovery (declared by typo.json)' }]);
+    expect(derived.mappings.every((m) => !m.applied)).toBe(true);
   });
 });
 

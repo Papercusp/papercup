@@ -1,0 +1,20 @@
+{
+  "kind": "p521-journey-mapping",
+  "schemaVersion": 1,
+  "name": "P-505 run 34 (exact 0.0.25 artifact) -> P-521 journeys, shakedown manifest only",
+  "evidence": {
+    "path": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+    "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228"
+  },
+  "p521Journeys": ["discovery-join", "git-consistency-signed-scope", "github-bridge"],
+  "scope": "shakedown",
+  "candidate": "0.0.25-alpha",
+  "decision": "p2p-public-release-endgame-2026-09-01#D-083",
+  "decidedBy": "su-3ee17ad9-e8f0-4145-bce5-732819d9ea4e",
+  "notes": [
+    "Declared here, not inside the evidence document: spec-evidence bindings 15931/15932/15933 (AUTO-BAR-R-1-P-204/P-203/P-521) pin the evidence bytes at the sha256 above. This mapping applies only while those bytes are unchanged.",
+    "github-bridge is included because the later 0.0.25 phase-E failure was a drill race (WI-10004055), not a product defect.",
+    "protected-effect-fencing is NOT mapped: leg G covers only the canonical-staging sink; the rest of the protected-effect set is leg I (D-082).",
+    "Shakedown only (D-080): the final candidate (0.0.26+) does not contain the 0.0.25 artifacts, so on that candidate this evidence reads lineage-mismatch and never counts toward the final verdict."
+  ]
+}

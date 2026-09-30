@@ -21,6 +21,13 @@
  * surfaces, as `lineage-mismatch`, never as a pass. A candidate-bound document that
  * declares no journey is reported as unmapped, never counted.
  *
+ * A journey may also be declared OUTSIDE the measurement record, by a separate
+ * `p521-journey-mapping` document that names the evidence path AND its sha256. This keeps
+ * the acceptance call (which journeys a run covers) apart from the measurement it points
+ * at: editing a bound evidence document would change the bytes its spec-evidence bindings
+ * pin. A mapping applies only while the evidence bytes still match its sha256. A stale,
+ * duplicated or contradicting mapping is reported and never counts.
+ *
  * Pure functions only: file and database I/O live in `run-p2p-candidate-manifest.ts`.
  */
 import { createHash } from 'node:crypto';
@@ -600,10 +607,27 @@ export interface EvidenceDocInput {
 
 export type EvidenceBinding = 'this-candidate' | 'other-artifact';
 
+/** `kind` of a document that declares journeys for an evidence document it does not modify. */
+export const JOURNEY_MAPPING_KIND = 'p521-journey-mapping' as const;
+
+export interface JourneyMappingOutcome {
+  /** Repo-relative path of the mapping document. */
+  path: string;
+  evidencePath: string | null;
+  evidenceSha256: string | null;
+  journeys: string[];
+  /** The authority recorded on the mapping (e.g. a plan decision id), if any. */
+  decision: string | null;
+  applied: boolean;
+  reason: string;
+}
+
 export interface JourneyEvidenceBinding {
   path: string;
   sha256: string;
   journeys: string[];
+  /** `inline` (the document declares its journeys) or the path of the mapping that did. */
+  declaredBy: string;
   binding: EvidenceBinding;
   artifactSha256s: string[];
   verdict: P2pJourneyResult['verdict'];
@@ -620,6 +644,8 @@ export interface DerivedJourneyEvidence {
   unmapped: { path: string; sha256: string; name: string | null }[];
   /** Documents that could not be used at all, with why. */
   ignored: { path: string; reason: string }[];
+  /** Every journey-mapping document considered, and whether it applied. */
+  mappings: JourneyMappingOutcome[];
 }
 
 /** Every artifact sha256 an operational evidence document names as its subject. */
@@ -646,6 +672,35 @@ function declaredJourneys(doc: Record<string, unknown>): string[] | null {
     ...(typeof one === 'string' ? [one] : []),
   ];
   return list.length ? uniq(list) : null;
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const x = uniq([...a]).sort(byCodePoint);
+  const y = uniq([...b]).sort(byCodePoint);
+  return x.length === y.length && x.every((v, i) => v === y[i]);
+}
+
+/** Parse one mapping document; a malformed one comes back with `applied:false` and why. */
+function parseJourneyMapping(input: EvidenceDocInput, doc: Record<string, unknown>): JourneyMappingOutcome {
+  const evidence = isRecord(doc.evidence) ? doc.evidence : {};
+  const evidencePath = typeof evidence.path === 'string' && evidence.path.trim() ? evidence.path.trim() : null;
+  const evidenceSha256 = typeof evidence.sha256 === 'string' && SHA256_HEX.test(evidence.sha256) ? evidence.sha256 : null;
+  const journeys = declaredJourneys(doc) ?? [];
+  const decision = typeof doc.decision === 'string' && doc.decision.trim() ? doc.decision.trim() : null;
+  const problems = [
+    ...(evidencePath ? [] : ['evidence.path missing']),
+    ...(evidenceSha256 ? [] : ['evidence.sha256 is not a sha256 hex digest']),
+    ...(journeys.length ? [] : ['declares no p521Journeys']),
+  ];
+  return {
+    path: input.path,
+    evidencePath,
+    evidenceSha256,
+    journeys,
+    decision,
+    applied: false,
+    reason: problems.length ? `malformed mapping: ${problems.join('; ')}` : 'pending',
+  };
 }
 
 function observedPeersOf(doc: Record<string, unknown>): string[] {
@@ -720,8 +775,25 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
   const unmapped: DerivedJourneyEvidence['unmapped'] = [];
   const ignored: DerivedJourneyEvidence['ignored'] = [];
 
+  // Pass 1: journey mappings, indexed by the evidence path they name. Two well-formed
+  // mappings for one evidence document is an unresolved acceptance call: neither applies.
+  const mappings: JourneyMappingOutcome[] = [];
+  const mappingByEvidence = new Map<string, JourneyMappingOutcome[]>();
+  for (const input of options.evidence) {
+    if (!isRecord(input.doc) || input.doc.kind !== JOURNEY_MAPPING_KIND) continue;
+    const mapping = parseJourneyMapping(input, input.doc);
+    mappings.push(mapping);
+    if (mapping.reason !== 'pending' || !mapping.evidencePath) continue;
+    mappingByEvidence.set(mapping.evidencePath, [...(mappingByEvidence.get(mapping.evidencePath) ?? []), mapping]);
+  }
+  for (const list of mappingByEvidence.values()) {
+    if (list.length < 2) continue;
+    for (const m of list) m.reason = `more than one mapping names this evidence (${list.map((x) => x.path).join(', ')})`;
+  }
+
   for (const input of options.evidence) {
     const doc = input.doc;
+    if (isRecord(doc) && doc.kind === JOURNEY_MAPPING_KIND) continue;
     if (!isRecord(doc) || doc.kind !== 'operational-test-evidence') {
       ignored.push({ path: input.path, reason: 'not an operational-test-evidence document' });
       continue;
@@ -732,7 +804,30 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
       continue;
     }
     const bound: EvidenceBinding = shas.some((s) => members.has(s)) ? 'this-candidate' : 'other-artifact';
-    const journeys = declaredJourneys(doc);
+    const inline = declaredJourneys(doc);
+    const candidates = (mappingByEvidence.get(input.path) ?? []).filter((m) => m.reason === 'pending');
+    const mapping = candidates.length === 1 ? candidates[0] : undefined;
+    let journeys = inline;
+    let declaredBy = 'inline';
+    if (mapping) {
+      if (mapping.evidenceSha256 !== input.sha256) {
+        mapping.reason = `pinned to evidence sha256 ${mapping.evidenceSha256}, but the document now hashes to ${input.sha256}`;
+      } else if (inline && !sameSet(inline, mapping.journeys)) {
+        mapping.reason = `contradicts the document's inline declaration (${inline.join(', ')})`;
+        ignored.push({
+          path: input.path,
+          reason: `journey declaration conflict: inline [${inline.join(', ')}] vs ${mapping.path} [${mapping.journeys.join(', ')}]`,
+        });
+        continue;
+      } else {
+        mapping.applied = true;
+        mapping.reason = inline ? 'agrees with the inline declaration' : 'applied';
+        if (!inline) {
+          journeys = mapping.journeys;
+          declaredBy = mapping.path;
+        }
+      }
+    }
     if (!journeys) {
       if (bound === 'this-candidate') {
         unmapped.push({ path: input.path, sha256: input.sha256, name: typeof doc.name === 'string' ? doc.name : null });
@@ -741,13 +836,23 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
       }
       continue;
     }
+    // A mapping that applied but whose evidence then proves unusable did not, in the end, apply.
+    const withdraw = (why: string) => {
+      if (mapping?.applied) {
+        mapping.applied = false;
+        mapping.reason = why;
+      }
+    };
     const unknownKeys = journeys.filter((j) => !known.has(j));
     if (unknownKeys.length) {
-      ignored.push({ path: input.path, reason: `unknown P-521 journey key(s): ${unknownKeys.join(', ')}` });
+      const why = `unknown P-521 journey key(s): ${unknownKeys.join(', ')}`;
+      withdraw(why);
+      ignored.push({ path: input.path, reason: declaredBy === 'inline' ? why : `${why} (declared by ${declaredBy})` });
       continue;
     }
     const measuredAt = measuredAtOf(doc);
     if (!measuredAt) {
+      withdraw('the evidence document has no parseable finishedAt');
       ignored.push({ path: input.path, reason: 'no parseable finishedAt' });
       continue;
     }
@@ -756,6 +861,7 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
       path: input.path,
       sha256: input.sha256,
       journeys,
+      declaredBy,
       binding: bound,
       artifactSha256s: shas,
       verdict,
@@ -782,6 +888,14 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
         detail: { sha256: chosen.sha256, binding: chosen.binding, artifactSha256s: chosen.artifactSha256s },
       },
     ];
+    const declaringMapping = mappings.find((m) => m.applied && m.path === chosen.declaredBy);
+    if (declaringMapping) {
+      refs.push({
+        ref: declaringMapping.path,
+        kind: JOURNEY_MAPPING_KIND,
+        detail: { evidenceSha256: declaringMapping.evidenceSha256, decision: declaringMapping.decision },
+      });
+    }
     journeys[journey.key] = {
       verdict: chosen.verdict,
       reason: `${chosen.reason} (${chosen.path})`,
@@ -792,5 +906,8 @@ export function deriveJourneyEvidence(options: DeriveJourneyEvidenceOptions): De
     };
   }
 
-  return { journeys, bindings, unmapped, ignored };
+  for (const m of mappings) {
+    if (m.reason === 'pending') m.reason = 'no evidence document at this path';
+  }
+  return { journeys, bindings, unmapped, ignored, mappings };
 }
