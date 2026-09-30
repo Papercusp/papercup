@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   createHostedWorkspaceHostRuntime,
   ensureHostedWorkspaceHostRuntime,
-  hostedAuditRow,
   readHostedWorkspaceHostConfig,
   registerHostedCustomerWorkspace,
   __resetHostedWorkspaceHostRuntime,
@@ -12,6 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRegistry } from '../workspace-registry';
+import { hostedDesktopAuditRow, isHostedDesktopAuditAction } from '../desktop/desktop-audit';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
 
@@ -159,7 +159,7 @@ describe('readHostedWorkspaceHostConfig', () => {
   });
 });
 
-describe('hostedAuditRow', () => {
+describe('hostedDesktopAuditRow', () => {
   const base: HostedHostAuditEvent = {
     action: 'desktop_takeover_started',
     organizationId: 'org_1',
@@ -176,27 +176,35 @@ describe('hostedAuditRow', () => {
     // The whole point: one `frame-vnc.takeover-started` filter must find frame,
     // local AND hosted takeovers. A hosted-only namespace would silently answer for
     // part of the population, which looks identical to a quiet week.
-    const row = hostedAuditRow(base);
+    const row = hostedDesktopAuditRow(base);
     expect(row.action).toBe('frame-vnc.takeover-started');
     expect(row.subject).toBe('hosted:host_1:c1');
     expect(row.details).toMatchObject({ target: 'hosted', generation: 3, userId: 'user_7' });
   });
 
   it('files a hosted watch in the same namespace', () => {
-    expect(hostedAuditRow({ ...base, action: 'desktop_watch_started' }).action).toBe('frame-vnc.watch-started');
+    expect(hostedDesktopAuditRow({ ...base, action: 'desktop_watch_started' }).action).toBe('frame-vnc.watch-started');
   });
 
   it('attributes the row to the browser principal, keeping the host in details', () => {
-    expect(hostedAuditRow(base).actor).toBe('user_7');
+    expect(hostedDesktopAuditRow(base).actor).toBe('user_7');
     const { userId: _drop, ...withoutUser } = base;
-    expect(hostedAuditRow(withoutUser).actor).toBe('host:host_1');
+    expect(hostedDesktopAuditRow(withoutUser).actor).toBe('host:host_1');
   });
 
   it('keeps NON-desktop relay events out of the desktop namespace', () => {
     // A PTY attach is a different population; folding it in would pollute the very
     // filter the shared namespace protects.
-    expect(hostedAuditRow({ ...base, action: 'pty_attached' }).action).toBe('hosted-relay.pty_attached');
-    expect(hostedAuditRow({ ...base, action: 'desktop_denied' }).action).toBe('hosted-relay.desktop_denied');
+    expect(hostedDesktopAuditRow({ ...base, action: 'pty_attached' }).action).toBe('hosted-relay.pty_attached');
+    expect(hostedDesktopAuditRow({ ...base, action: 'desktop_denied' }).action).toBe('hosted-relay.desktop_denied');
+  });
+
+  it('recognises only the two desktop viewer events, never an inherited key', () => {
+    expect(isHostedDesktopAuditAction('desktop_takeover_started')).toBe(true);
+    expect(isHostedDesktopAuditAction('desktop_watch_started')).toBe(true);
+    expect(isHostedDesktopAuditAction('pty.input')).toBe(false);
+    expect(isHostedDesktopAuditAction('constructor')).toBe(false);
+    expect(hostedDesktopAuditRow({ ...base, action: 'constructor' }).action).toBe('hosted-relay.constructor');
   });
 });
 
