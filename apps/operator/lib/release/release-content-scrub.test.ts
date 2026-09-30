@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { GENERIC_ACCOUNTS } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   PUBLISHED_CONTACT_EMAIL,
   findIdentityLeaks,
@@ -123,7 +127,24 @@ describe('findIdentityLeaks — the gate, separate from the fix', () => {
 describe('identityLiterals resolves from the machine, and hardcodes nothing', () => {
   it('never returns a generic account as an identity', () => {
     for (const lit of identityLiterals()) {
-      expect(['root', 'runner', 'build', 'ubuntu']).not.toContain(lit.value);
+      expect([...GENERIC_ACCOUNTS]).not.toContain(lit.value);
+    }
+  });
+
+  // WI-10004233: the scrub, the seed guard and the doc projection each kept a local
+  // generic-login list that drifted from the release gate's. They must all read the one
+  // shared set, so a runner/VM account the gate treats as generic is never "leaked".
+  it('reads its generic-account list from the shared module, not a local copy', () => {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const root = resolve(dir, '../../../..');
+    for (const rel of [
+      'apps/operator/lib/release/release-content-scrub.ts',
+      'apps/operator/lib/release/seed-identity-guard.ts',
+      'scripts/lib/doc-projection.ts',
+    ]) {
+      const src = readFileSync(resolve(root, rel), 'utf8');
+      expect(src, rel).toMatch(/import \{[^}]*GENERIC_ACCOUNTS[^}]*\} from '[^']*identity-leak-patterns\.mjs'/);
+      expect(src, rel).not.toMatch(/new Set\(\[\s*'root',\s*'runner'/);
     }
   });
 });

@@ -18,6 +18,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { homedir, hostname, userInfo } from 'node:os';
+// The ONE generic-account list, pinned equal to the release gate's (WI-10004233).
+import { GENERIC_ACCOUNTS, isGenericHost } from './identity-leak-patterns.mjs';
 
 /** Repo root: scripts/lib/doc-projection.ts → ../../ */
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -103,13 +105,13 @@ function identityLiterals(): Array<{ key: string; value: string; placeholder: st
     if (v && !skip.includes(v)) out.push({ key, value: v, placeholder });
   };
   try {
-    push('build-user-name', userInfo().username, '<build-user>', ['root', 'runner', 'build', 'ubuntu']);
+    push('build-user-name', userInfo().username, '<build-user>', [...GENERIC_ACCOUNTS]);
   } catch {
     /* no passwd entry — nothing to scrub */
   }
   push('build-home-path', homedir(), '$HOME', ['/root', '/', '/home']);
   const host = hostname();
-  if (host && !/^(runner|ci-|localhost)/.test(host)) push('build-hostname', host, '<build-host>');
+  if (host && !isGenericHost(host)) push('build-hostname', host, '<build-host>');
   for (const [key, cfg, placeholder] of [
     ['build-git-email', 'user.email', '<owner-email>'],
     ['build-git-name', 'user.name', 'the owner'],

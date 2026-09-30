@@ -58,6 +58,7 @@ import { join, relative } from 'node:path';
 // Imported, never re-declared: the owner-name env key is ONE truth and a second copy of it
 // here is exactly how these three gates drifted apart in the first place.
 import { OWNER_NAME_ENV } from './release-content-scrub';
+import { GENERIC_ACCOUNTS, isGenericHost } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 /**
  * Carries the REAL build hostname across the `bwrap --unshare-uts` boundary, because
@@ -84,10 +85,10 @@ export type IdentityKey =
 
 export type IdentityLiterals = ReadonlyMap<IdentityKey, string>;
 
-/** Generic account names that identify a CI runner, not a person. Same set as the python gate. */
-const IMPERSONAL_USERS = new Set(['root', 'runner', 'build', 'ubuntu']);
+/** Generic account names that identify a CI runner, not a person — the ONE shared list,
+ *  pinned equal to the python gate's GENERIC_ACCOUNTS (WI-10004233: a local copy drifted). */
+const IMPERSONAL_USERS: ReadonlySet<string> = GENERIC_ACCOUNTS;
 const IMPERSONAL_HOMES = new Set(['/root', '/', '/home']);
-const IMPERSONAL_HOST_PREFIXES = ['runner', 'ci-', 'localhost'];
 
 /**
  * A SHORT literal must match as a whole word or it matches half the seed.
@@ -173,7 +174,7 @@ export function resolveIdentityLiterals(inp: ResolveIdentityInput): {
   if (
     realHost &&
     !hostIsNeutral &&
-    !IMPERSONAL_HOST_PREFIXES.some((p) => realHost.startsWith(p))
+    !isGenericHost(realHost)
   ) {
     literals.set('build-hostname', realHost);
   }

@@ -27,6 +27,9 @@
 
 import { execFileSync } from 'node:child_process';
 import * as os from 'node:os';
+// The ONE generic-account list (pinned equal to audit-release-bundle.py's) — a local
+// copy here drifted from the gate that audits what this scrubs (WI-10004233).
+import { GENERIC_ACCOUNTS, isGenericHost } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 export interface IdentityLiteral {
   /** What it is — used in the redaction placeholder and in gate output. */
@@ -148,7 +151,7 @@ export const IDENTITY_PATTERNS: IdentityPattern[] = [
 
 /** Generic values that are not anybody's identity — matching them would redact
  *  half the page and teach the next person to switch the gate off. */
-const GENERIC_USERS = new Set(['root', 'runner', 'build', 'ubuntu', 'user', 'admin']);
+const GENERIC_USERS: ReadonlySet<string> = GENERIC_ACCOUNTS;
 const GENERIC_HOMES = new Set(['/root', '/', '/home']);
 
 /**
@@ -257,7 +260,7 @@ export function identityLiterals(): IdentityLiteral[] {
   if (home && !GENERIC_HOMES.has(home)) lits.push({ kind: 'home', value: home });
 
   const host = os.hostname();
-  if (host && !/^(runner|ci-|localhost)/.test(host)) lits.push({ kind: 'hostname', value: host });
+  if (host && !isGenericHost(host)) lits.push({ kind: 'hostname', value: host });
 
   /**
    * The owner's NAME resolves in precedence order:
