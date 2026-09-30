@@ -104,4 +104,55 @@ describe('MemoryHealthCard', () => {
     const canary = [...container.querySelectorAll('.pc-learning__flowchip')].find((c) => c.textContent?.includes('fragment hits'))! as HTMLElement;
     expect(canary.style.color).toBe('rgb(248, 113, 113)');
   });
+
+  // WI-10004133: a monitor fire that recorded no bench row must be visible, or the FP@5
+  // chip reads as current while it is stale.
+  describe('last precision attempt', () => {
+    const latest = {
+      ranAt: '2026-09-20T03:00:00.000Z', backend: 'hybrid', fpAt5: 0.17, rAt10: 0.8, pAt5: 0.5, mrr: 0.6,
+      medianTopScore: 0.7, floorCosine: 0.45, floorLex: 0.2, corpusN: 100, goldN: 40, latencyP50Ms: 10,
+    };
+    const attempt = (over: Record<string, unknown>) => ({
+      attemptedAt: '2026-09-27T03:00:00.000Z', outcome: 'failed', stage: 'bench', error: 'worker timed out',
+      rowId: null, jevGate: false, ...over,
+    });
+    const withPrecision = (lastAttempt: unknown) =>
+      mem({ precision: { latest, trend: [latest], fpAt5Delta: null, runCount: 1, lastAttempt } as MemoryHealth['precision'] });
+
+    it('renders a red failed chip with the stage and error when the newest fire failed after the latest run', () => {
+      render(<MemoryHealthCard memory={withPrecision(attempt({}))} />);
+      const chip = screen.getByTestId('memory-precision-last-attempt');
+      expect(chip.textContent).toContain('failed');
+      expect(chip.textContent).toContain('bench');
+      expect(chip.getAttribute('title')).toContain('worker timed out');
+      expect((chip as HTMLElement).style.color).toBe('rgb(248, 113, 113)');
+    });
+
+    it('renders a neutral skipped chip for a flag-off fire', () => {
+      render(<MemoryHealthCard memory={withPrecision(attempt({ outcome: 'flag-off', stage: null, error: null }))} />);
+      const chip = screen.getByTestId('memory-precision-last-attempt');
+      expect(chip.textContent).toContain('skipped');
+      expect((chip as HTMLElement).style.color).toBe('');
+    });
+
+    it('renders nothing when the newest fire recorded a row, or when the failure predates the latest run', () => {
+      render(<MemoryHealthCard memory={withPrecision(attempt({ outcome: 'recorded', stage: null, error: null, rowId: 7 }))} />);
+      expect(screen.queryByTestId('memory-precision-last-attempt')).toBeNull();
+      cleanup();
+      render(<MemoryHealthCard memory={withPrecision(attempt({ attemptedAt: '2026-09-19T03:00:00.000Z' }))} />);
+      expect(screen.queryByTestId('memory-precision-last-attempt')).toBeNull();
+      cleanup();
+      render(<MemoryHealthCard memory={withPrecision(null)} />);
+      expect(screen.queryByTestId('memory-precision-last-attempt')).toBeNull();
+    });
+
+    it('renders the failed chip even when no run was ever recorded', () => {
+      render(
+        <MemoryHealthCard
+          memory={mem({ precision: { latest: null, trend: [], fpAt5Delta: null, runCount: 0, lastAttempt: attempt({}) } as MemoryHealth['precision'] })}
+        />,
+      );
+      expect(screen.getByTestId('memory-precision-last-attempt').textContent).toContain('failed');
+    });
+  });
 });

@@ -39,7 +39,7 @@
  * a request key derived from the receipt id, so the second submit replays the
  * first blueprint receipt (D-030). A plain tool is at-least-once there.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   dispatchProjectedTool,
@@ -57,6 +57,7 @@ import {
   wornAsyncRules,
   type IdentityWearer,
 } from '../agent-identities/identity-async-rules';
+import { buildWearerToolContext } from '../agent-identities/wearer-authority';
 import { cancelIdentityRuleSubscription } from '../agent-identities/identity-rule-subscriptions';
 import type { CapabilityProviderKind } from '../capability-class-registry-store';
 import type { IdentityReactionCeiling } from '../capability-envelope/identity-grants-port';
@@ -299,10 +300,9 @@ export async function enqueueIdentityReactions(
 /* ------------------------------------------------------------------ */
 
 /**
- * PURE: the dispatcher context a wearer-principal reaction runs under. The
- * wearer is both principal and coordination owner, so `resolveAgentIdentity`
- * and the identity grant kernel judge the wearer. There is no `gateBypass`:
- * capability, role and quota all apply.
+ * PURE: the dispatcher context a wearer-principal reaction runs under — the
+ * shared wearer context (`buildWearerToolContext`: no `gateBypass`; capability,
+ * role and quota all apply) plus the reaction's cause.
  */
 export function buildWearerReactionCtx(input: {
   workspaceId: string;
@@ -313,28 +313,8 @@ export function buildWearerReactionCtx(input: {
   cause: ReactionCause;
 }): Omit<UnifiedToolContext, 'tx'> {
   return {
-    workspaceId: input.workspaceId,
-    harnessSlug: input.harnessSlug,
-    role: input.role,
-    featureId: null,
-    chunkId: null,
-    runId: randomUUID(),
-    spawnId: IDENTITY_REACTION_SPAWN_ID,
-    parentSpawnId: null,
-    uiClientId: input.ownerId,
+    ...buildWearerToolContext({ ...input, spawnId: IDENTITY_REACTION_SPAWN_ID }),
     reactionCause: input.cause,
-    isSuperuser: false,
-    profile: 'engineer',
-    transport: 'in_process',
-    log: () => {},
-    progress: () => {},
-    emit: () => {},
-    signal: new AbortController().signal,
-    principal: {
-      slug: input.ownerId,
-      workspaceId: input.workspaceId,
-      capabilities: new Set(input.capabilities),
-    },
   };
 }
 

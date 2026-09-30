@@ -33,6 +33,7 @@ function loop(over: Partial<LearningLoopHealth>): LearningLoopHealth {
     activityLastAt: null,
     daysSinceActivity: null,
     activitySource: null,
+    activityDetail: null,
     status: 'firing',
     expectedMaterialized: true,
     pauseAcknowledged: false,

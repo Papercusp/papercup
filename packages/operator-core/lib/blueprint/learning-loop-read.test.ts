@@ -119,12 +119,16 @@ describe('readLearningLoopHealth wiring', () => {
   it('passes the precision bench ledger in since-fire mode with a grace past one worker run', async () => {
     await readLearningLoopHealth(fakeSql(), 'ws-1', {});
     const opts = computeM.mock.calls[0]![2] as ActivityOpts;
-    expect(opts.activityByBlueprintId?.['memory-precision']).toEqual({
+    const precision = opts.activityByBlueprintId?.['memory-precision'] as Record<string, unknown> | undefined;
+    expect(precision).toMatchObject({
       lastActivityAt: '2026-08-02T08:02:11.000Z',
       source: 'memory_precision_bench',
       mode: 'since-fire',
       graceMs: PRECISION_ACTIVITY_GRACE_MS,
     });
+    // WI-10004133: the attempt ledger's account rides along (null when the fake has no attempt row).
+    expect(Object.keys(precision ?? {}).sort()).toEqual(['detail', 'graceMs', 'lastActivityAt', 'mode', 'source']);
+    expect(precision?.detail === null || typeof precision?.detail === 'string').toBe(true);
     expect(PRECISION_ACTIVITY_GRACE_MS).toBeGreaterThan(PRECISION_BENCH_WORKER_TIMEOUT_MS);
   });
 

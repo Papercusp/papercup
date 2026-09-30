@@ -261,6 +261,18 @@ export async function readLatestPrecisionAttempt(
   }
 }
 
+/**
+ * One line for a health verdict: what the latest recorded fire did. Null when no attempt
+ * is recorded, which since migration 1259 means the monitor never ran or its process died
+ * before it could record an outcome.
+ */
+export function describePrecisionAttempt(a: MemoryPrecisionAttempt | null): string | null {
+  if (!a) return null;
+  if (a.outcome === 'failed') return `last attempt ${a.attemptedAt} failed at ${a.stage ?? 'unknown stage'}: ${a.error ?? '(no error text)'}`;
+  if (a.outcome === 'flag-off') return `last attempt ${a.attemptedAt} skipped: the memory-precision bench flag was off`;
+  return `last attempt ${a.attemptedAt} recorded bench row #${a.rowId ?? '?'}`;
+}
+
 /** Record one monitor fire's outcome. Returns the new attempt id. */
 export async function recordMemoryPrecisionAttempt(
   sql: Sql,

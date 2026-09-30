@@ -40,6 +40,7 @@ const snapshot = (over: Partial<MemoryPrecisionSnapshot>): MemoryPrecisionSnapsh
   trend: [],
   fpAt5Delta: null,
   runCount: 0,
+  lastAttempt: null,
   ...over,
 });
 

@@ -748,6 +748,8 @@ class PuiPane {
         LANG: process.env.LANG ?? 'en_US.UTF-8',
         PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`,
         ...(options.operatorToken ? { PUI_OPERATOR_TOKEN: options.operatorToken } : {}),
+        // Opt-in PUI trace of every SU-session event it reduces (WI-10004184).
+        ...(process.env.PUI_SU_EVENT_LOG ? { PUI_SU_EVENT_LOG: process.env.PUI_SU_EVENT_LOG } : {}),
         ...options.env,
         PAPERCUSP_TUI_OWNER: OWNER,
         // Keep this direct-PTY test out of any ambient zellij/tmux session.
@@ -1760,6 +1762,16 @@ afterAll(async () => {
 }, 120_000);
 
 afterEach(stopEngines);
+// A session end schedules delayed maintenance (the archive pass, the lease
+// release). Stop what a case scheduled when it ends, so a pass never lands in
+// a later case and fails it with a warning that case did not cause
+// (EI-24668888903184334; measured: WI-10004164's archive warning failed
+// PUI-APPROVAL-DENY). A case that needs a pass awaits it inside the case.
+afterEach(async () => {
+  const { drainDetached } = await import('../detached-imports');
+  await drainDetached();
+  await finishTeardown(maintenance.jobs.splice(0).map((job) => () => job.stop()));
+});
 
 beforeEach(async () => {
   namedQueryRequests.length = 0;
@@ -4355,7 +4367,18 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         () => expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|event stream closed unexpectedly/),
         { timeout: 10_000, interval: 100 },
       );
-      console.info('PUI_P003_FAILED_START_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: failed }));
+      // R-03: the diagnostics the chat screen omits are in `pui doctor`: the
+      // operator URL, workspace and store this chat ran against.
+      const doctor = spawnSync(bin, ['doctor'], {
+        cwd: launchDir, encoding: 'utf8', timeout: 30_000,
+        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, LANG: process.env.LANG ?? 'en_US.UTF-8',
+          PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`, PAPERCUSP_TUI_OWNER: OWNER, ZELLIJ: '' },
+      });
+      const doctorOut = `${doctor.stdout ?? ''}${doctor.stderr ?? ''}`;
+      expect(doctorOut, doctorOut).toContain('PUI operator identity: OK');
+      expect(doctorOut, doctorOut).toMatch(new RegExp(`endpoint:\\s+http://127\\.0\\.0\\.1:${operatorPort}`));
+      expect(doctorOut, doctorOut).toMatch(new RegExp(`workspace:\\s+${WORKSPACE}`));
+      console.info('PUI_P003_FAILED_START_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: failed, doctor: doctorOut }));
     } finally {
       scriptedEngine.mode = 'success';
       await pane.stop();

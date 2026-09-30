@@ -472,10 +472,13 @@ export async function runMemoryPrecisionMonitor(
   const flag = deps.flag ?? ((slug: string) => getFlag(FLAGS.MEMORY_PRECISION_BENCH, `routine:${slug}`));
   // WI-10004133: every exit records its outcome durably. Best-effort — an attempt-write
   // failure is logged and never changes the outcome or throws into the routine tick.
+  // The attempt ledger follows the record seam: a caller that injects the bench-row write
+  // (a test or a dry harness) never writes attempts to the real database by default.
+  const injectedAttempt = deps.recordAttempt ?? (deps.record ? async () => {} : undefined);
   const recordAttempt = async (attempt: MemoryPrecisionAttemptInput): Promise<void> => {
     try {
-      if (deps.recordAttempt) {
-        await deps.recordAttempt(input.workspaceId, attempt);
+      if (injectedAttempt) {
+        await injectedAttempt(input.workspaceId, attempt);
       } else {
         const { getOrgPg } = await import('@papercusp/db-org');
         await recordMemoryPrecisionAttempt(getOrgPg().sql, input.workspaceId, attempt);

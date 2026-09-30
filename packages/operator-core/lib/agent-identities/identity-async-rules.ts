@@ -28,9 +28,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { AsyncRuleDeclaration } from '../cupboard/rule-store';
 import { parseCapabilityClassRef } from '../capability-class-registry-store';
 import type { IdentityReactionCeiling } from '../capability-envelope/identity-grants-port';
-import { PROTECTED_CAPABILITY_GLOBS, matchesAny } from '../capability-envelope/policy';
 import { getEventKey } from '../event-key-registry-store';
 import { validateClassFireTarget, type ClassFireTarget } from '../events/class-fire-target';
+import { IDENTITY_WEARER_ROLE, identityCeilingRefusal } from './wearer-authority';
 import {
   appliedIdentityRulesAt,
   type AppliedIdentityRules,
@@ -116,14 +116,6 @@ export function identityReactionReceiptId(input: {
 /* ------------------------------------------------------------------ */
 /* The wearer, read live.                                               */
 /* ------------------------------------------------------------------ */
-
-/**
- * Every identity-bearing launch record is an SU launch record
- * (`recordSuLaunchSpec` → `SuLaunchSpecRecord`), and an SU session dispatches
- * as role `su` — the same default the grant kernel applies (`ctx.role ?? 'su'`).
- * A record's `fleet.role` is fleet posture (leader/member), not a dispatcher role.
- */
-export const IDENTITY_WEARER_ROLE = 'su';
 
 export interface IdentityWearer {
   readonly ownerId: string;
@@ -221,18 +213,8 @@ export function identityReactionAllowlist(input: {
   const capabilities = [...new Set([capability, ...(input.dispatchCapabilities ?? []).map((cap) => cap.trim())])];
   for (const cap of capabilities) {
     if (!cap) return empty(`the dispatch path for class ${input.target.classRef} names an empty capability`);
-    if (matchesAny(cap, [...PROTECTED_CAPABILITY_GLOBS, ...input.ceiling.protectedAdditions])) {
-      return empty(`capability ${cap} is in the never-auto protected set`);
-    }
-    for (const ceiling of input.ceiling.ceilings) {
-      if (ceiling.denyCapabilities && matchesAny(cap, ceiling.denyCapabilities)) {
-        return empty(`capability ${cap} is denied by the pot/role ceiling`);
-      }
-      if (ceiling.allowCapabilities && ceiling.allowCapabilities.length > 0 &&
-          !matchesAny(cap, ceiling.allowCapabilities)) {
-        return empty(`capability ${cap} is outside the pot/role ceiling`);
-      }
-    }
+    const refusal = identityCeilingRefusal(cap, input.ceiling);
+    if (refusal) return empty(refusal);
   }
   return { ok: true, capabilities };
 }

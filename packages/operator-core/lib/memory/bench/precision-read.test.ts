@@ -6,7 +6,10 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  describePrecisionAttempt,
+  readLatestPrecisionAttempt,
   readMemoryPrecision,
+  recordMemoryPrecisionAttempt,
   recordMemoryPrecisionRun,
   type MemoryPrecisionMetrics,
 } from './precision-read';
@@ -133,5 +136,48 @@ describe('recordMemoryPrecisionRun', () => {
     // workspace_id is the first bound value; the metrics follow.
     expect(capturedValues[0]).toBe('ws-7');
     expect(capturedValues).toContain(0.17);
+  });
+});
+
+describe('memory-precision attempt ledger (WI-10004133)', () => {
+  it('reads the newest attempt and attaches it to the snapshot', async () => {
+    const sql = fakeSql((text) => {
+      if (text.includes('memory_precision_bench_attempts')) {
+        return [{ attempted_at: new Date('2026-09-30T07:00:00Z'), outcome: 'failed', stage: 'bench', error: 'worker timed out', row_id: null, jev_gate: true }];
+      }
+      if (text.includes('count(')) return [{ n: 1 }];
+      return [benchRow('2026-09-23T00:00:00Z', 0.17, 0.82)];
+    });
+    const snap = await readMemoryPrecision(sql, 'ws-1');
+    expect(snap.lastAttempt).toEqual({
+      attemptedAt: '2026-09-30T07:00:00.000Z', outcome: 'failed', stage: 'bench', error: 'worker timed out', rowId: null, jevGate: true,
+    });
+    expect(describePrecisionAttempt(snap.lastAttempt)).toBe('last attempt 2026-09-30T07:00:00.000Z failed at bench: worker timed out');
+  });
+
+  it('degrades to null when the attempts table is missing or the row is malformed', async () => {
+    const missing = fakeSql(() => {
+      throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    });
+    expect(await readLatestPrecisionAttempt(missing, 'ws-1')).toBeNull();
+    const malformed = fakeSql(() => [{ attempted_at: '2026-09-30T07:00:00Z', outcome: 'exploded' }]);
+    expect(await readLatestPrecisionAttempt(malformed, 'ws-1')).toBeNull();
+    expect(describePrecisionAttempt(null)).toBeNull();
+  });
+
+  it('writes one row per outcome, nulls the failed-only fields otherwise, and clips long errors', async () => {
+    const writes: unknown[][] = [];
+    const sql = fakeSql((_text, values) => {
+      writes.push(values);
+      return [{ id: writes.length }];
+    });
+    await recordMemoryPrecisionAttempt(sql, 'ws-7', { outcome: 'recorded', rowId: 9, jevGate: false });
+    await recordMemoryPrecisionAttempt(sql, 'ws-7', { outcome: 'flag-off' });
+    await recordMemoryPrecisionAttempt(sql, 'ws-7', { outcome: 'failed', stage: 'record', error: 'e'.repeat(5000), jevGate: true });
+    expect(writes[0]).toEqual(['ws-7', 'recorded', null, null, 9, false]);
+    expect(writes[1]).toEqual(['ws-7', 'flag-off', null, null, null, false]);
+    expect(writes[2].slice(0, 3)).toEqual(['ws-7', 'failed', 'record']);
+    expect(String(writes[2][3])).toHaveLength(2000);
+    expect(writes[2].slice(4)).toEqual([null, true]);
   });
 });

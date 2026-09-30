@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "jev-decision-model-integration-2026-09-29 AUTO-BAR-R-7-P-006: the P-006 decision applies every D-007 criterion to the recorded numbers without relaxing a budget",
+  "framework": "operational",
+  "command": [
+    "plans:get { slug: 'jev-decision-model-integration-2026-09-29', harness: 'papercusp', decisionId: 'D-007' }",
+    "plans:get { slug: 'jev-decision-model-integration-2026-09-29', harness: 'papercusp', decisionId: 'D-012' }",
+    "Read .papercusp/bench-reports/jev-admission-2026-09-30T03-42-38-294Z.md, section 'Arm D' (cross-check only; the report is gitignored scratch)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T07:19:00Z",
+  "finishedAt": "2026-09-30T07:21:00Z",
+  "summary": "D-007 sets four conjunctive criteria: (1) improvement, one-sided exact McNemar p < 0.05 on 30 hard negatives; (2) non-inferiority, bootstrap 95% CI lower bound >= -2pp R@10 and >= -0.02 exact-id MRR; (3) adversarial admit rate <= arm A; (4) order flip <= 5%, added p95 <= 400 ms, timeouts <= 2%. D-012 states, for arm B: (1) PASS 0/30 vs 8/30, p=0.0039; (2) FAIL, dR@10 CI lower bound -2.1pp misses -2pp by 0.1pp; (3) PASS 149/150 vs 150/150; (4) order flip 9.8% FAIL, p95 307 ms PASS, timeouts 0% PASS. For arm C: (1) FAIL 4/30, p=0.145; (2) PASS, dR@10 +4.0pp [0.7, 8.1]; (3) PASS; (4) order flip 9.6% FAIL, p95 229 ms PASS. For arm D: (1) FAIL 7/30 vs 8/30, p=0.5; (2) the only thresholds reaching significance (>= 0.925) cut R@10 by 21 to 84pp. Verdict: no arm meets D-007, nothing adopted, default stays Off, and the text says the 5% order budget 'is NOT relaxed after the fact'. Disclosed gap: D-012 does not state criteria (3) and (4) for arm D. They were not measured for D (the P-005 robustness battery covers the Jev arms only; the P-004 report lists them as 'pending P-005' for every arm). Because D-007 requires all four criteria, D's failure at (1) decides its verdict whatever (3) and (4) would show.",
+  "assertions": [
+    {
+      "id": "arm-b-all-four-criteria-stated",
+      "passed": true,
+      "evidence": "D-012 ARM B block states (1), (2), (3) and (4) with measured values and PASS/FAIL against the D-007 thresholds."
+    },
+    {
+      "id": "arm-c-all-four-criteria-stated",
+      "passed": true,
+      "evidence": "D-012 ARM C block states (1), (2), (3) and (4) with measured values and PASS/FAIL against the D-007 thresholds."
+    },
+    {
+      "id": "arm-d-deciding-criteria-stated",
+      "passed": true,
+      "evidence": "D-012 ARM D states (1) FAIL at t=0.7 (7/30, p=0.5, MDE80 +/-9.1pp) and the R@10 cost of the thresholds that reach significance; the report's Arm D table agrees (t=0.925: 3/30, p=0.0312, Bonferroni 0.500, dR@10 -21.4pp). Criteria (3) and (4) are not stated for D; see summary."
+    },
+    {
+      "id": "no-budget-relaxed",
+      "passed": true,
+      "evidence": "Every threshold D-012 applies equals the D-007 value (p < 0.05, -2pp, -0.02, <= arm A, 5%, 400 ms, 2%); D-012 adopts no arm and records the order budget as not relaxed."
+    }
+  ],
+  "workItemId": "WI-10004139",
+  "specId": "AUTO-BAR-R-7-P-006",
+  "planSlug": "jev-decision-model-integration-2026-09-29"
+}

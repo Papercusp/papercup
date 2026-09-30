@@ -16,6 +16,7 @@ import {
   PRECISION_BENCH_RESULT_MARKER,
   runBenchInWorker,
   runMemoryPrecisionMonitor,
+  type MemoryPrecisionBenchDeps,
   type PrecisionBenchRunOptions,
 } from './precision-monitor';
 import { parseJevGateShape, type MemoryPrecisionMetrics } from './precision-read';
@@ -457,5 +458,57 @@ describe('the gated shape tag (P-008)', () => {
     expect(parseJevGateShape('fusionMode:cosine-gated')).toBeNull();
     expect(parseJevGateShape(null)).toBeNull();
     expect(parseJevGateShape('')).toBeNull();
+  });
+});
+
+describe('runMemoryPrecisionMonitor attempt ledger (WI-10004133)', () => {
+  const base = { invalidate: () => {}, history: async () => [], escalateRecall: async () => {}, jevEffective: async () => 'off' as const, log: () => {} };
+  const capture = (into: unknown[]) => async (ws: string, attempt: unknown) => { into.push({ ws, attempt }); };
+
+  it('records exactly one attempt per fire, naming the outcome and, on failure, the stage and error', async () => {
+    const cases: Array<{ deps: MemoryPrecisionBenchDeps; expected: unknown; outcome: Record<string, unknown> }> = [
+      { deps: { flag: async () => false }, expected: { outcome: 'flag-off' }, outcome: { ran: false, skipReason: 'flag-off' } },
+      {
+        deps: { flag: async () => true, runBench: async () => { throw new Error('worker timed out'); }, record: async () => 1 },
+        expected: { outcome: 'failed', stage: 'bench', error: 'worker timed out', jevGate: false },
+        outcome: { ran: false, skipReason: 'failed', stage: 'bench', error: 'worker timed out' },
+      },
+      {
+        deps: { flag: async () => true, runBench: async () => METRICS, record: async () => { throw new Error('pg down'); } },
+        expected: { outcome: 'failed', stage: 'record', error: 'pg down', jevGate: false },
+        outcome: { ran: false, skipReason: 'failed', stage: 'record', error: 'pg down' },
+      },
+      {
+        deps: { flag: async () => true, runBench: async () => METRICS, record: async () => 42 },
+        expected: { outcome: 'recorded', rowId: 42, jevGate: false },
+        outcome: { ran: true, rowId: 42 },
+      },
+    ];
+    for (const c of cases) {
+      const captured: unknown[] = [];
+      const out = await runMemoryPrecisionMonitor({ workspaceId: 'ws-a', installSlug: 'op' }, { ...base, ...c.deps, recordAttempt: capture(captured) });
+      expect(out).toMatchObject(c.outcome);
+      expect(captured).toEqual([{ ws: 'ws-a', attempt: c.expected }]);
+    }
+  });
+
+  it('marks the attempt Jev-gated when the workspace switch is effectively On', async () => {
+    const captured: unknown[] = [];
+    await runMemoryPrecisionMonitor(
+      { workspaceId: 'ws-a', installSlug: 'op' },
+      { ...base, jevEffective: async () => 'on', flag: async () => true, runBench: async () => { throw new Error('x'); }, record: async () => 1, recordAttempt: capture(captured) },
+    );
+    expect(captured).toEqual([{ ws: 'ws-a', attempt: { outcome: 'failed', stage: 'bench', error: 'x', jevGate: true } }]);
+  });
+
+  it('a failing attempt write never changes the outcome or throws into the routine tick', async () => {
+    const logs: string[] = [];
+    const out = await runMemoryPrecisionMonitor(
+      { workspaceId: 'ws-a', installSlug: 'op' },
+      { ...base, log: (m) => logs.push(m), flag: async () => true, runBench: async () => METRICS, record: async () => 7,
+        recordAttempt: async () => { throw new Error('relation does not exist'); } },
+    );
+    expect(out).toMatchObject({ ran: true, rowId: 7 });
+    expect(logs.some((l) => l.includes('attempt record failed') && l.includes('relation does not exist'))).toBe(true);
   });
 });

@@ -25,9 +25,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 import {
   identityRuleSubscriberId,
   IDENTITY_RULE_SUBSCRIPTION_KIND,
-  IDENTITY_WEARER_ROLE,
   type IdentityWearer,
 } from '../agent-identities/identity-async-rules';
+import { IDENTITY_WEARER_ROLE } from '../agent-identities/wearer-authority';
 import type { AsyncRuleDeclaration } from '../cupboard/rule-store';
 import type { LatchedEventSubscriber } from './await/store';
 import {

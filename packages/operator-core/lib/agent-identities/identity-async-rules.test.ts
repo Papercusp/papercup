@@ -9,11 +9,11 @@ import {
   identityReactionReceiptId,
   identityRevisionTag,
   identityRuleSubscriberId,
-  IDENTITY_WEARER_ROLE,
   parseIdentityRuleSubscriberId,
   readIdentityWearer,
   wornAsyncRules,
 } from './identity-async-rules';
+import { IDENTITY_WEARER_ROLE } from './wearer-authority';
 import { wornRulePins, type AppliedIdentityRules } from './sync-hook-rules';
 
 const REVISION = 'a'.repeat(64);

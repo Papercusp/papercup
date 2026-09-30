@@ -46,6 +46,38 @@ pub struct PendingSuTurn {
 /// live keys, with these known kinds kept in a stable order.
 pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "pack", "plugin"];
 
+/// Opt-in trace of every SU-session event PUI reduces: `PUI_SU_EVENT_LOG=<path>`
+/// appends one line per event (its sequence, the cursor and replay head it met,
+/// and the event itself, clipped). A replay/dedupe fault is otherwise invisible:
+/// the screen shows only the merged result (WI-10004184). Off by default.
+fn trace_su_event(
+    event: &crate::su_session::SuSessionEvent,
+    sequence: u64,
+    last_sequence: u64,
+    replay_head: u64,
+) {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(path) = PATH
+        .get_or_init(|| std::env::var("PUI_SU_EVENT_LOG").ok().filter(|p| !p.is_empty()))
+        .as_deref()
+    else {
+        return;
+    };
+    let mut body = format!("{event:?}");
+    if body.len() > 600 {
+        let mut cut = 600;
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body.truncate(cut);
+    }
+    let line = format!("seq={sequence} last={last_sequence} head={replay_head} {body}\n");
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 fn normalize_cupboard_kind(kind: &str) -> &str {
     if kind == "tool-pack" {
         "pack"
@@ -3926,6 +3958,7 @@ impl App {
         }
         let replayed = envelope.sequence <= state.replay_head;
         let replay_done = envelope.sequence >= state.replay_head;
+        trace_su_event(&event, envelope.sequence, state.last_sequence, state.replay_head);
         if envelope.sequence > state.last_sequence.saturating_add(1) {
             // Keep rendering the newest event, but make the missing range
             // visible to the operator; the next reconnect starts from the
@@ -4300,6 +4333,7 @@ impl App {
 
     /// WI-10004162: a restored SU chat shows its saved owner turns before the
     /// engine replays the conversation, and SU replies are not in that record.
+    /// (See `trace_su_event` for the opt-in per-event trace.)
     /// When the replay reaches an owner turn already on screen, the saved
     /// messages after it wait aside, so the replayed reply lands under its own
     /// question instead of after every saved question. No match (a native

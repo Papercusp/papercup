@@ -317,7 +317,7 @@ export function syncContextRequests(input: {
         return input.produceContext({
           workspaceId: input.workspaceId, potSlug: input.potSlug, ownerId: input.ownerId, identityId,
           contribution: { id: rule.id, ref: context.ref, verb: context.verb, injection },
-          signal: call.signal,
+          signal: call.signal, deadlineAt: call.deadlineAt,
         });
       },
     };

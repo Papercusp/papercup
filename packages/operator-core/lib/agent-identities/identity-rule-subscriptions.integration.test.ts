@@ -157,7 +157,9 @@ describe('identity rule subscriptions + reaction receipts (real migrated PG)', (
     const deps: Partial<IdentityReactionDeps> = {
       resolvePot: async () => 'pot-a',
       validateFire: async () => ({ ok: true, target: TARGET, capability: 'tasks:create' }),
-      resolveFire: async () => ({ status: 'resolved', target: TARGET, tool: 'tasks:create', providerPackage: 'demo', providerVersion: '1.2.0' }),
+      resolveFire: async () => ({
+        status: 'resolved', target: TARGET, tool: 'tasks:create', providerPackage: 'demo', providerVersion: '1.2.0', providerKind: 'tool',
+      }),
       readCeiling: async () => ({ potSlug: 'pot-a', ceilings: [], protectedAdditions: [] }),
       isRegisteredTool: () => true,
       dispatch,

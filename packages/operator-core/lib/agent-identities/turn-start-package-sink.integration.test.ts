@@ -16,10 +16,20 @@ import { join } from 'node:path';
 import { stringify as stringifyYaml } from 'yaml';
 import type { Sql } from 'postgres';
 import { layerContentHash } from '@papercusp/orchestrator/blueprint';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import type { ProjectedTool, WrapDispatch } from '@papercusp/tooldef';
+import type { SavedRecipeAdapter } from '../agent-tools/orchestration/saved-recipe-adapter';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { DEFAULT_SINK_HOST_LIMITS, resetSinkEvaluatorForTests } from './sink-evaluator';
 import { projectPackageOrientationRows } from './package-orientation-classes';
-import { evaluateTurnStartPackageSink, packageSinkReceipt } from './turn-start-package-sink';
+import { inspectIdentityRecipeClassProvider } from './recipe-provider-conformance';
+import {
+  PACKAGE_SINK_SPAWN_ID,
+  defaultTurnStartPackageSinkDeps,
+  evaluateTurnStartPackageSink,
+  packageSinkReceipt,
+  resolvePackageSinkRecipeWearer,
+} from './turn-start-package-sink';
 
 const pg = vi.hoisted(() => ({ sql: null as Sql | null }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -53,9 +63,47 @@ const LIMITS = {
   turnCeiling: { tokens: DEFAULT_SINK_HOST_LIMITS.turnCeiling.tokens, wallClockMs: 30_000 },
 };
 
+// A real read-only tool and a saved recipe over it. The recipe provider's
+// evidence comes from the canonical inspector, never hand-written.
+const RECIPE_REVISION = 'a'.repeat(64);
+const notesTool: ProjectedTool = { pluginName: 'notes-plugin', description: 'read notes', effect: 'read',
+  expose: { mcp: { name: 'notes:read' } }, capabilities: ['notes:read'], inputSchema: {},
+  fn: vi.fn(async () => ({ notes: 'from the recipe' })) };
+const recipes: SavedRecipeAdapter = { inspect: vi.fn(async () => ({ ok: true as const,
+  recipe: { id: 'notes-recipe:read', script: 'return tools.notes.read({});' },
+  continuation: { id: 'notes-recipe:read', revision: RECIPE_REVISION, authority: { version: 1 as const,
+    revision: RECIPE_REVISION, refs: { workspaces: [], fleets: [], plans: [], harnesses: [], items: [], resources: [] },
+    requiresContext: false, runnable: true } } })), run: vi.fn(), search: vi.fn() };
+const recipeCalls: UnifiedToolContext[] = [];
+const recordCall: WrapDispatch = (_tool, _name, _args, ctx, next) => { recipeCalls.push(ctx); return next(ctx); };
+
 describe('turn-start package sink (real anchor + catalog + class registry)', () => {
   let db: OrgTestDb;
   let root: string;
+
+  async function inspectRecipe(id: string) {
+    const context: UnifiedToolContext = { workspaceId: WS, harnessSlug: POT, role: 'su',
+      principal: { slug: 'publisher', workspaceId: WS, capabilities: new Set(['*']) },
+      signal: new AbortController().signal, runId: 'run', spawnId: 'spawn', parentSpawnId: null,
+      featureId: null, chunkId: null, uiClientId: null, profile: 'engineer', transport: 'in_process',
+      tx: db.adminSql as UnifiedToolContext['tx'], log: () => {}, progress: () => {}, emit: () => {} };
+    const report = await inspectIdentityRecipeClassProvider({
+      capabilityClass: { ref: `${id}@1.0.0`, behavioralSuiteRef: null,
+        interfaceVerbs: { read: { inputSchema: { type: 'object' }, outputSchema: NOTES_SCHEMA } } },
+      providerPackage: 'notes-recipe', providerVersion: '1.0.0', registryRevision: 'registry-1',
+      recipes: { read: { recipe: { id: 'notes-recipe:read', revision: RECIPE_REVISION }, outputSchema: NOTES_SCHEMA } },
+      declaredNeeds: ['notes:read'], capabilityCeiling: new Set(['*']), context,
+    }, { tools: [notesTool], recipes });
+    expect(report.recipes.read).toMatchObject({ ok: true, requiredCapabilities: ['notes:read'] });
+    return report;
+  }
+
+  /** The production sink deps with the recipe runtime's tool surface and the ceiling pinned. */
+  const recipeSinkDeps = (ceiling: { ceilings: Array<{ denyCapabilities?: string[] }>; protectedAdditions: string[] } =
+    { ceilings: [], protectedAdditions: [] }) => defaultTurnStartPackageSinkDeps({
+    runtime: { tools: [notesTool], recipes, dispatchDeps: {}, wrapDispatch: recordCall },
+    readCeiling: async () => ceiling,
+  });
 
   async function registerClass(id: string, provider: string | null, kind: 'tool' | 'recipe' = 'tool') {
     const sql = db.adminSql;
