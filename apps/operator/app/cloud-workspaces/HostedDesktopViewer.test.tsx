@@ -10,7 +10,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import type { HostedDesktopViewerMode } from "./hosted-desktop-viewer-protocol";
+import {
+  HOSTED_DESKTOP_CONNECT_DEADLINE_MS,
+  type HostedDesktopViewerMode,
+} from "./hosted-desktop-viewer-protocol";
 
 const H = vi.hoisted(() => {
   class FakeSocket {
@@ -333,5 +336,78 @@ describe("<HostedDesktopViewer>", () => {
     ).toBe("error");
     const fullscreen = screen.getByRole("button", { name: /Fullscreen/ });
     expect((fullscreen as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  async function passDeadline(multiple = 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(
+        HOSTED_DESKTOP_CONNECT_DEADLINE_MS * multiple,
+      );
+    });
+  }
+
+  it("retries a desktop that never becomes ready on a fresh ticket, then fails visibly (WI-10004214)", async () => {
+    // The owner's first Take control sat on "Opening your desktop…" for minutes:
+    // the host's dial never settled, so desktop.ready never came and nothing
+    // bounded the wait. Each attempt now has a deadline and the last one errors.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { socket } = await renderViewer();
+      const panel = () =>
+        screen.getByRole("region", { name: /Desktop viewer/ });
+      expect(screen.getByText("Opening your desktop…")).toBeTruthy();
+
+      await passDeadline();
+      await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(2));
+      expect(socket.close).toHaveBeenCalledWith(1000, "viewer_detached");
+      expect(screen.getByText(/retrying \(attempt 2 of 3\)/)).toBeTruthy();
+
+      await passDeadline();
+      await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(3));
+      expect(screen.getByText(/retrying \(attempt 3 of 3\)/)).toBeTruthy();
+
+      await passDeadline();
+      await waitFor(() =>
+        expect(panel().getAttribute("data-state")).toBe("error"),
+      );
+      expect(H.sockets[2].close).toHaveBeenCalledWith(1000, "viewer_detached");
+      expect(H.fetch).toHaveBeenCalledTimes(3);
+      expect(
+        screen.getByText("Desktop stream failed: desktop_connect_timeout"),
+      ).toBeTruthy();
+
+      // A failed viewer stays failed until the user asks again.
+      await passDeadline(2);
+      expect(H.sockets).toHaveLength(3);
+
+      fireEvent.click(screen.getByRole("button", { name: /Reconnect/ }));
+      await waitFor(() => expect(H.FakeRFB.instances).toHaveLength(4));
+      expect(screen.getByText("Opening your desktop…")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a desktop that connected within the deadline alone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { socket, rfb } = await renderViewer();
+      act(() => {
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "desktop.ready",
+            action: "watch",
+            inputAllowed: false,
+          }),
+        });
+        rfb.emit("connect");
+      });
+      await passDeadline(3);
+      expect(H.sockets).toHaveLength(1);
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(screen.getByText("connected · watch-only")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

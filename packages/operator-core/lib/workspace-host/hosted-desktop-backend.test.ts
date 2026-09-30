@@ -245,6 +245,33 @@ describe('dialDesktopSocket', () => {
     await expect(dial).rejects.toMatchObject({ code: 'desktop_dial_failed' });
   });
 
+  it('rejects an upgrade that never opens at the deadline and aborts the pending socket (WI-10004214)', async () => {
+    // A stalled KasmVNC upgrade used to leave the dial pending forever, so the host
+    // never sent desktop.ready and the viewer sat on "Opening your desktop…".
+    vi.useFakeTimers();
+    try {
+      const wire = new FakeWire('ws://x', {});
+      const dial = dialDesktopSocket(dialInput, { createSocket: () => wire, dialTimeoutMs: 5_000 });
+      const outcome = dial.then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(wire.closedWith).toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(outcome).resolves.toMatchObject({
+        code: 'desktop_dial_failed',
+        message: 'dial_timeout_5000ms',
+      });
+      expect(wire.closedWith).toEqual({ code: 1000, reason: 'dial_timeout' });
+      // A late open after the deadline must not resurrect the dial.
+      wire.emitOpen();
+      await expect(outcome).resolves.not.toBe('resolved');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('pumps sandbox→viewer bytes and viewer→sandbox writes', async () => {
     const wire = new FakeWire('ws://x', {});
     const socket = await dialDesktopSocket(dialInput, {
