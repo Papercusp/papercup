@@ -34,6 +34,7 @@ import { isHostSingleton } from '../background-workers';
 import { cloudflareApi, CloudflareApiError, type CloudflareApi, type CloudflareZone } from './cloudflare-api';
 import {
   assertPort,
+  type ArgoTunnelLogin,
   normalizeHostname,
   normalizeLabel,
   OWN_TUNNEL_DEFAULT_LABEL,
@@ -108,6 +109,11 @@ export interface OwnTunnelDeps {
     readonly stop: () => Promise<void>;
   };
   readonly cloudflaredBin: () => string | null;
+  /** The finished one-click sign-in (runtime.ts), if any. */
+  readonly signIn: {
+    readonly completed: () => ArgoTunnelLogin | null;
+    readonly clear: () => void;
+  };
   readonly pickFreePort: (avoid: readonly number[]) => Promise<number>;
   /** Does an operator answer on this loopback port? Used before adopting a stale operator_port. */
   readonly operatorAnswers: (port: number) => Promise<boolean>;
@@ -189,6 +195,7 @@ export function defaultOwnTunnelDeps(overrides: Partial<OwnTunnelDeps> = {}, sto
       stop: () => stopConnector(),
     },
     cloudflaredBin: () => resolveCloudflaredBinary(),
+    signIn: { completed: completedLogin, clear: cancelLogin },
     pickFreePort: pickFreeLoopbackPort,
     operatorAnswers: defaultOperatorAnswers,
     installLabel: () => osHostname(),
@@ -297,7 +304,7 @@ export function cancelCloudflareSignIn(): void {
 
 /** After sign-in completes: the zone the user picked, so the wizard can offer `<name>.<zone>`. */
 export async function signedInZone(deps: OwnTunnelDeps = defaultOwnTunnelDeps()): Promise<{ zoneId: string; zoneName: string } | null> {
-  const login = completedLogin();
+  const login = deps.signIn.completed();
   if (!login) return null;
   const zone = await deps.api(login.apiToken).getZone(login.zoneId);
   return { zoneId: zone.id, zoneName: zone.name };
@@ -339,7 +346,7 @@ export async function provisionOwnTunnel(
   deps: OwnTunnelDeps = defaultOwnTunnelDeps(),
 ): Promise<OwnTunnelStatus> {
   const pasted = input.apiToken?.trim();
-  const login = pasted ? null : completedLogin();
+  const login = pasted ? null : deps.signIn.completed();
   if (!pasted && !login) {
     throw new OwnTunnelInputError('not_signed_in', 'sign in to Cloudflare first, or paste an API token');
   }
@@ -387,7 +394,7 @@ export async function provisionOwnTunnel(
     apiToken: pasted ?? login!.apiToken,
     runToken: provisioned.runToken,
   });
-  if (login) cancelLogin();
+  if (login) deps.signIn.clear();
   await reconcileOwnTunnel(deps);
   return ownTunnelStatus(deps);
 }
@@ -531,6 +538,8 @@ async function reconcileOnce(deps: OwnTunnelDeps): Promise<ReconcileResult> {
       await deps.connector.stop();
       connector = 'stopped';
     } else connector = 'idle';
+    // A deliberate stop is not a crash: switching back on starts cloudflared without backoff.
+    state.lastConnectorStartAt = 0;
   } else {
     const bin = deps.cloudflaredBin();
     if (!bin) {

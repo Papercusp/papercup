@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { SETUP_STEPS, findStep } from './steps';
 
 describe('Setup Wizard steps', () => {
-  it('exactly 12 steps in fixed order', () => {
-    expect(SETUP_STEPS).toHaveLength(12);
+  it('exactly 13 steps in fixed order', () => {
+    expect(SETUP_STEPS).toHaveLength(13);
     expect(SETUP_STEPS.map((s) => s.id)).toEqual([
       'os-permissions',
       'embedded-pg',
@@ -14,6 +14,8 @@ describe('Setup Wizard steps', () => {
       'keys',
       'git',
       'mobile-pairing',
+      // external-app-access P-009 (D-001): the user's own tunnel, optional.
+      'own-tunnel',
       'backups',
       'auto-update',
       'telemetry',
