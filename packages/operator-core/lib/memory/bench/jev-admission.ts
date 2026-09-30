@@ -475,7 +475,18 @@ export function evaluateFilterArm(
 
   const base = { arm: input.arm, label: input.label, floor: input.floor, thresholds: results, operational, pendingP005: [...PENDING_P005] };
 
-  if (operational.queries > 0 && operational.failOpen === operational.queries) {
+  if (operational.queries === 0) {
+    return {
+      ...base,
+      status: 'void',
+      selectedThreshold: null,
+      reasons: [
+        'no query had a candidate to judge — the replay admitted nothing, so the filter was never exercised ' +
+          '(an instrument failure, not a measurement)',
+      ],
+    };
+  }
+  if (operational.failOpen === operational.queries) {
     return {
       ...base,
       status: 'void',
