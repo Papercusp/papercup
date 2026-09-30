@@ -43,6 +43,7 @@ import {
   markOwnTunnelListenerSeamConfigured,
   startOwnTunnelReconciler,
 } from '@papercusp/operator-core/lib/own-tunnel/service';
+import { startPortalRelayReconciler } from '@papercusp/operator-core/lib/remote-access/relay-opt-in';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { requestOnlyHost } from '@papercusp/operator-core/lib/background-workers';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
@@ -982,6 +983,10 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   // Idempotent, never throws, and it re-reads the row every few seconds, so a first pass
   // that runs before boot migrations have applied simply converges on a later tick.
   startOwnTunnelReconciler();
+  // external-app-access P-008 (D-031): the opt-in Papercusp relay connector, the other route
+  // an install can use. Same shape: only the host singleton ever dials, a Papercusp-hosted
+  // machine never does, and a pass before boot migrations apply converges on a later tick.
+  startPortalRelayReconciler();
   // WI-6594: relay each worker's P-009 stamp declarations to every other worker.
   // The primary is the hub because only it holds a handle to every worker; it also
   // applies each patch locally, since it runs the background machinery whose own
