@@ -11,13 +11,23 @@
  * this whenever someone asks '<X>'" were saved (P(concrete) 0.55-0.82) because <X> was a
  * gold query phrased as a statement ("changing it to a membership check fixed it"): the
  * model credited the memory with its trigger's words.
+ *
+ * Adopted 2026-09-30 as `trigger` with refusal threshold 0.4 (jev-conflict-judge.ts
+ * CONTENT_FREE_MAX_P_CONCRETE), on the third of three disjoint 600-memory real samples
+ * after two pre-registered points failed (WI-10004428 thread; evidence
+ * docs/evidence/jev-substance-trigger-2026-09-30.json). The wording and the threshold
+ * are one measured pair: trigger lowers P(concrete) across the board, so changing either
+ * without the other voids the measurement.
  */
-import type { DecisionRequest, QuestionMap, YesNoQuestion } from '@papercusp/decision-model';
+import type { YesNoQuestion } from '@papercusp/decision-model';
 
 import { SUBSTANCE_CRITERIA, SUBSTANCE_INSTRUCTIONS } from './jev-admission-request';
 
 export const SUBSTANCE_WORDINGS = ['v1', 'trigger'] as const;
 export type SubstanceWording = (typeof SUBSTANCE_WORDINGS)[number];
+
+/** The wording memory:remember and the content-free sweep ask. Re-measure the pair before changing it. */
+export const JEV_SUBSTANCE_WORDING: SubstanceWording = 'trigger';
 
 export const TRIGGER_SUBSTANCE_INSTRUCTIONS =
   `${SUBSTANCE_INSTRUCTIONS} Text the memory only quotes as the occasion to recall it, such as a question someone ` +
@@ -43,9 +53,9 @@ export function substanceWordingParts(wording: SubstanceWording): {
     : { instructions: SUBSTANCE_INSTRUCTIONS, criteria: SUBSTANCE_CRITERIA };
 }
 
-/** Parses a CLI `--substance-wording` value; an absent flag means `v1`, anything unknown throws. */
+/** Parses a CLI `--substance-wording` value; an absent flag means the production wording, anything unknown throws. */
 export function parseSubstanceWording(raw: string | undefined): SubstanceWording {
-  const v = raw ?? 'v1';
+  const v = raw ?? JEV_SUBSTANCE_WORDING;
   if (!(SUBSTANCE_WORDINGS as readonly string[]).includes(v)) {
     throw new Error(`--substance-wording must be ${SUBSTANCE_WORDINGS.join('|')}, got ${v}`);
   }
@@ -56,20 +66,4 @@ export function parseSubstanceWording(raw: string | undefined): SubstanceWording
 export function substanceQuestion(wording: SubstanceWording, memoryText: string): YesNoQuestion {
   const { instructions, criteria } = substanceWordingParts(wording);
   return { type: 'yesNo', instructions: `${instructions}\n\nMemory:\n${memoryText}`, criteria };
-}
-
-/**
- * Returns `request` with its substance question re-asked under `wording`; every other
- * question and the state are untouched. `v1` returns the request unchanged, so a v1
- * bench run sends exactly the production bytes.
- */
-export function withSubstanceWording(
-  request: DecisionRequest<QuestionMap>,
-  substanceId: string,
-  memoryText: string,
-  wording: SubstanceWording,
-): DecisionRequest<QuestionMap> {
-  if (wording === 'v1') return request;
-  if (!(substanceId in request.questions)) throw new Error(`withSubstanceWording: no question ${substanceId}`);
-  return { ...request, questions: { ...request.questions, [substanceId]: substanceQuestion(wording, memoryText) } };
 }

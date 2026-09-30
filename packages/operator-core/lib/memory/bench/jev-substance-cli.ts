@@ -2,7 +2,13 @@
  * Save-time substance check measurement CLI (plan jev-performance-improvements-2026-09-30, P-010).
  *
  *   npx tsx packages/operator-core/lib/memory/bench/jev-substance-cli.ts \
- *     [--sample 600] [--seed p010] [--paired 150] [--concurrency 4]
+ *     [--sample 600] [--seed p010] [--paired 150] [--concurrency 4] [--substance-wording v1|trigger]
+ *
+ * `--substance-wording` (WI-10004428) asks the substance question under a named wording
+ * (jev-substance-wording.ts); absent, it asks the production JEV_SUBSTANCE_WORDING.
+ * `--exclude-sample-seed a,b` draws a sample disjoint from those seeds' samples.
+ * Every run also scores the held-out trigger set (jev-substance-heldout.ts) at the
+ * production threshold, CONTENT_FREE_MAX_P_CONCRETE.
  *
  * Asks memory:remember's substance question (jev-conflict-judge.ts buildConflictRequest
  * with `substance`) of every bench self-promoter and of a deterministic sample of the
@@ -24,10 +30,23 @@ import { JEV_PINNED_MODEL } from '@papercusp/decision-model';
 import { decisionModelLedgerStats } from '../../decision-model-ledger';
 import { classifyPool, normalizeForDedup } from '../corpus-sweep';
 import { liveCorpusSweepDeps } from '../corpus-sweep-io';
-import { buildConflictRequest, JEV_CONFLICT_TIMEOUT_MS, substancePConcrete } from '../jev-conflict-judge';
+import {
+  buildConflictRequest,
+  CONTENT_FREE_MAX_P_CONCRETE,
+  JEV_CONFLICT_TIMEOUT_MS,
+  substancePConcrete,
+} from '../jev-conflict-judge';
 import { ensureJevDecisionClient, readJevApiKey } from '../jev-settings';
+import { parseSubstanceWording } from '../jev-substance-wording';
 import { loadGoldSetFixture } from './gold-set';
 import { buildAdversarialCorpus } from './jev-robustness';
+import {
+  HELDOUT_TRIGGER_CONCRETE,
+  HELDOUT_TRIGGER_PROMOTERS,
+  renderHeldoutMarkdown,
+  summarizeHeldout,
+  type HeldoutScored,
+} from './jev-substance-heldout';
 import {
   pairedShift,
   percentile,
@@ -57,6 +76,13 @@ const sampleSize = intArg('--sample', 600);
 const seed = argValue('--seed') ?? 'p010';
 const pairedN = intArg('--paired', 150);
 const concurrency = Math.max(1, intArg('--concurrency', 4));
+const wording = parseSubstanceWording(argValue('--substance-wording'));
+/**
+ * Draw the sample from rows earlier samples did NOT draw: a fresh, disjoint confirmation
+ * sample. Comma-separated seeds are replayed in order, each drawn from what the previous
+ * ones left, which reproduces how those earlier runs were themselves drawn.
+ */
+const excludeSampleSeed = argValue('--exclude-sample-seed');
 
 async function mapPool<T, R>(items: readonly T[], width: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
@@ -82,7 +108,7 @@ async function ask(text: string, neighbours: readonly string[] = []): Promise<{ 
   const { request, substanceId } = buildConflictRequest(
     text,
     neighbours.map((t) => ({ text: t })),
-    { substance: true },
+    { substance: true, substanceWording: wording },
   );
   const started = Date.now();
   try {
@@ -115,7 +141,15 @@ try {
       live.push({ id: r.id, pool: r.pool, text: r.text });
     }
   }
-  const sample = seededSample(live, sampleSize, seed);
+  const excluded = new Set<string>();
+  for (const s of (excludeSampleSeed ?? '').split(',').filter(Boolean)) {
+    for (const r of seededSample(live.filter((x) => !excluded.has(x.id)), sampleSize, s)) excluded.add(r.id);
+  }
+  const sample = seededSample(
+    live.filter((r) => !excluded.has(r.id)),
+    sampleSize,
+    seed,
+  );
   const promoters = buildAdversarialCorpus(loadGoldSetFixture().queries).map((e) => ({ id: e.key, pool: null, text: e.text }));
   console.log(`[jev-substance] ${live.length} live real memories in ${pools.length} pools; sample ${sample.length}; ${promoters.length} self-promoters`);
 
@@ -143,12 +177,26 @@ try {
   const pairs = await mapPool(pairedRows, concurrency, async (row, i) => {
     const neighbours = [1, 2, 3].map((k) => sample[(i * 7 + k * 13) % sample.length].text).filter((t) => t !== row.text);
     const again = await ask(row.text, neighbours);
-    return { alone: row.pConcrete, withNeighbours: again.p };
+    return { id: row.id, population: row.population, alone: row.pConcrete, withNeighbours: again.p };
   });
   const paired = pairedN > 0 && threshold !== null ? pairedShift(pairs, threshold) : null;
 
+  // Held-out trigger set, scored at the production threshold (never used to choose t).
+  const heldoutInputs = [
+    ...HELDOUT_TRIGGER_PROMOTERS.map((r) => ({ ...r, population: 'heldout-promoter' as const })),
+    ...HELDOUT_TRIGGER_CONCRETE.map((r) => ({ ...r, population: 'heldout-concrete' as const })),
+  ];
+  const heldoutRows: HeldoutScored[] = await mapPool(heldoutInputs, concurrency, async (item) => {
+    const r = await ask(item.text);
+    return { ...item, pConcrete: r.p };
+  });
+  const heldout = summarizeHeldout(heldoutRows, CONTENT_FREE_MAX_P_CONCRETE);
+  const benchSavedAtProduction = rows.filter(
+    (r) => r.population === 'self-promoter' && r.pConcrete !== null && r.pConcrete >= CONTENT_FREE_MAX_P_CONCRETE,
+  );
+
   const deadline = Date.now() + 15_000;
-  const liveCalls = inputs.length + pairedRows.length;
+  const liveCalls = inputs.length + pairedRows.length + heldoutInputs.length;
   while (Date.now() < deadline) {
     const st = decisionModelLedgerStats();
     if (st.written + st.failed >= liveCalls) break;
@@ -169,11 +217,15 @@ try {
     generatedAt,
     params: {
       jevModel: JEV_PINNED_MODEL,
-      question: 'jev-conflict-judge.ts buildConflictRequest { substance: true } (SUBSTANCE_INSTRUCTIONS, P-005 wording)',
+      question: 'jev-conflict-judge.ts buildConflictRequest { substance: true }, substance question per jev-substance-wording.ts',
+      substanceWording: wording,
+      productionThreshold: CONTENT_FREE_MAX_P_CONCRETE,
+      benchSelfPromotersSavedAtProductionThreshold: benchSavedAtProduction.length,
       liveRealMemories: live.length,
       pools: pools.length,
       realSample: real.length,
       seed,
+      excludedSampleSeed: excludeSampleSeed ?? null,
       selfPromoters: promoters.length,
       timeoutMs: JEV_CONFLICT_TIMEOUT_MS,
       pairedRows: pairedRows.length,
@@ -187,12 +239,16 @@ try {
     paired,
     latency: { p50: percentile(latencies, 0.5), p95: percentile(latencies, 0.95), failures: rows.filter((r) => r.failure).length },
   };
-  const md = renderSubstanceMarkdown(report);
+  const md = `${renderSubstanceMarkdown(report)}\n\n${renderHeldoutMarkdown(heldout)}`;
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..');
   const dir = path.join(repoRoot, '.papercusp', 'bench-reports');
   fs.mkdirSync(dir, { recursive: true });
-  const stamp = generatedAt.replace(/[:.]/g, '-');
-  fs.writeFileSync(path.join(dir, `jev-substance-${stamp}.json`), JSON.stringify({ report, pairs }, null, 2) + '\n', 'utf8');
+  const stamp = `${wording}-${generatedAt.replace(/[:.]/g, '-')}`;
+  fs.writeFileSync(
+    path.join(dir, `jev-substance-${stamp}.json`),
+    JSON.stringify({ report, pairs, heldoutRows, heldout }, null, 2) + '\n',
+    'utf8',
+  );
   fs.writeFileSync(path.join(dir, `jev-substance-${stamp}.md`), md + '\n', 'utf8');
   console.log('\n' + md + '\n');
   console.log('wrote', path.join(dir, `jev-substance-${stamp}.md`));
