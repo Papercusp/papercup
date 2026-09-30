@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PDS P-003: the rig preflight (now six checks, with integration-queue-clear) measures every check in seconds on the real physical rig and refuses a violated check by name before any phase (live, 2026-09-30 re-proof)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "physical-drill-iteration-speed-2026-09-29",
+  "workItem": "WI-10003974",
+  "specs": ["AUTO-BAR-R-5-P-003@2"],
+  "observer": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+  "outcome": "passed",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T10:52:00Z",
+  "finishedAt": "2026-09-30T11:10:32Z",
+  "supersedes": "docs/evidence/pds-p003-live-rig-preflight-2026-09-30.json (five checks; went source-stale when integration-queue-clear was added to physical-drill-preflight.ts after same-box run 12)",
+  "summary": "At 11:10:25Z, on the real physical rig (tower + VM aviweiss@172.31.44.2), a standalone `physical-drill-producer rig-preflight` measured all six checks and each passed: drill-source-committed, canary-mode-baseline, vm-trust-hold-ready, vm-payload-current, hosts-answering and integration-queue-clear. The report's elapsedMs was 1188; the process took 7.1 s of wall time including tsx startup. Superproject HEAD was eb6869be68 and the papercusp-desktop gitlink was bcdcf7e1cf. `git status --porcelain` on the pot-git drill source was empty, so the source was committed. The new integration-queue-clear check was also run against the live same-box r13 rig after run 12 failed, before teardown. It refused by name: the tower's ratify queue held a below-steer-tier member head that canonical staging did not contain. That is the exact state that failed Phase D of run 12 after about 60 minutes. The preflight named it in seconds, before any phase.",
+  "assertions": [
+    {
+      "id": "all-six-checks-measured-fast",
+      "criteria": "On the real rig the preflight measures every check and completes in under a minute.",
+      "observed": "Report schemaVersion hive-git-physical-rig-preflight/v1, checks=[drill-source-committed, canary-mode-baseline, vm-trust-hold-ready, vm-payload-current, hosts-answering, integration-queue-clear], all results ok=true reason=ok, firstFailure=null, elapsedMs=1188, observedAt 2026-09-30T11:10:32.213Z; process wall 7099 ms (11:10:25.227Z-11:10:32.326Z), exit 0. Report sha256 b457a85f75c1528264e60f0c97b95aad6ca11384bd73525781b4111cf595748f.",
+      "evidence": "command: PAPERCUSP_REPO_DIR=<repo> PCUSP_VM_SSH=aviweiss@172.31.44.2 node_modules/.bin/tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts rig-preflight --vm-github-user-id 1567022 (the call hive-git-physical-probe.sh makes before its first rig ssh, run standalone); report kept at .papercusp/scratch/pds-r5-live-preflight-6.json",
+      "passed": true
+    },
+    {
+      "id": "new-check-refuses-by-name-on-a-live-rig",
+      "criteria": "A violated check refuses before any phase and the refusal names the check.",
+      "observed": "Against the live same-box r13 rig left by run 12 (before teardown), rig-preflight --check integration-queue-clear exited non-zero in 5.8 s with: 'PHYSICAL_PREFLIGHT_FAILED integration-queue-clear: the tower integrator holds 1 member head(s) in its ratify queue that staging e6ef2827d75e does not contain: 3DCu5+PUoj6h@cde3db7b6489 (below-steer-tier); the tower worktree HEAD cde3db7b6489 is not contained in canonical staging e6ef2827d75e, so Phase D's tower convergence can never reach the run-bound head'. Run 12 (task 0munxrb941ngavpk1hf) had spent 10:01Z-11:03Z reaching that failure at Phase D (fingerprint structured:98b434af971a).",
+      "evidence": ".papercusp/scratch/pds-r12-live-queue-refusal.txt; attempt ledger harness_shared.task_ledger task 0munxrb941ngavpk1hf; WI-10003976 post 1151165",
+      "passed": true
+    },
+    {
+      "id": "earlier-real-refusal-before-any-phase",
+      "criteria": "The probe refuses a real run before any phase when a check fails.",
+      "observed": "Run 20260930T020304Z-3605465: 'PHYSICAL_PREFLIGHT_FAILED drill-source-committed' naming the two uncommitted files, 19 s after the harness started, with an empty physical-probe.stdout and no PHASE_START line (carried over from the five-check proof; the probe path is unchanged).",
+      "evidence": "docs/evidence/pds-p003-live-rig-preflight-2026-09-30.json assertion refusal-names-check-before-any-phase",
+      "passed": true
+    }
+  ],
+  "falsifier": "A physical run reaches its first rig ssh before rig-preflight has run. A violation of any of the six checks lets a run start. A refusal does not name its check. An unmeasured check passes. The preflight takes a minute or more.",
+  "command": [
+    "PCUSP_VM_SSH=aviweiss@172.31.44.2 node_modules/.bin/tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts rig-preflight --vm-github-user-id 1567022",
+    "HIVE_GIT_RIG=same-box (r13 rig) tsx packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts rig-preflight --check integration-queue-clear"
+  ],
+  "note": "The standalone preflight is read-only and does not mutate the rig. Unit guard: physical-drill-preflight.test.ts; its test-run id is bound separately as the test evidence for this clause.",
+  "sourcePaths": [
+    "packages/operator-core/lib/sync/pot-git/physical-drill-preflight.ts",
+    "packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts",
+    "papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh"
+  ]
+}
