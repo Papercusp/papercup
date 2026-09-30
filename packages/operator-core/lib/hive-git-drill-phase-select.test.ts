@@ -75,8 +75,8 @@ describe('physical-phase-select.sh — the one parser the drill, probe and scena
   it('canonicalises --only-phase (order, case, duplicates) and expands --from-phase', () => {
     expect(lib('physical_phase_select only-phase "e,d,E"').stdout.trim()).toBe('D,E');
     expect(lib('physical_phase_select only-phase h').stdout.trim()).toBe('H');
-    expect(lib('physical_phase_select from-phase f').stdout.trim()).toBe('F,G,H');
-    expect(lib('physical_phase_list ""').stdout.trim()).toBe('A,B,C,D,E,F,G,H');
+    expect(lib('physical_phase_select from-phase f').stdout.trim()).toBe('F,G,H,I,J');
+    expect(lib('physical_phase_list ""').stdout.trim()).toBe('A,B,C,D,E,F,G,H,I,J');
   });
 
   it('refuses anything that is not a phase selection, with exit 2', () => {
@@ -94,7 +94,9 @@ describe('physical-phase-select.sh — the one parser the drill, probe and scena
 
   it('only a selection of every phase is a full (evidence-eligible) run', () => {
     expect(lib('physical_phase_is_full ""').status).toBe(0);
-    expect(lib('physical_phase_is_full "H,G,F,E,D,C,B,A"').status).toBe(0);
+    expect(lib('physical_phase_is_full "J,I,H,G,F,E,D,C,B,A"').status).toBe(0);
+    // A list that omits the newest phase is partial: the phase set is derived from PHYSICAL_PHASES_ALL.
+    expect(lib('physical_phase_is_full "I,H,G,F,E,D,C,B,A"').status).toBe(1);
     expect(lib('physical_phase_is_full D').status).toBe(1);
     expect(lib('physical_phase_is_full "$(physical_phase_select from-phase B)"').status).toBe(1);
   });
@@ -117,14 +119,14 @@ describe('the scenario honours the selection', () => {
       fullRun: false,
       releaseEvidence: false,
     });
-    expect(JSON.parse(plan().stdout)).toMatchObject({ phases: 'A,B,C,D,E,F,G,H', fullRun: true, releaseEvidence: true });
+    expect(JSON.parse(plan().stdout)).toMatchObject({ phases: 'A,B,C,D,E,F,G,H,I,J', fullRun: true, releaseEvidence: true });
     expect(plan('Z').status).not.toBe(0);
   });
 
   it('the real run_all_phases starts only the selected phase and announces every other as PHASE_SKIP', () => {
     const body = extractFunction(scenario, 'run_all_phases');
-    const fns = [...body.matchAll(/phase_start ([A-H]) (phase_[a-h]_[a-z_]+)/g)].map(([, letter, fn]) => ({ letter, fn }));
-    expect(fns.map((f) => f.letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const fns = [...body.matchAll(/phase_start ([A-Z]) (phase_[a-z]_[a-z_]+)/g)].map(([, letter, fn]) => ({ letter, fn }));
+    expect(fns.map((f) => f.letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']);
     const script = [
       'set -euo pipefail',
       extractFunction(scenario, 'now_iso'),
@@ -158,8 +160,8 @@ describe('hive-git-drill.sh --only-phase / --from-phase', () => {
 
   it('refuses a bad or unusable selection up front, before any work (exit 2, no work dir)', () => {
     const cases: [string[], Record<string, string>, RegExp][] = [
-      [['--only-phase', 'Z'], {}, /--only-phase wants A-H letters/],
-      [['--only-phase'], {}, /--only-phase wants A-H letters/],
+      [['--only-phase', 'Z'], {}, /--only-phase wants A-J letters/],
+      [['--only-phase'], {}, /--only-phase wants A-J letters/],
       [['--only-phase=D'], {}, /needs HIVE_GIT_PHYSICAL_PROBE_CMD/],
       [['--from-phase', 'A'], { HIVE_GIT_PHYSICAL_PROBE_CMD: '/bin/false' }, /every physical phase .* full release run/],
       [['--from-phase', 'D'], { HIVE_GIT_PHYSICAL_PROBE_CMD: '/bin/false', REQUIRE_ZERO_SKIPS: '1' }, /partial re-run can never satisfy it/],
@@ -226,7 +228,9 @@ echo "hive-git-physical-scenario: stub: VM worktree did not converge" >&2; exit 
   it('a failing partial run names the physical phase and keeps its output, with the rest not-selected', () => {
     const r = drillPartial('fail', ['--from-phase=d']);
     expect(r.status).toBe(1);
-    expect(r.probeSaw?.split('|')[0]).toBe('D,E,F,G,H');
+    // D through the last phase the shared parser knows (derived, so a new phase needs no edit here).
+    expect(r.probeSaw?.split('|')[0]).toBe(lib('physical_phase_select from-phase d').stdout.trim());
+    expect(r.probeSaw?.split('|')[0]).toMatch(/^D,E,F,G,H,I/);
     expect(r.stdout).toMatch(/physical E\/G adapter failed \(exit 1\) in phase D/);
     expect(r.stdout).toMatch(/OVERALL: FAIL/);
     expect(r.stdout).toMatch(

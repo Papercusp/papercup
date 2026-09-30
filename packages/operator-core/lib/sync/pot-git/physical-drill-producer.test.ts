@@ -4,8 +4,17 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PHYSICAL_DRILL_INCOMPLETE_EXIT,
   PhysicalDrillIncompleteEvidenceError,
+  physicalPhaseJMode,
   runPhysicalDrillCliToExit,
 } from './physical-drill-producer';
+import {
+  PHASE_J_MIN_ATTEMPTS,
+  PHASE_J_MIN_HOLD_MS,
+  PHASE_J_OBSERVATION_SCHEMA,
+  phaseJWriteSummary,
+  phaseJWriteTitle,
+  type PhysicalPhaseJObservation,
+} from './physical-drill-phase-j';
 
 // WI-10003741 / P-505 run 23: a producer mode that opened the @papercusp/locks
 // pg pool wrote its receipt and then never exited, so the scenario's ssh call
@@ -104,5 +113,105 @@ describe('runPhysicalDrillCliToExit', () => {
     expect(entry).toContain('exit: (code) => process.exit(code)');
     // Setting only exitCode is the shape that hung run 23.
     expect(source).not.toMatch(/process\.exitCode\s*=/);
+  });
+});
+
+// WI-10003961 / P-521 F4: the scenario drives Phase J only through these modes.
+describe('physicalPhaseJMode', () => {
+  const runId = 'p521-physical-20260930T011500Z-1234';
+  const observedAt = '2026-09-30T01:20:00.000Z';
+
+  function heldObservation(attempts: number, heldMs: number): PhysicalPhaseJObservation {
+    return {
+      schemaVersion: PHASE_J_OBSERVATION_SCHEMA,
+      hostId: 'vm',
+      step: 'held',
+      runId,
+      observedAt,
+      observerPid: 4242,
+      writes: { A: { count: 0, row: null }, B: { count: 0, row: null } },
+      cursors: [{
+        harnessSlug: 'hello-world-3-pot',
+        logKeyHex: 'ab'.repeat(32),
+        position: 7,
+        peerDevicePubkey: 'tower-device',
+        updatedAt: observedAt,
+        applyFailure: {
+          position: 8,
+          kind: 'retryable',
+          groupKey: 'work_items/WI-501',
+          reason: `57P03: p521 phase J bounded target-apply outage ${runId}`,
+          errorCode: '57P03',
+          attempts,
+          firstSeenAt: Date.parse(observedAt) - heldMs,
+          lastSeenAt: Date.parse(observedAt),
+        },
+      }],
+      faultPresent: true,
+    };
+  }
+
+  it('emits the tower create args for a run-bound write, and nothing else', async () => {
+    await expect(physicalPhaseJMode('phase-j-write', ['A', runId])).resolves.toEqual({
+      kind: 'task',
+      title: phaseJWriteTitle(runId, 'A'),
+      summary: phaseJWriteSummary(runId, 'A'),
+      force: true,
+    });
+    await expect(physicalPhaseJMode('phase-j-write', ['C', runId])).rejects.toThrow(/usage: .*phase-j-write <A\|B>/);
+    await expect(physicalPhaseJMode('phase-j-write', ['B'])).rejects.toThrow(/usage/);
+  });
+
+  it('only ever faults the VM, and routes each action to its own step', async () => {
+    const install = vi.fn(async () => ({ action: 'install' }) as never);
+    const remove = vi.fn(async () => ({ action: 'remove' }) as never);
+    const sweep = vi.fn(async () => ({ removed: [], remaining: [] }));
+    const deps = { install, remove, sweep };
+    // The tower is the fleet's live bg-host: no mode may fault it.
+    await expect(physicalPhaseJMode('phase-j-fault', ['tower', 'install', runId], deps)).rejects.toThrow(/usage/);
+    await expect(physicalPhaseJMode('phase-j-fault', ['vm', 'drop', runId], deps)).rejects.toThrow(/usage/);
+    await expect(physicalPhaseJMode('phase-j-fault', ['vm', 'install'], deps)).rejects.toThrow(/usage/);
+    await expect(physicalPhaseJMode('phase-j-fault', ['vm', 'sweep', runId], deps)).rejects.toThrow(/usage/);
+    expect(install).not.toHaveBeenCalled();
+    await physicalPhaseJMode('phase-j-fault', ['vm', 'install', runId], deps);
+    await physicalPhaseJMode('phase-j-fault', ['vm', 'remove', runId], deps);
+    await physicalPhaseJMode('phase-j-fault', ['vm', 'sweep'], deps);
+    expect(install).toHaveBeenCalledWith({ runId });
+    expect(remove).toHaveBeenCalledWith({ runId });
+    expect(sweep).toHaveBeenCalledTimes(1);
+  });
+
+  it('turns an unmet step into incomplete evidence (exit 3) that still carries the observation', async () => {
+    const early = heldObservation(PHASE_J_MIN_ATTEMPTS - 1, PHASE_J_MIN_HOLD_MS - 1);
+    const observe = vi.fn(async () => early);
+    const error = await physicalPhaseJMode('phase-j-observe', ['vm', 'held', runId, 'WI-501'], { observe })
+      .then(() => null, (e: unknown) => e);
+    expect(error).toBeInstanceOf(PhysicalDrillIncompleteEvidenceError);
+    expect((error as PhysicalDrillIncompleteEvidenceError).evidence).toBe(early);
+    expect((error as Error).message).toMatch(/attempts .* < .*held .*ms </);
+    expect(observe).toHaveBeenCalledWith({ hostId: 'vm', step: 'held', runId, featureIds: ['WI-501'] });
+  });
+
+  it('returns the observation once the step is reached', async () => {
+    const reached = heldObservation(PHASE_J_MIN_ATTEMPTS, PHASE_J_MIN_HOLD_MS);
+    const observe = vi.fn(async () => reached);
+    await expect(physicalPhaseJMode('phase-j-observe', ['vm', 'held', runId, 'WI-501'], { observe })).resolves.toBe(reached);
+  });
+
+  it('refuses a malformed held position before touching the database', async () => {
+    const observe = vi.fn();
+    await expect(
+      physicalPhaseJMode('phase-j-observe', ['vm', 'replayed', runId, 'WI-501', 'ab'.repeat(32), '8x'], { observe }),
+    ).rejects.toThrow(/held-position must be an integer/);
+    await expect(physicalPhaseJMode('phase-j-observe', ['mac', 'held', runId], { observe })).rejects.toThrow(/usage/);
+    expect(observe).not.toHaveBeenCalled();
+  });
+
+  it('rejects a verify input that does not prove the phase', async () => {
+    const readInput = vi.fn(() => ({ schemaVersion: 'wrong' }));
+    await expect(physicalPhaseJMode('phase-j-verify', ['/private/input.json'], { readInput })).rejects.toThrow(
+      /Phase J rejected: schemaVersion must be/,
+    );
+    expect(readInput).toHaveBeenCalledWith('/private/input.json');
   });
 });

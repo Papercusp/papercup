@@ -36,15 +36,26 @@ import {
   validatePhysicalPhaseH,
   type PhysicalPhaseHInput,
 } from './physical-drill-phase-h';
+import {
+  validatePhysicalPhaseI,
+  type PhysicalPhaseIInput,
+} from './physical-drill-phase-i';
+import {
+  validatePhysicalPhaseJ,
+  type PhysicalPhaseJInput,
+} from './physical-drill-phase-j';
 
 export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
-// v2 adds leg H (P-521 F3 serving identity, endgame D-081). v1 manifests are the historical A-G record.
-const SCHEMA = 'hive-git-physical-evidence/v2';
+// v3 adds leg I (P-521 F6 protected-effect fencing) and leg J (P-521 F4 bounded
+// target-apply outage + replay), endgame D-022/D-082. Both landed before any v3
+// artifact was minted, so they share one schema bump.
+// v2 added leg H (P-521 F3 serving identity, D-081); v1 is the historical A-G record.
+const SCHEMA = 'hive-git-physical-evidence/v3';
 const TRUST_SCHEMA = 'hive-git-physical-trust/v1';
 const TRUST_SOURCE = 'papercusp-vm-rig/v1';
 const PLAN = 'p2p-git-live-activation-2026-07-09';
-const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
+const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'] as const;
 const SHA256 = /^[0-9a-f]{64}$/i;
 
 type JsonRecord = Record<string, unknown>;
@@ -294,7 +305,7 @@ function validateLegVerdicts(
 ): void {
   const verdicts = Array.isArray(raw.legVerdicts) ? raw.legVerdicts : [];
   if (verdicts.length !== ALL_LEGS.length) {
-    errors.push('legVerdicts must contain exactly one same-run verdict for A through H');
+    errors.push(`legVerdicts must contain exactly one same-run verdict for ${ALL_LEGS[0]} through ${ALL_LEGS[ALL_LEGS.length - 1]}`);
   }
   const seen = new Set<string>();
   for (const candidate of verdicts) {
@@ -567,6 +578,106 @@ function validateLegH(
   }
 }
 
+function validateLegI(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
+  const leg = expectRecord(raw, 'legI', errors);
+  if (!leg) return;
+
+  let verdict: ReturnType<typeof validatePhysicalPhaseI>;
+  try {
+    verdict = validatePhysicalPhaseI(leg as unknown as PhysicalPhaseIInput);
+  } catch (error) {
+    errors.push(`legI protected-effect evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push('legI must contain the complete validated P-521 protected-effect fencing evidence object');
+    return;
+  }
+  for (const error of verdict.errors) errors.push(`legI: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legI must contain the complete validated P-521 protected-effect fencing evidence object');
+  }
+  if (leg.runId !== runId) errors.push('legI.runId must match the enclosing physical run');
+
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
+  ) {
+    errors.push('legI.window must fall inside the enclosing physical-run window');
+  }
+
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
+  if (
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
+  ) {
+    errors.push('legI identities must match the two attesting physical devices exactly');
+  }
+}
+
+function validateLegJ(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
+  const leg = expectRecord(raw, 'legJ', errors);
+  if (!leg) return;
+
+  let verdict: ReturnType<typeof validatePhysicalPhaseJ>;
+  try {
+    verdict = validatePhysicalPhaseJ(leg as unknown as PhysicalPhaseJInput);
+  } catch (error) {
+    errors.push(`legJ apply-outage evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push('legJ must contain the complete validated P-521 apply-outage replay evidence object');
+    return;
+  }
+  for (const error of verdict.errors) errors.push(`legJ: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legJ must contain the complete validated P-521 apply-outage replay evidence object');
+  }
+  if (leg.runId !== runId) errors.push('legJ.runId must match the enclosing physical run');
+
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
+  ) {
+    errors.push('legJ.window must fall inside the enclosing physical-run window');
+  }
+
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
+  if (
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
+  ) {
+    errors.push('legJ identities must match the two attesting physical devices exactly');
+  }
+}
+
 export function validatePhysicalDrillEvidence(
   raw: unknown,
   trustedAnchor?: unknown,
@@ -637,6 +748,8 @@ export function validatePhysicalDrillEvidence(
   validateLegF(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegG(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegH(evidence, runId, startedAt, finishedAt, hostKeys, errors);
+  validateLegI(evidence, runId, startedAt, finishedAt, hostKeys, errors);
+  validateLegJ(evidence, runId, startedAt, finishedAt, hostKeys, errors);
 
   const uniqueErrors = [...new Set(errors)];
   return {
@@ -646,7 +759,7 @@ export function validatePhysicalDrillEvidence(
     errors: uniqueErrors,
     summary:
       uniqueErrors.length === 0
-        ? `physical hive-git run ${runId} proves same-run A-H with strict D/P-305, E/P-306, F/P-307, G/P-308, and H/P-521 witnesses`
+        ? `physical hive-git run ${runId} proves same-run A-J with strict D/P-305, E/P-306, F/P-307, G/P-308, H/P-521, I/P-521 and J/P-521 witnesses`
         : `physical hive-git evidence rejected (${uniqueErrors.length} error${uniqueErrors.length === 1 ? '' : 's'})`,
   };
 }
