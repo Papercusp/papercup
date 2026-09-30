@@ -64,6 +64,7 @@ import {
   isNativeToolSearch,
   extractToolSearchQuery,
   formatToolFindRedirect,
+  buildToolFindRedirect,
   IDENTICAL_CALL_LOOP_LIMIT,
   toolCallLoopKey,
   noteToolCallRepeat,
@@ -5720,6 +5721,66 @@ describe('formatToolFindRedirect', () => {
     const reason = formatToolFindRedirect('q', [{ description: 'no name' }, { tool: 'coord:send' }]);
     expect(reason).toContain('• coord:send');
     expect(reason).not.toContain('no name');
+  });
+});
+
+// P-011 (fuzzy-tool-name-resolution-2026-07-02 / D-012): the I/O half of the bm25→tools:find
+// on-ramp. A native search_tool_bm25 call must be SERVED by tools:find (query extracted from the
+// call, JSON format forced, matches rendered inline) — and degrade, never throw, on transport failure.
+describe('buildToolFindRedirect (bm25 → tools:find on-ramp, I/O)', () => {
+  const originalFetch = global.fetch;
+  const prevBundle = process.env.PAPERCUSP_BUNDLE_URL;
+  afterEach(() => {
+    global.fetch = originalFetch;
+    if (prevBundle === undefined) delete process.env.PAPERCUSP_BUNDLE_URL;
+    else process.env.PAPERCUSP_BUNDLE_URL = prevBundle;
+    _resetHookOwnerIdForTests();
+  });
+
+  it('runs tools:find with the model\'s own query (format json) and renders the hits inline', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    _resetHookOwnerIdForTests();
+    let sent: { params?: { name?: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> } } = {};
+    global.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      sent = JSON.parse(String(init?.body));
+      const payload = { hits: [{ tool: 'coord:send', description: 'Send a coord message.\nmore' }] };
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(payload) }] } }),
+      };
+    }) as unknown as typeof fetch;
+    const reason = await buildToolFindRedirect({ query: 'send a message to a peer' });
+    expect(sent.params?.name).toBe('tools:find');
+    expect(sent.params?.arguments).toMatchObject({ query: 'send a message to a peer' });
+    expect(sent.params?._meta).toEqual({ format: 'json' });
+    expect(reason).toContain('• coord:send — Send a coord message.');
+    expect(reason).toContain('tools:invoke');
+    expect(reason).not.toContain('more');
+  });
+
+  it('degrades to the plain instruction (never throws) when the operator is unreachable', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    _resetHookOwnerIdForTests();
+    global.fetch = (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as unknown as typeof fetch;
+    const reason = await buildToolFindRedirect({ query: 'anything' });
+    expect(reason).toContain('search_tool_bm25 is disabled');
+    expect(reason).toContain('no matches');
+  });
+
+  it('makes no tools:find call when the native call carried no usable query', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    _resetHookOwnerIdForTests();
+    let calls = 0;
+    global.fetch = (async () => {
+      calls += 1;
+      return { ok: true, text: async () => '{}' };
+    }) as unknown as typeof fetch;
+    const reason = await buildToolFindRedirect({ limit: 5 });
+    expect(calls).toBe(0);
+    expect(reason).toContain('tools:find("<what you need>")');
   });
 });
 

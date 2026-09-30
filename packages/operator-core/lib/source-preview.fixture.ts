@@ -66,6 +66,7 @@ export const PUBLIC_DESKTOP_DROPPED = [
   'papercusp-desktop/bin/vm-rig/deploy.sh',
   'papercusp-desktop/bin/deb-hetzner-matrix.sh',
   'papercusp-desktop/.papercusp/state/lock.json',
+  'papercusp-desktop/test/release-identity.test.js', // gate's test-files class (P-020 re-export)
 ];
 
 /** Tracked paths the shared selection must drop, each for a different reason. */

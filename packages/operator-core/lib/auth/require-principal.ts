@@ -4,14 +4,20 @@
  *
  * Resolution order (first non-null wins):
  *   1. cookie session   — `kind: 'user'`,    `trust: 'verified'`
- *   2. device JWT       — `kind: 'device'`,  `trust: 'verified'`
- *   3. superuser bearer — `kind: 'system'`,  `trust: 'trusted'`
- *   4. agent bearer     — `kind: 'system'|'pi'`, `trust: 'trusted'` (token_index)
- *   5. loopback         — `kind: 'loopback'`,`trust: 'unverified-loopback'`
+ *   2. app key          — `kind: 'service'`, `trust: 'verified'` (`pcapp_…` bearer)
+ *   3. device JWT       — `kind: 'device'`,  `trust: 'verified'`
+ *   4. superuser bearer — `kind: 'system'`,  `trust: 'trusted'`
+ *   5. agent bearer     — `kind: 'system'|'pi'`, `trust: 'trusted'` (token_index)
+ *   6. loopback         — `kind: 'loopback'`,`trust: 'unverified-loopback'`
  *
  * Order matters: a request with both a session cookie AND a superuser
  * bearer presents as a user session (cookies are first-class; the
  * superuser bearer is the escape hatch when cookies are absent).
+ *
+ * An app key is TERMINAL when presented: a `pcapp_…` bearer that does not
+ * verify (unknown, wrong secret, revoked, paused, expired) is a 401, never a
+ * fall-through to the resolvers below it. Falling through would let a bad key
+ * relayed to a local listener pick up loopback trust (plan D-015).
  *
  * Requirements (`reqs`) gate the resolved principal further. Any failed
  * requirement throws `PrincipalCheckError` with an HTTP status the route
@@ -30,6 +36,7 @@ import { principalFromDeviceJwt } from './principal/from-device-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
 import { principalFromBearerToken } from './principal/from-bearer-token';
 import { principalFromLoopback } from './principal/from-loopback';
+import { resolveAppKeyPrincipal } from '../connected-apps/principal';
 
 // Re-export so existing app-side imports (`import { PrincipalRequirements } from './require-principal'`)
 // keep working. Canonical home is `@papercusp/agent-mcp` so the endpoint primitive
@@ -62,8 +69,16 @@ export async function requirePrincipal(
   headers: Headers,
   reqs: PrincipalRequirements = {},
 ): Promise<Principal> {
+  const cookiePrincipal = await principalFromCookie(headers);
+  const appKey = cookiePrincipal ? null : await resolveAppKeyPrincipal(headers);
+  if (appKey && !appKey.ok) {
+    throw new PrincipalCheckError(401, `app key refused: ${appKey.reason}`, {
+      headers: headerSnapshot(headers),
+    });
+  }
   const principal =
-    (await principalFromCookie(headers)) ??
+    cookiePrincipal ??
+    appKey?.principal ??
     (await principalFromDeviceJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??
@@ -107,8 +122,12 @@ export async function requirePrincipal(
  * which resolver fires without setting up the error boundary.
  */
 export async function tryResolvePrincipal(headers: Headers): Promise<Principal | null> {
+  const cookiePrincipal = await principalFromCookie(headers);
+  if (cookiePrincipal) return cookiePrincipal;
+  // A presented app key decides the outcome on its own — see requirePrincipal.
+  const appKey = await resolveAppKeyPrincipal(headers);
+  if (appKey) return appKey.ok ? appKey.principal : null;
   return (
-    (await principalFromCookie(headers)) ??
     (await principalFromDeviceJwt(headers)) ??
     principalFromSuperuserToken(headers) ??
     (await principalFromBearerToken(headers)) ??

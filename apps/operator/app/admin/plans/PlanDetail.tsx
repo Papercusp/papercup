@@ -44,6 +44,7 @@ import AgentsPanel from './AgentsPanel';
 import RunsPanel from './RunsPanel';
 import PlanTriggersPanel from './PlanTriggersPanel';
 import { PlanSpecCoverageSection } from './PlanSpecCoverageSection';
+import { PlanProvenance } from './PlanProvenance';
 import { PlanAcceptanceGateSection } from './PlanAcceptanceGateSection';
 import PlanConflictModal from './PlanConflictModal';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
@@ -547,6 +548,9 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
                 slug={data.slug}
                 harnessSlug={harnessSlug ?? data.harness ?? null}
               />
+              {/* plan-item-provenance P-005: always expanded (D-006) — a provenance chip
+          behind a fold is the unread evidence this panel exists to surface. */}
+              <PlanProvenance slug={data.slug} harnessSlug={harnessSlug ?? data.harness ?? null} />
               <div ref={editorScopeRef} className="pc-plan-editor-scope">
                 <PlanEditor
                   value={editing ? (draft ?? raw) : strippedRaw}

@@ -58,12 +58,13 @@ import { allowRealPgForLiveSuite } from './testing/live-suite-real-pg';
 
 const WORKSPACE = 'papercusp-workspace';
 /**
- * The WI-10003534 fix-serve instant on :3070. Null until the release operator runs a build that
- * blob-contains emit.ts's `independentGrading` stamp; until then the live census refuses to run
- * rather than counting pre-fix verdicts. Measured 2026-09-28 05:3xZ: :3070 runs 7708e704d9, which
- * has 0 hits for `independentGrading`; :3170 (deb86d246e) has it.
+ * The WI-10003534 fix-serve instant on :3070: the first release-operator start on a build that
+ * blob-contains emit.ts's `independentGrading` stamp. Measured 2026-09-30 00:5xZ (su-cf569f3f):
+ * the papercup-release reflog moves 7708e704d9 (0 hits) -> d425508f01 (1 hit) at 06:30:44Z on
+ * 2026-09-29, and the journal's first `Started papercusp-dev-api.service` after that checkout is
+ * 06:34:44.818Z. Every sha the release checkout has held since (d425508f01, 9a9473af95) has the stamp.
  */
-const CUTOFF: string | null = null;
+const CUTOFF: string | null = '2026-09-29T06:34:44.818Z';
 
 export interface R6Card {
   card: string;

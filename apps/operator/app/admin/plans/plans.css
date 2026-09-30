@@ -5304,3 +5304,28 @@
 .pc-requirement dd { margin: 2px 0 0; }
 .pc-requirement__history { padding-left: 20px; }
 .pc-requirement__history > li { padding-block: 8px; border-bottom: 1px solid var(--border); }
+
+/* plan-item-provenance P-005 — per-item provenance chips + "What you asked for". */
+.pc-plan-prov { margin-block: 8px; }
+.pc-plan-prov__items,
+.pc-plan-prov__requests { list-style: none; margin: 4px 0; padding: 0; }
+.pc-plan-prov__items > li,
+.pc-plan-prov__requests > li { padding-block: 3px; }
+.pc-plan-prov__chip {
+  font-size: 0.8em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-deeper);
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+.pc-plan-prov__chip--owner,
+.pc-plan-prov__chip--covered { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-soft); }
+.pc-plan-prov__chip--unresolved,
+.pc-plan-prov__chip--rejected,
+.pc-plan-prov__chip--open { border-color: var(--warn); color: var(--warn); }
+.pc-plan-prov__quotes { margin: 4px 0 6px 16px; }
+.pc-plan-prov__quote { margin: 4px 0; padding: 4px 8px; border-left: 2px solid var(--border); }
+.pc-plan-prov__quote.is-owner { border-left-color: var(--accent); }
+.pc-plan-prov__excerpt { white-space: pre-wrap; color: var(--fg); }

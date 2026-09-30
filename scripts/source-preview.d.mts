@@ -123,6 +123,16 @@ export function copyDesktopShell(mono: string, into: string, { env, auditScript 
     auditScript?: string | undefined;
 }): number;
 /**
+ * The bundle audit's forbidden-path tar globs (`--tar-excludes`). Refuses on failure or
+ * an empty list: copying an unfiltered tree is the failure this exists to prevent (WI-4419).
+ * @param {{ env?: NodeJS.ProcessEnv, auditScript?: string }} [opts]
+ * @returns {string[]}
+ */
+export function gateTarExcludes({ env, auditScript }?: {
+    env?: NodeJS.ProcessEnv;
+    auditScript?: string;
+}): string[];
+/**
  * The SAME audit-owned identity scrub source-tree-select.sh applies to the shared
  * selection (--source-leakers finds the files, --scrub-text redacts each on the COPY).
  * Anything added to the export after the selection must pass through it too: the desktop

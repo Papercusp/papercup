@@ -32,6 +32,7 @@ import '../../../agent-tools/index';
 import { PROJECTED_DEPS } from '../../../projected-tool-deps';
 import { chooseScopedHandle, isWorkspaceIsolationEnabled } from './scoped-handle';
 import { principalFromDeviceJwt } from '../../../auth/principal/from-device-jwt';
+import { resolveAppKeyToken } from '../../../connected-apps/principal';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -53,15 +54,22 @@ const HOST_EXTRAS: HttpToolHostExtras = {
     return isValidSuperuserBearer(bearer);
   },
   resolvePrincipalAndTx: async (bearer) => {
-    // Composite resolution: agent bearer (token_index → system/pi) first,
-    // then the mobile device JWT. `resolveBearer` hits PG; a transient PG
-    // failure must not block the self-contained (HMAC-verified) mobile
+    // An app key (`pcapp_…`, external-app-access P-002) is resolved by its own
+    // store and is TERMINAL: a key that does not verify is refused here, never
+    // retried as an agent bearer or a device JWT.
+    const appKey = await resolveAppKeyToken(bearer);
+    if (appKey && !appKey.ok) return null;
+    // Composite resolution otherwise: agent bearer (token_index → system/pi)
+    // first, then the mobile device JWT. `resolveBearer` hits PG; a transient
+    // PG failure must not block the self-contained (HMAC-verified) mobile
     // path, so its errors fall through rather than propagate.
-    let principal: Principal | null = null;
-    try {
-      principal = await resolveBearer(bearer);
-    } catch {
-      /* token_index unreachable — fall through to the mobile JWT path */
+    let principal: Principal | null = appKey?.principal ?? null;
+    if (!principal) {
+      try {
+        principal = await resolveBearer(bearer);
+      } catch {
+        /* token_index unreachable — fall through to the mobile JWT path */
+      }
     }
     // `principalFromDeviceJwt` reads the `Authorization` header, so
     // synthesize one from the bearer string. Async — it also runs the

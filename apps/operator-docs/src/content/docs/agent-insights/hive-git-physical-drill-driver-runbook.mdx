@@ -4,18 +4,17 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Driving the hive-git physical drill — reading a failure, and when to stop re-running"
-description: "How an agent drives papercusp-desktop/bin/hive-git-drill.sh's physical scenario: the per-run evidence dir, the phase-naming summary and HARNESS_RESULT line, the attempt fingerprint the loop gate compares, and the driver rule — after two drill failures with different causes, stop and audit the harness before the next run."
+title: "Driving the hive-git physical drill — reading a failure, re-running one phase, and when to stop re-running"
+description: "Runbook for driving papercusp-desktop/bin/hive-git-drill.sh's physical scenario: the per-run evidence dir, the phase-naming summary and HARNESS_RESULT line, the attempt fingerprint the loop gate compares, --only-phase/--from-phase partial re-runs (diagnostic, never release evidence), and the driver rule — after two drill failures with different causes, stop and audit the harness before the next run."
 type: Insight
 discovered: 2026-09-30
-tags: ["hive-git", "physical-drill", "runbook", "verification-harness", "loop-gate", "p505"]
+tags: ["runbook", "hive-git", "physical-drill"]
 status: active
 documents:
   - "papercusp-desktop/bin/hive-git-drill.sh"
-  - "papercusp-desktop/bin/lib/physical-failure-summary.sh"
+  - "papercusp-desktop/bin/lib/physical-phase-select.sh"
+  - "papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh"
   - "packages/operator-core/lib/verification-attempts/loop-gate.ts"
-  - "packages/operator-core/lib/verification-attempts/failure-fingerprint.ts"
-  - "packages/operator-core/lib/doc-claims/driver-audit-rule.ts"
 plans:
   - "physical-drill-iteration-speed-2026-09-29"
   - "expensive-verification-loops-2026-09-29"
@@ -38,8 +37,13 @@ After two drill failures with different causes, stop re-running the drill. Befor
 - **Evidence is kept per run.** Each physical run writes its adapter output to its own directory under `$HIVE_GIT_PHYSICAL_RUNS_DIR` (default `~/.papercusp-drill-physical-runs/<run-id>/`). The newest 30 runs are kept. The failure line names the directory, so compare two runs' output side by side and don't assume the next run will reproduce the last one.
 - **Guard-rail facts are pre-run checks.** The `guard-rail:p505-*` and `guard-rail:physical-drill-*` workspace facts record rig-state lessons from earlier runs. Read them (`facts:list { scope: 'workspace' }`) before a physical run. Where a fact carries an executable `recheck.exec` probe, the harness preflight runs it and refuses the run while it fails.
 
+## Re-running one phase
+
+A fix to one phase is verified by re-running only that phase, not the whole drill. `bin/hive-git-drill.sh --only-phase D` (or `--only-phase D,E`) runs just those physical-scenario phases. `--from-phase D` runs D through H. Either one runs against the rig state the previous run left behind (the join, the pot repo, the VM install), so it takes minutes instead of 18 to 26. It needs `HIVE_GIT_PHYSICAL_PROBE_CMD`, the same as a full physical run. It skips the local single-box legs, and the `HARNESS_RESULT` line records them as `skipped not-selected`. The selection is checked before anything starts, so a bad phase letter fails in a second, not after staging. A partial run is diagnostic only. The probe exits before it signs anything, so a partial run can never become release evidence, and the drill refuses a partial run under `REQUIRE_ZERO_SKIPS=1`. Once the phase passes, prove the fix with one full run. Selecting every phase is refused because that is the full run: drop the flag instead. To see what a selection would run without touching the rig, use `HIVE_GIT_PHYSICAL_PHASES=D bin/vm-rig/hive-git-physical-scenario.sh --phase-plan`.
+
 ## Related
 
 - Loop gate: `packages/operator-core/lib/verification-attempts/loop-gate.ts`. Attempt ledger: `attempt-ledger.ts` in the same directory.
 - Rule judge: `packages/operator-core/lib/doc-claims/driver-audit-rule.ts`. It pins this paragraph and the same rule in the base agent persona.
 - The drill: `papercusp-desktop/bin/hive-git-drill.sh`. The physical producer: `packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts`.
+- Phase selection: `papercusp-desktop/bin/lib/physical-phase-select.sh`, one parser that the drill, the probe and the scenario all share. Its guard: `packages/operator-core/lib/hive-git-drill-phase-select.test.ts`.

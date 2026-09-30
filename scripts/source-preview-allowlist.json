@@ -13,7 +13,7 @@
     {"detector":"gitleaks","rule":"generic-api-key","path":"papercusp-desktop/test/release-gitleaks.test.js","sha256":"9f9896ac62d17bb1cbddf7544c717dfbbcd27e8a36ef53697156463c6dfdf27d","reason":"Fixture of minified-bundle identifier strings (sortKey/signWithDeviceKey/token3/SESSION_PORT_TOKEN_ESTIMATOR) that the release gitleaks test asserts are NOT secrets."},
     {"detector":"gitleaks","rule":"generic-api-key","path":"papercusp-desktop/test/release-gitleaks.test.js","sha256":"e0da86954aed89f8b6e0bb820bb4997a3493af6235d8e4b68d15542bef72cc39","reason":"Fixture of minified-bundle identifier strings (sortKey/signWithDeviceKey/token3/SESSION_PORT_TOKEN_ESTIMATOR) that the release gitleaks test asserts are NOT secrets."},
     {"detector":"gitleaks","rule":"generic-api-key","path":"papercusp-desktop/test/release-identity-scan-archives.test.js","sha256":"3d62a254616472080c73e98c3212e52b9abb3d0b93c5cc57e7db4cd737b86379","reason":"Constant name/SHA-256 of a public WorkOS OAuth example used as a scan fixture; not a credential."},
-    {"detector":"trufflehog","rule":"URI","path":"papercusp-desktop/src-tauri/src/main.rs","sha256":"af68163c3d2cde3c6007e6fd630a098b9eaeffee147214aa4863996141c8eff5","reason":"Unit-test URI https://user:secret@server.example.com/ (RFC 2606 example domain) exercising credential redaction."},
+    {"detector":"trufflehog","rule":"URI","path":"papercusp-desktop/src-tauri/src/main.rs","sha256":"af68163c3d2cde3c6007e6fd630a098b9eaeffee147214aa4863996141c8eff5","reason":"Unit-test userinfo URI on the RFC 2606 example domain (server.example.com) exercising credential redaction; the password is the literal word secret."},
     {
       "detector": "gitleaks",
       "rule": "curl-auth-user",

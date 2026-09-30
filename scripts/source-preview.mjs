@@ -586,11 +586,29 @@ export function copyDesktopShell(mono, into, { env = process.env, auditScript = 
   }
   const dest = join(into, DESKTOP_DIR);
   run('mkdir', ['-p', dest]);
-  const excludes = DESKTOP_PUBLIC_EXCLUDES.map((p) => `--exclude=${p}`);
+  // The gate's own forbidden-path globs (test files, secrets, VCS, …), exactly as the
+  // shared selection derives them (source-tree-selection.sh step 1). Without them the
+  // shell's test/ tree shipped and the bundle audit refused the cut (P-020 re-export).
+  const gateExcludes = gateTarExcludes({ env, auditScript });
+  const excludes = [...DESKTOP_PUBLIC_EXCLUDES, ...gateExcludes].map((p) => `--exclude=${p}`);
   run('bash', ['-c', 'set -euo pipefail; src="$1"; dst="$2"; shift 2; tar -C "$src" -cf - "$@" . | tar -C "$dst" -xf -', '_', from, dest, ...excludes]);
   // Rooted at the shell itself: --source-leakers skips `papercusp-desktop/*` paths (the
   // installer's self-reference), so scanning from `into` would silently find nothing.
   return scrubIdentity(dest, readdirSync(dest), { env, auditScript });
+}
+
+/**
+ * The bundle audit's forbidden-path tar globs (`--tar-excludes`). Refuses on failure or
+ * an empty list: copying an unfiltered tree is the failure this exists to prevent (WI-4419).
+ * @param {{ env?: NodeJS.ProcessEnv, auditScript?: string }} [opts]
+ * @returns {string[]}
+ */
+export function gateTarExcludes({ env = process.env, auditScript = AUDIT_SCRIPT } = {}) {
+  const r = spawnSync('python3', [auditScript, '--tar-excludes'], { encoding: 'utf8', env, maxBuffer: 16 * 1024 * 1024 });
+  if (r.status !== 0) throw new PreviewError(`audit --tar-excludes failed (exit ${r.status}): ${(r.stderr || r.stdout).trim().slice(-1000)}`, 2);
+  const globs = r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!globs.length) throw new PreviewError('audit --tar-excludes returned nothing — refusing to copy an unfiltered desktop shell', 2);
+  return globs;
 }
 
 /**
