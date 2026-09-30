@@ -50,6 +50,9 @@ import { narrowHarnessSlugsToSessionHive } from '../../memory/hive-scope';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { systemDistinctId } from '../../flag-distinct-id';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { packageRecallEligibility, shapeIdentityPackageHits, wearerPackageResourcesOrEmpty } from '../../blueprint/package-memory-visibility';
+import { getOrgPg } from '@papercusp/db-org';
 
 /**
  * Per-session-tier hit shaping (context-trimming-tiers P-024). This tool's
@@ -233,6 +236,25 @@ export default defineTool({
       ...(args.include_superseded ? { includeSuperseded: true } : {}),
     };
 
+    // P-007 / D-021: identity-installed pack rows are archived; only the caller's
+    // applied exact-version pins re-admit them, before ranking and inside the
+    // pools above. Fails closed to "no pack rows", never to "no recall".
+    let pinnedPackResources: ReadonlySet<string> = new Set();
+    try {
+      let wearer: string | null = null;
+      try { wearer = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId ?? null; } catch { wearer = null; }
+      if (wearer) {
+        pinnedPackResources = await withMemoryTimeout(
+          wearerPackageResourcesOrEmpty(getOrgPg().sql, { workspaceId: ctx.principal?.workspaceId ?? '', ownerId: wearer }),
+          'memory:search package eligibility',
+          memoryLexicalFallbackTimeoutMs(),
+        );
+      }
+    } catch {
+      pinnedPackResources = new Set();
+    }
+    const eligibility = packageRecallEligibility(pinnedPackResources);
+
     // B1 (infra-fail-fast-build-integrity-2026-06-19): bound EVERY backend call
     // with a deadline. `available()` itself can hang when the store is wedged
     // (the 2026-06-19 outage), so it is inside the guarded region too. A timeout
@@ -270,6 +292,7 @@ export default defineTool({
           scope,
           limit,
           ...temporal,
+          ...eligibility,
           // EI-21348316803580175: bound the query embed. memory:search was the
           // lone interactive holdout — semantic.ts, sessions:search, tools:find
           // and ask-knowledge-tier all already opt into this same policy — and
@@ -310,7 +333,7 @@ export default defineTool({
       if (lexical) {
         try {
           fallbackHits = await withMemoryTimeout(
-            lexical(args.query, { scope, limit, ...temporal }),
+            lexical(args.query, { scope, limit, ...temporal, ...eligibility }),
             'memory:search lexical fallback',
             memoryLexicalFallbackTimeoutMs(),
           );
@@ -336,6 +359,8 @@ export default defineTool({
       legStats = null;
       overloadDegradedReason = reason;
     }
+    // D-021: exact-version dedupe, pinned boost and provenance over eligible hits.
+    hits = shapeIdentityPackageHits(hits, pinnedPackResources);
 
     // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the USER
     // pool — drop `project` hits tagged with a different workspace; keep owner-tier +

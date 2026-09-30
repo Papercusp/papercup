@@ -39,6 +39,7 @@
 
 import type { Sql } from 'postgres';
 import { classifyRecordedTurn, type RecordedTurnVerdict } from '../../turn-provenance/turn-ref';
+import { closeTruncatedWholePaste } from '../../turn-provenance/envelope-grammar';
 
 /** `RecordedTurnVerdict` plus the two states a SEARCH HIT can be in that a
  *  recorded-turn classifier never sees: a non-user turn, and an unreadable one. */
@@ -67,6 +68,13 @@ export interface TurnKey {
  * silently can.
  */
 export const TURN_ORIGIN_HEAD_CHARS = 512;
+
+/**
+ * Tail chars fetched beside the head (WI-10004057): enough for a closing
+ * `</pasted_content id="…">` tag (id ≤ 64) plus trailing whitespace, so a bounded
+ * head can be judged as the whole paste it belongs to.
+ */
+export const TURN_ORIGIN_TAIL_CHARS = 256;
 
 const NOT_USER_NOTE =
   'Not a user turn (assistant/tool output) — it cannot be an owner directive at all.';
@@ -113,10 +121,16 @@ export function turnOriginKey(k: TurnKey): string {
  * `head` must be the start of the turn — see property 1 in the module header.
  * Passing a mid-body excerpt is not a smaller error than passing nothing: it
  * returns a confident `owner-typed` for machine-injected text.
+ *
+ * `tail` is the END of the same turn (`right(text, TURN_ORIGIN_TAIL_CHARS)`). Pass it
+ * whenever `head` is a bounded slice: without it a machine turn wrapped in a paste
+ * block longer than the head classifies `owner-typed` (WI-10004057), because the
+ * whole-paste unwrap needs the closing tag the slice cut off.
  */
 export function classifyHitTurnOrigin(
   speaker: string | null | undefined,
   head: string | null | undefined,
+  tail?: string | null,
 ): HitTurnOrigin {
   if (typeof head !== 'string' || !head.trim()) {
     return unknownTurnOrigin('the turn text could not be read from the corpus');
@@ -132,7 +146,7 @@ export function classifyHitTurnOrigin(
     return { verdict: 'not-user-turn', origin: null, note: NOT_USER_NOTE };
   }
 
-  const { verdict, origin } = classifyRecordedTurn(head);
+  const { verdict, origin } = classifyRecordedTurn(closeTruncatedWholePaste(head, tail));
   switch (verdict) {
     case 'agent-injected':
       return { verdict, origin, note: agentInjectedNote(origin) };
@@ -170,10 +184,12 @@ export async function resolveHitTurnOrigins(
       turn_idx: number;
       speaker: string | null;
       head: string | null;
+      tail: string | null;
     }>
   >`
     SELECT source_kind, session_id, turn_idx, speaker,
-           left(text, ${TURN_ORIGIN_HEAD_CHARS}) AS head
+           left(text, ${TURN_ORIGIN_HEAD_CHARS}) AS head,
+           right(text, ${TURN_ORIGIN_TAIL_CHARS}) AS tail
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
        AND (source_kind, session_id, turn_idx) IN (
@@ -184,7 +200,7 @@ export async function resolveHitTurnOrigins(
   for (const r of rows) {
     out.set(
       turnOriginKey({ sourceKind: r.source_kind, sessionId: r.session_id, turnIdx: r.turn_idx }),
-      classifyHitTurnOrigin(r.speaker, r.head),
+      classifyHitTurnOrigin(r.speaker, r.head, r.tail),
     );
   }
   return out;

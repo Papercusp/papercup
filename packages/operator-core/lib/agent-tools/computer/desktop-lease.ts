@@ -164,9 +164,10 @@ export function leaseCapabilities(desktop: SandboxDesktop): DesktopCapabilities 
  * `leaseCapabilities` for what "measured" has to mean here.
  */
 async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): Promise<void> {
+  const workspaceId = activeWorkspaceId();
   try {
     const session = await registerDesktopSession({
-      workspaceId: activeWorkspaceId(),
+      workspaceId,
       harnessSlug: potSlug,
       kind: desktop.xServer === 'kasmvnc' ? 'kasmvnc' : 'xvfb-local',
       scope: 'pot',
@@ -183,8 +184,16 @@ async function recordLeaseInRegistry(potSlug: string, desktop: SandboxDesktop): 
     });
     sessionIds.set(potSlug, session.id);
     await markDesktopReady(session.id, { capabilities: leaseCapabilities(desktop) }, undefined);
-  } catch {
-    /* inventory only — a desktop without its row still works; the reconciler repairs it */
+  } catch (err) {
+    // Still best-effort — a desktop without its row still works — but never silent.
+    // On a workspace host the row IS the product: the hosted relay offers only the
+    // desktops the registry names, so a swallowed unique-index conflict read as
+    // `desktop_unavailable` with nothing in the journal to say why (D-439).
+    const pg = err as { code?: string; constraint_name?: string; message?: string };
+    console.warn(
+      `[desktop-lease] registry write failed for pot=${potSlug} display=${desktop.display} workspace=${workspaceId}` +
+        ` code=${pg.code ?? '-'} constraint=${pg.constraint_name ?? '-'}: ${pg.message ?? String(err)}`,
+    );
   }
 }
 

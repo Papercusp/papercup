@@ -663,6 +663,13 @@ export async function setDesktopViewer(
  * D-363 desktops die with the socket that operator holds. There, a row it cannot
  * vouch for was left by a previous incarnation of itself, and leaving it `ready`
  * blocks the next desktop on both live-row unique indexes (WI-10002797).
+ *
+ * `soleOwner` also drops the `workspace_id` predicate (D-439). The live-display
+ * index is `(host_ref, display)` with NO workspace column, so a local row left under
+ * the workspace id an earlier release used (the host's id moved at registration,
+ * WI-10003163) still holds its display — and a per-workspace sweep never sees it.
+ * The sole local owner answers for every local row on the machine, whatever
+ * workspace it was stamped with.
  */
 export async function reconcileLocalDesktopSessions(
   args: { workspaceId: string; liveIds: readonly string[]; bootId?: string; pid?: number; soleOwner?: boolean },
@@ -680,7 +687,7 @@ export async function reconcileLocalDesktopSessions(
   const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET state = 'dead', released_at = now()
-     WHERE workspace_id = ${args.workspaceId}
+     WHERE (${soleOwner}::boolean OR workspace_id = ${args.workspaceId})
        AND host_ref IS NULL
        AND state NOT IN ('released', 'dead')
        AND (

@@ -30,7 +30,7 @@
  * The agent op is cancelled within seconds of admission.
  */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -164,13 +164,18 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
   });
 
   it('creates (or reuses) a neutral harness from the documented declaration', async () => {
+    // harness:create requires an existing parentDir. The smoke runs on the
+    // operator's own host (P015_DEPLOYED_OPERATOR_URL is loopback), so make it here.
+    mkdirSync(SMOKE_PARENT, { recursive: true });
     try {
       await mcp('harness:create', {
         slug: SMOKE_HARNESS, parentDir: SMOKE_PARENT, folderName: SMOKE_HARNESS, blueprint: smokeDeclaration(),
       });
     } catch (err) {
       // A prior run left the harness in place; anything else is a real failure.
-      if (!/exist|already|taken|registered/i.test((err as Error).message)) throw err;
+      // Match harness:create's two reuse refusals exactly: a loose /exist/ also
+      // swallowed "does not exist" and hid a create that never happened.
+      if (!/slug already exists|destination already exists/i.test((err as Error).message)) throw err;
     }
     // The plan-target operation needs its pinned template in this harness.
     try {

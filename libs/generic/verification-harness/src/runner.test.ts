@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -88,6 +88,35 @@ describe('runHarness', () => {
     expect(ran).toEqual([]);
     expect(result.verdict).toBe('preflight-failed');
     expect(result.phases.every((p) => p.status === 'blocked' && p.reasonCode === 'preflight-failed')).toBe(true);
+  });
+
+  it('R-5: every run keeps its own evidence dir; a same-second run never overwrites an earlier one', async () => {
+    const root = tmp();
+    const clock = () => new Date('2026-09-30T00:00:00.000Z');
+    const run = (verdict: boolean) =>
+      runHarness({
+        contract: { name: 'r5', phases: [{ id: 'only' }] },
+        evidenceRoot: root,
+        now: clock,
+        runPhase: async ({ evidenceDir }) => {
+          writeFileSync(path.join(evidenceDir, 'mark.txt'), String(verdict));
+          return verdict ? { ok: true } : { ok: false, reasonCode: 'boom' };
+        },
+      });
+    const first = await run(false);
+    const second = await run(true);
+    // Same clock second, same pid: the ids must still differ, and so must the dirs.
+    expect(second.runId).not.toBe(first.runId);
+    expect(second.evidenceDir).not.toBe(first.evidenceDir);
+    // The first run's evidence is intact: its own result and its own phase output.
+    expect((await loadRunResult(first.evidenceDir)).verdict).toBe('fail');
+    expect(readFileSync(path.join(first.evidenceDir, 'phases', 'only', 'mark.txt'), 'utf8')).toBe('false');
+    expect((await loadRunResult(second.evidenceDir)).verdict).toBe('pass');
+    // An explicit run id that already exists is refused rather than reused.
+    await expect(
+      runHarness({ contract: { name: 'r5', phases: [{ id: 'only' }] }, evidenceRoot: root, runId: first.runId, runPhase: async () => ({ ok: true }) }),
+    ).rejects.toThrow(/already exists/);
+    expect((await loadRunResult(first.evidenceDir)).verdict).toBe('fail');
   });
 
   it('--only re-runs one phase and reuses passed setup from the prior run', async () => {
@@ -231,6 +260,35 @@ vh_finish
     expect(out).toMatch(/plan=setup:reuse,leg-a:skip,leg-b:run,leg-c:skip/);
     expect(out).toMatch(/VH_PHASE phase=setup status=reused/);
     expect(out).toMatch(/passed=0 failed=1 blocked=0 skipped=2 reused=1/);
+  });
+
+  it('R-5: a same-second second run in the same process claims its own dir and leaves the first intact', () => {
+    const root = tmp();
+    const bin = path.join(root, 'bin');
+    mkdirSync(bin);
+    // Pin ONLY the run-id timestamp format to one second; every other date call passes through.
+    const realDate = execFileSync('bash', ['-c', 'command -v date'], { encoding: 'utf8' }).trim();
+    writeFileSync(
+      path.join(bin, 'date'),
+      `#!/bin/sh\nfor a in "$@"; do case "$a" in +%Y%m%dT%H%M%SZ) echo 20260930T000000Z; exit 0;; esac; done\nexec ${realDate} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const ev = path.join(root, 'ev');
+    const file = path.join(root, 'h.sh');
+    writeFileSync(
+      file,
+      `source ${JSON.stringify(vh)}\nvh_phase only\n` +
+        `vh_init twice ${JSON.stringify(ev)} || exit 2\nvh_run only true\nvh_finish\n` +
+        `vh_init twice ${JSON.stringify(ev)} || exit 3\necho "SECOND=$VH_RUN_DIR"\nvh_run only false\n`,
+    );
+    const out = execFileSync('bash', [file], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    const runs = readdirSync(ev).filter((n) => n !== 'latest' && !n.endsWith('.json')).sort();
+    expect(runs).toHaveLength(2);
+    expect(runs[1]).toBe(`${runs[0]}.1`);
+    expect(out).toContain(`SECOND=${path.join(ev, runs[1]!)}`);
+    const first = JSON.parse(readFileSync(path.join(ev, runs[0]!, 'result.json'), 'utf8'));
+    expect(first.verdict).toBe('pass');
+    expect(first.runId).toBe(runs[0]);
   });
 
   it('a planned phase the harness never reported is a failure, not a pass', () => {

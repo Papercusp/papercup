@@ -1,0 +1,945 @@
+{
+  "journeys": {},
+  "bindings": [],
+  "unmapped": [
+    {
+      "path": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+      "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+      "name": "P-505 run 34 live: the exact 0.0.25 Papercusp Server candidate (deb sha256 matched to the release handoff) passes the P-301 hive-git drill with zero skips, including same-run two-physical-machine legs A-G (tower + macOS VM) with both device keys attesting"
+    }
+  ],
+  "ignored": [
+    {
+      "path": "docs/evidence/EI-23994272399366731-launchdaemon-regression.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/agent-launch-context-cost-r7-live-2026-09-19.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/backup-restore-workflow-id-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/blueprint-direct-receipt-recovery-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/blueprint-direct-receipt-recovery-mutation-r2-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/blueprint-operation-pin-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/byoc-delivery-acceleration-p006-reuse-benchmark-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/byoc-p005-resume-acceptance-2026-09-08.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/byoc-p009-combined-acceptance-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/cache-efficiency-p007-ttl-cadence-2026-09-26.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/cache-efficiency-p008-query-client-wall-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/codex-live-catalog-2026-09-23-gateway-fixed-request.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/codex-live-catalog-2026-09-23-gateway-prefix-request.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/codex-live-catalog-2026-09-23-session-29865-prefix.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/codex-live-catalog-2026-09-23-session-29867-fixed.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/desktop-design-journey-p002-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/desktop-design-rollout-p005-census-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/desktop-design-rollout-p005-verification-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/desktop-design-rollout-policy-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/disk-space-p001-p002-acceptance-proof-2026-09-08.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/dream-native-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/durable-spawn-request-only-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/event-await-delivery-recovery-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/fleet-launch-admission-p001-mutation-2026-09-14.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.counterexample.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r10-goal-feedback-live-probe-2026-09-29.counterexample.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r10-goal-feedback-live-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r2-live-probe-2026-09-29.counterexample.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r2-live-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r4-behavioral-probe-2026-09-29.counterexample.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-brief-r4-behavioral-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p004-s33-mixed-v12-v13-20260927.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p004-s33-v16-20260927.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p004-s33-v17-20260927.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p004-s33-v18-20260927.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-historical-recurrence-20260914.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-llm-delegate-v3-20260914.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-llm-unknown-v3-20260914.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-provider-negative-20260913.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-reader-negative-20260913.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-s33-v10-cohort-20260914.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-s33-v6-partial-20260914.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-s33-v7-verification-20260914.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/goal-feedback-p012-s33-v8-cohort-20260914.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/identities-v1-p037-orchestrator-typecheck-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/identities-v1-p037-orchestrator-typecheck-2026-09-26b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/learning-observations-p011-playwright-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/main-greening-operational-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/main-greening-p007-runtime-parity-2026-09-29.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/main-greening-r009-deployed-2026-09-29.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/managed-agent-capability-p002-yield-same-job-mutation-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/managed-agent-capability-p003-live-terminal-latch-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/managed-agent-capability-p003-pty-resize-mutation-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/managed-agent-capability-p003-pty-resource-mutation-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/measured-agent-productivity-p002-comparison-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/measured-agent-productivity-p007-acceptance-refresh-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/measured-agent-productivity-p007-guardrail-refresh-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/measured-agent-productivity-p007-guardrail-refresh-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/measured-agent-productivity-p007-rollout-hold-2026-09-08.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/operator-identity-kernel-latency-p003-deployed-live-2026-09-29.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/orchestration-durability-inspection-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p001-activation-audit-counterexample-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p001-activation-audit-source-coverage-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p001-performance-producer-live-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p004-mode-definition-delivery-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p004-root-su-native-orient-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p004-root-su-native-turn-start-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-codex-pinned-recovery-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-current-source-native-carry-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-dual-recovery-current-mode-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-installed-v1-v2-current-mode-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-managed-carry-current-mode-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-resumed-model-current-mode-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p006-turn-start-receipt-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p007-census-copyout-operational-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p007-r1-live-join-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p007-r2-snapshot-apply-rate-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j1-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j1-live-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j1-live-2026-09-29c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j2-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j2-live-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j2-live-2026-09-29b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-j2-live-2026-09-29c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-native-control-emission-ack-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-native-mode-stable-preack-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p008-selected-native-launch-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-actual-model-smoke-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-run49-two-host-acceptance-2026-09-08.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-run50-two-host-acceptance-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-witness-20260918T004336Z.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-a-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-a-cold-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-b-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-c-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-c-final-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-c-rerun-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-d-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-d-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-attribution-2026-09-19.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-22.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-23.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-23b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-23c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-23d.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-24a.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-24b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-24c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-24d.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-26b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-27b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r3-live-observation-2026-09-27c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-controlled-ui-2026-09-20.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-live-ui-2026-09-19.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-21.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-23.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-23b.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-24.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-24b.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-24c.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-25.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-2026-09-26.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-22.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-23.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-23b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-24b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-24c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-26b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-27b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-27c.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r4-real-backend-operational-2026-09-27d.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r5-kernel-non-override-2026-09-23.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-20.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-23.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-26b.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-e2e-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-switch-raw-2026-09-23.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-switch-raw-2026-09-24.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-switch-raw-2026-09-26.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r7-live-switch-raw-2026-09-27.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p015-r7-supplement-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p203-local-diagnostic-correlation-p003-falsifiability-2026-09-20.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p2p-endgame-shakedown-0022-7708e704-manifest.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-endgame-shakedown-0022-7708e704-provenance.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p319-live-self-signup-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p319-onboarding-oracle-counterexample-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p323-portal-chat-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p323-portal-new-session-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p326-customer-identity-boundary-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p326-new-session-turn-live-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p523-native-preparation-2026-09-14-5c8f.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p523-native-refresh-2026-09-22-bbee.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p523-native-rerun-2026-09-22-bbee.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p523-native-rerun2-2026-09-23-bbee.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p523-preparation-refresh-2026-09-22-bbee.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p523-readiness-inventory-2026-09-14-5c8f.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/papercusp-db-backup-invalid-db-operational-probe-2026-09-29.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-chat-voice-rail-operational-acceptance-2026-09-14.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-artifact-verifier-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-current-correctness-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-nonmutation-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-playwright-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-release-manifest-2026-09-12.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/portal-tab-performance-p004-typecheck-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/portal-voice-p030-r10-hosted-voice-readiness-2026-09-12.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/portal-voice-p030-r4-microphone-flow-2026-09-12.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/portal-voice-p030-r5-voice-safety-lifecycle-2026-09-12.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/portal-voice-p031-artifact-contract-validation-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/psu-recycle-carry-delivery-r6-mutation-2026-09-19.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pty-blender-current-build-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pty-host-error-corpus-live-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pty-host-live-production-2026-09-26.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pty-incident-census-2026-09-26.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pty-incident-report-coverage-mutation-2026-09-25.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pty-incident-report-coverage-mutation-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pui-p003-structured-engine-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p004-composer-progress-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-installed-engine-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-installed-green-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-installed-journey-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-installed-timing-journey-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-interrupt-counterexample-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p005-timing-fix-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-account-catalog.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-claude-native-cards-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-claude-os-restart-context-repair-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-claude-streaming-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-engine-parity-2026-09-11.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-engine-parity-current-2026-09-13.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-native-question-and-process-restart-progress-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-native-restart-progress-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-omp-gateway-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-omp-interrupt-progress-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-omp-route-and-archive-progress-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-omp-startup-and-native-abi-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-parity-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-question-and-restart-final-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-question-and-restart-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-r03-l4-current-cohort-2026-09-13.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-r03-l4-mutation-2026-09-11.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-r10-l4-current-cohort-2026-09-13.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-r10-l4-mutation-2026-09-11.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-reconnect-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-rpc-foundation-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-startup-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-structured-recovery-2026-09-07.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-view-composer-and-reply-repairs-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-worker-ownership-and-restart-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-p006-worker-ownership-and-restart-progress-2026-09-08.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/pui-r03-p008-unit-context-follows-selection-2026-09-27.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/pui-r14-public-journey-2026-09-27.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/review-verification-efficiency-p007-router-wake-pickup-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-26.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/review-verification-p003-counterexample-2026-09-12.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/servicenow-staff-ml-browser-verification-2026-09-08.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/shared-agent-obligations-2026-09-07-current-proof.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/shared-agent-obligations-2026-09-07-gui-journey.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/shared-agent-obligations-2026-09-07-gui-operational-test.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/test-suite-recovery-r1-falsifiability-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/unified-requirement-contract-r5-live-2026-09-09.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/unified-requirement-contract-r6-deployed-2026-09-22.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/work-item-completion-intent-mutation-2026-09-24.json",
+      "reason": "names no artifact sha256 in subject"
+    }
+  ]
+}

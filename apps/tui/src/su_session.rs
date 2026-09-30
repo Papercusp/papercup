@@ -681,6 +681,27 @@ pub fn session_in_directory(session_cwd: Option<&str>, launch_cwd: Option<&str>)
     }
 }
 
+/// The title a new conversation is saved under: the owner's first message,
+/// the way Claude Code and Codex label their resume lists. The first non-empty
+/// line, whitespace collapsed, capped at `CONVERSATION_TITLE_MAX` characters.
+/// A conversation opened with no message yet is "New conversation" — never a
+/// backend/runtime label like "Claude SU session" (P-005 review, P-007).
+pub const CONVERSATION_TITLE_MAX: usize = 60;
+pub fn conversation_title(first_message: Option<&str>) -> String {
+    let line = first_message
+        .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    if line.is_empty() {
+        return "New conversation".to_string();
+    }
+    if line.chars().count() <= CONVERSATION_TITLE_MAX {
+        return line;
+    }
+    let cut: String = line.chars().take(CONVERSATION_TITLE_MAX - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
 impl SuSessionInventoryEntry {
     pub fn from_snapshot(snapshot: &SuSessionSnapshot) -> Self {
         let lifecycle = snapshot.descriptor.lifecycle;
@@ -1160,6 +1181,27 @@ mod tests {
             SuSessionInventoryEntry::from_snapshot(&snapshot).cwd.as_deref(),
             Some("/work/app")
         );
+    }
+
+    #[test]
+    fn conversation_title_is_the_first_message_not_a_runtime_label() {
+        assert_eq!(conversation_title(Some("hi")), "hi");
+        assert_eq!(
+            conversation_title(Some("\n  Fix   the\tbuild  \nsecond line")),
+            "Fix the build"
+        );
+        assert_eq!(conversation_title(None), "New conversation");
+        assert_eq!(conversation_title(Some("  \n \n")), "New conversation");
+        let long = "word ".repeat(40);
+        let title = conversation_title(Some(&long));
+        assert!(title.ends_with('…'), "{title}");
+        assert!(title.chars().count() <= CONVERSATION_TITLE_MAX, "{title}");
+        // Multi-byte text is cut on a character boundary, not a byte offset.
+        let wide = "é".repeat(100);
+        assert_eq!(conversation_title(Some(&wide)).chars().count(), CONVERSATION_TITLE_MAX);
+        for backend in ["Claude", "Codex", "OMP"] {
+            assert!(!conversation_title(None).contains(backend));
+        }
     }
 
     #[test]

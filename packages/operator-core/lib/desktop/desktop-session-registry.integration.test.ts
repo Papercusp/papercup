@@ -308,10 +308,49 @@ describe('reconciliation (D-004: a row without a live handle is DEAD)', () => {
       { workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234, soleOwner: true },
       sql,
     );
-    expect(out.reapedIds).toEqual([stale.id]);
+    // toContain, not toEqual: a sole owner sweeps every unvouched local row in this
+    // shared schema, including other tests' leftovers (see the D-439 case below).
+    expect(out.reapedIds).toContain(stale.id);
     await expect(
       registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-sole', display: ':610', ownerBootId: BOOT, ownerPid: 1234 }), sql),
     ).resolves.toBeDefined();
+  });
+
+  // D-439: the live-display index has no workspace column, so residue stamped with the
+  // workspace id an earlier release used still holds the display. Measured shape on
+  // avi-test: desktop.start stayed desktop_unavailable across a full reboot.
+  it('as SOLE OWNER reaps residue stamped with a DIFFERENT workspace id that still holds the display', async () => {
+    const residue = await registerDesktopSession(
+      base({ workspaceId: 'ws-recon-earlier-release', scopeRef: 'sc-residue', display: ':611', ownerBootId: 'boot-previous', ownerPid: 77 }),
+      sql,
+    );
+    const ws = 'ws-recon-sole-cross';
+    await expect(
+      registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-cross', display: ':611', ownerBootId: BOOT, ownerPid: 1234 }), sql),
+    ).rejects.toThrow();
+
+    const out = await reconcileLocalDesktopSessions(
+      { workspaceId: ws, liveIds: [], bootId: BOOT, pid: 1234, soleOwner: true },
+      sql,
+    );
+    expect(out.reapedIds).toContain(residue.id);
+    await expect(
+      registerDesktopSession(base({ workspaceId: ws, scopeRef: 'sc-cross', display: ':611', ownerBootId: BOOT, ownerPid: 1234 }), sql),
+    ).resolves.toBeDefined();
+  });
+
+  // NEGATIVE CONTROL 3. Without sole ownership the sweep stays per-workspace: on a
+  // shared machine another workspace's rows are not this process's to judge.
+  it('without SOLE OWNER never reaps a row stamped with a different workspace id', async () => {
+    const foreign = await registerDesktopSession(
+      base({ workspaceId: 'ws-recon-foreign', scopeRef: 'sc-foreign', ownerBootId: 'boot-previous', ownerPid: 77 }),
+      sql,
+    );
+    const out = await reconcileLocalDesktopSessions(
+      { workspaceId: 'ws-recon-not-sole', liveIds: [], bootId: BOOT, pid: 1234 },
+      sql,
+    );
+    expect(out.reapedIds).not.toContain(foreign.id);
   });
 
   it('as SOLE OWNER still keeps a row it holds a live handle for, and never touches a remote row', async () => {

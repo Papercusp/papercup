@@ -26,6 +26,8 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { isIdentityPackageHit, packageRecallEligibility, shapeIdentityPackageHits,
+  wearerPackageResourcesOrEmpty } from '../blueprint/package-memory-visibility';
 import { getSessionBriefAmbientExcludedRefs } from '../session-brief';
 import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backend';
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
@@ -1290,6 +1292,19 @@ async function buildBlockInner(
       ...harnessSlugs.map((slug) => `harness:${slug}`),
       ...potSlugs.map(hiveScopeKey),
     ];
+    // P-007 / D-021: the wearer (the su owner id carried as the session id) may
+    // recall its applied exact-version pack rows; fails closed to none.
+    const wearer = input.session?.sessionId?.trim() || null;
+    let pinnedPackResources: ReadonlySet<string> = new Set();
+    if (wearer && scopes.length > 0) {
+      try {
+        pinnedPackResources = await withMemoryTimeout(
+          wearerPackageResourcesOrEmpty(getOrgPg().sql, { workspaceId: input.workspaceId, ownerId: wearer }),
+          'package eligibility', MEMORY_INJECT_TIMEOUT_MS);
+      } catch {
+        pinnedPackResources = new Set();
+      }
+    }
     const searchLifetime = new AbortController();
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
@@ -1299,6 +1314,7 @@ async function buildBlockInner(
             scope: scopes,
             limit: totalLimit,
             ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
+            ...packageRecallEligibility(pinnedPackResources),
             minScore,
             minLexScore,
             fusionMode,
@@ -1323,6 +1339,9 @@ async function buildBlockInner(
         console.log(`[memory-injection] search-detail scopes=${scopes.length} searchMs=${searchMs}`);
       }
     });
+    // D-021: exact-version dedupe, pinned boost and provenance, before the
+    // pool partition below shares these entries by reference.
+    ranked = shapeIdentityPackageHits(ranked, pinnedPackResources);
     const tStaleness = Date.now();
     try {
       ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId);
@@ -1682,7 +1701,8 @@ async function buildBlockInner(
         const slug = survivingHive.get(hit)!;
         (isPackHit(hit) ? packRows : mainRows).push(row(`hive:${slug}`));
       } else if (survivingHarness.has(hit)) {
-        mainRows.push(row(survivingHarness.get(hit)!));
+        // D-021: identity-package rows keep the pack trust tier in any pool.
+        (isIdentityPackageHit(hit) ? packRows : mainRows).push(row(survivingHarness.get(hit)!));
       } else if (survivingUser.has(hit)) {
         mainRows.push(row());
       }

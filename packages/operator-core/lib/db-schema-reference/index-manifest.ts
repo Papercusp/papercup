@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-09-29T23:37:42.991Z",
-  "migrationCountAtGeneration": 1042,
+  "generatedAt": "2026-09-30T01:07:01.469Z",
+  "migrationCountAtGeneration": 1043,
   "indexes": [
     {
       "schema": "audit",
@@ -1915,6 +1915,41 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "comms_trust_list",
       "definition": "CREATE UNIQUE INDEX comms_trust_list_pkey ON harness_shared.comms_trust_list USING btree (workspace_id, trusted_github_user_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connected_apps_pkey",
+      "table": "connected_apps",
+      "definition": "CREATE UNIQUE INDEX connected_apps_pkey ON harness_shared.connected_apps USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connected_apps_pkey",
+      "table": "connected_apps",
+      "definition": "CREATE UNIQUE INDEX connected_apps_pkey ON harness_shared.connected_apps USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connected_apps_token_hash_key",
+      "table": "connected_apps",
+      "definition": "CREATE UNIQUE INDEX connected_apps_token_hash_key ON harness_shared.connected_apps USING btree (token_hash) WHERE (token_hash IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connected_apps_user_idx",
+      "table": "connected_apps",
+      "definition": "CREATE INDEX connected_apps_user_idx ON harness_shared.connected_apps USING btree (user_email)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connected_apps_workspace_idx",
+      "table": "connected_apps",
+      "definition": "CREATE INDEX connected_apps_workspace_idx ON harness_shared.connected_apps USING btree (workspace_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -5828,34 +5863,6 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "migration_reservations",
       "definition": "CREATE UNIQUE INDEX migration_reservations_pkey ON harness_shared.migration_reservations USING btree (num)",
       "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "mobile_devices_pkey",
-      "table": "mobile_devices",
-      "definition": "CREATE UNIQUE INDEX mobile_devices_pkey ON harness_shared.mobile_devices USING btree (device_id)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "mobile_devices_pkey",
-      "table": "mobile_devices",
-      "definition": "CREATE UNIQUE INDEX mobile_devices_pkey ON harness_shared.mobile_devices USING btree (device_id)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "mobile_devices_user_idx",
-      "table": "mobile_devices",
-      "definition": "CREATE INDEX mobile_devices_user_idx ON harness_shared.mobile_devices USING btree (user_email)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "mobile_devices_workspace_idx",
-      "table": "mobile_devices",
-      "definition": "CREATE INDEX mobile_devices_workspace_idx ON harness_shared.mobile_devices USING btree (workspace_id) WHERE (revoked_at IS NULL)",
-      "constraintBacked": false
     },
     {
       "schema": "harness_shared",

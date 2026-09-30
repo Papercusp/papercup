@@ -537,11 +537,15 @@ chmod 0644 /etc/papercusp/desktop-egress.nft
 nft -f /etc/papercusp/desktop-egress.nft || fail desktop-egress-isolation
 nft list chain inet papercusp_desktop output >/dev/null || fail desktop-egress-isolation
 
+# The socket carries NO ordering or requirement on papercusp-workspace.service (D-439).
+# A default-dependency socket is Before=sockets.target, and every ordinary service is
+# After=basic.target, which is After=sockets.target — so After= that service closes a
+# cycle. systemd breaks it at boot by deleting the socket's start job: the socket was
+# live after install (started by hand below) and silently gone after the first reboot.
+# The coupling to the workspace service lives on the per-connection @.service instead.
 cat > /etc/systemd/system/papercusp-desktop.socket <<UNIT
 [Unit]
 Description=Papercusp isolated desktop session admission
-After=papercusp-workspace.service
-Requires=papercusp-workspace.service
 [Socket]
 ListenStream=/run/papercusp-desktop/session.sock
 SocketUser=root

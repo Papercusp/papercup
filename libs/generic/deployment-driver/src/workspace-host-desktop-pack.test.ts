@@ -66,6 +66,30 @@ describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
     expect(script).not.toContain('EnvironmentFile=');
     expect(script).not.toContain('setfacl');
   });
+  it('keeps the socket out of an ordering cycle so it survives a reboot (D-439)', () => {
+    // The socket keeps DefaultDependencies (Before=sockets.target); any ordinary service
+    // is After=basic.target, itself After=sockets.target. A socket ordered After= or
+    // requiring such a service is a boot-time cycle, and systemd resolves it by dropping
+    // the socket's start job — measured on avi-test r60 after a stop/start.
+    const unit = (path: string): string[] => {
+      const match = render().match(new RegExp(`cat > ${path.replace(/[.@]/g, '\\$&')} <<UNIT\\n([\\s\\S]*?)\\nUNIT\\n`));
+      expect(match, path).not.toBeNull();
+      return match![1].split('\n');
+    };
+    const socket = unit('/etc/systemd/system/papercusp-desktop.socket');
+    expect(socket).toContain('[Socket]');
+    expect(socket.filter((line) => /^(After|Requires|BindsTo|Wants|Requisite)=/.test(line))).toEqual([]);
+    expect(socket).not.toContain('DefaultDependencies=no');
+    // The coupling to the workspace service belongs to each accepted connection's instance.
+    const instance = unit('/etc/systemd/system/papercusp-desktop@.service');
+    expect(instance).toEqual(
+      expect.arrayContaining([
+        'After=papercusp-workspace.service',
+        'BindsTo=papercusp-workspace.service',
+        'JoinsNamespaceOf=papercusp-workspace.service',
+      ]),
+    );
+  });
   it('rejects identity override and unit-file injection before any installation', () => {
     expect(() => render({ isolation: { desktopUser: 'other-desktop' } })).toThrow(/fixed/);
     expect(() => render({ isolation: { serviceUser: 'papercusp\nExecStart=evil' } })).toThrow(/Unix account/);

@@ -35,6 +35,7 @@ import { parsePlan } from '@papercusp/plan-parser';
 import {
   classifyHitTurnOrigin,
   TURN_ORIGIN_HEAD_CHARS,
+  TURN_ORIGIN_TAIL_CHARS,
   turnOriginKey,
   type HitTurnOriginVerdict,
 } from './agent-tools/sessions/turn-origin';
@@ -322,9 +323,12 @@ export async function fetchSourceTurns(
   if (keyed.length === 0) return out;
   const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
   const width = Math.max(chars, TURN_ORIGIN_HEAD_CHARS);
-  const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string | null; head: string | null }>>`
+  const rows = await sql<
+    Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string | null; head: string | null; tail: string | null }>
+  >`
     SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker,
-           left(turns.text, ${width}) AS head
+           left(turns.text, ${width}) AS head,
+           right(turns.text, ${TURN_ORIGIN_TAIL_CHARS}) AS tail
       FROM harness_shared.session_turns AS turns
      WHERE (turns.workspace_id = ${workspaceId} OR turns.workspace_id = 'default')
        AND EXISTS (
@@ -344,7 +348,13 @@ export async function fetchSourceTurns(
     byKey.set(turnOriginKey({ sourceKind: row.source_kind, sessionId: row.session_id, turnIdx: Number(row.turn_idx) }), {
       speaker: row.speaker ?? null,
       text: head === null ? null : head.slice(0, chars),
-      verdict: classifyHitTurnOrigin(row.speaker, head === null ? null : head.slice(0, TURN_ORIGIN_HEAD_CHARS)).verdict,
+      // The tail lets a paste-wrapped injection longer than the head still unwrap
+      // (WI-10004057) — without it such a turn counts as OWNER evidence.
+      verdict: classifyHitTurnOrigin(
+        row.speaker,
+        head === null ? null : head.slice(0, TURN_ORIGIN_HEAD_CHARS),
+        row.tail,
+      ).verdict,
     });
   }
   for (const { ref, parsed } of keyed) {

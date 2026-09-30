@@ -32,7 +32,9 @@ describe('runHarness concurrency', () => {
       },
     });
     expect(peak).toBe(2);
-    expect(started.slice(0, 2)).toEqual(['s1', 's2']);
+    // The first two ADMITTED are s1 and s2 (FIFO slots, declaration order). Their fn-call order is
+    // not guaranteed: each awaits its phase-dir mkdir first, so they race there (flaked under load).
+    expect([...started.slice(0, 2)].sort()).toEqual(['s1', 's2']);
     expect(result.phases.map((p) => [p.phase, p.status])).toEqual([
       ['s1', 'passed'],
       ['s2', 'failed'],

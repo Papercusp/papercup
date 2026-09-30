@@ -112,6 +112,15 @@ import {
 import { runWithWorkspaceIfConcrete } from '../../../workspace-als';
 import { capabilityMapText } from '../../../agent-tools/tools/capability-map';
 import { isPluginNamespacedToolName, unknownToolReferral } from '../../../agent-tools/tools/unknown-tool-referral';
+import { resolveDispatchTarget } from '../../../agent-tools/resolve-dispatch-target';
+import {
+  annotateFuzzyResult,
+  resolveWithFuzzy,
+  withFuzzyToolName,
+  type FuzzyDispatchDeps,
+  type FuzzyResolutionRecord,
+} from '../../../agent-tools/fuzzy-dispatch';
+import { tierFor } from '@papercusp/agent-mcp';
 import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
 import { getPluginHost } from '../../../plugin-host-runtime';
 import {
@@ -441,6 +450,61 @@ async function recordMcpAuthFailureTelemetry(
     // the caller (or turn a dark session into a different failure mode).
     console.warn(
       `[mcp-handler] auth-failure telemetry failed for ${toolName}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
+
+/**
+ * Fuzzy tool-name recovery deps (plan fuzzy-tool-name-resolution-2026-07-02, P-007 / D-008–D-010).
+ * A mangled `tools/call` name is rewritten to its canonical registered name before the handler
+ * runs and the reply is annotated; every non-exact outcome lands in `tool_invocations` as a
+ * telemetry row keyed by the mangled name. Candidate scope (D-009) is the caller's LIVE surface:
+ * a trimmed (`?tools=`) session only resolves inside its seed + tools:find-activated set.
+ */
+const MCP_FUZZY_DEPS: FuzzyDispatchDeps = {
+  lookup: (name) => lookupByMcpName(name),
+  resolve: resolveDispatchTarget,
+  skip: isPluginNamespacedToolName,
+  transport: 'mcp',
+  modelOf: (extra) => urlFromExtra(extra)?.searchParams.get('model') ?? null,
+  // D-007: a tool whose capability is high-tier is never fuzzy-resolved (write-effect tools are
+  // additionally excluded by the resolver's own default `neverFuzzy`).
+  tierOf: (mcpName) => {
+    const caps = lookupByMcpName(mcpName)?.capabilities ?? [];
+    return caps.some((c) => tierFor(c) === 'high') ? 'high' : undefined;
+  },
+  visibleFor: (extra) => {
+    const url = urlFromExtra(extra);
+    const seed = parseToolsAllowlist(url?.searchParams.get('tools'));
+    if (!seed) return undefined;
+    const ctx = mcpAuthFailureContext(extra);
+    const allow = getSessionSurface(ctx?.uiClientId ?? null, seed);
+    if (!allow) return undefined;
+    return (tool) => {
+      const n = tool.expose.mcp?.name;
+      return n !== undefined && allow.has(n);
+    };
+  },
+  record: recordFuzzyResolutionTelemetry,
+};
+
+async function recordFuzzyResolutionTelemetry(rec: FuzzyResolutionRecord, extra: unknown): Promise<void> {
+  const ctx = mcpAuthFailureContext(extra);
+  if (!ctx) return;
+  try {
+    await PROJECTED_DEPS.recordInvocation?.({
+      toolName: rec.in,
+      pluginName: 'agent-mcp',
+      ctx,
+      windowKey: '',
+      durationMs: 0,
+      status: 'ok',
+      metadataJson: { fuzzyToolNameResolution: rec },
+    });
+  } catch (error) {
+    console.warn(
+      `[mcp-handler] fuzzy-resolution telemetry failed for ${rec.in}: ` +
         (error instanceof Error ? error.message : String(error)),
     );
   }
@@ -2448,7 +2512,7 @@ async function buildMcpToolContext(
   // applies the role-allowlist + quota + profile gates against `ctx`). The
   // universal reachability path for a client that can't grow its own tool list.
   const ctxRef: { current: UnifiedToolContext | undefined } = { current: undefined };
-  const dispatchTool: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
+  const dispatchToolExact: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
     // WI-3930: resolve TOLERANTLY — an agent commonly pastes a tool name into
     // tools:invoke in the underscore/group_verb (`curation_state-of-pot`) or
     // fully client-mangled (`mcp__papercusp-su__curation_state-of-pot`) form it
@@ -2602,6 +2666,23 @@ async function buildMcpToolContext(
       // rather than leak the full promoted body.
       projectionSpec || namedView ? undefined : target.skipResultDoor,
     );
+  };
+  // Fuzzy tool-name recovery for the tools:invoke re-dispatch seam (P-007 / D-008). Exact and
+  // canonical names go straight through; a typo'd name that resolves is dispatched under the
+  // canonical name and the reply annotated. No `extra` here (an in-process call), so the
+  // candidate set is the full catalog — tools:invoke already reaches any catalog tool.
+  const dispatchTool: UnifiedToolContext['dispatchTool'] = async (toolName, toolArgs) => {
+    if (resolveMcpName(toolName) !== undefined) return dispatchToolExact(toolName, toolArgs);
+    const fuzzy = await resolveWithFuzzy(toolName, undefined, MCP_FUZZY_DEPS);
+    if (fuzzy.kind !== 'rewrite') return dispatchToolExact(toolName, toolArgs);
+    const res = await dispatchToolExact(fuzzy.name, toolArgs);
+    return fuzzy.record.outcome === 'resolved' && Array.isArray((res as { content?: unknown }).content)
+      ? (annotateFuzzyResult(res as never, {
+          input: toolName,
+          resolvedName: fuzzy.name,
+          distance: fuzzy.record.distance,
+        }) as typeof res)
+      : res;
   };
   const builtCtx: UnifiedToolContext & AdmissionAuthorityContext = {
     activateTools,
@@ -3046,6 +3127,7 @@ export function registerMcpHost(server: McpServer): void {
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
+    withFuzzyToolName(
     async (
       req: {
         params: {
@@ -4529,6 +4611,8 @@ export function registerMcpHost(server: McpServer): void {
         content: [{ type: 'text' as const, text: unknownToolReferral(toolName) }],
       };
     },
+    MCP_FUZZY_DEPS,
+    ),
   );
 
   // ── Resources ────────────────────────────────────────────────────

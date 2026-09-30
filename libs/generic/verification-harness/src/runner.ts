@@ -113,6 +113,38 @@ export function newRunId(now: Date): string {
   return `${now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}-${process.pid}`;
 }
 
+/**
+ * Claims a run dir EXCLUSIVELY, so no run ever writes into another run's evidence (R-5). The
+ * default id is second-resolution + pid, which two runs from one process in the same second
+ * share; a non-recursive mkdir fails on EEXIST, and the auto id then takes a `.N` suffix. An
+ * explicit `runId` that already exists is refused, never reused.
+ */
+async function claimRunDir(evidenceRoot: string, explicit: string | undefined, startedAt: Date): Promise<string> {
+  await mkdir(evidenceRoot, { recursive: true });
+  const isTaken = (e: unknown) => (e as NodeJS.ErrnoException)?.code === 'EEXIST';
+  if (explicit !== undefined) {
+    try {
+      await mkdir(path.join(evidenceRoot, explicit));
+    } catch (e) {
+      if (isTaken(e)) {
+        throw new Error(`run ${explicit} already exists under ${evidenceRoot}; a run never reuses another run's evidence dir`);
+      }
+      throw e;
+    }
+    return explicit;
+  }
+  const base = newRunId(startedAt);
+  for (let n = 0; ; n++) {
+    const runId = n === 0 ? base : `${base}.${n}`;
+    try {
+      await mkdir(path.join(evidenceRoot, runId));
+      return runId;
+    } catch (e) {
+      if (!isTaken(e)) throw e;
+    }
+  }
+}
+
 export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
   const parsed = JSON.parse(await readFile(path.join(runDir, 'result.json'), 'utf8')) as HarnessRunResult;
   if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.phases)) {
@@ -148,8 +180,8 @@ export function defaultEvidenceRoot(harness: string, env: NodeJS.ProcessEnv = pr
   return path.join(state, 'verification-harness', harness);
 }
 
-/** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`. */
-const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+$/;
+/** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`, `.N` on a same-second collision. */
+const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+(\.\d+)?$/;
 export const DEFAULT_KEEP_RUNS = 30;
 /** A run dir with no result.json yet is in progress unless it is older than this. */
 const IN_PROGRESS_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -386,9 +418,8 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
   const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
   const startedAt = now();
-  const runId = args.runId ?? newRunId(startedAt);
+  const runId = await claimRunDir(args.evidenceRoot, args.runId, startedAt);
   const runDir = path.join(args.evidenceRoot, runId);
-  await mkdir(runDir, { recursive: true });
 
   const result: HarnessRunResult = {
     schemaVersion: 1,

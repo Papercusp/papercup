@@ -155,7 +155,17 @@ vh_init() {
   done
   VH_ARGS=(${VH_ARGS_TMP[@]+"${VH_ARGS_TMP[@]}"})
   [ "$VH_DISABLED" = 1 ] && return 0
-  VH_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID:-$$}"
+  mkdir -p "$root" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
+  # Claim the run dir EXCLUSIVELY (R-5): a plain mkdir fails when the dir exists, so a second
+  # run from the same process in the same second takes a .N suffix instead of writing into
+  # another run's evidence (runner.ts claimRunDir is the TS twin).
+  local vh_base vh_n=0
+  vh_base="$(date -u +%Y%m%dT%H%M%SZ)-${BASHPID:-$$}"
+  VH_RUN_ID="$vh_base"
+  until mkdir "$root/$VH_RUN_ID" 2>/dev/null; do
+    [ -d "$root/$VH_RUN_ID" ] || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
+    vh_n=$((vh_n + 1)); VH_RUN_ID="$vh_base.$vh_n"
+  done
   VH_RUN_DIR="$root/$VH_RUN_ID"
   mkdir -p "$VH_RUN_DIR/phases" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
   # `--reuse latest` means the run <root>/latest points at.

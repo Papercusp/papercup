@@ -115,6 +115,36 @@ export function unwrapWholePaste(text: string): string {
   return m ? m[2] : text;
 }
 
+/** The opening half of {@link PASTE_WRAPPER_SOURCE}: `m[1]` = paste id. */
+const PASTE_OPEN_RE = /^\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">/;
+
+/**
+ * A HEAD-BOUNDED view of a turn, made whole-paste-classifiable (WI-10004057).
+ *
+ * Every classifier that reads only `left(text, N)` hands {@link unwrapWholePaste} a
+ * head whose closing tag was cut off, so a paste longer than the head never unwraps:
+ * the envelope inside stays invisible and the turn falls through to the affirmative
+ * OWNER default. Measured: a loop-fire turn surfaced by `sessions:search` as
+ * `owner-typed`, and the same head fed the activation audit's owner-evidence check.
+ *
+ * `tail` is the END of the same turn (`right(text, M)`). When the head opens a paste
+ * block and the tail closes the SAME id with only whitespace after it, the whole turn
+ * is exactly one paste — the shape {@link PASTE_WRAPPER_RE} accepts on full text — so
+ * the closing tag is re-appended to the head and every head-bounded check sees what it
+ * would have seen on the full text. The whole-prompt rule is unchanged: owner words
+ * before the paste fail the head test, owner words after it fail the tail test, and
+ * either way the head is returned as-is. A head that already contains its closing tag
+ * (the turn fit in the head) is returned unchanged.
+ */
+export function closeTruncatedWholePaste(head: string, tail: string | null | undefined): string {
+  if (typeof tail !== 'string' || PASTE_WRAPPER_RE.test(head)) return head;
+  const open = PASTE_OPEN_RE.exec(head);
+  if (!open) return head;
+  // The id charset is regex-safe by construction ([A-Za-z0-9_-]).
+  const closing = `</pasted_content id="${open[1]}">`;
+  return new RegExp(`${closing}\\s*$`).test(tail) ? `${head}\n${closing}` : head;
+}
+
 /**
  * The same grammar in POSTGRES POSIX-regex dialect, for SQL `~` comparisons.
  *

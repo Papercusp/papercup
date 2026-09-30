@@ -5477,12 +5477,33 @@ async fn probe_su_session_inventory(
     harness: &str,
     summaries: &[agent_chats::AgentChatSummary],
 ) -> Vec<crate::su_session::SuSessionInventoryEntry> {
-    let mut entries = Vec::new();
+    // One snapshot request per chat (up to the 100-row list limit). Issued
+    // one-at-a-time this held the whole Agent Chat load — and with it the
+    // /resume list — for seconds after launch (P-007). Bounded fan-out keeps
+    // the operator from taking 100 simultaneous requests.
+    const PROBE_CONCURRENCY: usize = 8;
+    let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
+    let mut probes = tokio::task::JoinSet::new();
     for summary in summaries {
-        if let Ok(snapshot) = client.su_session_snapshot(harness, &summary.id).await {
-            entries.push(crate::su_session::SuSessionInventoryEntry::from_snapshot(
-                &snapshot,
-            ));
+        let client = client.clone();
+        let harness = harness.to_string();
+        let chat_id = summary.id.clone();
+        let limit = limit.clone();
+        probes.spawn(async move {
+            let _permit = limit.acquire_owned().await.ok()?;
+            client
+                .su_session_snapshot(&harness, &chat_id)
+                .await
+                .ok()
+                .map(|snapshot| {
+                    crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot)
+                })
+        });
+    }
+    let mut entries = Vec::new();
+    while let Some(joined) = probes.join_next().await {
+        if let Ok(Some(entry)) = joined {
+            entries.push(entry);
         }
     }
     entries.sort_by_key(|entry| entry.adv_session_id);
@@ -5537,7 +5558,9 @@ async fn open_su_session_task(
                 &crate::agent_chats::NewAgentChat {
                     role,
                     feature_id: launch.feature_id.clone(),
-                    title: Some(format!("{} SU session", backend.label())),
+                    title: Some(crate::su_session::conversation_title(
+                        initial_turn.as_ref().map(|turn| turn.draft.as_str()),
+                    )),
                 },
             )
             .await

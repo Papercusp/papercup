@@ -320,6 +320,14 @@ function physicalLegE(
       watchdogErrorSweeps: 0,
       watchdogStallSweeps: 0,
       githubBridge: input.bridge ?? null,
+      // WI-10004055: the finished fire whose verdict this observation read.
+      fire: {
+        active: false,
+        phase: 'complete',
+        startedAt: Date.parse(input.observedAt) - 1,
+        completedAt: Date.parse(input.observedAt) - 1,
+        outcomeStatus: 'nothing',
+      },
     },
     refs: {
       canonicalStaging: input.canonical ?? canonicalAfter,
@@ -368,7 +376,7 @@ function physicalLegE(
       },
       towerTrigger: trigger('tower', 'tower-member', '2026-08-13T12:19:40Z', '2026-08-13T12:19:50Z'),
       vmTrigger: trigger('vm', 'vm-member', '2026-08-13T12:20:00Z', '2026-08-13T12:20:10Z'),
-      tower: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'bridged-member', observedAt: '2026-08-13T12:20:20Z', mode: 'bridged', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
+      tower: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'bridged-member', observedAt: '2026-08-13T12:20:20Z', mode: 'bridged', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore, bridge: { ...clearBridge, at: Date.parse('2026-08-13T12:20:10Z') } }),
       vm: observation({ hostId: 'vm', deviceKey: vm.pubkeyBase64, stage: 'bridged-member', observedAt: '2026-08-13T12:20:30Z', mode: 'bridged', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
     },
     healthy: {
@@ -419,7 +427,8 @@ function physicalLegE(
         canonical: canonicalAfter,
         upstream: ingress,
         remote: divergence,
-        bridge: { ...clearBridge, divergence: 'escalate' },
+        // WI-10004055: the verdict of the divergence-egress fire, written after its trigger.
+        bridge: { ...clearBridge, at: Date.parse('2026-08-13T12:25:35Z'), divergence: 'escalate' },
         bridgeEscalation: { signals: [{ kind: 'egress-non-ff', localSha: canonicalAfter, remoteSha: divergence }] },
       }),
       recovery: {
@@ -2008,6 +2017,29 @@ esac
     expect(physicalScenario).toContain('trap phase_e_restore_on_exit EXIT');
     expect(physicalScenario).toContain('phase-e-verify');
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|push|update-ref)/);
+  });
+
+  it('reads each fire-judged tower stage only after the fire its trigger started has finished (WI-10004055)', () => {
+    // 0.0.25 shakedown: git-sync:run answered in_progress at 45s, and a one-shot
+    // divergence-after read landed ~20ms before the fire wrote divergence=escalate.
+    const phaseE = physicalScenario.slice(
+      physicalScenario.indexOf('phase_e_github_bridge() {'),
+      physicalScenario.indexOf('phase_f_lifecycle_safety() {'),
+    );
+    for (const [stage, started] of [
+      ['bridged-member', 'tower_member_started'],
+      ['healthy-egress', 'egress_started'],
+      ['divergence-after', 'divergence_started'],
+    ] as const) {
+      expect(phaseE).toContain(
+        `phase-e-observe tower ${stage} "$tower_device" "$run_id" "$PHASE_E_MODE_WAIT_SEC" "$${started}"`,
+      );
+      // The trigger start must be stamped BEFORE its git-sync:run call.
+      const stampAt = phaseE.indexOf(`${started}="$(now_iso)"`);
+      expect(stampAt, started).toBeGreaterThan(-1);
+      expect(stampAt).toBeLessThan(phaseE.indexOf('run_tower_git_sync', stampAt));
+      expect(phaseE.indexOf('run_tower_git_sync', stampAt)).toBeLessThan(phaseE.indexOf(`phase-e-observe tower ${stage} `));
+    }
   });
 
   it('starts Phase E from a recorded legacy baseline, waits for each stage mode, and always restores the canary mode (WI-10003791)', () => {

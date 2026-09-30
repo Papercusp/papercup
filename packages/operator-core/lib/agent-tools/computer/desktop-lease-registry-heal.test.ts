@@ -54,12 +54,25 @@ describe('desktop lease registry mirror', () => {
   it('re-records a nameless lease on the next ensure instead of serving it nameless forever', async () => {
     const provision = vi.fn(async () => fakeDesktop());
     __setProvisionerForTests(provision);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registry.registerDesktopSession
-      .mockRejectedValueOnce(new Error('duplicate key value violates unique constraint "desktop_sessions_live_scope_uq"'))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key value violates unique constraint "desktop_sessions_live_display_uq"'), {
+          code: '23505',
+          constraint_name: 'desktop_sessions_live_display_uq',
+        }),
+      )
       .mockResolvedValueOnce({ id: 'ds-healed' });
 
     const first = await ensureHiveDesktop('hosted-workspace');
     expect(hiveDesktopSessionId('hosted-workspace')).toBeUndefined();
+    // D-439: the failed write is still best-effort, but it names the pg code and the
+    // blocking index so a host's journal says why desktop.start answers unavailable.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toMatch(
+      /registry write failed for pot=hosted-workspace display=:110 workspace=ws-heal code=23505 constraint=desktop_sessions_live_display_uq/,
+    );
+    warn.mockRestore();
 
     const second = await ensureHiveDesktop('hosted-workspace');
     expect(second).toBe(first);

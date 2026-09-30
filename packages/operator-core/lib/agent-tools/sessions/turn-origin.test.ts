@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   TURN_ORIGIN_HEAD_CHARS,
+  TURN_ORIGIN_TAIL_CHARS,
   classifyHitTurnOrigin,
   resolveHitTurnOrigins,
   turnOriginKey,
@@ -195,7 +196,7 @@ describe('controls — the wrong implementations these assertions must reject', 
 describe('resolveHitTurnOrigins', () => {
   type Row = {
     source_kind: string; session_id: string; turn_idx: number;
-    speaker: string | null; head: string | null;
+    speaker: string | null; head: string | null; tail?: string | null;
   };
   const fakeSql = (rows: Row[], captured?: unknown[][]) =>
     ((_strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -234,5 +235,66 @@ describe('resolveHitTurnOrigins', () => {
     expect(captured[0]).toContainEqual(['claude', 'omp']);
     expect(captured[0]).toContainEqual(['sess-1', 'sess-2']);
     expect(captured[0]).toContainEqual([7, 3]);
+  });
+
+  it('WI-10004057: reads the tail so a long paste-wrapped injection is not owner speech', async () => {
+    const full = pasted(LOOP_FIRE_TURN + 'y'.repeat(2000));
+    const got = await resolveHitTurnOrigins(
+      fakeSql([{ source_kind: 'claude', session_id: 'sess-1', turn_idx: 7, speaker: 'user', head: head(full), tail: tail(full) }]),
+      'ws',
+      [key],
+    );
+    expect(got.get(turnOriginKey(key))?.verdict).toBe('agent-injected');
+  });
+});
+
+/**
+ * WI-10004057 — the head-bounded read of a PASTE-WRAPPED turn.
+ *
+ * PTY injectors (wake-pump, loop-fire, self-compaction) arrive wrapped in a Claude Code
+ * paste block. The whole-paste unwrap needs the closing tag at the tail, and a bounded
+ * head of a long paste has none — measured: a loop-fire turn surfaced by
+ * `sessions:search` as `owner-typed`, and the same head fed the activation audit's
+ * owner-evidence check. The tail restores the verdict the full text would get; owner
+ * words on either side of a paste must still keep the owner verdict.
+ */
+const PASTE_ID = '9879';
+const pasted = (inner: string) => `<pasted_content id="${PASTE_ID}">\n${inner}\n</pasted_content id="${PASTE_ID}">\n`;
+const tail = (text: string) => text.slice(-TURN_ORIGIN_TAIL_CHARS);
+
+describe('WI-10004057 — a paste-wrapped injection longer than the head', () => {
+  const full = pasted(LOOP_FIRE_TURN + 'y'.repeat(2000));
+
+  it('the head alone has lost the closing tag (the geometry of the bug)', () => {
+    expect(head(full)).not.toContain('</pasted_content');
+    // The pre-fix reading: without the tail the machine turn passes as the owner.
+    expect(classifyHitTurnOrigin('user', head(full)).verdict).toBe('owner-typed');
+  });
+
+  it('with the tail, it classifies as the injection the full text is', () => {
+    const got = classifyHitTurnOrigin('user', head(full), tail(full));
+    expect(got.verdict).toBe('agent-injected');
+    expect(got.origin).toBe('loop-fire');
+  });
+
+  it('owner words AFTER the paste keep the owner verdict (whole-prompt rule)', () => {
+    const quoted = `${full}please look at this wake`;
+    expect(classifyHitTurnOrigin('user', head(quoted), tail(quoted)).verdict).toBe('owner-typed');
+  });
+
+  it('owner words BEFORE the paste keep the owner verdict', () => {
+    const quoted = `what is this?\n${full}`;
+    expect(classifyHitTurnOrigin('user', head(quoted), tail(quoted)).verdict).toBe('owner-typed');
+  });
+
+  it('a different paste closing at the tail does not unwrap the first', () => {
+    const two = `${pasted(LOOP_FIRE_TURN + 'y'.repeat(2000))}owner note\n<pasted_content id="aaaa">\nquoted\n</pasted_content id="aaaa">`;
+    expect(classifyHitTurnOrigin('user', head(two), tail(two)).verdict).toBe('owner-typed');
+  });
+
+  it('a short paste that fits in the head classifies the same with or without the tail', () => {
+    const short = pasted(`${envelope('wake-pump')}\nwake`);
+    expect(classifyHitTurnOrigin('user', head(short)).verdict).toBe('agent-injected');
+    expect(classifyHitTurnOrigin('user', head(short), tail(short)).verdict).toBe('agent-injected');
   });
 });

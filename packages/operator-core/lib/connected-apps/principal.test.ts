@@ -13,8 +13,11 @@ const db = vi.hoisted(() => ({ row: null as Record<string, unknown> | null }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const sql = Object.assign(
-    async (strings: TemplateStringsArray) => {
-      const text = strings.join('?');
+    // Other modules in the catchall's graph also reach this client, some via
+    // postgres.js helper calls (`sql(value)`) rather than a tagged template —
+    // answer those with no rows instead of throwing an unhandled rejection.
+    async (strings: TemplateStringsArray | unknown) => {
+      const text = Array.isArray(strings) ? strings.join('?') : '';
       if (db.row && /SELECT[\s\S]*FROM harness_shared\.connected_apps/.test(text)) return [db.row];
       return [];
     },

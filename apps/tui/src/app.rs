@@ -2624,6 +2624,14 @@ pub struct App {
     /// inventory is kept independently of the selected stream so ended and
     /// archived sessions remain available for inspection after a restart.
     pub su_session_inventory: Vec<SuSessionInventoryEntry>,
+    /// The pot whose Agent Chat list (summaries + SU inventory) has actually
+    /// arrived. The /resume picker must tell "still loading" apart from
+    /// "nothing here": before the first load lands, `agent_chat_summaries` is
+    /// empty for BOTH reasons, and the default chat used to answer
+    /// "No earlier conversations in this directory" — a disabled row, so
+    /// Enter did nothing — for a pot that had them (P-005 review, P-007).
+    /// Keyed by harness so a pot switch reads as loading again.
+    pub agent_chats_loaded_for: Option<String>,
     /// advSessionIds this process has already issued an adopt/reattach for.
     ///
     /// P-010 requires restart reconciliation to "prevent duplicate panes /
@@ -2988,6 +2996,7 @@ impl App {
             su_session: None,
             su_connection_error: None,
             su_session_inventory: Vec::new(),
+            agent_chats_loaded_for: None,
             launch_cwd: crate::su_session::launch_cwd(),
             su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
@@ -5912,11 +5921,24 @@ impl App {
             }
         }));
         if self.chat_first && options.is_empty() {
-            options.push(PickerOption {
-                id: "chat:none".into(),
-                label: "No earlier conversations in this directory".into(),
-                hint: self.launch_cwd.clone(),
-                disabled: true,
+            // Until this pot's chat list has arrived an empty list means
+            // "not loaded yet", never "none exist". The picker refreshes in
+            // place when the list lands (`refresh_open_conversation_picker`).
+            let loaded = self.agent_chats_loaded_for.as_deref() == Some(self.harness.as_str());
+            options.push(if loaded {
+                PickerOption {
+                    id: "chat:none".into(),
+                    label: "No earlier conversations in this directory".into(),
+                    hint: self.launch_cwd.clone(),
+                    disabled: true,
+                }
+            } else {
+                PickerOption {
+                    id: "chat:loading".into(),
+                    label: "Loading earlier conversations…".into(),
+                    hint: self.launch_cwd.clone(),
+                    disabled: true,
+                }
             });
         }
         self.session_picker = Some(SessionPicker::new(PickerAxis::Conversation, options));
@@ -11484,6 +11506,10 @@ impl App {
                         entry
                     })
                     .collect();
+                // The default chat's /resume list filters by each session's
+                // recorded cwd, which lives on these rows — an open picker
+                // must re-filter now that they are here.
+                self.refresh_open_conversation_picker();
 
                 // P-010: adopt/reattach a live SU session by its STABLE
                 // advSessionId. Until this existed, `Action::AttachSuSession`
@@ -11623,6 +11649,7 @@ impl App {
                     self.agent_chat_id = chat_id;
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
+                    self.agent_chats_loaded_for = Some(harness.clone());
                     self.chat_messages = messages;
                     self.chat_focus = None;
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
@@ -16289,6 +16316,7 @@ mod tests {
             row_in("other-project", Some("/work/other")),
             row_in("unknown-dir", None),
         ];
+        a.agent_chats_loaded_for = Some(a.harness.clone());
         a.run_slash_command("resume");
         let ids: Vec<String> = a
             .session_picker
@@ -16317,6 +16345,103 @@ mod tests {
         a.chat_first = false;
         a.open_conversation_picker();
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 3);
+    }
+
+    /// P-007 (P-005 review, step 5): /resume opened right after relaunch,
+    /// before the Agent Chat list arrived, said "No earlier conversations in
+    /// this directory" — a disabled row, so Enter did nothing — for a
+    /// directory that had one. Until the list lands it must say it is
+    /// loading, and the open picker must gain the row when the list and the
+    /// SU inventory (which carries each session's cwd) arrive.
+    #[test]
+    fn chat_first_slash_resume_says_loading_until_the_list_arrives() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
+        let harness = a.harness.clone();
+        let token = a.next_agent_chat_load_token();
+
+        a.run_slash_command("resume");
+        let picker = a.session_picker.as_ref().expect("picker opens");
+        assert_eq!(picker.options.len(), 1, "{:?}", picker.options);
+        assert_eq!(picker.options[0].label, "Loading earlier conversations…");
+        assert!(picker.options[0].disabled);
+        assert!(
+            !picker.options[0].label.contains("No earlier"),
+            "an unloaded list must never claim there is nothing"
+        );
+
+        // The operator emits the inventory, then the load (agent_chat_load).
+        let mut row = inventory_row_for(
+            "earlier",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        row.cwd = Some("/work/app".into());
+        a.update(Event::SuSessionInventory {
+            harness: harness.clone(),
+            selected_chat_id: None,
+            entries: vec![row],
+        });
+        a.update(Event::AgentChatLoaded {
+            harness: harness.clone(),
+            chat_id: None,
+            role: "operator".into(),
+            load_token: token,
+            summaries: vec![chat_summary_for("earlier")],
+            messages: Vec::new(),
+            owner_turn_ids: Vec::new(),
+            approvals: Vec::new(),
+        });
+        let picker = a.session_picker.as_ref().expect("picker stays open");
+        let ids: Vec<&str> = picker.options.iter().map(|o| o.id.as_str()).collect();
+        assert_eq!(ids, vec!["chat:earlier"], "{:?}", picker.options);
+        assert!(!picker.options[0].disabled);
+
+        // Loaded and genuinely empty for this directory: now it may say so.
+        a.session_picker = None;
+        a.launch_cwd = Some("/work/empty".into());
+        a.run_slash_command("resume");
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[0].label,
+            "No earlier conversations in this directory"
+        );
+
+        // A different pot has not loaded: it reads as loading again.
+        a.session_picker = None;
+        a.harness = "another-pot".into();
+        a.run_slash_command("resume");
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[0].label,
+            "Loading earlier conversations…"
+        );
+    }
+
+    /// The SU inventory can land after the chat list is already showing; the
+    /// open picker re-filters on it instead of keeping a stale empty list.
+    #[test]
+    fn chat_first_open_picker_refilters_when_the_inventory_arrives() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
+        a.agent_chat_summaries = vec![chat_summary_for("earlier")];
+        a.agent_chats_loaded_for = Some(a.harness.clone());
+        a.run_slash_command("resume");
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[0].id,
+            "chat:none",
+            "without the inventory the session's directory is unknown"
+        );
+        let mut row = inventory_row_for(
+            "earlier",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        row.cwd = Some("/work/app".into());
+        a.update(Event::SuSessionInventory {
+            harness: a.harness.clone(),
+            selected_chat_id: None,
+            entries: vec![row],
+        });
+        assert_eq!(a.session_picker.as_ref().unwrap().options[0].id, "chat:earlier");
     }
 
     /// The workbench keeps /resume on the fleet switcher (panes and windows).

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { HitTurnOriginVerdict } from './agent-tools/sessions/turn-origin';
 import {
+  fetchSourceTurns,
   isOwnerTurnVerdict,
   itemProvenanceLabelText,
   resolveItemProvenance,
   validateItemProvenanceDeclarations,
   type ProvenanceMappingInput,
+  type TurnSql,
 } from './activation-item-provenance';
 
 const OWNER = 'session_turn:claude:s1:0';
@@ -166,5 +168,32 @@ describe('labels', () => {
     expect(['owner-typed', 'owner-turn', 'owner-dialog'].every((v) => isOwnerTurnVerdict(v as HitTurnOriginVerdict))).toBe(true);
     expect(['agent-injected', 'machine-surface', 'synthetic', 'not-user-turn', 'unknown'].some((v) => isOwnerTurnVerdict(v as HitTurnOriginVerdict))).toBe(false);
     expect(itemProvenanceLabelText('agent-added')).toBe('Added by the agent');
+  });
+});
+
+describe('fetchSourceTurns — WI-10004057: a long paste-wrapped injection is not owner evidence', () => {
+  const envelope = '⟦turn-origin:loop-fire nonce:559df93b11f00c02⟧';
+  const turnText = `<pasted_content id="9879">\n${envelope}\nLoop wake body\n${'x'.repeat(3000)}\n</pasted_content id="9879">\n`;
+  // Emulates `left(text, width)` / `right(text, 256)` over the one stored turn.
+  const fakeSql: TurnSql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    // Template order: left(text, width), right(text, tailWidth), then the WHERE values.
+    const [width, tailWidth] = values as [number, number];
+    return [
+      {
+        source_kind: 'claude',
+        session_id: 's1',
+        turn_idx: 2,
+        speaker: 'user',
+        head: turnText.slice(0, width),
+        tail: turnText.slice(-tailWidth),
+      },
+    ];
+  }) as TurnSql;
+
+  it('classifies the turn from head + tail, so it cannot count as the owner', async () => {
+    const turns = await fetchSourceTurns(fakeSql, 'ws', [LOOP_FIRE]);
+    const verdict = turns.get(LOOP_FIRE)?.verdict;
+    expect(verdict).toBe('agent-injected');
+    expect(isOwnerTurnVerdict(verdict)).toBe(false);
   });
 });

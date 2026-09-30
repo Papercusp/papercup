@@ -1,0 +1,432 @@
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  compareArtifactSets,
+  deriveCandidateProvenance,
+  deriveJourneyEvidence,
+  evidenceVerdict,
+  parseLegBuildProvenance,
+  type LegBuildProvenance,
+  type LegProvenanceInput,
+  type ReleaseLedgerRecord,
+} from './p2p-candidate-evidence';
+import { buildP2pCandidateManifest } from './p2p-candidate-manifest';
+import {
+  computeCandidateManifestFromRecords,
+  redactHome,
+  sha256Bytes,
+  type ComputeDeps,
+} from './run-p2p-candidate-manifest';
+
+const SRC = '93f1c72063bb422583c9c24e7092f1bed767f64f';
+const DESKTOP = 'cddbd8d530d8d3a7c49f22a371347d601a24ba47';
+const h = (seed: string) => createHash('sha256').update(seed).digest('hex');
+
+// Independent oracle for the candidate identity: sha256 over sorted "<sha>  <basename>\n".
+function digestOracle(pairs: [string, string][]): string {
+  return createHash('sha256')
+    .update(pairs.map(([name, sha]) => `${sha}  ${name}\n`).sort().join(''))
+    .digest('hex');
+}
+
+function leg(artifacts: [string, string][], over: Partial<LegBuildProvenance> = {}): LegBuildProvenance {
+  return {
+    version: '0.0.25',
+    buildSha: 'cddbd8d5',
+    reused: false,
+    gitHead: DESKTOP,
+    gitDirty: false,
+    gitDirtyAtEmit: true,
+    dirtySource: {
+      status: 'captured',
+      repositories: [
+        { label: 'desktop', gitHead: DESKTOP, files: [] },
+        { label: 'workspace', gitHead: SRC, files: [] },
+      ],
+    },
+    toolchain: { rustc: '1.97.1' },
+    releaseHostSha256: h('host'),
+    sidecar: { gitHead: SRC, serveMjsSha256: h('serve') },
+    builtAtUtc: '2026-09-29T17:22:14Z',
+    artifacts: artifacts.map(([name, sha]) => ({ name, sha256: sha, bytes: 10, sig: true })),
+    ...over,
+  };
+}
+
+const LINUX: [string, string][] = [
+  ['deb/Papercusp Server_0.0.25_amd64.deb', h('server-deb')],
+  ['deb/Papercusp GUI_0.0.25_amd64.deb', h('gui-deb')],
+];
+const MAC: [string, string][] = [['macos/Papercusp Server.app.tar.gz', h('server-tgz')]];
+
+function legs(over: Record<string, Partial<LegBuildProvenance>> = {}): LegProvenanceInput[] {
+  return [
+    { leg: 'linux', path: '/x/linux/build-provenance.json', record: leg(LINUX, over.linux) },
+    { leg: 'mac', path: '/x/mac/build-provenance.json', record: leg(MAC, over.mac) },
+  ];
+}
+
+function ledger(over: Partial<ReleaseLedgerRecord> = {}): ReleaseLedgerRecord {
+  return {
+    version: '0.0.25',
+    channel: 'alpha',
+    gitSha: SRC,
+    cutAt: '2026-09-29T17:55:29Z',
+    publishedAt: null,
+    artifacts: [
+      { name: 'Papercusp Server_0.0.25_amd64.deb', sha256: h('server-deb'), size: 10 },
+      { name: 'Papercusp Server_0.0.25_x64-setup.zip', sha256: h('win-zip'), size: 10 },
+    ],
+    ...over,
+  };
+}
+
+const RUN_CMD = {
+  tool: 'release:cut',
+  invocationId: '30021770',
+  invokedAt: '2026-09-29T15:45:54.326Z',
+  args: { op: 'run', version: '0.0.25', channel: 'alpha', sourceSha: SRC, confirm: true },
+};
+
+const statusOf = (p: ReturnType<typeof deriveCandidateProvenance>, id: string) =>
+  p.provenance.checks.find((c) => c.id === id)?.status;
+
+describe('deriveCandidateProvenance', () => {
+  it('derives source, pins and a digest over the union of leg + ledger artifacts', () => {
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger(), buildCommand: RUN_CMD });
+    expect(p.sourceSha).toBe(SRC);
+    expect(p.provenance.desktopSha).toBe(DESKTOP);
+    expect(p.provenance.buildSha).toBe('cddbd8d5');
+    expect(p.artifacts.map((a) => a.name)).toEqual([
+      'Papercusp GUI_0.0.25_amd64.deb',
+      'Papercusp Server.app.tar.gz',
+      'Papercusp Server_0.0.25_amd64.deb',
+      'Papercusp Server_0.0.25_x64-setup.zip',
+    ]);
+    expect(p.provenance.candidateDigest).toBe(
+      digestOracle([
+        ['Papercusp GUI_0.0.25_amd64.deb', h('gui-deb')],
+        ['Papercusp Server.app.tar.gz', h('server-tgz')],
+        ['Papercusp Server_0.0.25_amd64.deb', h('server-deb')],
+        ['Papercusp Server_0.0.25_x64-setup.zip', h('win-zip')],
+      ]),
+    );
+    const deb = p.provenance.artifacts.find((a) => a.name === 'Papercusp Server_0.0.25_amd64.deb');
+    expect(deb?.sources).toEqual(['leg:linux', 'ledger']);
+    for (const id of ['version-agreement', 'source-revision', 'desktop-pin', 'clean-source', 'built-not-reused', 'artifact-identity', 'sidecar-payload', 'build-command']) {
+      expect(statusOf(p, id), id).toBe('pass');
+    }
+    // the zip is vouched for only by the ledger, and nothing was re-hashed
+    expect(statusOf(p, 'ledger-corroboration')).toBe('warn');
+    expect(statusOf(p, 'rehash')).toBe('warn');
+    expect(p.provenance.ok).toBe(true);
+  });
+
+  it('a matching on-disk re-hash corroborates a ledger-only artifact', () => {
+    const p = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: legs(),
+      ledger: ledger(),
+      rehashes: [{ name: 'Papercusp Server_0.0.25_x64-setup.zip', sha256: h('win-zip'), bytes: 10, path: '/x/zip' }],
+    });
+    expect(statusOf(p, 'ledger-corroboration')).toBe('pass');
+    expect(statusOf(p, 'rehash')).toBe('pass');
+  });
+
+  it.each([
+    ['source-revision', { linux: { dirtySource: { repositories: [{ label: 'workspace', gitHead: 'f'.repeat(40), files: [] }] } } }],
+    ['built-not-reused', { mac: { reused: true } }],
+    ['clean-source', { linux: { gitDirty: true } }],
+    ['clean-source', { mac: { dirtySource: { repositories: [{ label: 'workspace', gitHead: SRC, files: [{ path: 'a.ts' }] }] } } }],
+    ['desktop-pin', { mac: { gitHead: 'e'.repeat(40), buildSha: 'eeeeeeee' } }],
+    ['desktop-pin', { linux: { buildSha: 'deadbeef' } }],
+    ['version-agreement', { mac: { version: '0.0.24' } }],
+    ['sidecar-payload', { mac: { sidecar: { gitHead: SRC, serveMjsSha256: h('other-serve') } } }],
+    ['sidecar-payload', { linux: { sidecar: { gitHead: 'a'.repeat(40), serveMjsSha256: h('serve') } } }],
+  ] as const)('a contradiction fails %s', (id, over) => {
+    const p = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(over as never), ledger: ledger() });
+    expect(statusOf(p, id)).toBe('fail');
+    expect(p.provenance.ok).toBe(false);
+  });
+
+  it('fails when one basename carries two byte identities or a re-hash disagrees', () => {
+    const conflict = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: legs(),
+      ledger: ledger({ artifacts: [{ name: 'Papercusp Server_0.0.25_amd64.deb', sha256: h('tampered') }] }),
+    });
+    expect(statusOf(conflict, 'artifact-identity')).toBe('fail');
+    const drift = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: legs(),
+      rehashes: [{ name: 'deb/Papercusp GUI_0.0.25_amd64.deb', sha256: h('bitrot'), bytes: 10, path: '/x' }],
+    });
+    expect(statusOf(drift, 'rehash')).toBe('fail');
+    expect(drift.provenance.ok).toBe(false);
+  });
+
+  it('fails a ledger or build command that names different source or runs after the build', () => {
+    const wrongLedger = deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger({ gitSha: 'b'.repeat(40) }) });
+    expect(statusOf(wrongLedger, 'source-revision')).toBe('fail');
+    expect(statusOf(wrongLedger, 'ledger-corroboration')).toBe('fail');
+    const wrongCmd = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: legs(),
+      buildCommand: { ...RUN_CMD, args: { ...RUN_CMD.args, sourceSha: 'c'.repeat(40) } },
+    });
+    expect(statusOf(wrongCmd, 'build-command')).toBe('fail');
+    const late = deriveCandidateProvenance({
+      version: '0.0.25',
+      channel: 'alpha',
+      legs: legs(),
+      buildCommand: { ...RUN_CMD, invokedAt: '2026-09-29T18:00:00Z' },
+    });
+    expect(statusOf(late, 'build-command')).toBe('fail');
+  });
+
+  it('refuses when no record identifies the source', () => {
+    expect(() =>
+      deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs({ linux: { dirtySource: null }, mac: { dirtySource: null } }) }),
+    ).toThrow(/cannot identify the candidate source/);
+  });
+});
+
+describe('parseLegBuildProvenance', () => {
+  it('accepts an emitter record and rejects malformed ones', () => {
+    expect(parseLegBuildProvenance(leg(LINUX), 'ok').artifacts).toHaveLength(2);
+    expect(() => parseLegBuildProvenance({ ...leg(LINUX), artifacts: [] }, 'empty')).toThrow(/non-empty array/);
+    expect(() => parseLegBuildProvenance({ ...leg([['a.deb', 'XYZ']]) }, 'bad')).toThrow(/malformed sha256/);
+    expect(() => parseLegBuildProvenance({ ...leg(LINUX), reused: 'no' }, 'bool')).toThrow(/'reused' must be a boolean/);
+  });
+});
+
+describe('compareArtifactSets', () => {
+  it('classifies identical, differing, missing and extra artifacts', () => {
+    const cmp = compareArtifactSets(
+      [
+        { name: 'deb/a.deb', sha256: h('a') },
+        { name: 'b.deb', sha256: h('b') },
+        { name: 'c.deb', sha256: h('c') },
+      ],
+      [
+        { name: 'a.deb', sha256: h('a') },
+        { name: 'b.deb', sha256: h('b2') },
+        { name: 'd.deb', sha256: h('d') },
+      ],
+    );
+    expect(cmp).toEqual({
+      identical: ['a.deb'],
+      differing: [{ name: 'b.deb', recorded: h('b'), rebuilt: h('b2') }],
+      missingInRebuild: ['c.deb'],
+      extraInRebuild: ['d.deb'],
+      reproducible: false,
+    });
+    expect(compareArtifactSets([{ name: 'a', sha256: h('a') }], [{ name: 'a', sha256: h('a') }]).reproducible).toBe(true);
+  });
+});
+
+function evidenceDoc(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: 'operational-test-evidence',
+    name: 'journey run',
+    subject: { debSha256: h('server-deb'), topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } },
+    exitCode: 0,
+    finishedAt: '2026-09-29T20:55:18Z',
+    assertions: [{ id: 'exact-artifact', passed: true }],
+    ...over,
+  };
+}
+
+describe('evidenceVerdict', () => {
+  it('passes only on exit 0 with a positive signal; fails on any failure; never passes a skip', () => {
+    expect(evidenceVerdict(evidenceDoc()).verdict).toBe('pass');
+    expect(evidenceVerdict(evidenceDoc({ exitCode: 1 })).verdict).toBe('fail');
+    expect(evidenceVerdict(evidenceDoc({ assertions: [{ id: 'x', passed: false }] })).verdict).toBe('fail');
+    expect(evidenceVerdict(evidenceDoc({ physicalRun: { legVerdicts: [{ leg: 'A', status: 'pass' }, { leg: 'G', status: 'skip' }] } })).verdict).toBe('unknown');
+    expect(evidenceVerdict(evidenceDoc({ physicalRun: { legVerdicts: [{ leg: 'A', status: 'fail' }] } })).verdict).toBe('fail');
+    expect(evidenceVerdict(evidenceDoc({ assertions: [] })).verdict).toBe('unknown');
+    expect(evidenceVerdict(evidenceDoc({ exitCode: undefined })).verdict).toBe('unknown');
+  });
+});
+
+describe('deriveJourneyEvidence → manifest', () => {
+  const candidate = () => deriveCandidateProvenance({ version: '0.0.25', channel: 'alpha', legs: legs(), ledger: ledger() });
+
+  it('a declared journey measured on a candidate member reads passed-on-this-artifact', async () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [{ path: 'docs/evidence/f3.json', sha256: h('doc'), doc: evidenceDoc({ p521Journey: 'serving-identity-restart' }) }],
+    });
+    expect(Object.keys(derived.journeys)).toEqual(['serving-identity-restart']);
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys, now: Date.parse('2026-09-30T00:00:00Z') });
+    const row = manifest.current.rows.find((r) => r.capability === 'serving-identity-restart');
+    expect(row?.state).toBe('passed-on-this-artifact');
+    expect(row?.evidence.refs[0]?.ref).toBe('docs/evidence/f3.json');
+    // the other seven journeys stay unmeasured, so the candidate is not GO
+    expect(manifest.current.rows.filter((r) => r.state === 'unmeasured')).toHaveLength(7);
+    expect(manifest.current.go).toBe(false);
+  });
+
+  it('evidence on other bytes surfaces as lineage-mismatch, never as a pass', async () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [
+        {
+          path: 'docs/evidence/old.json',
+          sha256: h('old'),
+          doc: evidenceDoc({ p521Journeys: ['github-bridge'], subject: { debSha256: h('0.0.24-deb'), topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } } }),
+        },
+      ],
+    });
+    expect(derived.bindings[0]?.binding).toBe('other-artifact');
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys });
+    const row = manifest.current.rows.find((r) => r.capability === 'github-bridge');
+    expect(row?.result).toBe('lineage-mismatch');
+    expect(row?.state).not.toBe('passed-on-this-artifact');
+  });
+
+  it('a missing peer keeps the row advancing', async () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [
+        {
+          path: 'docs/evidence/one-host.json',
+          sha256: h('one'),
+          doc: evidenceDoc({ p521Journey: 'discovery-join', subject: { debSha256: h('server-deb'), topology: { hosts: [{ id: 'tower' }] } } }),
+        },
+      ],
+    });
+    const manifest = await buildP2pCandidateManifest({ candidate: c, journeys: derived.journeys });
+    const row = manifest.current.rows.find((r) => r.capability === 'discovery-join');
+    expect(row?.state).toBe('advancing');
+    expect(row?.missingPeers).toEqual(['mac-vm']);
+  });
+
+  it('prefers the latest on-candidate run over a newer foreign one, and keeps every run in bindings', () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [
+        { path: 'a.json', sha256: h('a'), doc: evidenceDoc({ p521Journey: 'discovery-join', finishedAt: '2026-09-29T10:00:00Z', exitCode: 1 }) },
+        { path: 'b.json', sha256: h('b'), doc: evidenceDoc({ p521Journey: 'discovery-join', finishedAt: '2026-09-29T12:00:00Z' }) },
+        {
+          path: 'c.json',
+          sha256: h('c'),
+          doc: evidenceDoc({ p521Journey: 'discovery-join', finishedAt: '2026-09-29T14:00:00Z', subject: { debSha256: h('foreign') } }),
+        },
+      ],
+    });
+    expect(derived.journeys['discovery-join']?.verdict).toBe('pass');
+    expect(derived.journeys['discovery-join']?.evidence[0]?.ref).toBe('b.json');
+    expect(derived.bindings.map((b) => [b.path, b.selected, b.verdict])).toEqual([
+      ['a.json', false, 'fail'],
+      ['b.json', true, 'pass'],
+      ['c.json', false, 'pass'],
+    ]);
+  });
+
+  it('reports undeclared candidate evidence as unmapped and rejects unknown journey keys', () => {
+    const c = candidate();
+    const derived = deriveJourneyEvidence({
+      candidate: c,
+      evidence: [
+        { path: 'run34.json', sha256: h('34'), doc: evidenceDoc() },
+        { path: 'typo.json', sha256: h('t'), doc: evidenceDoc({ p521Journey: 'discovery' }) },
+        { path: 'notes.json', sha256: h('n'), doc: { kind: 'something-else' } },
+      ],
+    });
+    expect(derived.journeys).toEqual({});
+    expect(derived.unmapped).toEqual([{ path: 'run34.json', sha256: h('34'), name: 'journey run' }]);
+    expect(derived.ignored.map((i) => i.path)).toEqual(['typo.json', 'notes.json']);
+  });
+});
+
+describe('computeCandidateManifestFromRecords (CLI core)', () => {
+  let dir = '';
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = '';
+  });
+
+  it('computes provenance, corroborates a ledger-only artifact by re-hash, and binds evidence into the manifest', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'p2p-cand-'));
+    const linuxDir = join(dir, 'linux');
+    const winDir = join(dir, 'win');
+    const evDir = join(dir, 'evidence');
+    for (const d of [linuxDir, join(linuxDir, 'deb'), winDir, evDir]) mkdirSync(d, { recursive: true });
+    const debBytes = Buffer.from('server deb bytes');
+    const zipBytes = Buffer.from('windows zip bytes');
+    writeFileSync(join(linuxDir, 'deb', 'Server.deb'), debBytes);
+    writeFileSync(join(winDir, 'Server.zip'), zipBytes);
+    writeFileSync(join(linuxDir, 'build-provenance.json'), JSON.stringify(leg([['deb/Server.deb', sha256Bytes(debBytes)]])));
+    writeFileSync(join(winDir, 'build-provenance.json'), JSON.stringify(leg([['Setup.exe', h('setup')]])));
+    writeFileSync(
+      join(evDir, 'f4.json'),
+      JSON.stringify(evidenceDoc({ p521Journey: 'replicated-write-outage-replay', subject: { debSha256: sha256Bytes(debBytes), topology: { hosts: [{ id: 'tower' }, { id: 'mac-vm' }] } } })),
+    );
+    const hashed: string[] = [];
+    const deps: ComputeDeps = {
+      readLedger: async () => ({
+        version: '0.0.25',
+        channel: 'alpha',
+        gitSha: SRC,
+        artifacts: [
+          { name: 'Server.deb', sha256: sha256Bytes(debBytes) },
+          { name: 'Server.zip', sha256: sha256Bytes(zipBytes) },
+        ],
+      }),
+      readBuildCommand: async () => RUN_CMD,
+      hashFile: async (path) => {
+        hashed.push(path);
+        return sha256Bytes(zipBytes);
+      },
+    };
+    const result = await computeCandidateManifestFromRecords(
+      {
+        version: '0.0.25',
+        channel: 'alpha',
+        legs: [
+          { leg: 'linux', path: join(linuxDir, 'build-provenance.json') },
+          { leg: 'windows', path: join(winDir, 'build-provenance.json') },
+        ],
+        evidenceDir: evDir,
+        repoRoot: dir,
+        rehash: 'ledger-only',
+        now: Date.parse('2026-09-30T00:00:00Z'),
+      },
+      deps,
+    );
+    expect(hashed).toEqual([join(winDir, 'Server.zip')]);
+    expect(result.provenance.provenance.checks.find((c) => c.id === 'ledger-corroboration')?.status).toBe('pass');
+    expect(result.provenance.provenance.legs.map((l) => l.fileSha256)).toEqual([
+      sha256Bytes(JSON.stringify(leg([['deb/Server.deb', sha256Bytes(debBytes)]]))),
+      sha256Bytes(JSON.stringify(leg([['Setup.exe', h('setup')]]))),
+    ]);
+    expect(result.manifest.artifact.sha256).toBe(
+      digestOracle([
+        ['Server.deb', sha256Bytes(debBytes)],
+        ['Setup.exe', h('setup')],
+        ['Server.zip', sha256Bytes(zipBytes)],
+      ]),
+    );
+    expect(result.evidence.bindings.map((b) => b.path)).toEqual(['evidence/f4.json']);
+    const row = result.manifest.current.rows.find((r) => r.capability === 'replicated-write-outage-replay');
+    expect(row?.state).toBe('passed-on-this-artifact');
+  });
+
+  it('redacts the home directory from evidence text', () => {
+    const fakeHome = join(tmpdir(), 'fake-home-user');
+    expect(redactHome(`${fakeHome}/x and ${fakeHome}/y`, fakeHome)).toBe('~/x and ~/y');
+    expect(redactHome('/mnt/data/x', fakeHome)).toBe('/mnt/data/x');
+  });
+});

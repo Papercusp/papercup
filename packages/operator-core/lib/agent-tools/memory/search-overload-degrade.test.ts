@@ -71,7 +71,9 @@ const saturatedBackend = (withLexical: boolean) => ({
   lexicalScoreScale: 'lexical' as const,
   available: vi.fn(async () => ({ ok: true })),
   search: vi.fn(() => NEVER<unknown[]>()),
-  ...(withLexical ? { searchLexical: vi.fn(async () => [LEX_HIT]) } : {}),
+  ...(withLexical
+    ? { searchLexical: vi.fn(async (_query: string, _opts: { scope: string[] }) => [LEX_HIT]) }
+    : {}),
   list: vi.fn(async () => [] as unknown[]),
   get: vi.fn(async () => null),
   remember: vi.fn(async () => ({ ids: [] })),

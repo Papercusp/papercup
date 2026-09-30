@@ -2,7 +2,8 @@
  * device-store.integration.test.ts — the paired-mobile-device + push-token store
  * against REAL Postgres (testcontainer), exercising REAL RLS.
  *
- * harness_shared.mobile_devices / mobile_push_tokens are RLS-enabled with a
+ * harness_shared.connected_apps (kind='mobile' rows; migration 1244 generalized
+ * the old mobile_devices table) / mobile_push_tokens are RLS-enabled with a
  * `workspace_id = current_setting('app.workspace_id')` policy. The store's
  * workspace-scoped functions go through `withWorkspace(ws, cb)` (RLS-subject
  * harness_app role + the GUC), while the desktop-facing helpers (isRevoked,
@@ -194,7 +195,7 @@ describe('device-store (real PG + real RLS)', () => {
     await upsertPushToken({ deviceId: idA, workspaceId: wsA, platform: 'apns', token: 'a-tok' });
     await upsertPushToken({ deviceId: idB, workspaceId: wsB, platform: 'apns', token: 'b-tok' });
 
-    // wsA only sees its own token (RLS on the JOINed mobile_devices).
+    // wsA only sees its own token (RLS on the JOINed connected_apps).
     expect(await pushTargetsForWorkspace(wsA)).toEqual([{ platform: 'apns', token: 'a-tok' }]);
 
     // Revoking device A drops its token from the targets (JOIN ... WHERE revoked_at IS NULL).
