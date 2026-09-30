@@ -82,6 +82,11 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * must not cost the customer their connector.
    */
   onBinding?: (binding: HostedConnectorBinding) => void;
+  /**
+   * P-328 (D-030 #4): the portal's relay usage for this workspace, sent on each relayed app
+   * call. Defaults to {@link defaultRelayUsageReport}, which raises the relay-limit alert.
+   */
+  onRelayUsage?: (customerWorkspaceId: string, relayUsage: unknown) => void;
   /** Test seam — swap the transport. */
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
@@ -117,6 +122,16 @@ export function defaultHostedAudit(event: HostedHostAuditEvent): void {
  * `desktop.start` coalesces onto `ensureHiveDesktop`'s existing lease.
  */
 export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
+
+/**
+ * The default relay-usage sink: the relay-limit alert on this operator's attention rail.
+ * Loaded lazily so the runtime's static graph does not pull in the org database client.
+ */
+export function defaultRelayUsageReport(customerWorkspaceId: string, relayUsage: unknown): void {
+  void import('../connected-apps/alert-sweep')
+    .then(({ onRelayUsageReported }) => onRelayUsageReported(customerWorkspaceId, relayUsage))
+    .catch((error) => console.warn('[hosted-workspace-host] relay usage report failed:', error));
+}
 
 /**
  * The desktop plane wired to this operator's real registry and lease map.
@@ -216,6 +231,7 @@ export function createHostedWorkspaceHostRuntime(
         },
         onAudit,
         onWarning: warn,
+        onRelayUsage: (relayUsage) => (options.onRelayUsage ?? defaultRelayUsageReport)(next.customerWorkspaceId, relayUsage),
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
       });
