@@ -150,14 +150,9 @@ const EXEMPT: ReadonlyArray<{ file: string; contains: string; reason: string }> 
     contains: 'AS matched_anchor, 0 AS leg',
     reason:
       'chunkAwareVectorLegSql is a SQL builder: it returns a fragment and executes nothing. ' +
-      'Rule 2 of this guard requires every call site to run it inside withIterativeScan.',
-  },
-  {
-    file: 'libs/generic/search/src/chunks/vector-leg.ts',
-    contains: 'AS matched_anchor, 1 AS leg',
-    reason:
-      'The chunk arm of the same builder fragment; executed only by call sites that rule 2 ' +
-      'requires to be inside withIterativeScan.',
+      'Rule 2 of this guard requires every call site to run it inside withIterativeScan. ' +
+      "Its chunk arm orders by an interpolated fragment (scan 'ann' or 'exact', D-032), so " +
+      'this scan no longer sees it as a literal ORDER BY; the same rule 2 covers it.',
   },
   {
     file: 'packages/operator-core/lib/personal-vault/store.ts',
