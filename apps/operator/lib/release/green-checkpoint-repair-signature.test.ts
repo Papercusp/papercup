@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   NON_TEST_GATE_SCRIPTS,
+  describeRepairHeadRunnerFailure,
   parseRepairHeadRadius,
   partitionRepairSignatureEntries,
   makeTestWorkspaceResolver,
@@ -658,5 +659,80 @@ describe("P-006 verifyRepairHead — the typed signature drives the runners, at 
       expect(parseRepairHeadRadius(output.replace("workspaces=1 guards", "workspaces=2 guards"))?.coverageComplete).toBe(false);
       expect(parseRepairHeadRadius("")?.coverageComplete).toBe(false);
     });
+  });
+});
+
+/**
+ * WI-10004151: an `unavailable` hold must name WHY nothing was measured. On 2026-09-30 a
+ * partial package-lock.json admission left repair head 5955f82b without a dependency
+ * generation; the radius resolver threw, `.catch(() => null)` dropped the error, and the queue
+ * re-held every tick on "could not be resolved" with no cause and no remedy.
+ */
+describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold", () => {
+  const MISSING_GENERATION =
+    "bash setup-release-checkout.sh exited 74: dependency-generation.sh: " +
+    "no prewarmed dependency generation for input fingerprint 523c88fb";
+  const admittedQueue = () =>
+    queueWith([entry({ kind: "lint-leg", id: "lint:remaining" })], {
+      admissions: [{
+        atMs: 2, actor: "test", source: { ref: "staging", sha: HEAD },
+        fromRepairHead: CANDIDATE, toRepairHead: HEAD,
+        paths: ["package-lock.json"], unchanged: [], blobs: { "package-lock.json": "e".repeat(40) },
+      }],
+    });
+
+  it("names the missing dependency generation, its fingerprint and its remedy when the radius resolver throws", async () => {
+    let gateRuns = 0;
+    const result = await verifyRepairHead({
+      affectedTestsAtRef: async () => { throw new Error(MISSING_GENERATION); },
+      runGateAtRef: async (head, ids) => {
+        gateRuns += 1;
+        return { pass: true, summary: "ok", measuredHead: head, perGate: ids.map((id) => ({ id, status: "pass" as const })) };
+      },
+    }, admittedQueue());
+    expect(result.kind).toBe("unavailable");
+    expect(result.summary).toContain("could not be resolved at repair head cccccccc");
+    expect(result.summary).toContain("fingerprint 523c88fb");
+    expect(result.summary).toContain("does not clear on its own");
+    expect(result.summary).toContain("--ensure-ref");
+    expect(gateRuns).toBe(0);
+  });
+
+  it("carries an ordinary resolver error verbatim, and says 'malformed' only for a null radius", async () => {
+    const thrown = await verifyRepairHead({
+      affectedTestsAtRef: async () => { throw new Error("affected-tests selector exited 2 at cccccccccccc: boom"); },
+      runGateAtRef: async (head) => ({ pass: true, summary: "ok", measuredHead: head }),
+    }, admittedQueue());
+    expect(thrown.summary).toContain("(affected-tests selector exited 2 at cccccccccccc: boom)");
+    const malformed = await verifyRepairHead({
+      affectedTestsAtRef: async () => null,
+      runGateAtRef: async (head) => ({ pass: true, summary: "ok", measuredHead: head }),
+    }, admittedQueue());
+    expect(malformed.kind).toBe("unavailable");
+    expect(malformed.summary).toContain("(the selector output was malformed or unroutable)");
+  });
+
+  it("names the file runner's failure and does not spend the gate runner after it", async () => {
+    const files = [{ workspace: CORE, file: "lib/a.test.ts" }];
+    const queue = queueWith([
+      entry({ kind: "test-file", id: files[0]!.file, workspace: CORE }),
+      entry({ kind: "lint-leg", id: "lint:x" }),
+    ]);
+    let gateRuns = 0;
+    const result = await verifyRepairHead({
+      runTestsAtRef: async () => { throw new Error("vitest crashed: ENOSPC"); },
+      runGateAtRef: async (head) => { gateRuns += 1; return { pass: true, summary: "ok", measuredHead: head }; },
+    }, queue);
+    expect(result).toMatchObject({ kind: "unavailable" });
+    expect(result.summary).toContain("the file runner failed to execute at repair head cccccccc (vitest crashed: ENOSPC)");
+    expect(gateRuns).toBe(0);
+  });
+
+  it("bounds a long failure to one line", () => {
+    const described = describeRepairHeadRunnerFailure(new Error(`line one\n${"x".repeat(2000)}`));
+    expect(described).not.toContain("\n");
+    expect(described.length).toBeLessThanOrEqual(601);
+    expect(described.endsWith("…")).toBe(true);
+    expect(describeRepairHeadRunnerFailure("plain string")).toBe("plain string");
   });
 });

@@ -1078,8 +1078,9 @@ export interface CheckpointDeps {
    *  the checkpoint tree after it is pointed at `ref`, so the graph walk reads the lineage's own
    *  package graph. Returns the related test files and the lint/check legs the run attaches
    *  (both re-runnable at the same `ref` via `runTestsAtRef` / `runGateAtRef`), or null when the
-   *  selector widened or a task cannot be narrowed — the caller then runs the FULL gate at `ref`.
-   *  Optional: absent ⇒ that same full-run fall-through. Never reads the integration tip. */
+   *  selector output is malformed/unroutable. A failure to RUN (tree setup, missing dependency
+   *  generation, non-zero selector exit) rejects with an error naming its cause, which the
+   *  caller carries into the queue's hold (WI-10004151). Never reads the integration tip. */
   affectedTestsAtRef?(
     ref: string,
     paths: string[],
@@ -5908,6 +5909,46 @@ function recordedRoundAt(
   return "?";
 }
 
+/** Upper bound on a runner failure carried into an `unavailable` summary, which is logged,
+ *  returned as the run summary and folded into gate health. */
+const REPAIR_RUNNER_FAILURE_MAX_CHARS = 600;
+
+/** WI-10004151: say WHY a repair-head runner/resolver produced no evidence, in one bounded line.
+ *  A missing exact-input dependency generation (dependency-generation.sh reserves exit 74 for
+ *  that family; the "no prewarmed …" line is its MISSING case) is named with its fingerprint
+ *  and remedy, because it never clears on its own: every tick re-holds on the same miss. */
+export function describeRepairHeadRunnerFailure(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const fingerprint =
+    /no prewarmed dependency generation for input fingerprint ([0-9a-f]{8,64})/.exec(
+      raw,
+    )?.[1];
+  if (fingerprint) {
+    return (
+      `no prewarmed dependency generation exists for the repair head's lockfile inputs ` +
+      `(fingerprint ${fingerprint}); this does not clear on its own. Publish a generation for ` +
+      `that fingerprint: dependency-generation.sh --ensure-ref <repairHead> serves it only when ` +
+      `the head's lockfiles equal the live tree's, so a partial package-lock.json admission ` +
+      `needs a generation built from the head's own lockfiles (WI-10004151)`
+    );
+  }
+  const oneLine = raw.replace(/\s+/g, " ").trim() || "no error detail";
+  return oneLine.length > REPAIR_RUNNER_FAILURE_MAX_CHARS
+    ? `${oneLine.slice(0, REPAIR_RUNNER_FAILURE_MAX_CHARS)}…`
+    : oneLine;
+}
+
+/** Run one repair-head runner, keeping its failure as a described reason instead of `null`. */
+async function settleRepairHeadRunner<T>(
+  run: Promise<T>,
+): Promise<{ value: T } | { failure: string }> {
+  try {
+    return { value: await run };
+  } catch (error) {
+    return { failure: describeRepairHeadRunnerFailure(error) };
+  }
+}
+
 export async function verifyRepairHead(
   deps: RepairHeadVerificationDeps,
   queue: FrozenCandidateRepairQueue,
@@ -6015,20 +6056,28 @@ export async function verifyRepairHead(
   const gateList = [...gates];
   // Sequential on purpose: both runners materialize `head` in the SAME checkpoint tree, and
   // two concurrent setupTree calls on one directory race each other's checkout.
-  const fileRun =
+  const fileSettled =
     fileList.length > 0
-      ? await deps.runTestsAtRef!(head, fileList).catch(() => null)
+      ? await settleRepairHeadRunner(deps.runTestsAtRef!(head, fileList))
       : undefined;
-  const gateRun =
-    gateList.length > 0
-      ? await deps.runGateAtRef!(head, gateList).catch(() => null)
-      : undefined;
-  if (fileRun === null || gateRun === null) {
+  if (fileSettled && "failure" in fileSettled) {
     return {
       kind: "unavailable",
-      summary: `the ${fileRun === null ? "file" : "gate"} runner failed to execute at repair head ${at}; nothing was measured`,
+      summary: `the file runner failed to execute at repair head ${at} (${fileSettled.failure}); nothing was measured`,
     };
   }
+  const fileRun = fileSettled?.value;
+  const gateSettled =
+    gateList.length > 0
+      ? await settleRepairHeadRunner(deps.runGateAtRef!(head, gateList))
+      : undefined;
+  if (gateSettled && "failure" in gateSettled) {
+    return {
+      kind: "unavailable",
+      summary: `the gate runner failed to execute at repair head ${at} (${gateSettled.failure}); nothing was measured`,
+    };
+  }
+  const gateRun = gateSettled?.value;
   // An optional detailed result is evidence only for this exact requested set/head.
   // Aggregate-only older runners remain conservative; malformed detail must never erase
   // a red merely because its array happens to have the right length.
@@ -20127,8 +20176,9 @@ export function realCheckpointDeps(
     // P-005 / D-004: the ADMITTED paths' selective radius, resolved AT `ref` (the frozen
     // lineage's repair head). The checkpoint tree is pointed at `ref` FIRST, so the selector's
     // graph walk reads the lineage's own package graph — never the integration tree's, whose
-    // tip may carry workspaces the lineage lacks. Same honest-absence contract as runTestsAtRef:
-    // a setupTree throw propagates to the caller's .catch(() => null) → full run at `ref`.
+    // tip may carry workspaces the lineage lacks. A setupTree throw (e.g. a missing dependency
+    // generation) or a non-zero selector exit PROPAGATES as an error naming its cause;
+    // verifyRepairHead carries it into the hold (WI-10004151). `null` is only malformed output.
     async affectedTestsAtRef(ref, paths) {
       await this.setupTree(ref);
       const probe = await exec(
@@ -20147,7 +20197,18 @@ export function realCheckpointDeps(
           killProcessGroupOnTimeout: true,
         },
       );
-      return probe.code === 0 ? parseRepairHeadRadius(probe.stdout) : null;
+      if (probe.code !== 0) {
+        const tail = (probe.stderr || probe.stdout)
+          .trim()
+          .split(/\r?\n/)
+          .slice(-5)
+          .join(" | ");
+        throw new Error(
+          `affected-tests selector exited ${probe.code}` +
+            `${probe.signal ? ` via ${probe.signal}` : ""} at ${ref.slice(0, 12)}: ${tail}`,
+        );
+      }
+      return parseRepairHeadRadius(probe.stdout);
     },
     async detectSplitSourceTestPairs(input) {
       return detectSplitSourceTestPairs({
