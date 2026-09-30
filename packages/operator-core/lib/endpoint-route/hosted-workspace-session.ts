@@ -9,6 +9,7 @@ import type {
   AppRelayChannel,
   AppRelayChannelKind,
   AppRelayConnector,
+  AppRelayOpenOptions,
   AppRelayPort,
 } from '../workspace-host/hosted-app-relay';
 
@@ -362,6 +363,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     connector: AppRelayConnector,
     handlers: { onFrame: (payload: Record<string, unknown>) => void; onClose: (reason: string) => void },
     kind: AppRelayChannelKind = 'app-http',
+    openOptions: AppRelayOpenOptions = {},
   ): AppRelayChannel | null {
     // Each kind carries only its own client frames: an app call's http.* pair, or the one
     // mint.request (P-325) / token.request (P-016) of the key channel. The machine fences both too.
@@ -410,6 +412,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       kind,
       audience: kind === 'app-key-mint' ? 'portal-oauth' : 'app',
       role: 'controller',
+      // P-328: this month's relay usage (counts only), so the machine can raise the limit alert.
+      ...(kind === 'app-http' && openOptions.relayUsage ? { relayUsage: openOptions.relayUsage } : {}),
     });
     this.audit(state.binding, 'app_relay_opened', channelId);
     return {

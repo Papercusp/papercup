@@ -29,6 +29,7 @@
  * channel carries exactly one request.
  */
 import type { Sql } from 'postgres';
+import type { RelayUsageReport } from '../connected-apps/alert-sweep';
 import { isAppKeyShaped, parseAppKey } from '../connected-apps/key';
 import { isRelayableTokenAnswer, relayedBasic, relayedTokenFields } from '../connected-apps/mcp-oauth';
 import { publicOriginOf } from '../connected-apps/mcp-oauth-discovery';
@@ -452,7 +453,16 @@ export interface AppRelayPort {
     connector: AppRelayConnector,
     handlers: { onFrame: (payload: Record<string, unknown>) => void; onClose: (reason: string) => void },
     kind?: AppRelayChannelKind,
+    open?: AppRelayOpenOptions,
   ): AppRelayChannel | null;
+}
+
+/**
+ * Extra fields the portal sends on an `app-http` channel's `relay.open` (P-328, D-030 #4): the
+ * workspace's relay usage this month, so the machine can raise the relay-limit alert. Counts only.
+ */
+export interface AppRelayOpenOptions {
+  relayUsage?: RelayUsageReport;
 }
 
 export interface HostedAppRelayAuditEvent {
@@ -545,7 +555,8 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
     return refuse(429, 'rate_limited', { 'retry-after': '60' }, { limit: 'requests_per_minute' });
   }
   const month = appRelayMonth(now);
-  if ((await deps.usage.monthBytes(workspace, month)) >= limits.monthlyBandwidthBytes) {
+  const monthBytes = await deps.usage.monthBytes(workspace, month);
+  if (monthBytes >= limits.monthlyBandwidthBytes) {
     audit('app_relay_refused', 'rate_limited monthly_bandwidth');
     return refuse(429, 'rate_limited', { 'retry-after': String(secondsUntilNextMonth(now)) }, { limit: 'monthly_bandwidth' });
   }
@@ -574,6 +585,7 @@ export async function handleHostedAppRelay(request: Request, deps: HostedAppRela
     body,
     signal: request.signal,
     audit,
+    relayUsage: { month, bytes: monthBytes, limitBytes: limits.monthlyBandwidthBytes },
   });
 }
 
@@ -582,6 +594,7 @@ function relay(input: {
   connector: AppRelayConnector;
   workspace: AppRelayWorkspace;
   month: string;
+  relayUsage: RelayUsageReport;
   method: string;
   path: string;
   headers: Record<string, string>;
@@ -677,7 +690,7 @@ function relay(input: {
         }
         finish(reason);
       },
-    });
+    }, 'app-http', { relayUsage: input.relayUsage });
 
     if (!channel) {
       input.audit('app_relay_refused', 'workspace_offline');

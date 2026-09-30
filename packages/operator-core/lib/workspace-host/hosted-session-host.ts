@@ -118,6 +118,8 @@ export interface HostedHostRelayOpen {
   kind?: HostedHostChannelKind;
   /** Required when `kind === 'desktop'`; ignored otherwise. */
   desktopSessionId?: string;
+  /** `kind === 'app-http'` only: the portal relay's usage this month (P-328). Counts only. */
+  relayUsage?: unknown;
 }
 
 export interface HostedHostRelayMessage {
@@ -279,6 +281,11 @@ export interface HostedWorkspaceHostOptions {
    * own loopback operator; overridable only so tests need no listening server.
    */
   operatorHttp?: { origin?: string; fetch?: OperatorHttpFetch };
+  /**
+   * P-328 (D-030 #4): the portal sends this month's relay usage on an `app-http` `relay.open`.
+   * The raw field is passed through unparsed; the receiver validates it and may raise an alert.
+   */
+  onRelayUsage?: (relayUsage: unknown) => void;
 }
 
 type HostSession = {
@@ -886,6 +893,13 @@ export class HostedWorkspaceHostSessionAdapter {
       this.channels.set(appChannelId, { kind: 'operator-http', ...identity, http, plane: 'app' });
       this.send(appChannelId, { type: 'http.ready' });
       this.audit('app_http_attached', identity, appChannelId);
+      if (message.relayUsage !== undefined && this.options.onRelayUsage) {
+        try {
+          this.options.onRelayUsage(message.relayUsage);
+        } catch (err) {
+          this.options.onWarning?.(`relay usage report failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return;
     }
     if (message.kind === 'app-key-mint') {
