@@ -362,7 +362,8 @@ describe('same-box transport — a rig producer never reaches the live operator 
   });
 
   it('tower-tsx refuses to run without a rig PG port, or with the live :5432', () => {
-    for (const extra of [{}, { SAME_BOX_TOWER_PG_PORT: '5432' }, { SAME_BOX_TOWER_PG_PORT: 'x' }]) {
+    const refusals: Record<string, string>[] = [{}, { SAME_BOX_TOWER_PG_PORT: '5432' }, { SAME_BOX_TOWER_PG_PORT: 'x' }];
+    for (const extra of refusals) {
       const r = towerTsx(stubRig(), extra);
       expect(r.status, JSON.stringify(extra)).toBe(2);
       expect(r.stdout).toBe('');
