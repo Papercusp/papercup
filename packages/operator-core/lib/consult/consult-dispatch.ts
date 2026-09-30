@@ -131,7 +131,8 @@ export type DispatchSkipReason =
   | 'evidence-span-unavailable'
   | 'launch-failed'
   | 'kickoff-not-persisted'
-  | 'launch-exited';
+  | 'launch-exited'
+  | 'first-turn-rejected';
 
 export interface ConsultDispatchAttempt {
   rank: number;
@@ -197,12 +198,15 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     target: ResumeTarget,
   ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
   /**
-   * Read a Claude source transcript's tail for provider "Tool reference … not
-   * found" rejections. A fork replays the source history, so a source whose
-   * latest assistant output is such a rejection yields a fork that fails the
-   * same way on its first turn (WI-10004260). Returns null when unreadable.
+   * Read a Claude transcript's tail for provider "Tool reference … not found"
+   * rejections (WI-10004260). Used twice: on the SOURCE before forking it (a
+   * fork replays the source history, so a source whose latest assistant output
+   * is such a rejection yields a fork that fails the same way), and on the
+   * answering session's own transcript after its kickoff lands (a first turn
+   * that is such a rejection is a dead responder, not a dispatch). Returns
+   * null when unreadable.
    */
-  analyzeSourceTranscript: (
+  analyzeClaudeTranscript: (
     transcriptPath: string,
   ) => Pick<ClaudeResumeTranscriptAnalysis, 'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName'> | null;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
@@ -438,6 +442,7 @@ const LAUNCH_FAILURE_REASONS: ReadonlySet<string> = new Set<DispatchSkipReason>(
   'launch-failed',
   'kickoff-not-persisted',
   'launch-exited',
+  'first-turn-rejected',
 ]);
 
 /** The fields of a persisted walk ({@link dispatchRecordEntry}) the cool-down reads. */
@@ -812,7 +817,7 @@ export async function dispatchConsultResponder(
   const d: ConsultDispatchDeps = {
     resolveResumeTarget,
     checkResumeTranscript: defaultCheckResumeTranscript,
-    analyzeSourceTranscript: analyzeClaudeResumeTranscriptFile,
+    analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     buildAgentLaunchCommand,
     injectLaunchedByArg,
     buildConsoleEnvelope,
@@ -947,7 +952,7 @@ async function walkConsultDispatch(
     const sourceAgent = (target.agent ?? '').toLowerCase();
     if ((sourceAgent === 'claude' || sourceAgent === 'claude-code') && transcript.transcriptPath) {
       try {
-        const analysis = d.analyzeSourceTranscript(transcript.transcriptPath);
+        const analysis = d.analyzeClaudeTranscript(transcript.transcriptPath);
         if (analysis && analysis.trailingMissingToolReferenceTurns > 0) {
           forkBlockedByPoison =
             `${target.ownerId ?? 'the source'}'s transcript ends in ${analysis.trailingMissingToolReferenceTurns} ` +
@@ -1272,6 +1277,48 @@ async function launchAnsweringSession(
     }
   } else {
     verify = await verifyPromise;
+  }
+
+  // WI-10004260 (part B): the kickoff receipt names the answering session's own
+  // native transcript. If its first reply is already a provider "Tool reference
+  // … not found" 400, this session is dead on arrival, even though its host
+  // may register as live: Claude Code shows the error and waits for input. Measured
+  // on an acceptance consult: the fork recorded 'dispatched', then held the
+  // grading slot silently until its cascade expiry. Checked once, after the
+  // verification wait; a first turn that has not landed yet reads as healthy,
+  // so this can only turn a dead dispatch into a fast cascade, never refuse a
+  // good one.
+  const answeringTranscript = spawn.kickoffProof?.nativeRef;
+  if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
+    let rejection: { turns: number; tool: string | null } | null = null;
+    try {
+      const analysis = d.analyzeClaudeTranscript(answeringTranscript);
+      if (analysis && analysis.trailingMissingToolReferenceTurns > 0) {
+        rejection = {
+          turns: analysis.trailingMissingToolReferenceTurns,
+          tool: analysis.lastMissingToolReferenceName,
+        };
+      }
+    } catch {
+      // Unreadable is not evidence of a rejection; keep the dispatch.
+    }
+    if (rejection) {
+      const stopped = await d.stopFailedLaunch(spawn.taskId);
+      return {
+        record: {
+          ...base,
+          outcome: 'failed',
+          reason: 'first-turn-rejected',
+          detail:
+            `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
+            `its first reply was a provider "Tool reference not found" rejection` +
+            (rejection.tool ? ` ('${rejection.tool}')` : '') +
+            ` in ${answeringTranscript}; ${stopped}`,
+        },
+        answeringOwnerId: null,
+        verified: false,
+      };
+    }
   }
 
   return {

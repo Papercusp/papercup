@@ -22,7 +22,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { __resetClaudeResumeTranscriptCacheForTests } from '../claude-resume-tool-references.mjs';
+import {
+  analyzeClaudeResumeTranscriptFile,
+  __resetClaudeResumeTranscriptCacheForTests,
+} from '../claude-resume-tool-references.mjs';
 import {
   DISPATCH_RECORD_TEXT_MAX,
   DISPATCH_VERIFY_TIMEOUT_MS,
@@ -174,6 +177,8 @@ function makeFakes(
     // Same for the cool-down reader (WI-10003198): no history ⇒ no cool-down.
     readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
     readReviewerModel: async () => null,
+    // No transcript is poisoned unless a test says so; never read the real fs here.
+    analyzeClaudeTranscript: () => null,
     nowMs: () => NOW_MS,
     loadRanks: async () => RANKS,
     ...over,
@@ -479,6 +484,7 @@ describe('dispatchConsultResponder — the walk', () => {
         async (path) => {
           const { deps, calls } = makeFakes({
             checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+            analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
           });
           const r = await dispatchConsultResponder(OPTS, CTX, deps);
           expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-transcript-poisoned' });
@@ -497,6 +503,7 @@ describe('dispatchConsultResponder — the walk', () => {
         async (path) => {
           const { deps } = makeFakes({
             checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+            analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
           });
           const r = await dispatchConsultResponder(OPTS, CTX, deps);
           expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
@@ -504,10 +511,41 @@ describe('dispatchConsultResponder — the walk', () => {
       ),
     );
 
+    it('a fork whose FIRST reply is the rejection is a failed rank, stopped, and the walk cascades', async () => {
+      // The fixture spawn's kickoff receipt names '/native/answer.jsonl' as the
+      // answering session's transcript; the source itself is healthy.
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: (p: string) =>
+          p === '/native/answer.jsonl'
+            ? { trailingMissingToolReferenceTurns: 1, lastMissingToolReferenceName: 'EndConversation' }
+            : null,
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts[0]).toMatchObject({
+        rank: 1,
+        operation: 'fork',
+        outcome: 'failed',
+        reason: 'first-turn-rejected',
+      });
+      expect(r.attempts[0]!.detail).toContain("'EndConversation'");
+      expect(calls.stopped).toEqual(['task-1']);
+      // The conversion leg is not a Claude session, so it is not re-checked.
+      expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: () => ({ trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null }),
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      expect(calls.stopped).toEqual([]);
+    });
+
     it('an unreadable transcript analysis does not block the fork (the kickoff proof still guards it)', async () => {
       const { deps } = makeFakes({
         checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: '/nope.jsonl' }),
-        analyzeSourceTranscript: () => {
+        analyzeClaudeTranscript: () => {
           throw new Error('EACCES');
         },
       });
