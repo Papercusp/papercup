@@ -5,9 +5,11 @@
  * classifier must reject that as a FLAKE, and must also reject unreadable
  * snapshots rather than manufacturing a green attribution.
  */
-import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -90,6 +92,102 @@ describe('snapshotRetryTree', () => {
     expect(current.known).toBe(true);
     expect(current.head).toMatch(/^[0-9a-f]{7,40}$/);
     expect(current.digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * Recurrence guard for EI-24662228809776827. A dirty submodule used to be
+ * fingerprinted by walking its whole directory, ignored build output
+ * included — 81 s for `papercusp-desktop` on the shared tree, which timed out
+ * every real-repository snapshot. It must be read through its own git state.
+ */
+describe('snapshotRetryTree with a dirty submodule', () => {
+  let outer = '';
+  let inner = '';
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=retry-tree', '-c', 'user.email=retry-tree@test', '-c', 'commit.gpgsign=false', ...args],
+      { cwd, stdio: 'pipe' },
+    );
+
+  beforeAll(() => {
+    outer = mkdtempSync(join(tmpdir(), 'retry-tree-submodule-'));
+    git(outer, 'init', '-q');
+    writeFileSync(join(outer, 'README.md'), 'outer\n');
+    inner = join(outer, 'sub');
+    mkdirSync(inner);
+    git(inner, 'init', '-q');
+    writeFileSync(join(inner, '.gitignore'), 'build/\n');
+    writeFileSync(join(inner, 'tracked.txt'), 'v1\n');
+    git(inner, 'add', '.');
+    git(inner, 'commit', '-q', '-m', 'inner');
+    // `git add` of an embedded repository records a gitlink (mode 160000).
+    git(outer, 'add', 'README.md', 'sub');
+    git(outer, 'commit', '-q', '-m', 'outer');
+    // Dirty the submodule and give it ignored build output.
+    writeFileSync(join(inner, 'tracked.txt'), 'v2\n');
+    mkdirSync(join(inner, 'build'));
+    writeFileSync(join(inner, 'build', 'artifact.bin'), 'a');
+  });
+
+  afterAll(() => {
+    if (outer) rmSync(outer, { recursive: true, force: true });
+  });
+
+  it('reports the submodule as one changed path', () => {
+    const snap = snapshotRetryTree(outer);
+    expect(snap.known).toBe(true);
+    expect(snap.changedPaths).toEqual(['sub']);
+  });
+
+  it('ignores ignored content inside the submodule instead of walking it', () => {
+    const before = snapshotRetryTree(outer);
+    writeFileSync(join(inner, 'build', 'artifact.bin'), 'b');
+    const after = snapshotRetryTree(outer);
+    expect(after.known).toBe(true);
+    expect(after.digest).toBe(before.digest);
+  });
+
+  it('still detects a tracked content change inside the submodule', () => {
+    const before = snapshotRetryTree(outer);
+    writeFileSync(join(inner, 'tracked.txt'), `v-${Date.now()}\n`);
+    const after = snapshotRetryTree(outer);
+    expect(after.known).toBe(true);
+    expect(classifyRetryTreeProvenance(before, after)).toEqual({
+      classification: 'tree-changed',
+      reason: 'working-tree-changed',
+    });
+  });
+
+  it('still detects a new untracked file inside the submodule', () => {
+    const before = snapshotRetryTree(outer);
+    writeFileSync(join(inner, `untracked-${Date.now()}.txt`), 'new\n');
+    const after = snapshotRetryTree(outer);
+    expect(after.digest).not.toBe(before.digest);
+  });
+
+  it('still detects a commit inside the submodule', () => {
+    const before = snapshotRetryTree(outer);
+    git(inner, 'add', '-A');
+    git(inner, 'commit', '-q', '-m', 'inner-2');
+    const after = snapshotRetryTree(outer);
+    expect(after.head).toBe(before.head);
+    expect(after.digest).not.toBe(before.digest);
+  });
+
+  it('fails closed when the submodule git state is unreadable', () => {
+    const readable = (root: string, args: string[]) => {
+      try {
+        return execFileSync('git', args, { cwd: root, encoding: 'buffer', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        return null;
+      }
+    };
+    const snap = snapshotRetryTree(outer, {
+      git: (root, args) => (resolve(root) === resolve(inner) ? null : readable(root, args)),
+    });
+    expect(snap).toMatchObject({ known: false, reason: 'working-tree-unreadable' });
   });
 });
 
