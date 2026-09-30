@@ -120,6 +120,18 @@ export function isLeaseLive(lease: RetentionLease, nowMs: number): boolean {
   return lease.expiresNs === 0n || lease.expiresNs > BigInt(Math.floor(nowMs)) * 1_000_000n;
 }
 
+/** expires_ns=0 is what every lease gets while PAPERCUSP_RELEASE_RETENTION_TTL_SEC is unset, so
+ *  "never expires" would pin every cut ever made. Reclaim honours such a lease only for the latest
+ *  published release or a NEWER (in-flight / unreleased) cut; an older one is ignored. Unknowable
+ *  (no published record, or an unparsable version) fails closed = honoured. Chosen over a finite
+ *  default TTL, which would change the lease writer and could expire an in-flight cut mid-build. */
+export function neverExpiringLeaseHonored(lease: RetentionLease, published: ReleaseRecord | null): boolean {
+  if (lease.expiresNs !== 0n) return true;
+  if (!published || !lease.version) return true;
+  const cmp = compareVersions(lease.version, published.version);
+  return cmp === null || cmp >= 0;
+}
+
 /** desktop-v0.0.25-alpha → 0.0.25 */
 export function versionFromTag(tag: string): string | null {
   return /^desktop-v(\d+\.\d+\.\d+)(?:-|$)/.exec(tag)?.[1] ?? null;
@@ -227,6 +239,8 @@ export interface ReclaimVerdict {
   head: string | null;
   version: string | null;
   leaseTags: string[];
+  /** never-expiring leases on an older-than-published tree, ignored as protection (reported, not hidden) */
+  ignoredLeases: string[];
   createdAt: string | null;
   lastHeadMoveAt: string | null;
   disposition: ReclaimDisposition;
@@ -305,7 +319,12 @@ export function planCutReclaim(input: ReclaimPlanInput): ReclaimPlan {
     for (const other of registered) {
       if (other !== wt.path && other.startsWith(`${wt.path}/`)) reasons.push(`contains-worktree:${other}`);
     }
-    for (const l of covering) if (isLeaseLive(l, input.nowMs)) reasons.push(`lease:${l.tag}`);
+    const ignoredLeases: string[] = [];
+    for (const l of covering) {
+      if (!isLeaseLive(l, input.nowMs)) continue;
+      if (!neverExpiringLeaseHonored(l, published)) ignoredLeases.push(`${l.tag}:never-expires,older-than-${published?.version}`);
+      else reasons.push(`lease:${l.tag}`);
+    }
     if (published) {
       const backsHead = !!published.gitSha && !!wt.head && wt.head.startsWith(published.gitSha.slice(0, 12));
       const backsLease = covering.some((l) => l.version === published.version);
@@ -339,6 +358,7 @@ export function planCutReclaim(input: ReclaimPlanInput): ReclaimPlan {
       head: wt.head,
       version: probe?.desktopVersion ?? null,
       leaseTags,
+      ignoredLeases,
       createdAt: iso(created),
       lastHeadMoveAt: iso(moved),
       disposition: reasons.length ? 'protected' : leaseTags.length ? 'reclaimable' : 'named-only',
@@ -808,6 +828,7 @@ export function renderReclaimPlan(plan: ReclaimPlan) {
     rootFs: v.onRootFs,
     version: v.version,
     ...(v.leaseTags.length ? { leases: v.leaseTags } : {}),
+    ...(v.ignoredLeases.length ? { leasesIgnored: v.ignoredLeases } : {}),
   });
   return {
     latestPublished: plan.latestPublished,

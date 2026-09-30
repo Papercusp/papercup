@@ -14,10 +14,12 @@ import {
   gatherCutReclaimPlan,
   isLeaseLive,
   machineWrittenRule,
+  neverExpiringLeaseHonored,
   parsePorcelainV2,
   parseRetentionLease,
   parseWorktreePorcelain,
   planCutReclaim,
+  renderReclaimPlan,
   resolveReclaimTargets,
   type HolderScan,
   type ReclaimPlanInput,
@@ -56,6 +58,7 @@ const lease = (tag: string, paths: string[], expiresNs: bigint): RetentionLease 
   paths,
 });
 const expired = BigInt(NOW - DAY) * 1_000_000n;
+const liveFinite = BigInt(NOW + DAY) * 1_000_000n;
 const verified: HolderScan = { verified: true, holders: new Map() };
 
 function input(over: Partial<ReclaimPlanInput> & { trees: Array<[ReclaimWorktree, TreeProbe]> }): ReclaimPlanInput {
@@ -145,7 +148,7 @@ describe('planCutReclaim — the protected set', () => {
         ],
         leases: [
           lease('desktop-v0.0.22-alpha', ['/w/relcut-0022/papercusp-desktop/src-tauri/target/release'], expired),
-          lease('desktop-v0.0.24-alpha', ['/w/relcut-0024/papercusp-desktop/src-tauri/target/release'], 0n),
+          lease('desktop-v0.0.24-alpha', ['/w/relcut-0024/papercusp-desktop/src-tauri/target/release'], liveFinite),
         ],
       }),
     );
@@ -225,11 +228,55 @@ describe('planCutReclaim — the protected set', () => {
           [wt('/w/relcut-0023-win'), probe({ realPath: '/mnt/off/w/relcut-0023-win', offloaded: true })],
           [wt('/w/desktop-release-0.0.19'), probe({ desktopVersion: '0.0.19' })],
         ],
-        leases: [lease('desktop-v0.0.23-alpha', ['/mnt/off/w/relcut-0023-win/papercusp-desktop/target'], 0n)],
+        leases: [lease('desktop-v0.0.23-alpha', ['/mnt/off/w/relcut-0023-win/papercusp-desktop/target'], liveFinite)],
       }),
     );
     expect(verdict(plan, '/w/relcut-0023-win').reasons).toEqual(['lease:desktop-v0.0.23-alpha']);
     expect(verdict(plan, '/w/desktop-release-0.0.19').disposition).toBe('named-only');
+  });
+
+  // [peer:su-3ee17ad9 2026-09-30T04:04Z] expires_ns=0 is every lease's default while
+  // PAPERCUSP_RELEASE_RETENTION_TTL_SEC is unset, so it must not pin every old cut forever.
+  it('honours a never-expiring (expires_ns=0) lease only for the latest published and newer cuts', () => {
+    const plan = planCutReclaim(
+      input({
+        trees: [
+          [wt('/w/relcut-0021'), probe({ desktopVersion: '0.0.21' })],
+          [wt('/w/relcut-0025', { head: 'f'.repeat(40) }), probe({ desktopVersion: '0.0.25' })],
+          [wt('/w/relcut-0026'), probe({ desktopVersion: '0.0.26' })],
+          [wt('/w/odd-tag'), probe()],
+        ],
+        leases: [
+          lease('desktop-v0.0.21-alpha', ['/w/relcut-0021/papercusp-desktop/target'], 0n),
+          lease('desktop-v0.0.25-alpha', ['/w/relcut-0025/papercusp-desktop/target'], 0n),
+          lease('desktop-v0.0.26-alpha', ['/w/relcut-0026/papercusp-desktop/target'], 0n),
+          lease('hotfix-build', ['/w/odd-tag/papercusp-desktop/target'], 0n),
+        ],
+      }),
+    );
+    const old = verdict(plan, '/w/relcut-0021');
+    expect(old.reasons).toEqual([]);
+    expect(old.disposition).toBe('reclaimable');
+    expect(old.ignoredLeases).toEqual(['desktop-v0.0.21-alpha:never-expires,older-than-0.0.25']);
+    expect(renderReclaimPlan(plan).reclaimable).toEqual([
+      expect.objectContaining({ path: '/w/relcut-0021', leasesIgnored: old.ignoredLeases }),
+    ]);
+    expect(verdict(plan, '/w/relcut-0025').reasons).toEqual(
+      expect.arrayContaining(['lease:desktop-v0.0.25-alpha', 'latest-published:0.0.25']),
+    );
+    expect(verdict(plan, '/w/relcut-0026').reasons).toContain('lease:desktop-v0.0.26-alpha');
+    expect(verdict(plan, '/w/relcut-0026').ignoredLeases).toEqual([]);
+    expect(verdict(plan, '/w/odd-tag').reasons).toEqual(['lease:hotfix-build']);
+  });
+
+  it('neverExpiringLeaseHonored: only expires_ns=0 on an older version is dropped; unknowns fail closed', () => {
+    const pub = { version: '0.0.25', gitSha: null, cutAtMs: 0, publishedAtMs: 1 };
+    expect(neverExpiringLeaseHonored(lease('desktop-v0.0.21-alpha', [], 0n), pub)).toBe(false);
+    expect(neverExpiringLeaseHonored(lease('desktop-v0.0.21-alpha', [], liveFinite), pub)).toBe(true);
+    expect(neverExpiringLeaseHonored(lease('desktop-v0.0.25-alpha', [], 0n), pub)).toBe(true);
+    expect(neverExpiringLeaseHonored(lease('desktop-v0.0.26-alpha', [], 0n), pub)).toBe(true);
+    expect(neverExpiringLeaseHonored(lease('no-version', [], 0n), pub)).toBe(true);
+    expect(neverExpiringLeaseHonored(lease('desktop-v0.0.21-alpha', [], 0n), null)).toBe(true);
   });
 
   it.each([
@@ -359,7 +406,8 @@ describe('gather + execute against a real temporary repo', () => {
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     fs.writeFileSync(
       path.join(ret, 'lease-desktop-v0.0.24-alpha.tsv'),
-      `schema=papercusp-release-retention/v1\ntag=desktop-v0.0.24-alpha\ncreated_ns=1\nexpires_ns=0\npath=${tree}/target\n`,
+      // a FINITE live expiry: an expires_ns=0 lease on a pre-published version no longer protects
+      `schema=papercusp-release-retention/v1\ntag=desktop-v0.0.24-alpha\ncreated_ns=1\nexpires_ns=${BigInt(Date.now() + DAY) * 1_000_000n}\npath=${tree}/target\n`,
     );
     const refused = await executeCutReclaim(await gather(), [tree]);
     expect(refused).toMatchObject({ ok: false, refused: true });
