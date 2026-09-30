@@ -71,11 +71,26 @@
  * and nested calls cannot masquerade as live invocations. Give the enclosing `it`/`test`
  * an explicit larger timeout; the parent remains the final bound.
  *
+ * The third class is a sub-floor IDLE / no-output-progress window handed to a child process
+ * (`execProcess({ command: process.execPath, idleTimeoutMs: 300 })`). The idle clock is armed
+ * at spawn, so the child's own interpreter boot is charged to its FIRST window: under the
+ * gate's parallel load a `node` boot alone exceeded 300ms, the child was idle-killed before
+ * it wrote a byte, and a correct test went red (WI-10004029, git-stdin-sidecar-handoff).
+ * Only files that spawn a child are scanned; object-literal keys matching IDLE_WINDOW_KEY_RE
+ * are read with TypeScript, and a same-file numeric `const` is RESOLVED, so hoisting the
+ * literal into a name does not evade the floor. A test that deliberately wants the window to
+ * fire (it asserts the idle kill, or uses the idle tick as a trigger) states so on the site:
+ * `// idle-window-ok: <reason>` on the same or the preceding line. That exemption is
+ * site-level and reason-carrying on purpose — a file-level baseline would also grandfather
+ * a regression of the sites this class exists to protect.
+ *
  * KNOWN BOUND, stated rather than implied: an elapsed budget reached through a helper, a struct
  * field (`expect(res.latencyMs).toBeLessThan(400)`), or a cross-file constant is NOT
  * detected. For child-process inversions, calls routed through a helper, aliased direct-call
  * names, or budgets held in
- * identifiers are also not resolved. This guard reports what it can see and its --list
+ * identifiers are also not resolved. For idle windows, a window passed through a helper, a
+ * spread, a computed key, arithmetic, or a cross-file / non-`const` binding is not resolved.
+ * This guard reports what it can see and its --list
  * output is the honest population — it is not a proof that no other tight budget exists.
  * Overstating a guard's reach is how the next reader mistakes silence for safety.
  *
@@ -322,6 +337,95 @@ export function findNestedChildBudgetInversions(
   return inversions;
 }
 
+/**
+ * Idle / no-output-progress windows handed to a child process below this (ms) race the
+ * child's own boot. 1000ms: a `node` boot under the gate's stateful lane measured 300ms+,
+ * and the WI-10004029 fix settled on 1500ms. TIGHT_BUDGET_FLOOR_MS (500) bounds an elapsed
+ * assertion and is too low for a window that also contains interpreter start-up.
+ */
+export const IDLE_WINDOW_FLOOR_MS = 1000;
+
+/** Option keys that arm an idle / no-progress window. `progressIntervalMs` is NOT one. */
+export const IDLE_WINDOW_KEY_RE =
+  /^(?:idle|noOutput|noProgress|progress|stall|inactivity)(?:Timeout|TimeoutMs|WindowMs|DeadlineMs|Ms)$/i;
+
+/** A file is eligible only when it spawns a child (tested on comment-stripped text). */
+export const SPAWNS_CHILD_RE =
+  /\b(?:spawn|spawnSync|execFile|execFileSync|execSync|fork|execProcess|managedSpawn|execa)\s*\(|\bprocess\.execPath\b/;
+
+/** Site-level, reason-carrying exemption for a deliberately short window. See header. */
+export const IDLE_WINDOW_EXEMPTION_RE = /idle-window-ok:\s*\S/;
+
+/**
+ * Pre-existing sub-floor idle windows, grandfathered by FILE. SHRINK-ONLY — re-seed only
+ * from a measuring `--list` run. Empty at introduction: every measured site was either
+ * fixed or carries an `idle-window-ok:` exemption.
+ */
+export const IDLE_WINDOW_BASELINE = new Set([]);
+
+/**
+ * Literal and same-file-`const` idle windows in object literals. Non-positive values are
+ * invalid-policy fixtures, not windows, and are skipped. A binding declared more than once
+ * with different values (or also as `let`/`var`) is ambiguous and is not resolved.
+ */
+export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
+  const kind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
+  const bindings = new Map();
+  const record = (name, value) => {
+    const prev = bindings.has(name) ? bindings.get(name) : undefined;
+    bindings.set(name, prev === undefined || prev === value ? value : null);
+  };
+  const collect = (node) => {
+    if (ts.isVariableDeclarationList(node)) {
+      const isConst = (node.flags & ts.NodeFlags.Const) !== 0;
+      for (const declaration of node.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        record(declaration.name.text, isConst ? numericLiteralMs(declaration.initializer) : null);
+      }
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+
+  const lines = text.split('\n');
+  const found = [];
+  const visit = (node) => {
+    if (ts.isObjectLiteralExpression(node)) {
+      for (const property of node.properties) {
+        let key = null;
+        let valueNode = null;
+        if (ts.isPropertyAssignment(property)) {
+          key = propertyNameText(property.name);
+          valueNode = property.initializer;
+        } else if (ts.isShorthandPropertyAssignment(property)) {
+          key = property.name.text;
+          valueNode = property.name;
+        }
+        if (!key || !IDLE_WINDOW_KEY_RE.test(key)) continue;
+        let budgetMs = numericLiteralMs(valueNode);
+        let via = 'literal';
+        if (budgetMs === null && valueNode && ts.isIdentifier(valueNode)) {
+          const resolved = bindings.get(valueNode.text);
+          if (typeof resolved === 'number') {
+            budgetMs = resolved;
+            via = `const ${valueNode.text}`;
+          }
+        }
+        if (budgetMs === null || budgetMs <= 0) continue;
+        const line = source.getLineAndCharacterOfPosition(property.getStart(source)).line + 1;
+        const exempt =
+          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 1] ?? '') ||
+          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 2] ?? '');
+        found.push({ line, key, budgetMs, via, exempt });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 function walkTestFiles(dir, out) {
   let entries;
   try {
@@ -362,6 +466,8 @@ function main() {
   const offenders = [];
   const measured = [];
   const nestedInversions = [];
+  const idleMeasured = [];
+  const idleOffenders = [];
   for (const abs of files) {
     let rawText;
     let text;
@@ -380,6 +486,14 @@ function main() {
         const baselineKey = nestedInversionKey(rel, inversion);
         if (inversion.childCall === 'spawnSync' && SPAWN_SYNC_EXPLICIT_BASELINE.has(baselineKey)) continue;
         nestedInversions.push({ rel, baselineKey, ...inversion });
+      }
+    }
+    if (SPAWNS_CHILD_RE.test(text)) {
+      for (const window of findChildIdleWindowBudgets(rawText, abs)) {
+        idleMeasured.push({ rel, ...window });
+        if (window.budgetMs < IDLE_WINDOW_FLOOR_MS && !window.exempt && !IDLE_WINDOW_BASELINE.has(rel)) {
+          idleOffenders.push({ rel, ...window });
+        }
       }
     }
     if (text.includes('.now()')) {
@@ -403,8 +517,36 @@ function main() {
         `${tight.length} below the ${TIGHT_BUDGET_FLOOR_MS}ms floor, in ${new Set(tight.map((m) => m.rel)).size} file(s).`,
     );
     console.log(`${nestedInversions.length} direct synchronous child/parent timeout inversion(s).`);
+    idleMeasured.sort((a, b) => a.budgetMs - b.budgetMs || a.rel.localeCompare(b.rel));
+    for (const w of idleMeasured) {
+      const mark = w.budgetMs >= IDLE_WINDOW_FLOOR_MS
+        ? 'ok      '
+        : w.exempt ? 'EXEMPT  ' : IDLE_WINDOW_BASELINE.has(w.rel) ? 'BASELINE' : 'TIGHT   ';
+      console.log(`IDLE-WIN ${mark} ${String(w.budgetMs).padStart(6)}ms  ${w.rel}:${w.line}  ${w.key} (${w.via})`);
+    }
+    console.log(
+      `${idleMeasured.length} child idle window(s); ` +
+        `${idleMeasured.filter((w) => w.budgetMs < IDLE_WINDOW_FLOOR_MS).length} below the ${IDLE_WINDOW_FLOOR_MS}ms floor ` +
+        `(${idleMeasured.filter((w) => w.budgetMs < IDLE_WINDOW_FLOOR_MS && w.exempt).length} exempted on-site).`,
+    );
     console.log('Re-seed BASELINE from the TIGHT/BASELINE paths above — never from a hand-run grep.');
     return;
+  }
+
+  if (idleOffenders.length > 0) {
+    console.error(
+      `\n✖ ${idleOffenders.length} child idle window(s) below the ${IDLE_WINDOW_FLOOR_MS}ms floor ` +
+        '(not exempted, not in IDLE_WINDOW_BASELINE):\n',
+    );
+    for (const o of idleOffenders) console.error(`   ${o.rel}:${o.line}  ${o.key} ${o.budgetMs}ms (${o.via})`);
+    console.error(
+      "\nThe idle clock is armed at spawn, so the child's interpreter boot is charged to its FIRST\n" +
+        'window; under the gate\'s parallel load a node boot alone exceeds 300ms and a correct test\n' +
+        `is idle-killed before it writes a byte. Use a window of at least ${IDLE_WINDOW_FLOOR_MS}ms (a named\n` +
+        'const plus an in-test ordering assertion). If the test WANTS the window to fire, say so on\n' +
+        'the site: `// idle-window-ok: <reason>` on the same or the preceding line.\n',
+    );
+    if (offenders.length === 0 && nestedInversions.length === 0) process.exit(1);
   }
 
   if (offenders.length > 0 || nestedInversions.length > 0) {
@@ -447,7 +589,8 @@ function main() {
 
   console.log(
     `✓ no NEW tight wall-clock timing budgets (floor ${TIGHT_BUDGET_FLOOR_MS}ms, ` +
-      `${BASELINE.size} file(s) baselined) or direct synchronous child/parent timeout inversions. ` +
+      `${BASELINE.size} file(s) baselined), direct synchronous child/parent timeout inversions, ` +
+      `or sub-${IDLE_WINDOW_FLOOR_MS}ms child idle windows. ` +
       '--list to measure the population.',
   );
 }

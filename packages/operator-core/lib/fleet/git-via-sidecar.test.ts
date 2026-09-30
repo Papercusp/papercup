@@ -239,6 +239,7 @@ describe('spawner-sidecar process progress guard', () => {
     const res = await execProcess({
       command: process.execPath,
       args: ['-e', "const fs = require('fs'); fs.closeSync(1); fs.closeSync(2); setTimeout(() => {}, 60_000);"],
+      // idle-window-ok: this test ASSERTS the idle kill; a slow child boot can only delay it, never prevent it.
       idleTimeoutMs: 120,
       timeoutMs: 5_000,
     }, executionDeps);
@@ -247,32 +248,48 @@ describe('spawner-sidecar process progress guard', () => {
   });
 
   it('retains the absolute deadline when output never stops', async () => {
+    // The idle clock is armed at spawn, so the child's node boot is charged to its first
+    // window (WI-10004030): the window must outlast a loaded boot, and the hard deadline
+    // must still be the bound that fires.
+    const IDLE_MS = 1_000;
+    const HARD_MS = 2_500;
+    expect(IDLE_MS).toBeLessThan(HARD_MS);
     const res = await execProcess({
       command: process.execPath,
       args: ['-e', "process.stderr.write('ready\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);"],
-      idleTimeoutMs: 500,
-      timeoutMs: 800,
+      idleTimeoutMs: IDLE_MS,
+      timeoutMs: HARD_MS,
     }, executionDeps);
     expect(res.stderr).toContain('progress');
     expect(res.code).toBe(-1);
-    expect(res.stderr).toContain('timed out after 800ms');
+    expect(res.stderr).toContain(`timed out after ${HARD_MS}ms`);
     expect(res.stderr).not.toContain('no output progress');
   });
 
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
+    // The window must outlast a loaded node boot (WI-10004030), and the child must keep
+    // producing output for well over one window — otherwise it finishes inside the first
+    // window and the test no longer proves the deadline was refreshed.
+    const IDLE_MS = 1_000;
+    const TICK_MS = 100;
+    const TICKS = 25;
+    const HARD_MS = 8_000;
+    expect(TICK_MS).toBeLessThan(IDLE_MS);
+    expect(TICKS * TICK_MS).toBeGreaterThan(2 * IDLE_MS);
+    expect(TICKS * TICK_MS + IDLE_MS).toBeLessThan(HARD_MS);
     const script =
-      "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === 8) clearInterval(t); }, 100);";
+      `process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === ${TICKS}) clearInterval(t); }, ${TICK_MS});`;
     const started = Date.now();
     const res = await execProcess(
       {
         command: process.execPath,
         args: ['-e', script],
-        idleTimeoutMs: 500,
-        timeoutMs: 2_000,
+        idleTimeoutMs: IDLE_MS,
+        timeoutMs: HARD_MS,
       },
       executionDeps,
     );
-    expect(Date.now() - started).toBeGreaterThanOrEqual(700);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2 * IDLE_MS);
     expect(res.code, res.stderr).toBe(0);
     expect(res.stderr).toContain('progress');
   });
@@ -282,6 +299,7 @@ describe('spawner-sidecar process progress guard', () => {
       {
         command: process.execPath,
         args: ['-e', 'setTimeout(() => {}, 60_000)'],
+        // idle-window-ok: this test ASSERTS the idle kill of a silent child; boot time cannot turn it into a pass.
         idleTimeoutMs: 120,
         timeoutMs: 2_000,
       },

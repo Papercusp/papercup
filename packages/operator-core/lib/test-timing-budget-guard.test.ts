@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: tsc reports TS7016 at the module-SPECIFIER line, so on a multi-line import the @ts-ignore lands on `import {` and suppresses nothing.
-import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE, SPAWN_SYNC_EXPLICIT_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
+import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE, SPAWN_SYNC_EXPLICIT_BASELINE, findChildIdleWindowBudgets, IDLE_WINDOW_FLOOR_MS, IDLE_WINDOW_KEY_RE, SPAWNS_CHILD_RE, IDLE_WINDOW_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
 
 describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () => {
   it('FLAGS a tight literal budget on a direct elapsed assertion', () => {
@@ -192,5 +192,77 @@ describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () =
       });
     `;
     expect(findNestedChildBudgetInversions(src)).toEqual([]);
+  });
+});
+
+describe('child idle-window guard (WI-10004030 — the WI-10004029 gate-red class)', () => {
+  // The exact pre-fix shape of git-stdin-sidecar-handoff.test.ts: a 300ms idle window armed
+  // at spawn, so a loaded `node` boot is charged to it and a correct test is idle-killed.
+  const PRE_FIX = `
+    const result = await execProcess({
+      command: process.execPath,
+      args: ['-e', script],
+      idleTimeoutMs: 300,
+      timeoutMs: 3000,
+    }, deps);
+  `;
+
+  it('FLAGS the pre-fix literal shape', () => {
+    expect(SPAWNS_CHILD_RE.test(PRE_FIX)).toBe(true);
+    expect(findChildIdleWindowBudgets(PRE_FIX)).toEqual([
+      expect.objectContaining({ key: 'idleTimeoutMs', budgetMs: 300, via: 'literal', exempt: false }),
+    ]);
+  });
+
+  it('RESOLVES a same-file const, so hoisting the literal into a name does not evade the floor', () => {
+    const src = `const IDLE_MS = 300;\nexecProcess({ command: process.execPath, idleTimeoutMs: IDLE_MS });`;
+    expect(findChildIdleWindowBudgets(src)).toEqual([
+      expect.objectContaining({ budgetMs: 300, via: 'const IDLE_MS' }),
+    ]);
+    const shorthand = `const idleTimeoutMs = 250;\nspawn('node', [], { idleTimeoutMs });`;
+    expect(findChildIdleWindowBudgets(shorthand)).toEqual([expect.objectContaining({ budgetMs: 250 })]);
+  });
+
+  it('does NOT flag the post-fix window at or above the floor', () => {
+    const src = `const IDLE_MS = 1_500;\nexecProcess({ command: process.execPath, idleTimeoutMs: IDLE_MS });`;
+    const [window] = findChildIdleWindowBudgets(src);
+    expect(window.budgetMs).toBe(1500);
+    expect(window.budgetMs).toBeGreaterThanOrEqual(IDLE_WINDOW_FLOOR_MS);
+  });
+
+  it('honours an on-site, reason-carrying exemption on the same or the preceding line only', () => {
+    const preceding = `execProcess({\n  // idle-window-ok: asserts the idle kill\n  idleTimeoutMs: 120,\n});`;
+    expect(findChildIdleWindowBudgets(preceding)).toEqual([expect.objectContaining({ exempt: true })]);
+    const sameLine = `execProcess({ idleTimeoutMs: 120 }); // idle-window-ok: asserts the idle kill`;
+    expect(findChildIdleWindowBudgets(sameLine)).toEqual([expect.objectContaining({ exempt: true })]);
+    const reasonless = `execProcess({\n  // idle-window-ok:\n  idleTimeoutMs: 120,\n});`;
+    expect(findChildIdleWindowBudgets(reasonless)).toEqual([expect.objectContaining({ exempt: false })]);
+    const tooFar = `// idle-window-ok: asserts the idle kill\n\nexecProcess({\n  idleTimeoutMs: 120,\n});`;
+    expect(findChildIdleWindowBudgets(tooFar)).toEqual([expect.objectContaining({ exempt: false })]);
+  });
+
+  it('does NOT flag a non-idle key, a progress INTERVAL, or a non-positive invalid-policy fixture', () => {
+    expect(findChildIdleWindowBudgets('execProcess({ command: process.execPath, timeoutMs: 300 });')).toEqual([]);
+    expect(findChildIdleWindowBudgets('execProcess({ progressIntervalMs: 300 });')).toEqual([]);
+    expect(findChildIdleWindowBudgets('check({ stallWindowMs: 0 }); check({ stallWindowMs: -1 });')).toEqual([]);
+    expect(IDLE_WINDOW_KEY_RE.test('progressIntervalMs')).toBe(false);
+    expect(IDLE_WINDOW_KEY_RE.test('noOutputTimeoutMs')).toBe(true);
+  });
+
+  it('does NOT resolve an ambiguous or non-const binding (a documented bound, not a guess)', () => {
+    const shadowed = `const IDLE_MS = 300;\nfunction f() { const IDLE_MS = 5000; }\nexecProcess({ idleTimeoutMs: IDLE_MS });`;
+    expect(findChildIdleWindowBudgets(shadowed)).toEqual([]);
+    expect(findChildIdleWindowBudgets(`let IDLE_MS = 300;\nexecProcess({ idleTimeoutMs: IDLE_MS });`)).toEqual([]);
+  });
+
+  it('scopes eligibility to files that spawn a child', () => {
+    expect(SPAWNS_CHILD_RE.test('const pool = createPool({ idleTimeoutMs: 300 });')).toBe(false);
+    expect(SPAWNS_CHILD_RE.test("spawnSync('git', ['status']);")).toBe(true);
+  });
+
+  it('keeps the floor and an EMPTY shrink-only baseline — every measured site was fixed or exempted', () => {
+    expect(IDLE_WINDOW_FLOOR_MS).toBe(1000);
+    expect(IDLE_WINDOW_BASELINE as Set<string>).toBeInstanceOf(Set);
+    expect((IDLE_WINDOW_BASELINE as Set<string>).size).toBe(0);
   });
 });

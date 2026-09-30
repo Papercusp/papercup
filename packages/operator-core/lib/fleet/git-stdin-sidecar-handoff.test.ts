@@ -390,6 +390,7 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
       command: process.execPath,
       args: ['-e', `const fs=require('node:fs'); let sent=false; setInterval(()=>{if(!sent&&fs.existsSync(${JSON.stringify(notifyPath)})){sent=true;process.stderr.write('progress');} if(fs.existsSync(${JSON.stringify(finishPath)}))process.exit(0);},10);`],
       stdoutPath: join(dir, 'out'),
+      // idle-window-ok: the idle tick is the TRIGGER that starts the paused stdout-file probe; the pending probe suspends idle judgement, so boot time cannot idle-kill this child.
       idleTimeoutMs: 300,
       timeoutMs: 1800,
     }, { ...executionDeps, signal: controller.signal, onOutputActivity });
