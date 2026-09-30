@@ -50,7 +50,7 @@ const LIMITS = {
   turnCeiling: { tokens: DEFAULT_SINK_HOST_LIMITS.turnCeiling.tokens, wallClockMs: 30_000 },
 };
 const NO_RM = {
-  id: 'no-rm', title: 'no-rm', description: 'no-rm guard', version: '1.0.0', delivery: 'sync', sink: 'pre-tool',
+  schemaVersion: 1, id: 'no-rm', title: 'no-rm', description: 'no-rm guard', version: '1.0.0', delivery: 'sync', sink: 'pre-tool',
   tools: ['capability:bash'], guard: { deny: { 'input.command': { matches: 'rm -rf' } }, reason: 'no recursive deletes' },
 };
 
@@ -140,11 +140,11 @@ describe('identity preview (runtime sink, worn guard and package receipts side b
     pg.sql = db.adminSql;
     root = mkdtempSync(join(tmpdir(), 'identity-preview-'));
     vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
-    const rules = join(root, 'rules');
-    mkdirSync(join(rules, 'no-rm'), { recursive: true });
-    writeFileSync(join(rules, 'no-rm', 'rule.json'), JSON.stringify(NO_RM));
-    writeFileSync(join(rules, 'no-rm', 'listing.json'), JSON.stringify({ kind: 'rule', version: '1.0.0' }));
-    vi.stubEnv('PAPERCUSP_RULES_DIR', rules);
+    // An installed rule package, where the cupboard puts one (the user layer of rule-store.ts).
+    const rule = join(root, 'home', 'rules', 'installed', 'no-rm');
+    mkdirSync(rule, { recursive: true });
+    writeFileSync(join(rule, 'rule.json'), JSON.stringify(NO_RM));
+    writeFileSync(join(rule, 'listing.json'), JSON.stringify({ kind: 'rule', version: '1.0.0' }));
     await registerClass('context.notes', 'notes-tool');
     await registerClass('context.absent', null);
     writeIdentity('previewed', { contributions: [
