@@ -295,6 +295,11 @@ export interface EvaluateSinkInvocationInput {
   /** The caller detached (e.g. the hook's response wall); cancels host calls. */
   readonly signal?: AbortSignal;
   readonly now?: () => number;
+  /**
+   * What this turn already spent on OTHER hosts (P-011, D-024): the process
+   * ledger charges at least these tokens, from no later than this start.
+   */
+  readonly turnSpent?: { readonly tokensSpent: number; readonly startedAt: number };
 }
 
 /**
@@ -307,6 +312,10 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
   const start = now();
   const { sessionId, turnId, attachmentRevision } = input.invocation;
   const ledger = turnLedger(sessionId, turnId, start);
+  if (input.turnSpent) {
+    ledger.tokensSpent = Math.max(ledger.tokensSpent, input.turnSpent.tokensSpent);
+    ledger.startedAt = Math.min(ledger.startedAt, input.turnSpent.startedAt);
+  }
   const turnTokensLeft = Math.max(0, limits.turnCeiling.tokens - ledger.tokensSpent);
   const turnMsLeft = Math.max(0, limits.turnCeiling.wallClockMs - (start - ledger.startedAt));
   const budgetTokens = Math.min(limits.sinkBudget.tokens, turnTokensLeft);
