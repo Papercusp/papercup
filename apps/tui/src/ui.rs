@@ -3249,7 +3249,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         1 => "  · 1 queued".to_string(),
         n => format!("  · {n} queued"),
     };
-    let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
+    let (ctitle, ctext, cstyle) = if app.card_state.focused_answered().is_some() {
+        // P-015: the answer is sent; the card is waiting for the agent to take it.
+        (
+            " Answer sent ",
+            "Waiting for the agent…".to_string(),
+            Theme::dim(),
+        )
+    } else if app.card_state.has_card() {
         // A blocking card is open — the composer is suspended; the card owns the
         // keys (arrows/number/space/Enter). Tell the user where to act.
         let details = match app.card_state.focused().and_then(|card| card.details()) {
@@ -3719,13 +3726,62 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The single line an answered card collapses to (P-015):
+/// `✓ Approved · <first prompt line> · N more`, clipped to the strip width.
+/// Declines and skips use a neutral dash, not a failure mark (P-014).
+fn answered_card_line(
+    card: &crate::card_view::OpenCard,
+    answered: &crate::card_view::AnsweredCard,
+    remaining: usize,
+    width: usize,
+) -> Line<'static> {
+    let negative = matches!(answered.summary.as_str(), "Declined" | "Skipped" | "Cancelled");
+    let (mark, style) = if negative {
+        ("– ", Theme::dim())
+    } else {
+        ("✓ ", Theme::success())
+    };
+    let prompt = card.prompt.lines().next().unwrap_or("").trim().to_string();
+    let more = if remaining > 0 {
+        format!(" · {remaining} more")
+    } else {
+        String::new()
+    };
+    let head = format!("{mark}{}", answered.summary);
+    let budget = width
+        .saturating_sub(head.chars().count() + more.chars().count() + 3)
+        .max(1);
+    let prompt: String = if prompt.chars().count() > budget {
+        let mut s: String = prompt.chars().take(budget.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    } else {
+        prompt
+    };
+    Line::from(vec![
+        Span::styled(head, style),
+        Span::styled(format!(" · {prompt}{more}"), Theme::dim()),
+    ])
+}
+
 /// Render the focused inline card into `area` (Phase 2a). A bordered block whose
 /// title carries the queue indicator (N more after this). The card is a blocking
 /// modal on the operator surface — the composer is suspended while it's open.
 fn draw_card(f: &mut Frame, app: &App, area: Rect) {
+    let remaining = app.card_state.remaining();
+    if let (Some(card), Some(answered)) = (app.card_state.focused(), app.card_state.focused_answered()) {
+        // P-015: the answer is on its way — collapse the card to one line the
+        // moment the key lands, so it can't look unanswered and invite a second
+        // press. The server's close event removes the row.
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(answered_card_line(card, answered, remaining, area.width as usize)),
+            area,
+        );
+        return;
+    }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
     let lines = card_lines(app, inner_w);
-    let remaining = app.card_state.remaining();
     let title = if remaining > 0 {
         format!(
             " {} Operator asks · {remaining} more ",

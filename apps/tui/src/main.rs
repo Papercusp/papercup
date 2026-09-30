@@ -6824,18 +6824,21 @@ async fn card_respond_send(
     payload: Option<serde_json::Value>,
     tx: UnboundedSender<Event>,
 ) {
+    // P-015: every failure names the card it belongs to, so the TUI reopens
+    // exactly that card. A card POST failure is not a turn failure — the agent
+    // is still waiting on the card — so it never travels as `ChatError`.
+    let failed = |error: String| {
+        let _ = tx.send(Event::CardRespondFailed {
+            correlation_id: correlation_id.clone(),
+            error,
+        });
+    };
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
-        Err(e) => {
-            let _ = tx.send(Event::ChatError(format!("card-response: {e}")));
-            return;
-        }
+        Err(e) => return failed(format!("operator unreachable: {e}")),
     };
     let Some(ws) = workspace_id.filter(|id| !id.trim().is_empty()) else {
-        let _ = tx.send(Event::ChatError(
-            "Reconnect this conversation to resolve the card's workspace".into(),
-        ));
-        return;
+        return failed("the card's workspace is unknown; reconnect this conversation".into());
     };
     if let Err(e) = client
         .card_respond(
@@ -6848,7 +6851,7 @@ async fn card_respond_send(
         )
         .await
     {
-        let _ = tx.send(Event::ChatError(format!("card-response: {e}")));
+        failed(e.to_string());
     }
 }
 
