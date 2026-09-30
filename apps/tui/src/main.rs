@@ -5394,6 +5394,7 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
         provenance: None,
         tools,
         streaming: false,
+        worked_for: None,
     })
 }
 
@@ -5426,6 +5427,7 @@ fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<mod
             .map(|tool| models::ChatToolCall::plain(tool.name))
             .collect(),
         streaming: false,
+        worked_for: None,
     })
 }
 

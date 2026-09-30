@@ -2836,6 +2836,11 @@ pub struct ChatMessage {
     pub provenance: Option<ChatProvenance>,
     pub tools: Vec<ChatToolCall>,
     pub streaming: bool,
+    /// How long the turn this reply ended ran, measured by this PUI from the
+    /// moment the turn started running to the moment it settled
+    /// (pui-chat-first-ux P-019: "Worked for 4s"). `None` for replies loaded
+    /// from history, whose running time this PUI never saw.
+    pub worked_for: Option<std::time::Duration>,
 }
 
 impl ChatMessage {
@@ -2847,6 +2852,7 @@ impl ChatMessage {
             provenance: None,
             tools: Vec::new(),
             streaming: false,
+            worked_for: None,
         }
     }
     pub fn assistant(text: &str) -> Self {
@@ -2857,6 +2863,7 @@ impl ChatMessage {
             provenance: None,
             tools: Vec::new(),
             streaming: false,
+            worked_for: None,
         }
     }
     /// A line the owner composed that was NEVER delivered, preserved in the
@@ -2880,6 +2887,7 @@ impl ChatMessage {
             provenance: None,
             tools: Vec::new(),
             streaming: false,
+            worked_for: None,
         }
     }
     /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
@@ -2891,6 +2899,7 @@ impl ChatMessage {
             provenance: None,
             tools: Vec::new(),
             streaming: true,
+            worked_for: None,
         }
     }
 }

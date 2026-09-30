@@ -2592,6 +2592,12 @@ pub struct App {
     pub chat_undo: Vec<String>,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
+    /// When the running turn started running (pui-chat-first-ux P-019). Set on
+    /// the first event that finds `chat_streaming` on and cleared when it goes
+    /// off, at which point the elapsed time is stored on the turn's last reply
+    /// as `worked_for`. Edge-detected in `update` so the many places that start
+    /// or end a turn need not each remember to time it.
+    pub chat_turn_started: Option<std::time::Instant>,
     /// Turns composed WHILE one was already in flight, oldest first (P-007 draft
     /// queuing). Enter during a streaming turn moves the composed line here
     /// instead of being swallowed, and `drain_queued_turn` dispatches the head
@@ -3032,6 +3038,7 @@ impl App {
             chat_undo: Vec::new(),
             chat_scroll: 0,
             chat_streaming: false,
+            chat_turn_started: None,
             chat_queued: Vec::new(),
             keyboard_host: crate::keyboard::from_env(),
             su_pending_turn: None,
@@ -10471,7 +10478,29 @@ impl App {
         // every event, is what keeps it on the selected conversation without
         // each of those arms having to remember to.
         self.reconcile_context_projection_target();
+        self.time_chat_turn(std::time::Instant::now());
         action
+    }
+
+    /// pui-chat-first-ux P-019: time each turn from the event that finds it
+    /// running to the event that finds it settled, and keep the result on the
+    /// turn's last reply so the transcript can say "Worked for 4s". A turn that
+    /// settles without a reply of its own (a failed send) records nothing.
+    pub(crate) fn time_chat_turn(&mut self, now: std::time::Instant) {
+        match (self.chat_streaming, self.chat_turn_started) {
+            (true, None) => self.chat_turn_started = Some(now),
+            (false, Some(started)) => {
+                self.chat_turn_started = None;
+                if let Some(last) = self
+                    .chat_messages
+                    .last_mut()
+                    .filter(|m| m.role == "assistant" && !m.streaming)
+                {
+                    last.worked_for = Some(now.saturating_duration_since(started));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn update_event(&mut self, ev: Event) -> Action {

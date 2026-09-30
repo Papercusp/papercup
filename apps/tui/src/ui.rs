@@ -3033,7 +3033,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // a background highlight: the transcript already spends colour on role,
         // tone and tool state, and the marker has to stay legible on a
         // monochrome or high-contrast terminal in the release matrix.
-        let focused = Some(block_idx) == copy_focus;
+        //
+        // Inline (P-019) the marker shows only once the reader has moved the
+        // cursor or left the message box: while typing, `y` goes into the draft,
+        // so a marker on the newest reply would point at nothing a key does.
+        let focused = Some(block_idx) == copy_focus
+            && (!inline || app.chat_focus.is_some() || !app.chat_composing);
+        let inline_turn = inline && matches!(m.role.as_str(), "user" | "assistant");
+        if inline_turn {
+            push_inline_turn(&mut lines, m, focused, inner_w);
+        }
         let header = if focused {
             format!("▸ {header}")
         } else {
@@ -3047,7 +3056,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         let follows_same_speaker = m.role == "assistant"
             && block_idx > 0
             && app.chat_messages[block_idx - 1].role == "assistant";
-        if !follows_same_speaker || focused {
+        if !inline_turn && (!follows_same_speaker || focused) {
             lines.push(Line::from(Span::styled(header, who_style)));
         }
         if let Some(provenance) = m.provenance.as_ref().filter(|_| details) {
@@ -3059,7 +3068,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 Theme::dim(),
             )));
         }
-        if m.role == "assistant" && !m.reasoning.trim().is_empty() {
+        if !inline_turn && m.role == "assistant" && !m.reasoning.trim().is_empty() {
             lines.push(Line::from(Span::styled("  reasoning", Theme::dim())));
             for line in wrap_text(m.reasoning.trim(), inner_w.saturating_sub(2)) {
                 lines.push(Line::from(Span::styled(format!("  {line}"), Theme::dim())));
@@ -3079,7 +3088,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // types `*` means an asterisk and a pasted path means that path — and
         // showing someone their own message back restyled is a lie about what
         // was sent. Only the model's half goes through the renderer.
-        if m.role == "assistant" {
+        if inline_turn {
+            // Drawn by `push_inline_turn` above.
+        } else if m.role == "assistant" {
             lines.extend(crate::markdown::render(&body, inner_w, m.streaming));
         } else {
             for wl in wrap_text(&body, inner_w) {
@@ -3200,8 +3211,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             .iter()
             .filter(|t| crate::change_card::is_change_card(t))
             .count();
-        if card_count > 0 {
-            let reachable_now = app.chat_focus.is_some() && Some(block_idx) == copy_focus;
+        let reachable_now = app.chat_focus.is_some() && Some(block_idx) == copy_focus;
+        // Inline (P-019) the transcript carries no key lesson on every edited
+        // turn; the line appears on the turn the cursor is on, where Enter works.
+        if card_count > 0 && (!inline || reachable_now) {
             lines.push(Line::from(Span::styled(
                 trunc(
                     &format!(
@@ -3218,6 +3231,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 Theme::info(),
             )));
         }
+        if let Some(worked) = m.worked_for.filter(|_| inline) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("✻ Worked for {}", worked_for_label(worked)),
+                Theme::dim(),
+            )));
+        }
         lines.push(Line::from("")); // blank separator between turns
     }
     // pui-chat-first-ux P-012: the line the owner just sent, shown the moment
@@ -3225,15 +3245,41 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // an accepted owner line; `App::pending_owner_echo` ends it when that line
     // lands or the send fails.
     if let Some(echo) = app.pending_owner_echo() {
-        lines.push(Line::from(Span::styled("  you", Theme::selected())));
-        for wl in wrap_text(echo, inner_w) {
-            lines.push(Line::from(wl));
+        if inline {
+            push_inline_turn(
+                &mut lines,
+                &crate::models::ChatMessage::user(echo),
+                false,
+                inner_w,
+            );
+        } else {
+            lines.push(Line::from(Span::styled("  you", Theme::selected())));
+            for wl in wrap_text(echo, inner_w) {
+                lines.push(Line::from(wl));
+            }
         }
         lines.push(Line::from(""));
     }
 
+    // Inline there is no title bar to say a turn is running, so the bottom row
+    // of the transcript area says it, the way Claude Code's spinner line sits
+    // directly above its prompt. Esc stops the turn only from the composer.
+    let (transcript_area, running_row) = if inline && app.chat_streaming && transcript_area.height > 1
+    {
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(transcript_area);
+        (split[0], Some(split[1]))
+    } else {
+        (transcript_area, None)
+    };
     let total = lines.len() as u16;
-    let visible = transcript_area.height.saturating_sub(2); // block borders
+    let visible = if inline {
+        transcript_area.height
+    } else {
+        transcript_area.height.saturating_sub(2) // block borders
+    };
     let max_top = total.saturating_sub(visible);
     // chat_scroll = lines up from the bottom; clamp so it never overscrolls.
     let top = max_top.saturating_sub(app.chat_scroll.min(max_top));
@@ -3263,13 +3309,27 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
-    let title = format!(" {}Agent Chat{}{} ", dock_focus, earlier, streaming_title,);
-    let para = Paragraph::new(lines).scroll((top, 0)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Line::from(title)),
-    );
-    f.render_widget(para, transcript_area);
+    if inline {
+        f.render_widget(Paragraph::new(lines).scroll((top, 0)), transcript_area);
+        if let Some(row) = running_row {
+            let key = if app.chat_composing { "Esc" } else { "Ctrl+X" };
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("{} Running · {key} to interrupt", crate::glyph::status::WIP),
+                    Theme::notify(),
+                ))),
+                row,
+            );
+        }
+    } else {
+        let title = format!(" {}Agent Chat{}{} ", dock_focus, earlier, streaming_title,);
+        let para = Paragraph::new(lines).scroll((top, 0)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Line::from(title)),
+        );
+        f.render_widget(para, transcript_area);
+    }
 
     // Inline card (Phase 2a): render the focused card into its reserved strip.
     if let Some(ca) = card_area {
@@ -3550,7 +3610,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     );
     let cpara = Paragraph::new(composer_lines).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(if inline {
+                Borders::TOP | Borders::BOTTOM
+            } else {
+                Borders::ALL
+            })
             .title(Line::from(ctitle)),
     );
     f.render_widget(cpara, composer_area);
@@ -3564,15 +3628,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         && app.pending_approvals.is_empty();
     if composer_editable && composer_area.height > 2 && composer_area.width > 2 {
         let (row, column) = app.chat_cursor_line_col();
+        let left_border = side_borders / 2;
         let x = composer_area
             .x
-            .saturating_add(1)
+            .saturating_add(left_border)
             .saturating_add(2)
             .saturating_add(column as u16)
             .min(
                 composer_area
                     .x
-                    .saturating_add(composer_area.width.saturating_sub(2)),
+                    .saturating_add(composer_area.width.saturating_sub(1 + left_border)),
             );
         let y = composer_area
             .y
@@ -3586,6 +3651,77 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     .saturating_add(composer_area.height.saturating_sub(2)),
             );
         f.set_cursor_position(Position::new(x, y));
+    }
+}
+
+/// pui-chat-first-ux P-017: the chat is printed inline (no side borders) when
+/// it is the whole screen, i.e. the chat-first conversation. The docked pane
+/// and the workbench's Agent Chat tab keep their boxed layout.
+fn chat_is_inline(app: &App) -> bool {
+    app.chat_first && app.tab == Tab::Operator
+}
+
+/// pui-chat-first-ux P-019: one turn printed the way Claude Code prints it: no
+/// `you`/`agent` header line; a two-cell gutter carries the speaker instead
+/// (`❯` your message, `●` the reply) and the text continues under it indented.
+/// `▸` replaces the marker on the block `y` would copy.
+fn push_inline_turn(
+    lines: &mut Vec<Line<'static>>,
+    m: &crate::models::ChatMessage,
+    focused: bool,
+    inner_w: usize,
+) {
+    let assistant = m.role == "assistant";
+    let (marker, marker_style) = match (focused, assistant) {
+        (true, _) => ("▸ ", Theme::selected()),
+        (false, true) => ("● ", Theme::notify()),
+        (false, false) => ("❯ ", Theme::dim()),
+    };
+    let text_w = inner_w.saturating_sub(2).max(1);
+    if assistant && !m.reasoning.trim().is_empty() {
+        for line in wrap_text(m.reasoning.trim(), text_w) {
+            lines.push(Line::from(Span::styled(format!("  {line}"), Theme::dim())));
+        }
+    }
+    let body: Vec<Line<'static>> = if assistant {
+        let text = if m.streaming {
+            let preview = crate::chat_tags::live_preview(&m.content);
+            if preview.is_empty() {
+                "…".to_string()
+            } else {
+                preview
+            }
+        } else {
+            m.content.clone()
+        };
+        if text.trim().is_empty() {
+            // A block that only carries tool calls: its rows follow, already
+            // indented under the gutter.
+            Vec::new()
+        } else {
+            crate::markdown::render(&text, text_w, m.streaming)
+        }
+    } else {
+        wrap_text(&m.content, text_w).into_iter().map(Line::from).collect()
+    };
+    for (i, mut line) in body.into_iter().enumerate() {
+        let gutter = if i == 0 {
+            Span::styled(marker, marker_style)
+        } else {
+            Span::raw("  ")
+        };
+        line.spans.insert(0, gutter);
+        lines.push(line);
+    }
+}
+
+/// "4s", "1m 12s": the running time of a finished turn (P-019).
+fn worked_for_label(worked: std::time::Duration) -> String {
+    let secs = worked.as_secs().max(1);
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m {}s", secs / 60, secs % 60)
     }
 }
 
@@ -9360,6 +9496,158 @@ mod tests {
         let priced = render(&app, 120, 24);
         assert_no_chat_jargon(&priced);
         assert!(priced.contains("Claude · /work/demo · $0.12"), "{priced}");
+    }
+
+    /// The frame as rows of cells, for assertions about columns and rules.
+    fn render_rows(app: &App, w: u16, h: u16) -> (Vec<String>, Position) {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(f, app)).unwrap();
+        let rows = term
+            .backend()
+            .buffer()
+            .content()
+            .chunks(w as usize)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect();
+        let cursor = term.get_cursor_position().unwrap();
+        (rows, cursor)
+    }
+
+    /// pui-chat-first-ux P-017: the chat-first conversation is printed inline,
+    /// like Claude Code: no box around the transcript and only a rule above and
+    /// below the composer, so a selected reply carries no `│` and its text
+    /// starts in the first column. The workbench keeps its boxes (control).
+    #[test]
+    fn chat_first_prints_the_conversation_without_side_borders() {
+        let mut app = chat_first_bound_app();
+        app.chat_input = "hey".into();
+        app.chat_cursor = 3;
+        let (rows, cursor) = render_rows(&app, 120, 24);
+        let text = rows.join("\n");
+        for border in ['│', '┌', '┐', '└', '┘'] {
+            assert!(!text.contains(border), "chat-first draws `{border}`:\n{text}");
+        }
+        let reply = rows
+            .iter()
+            .find(|r| r.contains("what are we working on"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(reply.starts_with("● Hi — what are we working on?"), "{text}");
+        let draft = rows
+            .iter()
+            .position(|r| r.starts_with("> hey"))
+            .unwrap_or_else(|| panic!("{text}"));
+        // One rule under the composer (the last row) and one above it, which
+        // carries the composer's title.
+        assert!(rows[23].chars().all(|c| c == '─'), "{text}");
+        let rule_above = rows[..draft]
+            .iter()
+            .rposition(|r| r.trim_end().ends_with('─'))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(rows[rule_above].contains("Message"), "{text}");
+        assert!(
+            rows[rule_above + 1..draft]
+                .iter()
+                .all(|r| !r.contains('─')),
+            "{text}"
+        );
+        // The cursor sits after `> hey` in the first column's coordinates.
+        assert_eq!(cursor, Position::new(5, draft as u16), "{text}");
+
+        // Control: the same conversation in the workbench is still boxed.
+        app.chat_first = false;
+        let (boxed, _) = render_rows(&app, 120, 24);
+        assert!(boxed.join("\n").contains('│'), "{}", boxed.join("\n"));
+    }
+
+    /// pui-chat-first-ux P-019: turns print like Claude Code's: `❯` before your
+    /// message and `●` before the reply, no `you`/`agent` header rows, the
+    /// running time under a finished turn, and no change-card key lesson on a
+    /// turn the cursor is not on. The workbench keeps its headers (control).
+    #[test]
+    fn chat_first_prints_compact_turns_with_the_time_each_took() {
+        let mut app = chat_first_bound_app();
+        app.chat_messages[1].worked_for = Some(std::time::Duration::from_millis(4_300));
+        let mut edit = crate::models::ChatToolCall::plain("Edit".into());
+        edit.input = Some(serde_json::json!({
+            "file_path": "/work/demo/calc.js",
+            "old_string": "a + b",
+            "new_string": "a - b",
+        }));
+        edit.outcome = ToolOutcome::Ok;
+        app.chat_messages[1].tools.push(edit);
+        let (rows, _) = render_rows(&app, 120, 24);
+        let text = rows.join("\n");
+        assert!(rows.iter().any(|r| r.starts_with("❯ hello")), "{text}");
+        assert!(
+            rows.iter().any(|r| r.starts_with("● Hi — what are we working on?")),
+            "{text}"
+        );
+        for header in ["you", "agent", "▸ agent"] {
+            assert!(
+                !rows.iter().any(|r| r.trim() == header),
+                "a `{header}` header row:\n{text}"
+            );
+        }
+        assert!(rows.iter().any(|r| r.starts_with("✻ Worked for 4s")), "{text}");
+        assert!(!text.contains("change card"), "{text}");
+
+        // Control: the workbench still prints headers and the card affordance.
+        app.chat_first = false;
+        let (boxed, _) = render_rows(&app, 120, 24);
+        let boxed = boxed.join("\n");
+        assert!(boxed.contains("agent"), "{boxed}");
+        assert!(boxed.contains("change card"), "{boxed}");
+        assert!(!boxed.contains("Worked for"), "{boxed}");
+    }
+
+    /// P-019: the reply that ends a turn carries how long the turn ran, from
+    /// the event that found it running to the one that found it settled.
+    #[test]
+    fn a_turn_that_settles_records_its_running_time_on_its_reply() {
+        let mut app = chat_first_bound_app();
+        let start = std::time::Instant::now();
+        app.chat_streaming = true;
+        app.chat_messages.push(crate::models::ChatMessage::streaming_assistant());
+        app.time_chat_turn(start);
+        assert_eq!(app.chat_turn_started, Some(start));
+        let last = app.chat_messages.len() - 1;
+        app.chat_messages[last].streaming = false;
+        app.chat_messages[last].content = "done".into();
+        app.chat_streaming = false;
+        app.time_chat_turn(start + std::time::Duration::from_secs(7));
+        assert_eq!(app.chat_turn_started, None);
+        assert_eq!(
+            app.chat_messages[last].worked_for,
+            Some(std::time::Duration::from_secs(7))
+        );
+        // A turn that ends on the owner's own line (a failed send) records
+        // nothing on anyone's reply.
+        app.chat_messages.push(crate::models::ChatMessage::user("again"));
+        app.chat_streaming = true;
+        app.time_chat_turn(start);
+        app.chat_streaming = false;
+        app.time_chat_turn(start + std::time::Duration::from_secs(3));
+        assert_eq!(app.chat_messages.last().unwrap().worked_for, None);
+        assert_eq!(
+            app.chat_messages[last].worked_for,
+            Some(std::time::Duration::from_secs(7))
+        );
+    }
+
+    /// P-017: inline there is no title bar, so a running turn is stated on the
+    /// row directly above the composer, with the key that stops it.
+    #[test]
+    fn chat_first_states_a_running_turn_above_the_composer() {
+        let mut app = chat_first_bound_app();
+        app.chat_streaming = true;
+        let (rows, _) = render_rows(&app, 120, 24);
+        let text = rows.join("\n");
+        let running = rows
+            .iter()
+            .position(|r| r.contains("Running · Esc to interrupt"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(rows[running + 1].trim_end().ends_with('─'), "{text}");
+        assert!(!text.contains("Agent Chat"), "{text}");
     }
 
     #[test]
