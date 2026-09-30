@@ -45,6 +45,7 @@ import runTool, {
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
   parseRouterTestResult,
+  parseNodeTestGroupRuns,
   preserveConfinedTestOnHostShutdown,
   readManagedTestProcessResourceSnapshot,
   mapHarnessTestRunIdsByFile,
@@ -855,6 +856,52 @@ describe('testing:run (integration)', () => {
     expect(out.failed).toBe(0);
     expect(out.failures).toEqual([]);
   }, 180_000);
+
+  // WI-10004243: a mixed Vitest + node:test batch used to drop the node:test file from
+  // byFile, so scorecards:emit refused its criterion as "never reported on".
+  it('keeps a node:test file in byFile when the batch also runs Vitest files', async () => {
+    const out = await body(call({ files: [GREEN_TARGET, NODE_TEST_TARGET] }));
+
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.files).toBe(2);
+    const byFile = (out.byFile ?? {}) as Record<string, { passed: number; failed: number }>;
+    expect(Object.keys(byFile).sort()).toEqual([GREEN_TARGET, NODE_TEST_TARGET].sort());
+    expect(byFile[NODE_TEST_TARGET]!.passed).toBeGreaterThan(0);
+    expect(byFile[NODE_TEST_TARGET]!.failed).toBe(0);
+  }, 240_000);
+
+  it('attributes node:test summaries per router group and never across groups', () => {
+    const output = [
+      'ROUTE cwd=papercusp-desktop runner=node:test',
+      '  requested test/a.test.js',
+      'ℹ tests 3',
+      'ℹ pass 2',
+      'ℹ fail 1',
+      'not ok 2 - breaks',
+      'TEST_FILE_GROUP_RESULT cwd=papercusp-desktop runner=node:test executed=1 status=failed',
+      'ROUTE cwd=packages/operator-core runner=vitest',
+      '  requested lib/x.test.ts',
+      'ROUTE cwd=other runner=node:test',
+      '  requested test/b.test.js',
+      '  requested test/c.test.js',
+      'ℹ tests 4',
+      'ℹ pass 4',
+      'ℹ fail 0',
+      'TEST_FILE_RESULT requested=4 executed=4 matched=4 status=failed',
+    ].join('\n');
+    const files = ['papercusp-desktop/test/a.test.js', 'packages/operator-core/lib/x.test.ts', 'other/test/b.test.js', 'other/test/c.test.js'];
+
+    const runs = parseNodeTestGroupRuns(output, files);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]!.byFile).toEqual({
+      'papercusp-desktop/test/a.test.js': { passed: 2, failed: 1, skipped: 0, collectionFailed: false },
+    });
+    expect(runs[0]!.failures[0]).toMatchObject({ file: 'papercusp-desktop/test/a.test.js', test: 'breaks' });
+    // A multi-file group is counted but never attributed to one file.
+    expect(runs[1]).toMatchObject({ passed: 4, failed: 0, files: 2, byFile: {} });
+    // A group with no numeric summary is not evidence.
+    expect(parseNodeTestGroupRuns('ROUTE cwd=x runner=node:test\n  requested t.test.js\n', ['x/t.test.js'])).toEqual([]);
+  });
 
   it('requires the router marker and a non-zero numeric test summary for the node:test fallback', () => {
     const output = [
