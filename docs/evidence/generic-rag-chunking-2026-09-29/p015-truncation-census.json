@@ -1,0 +1,90 @@
+{
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-015",
+  "workItem": "WI-10003944",
+  "claim": "sync stats show no silent truncation: every parent whose text exceeds what maxChunks windows cover is stored at exactly maxChunks chunks (the cap the engine counts in parentsTruncatedByMaxChunks and logs per tick), none below or above the cap, none unchunked",
+  "measuredAt": "2026-09-30T13:58:56.776Z",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "database": "operator DB (papercusp), read-only",
+  "method": "For each text_chunks surface in the live registry: coveredChars = size + (maxChunks-1)*(size-overlap); cross-tab each eligible parent length(textSql) against coveredChars and its stored chunk count against maxChunks. at_cap_within_covered counts parents at the cap whose raw text fits (header text and window snapping add windows); it is not truncation.",
+  "census": [
+    {
+      "surface": "plans",
+      "maxChunks": 32,
+      "coveredChars": 40250,
+      "parents": 2059,
+      "over_covered": 219,
+      "over_at_cap": 219,
+      "over_below_cap": 0,
+      "over_unchunked": 0,
+      "above_cap": 0,
+      "at_cap_within_covered": 14,
+      "max_stored": 32
+    },
+    {
+      "surface": "operator_turns",
+      "maxChunks": 8,
+      "coveredChars": 10250,
+      "parents": 48474,
+      "over_covered": 818,
+      "over_at_cap": 818,
+      "over_below_cap": 0,
+      "over_unchunked": 0,
+      "above_cap": 0,
+      "at_cap_within_covered": 210,
+      "max_stored": 8
+    },
+    {
+      "surface": "work_items",
+      "maxChunks": 4,
+      "coveredChars": 5250,
+      "parents": 240753,
+      "over_covered": 370,
+      "over_at_cap": 370,
+      "over_below_cap": 0,
+      "over_unchunked": 0,
+      "above_cap": 0,
+      "at_cap_within_covered": 1166,
+      "max_stored": 4
+    },
+    {
+      "surface": "consult_questions",
+      "maxChunks": 8,
+      "coveredChars": 10250,
+      "parents": 2355,
+      "over_covered": 31,
+      "over_at_cap": 31,
+      "over_below_cap": 0,
+      "over_unchunked": 0,
+      "above_cap": 0,
+      "at_cap_within_covered": 3,
+      "max_stored": 8
+    }
+  ],
+  "sessionTurns": {
+    "surface": "session_turns",
+    "store": "harness_shared.session_turn_chunks",
+    "maxChunks": 16,
+    "coveredChars": 20250,
+    "maxTurnChars": 8000,
+    "maxChunksStored": 7,
+    "measuredAt": "2026-09-30T14:00Z",
+    "note": "turns are capped at 8,000 characters at ingest, so no session turn can reach the 16-window cap; truncation by maxChunks is impossible on this surface (SQL: max(length(text)) over harness_shared.session_turns; max chunk count per turn key over session_turn_chunks)"
+  },
+  "loggedByBgHost": {
+    "unit": "papercusp-bg-host.service",
+    "window": "2026-09-29T22:00Z..2026-09-30T13:59Z",
+    "line": "[chunk-sync] <surface>: ... , N truncated by maxChunks",
+    "plans": {
+      "ticks": 38,
+      "truncatedTotal": 60
+    },
+    "consult_questions": {
+      "ticks": 6,
+      "truncatedTotal": 6
+    },
+    "note": "per-tick counts of parents re-synced in that window, not a census; operator_turns and work_items logged no truncating re-sync in the window"
+  },
+  "verdict": "pass",
+  "probeSource": "// P-015 \"sync stats show no silent truncation\" census. [self-imposed under AUTO #970, WI-10003944]\n// Read-only. For every text_chunks surface in the live registry, cross-tabs each eligible\n// parent's text length against the length maxChunks windows can cover, and the parent's\n// stored chunk count against maxChunks. Silent truncation would show as a long parent with\n// fewer than maxChunks chunks (tail lost somewhere other than the cap), a parent stored above\n// the cap, or a long parent with no chunks at all. Prints one CENSUS line per surface.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { CHUNK_SURFACES } = await import(base + 'search/chunks/registry.ts');\nconst { getOrgPg } = await import('@papercusp/db-org');\nconst { sql } = getOrgPg();\n\nconst TEXT_SURFACES = ['plans', 'operator_turns', 'work_items', 'consult_questions'];\nfor (const s of CHUNK_SURFACES as Array<Record<string, any>>) {\n  if (!TEXT_SURFACES.includes(s.surface)) continue;\n  const { size, overlap } = s.splitter;\n  const max = s.maxChunks as number;\n  const covered = size + (max - 1) * (size - overlap);\n  const cols = (s.parent.key as Array<string | { column: string }>).map((c) => (typeof c === 'string' ? c : c.column));\n  const key = `ARRAY[${cols.map((c) => `p.${c}::text`).join(', ')}]`;\n  const where = s.eligibleSql ? `WHERE ${s.eligibleSql}` : '';\n  const [r] = await sql.unsafe(\n    `WITH par AS (SELECT ${key} AS k, length(${s.textSql}) AS len FROM ${s.parent.table} p ${where}),\n          ch AS (SELECT parent_key AS k, count(*)::int AS n FROM harness_shared.text_chunks WHERE surface = $1 GROUP BY parent_key)\n     SELECT count(*)::int AS parents,\n            count(*) FILTER (WHERE par.len > $2)::int AS over_covered,\n            count(*) FILTER (WHERE par.len > $2 AND ch.n = $3)::int AS over_at_cap,\n            count(*) FILTER (WHERE par.len > $2 AND ch.n < $3)::int AS over_below_cap,\n            count(*) FILTER (WHERE par.len > $2 AND ch.n IS NULL)::int AS over_unchunked,\n            count(*) FILTER (WHERE ch.n > $3)::int AS above_cap,\n            count(*) FILTER (WHERE ch.n = $3 AND par.len <= $2)::int AS at_cap_within_covered,\n            max(ch.n)::int AS max_stored\n       FROM par LEFT JOIN ch ON ch.k = par.k`,\n    [s.surface, covered, max],\n  );\n  console.log('CENSUS', JSON.stringify({ surface: s.surface, maxChunks: max, coveredChars: covered, ...r }));\n}\nconsole.log('AT', new Date().toISOString());\nawait sql.end({ timeout: 5 });\n"
+}
