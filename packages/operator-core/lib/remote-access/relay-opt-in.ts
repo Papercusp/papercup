@@ -151,6 +151,19 @@ export interface PortalRelayDeps {
   readonly installLabel: () => string;
   readonly newInstallId: () => string;
   readonly now: () => number;
+  /** Tell an open Remote access screen to re-read (every workspace's view; the relay is install-wide). Never throws. */
+  readonly notifyChanged: () => void;
+}
+
+/** The sync query the Remote access screen reads (sync-resolver `remoteAccess.overview`). */
+export const PORTAL_RELAY_SCREEN_QUERY = 'remoteAccess.overview';
+
+function defaultNotifyChanged(): void {
+  void import('../sync-sse')
+    // No args: every workspace's copy of the screen. A short dedupe window, because linking moves
+    // through several states within seconds and the bus's 90s default would swallow all but one.
+    .then(({ notifySyncInvalidate }) => notifySyncInvalidate(PORTAL_RELAY_SCREEN_QUERY, undefined, undefined, { dedupeWindowMs: 1_000 }))
+    .catch(() => undefined);
 }
 
 // ── portal client (fetch) ──────────────────────────────────────────────────────────────────────
@@ -304,6 +317,7 @@ export function defaultPortalRelayDeps(overrides: Partial<PortalRelayDeps> = {},
     installLabel: () => osHostname(),
     newInstallId: () => `inst-${randomBytes(12).toString('hex')}`,
     now: () => Date.now(),
+    notifyChanged: defaultNotifyChanged,
     ...overrides,
   };
 }
@@ -425,6 +439,7 @@ export async function acceptPortalRelayNotice(
   }
   await ensureRow(deps);
   await deps.store.recordConsent({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION, by: input.by ?? null });
+  deps.notifyChanged();
   return portalRelayStatus(deps);
 }
 
@@ -451,13 +466,17 @@ export async function beginPortalRelayLink(
     pollIntervalSec: Math.max(1, Math.round(code.interval)),
   });
   state.lastPollAt = 0;
+  deps.notifyChanged();
   return portalRelayStatus(deps);
 }
 
 /** Stop linking before it finishes. */
 export async function cancelPortalRelayLink(deps: PortalRelayDeps = defaultPortalRelayDeps()): Promise<PortalRelayStatus> {
   const row = await deps.store.read();
-  if (row?.state === 'linking') await deps.store.setOff(null);
+  if (row?.state === 'linking') {
+    await deps.store.setOff(null);
+    deps.notifyChanged();
+  }
   return portalRelayStatus(deps);
 }
 
@@ -480,7 +499,10 @@ export async function disconnectPortalRelay(deps: PortalRelayDeps = defaultPorta
     }
   }
   deps.connector.stop();
-  if (row && row.state !== 'off') await deps.store.setOff(null);
+  if (row && row.state !== 'off') {
+    await deps.store.setOff(null);
+    deps.notifyChanged();
+  }
   return { ...(await portalRelayStatus(deps)), portalUnlinked };
 }
 
@@ -492,6 +514,7 @@ const state = pinModuleState('@papercusp/operator-core.remote-access.relay-opt-i
   lastPollAt: 0,
   lastConnectorStartAt: 0,
   lastLoggedError: null as string | null,
+  lastFingerprint: null as string | null,
 }));
 
 export interface PortalRelayReconcileResult {
@@ -590,7 +613,31 @@ async function runLinked(row: PortalRelayRow, deps: PortalRelayDeps): Promise<Po
   return { action: 'started', error: null };
 }
 
+/**
+ * What the Remote access screen shows, reduced to the parts that change: the row's state and
+ * last write, and the connector's running/bound flags. `bound` lives only in this process, so the
+ * reconciler (the process that runs the connector) is what tells the screen it changed.
+ */
+async function screenFingerprint(deps: PortalRelayDeps): Promise<string> {
+  const row = await deps.store.read();
+  const c = deps.connector.status();
+  return [row?.state ?? 'none', row?.updatedAt ? new Date(row.updatedAt).getTime() : 0, c.running, c.bound].join('|');
+}
+
 async function reconcileOnce(deps: PortalRelayDeps): Promise<PortalRelayReconcileResult> {
+  const result = await reconcileStep(deps);
+  if (result.action === 'hosted-machine' || result.action === 'not-owner') return result;
+  const fingerprint = await screenFingerprint(deps);
+  if (fingerprint !== state.lastFingerprint) {
+    // The first pass after boot records the baseline without a push: nothing on screen changed.
+    const first = state.lastFingerprint === null;
+    state.lastFingerprint = fingerprint;
+    if (!first) deps.notifyChanged();
+  }
+  return result;
+}
+
+async function reconcileStep(deps: PortalRelayDeps): Promise<PortalRelayReconcileResult> {
   if (isPapercuspHostedMachine(deps.env)) {
     if (deps.connector.running()) deps.connector.stop();
     return { action: 'hosted-machine', error: null };
@@ -660,4 +707,5 @@ export function resetPortalRelayStateForTests(): void {
   state.lastPollAt = 0;
   state.lastConnectorStartAt = 0;
   state.lastLoggedError = null;
+  state.lastFingerprint = null;
 }

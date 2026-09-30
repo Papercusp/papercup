@@ -6090,7 +6090,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // `remoteAccess.overview` — Settings → Remote access (external-app-access P-010, D-025): ONE row
   // with the workspace's switch, every live phone / app key / service key of the workspace (with
   // creator, last use and state, R-26 / D-007), and the install's own-tunnel route + health
-  // (P-009). The screen's writes (routes/remote-access, /connected-apps/rotate) invalidate it.
+  // (P-009) and Papercusp relay state (P-008). The screen's writes (routes/remote-access,
+  // /connected-apps/rotate) and the relay's reconciler invalidate it.
   'remoteAccess.overview': {
     backingTables: ['harness_shared.connected_apps', 'harness_shared.connected_app_access_settings'],
     argsSchema: z.object({ workspaceId: z.string().trim().min(1).max(200).default('default') }),
@@ -6106,7 +6107,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       } catch (err) {
         ownTunnelError = err instanceof Error ? err.message : String(err);
       }
-      return [{ workspaceId, remoteAccess, entries, ownTunnel, ownTunnelError }];
+      // P-008 (D-031): the opt-in Papercusp relay, the install's other route. The reconciler that
+      // runs the connector invalidates this query on every change (relay-opt-in.ts notifyChanged).
+      let portalRelay: unknown = null;
+      let portalRelayError: string | null = null;
+      try {
+        const { portalRelayStatus } = await import('../remote-access/relay-opt-in');
+        portalRelay = await portalRelayStatus();
+      } catch (err) {
+        portalRelayError = err instanceof Error ? err.message : String(err);
+      }
+      return [{ workspaceId, remoteAccess, entries, ownTunnel, ownTunnelError, portalRelay, portalRelayError }];
     },
   },
 

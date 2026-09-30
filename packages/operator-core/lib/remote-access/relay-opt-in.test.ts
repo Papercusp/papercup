@@ -143,10 +143,12 @@ function fakeWorld(opts: { env?: NodeJS.ProcessEnv; owner?: boolean; otherOperat
     installLabel: () => 'my-laptop',
     newInstallId: () => 'inst-0123456789abcdef01234567',
     now: () => now,
+    notifyChanged: vi.fn(),
   };
   return {
     deps,
     portal,
+    notifyChanged: deps.notifyChanged as ReturnType<typeof vi.fn>,
     pollResults,
     get row() { return row; },
     get secrets() { return secrets; },
@@ -384,6 +386,52 @@ describe('the reconciler finishes the link and runs the connector', () => {
     await gone.deps.store.setOperatorPort(3170);
     expect(await reconcilePortalRelay(gone.deps)).toMatchObject({ action: 'started' });
     expect(gone.row?.operatorPort).toBe(3070);
+  });
+});
+
+describe('an open Remote access screen is told when the relay changes', () => {
+  it('each user action notifies once', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    expect(w.notifyChanged).toHaveBeenCalledTimes(1);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    expect(w.notifyChanged).toHaveBeenCalledTimes(2);
+    await cancelPortalRelayLink(w.deps);
+    expect(w.notifyChanged).toHaveBeenCalledTimes(3);
+    // Cancelling with nothing pending changes nothing, so nothing is pushed.
+    await cancelPortalRelayLink(w.deps);
+    expect(w.notifyChanged).toHaveBeenCalledTimes(3);
+  });
+
+  it('the reconciler pushes when the row or the connector changes, and stays quiet otherwise', async () => {
+    const w = fakeWorld();
+    await acceptPortalRelayNotice({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION }, w.deps);
+    await beginPortalRelayLink({ portalOrigin: PORTAL }, w.deps);
+    w.notifyChanged.mockClear();
+    // First pass records the baseline.
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'polled' });
+    expect(w.notifyChanged).not.toHaveBeenCalled();
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'waiting' });
+    expect(w.notifyChanged).not.toHaveBeenCalled();
+    w.advance(5_000);
+    w.pollResults.push(APPROVED);
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'linked' });
+    expect(w.notifyChanged).toHaveBeenCalledTimes(1);
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'started' });
+    expect(w.notifyChanged).toHaveBeenCalledTimes(2);
+    // The portal's binding arrives: only this process knows, so the reconciler must say so.
+    w.connectorBinds();
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'running' });
+    expect(w.notifyChanged).toHaveBeenCalledTimes(3);
+    expect(await reconcilePortalRelay(w.deps)).toMatchObject({ action: 'running' });
+    expect(w.notifyChanged).toHaveBeenCalledTimes(3);
+  });
+
+  it('a process that does not run the connector never pushes from the reconciler', async () => {
+    const w = fakeWorld({ owner: false });
+    await reconcilePortalRelay(w.deps);
+    await reconcilePortalRelay(w.deps);
+    expect(w.notifyChanged).not.toHaveBeenCalled();
   });
 });
 
