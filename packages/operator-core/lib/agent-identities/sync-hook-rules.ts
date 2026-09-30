@@ -31,7 +31,12 @@ import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { HookContextSink, ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
-import { parseRulePackage, RULE_PACKAGE_SCHEMA_VERSION, type SyncRuleDeclaration } from '../cupboard/rule-store';
+import {
+  parseRulePackage,
+  RULE_PACKAGE_SCHEMA_VERSION,
+  type AsyncRuleDeclaration,
+  type SyncRuleDeclaration,
+} from '../cupboard/rule-store';
 import {
   DEFAULT_SINK_HOST_LIMITS,
   evaluateSinkInvocation,
@@ -68,14 +73,24 @@ export interface WornSyncRules {
   readonly unreadable: readonly UnreadableWornRule[];
 }
 
+/** Every rule pin an applied artifact carries, sync and async, parsed. */
+export interface WornRulePins {
+  readonly rules: readonly {
+    readonly identityId: string;
+    readonly pinRef: string;
+    readonly rule: SyncRuleDeclaration | AsyncRuleDeclaration;
+  }[];
+  readonly unreadable: readonly UnreadableWornRule[];
+}
+
 type PackageInput = Extract<ResolvedAgentSpecification['inputs'][number], { kind: 'package' }>;
 
-/** PURE: the sync rules an applied artifact pins, attributed to their layers. */
-export function wornSyncRules(artifact: Pick<ResolvedAgentSpecification, 'inputs'>): WornSyncRules {
+/** PURE: every rule an applied artifact pins, attributed to its blueprint layer. */
+export function wornRulePins(artifact: Pick<ResolvedAgentSpecification, 'inputs'>): WornRulePins {
   const packages = artifact.inputs.filter((entry): entry is PackageInput => entry.kind === 'package');
   const owner = (ref: string) => packages.find((entry) => entry.packageKind !== 'rule' &&
     (entry.dependencies ?? []).some((dependency) => dependency.packageKind === 'rule' && dependency.ref === ref))?.ref;
-  const rules: WornSyncRule[] = [];
+  const rules: WornRulePins['rules'][number][] = [];
   const unreadable: UnreadableWornRule[] = [];
   for (const pin of packages) {
     if (pin.packageKind !== 'rule') continue;
@@ -89,9 +104,23 @@ export function wornSyncRules(artifact: Pick<ResolvedAgentSpecification, 'inputs
       unreadable.push({ identityId, pinRef: pin.ref, error: parsed ? parsed.error : 'rule pin carries no value' });
       continue;
     }
-    if (parsed.rule.delivery === 'sync') rules.push({ identityId, pinRef: pin.ref, rule: parsed.rule });
+    rules.push({ identityId, pinRef: pin.ref, rule: parsed.rule });
   }
   return { rules, unreadable };
+}
+
+/** The sync view of {@link wornRulePins}. */
+function syncView(pins: WornRulePins): WornSyncRules {
+  const rules: WornSyncRule[] = [];
+  for (const entry of pins.rules) {
+    if (entry.rule.delivery === 'sync') rules.push({ identityId: entry.identityId, pinRef: entry.pinRef, rule: entry.rule });
+  }
+  return { rules, unreadable: pins.unreadable };
+}
+
+/** PURE: the sync rules an applied artifact pins, attributed to their layers. */
+export function wornSyncRules(artifact: Pick<ResolvedAgentSpecification, 'inputs'>): WornSyncRules {
+  return syncView(wornRulePins(artifact));
 }
 
 /** A `tools` filter entry is a name or a prefix ending in `*`; no filter matches every tool. */
