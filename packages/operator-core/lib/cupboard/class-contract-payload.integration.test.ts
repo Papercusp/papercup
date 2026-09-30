@@ -18,9 +18,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 import {
-  bindCapabilityProviderToPot,
   defineCapabilityClass,
-  deletePotCapabilityProviderBinding,
   getCapabilityClass,
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
@@ -32,6 +30,7 @@ import {
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { resolveCapabilityGrants } from './capability-grant-resolver';
 import { prepareBlueprintPublicRelease } from './blueprint-release';
+import { blueprintInstallJournal } from './blueprint-install-journal';
 import { installBlueprintFromCupboardCore, type InstallBlueprintCoreDeps } from './install-blueprint-core';
 import type { IdentityInstallConsent } from './identity-install-consent';
 import {
@@ -199,27 +198,9 @@ function installDeps(
         rounds: 0,
       };
     },
-    async commitCapabilitySelections(selections) {
-      for (const selection of selections) {
-        const parsed = parseCapabilityClassRef(selection.classRef)!;
-        await bindCapabilityProviderToPot(db.adminSql, {
-          ...scope, classId: parsed.id, classVersion: parsed.version,
-          providerPackage: selection.providerPackage, providerVersion: selection.providerVersion,
-          boundBy: 'p021-test',
-        });
-      }
-      return {
-        rollback: async () => {
-          for (const selection of selections) {
-            const parsed = parseCapabilityClassRef(selection.classRef)!;
-            await deletePotCapabilityProviderBinding(db.adminSql, {
-              ...scope, classId: parsed.id, classVersion: parsed.version,
-              expectedProviderPackage: selection.providerPackage, expectedProviderVersion: selection.providerVersion,
-            });
-          }
-        },
-      };
-    },
+    // The production P-014 journal writes the pot binding.
+    blueprintInstallJournal: ({ blueprintId, bindings }) => blueprintInstallJournal(
+      { sql: db.adminSql, workspaceId: WS, blueprintId }, { operation: 'install', potSlug, bindings }),
   };
 }
 
@@ -316,9 +297,15 @@ describe('P-021 portable class contracts through the signed Cupboard release (re
     const ok = await install('pot-a', approve(artifact, carried), ['mail:*'], identityConsent);
     expect(ok.classContracts?.imported).toEqual([{ ref: CLASS_REF, contractHash: carried[0]!.contractHash, created: false }]);
     expect(ok.capabilityGrants?.selected).toMatchObject([{ classRef: CLASS_REF, providerPackage: 'publisher-mail' }]);
-    expect((await getPotCapabilityProviderBinding(db.adminSql, {
+    const bound = await getPotCapabilityProviderBinding(db.adminSql, {
       workspaceId: WS, potSlug: 'pot-a', classId: 'publisher.mail-send', classVersion: '1.0.0',
-    }))?.verbBindings).toEqual({ send: TOOL });
+    });
+    expect(bound?.verbBindings).toEqual({ send: TOOL });
+    // The binding is the pot install's journaled resource, applied with the release.
+    expect(bound?.boundBy).toMatch(/^cupboard:install-blueprint#/);
+    expect(ok.bindingJournal?.pots).toMatchObject([{
+      potSlug: 'pot-a', applied: true, bindings: [`${CLASS_REF} → publisher-mail@1.0.0`],
+    }]);
 
     // Exceeding the ceiling: the same verified provider is refused for a pot
     // whose ceiling does not admit mail:send, before any binding is written.

@@ -124,6 +124,12 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           providerBindings: ['crm.email@1.0.0 → crm-email-tool@1.0.0'],
           contextReads: [], rules: [], events: [], operations: [], pluginCode: [], sharedContent: [],
         },
+        bindingJournal: {
+          recovered: [],
+          pots: [{ potSlug: 'sales-ops', dependentId: 'blueprint-install:abc', applied: true,
+            bindings: ['crm.email@1.0.0 → acme-crm@2.0.0'], superseded: [] }],
+          residue: [],
+        },
         capabilityGrants: {
           ok: true,
           requirements: [{ classRef: 'crm.email@1.0.0', optional: false, state: 'choosable' }],
