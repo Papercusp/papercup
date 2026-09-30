@@ -30,6 +30,7 @@ import {
   RO_OPEN_RETRY_ATTEMPTS,
   CUT_SEED_DRAIN_STALL_MS,
   mergeReleaseSeedRedactionValues,
+  resolveReleaseSeedRedactionValuesForCut,
   deriveSourceStoreDirs,
   createFilteredSeedProgressReporter,
   withSeedOutput,
@@ -192,6 +193,31 @@ describe('mergeReleaseSeedRedactionValues (WI-37894)', () => {
     );
 
     expect(values).toEqual([FIXTURE_REAL_HOST, FIXTURE_BUILD_HOST, FIXTURE_BUILD_USER]);
+  });
+});
+
+describe('release seed identity coverage for fresh and reused corestores (WI-10004435)', () => {
+  it('loads the release literal set for a reused corestore even though wantCorestore is false', () => {
+    const load = vi.fn(() => ['Synthetic Owner', 'Synthetic Organization']);
+
+    expect(resolveReleaseSeedRedactionValuesForCut({
+      wantCorestore: false,
+      reuseCorestoreDir: '/fixture/reused-seed',
+      load,
+    })).toEqual(['Synthetic Owner', 'Synthetic Organization']);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads once for a fresh corestore and skips resolution only when no corestore can ship', () => {
+    const freshLoad = vi.fn(() => ['Synthetic Owner']);
+    expect(resolveReleaseSeedRedactionValuesForCut({ wantCorestore: true, load: freshLoad })).toEqual([
+      'Synthetic Owner',
+    ]);
+    expect(freshLoad).toHaveBeenCalledTimes(1);
+
+    const absentLoad = vi.fn(() => ['must-not-load']);
+    expect(resolveReleaseSeedRedactionValuesForCut({ wantCorestore: false, load: absentLoad })).toEqual([]);
+    expect(absentLoad).not.toHaveBeenCalled();
   });
 });
 

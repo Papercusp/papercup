@@ -240,6 +240,25 @@ export function mergeReleaseSeedRedactionValues(output: string, realHostname?: s
   ].filter((value): value is string => !!value && value.length >= 3))];
 }
 
+/**
+ * Resolve the release literal set whenever the finished seed contains a corestore,
+ * whether that corestore is cut fresh or grafted from `--reuse-corestore`.
+ *
+ * The reuse path deliberately sets `wantCorestore=false` because it must not open the
+ * live store.  Using `corestore?.redactValues` as the later staged-byte guard's input
+ * therefore silently reduced that guard to the five build-box literals and let a stale
+ * snapshot carrying an owner organization name reach the Windows packaging gate.  Keep
+ * selection in one pure, tested branch and feed its result to BOTH the fresh projection
+ * and the post-graft guard.
+ */
+export function resolveReleaseSeedRedactionValuesForCut(input: {
+  readonly wantCorestore: boolean;
+  readonly reuseCorestoreDir?: string;
+  readonly load: () => readonly string[];
+}): readonly string[] {
+  return input.wantCorestore || input.reuseCorestoreDir ? input.load() : [];
+}
+
 function releaseSeedRedactionValues(root: string): readonly string[] {
   const audit = join(root, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
   const result = spawnSync('python3', [audit, '--identity-literals'], {
@@ -1396,6 +1415,11 @@ async function main(): Promise<void> {
   const reuseCorestoreDir = reuseCorestoreRaw ? resolve(reuseCorestoreRaw) : undefined;
   const emitEpochKey = args['emit-epoch-key'] === true;
   const wantCorestore = args['no-corestore'] !== true && !reuseCorestoreDir;
+  const releaseRedactionValues = resolveReleaseSeedRedactionValuesForCut({
+    wantCorestore,
+    ...(reuseCorestoreDir ? { reuseCorestoreDir } : {}),
+    load: () => releaseSeedRedactionValues(root),
+  });
   const asJson = args['json'] === true;
 
   // P-004 sparse cut: ship only [snapshotIndex,len) of each core (drops the ~2GB history
@@ -1621,7 +1645,7 @@ async function main(): Promise<void> {
       // owner's private author log. The provider mints a fresh read-only snapshot core,
       // redacts email-shaped values, and leaves the live source log untouched.
       filtered: true,
-      redactValues: releaseSeedRedactionValues(root),
+      redactValues: releaseRedactionValues,
       onProgress: createFilteredSeedProgressReporter(),
     };
   }
@@ -1686,7 +1710,7 @@ async function main(): Promise<void> {
       await assertStagedSeedCarriesNoIdentity({
         dir: outDir,
         neutralHostname: process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME,
-        extraLiterals: corestore?.redactValues ?? [],
+        extraLiterals: releaseRedactionValues,
       });
 
       // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.
