@@ -23,8 +23,12 @@ import { defineTool, type RouteDefinition } from '@papercusp/tooldef/define-tool
 import type { HostedMembershipAuthorityReader } from '../../../auth/hosted-membership-authority';
 import { isHostedPrincipal, type HostedPermission } from '../../../auth/hosted-principal';
 import type { HostedPrincipalResolver } from '../../../auth/hosted-principal-resolver';
-import { isHostedConnectorLive, type HostedWorkspaceConnectorGateway } from '../../hosted-workspace-connector';
-import type { HostedCliStore, HostedCliToken } from './store';
+import {
+  isHostedConnectorLive,
+  readHostedConnectorBearer,
+  type HostedWorkspaceConnectorGateway,
+} from '../../hosted-workspace-connector';
+import { RELAY_INSTALL_ID_RE, type HostedCliStore, type HostedCliToken } from './store';
 
 export { PostgresHostedCliStore, type HostedCliStore } from './store';
 
@@ -36,7 +40,20 @@ export const HOSTED_CLI_ROUTES = [
   { method: 'GET', path: '/hosted/cli/workspaces', access: 'public' },
   { method: 'POST', path: '/hosted/cli/workspaces/:workspaceId/terminal', access: 'public' },
   { method: 'POST', path: '/hosted/cli/logout', access: 'public' },
+  // EAA P-008 (D-031): a local install links to the portal relay with the same device grant.
+  { method: 'POST', path: '/hosted/relay/device/code', access: 'public' },
+  { method: 'POST', path: '/hosted/relay/device/token', access: 'public' },
+  { method: 'POST', path: '/hosted/relay/unlink', access: 'public' },
 ] as const;
+
+/**
+ * The relay notice shown on the portal's approval page for a relay link (D-009). The machine
+ * shows the same words before it lets the user start linking (remote-access/relay-opt-in.ts).
+ */
+export const PORTAL_RELAY_NOTICE =
+  "When the Papercusp relay is on, calls from outside apps pass through Papercusp's servers on their way to this computer. " +
+  'Papercusp can read those calls and their results while they pass through, and does not store them. ' +
+  "If you don't want that, use your own tunnel instead.";
 
 export const HOSTED_CLI_DEVICE_CODE_TTL_MS = 10 * 60_000;
 export const HOSTED_CLI_POLL_INTERVAL_MS = 5_000;
@@ -57,7 +74,7 @@ export interface HostedCliRouteDependencies {
   readonly controlPlaneWorkspaceId: string;
   readonly store: HostedCliStore;
   readonly membershipAuthority: Pick<HostedMembershipAuthorityReader, 'resolveActive'>;
-  readonly connectorGateway: Pick<HostedWorkspaceConnectorGateway, 'issueSessionTicket'>;
+  readonly connectorGateway: Pick<HostedWorkspaceConnectorGateway, 'issueSessionTicket' | 'enroll' | 'authenticate' | 'revoke'>;
   /** The page route looks the browser session up itself so it can send a signed-out visitor to sign-in. */
   readonly resolvePrincipal: HostedPrincipalResolver;
   readonly clock?: () => Date;
@@ -291,6 +308,18 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
           404,
         );
       }
+      if (grant.purpose === 'relay-link') {
+        return htmlPage(
+          'Connect this computer to the Papercusp relay?',
+          `<p><b>${escapeHtml(grant.clientLabel)}</b> is asking to join your organization as a workspace that outside apps reach through Papercusp. Check that its Remote access screen shows this code:</p>
+<p><code>${escapeHtml(grant.userCode)}</code></p>
+<p>${escapeHtml(PORTAL_RELAY_NOTICE)}</p>
+<p>Members of your organization who can operate workspaces can approve app sign-ins for it here. You can disconnect it from that computer at any time.</p>
+<form method="post" action="/api/hosted/cli/device/decision"><input type="hidden" name="user_code" value="${escapeHtml(grant.userCode)}">
+<div class="row"><button class="primary" type="submit" name="decision" value="approve">Connect</button>
+<button type="submit" name="decision" value="deny">Deny</button></div></form>`,
+        );
+      }
       return htmlPage(
         'Allow psu to use your workspaces?',
         `<p>psu on <b>${escapeHtml(grant.clientLabel)}</b> is asking to sign in as you. Check that your terminal shows this code:</p>
@@ -324,6 +353,22 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       const userCode = normalizeUserCode(fields.user_code ?? fields.userCode);
       const decision = fields.decision === 'approve' ? 'approved' : fields.decision === 'deny' ? 'denied' : null;
       if (!userCode || !decision) return jsonError('invalid_decision', 400);
+      // A relay link adds a workspace to the organization, so approving one needs the operate
+      // permission; viewing members may still deny it (D-031).
+      let purpose: 'cli' | 'relay-link' = 'cli';
+      try {
+        purpose = (await deps.store.findPendingGrant(userCode, clock()))?.purpose ?? 'cli';
+      } catch {
+        return jsonError('authority_unavailable', 503);
+      }
+      if (purpose === 'relay-link' && decision === 'approved' && !principal.permissions.has('workspace:operate')) {
+        if (!isForm) return jsonError('forbidden', 403, { missingPermission: 'workspace:operate' });
+        return htmlPage(
+          'You cannot connect a computer',
+          '<p>Connecting a computer adds a workspace to your organization. Ask an organization owner or admin to approve it.</p>',
+          403,
+        );
+      }
       let decided: boolean;
       try {
         decided = await deps.store.decideGrant({
@@ -339,6 +384,11 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       if (!isForm) return decided ? Response.json({ ok: true, decision }) : jsonError('grant_not_pending', 404);
       if (!decided) {
         return htmlPage('Code not found', '<p>This code has expired or was already used. Run <b>psu --connect-login</b> again.</p>', 404);
+      }
+      if (purpose === 'relay-link') {
+        return decision === 'approved'
+          ? htmlPage('Computer connected', '<p>You can close this tab. The computer finishes connecting on its own in a few seconds.</p>')
+          : htmlPage('Connection denied', '<p>The computer was not connected. You can close this tab.</p>');
       }
       return decision === 'approved'
         ? htmlPage('psu is signed in', '<p>You can close this tab and go back to your terminal.</p>')
@@ -524,5 +574,185 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
     },
   });
 
-  return [deviceCode, devicePage, deviceDecision, deviceToken, workspaces, terminal, logout];
+  // ── EAA P-008 (D-031): link a local install to the portal relay ─────────────────────────────
+
+  const relayDeviceCode = defineTool({
+    method: 'POST',
+    path: '/hosted/relay/device/code',
+    auth: 'public',
+    async handler(request) {
+      const body = (await readJson(request)) ?? {};
+      const installId = typeof body.installId === 'string' ? body.installId.trim() : '';
+      if (!RELAY_INSTALL_ID_RE.test(installId)) return jsonError('invalid_install_id', 400);
+      const clientLabel = sanitizeClientLabel(body.installLabel) || 'a Papercusp computer';
+      const now = clock();
+      const expiresAt = new Date(now.getTime() + HOSTED_CLI_DEVICE_CODE_TTL_MS);
+      const code = `pdc_${randomString(random, 32)}`;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const userCode = randomUserCode(random);
+        let created: boolean;
+        try {
+          created = await deps.store.createGrant({
+            deviceCodeHash: sha256Hex(code),
+            userCode,
+            clientLabel,
+            createdAt: now,
+            expiresAt,
+            purpose: 'relay-link',
+            installId,
+          });
+        } catch {
+          return jsonError('device_code_unavailable', 503);
+        }
+        if (!created) continue;
+        const verificationUri = `${origin}${devicePagePath}`;
+        return Response.json(
+          {
+            ok: true,
+            deviceCode: code,
+            userCode,
+            verificationUri,
+            verificationUriComplete: `${verificationUri}?user_code=${encodeURIComponent(userCode)}`,
+            expiresIn: Math.round(HOSTED_CLI_DEVICE_CODE_TTL_MS / 1000),
+            interval: Math.round(HOSTED_CLI_POLL_INTERVAL_MS / 1000),
+          },
+          { headers: { 'cache-control': 'no-store' } },
+        );
+      }
+      return jsonError('device_code_unavailable', 503);
+    },
+  });
+
+  const relayDeviceToken = defineTool({
+    method: 'POST',
+    path: '/hosted/relay/device/token',
+    auth: 'public',
+    async handler(request) {
+      const body = await readJson(request);
+      const code = typeof body?.deviceCode === 'string' ? body.deviceCode : '';
+      if (!DEVICE_CODE_RE.test(code)) return deviceTokenError('invalid_grant');
+      const now = clock();
+      let result;
+      try {
+        result = await deps.store.exchangeRelayLinkGrant({
+          deviceCodeHash: sha256Hex(code),
+          now,
+          minPollIntervalMs: HOSTED_CLI_POLL_INTERVAL_MS - 1_000,
+        });
+      } catch {
+        return jsonError('authority_unavailable', 503);
+      }
+      switch (result.status) {
+        case 'approved':
+          break;
+        case 'pending':
+          return deviceTokenError('authorization_pending');
+        case 'slow_down':
+          return deviceTokenError('slow_down');
+        case 'denied':
+          return deviceTokenError('access_denied');
+        case 'expired':
+          return deviceTokenError('expired_token');
+        default:
+          return deviceTokenError('invalid_grant');
+      }
+      // The grant is consumed. The approver's membership is re-checked now, not trusted from the
+      // approval moment, so a member removed in between links nothing.
+      let membership;
+      try {
+        membership = await deps.membershipAuthority.resolveActive({
+          userId: result.userId,
+          organizationId: result.organizationId,
+        });
+      } catch {
+        return jsonError('authority_unavailable', 503);
+      }
+      if (!membership?.permissions.has('workspace:operate')) return jsonError('membership_not_active', 403);
+      let enrollment;
+      let linked;
+      try {
+        linked = await deps.store.upsertLinkedWorkspace({
+          organizationId: result.organizationId,
+          installId: result.installId,
+          displayName: result.clientLabel,
+          userId: result.userId,
+          at: now,
+        });
+        enrollment = await deps.connectorGateway.enroll(
+          {
+            controlPlaneWorkspaceId: deps.controlPlaneWorkspaceId,
+            organizationId: result.organizationId,
+            customerWorkspaceId: linked.customerWorkspaceId,
+            hostId: linked.hostId,
+            routeLabel: linked.routeLabel,
+            transport: 'websocket',
+          },
+          HOSTED_CLI_DEVICE_CODE_TTL_MS,
+        );
+      } catch {
+        return jsonError('relay_link_unavailable', 503);
+      }
+      const connectorUrl = new URL('/api/hosted/connectors/socket', origin);
+      connectorUrl.protocol = connectorUrl.protocol === 'http:' ? 'ws:' : 'wss:';
+      return Response.json(
+        {
+          ok: true,
+          organizationId: result.organizationId,
+          organizationName: await organizationLabel(result.organizationId),
+          customerWorkspaceId: linked.customerWorkspaceId,
+          enrollmentTicket: enrollment.ticket,
+          enrollmentExpiresAt: enrollment.binding.expiresAt.toISOString(),
+          registerUrl: `${origin}/api/hosted/connectors/register`,
+          connectorUrl: connectorUrl.toString(),
+          appBaseUrl: `${origin}/api/workspaces/${encodeURIComponent(linked.customerWorkspaceId)}`,
+        },
+        { headers: { 'cache-control': 'no-store' } },
+      );
+    },
+  });
+
+  const relayUnlink = defineTool({
+    method: 'POST',
+    path: '/hosted/relay/unlink',
+    auth: 'public',
+    async handler(request) {
+      const bearer = readHostedConnectorBearer(request.headers);
+      if (!bearer) return jsonError('connector_bearer_required', 401);
+      let binding;
+      try {
+        binding = await deps.connectorGateway.authenticate(bearer);
+      } catch {
+        return jsonError('authority_unavailable', 503);
+      }
+      // Idempotent: an unknown or already-revoked bearer is already unlinked.
+      if (!binding) return Response.json({ ok: true, unlinked: false });
+      let unlinked: boolean;
+      try {
+        unlinked = await deps.store.unlinkLinkedWorkspace({
+          organizationId: binding.organizationId,
+          customerWorkspaceId: binding.customerWorkspaceId,
+          at: clock(),
+        });
+        // Only a linked install may unlink itself; a hosted machine's bearer changes nothing.
+        if (unlinked) {
+          await deps.connectorGateway.revoke({
+            controlPlaneWorkspaceId: binding.controlPlaneWorkspaceId,
+            organizationId: binding.organizationId,
+            customerWorkspaceId: binding.customerWorkspaceId,
+            hostId: binding.hostId,
+            routeLabel: binding.routeLabel,
+          });
+        }
+      } catch {
+        return jsonError('authority_unavailable', 503);
+      }
+      if (!unlinked) return jsonError('not_a_linked_install', 403);
+      return Response.json({ ok: true, unlinked: true });
+    },
+  });
+
+  return [
+    deviceCode, devicePage, deviceDecision, deviceToken, workspaces, terminal, logout,
+    relayDeviceCode, relayDeviceToken, relayUnlink,
+  ];
 }
