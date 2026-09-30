@@ -101,10 +101,12 @@ it.each([{ script: 'id' }, { durationSec: -5 }, { intervalSec: 1.5 }, { releaseT
   },
 );
 
-it('refuses to write the 24h acceptance stage from a shorter smoke soak', async () => {
+it('refuses to write the acceptance stage from a shorter smoke soak', async () => {
   const response = await start!.handler(post({ durationSec: 600, intervalSec: 60, releaseTaskId: 'task-1' }), ctx);
   expect(response.status).toBe(400);
-  expect(await response.json()).toMatchObject({ error: expect.stringMatching(/cannot record acceptance\.soak-24h/) });
+  expect(await response.json()).toMatchObject({
+    error: expect.stringMatching(/a soak shorter than 3600s cannot record acceptance\.soak$/),
+  });
   expect(h.bind).not.toHaveBeenCalled();
 });
 

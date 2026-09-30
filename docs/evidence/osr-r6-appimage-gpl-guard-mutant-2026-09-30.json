@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "open-source-release R-6: AppImage GPL guard suite FAILS against a mutant build-appimage.sh whose GPL-library guard never fires",
-  "framework": "node:test",
+  "framework": "node",
   "command": [
     "T=$(mktemp -d); mkdir -p $T/test $T/bin",
     "cp papercusp-desktop/test/appimage-gpl-guard.test.js $T/test/; cp papercusp-desktop/bin/build-appimage.sh $T/bin/",

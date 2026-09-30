@@ -61,7 +61,9 @@ import {
   type PhysicalPhaseDInput,
   type PhysicalPhaseDMutationKind,
   type PhysicalPhaseDObservationStage,
+  PHASE_D_WORKSPACE,
 } from './physical-drill-phase-d';
+import { getPotGitMode, setPotGitMode } from '../../harness/git-sync/hive-git-mode';
 import {
   capturePhysicalPhaseEObservation,
   createPhysicalPhaseEDivergence,
@@ -583,6 +585,19 @@ async function cli(argv: string[]): Promise<unknown> {
   if (mode === 'phase-e-mode-read') {
     if (args.length !== 0) throw new Error('usage: physical-drill-producer phase-e-mode-read');
     return readPhysicalPhaseEMode();
+  }
+  if (mode === 'same-box-pot-mode') {
+    // Rig setup for the same-box rehearsal only: put the throwaway pot in the canary's steady
+    // mode (bridged) so git-sync creates the pot-git stores the phases observe. Refused on the
+    // physical rig, whose canary mode belongs to its hive (phase E restores it).
+    const [nextMode] = args;
+    if ((nextMode !== 'legacy' && nextMode !== 'bridged' && nextMode !== 'p2p-only') || args.length !== 1) {
+      throw new Error('usage: physical-drill-producer same-box-pot-mode <legacy|bridged|p2p-only>');
+    }
+    const target = physicalDrillTarget();
+    if (!target.diagnostic) throw new Error('physical-drill-producer: same-box-pot-mode is refused on the physical rig');
+    await setPotGitMode(PHASE_D_WORKSPACE, target.potHome, nextMode);
+    return { ok: true, potHome: target.potHome, mode: await getPotGitMode(PHASE_D_WORKSPACE, target.potHome) };
   }
   if (mode === 'phase-e-mode-ensure') {
     const [nextMode, runId] = args;

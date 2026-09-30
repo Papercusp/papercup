@@ -29,7 +29,12 @@ const SUBJECT: WorkspaceHostSoakSubject = {
   image: IMAGE,
 };
 const T0 = Date.parse('2026-09-23T00:00:00.000Z');
-const POLICY: WorkspaceHostSoakPolicy = DEFAULT_WORKSPACE_HOST_SOAK_POLICY;
+// The evaluator rules are exercised on a long 24h/5-minute window so the rate and coverage cases
+// have room; the default (acceptance) window is pinned separately below.
+const POLICY: WorkspaceHostSoakPolicy = resolveWorkspaceHostSoakPolicy({
+  durationMs: 24 * 60 * 60_000,
+  intervalMs: 5 * 60_000,
+});
 
 const running: WorkspaceHostSoakInstanceReading = {
   kind: 'observed',
@@ -60,11 +65,29 @@ async function cleanWindow(overrides: Map<number, Promise<WorkspaceHostSoakSampl
 }
 
 describe('resolveWorkspaceHostSoakPolicy', () => {
-  it('defaults to a 24h window sampled every 5 minutes, which qualifies for acceptance', () => {
+  it('defaults to a 1h window sampled every minute, which qualifies for acceptance', () => {
     const policy = resolveWorkspaceHostSoakPolicy();
-    expect(policy.durationMs).toBe(24 * 60 * 60_000);
-    expect(policy.intervalMs).toBe(5 * 60_000);
+    expect(policy).toEqual(DEFAULT_WORKSPACE_HOST_SOAK_POLICY);
+    expect(policy.durationMs).toBe(60 * 60_000);
+    expect(policy.intervalMs).toBe(60_000);
     expect(workspaceHostSoakQualifiesForAcceptance(policy)).toBe(true);
+  });
+
+  it('keeps the default window tolerant: 61 clean samples pass, and so does one isolated reach flake', async () => {
+    const policy = DEFAULT_WORKSPACE_HOST_SOAK_POLICY;
+    const flake: WorkspaceHostSoakReachOutcome = { kind: 'transport-failure', detail: 'exit 255' };
+    const count = Math.floor(policy.durationMs / policy.intervalMs) + 1;
+    const window = await Promise.all(
+      Array.from({ length: count }, (_, sequence) =>
+        sampleAt(sequence, running, sequence === 30 ? flake : { kind: 'reached' }, T0 + sequence * policy.intervalMs),
+      ),
+    );
+    expect(evaluateWorkspaceHostSoak({ samples: window, policy })).toMatchObject({
+      verdict: 'pass',
+      samples: 61,
+      expectedSamples: 61,
+      reasons: [],
+    });
   });
 
   it('allows a short smoke soak but marks it as NOT qualifying for the acceptance stage', () => {

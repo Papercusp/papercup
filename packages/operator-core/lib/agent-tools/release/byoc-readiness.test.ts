@@ -258,7 +258,7 @@ function snapshot(
     ['root-bootstrap', 'root bootstrap'],
     ['fixed-agent-initialization', 'fixed-agent initialization'],
     ['customer-acceptance', 'customer acceptance'],
-    ['soak-24h', '24-hour soak'],
+    ['soak', 'soak'],
     ['resource-census', 'resource census'],
     ['billing-closure', 'billing closure'],
     ['cleanup', 'cleanup'],

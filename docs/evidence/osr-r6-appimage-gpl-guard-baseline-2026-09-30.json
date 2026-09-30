@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "open-source-release R-6: AppImage GPL guard node:test suite passes against the real build-appimage.sh",
-  "framework": "node:test",
+  "framework": "node",
   "command": [
     "node --test papercusp-desktop/test/appimage-gpl-guard.test.js"
   ],
