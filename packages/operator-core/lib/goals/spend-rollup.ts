@@ -500,6 +500,9 @@ export async function refreshGoalTripwires(
 ): Promise<{ advanced: number; written: boolean; breached: ReturnType<typeof breachedTripwires> }> {
   const res = refreshTripwireCurrents(goal.tripwires, {
     measuredSpentCents: rollup.spentCents,
+    // The window the cents were summed over, so a window-suffixed metric
+    // (`spend_usd_7d`) resolves only when it names this window (WI-10004419).
+    measuredWindowSec: rollup.windowSec,
     goalAgeMs: nowMs - goal.createdAtMs,
     // The stamp's clock comes from the caller for the same reason the rest of the
     // measurement does: the refresh stays pure and testable without a fake timer.

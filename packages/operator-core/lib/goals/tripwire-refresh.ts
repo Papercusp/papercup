@@ -128,6 +128,14 @@ export interface TripwireMeasurement {
    * (`measured: false`) or absent. Null advances no spend tripwire.
    */
   measuredSpentCents: number | null;
+  /**
+   * The window, in seconds, that `measuredSpentCents` was summed over (the
+   * rollup's `windowSec` — the goal's budget window), or null/absent for a
+   * lifetime or unknown window. A window-suffixed spend metric (`spend_usd_7d`)
+   * resolves ONLY when this equals its suffix; any other window leaves it
+   * unmeasured rather than relabelling a different population (WI-10004419).
+   */
+  measuredWindowSec?: number | null;
   /** Age of the goal at measurement time, in ms. Negative values are treated as 0. */
   goalAgeMs: number;
   /**
@@ -201,11 +209,52 @@ const MS_PER_DAY = 86_400_000;
  * has been observed to disagree with it. `spend_usd` therefore yields dollars
  * whatever `unit` says.
  */
-const RESOLVERS: Record<string, (m: TripwireMeasurement) => number | null> = {
+type Resolver = (m: TripwireMeasurement) => number | null;
+
+/**
+ * Window suffixes a spend metric may carry, mapped to the rollup window (seconds)
+ * each one names (WI-10004419).
+ *
+ * A goal that declares `spend_usd_7d` ("trailing-7d spend vs a weekly ceiling")
+ * used to fall through to the no-resolver path and keep whatever number it was
+ * authored with — a kill criterion that silently never moved while the rollup
+ * measured the real spend. The suffix is a CLAIM about the window, so it is
+ * honoured only when the measurement was actually taken over that window: a 7d
+ * metric fed a 24h or lifetime rollup stays unmeasured (rule 2), never a
+ * mislabelled number.
+ */
+const SPEND_WINDOW_SUFFIXES: Readonly<Record<string, number>> = {
+  '24h': 86_400,
+  '7d': 604_800,
+  '30d': 2_592_000,
+};
+
+/** Measured cents over exactly `windowSec`, or null when the window differs or is unknown. */
+function windowedSpendCents(m: TripwireMeasurement, windowSec: number): number | null {
+  if (m.measuredSpentCents === null || m.measuredWindowSec !== windowSec) return null;
+  return Math.round(m.measuredSpentCents);
+}
+
+const WINDOWED_SPEND_RESOLVERS: Record<string, Resolver> = Object.fromEntries(
+  Object.entries(SPEND_WINDOW_SUFFIXES).flatMap(([suffix, windowSec]): Array<[string, Resolver]> => [
+    [
+      `spend_usd_${suffix}`,
+      (m) => {
+        const cents = windowedSpendCents(m, windowSec);
+        return cents === null ? null : cents / 100;
+      },
+    ],
+    [`spend_cents_${suffix}`, (m) => windowedSpendCents(m, windowSec)],
+  ]),
+);
+
+const RESOLVERS: Record<string, Resolver> = {
   /** Dollars, 2dp — the ceiling most goals declare. */
   spend_usd: (m) => (m.measuredSpentCents === null ? null : Math.round(m.measuredSpentCents) / 100),
   /** Cents, as stored. */
   spend_cents: (m) => (m.measuredSpentCents === null ? null : Math.round(m.measuredSpentCents)),
+  /** `spend_{usd,cents}_{24h,7d,30d}` — only when the rollup window matches the suffix. */
+  ...WINDOWED_SPEND_RESOLVERS,
   /** Whole days since the goal was created. */
   days_elapsed: (m) => Math.floor(Math.max(0, m.goalAgeMs) / MS_PER_DAY),
   /** Whole hours since the goal was created. */
@@ -235,6 +284,10 @@ export const GENERICALLY_MEASURABLE_METRICS: readonly string[] = Object.keys(RES
 export const METRIC_POPULATION: Record<string, string> = {
   spend_usd: 'attributed-by-lineage:authoritative',
   spend_cents: 'attributed-by-lineage:authoritative',
+  // Same lineage stream; the suffix only restricts WHEN it resolves.
+  ...Object.fromEntries(
+    Object.keys(WINDOWED_SPEND_RESOLVERS).map((metric) => [metric, 'attributed-by-lineage:authoritative']),
+  ),
   days_elapsed: 'goal-lifetime',
   hours_elapsed: 'goal-lifetime',
 };
