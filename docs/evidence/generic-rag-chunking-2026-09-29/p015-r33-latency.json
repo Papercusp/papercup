@@ -1,0 +1,368 @@
+{
+  "bar": "R-33",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "item": "P-015",
+  "decision": "D-024 (bounds), D-032 (exact scan for the feature family)",
+  "rule": "each site's change p95 over the fixed 30-query set (3 rounds) must be <= its D-024 bound (1.25x the baseline p95)",
+  "measuredAt": "2026-09-30T13:17:14.288Z",
+  "startedAt": "2026-09-30T13:08:05.741Z",
+  "baselinePort": 3070,
+  "changePort": 3170,
+  "buildA": {
+    "ok": true,
+    "service": "papercusp-operator",
+    "sha": "9a9473af95",
+    "version": "0.0.0",
+    "ts": "2026-09-30T13:08:05.727Z"
+  },
+  "buildB": {
+    "ok": true,
+    "service": "papercusp-operator",
+    "sha": "1fe3381bff",
+    "version": "0.0.0",
+    "ts": "2026-09-30T13:08:05.740Z"
+  },
+  "rounds": 3,
+  "querySetHash": "a7b47c0b2e7aa900f19185f6a8f9d57626b18bf635a9b0c9d42c810464af2e10",
+  "cores": 128,
+  "loadavg": {
+    "start": [
+      52.8,
+      49.18,
+      43.96
+    ],
+    "mid": [
+      51.6,
+      49.16,
+      46.16
+    ],
+    "end": [
+      48.33,
+      48.58,
+      46.01
+    ]
+  },
+  "benchSource": ".papercusp/scratch/rag-carry/r33-ab-bench.mts",
+  "rawBench": ".papercusp/scratch/rag-carry/r33-ab-3-d032.json",
+  "sites": {
+    "plans": {
+      "site": "plans:search (retrieve)",
+      "boundP95Ms": 2065,
+      "baseline": {
+        "port": 3070,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "9a9473af95",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.727Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 0,
+        "p50": 674,
+        "p95": 1488,
+        "perRoundP95": [
+          1486,
+          1469,
+          1717
+        ]
+      },
+      "change": {
+        "port": 3170,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "1fe3381bff",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.740Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 0,
+        "p50": 867,
+        "p95": 1818,
+        "perRoundP95": [
+          1592,
+          1896,
+          1818
+        ],
+        "firstErrors": []
+      },
+      "pairedRatioBoverA": {
+        "n": 90,
+        "median": 1.22
+      },
+      "verdict": "pass"
+    },
+    "turns": {
+      "site": "search:semantic operator turns",
+      "boundP95Ms": 1740,
+      "baseline": {
+        "port": 3070,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "9a9473af95",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.727Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 26,
+        "p50": 651,
+        "p95": 859,
+        "perRoundP95": [
+          854,
+          966,
+          837
+        ]
+      },
+      "change": {
+        "port": 3170,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "1fe3381bff",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.740Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 3,
+        "p50": 907,
+        "p95": 1669,
+        "perRoundP95": [
+          1739,
+          1480,
+          1669
+        ],
+        "firstErrors": []
+      },
+      "pairedRatioBoverA": {
+        "n": 90,
+        "median": 1.56
+      },
+      "verdict": "pass"
+    },
+    "work_item": {
+      "site": "search:semantic work items",
+      "boundP95Ms": 2011,
+      "baseline": {
+        "port": 3070,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "9a9473af95",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.727Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 0,
+        "p50": 668,
+        "p95": 2090,
+        "perRoundP95": [
+          2320,
+          1224,
+          1795
+        ]
+      },
+      "change": {
+        "port": 3170,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "1fe3381bff",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.740Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 0,
+        "p50": 456,
+        "p95": 2110,
+        "perRoundP95": [
+          1880,
+          1600,
+          6515
+        ],
+        "firstErrors": []
+      },
+      "pairedRatioBoverA": {
+        "n": 90,
+        "median": 0.71
+      },
+      "verdict": "fail"
+    },
+    "work_items_search": {
+      "site": "work_items:search",
+      "boundP95Ms": 500,
+      "baseline": {
+        "port": 3070,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "9a9473af95",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.727Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 7,
+        "p50": 37,
+        "p95": 322,
+        "perRoundP95": [
+          536,
+          300,
+          318
+        ]
+      },
+      "change": {
+        "port": 3170,
+        "build": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "1fe3381bff",
+          "version": "0.0.0",
+          "ts": "2026-09-30T13:08:05.740Z"
+        },
+        "n": 90,
+        "ok": 90,
+        "degraded": 4,
+        "p50": 350,
+        "p95": 1056,
+        "perRoundP95": [
+          1056,
+          600,
+          1175
+        ],
+        "firstErrors": []
+      },
+      "pairedRatioBoverA": {
+        "n": 90,
+        "median": 4.81
+      },
+      "verdict": "fail"
+    },
+    "consult": {
+      "site": "consult peersKnow chunk-aware leg (in-process)",
+      "boundP95Ms": 17.5,
+      "baseline": {
+        "n": 150,
+        "p50": 4,
+        "p95": 6,
+        "p99": 7,
+        "max": 12
+      },
+      "change": {
+        "n": 150,
+        "p50": 10,
+        "p95": 14,
+        "p99": 17,
+        "max": 23
+      },
+      "embed": {
+        "n": 30,
+        "p50": 7,
+        "p95": 45
+      },
+      "verdict": "pass"
+    }
+  },
+  "verdict": "fail",
+  "priorRuns": [
+    {
+      "file": ".papercusp/scratch/rag-carry/r33-ab-2-post1266.json",
+      "startedAt": "2026-09-30T12:27:39.437Z",
+      "buildA": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "9a9473af95",
+        "version": "0.0.0",
+        "ts": "2026-09-30T12:27:39.426Z"
+      },
+      "buildB": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "6788961208",
+        "version": "0.0.0",
+        "bundleStale": {
+          "schema": "bundle-stale-v1",
+          "failedAt": "2026-09-30T12:26:39.225Z",
+          "entry": "bin/hono-host.ts",
+          "outfile": "dist-host/hono-host.mjs",
+          "servingBundleMtime": "2026-09-30T11:55:02.405Z",
+          "servingBundleAgeSecAtFailure": 1897,
+          "failingFiles": [
+            "../../packages/operator-core/lib/connected-apps/enforce.ts:28:34"
+          ],
+          "error": "✘ [ERROR] No matching export in \"../../packages/operator-core/lib/connected-apps/store.ts\" for import \"loadAlertedAppRow\"\n\n    ../../packages/operator-core/lib/connected-apps/enforce.ts:28:34:\n      28 │ ...adAccessTokenScopeRow, loadAlertedAppRow, loadAppScopeRow } fro...\n         ╵                           ~~~~~~~~~~~~~~~~~\n\n1 error\nERROR: esbuild failed to bundle bin/hono-host.ts (see the esbuild diagnostics above)."
+        },
+        "ts": "2026-09-30T12:27:39.436Z"
+      },
+      "p95": {
+        "plans": {
+          "A": 1456,
+          "B": 1470
+        },
+        "turns": {
+          "A": 991,
+          "B": 1192
+        },
+        "work_item": {
+          "A": 1365,
+          "B": 1267
+        },
+        "work_items_search": {
+          "A": 277,
+          "B": 882
+        },
+        "consult": {
+          "parentOnly": 6,
+          "chunkAware": 14
+        }
+      }
+    },
+    {
+      "file": ".papercusp/scratch/rag-carry/r33-ab-1.json",
+      "startedAt": "2026-09-30T12:02:45.471Z",
+      "buildA": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "9a9473af95",
+        "version": "0.0.0",
+        "ts": "2026-09-30T12:02:45.459Z"
+      },
+      "buildB": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "6788961208",
+        "version": "0.0.0",
+        "ts": "2026-09-30T12:02:45.470Z"
+      },
+      "p95": {
+        "plans": {
+          "A": 1682,
+          "B": 2471
+        },
+        "turns": {
+          "A": 962,
+          "B": 1323
+        },
+        "work_item": {
+          "A": 1605,
+          "B": 1510
+        },
+        "work_items_search": {
+          "A": 295,
+          "B": 684
+        },
+        "consult": {
+          "parentOnly": 5,
+          "chunkAware": 22
+        }
+      }
+    }
+  ]
+}
