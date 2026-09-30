@@ -271,7 +271,7 @@ function portfolio(worklist: GoalPortfolioBrief['worklist'], degradedReasons: st
       spentCents: 2_500,
       unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
-      spentCentsSource: 'goal-pots-rollup',
+      spentCentsSource: 'goal-lineage-rollup',
       budgetWindowSec: null,
     },
     tripwires: [],
@@ -305,7 +305,7 @@ function launch(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchResolu
       spentCents: 2_500,
       unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
-      spentCentsSource: 'goal-pots-rollup',
+      spentCentsSource: 'goal-lineage-rollup',
     },
     refusal: null,
     degraded: false,
@@ -469,7 +469,7 @@ describe('frozen provider matrix: plan placement (6 opportunities)', () => {
       limit: 10_000,
       current: 10_500,
       requested: 2,
-      currentScope: 'inside-goal-pots:authoritative',
+      currentScope: 'attributed-by-lineage:authoritative',
       message: 'verified goal budget is exhausted',
     },
   });
@@ -637,7 +637,7 @@ describe('plan placement preserves canonical launch evidence', () => {
       },
     });
     expect(result.evidence.map((entry) => entry.note).join('\n')).toContain('headcount=2');
-    expect(result.evidence.map((entry) => entry.note).join('\n')).toContain('budgetSource=goal-pots-rollup');
+    expect(result.evidence.map((entry) => entry.note).join('\n')).toContain('budgetSource=goal-lineage-rollup');
   });
 
   it('keeps a degraded budget/headcount read explicit and never turns it into due work', () => {

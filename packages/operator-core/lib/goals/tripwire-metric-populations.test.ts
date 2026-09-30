@@ -2,11 +2,12 @@
  * Pins each tripwire metric to the POPULATION its `current` measured
  * (spend-attribution…-2026-09-04 P-004).
  *
- * A breach reason is attached to a kill, so it is the worst possible place for
+ * A breach reason is attached to a pause, so it is the worst possible place for
  * a bare number. `spend_usd 62 reached threshold 100` reads as "this goal has
- * spent $62"; it is in fact a statement about the goal's POT SUBSET, because
- * the spend resolvers are fed `measuredSpentCents`, which the rollup sets from
- * the pot leg alone and never from the diagnostic session leg.
+ * spent $62"; it is in fact a statement about the goal-attributed stream over
+ * the budget WINDOW, because the spend resolvers are fed `measuredSpentCents`,
+ * which the rollup sets from the lineage leg (D-011) and never from the
+ * diagnostic pot or session legs.
  *
  * `METRIC_POPULATION` is therefore code-describing metadata about RESOLVERS —
  * the repo's derived-truth ladder says that will drift unless something fails
@@ -20,6 +21,7 @@ import {
   METRIC_POPULATION,
   populationForMetric,
 } from './tripwire-refresh';
+import { GOAL_SPEND_LINEAGE_SCOPE } from './spend-rollup';
 
 describe('tripwire metric populations — every resolved metric names what it measured', () => {
   it('covers EVERY generically-measurable metric, with no orphans in either direction', () => {
@@ -30,12 +32,13 @@ describe('tripwire metric populations — every resolved metric names what it me
     expect(labelled).toEqual(resolved);
   });
 
-  it('labels the spend metrics with the POT scope — the leg that actually feeds them', () => {
-    // Not cosmetic: naming these 'goal spend' would restate the very error
-    // P-004 exists to stop. Both spend resolvers read measuredSpentCents, which
-    // refreshGoalTripwires sets from `rollup.pot`, never from the session leg.
-    expect(populationForMetric('spend_usd')).toBe('inside-goal-pots:authoritative');
-    expect(populationForMetric('spend_cents')).toBe('inside-goal-pots:authoritative');
+  it('labels the spend metrics with the LINEAGE scope — the leg that actually feeds them', () => {
+    // Not cosmetic: naming these 'goal spend' would hide which population was
+    // measured. Both spend resolvers read measuredSpentCents, which
+    // refreshGoalTripwires sets from `rollup.spentCents` — the goal-attributed
+    // lineage stream over the budget window (D-011), never the pot or session leg.
+    expect(populationForMetric('spend_usd')).toBe(GOAL_SPEND_LINEAGE_SCOPE);
+    expect(populationForMetric('spend_cents')).toBe(GOAL_SPEND_LINEAGE_SCOPE);
   });
 
   it('does NOT give the time metrics a spend scope', () => {

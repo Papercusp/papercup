@@ -33,8 +33,8 @@
  *     own executor can score those, and a plausible-looking number that nobody
  *     measured is worse than a blank.
  *  2. NEVER PROMOTE A FLOOR TO A MEASUREMENT. `computeGoalSpendRollup` reports
- *     `measured: false` when any sample is unpriced — the total is then a lower
- *     bound. Advancing a ceiling-governing tripwire from a floor would read as
+ *     `spentCents: null` when any attributed sample is unpriced — the priced
+ *     total is then a lower bound. Advancing a ceiling-governing tripwire from a floor would read as
  *     "you are safely under" when the true figure is unknown, so an unmeasured
  *     rollup advances nothing. Measured live: the-gui-chat-surface-…8fa0ed had 8
  *     of 17 samples unpriced, and correctly stays blank.
@@ -222,9 +222,10 @@ export const GENERICALLY_MEASURABLE_METRICS: readonly string[] = Object.keys(RES
  * A breach reason reading `spend_usd 62 reached threshold 100` invites the
  * reader to hear "this goal has spent $62" — a fact about the goal. It is not:
  * the spend resolvers are fed `measuredSpentCents`, which the rollup sets from
- * the POT leg alone, so it is a fact about the goal's pot subset and excludes
- * the diagnostic session leg entirely. At a breach that misreading is expensive,
- * because the readout is attached to a kill.
+ * the goal-attributed (lineage) stream over the goal's budget window (D-011),
+ * so it is a fact about that window, not the goal's lifetime, and excludes the
+ * diagnostic pot and session legs entirely. At a breach that misreading is
+ * expensive, because the readout is attached to a pause.
  *
  * Kept HERE, next to RESOLVERS, rather than at the readout site: this is a
  * description of what each resolver reads, and it goes stale the moment the two
@@ -232,8 +233,8 @@ export const GENERICALLY_MEASURABLE_METRICS: readonly string[] = Object.keys(RES
  * added without a population, so the pair cannot silently separate.
  */
 export const METRIC_POPULATION: Record<string, string> = {
-  spend_usd: 'inside-goal-pots:authoritative',
-  spend_cents: 'inside-goal-pots:authoritative',
+  spend_usd: 'attributed-by-lineage:authoritative',
+  spend_cents: 'attributed-by-lineage:authoritative',
   days_elapsed: 'goal-lifetime',
   hours_elapsed: 'goal-lifetime',
 };
