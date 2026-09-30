@@ -51,8 +51,8 @@ import {
   resetReadCursorStore,
 } from './agent-tools/coordination/read-cursors';
 import {
-  bindTurnStartIdentityOutputs, buildTurnStartOrientationBlock, defaultOrientationDeps, TURN_START_IDENTITY_DELIVERY_KEY,
-  type OrientationDeps,
+  bindTurnStartIdentityOutputs, buildTurnStartOrientationBlock, composeOrientationBlockWithRows, defaultOrientationDeps,
+  resolveOrientationState, TURN_START_IDENTITY_DELIVERY_KEY, type OrientationDeps,
 } from './turn-start-orientation';
 import { AGENT_OBLIGATION_SCHEMA_VERSION, defineAgentObligation, formatAgentObligationLine } from './agent-obligations';
 import { PLAN_CONTEXT_MAX, projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
@@ -341,7 +341,7 @@ describe('goal placement receipts through the real orientation ACK path', () => 
       turn: (token: string | null | undefined, overrides: Partial<OrientationDeps> = {}, budgetChars?: number) =>
         buildTurnStartOrientationBlock({ ownerId: 'su-proof', workspaceId: 'ws-proof',
           deps: { ...goalDeps, ...overrides }, progressReceiptDeps: receiptDeps,
-          identityBinder: identityBindMock as never,
+          identityBinder: identityBindMock as never, placementBackgroundTimeoutMs: 1_000,
           ...(token === undefined ? {} : { confirmedDeliveryToken: token }),
           ...(budgetChars === undefined ? {} : { budgetChars }),
         }),
@@ -441,9 +441,99 @@ describe('goal placement receipts through the real orientation ACK path', () => 
     const first = await f.turn(null);
     expect(first.block).toContain(formatAgentObligationLine(f.row, 'action'));
     expect(first.deliveryToken).toEqual(expect.any(String));
+    await drainDetached();
     await f.turn(first.deliveryToken, { obligations: async () => null }); await drainDetached();
-    expect(store.acks[1]?.result.committed?.[GOAL_PLACEMENT_DELIVERY_KEY]).toMatchObject({ unavailable: true, reason: 'timeout' });
+    expect(store.acks[1]?.result.committed?.[GOAL_PLACEMENT_DELIVERY_KEY]).toMatchObject({
+      unavailable: true, reason: 'timeout', token: first.deliveryToken,
+    });
     expect(f.receiptDeps.lookup).not.toHaveBeenCalled();
     expect(f.receiptDeps.append).not.toHaveBeenCalled();
+  });
+
+  it('upgrades a baseline that outlives the hook budget by token, so the next ACK still records the receipt', async () => {
+    const f = fixture();
+    const native = await f.receiptDeps.lookup('su-proof', 'native-proof');
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    f.receiptDeps.current = vi.fn(async () => { await released; return native; });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = await f.turn(null);
+    expect(first.block).toContain(formatAgentObligationLine(f.row, 'action'));
+    expect(first.deliveryToken).toEqual(expect.any(String));
+    release(); await drainDetached();
+    f.finish();
+    await f.turn(first.deliveryToken); await drainDetached();
+    expect(store.acks[1]?.result.committed?.[GOAL_PLACEMENT_DELIVERY_KEY]).toMatchObject({
+      token: first.deliveryToken, nativeSessionId: 'native-proof',
+    });
+    expect(f.receiptDeps.append).toHaveBeenCalledTimes(1);
+  });
+
+  describe('outer budget reserves the due placement row', () => {
+    // Measured live 2026-09-30 (goal 60d3a8, holder su-2e6fb313): the sink admitted
+    // the placement row, then the composed block spent its budget on three open-check
+    // rows and the same plan's author-repair row. The placement line was the next row,
+    // missed the budget, and no goalPlacementTurn receipt could ever form.
+    const SLUG = 'session-transcript-exact-fuzzy-search-2026-09-14';
+    const common = {
+      ruleRevision: 'v1', responsibleOwnerId: 'su-proof', priority: 'high' as const, evidence: [],
+      authority: { kind: 'policy' as const, sourceRef: 'fixture:policy', revision: 'v1' },
+      sourceGeneration: 'generation-1', episode: 'fixture-episode',
+      clearsWhen: { id: 'resolved', summary: 'Resolved.', evidenceKind: 'state' as const, sourceRef: 'fixture:state' },
+    };
+    const openChecks = async () => [1, 2, 3].map((n) => ({ id: `check-${n}`, kind: 'check' as const,
+      claim: `carried claim ${n} `.padEnd(120, '.'), recheck: `probe ${n} `.padEnd(120, '.'), pointer: `WI-${n}` }));
+    function crowded(placementDemand: number) {
+      const repair = defineAgentObligation({ ...common, family: 'independent-verification', ruleId: 'verify',
+        scope: { ownerId: 'su-proof', workspaceId: 'ws-proof', planSlug: SLUG },
+        title: `Plan ${SLUG} needs author repair before independent certification`, status: 'due',
+        reason: 'Gate refused.', causalRank: 1, applicableDemand: 1,
+        action: { kind: 'repair', summary: 'repair acceptance_bar_contract_not_ready before requesting a grader',
+          targetRef: `plan:harness/${SLUG}` } });
+      const placement = defineAgentObligation({ ...common, family: 'plan-placement', ruleId: 'placement',
+        scope: { ownerId: 'su-proof', workspaceId: 'ws-proof', goalId: 'goal', planSlug: SLUG },
+        title: `Place goal plan ${SLUG}`, status: 'due', reason: 'No member claim.', causalRank: 2,
+        applicableDemand: placementDemand,
+        action: { kind: 'delegate', summary: 'launch its independently led fleet', targetRef: `plan:harness/${SLUG}`,
+          tool: 'fleet:launch-on-plan' } });
+      const brief = projectAgentTurnStartObligationBrief({ schemaVersion: AGENT_OBLIGATION_SCHEMA_VERSION,
+        evaluatedAt: '2026-09-30T19:37:00.000Z', sourceGeneration: 'generation-1',
+        evaluations: [repair, placement], primary: [repair, placement], conflicts: [] });
+      return { line: formatAgentObligationLine(placement, 'action'), brief,
+        overrides: { openChecks, obligations: async () => brief } satisfies Partial<OrientationDeps> };
+    }
+    /** A budget that fits every row ahead of the placement line but not the line itself. */
+    async function cuttingBudget(overrides: Partial<OrientationDeps>, line: string) {
+      const state = await resolveOrientationState('su-proof', 'ws-proof', { ...fixture().goalDeps, ...overrides });
+      const full = composeOrientationBlockWithRows({ state, committed: null, epoch: 1, budgetChars: 20_000 }).block;
+      expect(full).toContain(line);
+      return full.indexOf(line) + Math.floor(line.length / 2);
+    }
+
+    it('delivers the line the budget would cut, and the receipt forms from it', async () => {
+      const f = fixture();
+      const due = crowded(1);
+      expect(due.brief.projection.receipt).toMatchObject({ entriesDelivered: 2, entriesOmitted: 0 });
+      const budget = await cuttingBudget(due.overrides, due.line);
+      const first = await f.turn(null, due.overrides, budget);
+      expect(first.block.length).toBeLessThanOrEqual(budget);
+      expect(first.block).toContain(due.line);
+      expect(first.block).toMatch(/orientation rows omitted/);
+      f.finish();
+      await f.turn(first.deliveryToken, { obligations: async () => null }); await drainDetached();
+      expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+        goalPlacementTurn: expect.objectContaining({ planSlug: SLUG, deliveryToken: first.deliveryToken }),
+      } }));
+    });
+
+    it('CONTROL: the same line with no applicable demand is not reserved, and the budget cuts it', async () => {
+      const f = fixture();
+      const due = crowded(1);
+      const idle = crowded(0);
+      expect(idle.line).toBe(due.line);
+      const first = await f.turn(null, idle.overrides, await cuttingBudget(idle.overrides, idle.line));
+      expect(first.block).not.toContain(idle.line);
+      expect(first.block).toMatch(/orientation rows omitted/);
+    });
   });
 });

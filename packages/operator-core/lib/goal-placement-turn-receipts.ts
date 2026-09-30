@@ -1,6 +1,6 @@
 /** Exact goal-plan exposure + native final-turn receipts, on existing stores. */
 import { z } from 'zod';
-import { formatAgentObligationLine } from './agent-obligations';
+import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
 import type { AgentObligationBrief, AgentObligationAgendaRead } from './agent-obligation-reader';
 import type { TranscriptTailTurn } from './turn-journal';
 import type { SelfSession } from './search/self-session';
@@ -275,15 +275,23 @@ export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof
   })).value;
 }
 
+/** The owner-free half of the receipt gate: a due, actionable goal placement row.
+ * The turn-start composer reserves budget for exactly these rows, so it must ask
+ * this same predicate — a composer that guessed would protect one set and the
+ * receipt below would measure another. */
+export function isGoalPlacementReceiptCandidate(row: AgentObligation): boolean {
+  return row.family === 'plan-placement' && row.status === 'due' && row.applicableDemand > 0 &&
+    Boolean(row.scope.goalId) && Boolean(row.scope.planSlug) && row.action !== undefined &&
+    ['delegate', 'continue', 'repair'].includes(row.action.kind);
+}
+
 /** Only whole, actually rendered actionable rows may become receipt candidates. */
 export function deliveredGoalPlacementRows(input: {
   ownerId: string; workspaceId: string; brief: AgentObligationBrief | null | undefined; block: string;
 }): GoalPlacementDelivery['rows'] {
   return (input.brief?.projection.entries ?? []).flatMap((row) => {
-    if (row.family !== 'plan-placement' || row.status !== 'due' || row.applicableDemand <= 0 ||
+    if (!isGoalPlacementReceiptCandidate(row) || !row.action || !row.scope.goalId || !row.scope.planSlug ||
       row.scope.ownerId !== input.ownerId || row.scope.workspaceId !== input.workspaceId ||
-      !row.scope.goalId || !row.scope.planSlug || !row.action ||
-      !['delegate', 'continue', 'repair'].includes(row.action.kind) ||
       !input.block.includes(formatAgentObligationLine(row, 'action'))) return [];
     const parsed = rowSchema.safeParse({ goalId: row.scope.goalId, planSlug: row.scope.planSlug,
       planRef: row.action.targetRef, obligationId: row.id, sourceGeneration: row.sourceGeneration,

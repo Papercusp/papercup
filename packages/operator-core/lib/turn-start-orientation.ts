@@ -63,7 +63,7 @@ import {
 } from './work-item-dispatch-states';
 import { projectAgentTurnStartObligationBrief, type AgentObligationBrief } from './agent-obligation-reader';
 import { formatAgentObligationLine, type AgentObligation } from './agent-obligations';
-import type { GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
+import { isGoalPlacementReceiptCandidate, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
 import { trackDetached } from './detached-imports';
 import { withBoundedTimeout } from './bounded-timeout';
 import type { OwnerDirectiveRow } from './owner-directives';
@@ -3263,41 +3263,86 @@ export function composeOrientationBlockWithRows(input: ComposeOrientationBlockIn
     ...(directives.reminder ? [{ classId: 'obligations' as const, order: 0, text: directives.reminder }] : []),
     ...projectOrientationRows(renderState, 'turn-start', committed),
   ];
-  const out: string[] = [header];
+  // Rows whose DELIVERY a receipt measures are paid for before anything else is
+  // packed. Every other row keeps the break-on-first-miss rule below; a reserved
+  // row still lands in its own emission slot, it just cannot be the one that misses.
+  const reserved = reservedOrientationRows(projected, renderState, budget - header.length);
+  let reservedCost = [...reserved].reduce((sum, row) => sum + row.text.length + 1, 0);
   const kept: OrientationRow[] = [];
+  const omitted: OrientationRow[] = [];
   let used = header.length;
-  let next = 0;
-  for (; next < projected.length; next += 1) {
-    const row = projected[next]!;
+  for (const row of projected) {
     const cost = row.text.length + 1; // + the newline joining it
-    if (used + cost > budget) break;
-    out.push(row.text);
+    if (reserved.has(row)) {
+      kept.push(row);
+      used += cost;
+      reservedCost -= cost;
+      continue;
+    }
+    if (omitted.length > 0 || used + cost + reservedCost > budget) {
+      omitted.push(row);
+      continue;
+    }
     kept.push(row);
     used += cost;
   }
   // D-027: the break above used to drop every remaining row with no trace, so an
   // agent could not tell "nothing is owed" from "it did not fit". Say what was cut,
   // evicting kept rows from the tail until the marker fits. The marker is not a
-  // class's row: it is never credited as delivery of anything it names.
-  if (next < projected.length) {
-    const omitted = projected.slice(next);
-    const marker = () => {
-      const classes = [...new Set(omitted.map((row) => row.classId))];
-      const named = classes.slice(0, 3).join(', ') + (classes.length > 3 ? `, +${classes.length - 3}` : '');
-      return `- +${omitted.length} orientation rows omitted (${named}) — coord:orient`;
-    };
-    while (kept.length > 0 && used + marker().length + 1 > budget) {
-      const row = kept.pop()!;
-      out.pop();
-      omitted.unshift(row);
-      used -= row.text.length + 1;
+  // class's row: it is never credited as delivery of anything it names. A reserved
+  // row is never evicted for it — that would hand back the cut the reservation paid for.
+  const marker = () => {
+    const classes = [...new Set(omitted.map((row) => row.classId))];
+    const named = classes.slice(0, 3).join(', ') + (classes.length > 3 ? `, +${classes.length - 3}` : '');
+    return `- +${omitted.length} orientation rows omitted (${named}) — coord:orient`;
+  };
+  if (omitted.length > 0) {
+    while (used + marker().length + 1 > budget) {
+      let index = kept.length - 1;
+      while (index >= 0 && reserved.has(kept[index]!)) index -= 1;
+      if (index < 0) break;
+      const [row] = kept.splice(index, 1);
+      omitted.unshift(row!);
+      used -= row!.text.length + 1;
     }
-    if (used + marker().length + 1 <= budget) out.push(marker());
   }
+  const out = [header, ...kept.map((row) => row.text)];
+  if (omitted.length > 0 && used + marker().length + 1 <= budget) out.push(marker());
   // Header alone says nothing — emit only if at least one real line survived.
   // A header-only composition delivered NOTHING, so its rows are dropped too:
   // reporting them as reach would credit a class for a block nobody received.
   return out.length > 1 ? { block: out.join('\n'), rows: kept } : { block: '', rows: [] };
+}
+
+/**
+ * PURE: the projected rows the outer budget must not cut — a due goal plan-placement
+ * action ({@link isGoalPlacementReceiptCandidate}).
+ *
+ * Its receipt is `block.includes(line)` against the FINAL block, so it is only as
+ * reachable as the tightest budget in front of it. Measured live 2026-09-30 (goal
+ * 60d3a8): the sink admitted the row, then this composer dropped it behind three
+ * open-check rows and the same plan's author-repair row, and the holder was never
+ * told to place the plan. Reserved in emission order while they fit on their own
+ * (`room`); a row too long for the whole budget is left to the ordinary rule.
+ */
+function reservedOrientationRows(
+  projected: readonly OrientationRow[],
+  state: OrientationState,
+  room: number,
+): ReadonlySet<OrientationRow> {
+  const lines = (state.obligations?.projection.entries ?? [])
+    .filter(isGoalPlacementReceiptCandidate)
+    .map((row) => formatAgentObligationLine(row, 'action'));
+  const reserved = new Set<OrientationRow>();
+  if (lines.length === 0) return reserved;
+  let cost = 0;
+  for (const row of projected) {
+    if (row.classId !== 'obligations' || !lines.some((line) => row.text.includes(line))) continue;
+    if (cost + row.text.length + 1 > room) continue;
+    reserved.add(row);
+    cost += row.text.length + 1;
+  }
+  return reserved;
 }
 
 /** Fingerprint only obligation content that survived the final outer budget.
@@ -4707,6 +4752,8 @@ export async function buildTurnStartOrientationBlock(input: {
   identityBinder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs;
   /** Test seam only; production reads the caller's authoritative presence row. */
   identityAssignmentReader?: (ownerId: string) => Promise<SuAssignmentPresence | null>;
+  /** Test seam only; how long a late placement baseline may keep upgrading its staged fallback. */
+  placementBackgroundTimeoutMs?: number;
 }): Promise<TurnStartOrientationDelivery> {
   try {
     const { ownerId, workspaceId } = input;
@@ -4792,18 +4839,25 @@ export async function buildTurnStartOrientationBlock(input: {
       outputRevision: createHash('sha256').update(block).digest('hex'),
     };
     deliveredFingerprint[TURN_START_IDENTITY_DELIVERY_KEY] = pendingIdentity;
+    let latePlacement: Promise<unknown> | null = null;
     if (progressReceipts && deliveryToken) {
       const rows = progressReceipts.deliveredGoalPlacementRows({ ownerId, workspaceId, brief: state.obligations, block });
       if (rows.length) {
+        // The admission preflight inside prepare costs ~0.4s warm and seconds
+        // cold, so on a live host it rarely fits the hook's budget. Stage a
+        // token-stamped fallback now; the same in-flight prepare upgrades it
+        // by token after staging (below) instead of being thrown away.
+        const preparing = progressReceipts.prepareGoalPlacementDelivery({ ownerId, workspaceId, token: deliveryToken,
+          brief: state.obligations, block }, input.progressReceiptDeps);
         const measured = await withBoundedTimeout(
-          progressReceipts.prepareGoalPlacementDelivery({ ownerId, workspaceId, token: deliveryToken,
-            brief: state.obligations, block }, input.progressReceiptDeps),
+          preparing,
           { fallback: null, timeoutMs: 250, label: 'goal-placement-delivery-baseline' },
         );
         deliveredFingerprint[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY] = measured.value ?? {
-          version: 1, unavailable: true, rows,
+          version: 1, unavailable: true, token: deliveryToken, rows,
           reason: measured.reason ?? 'native-baseline-unavailable',
         };
+        if (measured.degraded && measured.reason === 'timeout') latePlacement = preparing;
       }
     }
     const staged = await stage(
@@ -4841,6 +4895,21 @@ export async function buildTurnStartOrientationBlock(input: {
         await annotateReadCursorByToken(
           ownerId, ORIENTATION_CURSOR_SURFACE, TURN_START_IDENTITY_DELIVERY_KEY, identityToken, receipt,
         );
+      })()).catch(() => {});
+    }
+    if (staged && latePlacement && progressReceipts && deliveryToken) {
+      // Its offeredAt is taken when prepare finishes, so a late upgrade can
+      // only make a receipt harder to form. A candidate the next ACK already
+      // confirmed as unavailable stays unavailable.
+      const placementKey = progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY;
+      void trackDetached((async () => {
+        const late = await withBoundedTimeout(latePlacement, {
+          fallback: null, timeoutMs: input.placementBackgroundTimeoutMs ?? 8_000,
+          label: 'goal-placement-delivery-background',
+        });
+        if (!late.value) return;
+        const { annotateReadCursorByToken } = await import('./agent-tools/coordination/read-cursors');
+        await annotateReadCursorByToken(ownerId, ORIENTATION_CURSOR_SURFACE, placementKey, deliveryToken, late.value);
       })()).catch(() => {});
     }
     // A token whose stage failed names no pending, so confirming it could never
