@@ -10325,6 +10325,42 @@ mod tests {
         app
     }
 
+    /// P-015: the frame drawn right after the answering keypress shows the card
+    /// as ONE "✓ Approved" row — the options are gone, so the card can't look
+    /// unanswered — and the composer says the answer is on its way.
+    #[test]
+    fn an_answered_approval_card_collapses_to_one_approved_row() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        for (cid, command) in [("alpha", "echo ALPHA"), ("beta", "echo BETA")] {
+            let data = serde_json::json!({
+                "runId": cid, "workspaceId": "ws", "version": 1,
+                "snapshot": { "openCards": [{
+                    "correlationId": cid,
+                    "prompt": format!("Allow Bash?\n$ {command}"),
+                    "presentation": { "kind": "radio", "options": [
+                        { "id": "0", "label": "Approve" }, { "id": "1", "label": "Decline" }] },
+                    "allowDecline": true, "createdAt": 1.0 }] }
+            })
+            .to_string();
+            app.card_state
+                .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&data).unwrap());
+        }
+        let open = render(&app, 100, 30);
+        assert!(open.contains("Decline") && open.contains("echo ALPHA"), "{open}");
+
+        app.card_state.mark_answered(
+            "alpha",
+            "Approved".into(),
+            crossterm::event::KeyCode::Char('1'),
+        );
+        let text = render(&app, 100, 30);
+        assert!(text.contains("✓ Approved · Allow Bash? · 1 more"), "{text}");
+        assert!(!text.contains("Decline"), "the answered card's options are still drawn: {text}");
+        assert!(!text.contains("echo BETA"), "the next card was focused under the answer: {text}");
+        assert!(text.contains("Waiting for the agent"), "{text}");
+    }
+
     #[test]
     fn an_open_change_card_paints_its_diff_and_its_keys() {
         let text = render(&card_app(0), 120, 40);

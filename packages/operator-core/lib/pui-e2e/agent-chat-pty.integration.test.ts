@@ -5155,6 +5155,90 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     }
   });
 
+  // P-015 (pui-chat-first-ux-2026-09-28) — an answered approval card leaves the
+  // screen at once, and a repeated keypress cannot answer a later card. P-005
+  // saw the answered card sit unchanged ~4s, so the reviewer pressed Approve
+  // again, as a user would. Here the Approve key is HELD: after the answering
+  // press it keeps repeating every 50ms until well after the next card is on
+  // screen. Every repeat must be swallowed — none may answer the peer — and
+  // the one-line "✓ Approved" row must be drawn before the peer card appears
+  // (read from the raw PTY stream, so a fast server close cannot hide it).
+  test('P-015: an answered approval card collapses to one Approved row at once and a held Approve key cannot answer the next card', async () => {
+    scriptedEngine.successText = 'PUI approval collapse probe replied';
+    scriptedEngine.mode = 'approval';
+    const pane = new PuiPane(bin, operatorPort, home);
+    let repeatsSent = 0;
+    try {
+      const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval collapse probe');
+      const peerCommand = String(peer.input.command);
+      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(peerCommand));
+      expect(peerCard, pane.screen()).toBeDefined();
+      const before = pane.rawSince(0).length;
+
+      pane.write('1'); // Approve — then hold it.
+      const repeat = setInterval(() => {
+        pane.write('1');
+        repeatsSent += 1;
+      }, 50);
+      try {
+        await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), {
+          timeout: 30_000,
+          interval: 50,
+        });
+        await pane.waitFor(peerCommand);
+        await pane.waitFor('Decline');
+        // Keep holding well past the moment the peer became answerable.
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      } finally {
+        clearInterval(repeat);
+      }
+      expect(repeatsSent).toBeGreaterThan(10);
+
+      // The held key answered exactly the focused request, once.
+      expect(scriptedEngine.approvalVerdicts).toHaveLength(1);
+      expect(scriptedEngine.approvalVerdicts[0]).toMatchObject({ tag: focused.tag, verdict: { behavior: 'allow' } });
+      expect(scriptedEngine.approvalExecuted.map((e) => e.tag)).not.toContain(peer.tag);
+      expect(pendingNativeCards().map((card) => card.correlationId)).toContain(peerCard?.correlationId);
+
+      // Replay the stream after the keypress: the collapsed row is on screen
+      // before the peer card is.
+      const vt = new VtScreen(pane.size.rows, pane.size.cols);
+      vt.feed(pane.rawSince(0).slice(0, before));
+      const after = pane.rawSince(before);
+      let approvedAt = -1;
+      let peerAt = -1;
+      for (let end = 0; end < after.length && peerAt < 0; end += 64) {
+        vt.feed(after.slice(end, end + 64));
+        const text = vt.text();
+        if (approvedAt < 0 && text.includes('✓ Approved')) approvedAt = end;
+        if (text.includes(peerCommand)) peerAt = end;
+      }
+      expect(approvedAt, pane.screen()).toBeGreaterThanOrEqual(0);
+      expect(peerAt).toBeGreaterThan(approvedAt);
+
+      // A DIFFERENT key is a deliberate choice about the peer, and answers it.
+      pane.write('2'); // Decline
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), {
+        timeout: 30_000,
+        interval: 100,
+      });
+      expect(scriptedEngine.approvalVerdicts[1]).toMatchObject({ tag: peer.tag, verdict: { behavior: 'deny' } });
+      console.info(
+        'PUI_P015_ACCEPTANCE',
+        JSON.stringify({ binary: bin, binarySha256, approved: focused.tag, repeatsSent, approvedAt, peerAt,
+          peerDeclined: peer.tag }),
+      );
+    } catch (error) {
+      console.info(
+        'PUI_P015_FAILURE',
+        JSON.stringify({ ...pane.failureEvidence(), repeatsSent, verdicts: scriptedEngine.approvalVerdicts, cardReplies }),
+      );
+      throw error;
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
   // PUI-APPROVAL-DENY — declining a request stops exactly that action.
   // Falsifier: "denied action executes or affects a different request."
   test('PUI-APPROVAL-DENY / AUTO-BAR-R-09-P-010: declining one request executes nothing and leaves its peer pending', async () => {
