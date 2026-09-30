@@ -17,6 +17,17 @@ import type { AppKeyRow, CreatedAppKey } from '../../connected-apps/store';
 import { defaultAccessToolDeps, localOnlyRefusal } from './_shared';
 import { accessCreate, accessList, accessRevoke, accessSetPaused, defaultAccessHandlerDeps, type AccessHandlerDeps } from './handlers';
 
+// Copy-out mutation-probe seams: scripts/mutation-probe.sh points these at a mutated copy in its
+// repo mirror, so the shared tree is never mutated. Unset, the real modules load.
+vi.mock('./_shared', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_ACCESS_SHARED_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+vi.mock('./handlers', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_ACCESS_HANDLERS_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+
 const SECRET = `pcapp_${'k'.repeat(16)}_${'z'.repeat(43)}`;
 
 function row(id: string, over: Partial<AppKeyRow> = {}): AppKeyRow {
