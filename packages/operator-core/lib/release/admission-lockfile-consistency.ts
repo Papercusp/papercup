@@ -177,7 +177,9 @@ function resolveBlobs(
         bySubmodule.set(prefix, group);
         break;
       }
-      if (entry?.type !== 'tree') break;
+      // `ls-tree` omits a tree's own entry when another pathspec descends into it, so an
+      // intermediate directory reads as unlisted; only a listed non-tree ends the walk.
+      if (entry && entry.type !== 'tree') break;
     }
     if (!gitlink) out.set(rel, null);
   }
