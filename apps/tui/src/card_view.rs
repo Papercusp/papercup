@@ -562,6 +562,16 @@ impl CardState {
         !self.cards.is_empty()
     }
 
+    /// Whether an open card is the approval for a tool call titled `title`
+    /// (its prompt opens `Allow <title>?`). pui-chat-first-ux P-020: that card
+    /// carries the call's diff, so the transcript row need not repeat it.
+    pub fn asks_about(&self, title: &str) -> bool {
+        let question = format!("Allow {title}?");
+        self.cards
+            .iter()
+            .any(|card| card.prompt.lines().next().map(str::trim) == Some(question.as_str()))
+    }
+
     /// Whether option index `i` is toggled (checkbox cards).
     pub fn is_checked(&self, i: usize) -> bool {
         self.checked.contains(&i)

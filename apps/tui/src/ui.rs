@@ -3099,11 +3099,29 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         }
         for tc in &m.tools {
             let semantic = crate::semantic_tool_cards::card_for_tool(tc);
+            // P-008: a readable name + target (`Update(calc.js)`,
+            // `papercusp-su · work items claimable (MCP)`), never the wire id.
+            let display = crate::tool_display::tool_display(
+                &tc.name,
+                tc.input.as_ref(),
+                app.launch_cwd.as_deref(),
+            );
+            // P-020: while this call's approval card is open, the card shows the
+            // diff; the row says only what it waits for, so the change appears once.
+            let asked_below = matches!(tc.outcome, ToolOutcome::Pending)
+                && app.card_state.asks_about(&display.title);
             // Every label here is a RENDER concern applied from raw model fields
             // (D-017 #1): `name` stays the bare tool so the approval prompt and
             // the resolve POST both read it cleanly, and the status is derived
             // from `outcome`/`needs_approval` rather than baked into the name.
             let (status, status_style) = match &tc.outcome {
+                ToolOutcome::Pending if asked_below => (
+                    format!(
+                        "  {} waiting for your answer",
+                        crate::glyph::status::NEEDS_HUMAN
+                    ),
+                    Theme::warn(),
+                ),
                 // Parked beats running: an approval-gated call is not slow, it is
                 // STOPPED and waiting on this user, and the two must never look
                 // alike or nobody learns the turn needs them.
@@ -3131,13 +3149,6 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     Theme::dim(),
                 ),
             };
-            // P-008: a readable name + target (`Update(calc.js)`,
-            // `papercusp-su · work items claimable (MCP)`), never the wire id.
-            let display = crate::tool_display::tool_display(
-                &tc.name,
-                tc.input.as_ref(),
-                app.launch_cwd.as_deref(),
-            );
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(
@@ -3166,7 +3177,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                         style,
                     )));
                 }
-            } else if let Some(summary) = display.summary.as_deref() {
+            } else if let Some(summary) = display.summary.as_deref().filter(|_| !asked_below) {
                 lines.push(Line::from(Span::styled(
                     trunc(&format!("    {summary}"), inner_w),
                     Theme::dim(),
@@ -3194,7 +3205,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     )));
                 }
             }
-            lines.extend(tool_detail_lines(tc, inner_w, app.chat_tools_expanded));
+            if !asked_below {
+                lines.extend(tool_detail_lines(tc, inner_w, app.chat_tools_expanded));
+            }
         }
         // P-007 change cards: the affordance. The diff overlay is reachable
         // only by Enter on a CURSORED block, which nothing else on this screen
@@ -3760,9 +3773,20 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     let Some(card) = app.card_state.focused() else {
         return lines;
     };
-    // Prompt (wrapped).
-    for wl in wrap_text(&card.prompt, inner_w.saturating_sub(2).max(8)) {
-        lines.push(Line::from(Span::styled(wl, Theme::header())));
+    // Prompt (wrapped). P-020: a first line promoted to the border title is not
+    // repeated here; a tool approval's `- old` / `+ new` lines read as a diff.
+    let skip = usize::from(card_promoted_title(card, inner_w).is_some());
+    for raw in card.prompt.lines().skip(skip) {
+        let style = if raw.starts_with("+ ") {
+            Theme::success()
+        } else if raw.starts_with("- ") {
+            Theme::danger()
+        } else {
+            Theme::header()
+        };
+        for wl in wrap_text(raw, inner_w.saturating_sub(2).max(8)) {
+            lines.push(Line::from(Span::styled(wl, style)));
+        }
     }
     // Optional structured report block (the same two-tier render the inbox uses).
     if let Some(rep) = &card.report {
@@ -3911,6 +3935,16 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// P-020: the card's first prompt line (`Allow Update(calc.js)?`, a short
+/// question) when it fits on the card's top border with room for a queue count,
+/// so the border carries the question instead of a status banner. `None` keeps
+/// a long first line in the wrapped body.
+fn card_promoted_title(card: &crate::card_view::OpenCard, inner_w: usize) -> Option<String> {
+    let first = card.prompt.lines().next()?.trim();
+    // " {first} · NN more " between the corners.
+    (!first.is_empty() && first.chars().count() + 12 <= inner_w).then(|| first.to_string())
+}
+
 /// The single line an answered card collapses to (P-015):
 /// `✓ Approved · <first prompt line> · N more`, clipped to the strip width.
 /// Declines and skips use a neutral dash, not a failure mark (P-014).
@@ -3975,18 +4009,26 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
+    let Some(card) = app.card_state.focused() else {
+        return;
+    };
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
     let lines = card_lines(app, inner_w);
-    // Say what the card needs from the person, not which Papercusp component
-    // raised it: "Operator" is internal product jargon to someone who launched
-    // `pui` to chat (WI-10004211, pui-chat-first-ux-2026-09-28 R-03).
+    // Say what the card asks, not which Papercusp component raised it
+    // ("Operator" is jargon to someone who launched `pui` to chat, WI-10004211)
+    // and without a status banner (P-020): the card's own question heads it, as
+    // Claude Code's dialog does, or a plain "Approval" / "Question".
+    let head = card_promoted_title(card, inner_w).unwrap_or_else(|| {
+        if card.details().is_some() {
+            "Approval".to_string()
+        } else {
+            "Question".to_string()
+        }
+    });
     let title = if remaining > 0 {
-        format!(
-            " {} Needs your answer · {remaining} more ",
-            crate::glyph::nav::EXPANDED
-        )
+        format!(" {head} · {remaining} more ")
     } else {
-        format!(" {} Needs your answer ", crate::glyph::nav::EXPANDED)
+        format!(" {head} ")
     };
     // Clear under the strip so the transcript doesn't bleed through.
     f.render_widget(Clear, area);
@@ -9783,6 +9825,89 @@ mod tests {
         assert!(text.contains("> hello"), "{text}");
     }
 
+    /// pui-chat-first-ux-2026-09-28 P-020: while an edit's approval card is
+    /// open, its diff appears once (in the card, coloured), the transcript row
+    /// says it waits for an answer, and the card is headed by its question.
+    /// Once the card closes the row shows its diff again.
+    #[test]
+    fn an_open_edit_approval_shows_its_diff_once() {
+        use crate::models::{ChatMessage, ChatToolCall};
+
+        let mut edit = ChatMessage::assistant("");
+        edit.tools.push(ChatToolCall {
+            name: "Edit".into(),
+            id: Some("call-edit".into()),
+            needs_approval: false,
+            input: Some(serde_json::json!({
+                "file_path": "calc.js",
+                "old_string": "function add(a, b) {\n  return a + b;",
+                "new_string": "function add(a, b, c = 0) {\n  return a + b + c;",
+            })),
+            result: None,
+            outcome: ToolOutcome::Pending,
+        });
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.set_chat_history(
+            "c1".into(),
+            vec![ChatMessage::user("add a third arg"), edit],
+            false,
+            None,
+        );
+        let title = crate::tool_display::tool_display(
+            "Edit",
+            app.chat_messages[1].tools[0].input.as_ref(),
+            app.launch_cwd.as_deref(),
+        )
+        .title;
+        assert_eq!(title, "Update(calc.js)", "fixture title");
+        let before = render(&app, 110, 40);
+        assert!(
+            before.contains("return a + b + c;"),
+            "with no card the row shows its diff: {before}"
+        );
+
+        let snap = serde_json::json!({
+            "runId": "turn-1", "workspaceId": "ws", "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-edit",
+                "prompt": "Allow Update(calc.js)?\nAdd 2 lines, remove 2 lines\n- function add(a, b) {\n-   return a + b;\n+ function add(a, b, c = 0) {\n+   return a + b + c;",
+                "details": "Raw arguments (Edit):\n{}",
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "0", "label": "Approve" }, { "id": "1", "label": "Decline" }] },
+                "allowDecline": true, "createdAt": 1.0 }] }
+        })
+        .to_string();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+        let open = render(&app, 110, 40);
+        assert_eq!(
+            open.matches("return a + b + c;").count(),
+            1,
+            "the diff appears once while the card is open: {open}"
+        );
+        assert!(open.contains("waiting for your answer"), "{open}");
+        assert!(open.contains("┌ Allow Update(calc.js)? "), "{open}");
+        assert_eq!(open.matches("Allow Update(calc.js)?").count(), 1, "{open}");
+        assert!(!open.contains("Needs your answer"), "{open}");
+
+        // A card about a DIFFERENT call leaves this row's diff in place.
+        let other = snap.replace("Allow Update(calc.js)?", "Allow Update(other.js)?");
+        app.card_state = crate::card_view::CardState::new();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&other).unwrap());
+        let unrelated = render(&app, 110, 40);
+        assert_eq!(
+            unrelated.matches("return a + b + c;").count(),
+            2,
+            "an unrelated card does not hide this row's diff: {unrelated}"
+        );
+        assert!(
+            !unrelated.contains("waiting for your answer"),
+            "{unrelated}"
+        );
+    }
+
     /// pui-chat-first-ux-2026-09-28 P-013: the tool rows render above the
     /// answer they produced, and the answer does not repeat the speaker header
     /// unless it is the copy target (whose `▸` marker lives on that header).
@@ -10485,9 +10610,19 @@ mod tests {
         assert!(text.contains("Approve the deploy?"), "card prompt renders");
         assert!(text.contains("1. Approve"), "option 1 renders numbered");
         assert!(text.contains("2. Reject"), "option 2 renders numbered");
+        // P-020: the question heads the card; no status banner above it.
         assert!(
-            text.contains("Needs your answer"),
-            "card block title renders"
+            text.contains("┌ Approve the deploy? "),
+            "card border carries the question: {text}"
+        );
+        assert_eq!(
+            text.matches("Approve the deploy?").count(),
+            1,
+            "the promoted question is not repeated in the body: {text}"
+        );
+        assert!(
+            !text.contains("Needs your answer"),
+            "no status banner title (P-020): {text}"
         );
         assert!(
             !text.contains("Operator asks"),
