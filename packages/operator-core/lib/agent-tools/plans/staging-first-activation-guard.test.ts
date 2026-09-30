@@ -316,6 +316,24 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  it.each(['done', 'dropped'])('does not treat a %s release-plane blocker as a wait', (status) => {
+    const parsed = plan([
+      `- **P-001** \`${status}\` Verify the green pin, main promotion, and deployed host.`,
+      '- **P-002** `todo` Run the matched trials on whichever build carries the arm switch. blocked-by: P-001',
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('still rejects the same dependency while the release-plane blocker is open', () => {
+    const parsed = plan([
+      '- **P-001** `todo` Verify the green pin, main promotion, and deployed host.',
+      '- **P-002** `todo` Run the matched trials on whichever build carries the arm switch. blocked-by: P-001',
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it('rejects a strong main wait carried only by a decision linked from the item', () => {
     const parsed = plan(
       ['- **P-001** `todo` Continue implementing the interactive client under D-001.'],

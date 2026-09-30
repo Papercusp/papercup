@@ -279,7 +279,9 @@ export function stagingFirstActivationProblems(plan: ParsedPlan): StagingFirstAc
       hasNonFinalWorkInTitle(item.text) &&
       item.blockedBy.some((ref) => {
         const blocker = plan.items.find((candidate) => candidate.id === ref);
-        return blocker ? DEPLOYED_ENV_RE.test(blocker.text) : false;
+        // A terminal blocker imposes no wait, even when its text names the release plane.
+        if (!blocker || isTerminalItemStatus(blocker.storedStatus)) return false;
+        return DEPLOYED_ENV_RE.test(blocker.text);
       })
     ) {
       problems.push({
