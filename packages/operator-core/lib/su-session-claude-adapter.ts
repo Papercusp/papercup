@@ -43,6 +43,7 @@ import { createAgentTimelineParser } from './endpoint-route/routes/harness/strea
 import type { TimelineLineParser } from './session-timeline-parsers';
 import {
   SuSessionHost,
+  nativeRecordKey,
   registerSuSessionHost,
   type SuSessionCommandContext,
   type SuSessionCommandOutcome,
@@ -585,17 +586,22 @@ export class ClaudeSuSessionAdapter {
 
   /** Consume one complete Claude JSONL record. The source retains a partial
    * trailing record until its newline arrives. */
-  ingestNativeLine(line: string, { preserveLifecycle = false }: { preserveLifecycle?: boolean } = {}): void {
+  ingestNativeLine(line: string, { preserveLifecycle = false, replay = false }: { preserveLifecycle?: boolean; replay?: boolean } = {}): void {
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
     } catch {
+      if (!this.host.claimNativeRecord(nativeRecordKey(line, {})) && replay) return;
       this.host.emit({
         type: 'error', scope: 'transport', code: 'claude_record_malformed',
         message: 'Claude transcript emitted a malformed JSONL record', recoverable: true,
       } as SuSessionEventInput<'claude'>);
       return;
     }
+    // A replayed snapshot only adds records this host has not shown yet: the
+    // same transcript is read early and again once the engine is up, and a
+    // resume retry replays it on the same host (WI-10004162).
+    if (!this.host.claimNativeRecord(nativeRecordKey(line, record)) && replay) return;
 
     if (record.type === 'stream_event') {
       this.ingestPartial(record);
@@ -716,7 +722,7 @@ export class ClaudeSuSessionAdapter {
     if (!this.runtimeValue.transcriptPath) {
       throw new Error('Claude runtime has no resolved transcript path');
     }
-    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle });
+    for await (const line of readClaudeTranscriptSnapshotLines(this.runtimeValue.transcriptPath)) this.ingestNativeLine(line, { preserveLifecycle, replay: true });
   }
 
   /** P-004 calls this after exact Claude resume/carry replacement attaches. The
