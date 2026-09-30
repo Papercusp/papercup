@@ -106,7 +106,21 @@ export type AppKeyRefusal =
   | 'paused'
   | 'expired'
   /** A client-credentials secret presented as a bearer: it is only valid at the token endpoint. */
-  | 'token_endpoint_only';
+  | 'token_endpoint_only'
+  /**
+   * The key's workspace has Remote access switched off (P-010, D-025): the instant kill switch.
+   * Every app key, service key and access token of that workspace is refused until it is back on.
+   */
+  | 'remote_access_off';
+
+/**
+ * The workspace's Remote access switch, read in the same query as the key (D-025). Required on
+ * every row a verdict is computed from, so a loader that forgets to read it does not compile — and
+ * a row where it is not literally `true` is refused, so a missing value fails closed.
+ */
+export interface RemoteAccessState {
+  remote_access_enabled: boolean;
+}
 
 /** The access token a bearer presented (P-016). Its principal is still the parent key. */
 export interface AccessTokenGrant {
@@ -186,6 +200,13 @@ const APP_COLUMNS = `id, user_email, workspace_id, kind, label, scopes, limits,
   paired_at, expires_at, paused_at, revoked_at, last_seen, last_ip,
   spend_cap_cents::float8 AS spend_cap_cents, spend_cap_window_sec,
   rotated_at, previous_token_valid_until, client_auth`;
+
+/**
+ * The Remote access switch of the key's workspace (migration 1263, D-025), as a column of a query
+ * over `harness_shared.connected_apps` (unaliased). No settings row = on.
+ */
+const REMOTE_ACCESS_COLUMN = `COALESCE((SELECT s.enabled FROM harness_shared.connected_app_access_settings s
+   WHERE s.workspace_id = harness_shared.connected_apps.workspace_id), true) AS remote_access_enabled`;
 
 /** The scope fields a caller may ask for, before normalization. */
 export type AppKeyScopeRequest = Pick<CreateAppKeyOptions, 'capabilities' | 'tools' | 'harnesses' | 'knownTools'>;
@@ -349,11 +370,12 @@ export async function rotateAppKey(
   return { app, key: minted.key, previousKeyValidUntil: validUntil };
 }
 
-/** A stored key row as verification reads it: the public row plus both digests. */
-export type StoredAppKeyRow = AppKeyRow & {
-  token_hash: string | null;
-  previous_token_hash?: string | null;
-};
+/** A stored key row as verification reads it: the public row, both digests and the workspace switch. */
+export type StoredAppKeyRow = AppKeyRow &
+  RemoteAccessState & {
+    token_hash: string | null;
+    previous_token_hash?: string | null;
+  };
 
 /**
  * The verdict for a presented key against its stored row — pure, so every rule is testable
@@ -364,11 +386,14 @@ export type StoredAppKeyRow = AppKeyRow & {
  *      other secret is `mismatch`. These come first, so only a holder of a real secret for this id
  *      ever learns the key's state.
  *   2. Revocation outranks pause outranks expiry in the reported reason.
+ *   3. Then the workspace's Remote access switch (P-010, D-025): switched off, every key of the
+ *      workspace is `remote_access_off`. It ranks below the key's own state, so a key revoked on
+ *      the screen still reports `revoked` (R-40) whatever the switch says.
  *
  * Nothing here reads who created the key: a service key belongs to the workspace, so a change in
  * its creator's organization membership cannot refuse it (D-007, R-10).
  *
- *   3. A client-credentials key (client_auth set, P-016) is refused as a bearer
+ *   4. A client-credentials key (client_auth set, P-016) is refused as a bearer
  *      (`token_endpoint_only`); only the token endpoint verifies it, with `at: 'token-endpoint'`.
  */
 export function appKeyVerdictOf(
@@ -379,24 +404,37 @@ export function appKeyVerdictOf(
 ): AppKeyVerdict {
   if (!parseAppKey(key)) return { ok: false, reason: 'malformed' };
   if (!row) return { ok: false, reason: 'unknown' };
-  const { token_hash: tokenHash, previous_token_hash: previousHash, ...app } = row;
+  const {
+    token_hash: tokenHash,
+    previous_token_hash: previousHash,
+    remote_access_enabled: remoteAccessEnabled,
+    ...app
+  } = row;
   let viaPreviousKey = false;
   if (!appKeyHashMatches(key, tokenHash)) {
     if (!appKeyHashMatches(key, previousHash)) return { ok: false, reason: 'mismatch' };
     if (!previousKeyStillValid(app.previous_token_valid_until, now)) return { ok: false, reason: 'rotated' };
     viaPreviousKey = true;
   }
-  const state = parentStateRefusal(app, now);
+  const state = parentStateRefusal(app, remoteAccessEnabled, now);
   if (state) return { ok: false, reason: state };
   if (app.client_auth && opts.at !== 'token-endpoint') return { ok: false, reason: 'token_endpoint_only' };
   return { ok: true, app, viaPreviousKey };
 }
 
-/** Revocation outranks pause outranks expiry, for a key and for every token it issued. */
-function parentStateRefusal(app: AppKeyRow, now: Date): 'revoked' | 'paused' | 'expired' | null {
+/**
+ * Revocation outranks pause outranks expiry outranks the workspace switch, for a key and for every
+ * token it issued. The switch refuses unless it is literally `true`, so a missing value fails closed.
+ */
+function parentStateRefusal(
+  app: AppKeyRow,
+  remoteAccessEnabled: boolean,
+  now: Date,
+): 'revoked' | 'paused' | 'expired' | 'remote_access_off' | null {
   if (app.revoked_at) return 'revoked';
   if (app.paused_at) return 'paused';
   if (app.expires_at && app.expires_at.getTime() <= now.getTime()) return 'expired';
+  if (remoteAccessEnabled !== true) return 'remote_access_off';
   return null;
 }
 
@@ -417,7 +455,7 @@ export interface StoredAccessTokenRow {
  */
 export function accessTokenVerdictOf(
   token: StoredAccessTokenRow | null | undefined,
-  parent: AppKeyRow | null | undefined,
+  parentRow: (AppKeyRow & RemoteAccessState) | null | undefined,
   presented: string,
   now: Date,
 ): AppKeyVerdict {
@@ -426,10 +464,12 @@ export function accessTokenVerdictOf(
   if (!token || token.id !== parsed.id) return { ok: false, reason: 'unknown' };
   if (!appKeyHashMatches(presented, token.token_hash)) return { ok: false, reason: 'mismatch' };
   if (token.expires_at.getTime() <= now.getTime()) return { ok: false, reason: 'expired' };
-  if (!parent || parent.id !== token.app_id || parent.kind !== 'service' || !parent.client_auth) {
+  if (!parentRow) return { ok: false, reason: 'revoked' };
+  const { remote_access_enabled: remoteAccessEnabled, ...parent } = parentRow;
+  if (parent.id !== token.app_id || parent.kind !== 'service' || !parent.client_auth) {
     return { ok: false, reason: 'revoked' };
   }
-  const state = parentStateRefusal(parent, now);
+  const state = parentStateRefusal(parent, remoteAccessEnabled, now);
   if (state) return { ok: false, reason: state };
   return {
     ok: true,
