@@ -1363,14 +1363,94 @@ describe('buildWorkspaceHostBootstrap', () => {
     const switchAt = lines.indexOf('mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"');
     const reloadAt = lines.indexOf('systemctl daemon-reload');
     const enableAt = lines.indexOf('systemctl enable "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to enable"; }');
-    const restartAt = lines.indexOf('systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }');
+    const restartAt = lines.indexOf('  systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }');
 
     // Calibration: no missing command may pass the ordering assertions through a -1 index.
     expect(switchAt).toBeGreaterThanOrEqual(0);
     expect(reloadAt).toBeGreaterThan(switchAt);
     expect(enableAt).toBeGreaterThan(reloadAt);
     expect(restartAt).toBeGreaterThan(enableAt);
+    expect(lines[restartAt - 1]).toBe('if service_restart_needed; then');
     expect(repair).not.toContain('systemctl enable --now "$SERVICE_NAME.service"');
+  });
+
+  /**
+   * WI-10004242, measured on avi-test r62b 2026-09-30: GCE re-ran the whole bootstrap on a reboot
+   * and restarted the already-running service at 11:19:23Z, killing a desktop the customer had
+   * opened at 11:18:58Z. The restart may be skipped ONLY on a later boot re-running a bootstrap
+   * that completed, with `current` unchanged and the unit active. Runs the rendered function.
+   */
+  describe('service_restart_needed (WI-10004242)', () => {
+    const script = buildWorkspaceHostBootstrap(input({ action: 'upgrade' }));
+    const lines = script.split('\n');
+    const start = lines.indexOf('service_restart_needed() {');
+    const end = lines.indexOf('}', start);
+    const fn = lines.slice(start, end + 1).join('\n');
+    const fingerprint = /^BOOTSTRAP_FINGERPRINT=([a-f0-9]{64})$/m.exec(script)?.[1] ?? '';
+
+    function restartNeeded(opts: {
+      marker?: string;
+      previousRelease?: string;
+      currentRelease?: string;
+      unitState?: string;
+    }): boolean {
+      const root = mkdtempSync(join(tmpdir(), 'wi10004242-'));
+      try {
+        const runtimeRoot = join(root, 'opt');
+        mkdirSync(join(runtimeRoot, 'releases', 'r1'), { recursive: true });
+        mkdirSync(join(runtimeRoot, 'releases', 'r2'), { recursive: true });
+        symlinkSync(join(runtimeRoot, 'releases', opts.currentRelease ?? 'r1'), join(runtimeRoot, 'current'));
+        const marker = join(runtimeRoot, '.bootstrap-complete');
+        if (opts.marker !== undefined) writeFileSync(marker, opts.marker);
+        const harness = [
+          'set -euo pipefail',
+          `systemctl() { [[ "$1" == is-active ]] && echo ${opts.unitState ?? 'active'}; }`,
+          `RUNTIME_ROOT=${runtimeRoot}`,
+          'SERVICE_NAME=papercusp-workspace',
+          `BOOTSTRAP_FINGERPRINT=${fingerprint}`,
+          `BOOTSTRAP_COMPLETE_MARKER=${marker}`,
+          'BOOT_ID=boot-now',
+          `PREVIOUS_TARGET=${join(runtimeRoot, 'releases', opts.previousRelease ?? 'r1')}`,
+          fn,
+          'if service_restart_needed; then echo RESTART; else echo KEEP; fi',
+        ].join('\n');
+        const run = spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+        expect(run.stderr).toBe('');
+        expect(run.status).toBe(0);
+        return run.stdout.trim() === 'RESTART';
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    it('renders a deterministic fingerprint of the script and the function around the restart', () => {
+      expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(start).toBeGreaterThan(0);
+      expect(buildWorkspaceHostBootstrap(input({ action: 'upgrade' }))).toBe(script);
+      expect(buildWorkspaceHostBootstrap(input({ action: 'install' }))).not.toContain(`BOOTSTRAP_FINGERPRINT=${fingerprint}`);
+      expect(script).not.toContain('__PAPERCUSP_BOOTSTRAP_FINGERPRINT__');
+    });
+
+    it('writes the completion marker only after the attestation, just before "bootstrap complete"', () => {
+      const writeAt = lines.indexOf('mv -Tf "$BOOTSTRAP_COMPLETE_MARKER.next" "$BOOTSTRAP_COMPLETE_MARKER"');
+      expect(writeAt).toBeGreaterThan(lines.findIndex((line) => line.startsWith('ATTESTATION_PATH=')));
+      expect(lines[writeAt + 1]).toBe('log "bootstrap complete"');
+    });
+
+    it('keeps the service running only on a later boot of a completed, identical bootstrap', () => {
+      expect(restartNeeded({ marker: `${fingerprint} boot-earlier\n` })).toBe(false);
+    });
+
+    it('restarts on a first run, a changed rendering, a same-boot re-run, a release switch, or an inactive unit', () => {
+      // Calibration: the keep case above passes with exactly these defaults.
+      expect(restartNeeded({})).toBe(true);
+      expect(restartNeeded({ marker: `${'0'.repeat(64)} boot-earlier\n` })).toBe(true);
+      expect(restartNeeded({ marker: `${fingerprint} boot-now\n` })).toBe(true);
+      expect(restartNeeded({ marker: `${fingerprint}\n` })).toBe(true);
+      expect(restartNeeded({ marker: `${fingerprint} boot-earlier\n`, currentRelease: 'r2' })).toBe(true);
+      expect(restartNeeded({ marker: `${fingerprint} boot-earlier\n`, unitState: 'activating' })).toBe(true);
+      expect(restartNeeded({ marker: `${fingerprint} boot-earlier\n`, unitState: 'failed' })).toBe(true);
+    });
   });
 
   it('supports explicit distinct identities and rejects privileged or shared identities', () => {
