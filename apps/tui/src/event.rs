@@ -438,6 +438,13 @@ pub enum Event {
     ChatDone,
     /// The operator converse stream errored (`error`, or transport failure).
     ChatError(String),
+    /// A card answer's `/card-response` POST failed (P-015). Only that card goes
+    /// back to answerable; the run it belongs to is still waiting on it, so this
+    /// is never a turn failure (which `ChatError` would make it).
+    CardRespondFailed {
+        correlation_id: String,
+        error: String,
+    },
     /// The transcript row backing the attached SU session resolved. Emitted by
     /// SU-session create/attach so later control commands keep one durable chat.
     AgentChatBound(String),

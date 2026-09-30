@@ -294,7 +294,7 @@ function OptInEditor({
           options={[
             { value: 'off', label: 'No one (off)' },
             { value: 'selected-fleets', label: 'Selected fleets' },
-            { value: 'any-fleet', label: 'Any granted fleet' },
+            { value: 'any-fleet', label: 'Any fleet' },
           ]}
         />
       </label>
@@ -568,9 +568,10 @@ export default function P2pSettingsPage() {
       <h1>P2P work sharing</h1>
       <p className="pc-settings-intro">
         Opt this host into pull-based work hand-off across {t('pot', { lower: true })} peers — and control exactly what it
-        accepts. Accepting foreign work requires BOTH a capability grant from you (Peers, below) and
-        this host&apos;s opt-in; everything defaults to off. Settings here are host-local — your machine&apos;s
-        sovereignty; grants federate, your opt-in does not.
+        accepts. In v1 a peer can take work here only through a seat this host offers, only while this
+        host&apos;s opt-in admits it, and, for {t('pot', { lower: true })}-scoped offers, only if the peer is on your trust
+        list; everything defaults to off. Capability grants (Peers, below) are recorded but not yet enforced.
+        Settings here are host-local — your machine&apos;s sovereignty; grants federate, your opt-in does not.
       </p>
 
       {settingsReadError && (
@@ -714,6 +715,7 @@ export default function P2pSettingsPage() {
       <section className="pc-settings-section" aria-label="Peers" style={sectionStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
           <h2 style={{ ...h2Style, margin: 0 }}>Peers — capability grants</h2>
+          <span style={pendingBadge}>not enforced in v1</span>
           {hiveOptions.length > 0 && (
             <Select
               value={hive ?? ''}
@@ -724,6 +726,8 @@ export default function P2pSettingsPage() {
           )}
         </div>
         <p style={{ ...muteStyle, margin: '0 0 10px' }}>
+          Not enforced in v1: a grant does not change what a peer may start on this host. v1 authorization is
+          seat delegation plus your trust list; grants are recorded now so enforcement can follow a later release.
           Grants are issued by YOU (your numeric GitHub id), keyed per {t('pot', { lower: true })}, resolved only through
           attested devices. Presets: Observer (chat) · Collaborator (+steer) · Delegate (+work-offer,
           wake) · Operator (+spawn). A capability downgrade is revocation-class and bumps your

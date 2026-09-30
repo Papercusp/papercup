@@ -246,6 +246,22 @@ describe('/settings/p2p render', () => {
     expect(within(peers).queryByText(/No capability grants/i)).toBeNull();
   });
 
+  // Endgame D-089 (WI-10004098): v1 peer authority is seat delegation + trust list. checkP2pCapability
+  // is on no production path, so no copy may say or imply that a capability grant gates foreign work.
+  it('does not claim capability grants gate foreign work in v1', () => {
+    render(<P2pSettingsPage />);
+    const intro = document.querySelector('.pc-settings-intro');
+    expect(intro, 'intro paragraph missing').toBeTruthy();
+    expect(intro!.textContent).not.toMatch(/requires BOTH a capability grant/i);
+    expect(intro!.textContent).toMatch(/Capability grants .* are recorded but not yet enforced/i);
+    const peers = screen.getByRole('region', { name: 'Peers' });
+    expect(within(peers).getByText('not enforced in v1')).toBeTruthy();
+    expect(peers.textContent).toMatch(/v1 authorization is\s+seat delegation plus your trust list/i);
+    const mode = screen.getByRole('combobox', { name: 'Work opt-in mode' });
+    expect(within(mode).getByRole('option', { name: 'Any fleet' })).toBeTruthy();
+    expect(within(mode).queryByRole('option', { name: /granted/i })).toBeNull();
+  });
+
   it('links shipped budgets to Resources and renders a truthful foreign-work empty state', () => {
     render(<P2pSettingsPage />);
     const live = screen.getByRole('region', { name: 'Foreign work running now' });
