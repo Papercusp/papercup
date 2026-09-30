@@ -46,7 +46,8 @@ function routes(over: Partial<RemoteAccessRouteDependencies> = {}, local = true)
 describe('remote-access routes', () => {
   it('every route is loopback-authenticated at the route stack', () => {
     const { list } = routes();
-    expect(list.length).toBe(5);
+    // GET + POST /remote-access, pause, revoke, scopes, and the P-011 activity read.
+    expect(list.length).toBe(6);
     for (const r of list as any[]) expect(r.auth).toBe('loopback');
   });
 
