@@ -31,8 +31,16 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: h.adminSql }),
 }));
 
-const { createAppKey, listAppKeys, setAppKeyPaused, revokeAppKey, verifyAppKey, recordAppKeyUse } =
-  await import('./store');
+const {
+  createAppKey,
+  createServiceKey,
+  listAppKeys,
+  setAppKeyPaused,
+  revokeAppKey,
+  rotateAppKey,
+  verifyAppKey,
+  recordAppKeyUse,
+} = await import('./store');
 const { parseAppKey } = await import('./key');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -170,5 +178,167 @@ describe('connected-apps store (real PG + real RLS)', () => {
       INSERT INTO harness_shared.connected_apps (id, user_email, workspace_id, kind, token_hash)
       VALUES (${`raw${n}${randomBytes(3).toString('hex')}`}, 'o@example.test', ${ws}, 'app', ${key})
     `).rejects.toThrow(/connected_apps_token_hash_shape/);
+  });
+
+  // ── P-015 (migration 1252): service keys, rotation overlap, spending caps ──────────────────
+
+  it('R-10/R-13: a service key persists as kind=service with its spending cap and verifies', async () => {
+    const ws = freshWs();
+    const { app, key } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'nightly sync',
+      spendCapCents: 2_500,
+    });
+    const [row] = await h.adminSql`
+      SELECT kind, spend_cap_cents::float8 AS cap, spend_cap_window_sec, expires_at
+        FROM harness_shared.connected_apps WHERE id = ${app.id}
+    `;
+    expect(row).toMatchObject({ kind: 'service', cap: 2_500, spend_cap_window_sec: 30 * 24 * 60 * 60, expires_at: null });
+    const verdict = await verifyAppKey(key);
+    expect(verdict.ok).toBe(true);
+    if (verdict.ok) expect(verdict.app.kind).toBe('service');
+    expect((await listAppKeys(ws)).map((k) => k.id)).toContain(app.id);
+  });
+
+  it('R-11/R-12: rotation keeps the old secret valid inside the window, refuses it after, and stores digests only', async () => {
+    const ws = freshWs();
+    const { app, key: oldKey } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'rotating',
+      spendCapCents: 1_000,
+    });
+    const now = new Date();
+    const rotated = await rotateAppKey(ws, app.id, { overlapSec: 3_600, now });
+    expect(rotated).not.toBeNull();
+    const newKey = rotated!.key;
+    expect(newKey).not.toBe(oldKey);
+    expect(parseAppKey(newKey)?.id).toBe(app.id);
+
+    // Both secrets authenticate inside the overlap window; only the old one is flagged.
+    const inWindow = new Date(now.getTime() + 60_000);
+    const viaNew = await verifyAppKey(newKey, inWindow);
+    const viaOld = await verifyAppKey(oldKey, inWindow);
+    expect(viaNew).toMatchObject({ ok: true, viaPreviousKey: false });
+    expect(viaOld).toMatchObject({ ok: true, viaPreviousKey: true });
+
+    // At the deadline the old secret is refused as `rotated`; the new one still works.
+    const afterWindow = new Date(now.getTime() + 3_600_000);
+    expect(await verifyAppKey(oldKey, afterWindow)).toEqual({ ok: false, reason: 'rotated' });
+    expect((await verifyAppKey(newKey, afterWindow)).ok).toBe(true);
+
+    // R-8 still holds across rotation: both digests are stored, neither key nor secret is.
+    const [row] = await h.adminSql`
+      SELECT row_to_json(c)::text AS json, token_hash, previous_token_hash, rotated_at
+        FROM harness_shared.connected_apps c WHERE id = ${app.id}
+    `;
+    expect(row.token_hash).toBe(sha256(newKey));
+    expect(row.previous_token_hash).toBe(sha256(oldKey));
+    expect(row.rotated_at).toBeInstanceOf(Date);
+    for (const k of [oldKey, newKey]) {
+      expect(row.json).not.toContain(k);
+      expect(row.json).not.toContain(parseAppKey(k)!.secret);
+    }
+  });
+
+  it('R-12: rotating again inside the window retires the oldest secret at once', async () => {
+    const ws = freshWs();
+    const { app, key: first } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'double-rotate',
+      spendCapCents: 1_000,
+    });
+    const now = new Date();
+    const second = (await rotateAppKey(ws, app.id, { overlapSec: 3_600, now }))!.key;
+    const third = (await rotateAppKey(ws, app.id, { overlapSec: 3_600, now: new Date(now.getTime() + 1_000) }))!.key;
+    const at = new Date(now.getTime() + 2_000);
+    expect(await verifyAppKey(first, at)).toEqual({ ok: false, reason: 'mismatch' });
+    expect(await verifyAppKey(second, at)).toMatchObject({ ok: true, viaPreviousKey: true });
+    expect(await verifyAppKey(third, at)).toMatchObject({ ok: true, viaPreviousKey: false });
+  });
+
+  it('a zero overlap is an immediate cutover, and revoke ends an open overlap window', async () => {
+    const ws = freshWs();
+    const { app, key: oldKey } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'cutover',
+      spendCapCents: 1_000,
+    });
+    const now = new Date();
+    const newKey = (await rotateAppKey(ws, app.id, { overlapSec: 0, now }))!.key;
+    expect(await verifyAppKey(oldKey, now)).toEqual({ ok: false, reason: 'rotated' });
+    expect((await verifyAppKey(newKey, now)).ok).toBe(true);
+
+    const { app: b, key: bOld } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'revoked-mid-window',
+      spendCapCents: 1_000,
+    });
+    const bNew = (await rotateAppKey(ws, b.id, { overlapSec: 3_600 }))!.key;
+    expect(await revokeAppKey(ws, b.id)).toBe(true);
+    expect(await verifyAppKey(bOld)).toEqual({ ok: false, reason: 'revoked' });
+    expect(await verifyAppKey(bNew)).toEqual({ ok: false, reason: 'revoked' });
+    expect(await rotateAppKey(ws, b.id)).toBeNull();
+  });
+
+  it('workspace RLS bounds rotation: another workspace cannot rotate the key', async () => {
+    const ws = freshWs();
+    const { app, key } = await createServiceKey({
+      workspaceId: ws,
+      userEmail: 'creator@example.test',
+      label: 'rls',
+      spendCapCents: 1_000,
+    });
+    expect(await rotateAppKey(freshWs(), app.id)).toBeNull();
+    expect(await verifyAppKey(key)).toMatchObject({ ok: true, viaPreviousKey: false });
+  });
+
+  it('R-13 at the storage layer: the database refuses an uncapped service key and malformed rotation state', async () => {
+    const ws = freshWs();
+    const id = () => `svc${n}${randomBytes(4).toString('hex')}`;
+    const digest = sha256(`pcapp_${'S'.repeat(16)}_${'b'.repeat(43)}`);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps (id, user_email, workspace_id, kind, token_hash)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest})
+    `).rejects.toThrow(/connected_apps_service_has_spend_cap/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps (id, user_email, workspace_id, kind)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service')
+    `).rejects.toThrow(/connected_apps_app_has_token_hash|connected_apps_service_has_spend_cap/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps (id, user_email, workspace_id, kind, token_hash, spend_cap_cents)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest}, 0)
+    `).rejects.toThrow(/connected_apps_spend_cap_positive/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps
+        (id, user_email, workspace_id, kind, token_hash, spend_cap_cents, spend_cap_window_sec)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest}, 100, 0)
+    `).rejects.toThrow(/connected_apps_spend_cap_window_positive/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps
+        (id, user_email, workspace_id, kind, token_hash, spend_cap_cents, previous_token_hash)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest}, 100, ${digest})
+    `).rejects.toThrow(/connected_apps_previous_token_pair/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps
+        (id, user_email, workspace_id, kind, token_hash, spend_cap_cents,
+         previous_token_hash, previous_token_valid_until)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest}, 100, 'not-a-digest', now())
+    `).rejects.toThrow(/connected_apps_previous_token_hash_shape/);
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps
+        (id, user_email, workspace_id, kind, previous_token_hash, previous_token_valid_until)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'mobile', ${digest}, now())
+    `).rejects.toThrow(/connected_apps_previous_token_kind/);
+    // Positive control: a well-formed capped service row is accepted, so the refusals above are
+    // the CHECKs firing and not some unrelated insert failure.
+    await expect(h.adminSql`
+      INSERT INTO harness_shared.connected_apps (id, user_email, workspace_id, kind, token_hash, spend_cap_cents)
+      VALUES (${id()}, 'o@example.test', ${ws}, 'service', ${digest}, 100)
+    `).resolves.toBeDefined();
   });
 });

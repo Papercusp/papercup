@@ -62,6 +62,23 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+// Mutation-probe seams (copy-out tier): `scripts/mutation-probe.sh --test
+// 'PAPERCUSP_<MODULE>_PROBE={} …'` points one module at a mutated COPY inside the probe's repo
+// mirror, so its relative imports still resolve and proving R-10..R-13 falsifiable never mutates
+// the shared tree. Unset (every normal run): the real module.
+vi.mock('./store', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_STORE_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+vi.mock('./service-keys', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_SERVICE_KEYS_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+vi.mock('./principal', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_PRINCIPAL_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+
 import { registerProjectedTool, _resetProjectionRegistryForTests, type ProjectedTool } from '@papercusp/agent-mcp';
 import catchall from '../endpoint-route/routes/agent-tools/catchall';
 import type { RouteContext } from '../endpoint-route/define-route';
