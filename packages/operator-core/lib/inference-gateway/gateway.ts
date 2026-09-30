@@ -9,8 +9,9 @@
  *   2. `governor.acquire(est)` — BLOCK until a slot frees (backpressure, D-004) rather than
  *      bursting; a wait longer than `maxQueueWaitMs` returns a synthetic 429 + `retry-after`
  *      (so a multi-hour capacity pause doesn't pin an HTTP socket open for hours);
- *   3. inject `Authorization: Bearer <bound-account-token>` + `anthropic-beta: oauth-…`
- *      (the bee sends UNAUTHENTICATED to 127.0.0.1) and forward to api.anthropic.com,
+ *   3. inject the bound account's credential per attempt — `Authorization: Bearer <token>` +
+ *      `anthropic-beta: oauth-…` for a subscription account, `x-api-key` (no OAuth beta) for a
+ *      Console API-key account (the bee sends UNAUTHENTICATED to 127.0.0.1) — and forward to api.anthropic.com,
  *      streaming SSE through untouched;
  *   4. feed every response's `anthropic-ratelimit-*` headers back into the governor
  *      (`recordResponse` → unified-utilization pace/pause, D-009) and `penalize()` on 429/529.
@@ -57,7 +58,7 @@ import {
 } from './provider-admission-lifecycle';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
-import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta, scrubSecrets } from './credential-store';
+import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';

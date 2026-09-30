@@ -36,7 +36,7 @@
  */
 import { egressEntries, type AccountEgress, type ClaudeAccount } from '../deployment/account-pool';
 import { parseUnifiedWindow, parseUnified7dWindow } from './gateway';
-import { withOAuthBeta } from './credential-store';
+import { claudeAttemptHeaders, claudeAuthModeForRef } from './credential-store';
 import { resolveAccountEgress } from './egress-dispatcher';
 import { parseCodexCliRef } from './codex-cli-bridge';
 import {
@@ -313,12 +313,13 @@ export async function probeAccountCapacity(
         () => fetchImpl(`${UPSTREAM}/v1/messages`, {
           method: 'POST',
           signal: ac.signal,
-          headers: {
-            'content-type': 'application/json',
-            'anthropic-version': ANTHROPIC_VERSION,
-            'anthropic-beta': withOAuthBeta(null),
-            authorization: `Bearer ${token}`,
-          },
+          // P-006: an API-key account is probed with `x-api-key` and no OAuth beta; a Bearer
+          // probe would 401/400 and read as a dead account.
+          headers: claudeAttemptHeaders(
+            { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION },
+            claudeAuthModeForRef(account.credentialRef),
+            token,
+          ),
           body: JSON.stringify({
             model: CAPACITY_PROBE_MODEL,
             max_tokens: 1,
