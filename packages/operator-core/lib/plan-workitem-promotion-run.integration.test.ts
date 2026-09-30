@@ -248,10 +248,32 @@ beforeAll(async () => {
   // That write is fail-soft in production, but it console.warns on failure and
   // vitest-fail-on-console escalates a warn into a hard red — so a fixture missing this one
   // table failed 28 of 34 tests here with an error naming the CONSOLE guard, never the table.
-  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
-    label: 'plan-workitem-promotion-run.integration.test.ts',
-    runtimeTables: ['harness_shared.event_key_fires'],
-  });
+  // WI-10004234 (2026-09-30): recordKeyFire now resolves the fire's subscribers from
+  // harness_shared.event_awaits inside the latch write, so the latch alone warned
+  // `relation "harness_shared.event_awaits" does not exist` on every mint and reddened
+  // this file (D-046 first). Same event-await chain as work-items-lifecycle's fixture.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '163-await-event-subscriptions.sql',
+      '175-watch-floor-coalesce-cols.sql',
+      '387-event-wake-delivery-source.sql',
+      '533-add-event-awaits-payload-filter.sql',
+      '541-predicate-watches.sql',
+      '572-event-await-nodes-threshold-tree.sql',
+      '599-event-announcement-generation.sql',
+      '632-event-key-fire-latch.sql',
+      '871-lifecycle-bound-watches.sql',
+      '925-fleet-leader-watch-suppression.sql',
+      '953-event-announcement-logical-gate.sql',
+      '1216-event-await-fired-delivery-intent-marker.sql',
+      '1250-predicate-watch-evaluator-baselines.sql',
+    ],
+    {
+      label: 'plan-workitem-promotion-run.integration.test.ts',
+      runtimeTables: ['harness_shared.event_key_fires', 'harness_shared.event_awaits'],
+    },
+  );
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(`
