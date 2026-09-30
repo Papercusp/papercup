@@ -74,7 +74,12 @@ vi.mock('../severe-event-broadcast', () => ({
 // WI-6643: the alarm path dynamic-imports this. Stubbed so a test that drives a
 // real alarm asserts the payload instead of doing owner-notification IO.
 const notify = vi.hoisted(() => ({ attention: vi.fn(async (..._args: unknown[]) => undefined) }));
-vi.mock('../attention-notify', () => ({ notifyAttention: notify.attention }));
+// notifyAttentionOnce: reached transitively (connected-apps/principal.ts imports it since
+// 2026-09-30); a factory without it fails collection for the whole file.
+vi.mock('../attention-notify', () => ({
+  notifyAttention: notify.attention,
+  notifyAttentionOnce: vi.fn(async (..._args: unknown[]) => undefined),
+}));
 
 import {
   checkOriginFreshness,
