@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-19: GitHub Actions passes on the launch commit",
+  "framework": "operational",
+  "command": [
+    "gh run list --repo Papercusp/papercusp-app --commit b98518640b8d026adfc59b7149ed6334dcdd0c2f --json conclusion,databaseId"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:05:30Z",
+  "finishedAt": "2026-09-30T06:05:31Z",
+  "summary": "The CI run on the launch commit concluded success.",
+  "assertions": [
+    {
+      "id": "ci-green",
+      "passed": true,
+      "evidence": "run 36675443387 'CI' success on b9851864 (the prior launch run 36663115885 also succeeded)."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-19",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

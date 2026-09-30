@@ -5979,13 +5979,21 @@ export async function verifyRepairHead(
         summary: `${admitted.length} admitted path(s) have no related-radius resolver at repair head ${at}; the queue holds without spending the full gate`,
       };
     }
-    const radius = await deps
-      .affectedTestsAtRef(head, admitted)
-      .catch(() => null);
+    // WI-10004151: the resolver's failure is CARRIED into the hold, never swallowed. A
+    // `.catch(() => null)` here once parked a queue for hours on a hold that named no cause
+    // (a missing dependency generation for a partial package-lock.json admission).
+    const settled = await settleRepairHeadRunner(
+      deps.affectedTestsAtRef(head, admitted),
+    );
+    const radius = "value" in settled ? settled.value : null;
     if (!radius) {
+      const cause =
+        "failure" in settled
+          ? settled.failure
+          : "the selector output was malformed or unroutable";
       return {
         kind: "unavailable",
-        summary: `the related radius of ${admitted.length} admitted path(s) could not be resolved at repair head ${at}; the queue holds without spending the full gate`,
+        summary: `the related radius of ${admitted.length} admitted path(s) could not be resolved at repair head ${at} (${cause}); the queue holds without spending the full gate`,
       };
     }
     radiusCoverageComplete = radius.coverageComplete === true;

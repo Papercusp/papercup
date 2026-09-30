@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { presentOnDisk } from '../../../scripts/lib/tracked-files.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -28,11 +29,14 @@ function trackedSourceFiles(): string[] {
   });
   expect(result.error, `git ls-files failed to spawn: ${result.error?.message}`).toBeUndefined();
   expect(result.status, `git ls-files failed: ${result.stderr ?? ''}`).toBe(0);
-  return (result.stdout ?? '')
+  const files = (result.stdout ?? '')
     .split('\0')
     .filter(Boolean)
     .filter((file) => /\.(?:ts|mjs|json)$/.test(file))
     .filter((file) => !file.includes('/node_modules/') && !file.includes('/docs/'));
+  // The index keeps listing an rm'd path until git-sync commits the deletion;
+  // reading it would throw ENOENT on the shared tree (WI-10004173).
+  return presentOnDisk(files, REPO_ROOT);
 }
 
 function readTracked(file: string): string {

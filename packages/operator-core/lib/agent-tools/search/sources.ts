@@ -31,6 +31,7 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // 600-row request on the live 302k-row corpus.
 import { withIterativeScan, chunkAwareVectorLegSql, type ChunkAwareVectorLegOptions } from '@papercusp/search';
 import { SESSION_TURN_CHUNK_SURFACE } from '../../search/turn-chunk-sync';
+import { OPERATOR_TURNS_CHUNK_SURFACE } from '../../search/chunks/registry';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import {
   proseProfilePredicateSql,
@@ -522,19 +523,35 @@ const turns: SearchSource = {
     }));
   },
   async embedding(p): Promise<Listing> {
-    const { sql, query, workspaceId, limit, qVec } = p;
-    const rows = (await withIterativeScan(sql, (sql) => sql`
-      SELECT t.id, t.role, t.text,
-             1 - (t.text_embedding <=> ${qVec}::vector) AS sim,
+    const { query, workspaceId, limit, qVec } = p;
+    // generic-rag-chunking P-010 (D-017): rank each turn by the nearer of its own
+    // vector (first 2,000 characters) and its window chunks less the 0.06
+    // margin, so a turn whose only match lies past the cut is still found. The
+    // workspace comes from the CONVERSATION, as in the lexical leg: 861 turns
+    // written May-June 2026 carry a turn workspace_id that differs from their
+    // conversation's (measured 2026-09-30).
+    const rows = (await withIterativeScan(p.sql, (sql) => sql`
+      WITH best AS (${chunkAwareVectorLegSql(sql, {
+        surface: OPERATOR_TURNS_CHUNK_SURFACE,
+        parentAlias: 't',
+        qVec,
+        limit,
+        mode: 'retrieve',
+        parentFilter: p.sql`EXISTS (SELECT 1 FROM harness_shared.operator_conversations c
+                                     WHERE c.id = t.conversation_id AND c.workspace_id = ${workspaceId})`,
+        // D-011: the embedding-space rule stays here; the helper only names
+        // the qualified columns. A missing column fails closed.
+        spaceFilter: (cols) => (cols.profileColumn && cols.modeColumn
+          ? proseProfileSql(p, cols.profileColumn, cols.modeColumn)
+          : p.sql`FALSE`),
+      })})
+      SELECT t.id, t.role, t.text, 1 - b.distance AS sim,
              ts_headline('english', t.text,
                plainto_tsquery('english', ${query}),
                ${HEADLINE_OPTS}) AS highlight
-        FROM harness_shared.operator_turns t
-        JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id
-       WHERE c.workspace_id = ${workspaceId}
-         AND t.text_embedding IS NOT NULL
-         AND ${proseProfileSql(p, 't.text_embedding_profile', 't.text_embedding_mode')}
-    ORDER BY t.text_embedding <=> ${qVec}::vector
+        FROM best b
+        JOIN harness_shared.operator_turns t ON t.id = b.id
+    ORDER BY b.distance, b.id
        LIMIT ${limit}
     `)) as unknown as Array<{ id: string; role: string; text: string; sim: number; highlight: string }>;
     return rows.map((r) => ({

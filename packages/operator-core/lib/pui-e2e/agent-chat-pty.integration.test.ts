@@ -3873,11 +3873,34 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     })));
     const spy = vi.spyOn(stdio, 'startSuStdioPeer')
       .mockImplementation(async (options) => fakeNativePeer('omp', options, () => replyText));
+    // `auto` is honoured only when the pool holds an allowed account of the
+    // model's provider; the isolated operator starts with an empty pool, so
+    // the case seeds one catalogue-only Claude account and restores the row.
+    const [poolBefore] = await db.adminSql<{ payload: { accounts?: unknown[] } }[]>`
+      SELECT payload FROM harness_shared.operator_account_pool WHERE workspace_id = ${WORKSPACE}`;
     try {
       await writeAgentConfig({ ...saved, backend: 'omp' });
       // Pin the model the engine checks against the route, so the case does
       // not depend on this machine's ~/.omp config (EI-24662907494758489).
       process.env.PAPERCUSP_OMP_MODEL_SELECTOR = gatewayModel;
+      const seeded = {
+        ...(poolBefore?.payload ?? {}),
+        accounts: [...(poolBefore?.payload?.accounts ?? []),
+          { id: 'wi164-claude', provider: 'claude', credentialRef: '', addedAt: 0, boundTo: [] }],
+      };
+      await db.adminSql`
+        INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
+        VALUES (${WORKSPACE}, ${JSON.stringify(seeded)}::text::jsonb, ${Date.now()})
+        ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
+      {
+        const { loadAccountPool } = await import('../deployment/account-pool-store');
+        const { getAccountOverride } = await import('../deployment/account-session-override');
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        console.info('PUI_WI164_POOL', JSON.stringify({
+          active: activeWorkspaceId(), pool: await loadAccountPool(WORKSPACE),
+          override: await getAccountOverride(WORKSPACE),
+        }));
+      }
 
       stage = 'unchosen';
       const tag = randomUUID().slice(0, 8);
@@ -3938,6 +3961,14 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       console.info('PUI_WI164_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256 }));
     } finally {
       spy.mockRestore();
+      if (poolBefore) {
+        await db.adminSql`
+          UPDATE harness_shared.operator_account_pool
+             SET payload = ${JSON.stringify(poolBefore.payload)}::text::jsonb, updated_at = ${Date.now()}
+           WHERE workspace_id = ${WORKSPACE}`;
+      } else {
+        await db.adminSql`DELETE FROM harness_shared.operator_account_pool WHERE workspace_id = ${WORKSPACE}`;
+      }
       if (savedOmpModel === undefined) delete process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
       else process.env.PAPERCUSP_OMP_MODEL_SELECTOR = savedOmpModel;
       await writeAgentConfig(saved);
@@ -7188,6 +7219,28 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const AGENT_BLOCK = /^│[▸ ] agent\s/m;
         const restoreStarted = performance.now();
         await vi.waitFor(() => expect(pane.screen(), 'the restored chat shows the agent replies').toMatch(AGENT_BLOCK), { timeout: 60_000, interval: 250 });
+        // ...all of them, in conversation order. Frame 05a once showed every
+        // saved `you` block first and the replayed replies after them, which
+        // the header check above passed. Settle on the last recorded reply,
+        // then no two `you` blocks may be adjacent, and after the last prompt
+        // no EARLIER reply may appear (at rest the old order scrolled every
+        // `you` block off screen, so the adjacency check alone passed it).
+        const entries = log as unknown as Array<{ label?: string; prompt?: unknown; reply?: unknown }>;
+        const head = (label: string, key: 'prompt' | 'reply') =>
+          String(entries.find((entry) => entry.label === label)?.[key] ?? '').trim().slice(0, 24);
+        const lastReply = head('04-run-tests', 'reply');
+        if (lastReply) {
+          await vi.waitFor(() => expect(pane.screen(), 'the restore reaches the last reply').toContain(lastReply),
+            { timeout: 60_000, interval: 250 });
+          const restored = pane.screen();
+          const lastPromptAt = restored.lastIndexOf(head('04-run-tests', 'prompt'));
+          expect(lastPromptAt, 'the last prompt sits right above its reply').toBeGreaterThanOrEqual(0);
+          for (const earlier of ['01-greeting', '02-read-explain', '03-edit'].map((label) => head(label, 'reply')).filter(Boolean)) {
+            expect(restored.slice(lastPromptAt), `an earlier reply after the last prompt: ${earlier}`).not.toContain(earlier);
+          }
+        }
+        const restoredBlocks = [...pane.screen().matchAll(/^│[▸ ] (you|agent)\s/gm)].map((match) => match[1]).join(' ');
+        expect(restoredBlocks, 'restored history is in conversation order').not.toMatch(/\byou you\b/);
         log.push({ label: '05a-restored', restoreMs: Math.round(performance.now() - restoreStarted) });
         frame('05a-relaunch', pane.screen());
         pane.write('/resume');

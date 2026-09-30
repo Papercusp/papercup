@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-20: the security review disposes of every local listener of a running desktop",
+  "framework": "operational",
+  "command": [
+    "ss -ltnp inside VM osr18b while the public-cut desktop ran (.papercusp/scratch/osr/r18-ports.out)",
+    "compare with plan decision D-020"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:14:30Z",
+  "finishedAt": "2026-09-30T06:36:00Z",
+  "summary": "The running desktop had 9 listeners: 3270, 5532, 3076, 3068, 8788, 9223, 40183, plus the OS listeners 5432, 22 and 53. D-020 records a disposition for each. The only all-interfaces Papercusp bind is mobile-voice :3068, and it requires a device JWT.",
+  "assertions": [
+    {
+      "id": "every-listener-disposed",
+      "passed": true,
+      "evidence": "D-020 rows: 3270, 5532, 3076, 3068, 8788, 9223, dev-bridge ephemeral (40183), 5432 out of scope, 22/53 OS. None unaccounted."
+    },
+    {
+      "id": "lan-surface-authenticated",
+      "passed": true,
+      "evidence": "device-voice-ws.ts:173-175 verifyDeviceToken; close(1008,'unauthorized')."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-20",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

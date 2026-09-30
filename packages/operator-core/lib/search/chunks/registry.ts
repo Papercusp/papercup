@@ -104,9 +104,65 @@ export const CHUNK_STORES: readonly ChunkStoreRegistration[] = [
   },
 ];
 
+/**
+ * Plans (P-009, D-014): 1,500-character windows with 250 overlap, up to 32
+ * windows (~41k characters), chunk margin 0 — the bench arm D-014 chose. The
+ * markdown splitter had the best tail MRR but cost short plans too much, so
+ * D-014 rejected it; window chunks carry no anchor, and plans:search derives the
+ * matched section from the winning window's position instead
+ * (agent-tools/plans/semantic-leg.ts). Plans past 32 windows (233 of 2,164,
+ * measured 2026-09-30) lose their tail, counted in parentsTruncatedByMaxChunks.
+ * The header is the title, which the parent vector also embeds
+ * (title + left(content, 2000)). Templates are never searched, so never chunked.
+ * Reader: plans:search, in retrieve mode. plans:new's duplicate guard and the
+ * scout novelty and intent legs read the parent vector alone (D-005).
+ */
+export const PLANS_CHUNK_SURFACE: PapercuspChunkSurface = {
+  surface: 'plans',
+  parent: {
+    table: 'harness_shared.harness_plans',
+    key: ['workspace_id', 'harness_slug', 'plan_slug'],
+  },
+  textSql: 'p.content',
+  headerSql: 'p.title',
+  eligibleSql: 'p.template_slug IS NULL',
+  versionSql: 'p.updated_at',
+  splitter: { kind: 'window', size: 1500, overlap: 250 },
+  maxChunks: 32,
+  chunkMargin: 0,
+  parentVector: { column: 'embedding', profileColumn: 'embedding_profile', modeColumn: 'embedding_mode' },
+};
+
+/**
+ * Operator (chat) turns (P-010, D-017): 1,500-character windows with 250
+ * overlap, up to 8 windows (~11k characters), each chunk's similarity lowered
+ * by 0.06 before best-match pooling — the bench arm D-017 chose (at margin 0
+ * the collection would not be chunked at all). Turns past 8 windows (268 over
+ * 80k characters at P-001) lose their tail, counted in
+ * parentsTruncatedByMaxChunks.
+ *
+ * A turn's text never changes after its INSERT (operator-conversations.ts
+ * appendTurn; turn-answer.ts updates `tools` only), so its creation time
+ * (epoch milliseconds) is its version. No header: a turn has no title line.
+ * Reader: the search:semantic 'turns' source, in retrieve mode.
+ */
+export const OPERATOR_TURNS_CHUNK_SURFACE: PapercuspChunkSurface = {
+  surface: 'operator_turns',
+  parent: { table: 'harness_shared.operator_turns', key: ['id'] },
+  textSql: 'p.text',
+  versionSql: 'to_timestamp(p.created_at / 1000.0)',
+  splitter: { kind: 'window', size: 1500, overlap: 250 },
+  maxChunks: 8,
+  chunkMargin: 0.06,
+  parentVector: { column: 'text_embedding', profileColumn: 'text_embedding_profile', modeColumn: 'text_embedding_mode' },
+  searchSource: 'turns',
+};
+
 export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   // Session turns (P-007): the dedicated store above, not the shared table.
   SESSION_TURN_CHUNK_SURFACE,
+  PLANS_CHUNK_SURFACE,
+  OPERATOR_TURNS_CHUNK_SURFACE,
 ];
 
 /** Bare table name (the storage-growth-alarm's key form). */

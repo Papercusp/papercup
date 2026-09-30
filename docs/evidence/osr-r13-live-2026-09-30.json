@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-13: every public Papercusp repository declares a license",
+  "framework": "operational",
+  "command": [
+    "gh repo list Papercusp --visibility public --limit 100 --json name,licenseInfo"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:21:40Z",
+  "finishedAt": "2026-09-30T06:21:42Z",
+  "summary": "47 public repositories; 0 with null licenseInfo. The one earlier gap (sidestage) was a default-branch problem: its ELv2 LICENSE was on staging while main was frozen by that repo's red gate. The default branch is now staging (D-019).",
+  "assertions": [
+    {
+      "id": "all-licensed",
+      "passed": true,
+      "evidence": "47 repos: apache-2.0 36, other (ELv2) 10, mit 1, null 0."
+    },
+    {
+      "id": "before-fix-control",
+      "passed": true,
+      "evidence": "At 06:18Z the same query returned sidestage with null licenseInfo, so the check can fail."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-13",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

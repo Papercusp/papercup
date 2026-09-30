@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-21: external contributions have a PR route and a CLA",
+  "framework": "operational",
+  "command": [
+    "read CONTRIBUTING.md, CLA.md, .github/workflows/cla.yml in b98518640b8d"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:32:40Z",
+  "finishedAt": "2026-09-30T06:32:41Z",
+  "summary": "CONTRIBUTING describes the route: an accepted pull request is applied in the development tree and exported, and the PR is closed with a link to the exported commit. It names the CLA. CLA.md exists. cla.yml runs contributor-assistant/github-action@v2.6.1 against CLA.md.",
+  "assertions": [
+    {
+      "id": "route",
+      "passed": true,
+      "evidence": "CONTRIBUTING.md:13-16 describe applying the PR in the development tree; the PR itself is not merged directly."
+    },
+    {
+      "id": "cla-named",
+      "passed": true,
+      "evidence": "CONTRIBUTING.md:24 'Agreement (CLA). A bot comments on your first pull request'."
+    },
+    {
+      "id": "cla-workflow",
+      "passed": true,
+      "evidence": "cla.yml:33 uses contributor-assistant/github-action@v2.6.1; path-to-document .../CLA.md."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-21",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

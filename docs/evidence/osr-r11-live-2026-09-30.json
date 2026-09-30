@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-11: a fresh public build sends no telemetry before opt-in",
+  "framework": "operational",
+  "command": [
+    "VM osr18b (fresh overlay, desktop booted from b98518640b8d per README): sudo tcpdump -n -i any '(udp port 53) or (tcp SYN and not 127/8 and not 10.0.2.2)' for 240s, 06:20:57Z-06:24:57Z",
+    "positive control inside the window: getent hosts r11-positive-control.example.com; curl https://example.com"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:20:57Z",
+  "finishedAt": "2026-09-30T06:24:57Z",
+  "summary": "The running app sent nothing to the network before opt-in. Over the 240s window the only outbound SYN was the control curl (104.20.23.154:443), and the only DNS queries were for the two control names. The instrument saw both control actions, so it was capturing. In code, telemetry-flush.ts forwards only when NODE_ENV=production and (setup_wizard_state.telemetry_enabled or PAPERCUSP_INTERNAL_BUILD=true). A fresh install has neither. Caveat: this was a README dev boot, so NODE_ENV was not production. The capture shows zero egress. The production path is covered by the code review (D-010).",
+  "assertions": [
+    {
+      "id": "no-egress-before-opt-in",
+      "passed": true,
+      "evidence": "tcpdump: 27 lines, 38 packets. The only SYN was to 104.20.23.154.443 (the control). DNS: example.com and r11-positive-control.example.com only (the controls)."
+    },
+    {
+      "id": "instrument-positive-control",
+      "passed": true,
+      "evidence": "Both control actions appear in the capture, so a telemetry request would have been seen."
+    },
+    {
+      "id": "opt-in-gate-in-code",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/telemetry-flush.ts: optedIn=Boolean(setup_wizard_state.telemetry_enabled); send only if isProd && (optedIn || internalBuild)."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-11",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

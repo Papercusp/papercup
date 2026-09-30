@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-17: an owner-assigned work-item tracks the trademark filing",
+  "framework": "operational",
+  "command": [
+    "work_items:get { id:'WI-10004102' }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:28:25Z",
+  "finishedAt": "2026-09-30T06:28:26Z",
+  "summary": "WI-10004102 'Owner action: file a \"Papercusp\" trademark application (USPTO)' is open, with payload.needsOwnerAction=true and payload.ownerAssignee='owner:Avi'.",
+  "assertions": [
+    {
+      "id": "tracked",
+      "passed": true,
+      "evidence": "WI-10004102 state open, needsOwnerAction true, ownerAssignee owner:Avi, ownerAction names the USPTO filing."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-17",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

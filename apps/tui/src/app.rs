@@ -3939,8 +3939,11 @@ impl App {
         }
         self.agent_chat_id = Some(envelope.session.agent_chat_id.clone());
         // WI-10004162: a live event lands after the whole restored history.
-        if !replayed {
-            self.flush_su_replay_tail();
+        // Field access, not `flush_su_replay_tail`: `state` still borrows
+        // `self.su_session` for the arms below.
+        if !replayed && !self.su_replay_tail.is_empty() {
+            let tail = std::mem::take(&mut self.su_replay_tail);
+            self.chat_messages.extend(tail);
         }
 
         match event {

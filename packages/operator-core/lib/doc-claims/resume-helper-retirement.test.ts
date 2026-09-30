@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { stripComments } from './gate-candidate-ref';
+import { presentOnDisk } from '../../../../scripts/lib/tracked-files.mjs';
 
 // lib/doc-claims -> lib -> operator-core -> packages -> repo root
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -49,7 +50,9 @@ function trackedProductionSources(): SourceEntry[] {
         'refusing to report a clean zero-match result over an incomplete index',
     );
   }
-  return files.map((path) => ({ path, source: readFileSync(join(ROOT, path), 'utf8') }));
+  // The index keeps listing an rm'd path until git-sync commits the deletion;
+  // reading it would throw ENOENT on the shared tree (WI-10004173).
+  return presentOnDisk(files, ROOT).map((path) => ({ path, source: readFileSync(join(ROOT, path), 'utf8') }));
 }
 
 function findSites(entries: SourceEntry[], pattern: RegExp): ReferenceSite[] {

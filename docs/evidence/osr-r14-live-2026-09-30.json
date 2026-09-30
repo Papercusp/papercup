@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-14: secret scanners report no unreviewed finding on the launch commit",
+  "framework": "operational",
+  "command": [
+    "node scripts/source-preview.mjs push --target public --ref e89081e --confirm (log .papercusp/scratch/osr/push-real.out)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T05:45:00Z",
+  "finishedAt": "2026-09-30T05:50:00Z",
+  "summary": "The export gate for the pushed commit b98518640b8d ran all four audits clean: audit-release-bundle, audit-release-bundle --scan-dir, gitleaks and trufflehog. No finding needed triage, so no rotation record is owed.",
+  "assertions": [
+    {
+      "id": "gate-clean",
+      "passed": true,
+      "evidence": "push-real.out: '✓ audit-release-bundle: clean', '✓ audit-release-bundle --scan-dir: clean', '✓ gitleaks: clean', '✓ trufflehog: clean'."
+    },
+    {
+      "id": "gate-judged-launch-commit",
+      "passed": true,
+      "evidence": "push-real.out: 'pushed b98518640b8d026adfc59b7149ed6334dcdd0c2f (parent 96a6ba72...) (tree ca581d4c...) = Papercusp/papercup@e89081ee...'."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-14",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-16: paid features are enforced server-side; closed cloud services are absent from the cut",
+  "framework": "operational",
+  "command": [
+    "read packages/operator-core/lib/auth/hosted-entitlements.ts in the cut",
+    "git ls-files | grep -ciE '^(apps/(cloud|billing|hosted-control|portal)|services/(billing|cloud))/'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:34:30Z",
+  "finishedAt": "2026-09-30T06:34:31Z",
+  "summary": "Hosted entitlement resolution is server-side and fails closed. Its header says 'authority fails closed with a stable audit reason', and invalid input returns null, meaning no entitlement. No closed cloud-service tree is in the public cut (D-015).",
+  "assertions": [
+    {
+      "id": "fail-closed",
+      "passed": true,
+      "evidence": "hosted-entitlements.ts:8 'authority fails closed with a stable audit reason'; :117, :319-320 and :333 return null on invalid input."
+    },
+    {
+      "id": "closed-services-absent",
+      "passed": true,
+      "evidence": "0 tracked files under apps/{cloud,billing,hosted-control,portal} or services/{billing,cloud} in the public cut Papercusp/papercusp-app@b98518640b8d026adfc59b7149ed6334dcdd0c2f."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-16",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

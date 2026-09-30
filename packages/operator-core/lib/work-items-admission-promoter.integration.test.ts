@@ -2014,6 +2014,39 @@ describe('work-item admission promoter (real Postgres)', () => {
     });
   });
 
+  it('rolls queue health up over the admission-pipeline population, never an unadmitted row payload (WI-10003692)', async () => {
+    // Two rows that entered admission.
+    await seedItem({ id: 'WI-pipeline-pending', admission: 'pending' });
+    await seedItem({
+      id: 'WI-pipeline-reviewed',
+      admission: 'admitted',
+      payload: { admissionReview: { state: 'reviewed', reviewedAt: '2026-08-26T11:00:00Z' } },
+    });
+    // Two rows that never entered admission (admission and admitted_at both NULL),
+    // the shape of the ~140k live agent observations. Their payloads carry review
+    // states that WOULD count if the rollup still read every row's payload: no
+    // admissionReview writer produces this pairing, so counting them would be
+    // both wrong and the ~4s detoast of the whole harness this item removed.
+    await seedItem({
+      id: 'EI-observation-reviewed',
+      admission: null,
+      payload: { admissionReview: { state: 'reviewed' }, note: 'x'.repeat(4096) },
+    });
+    await seedItem({
+      id: 'EI-observation-terminal',
+      admission: null,
+      payload: { admissionReview: { state: 'terminal', terminalOutcome: 'duplicate-merge' } },
+    });
+
+    const snapshot = await readWorkItemAdmissionSnapshot({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+
+    expect(snapshot.summary).toMatchObject({
+      pending: 1,
+      unreviewed: 0,
+      reviewDebt: { pending: 0, reReviewed: 1, stillOpen: 1, terminal: 0 },
+    });
+  });
+
   it('starts every independent owner-snapshot read before any of them resolves', async () => {
     const started: string[] = [];
     const resolved: string[] = [];

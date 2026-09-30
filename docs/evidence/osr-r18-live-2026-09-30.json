@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-18: a stranger can build and boot the desktop from the README on a fresh machine",
+  "framework": "operational",
+  "command": [
+    "fresh VM osr18b (150G overlay off golden; no node/npm/cargo/gcc/psql preinstalled) running guest-r18.sh: clone b98518640b8d, README steps apt-prereqs, toolchains, npm ci, lint-tsc, ui-build, desktop-ci, desktop-dev",
+    "curl http://127.0.0.1:3270/api/health; scrot window capture"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T05:55:43Z",
+  "finishedAt": "2026-09-30T06:15:50Z",
+  "summary": "Every README step exited 0 on a machine with no toolchain. npm run lint:tsc reported LINT_TSC_RESULT exit=0 status=clean head=b98518640b. The desktop booted with its own embedded Postgres on :5532. The operator served /api/health {ok:true, sha:b9851864} on :3270 and the SPA root returned 200 (38793 bytes). The X window 'Papercusp' (1278x775) was on screen. Screenshot sha256 e9e24b05a8bc07f1f6a7979ab914f6e65e632323b7d13d4ea21289a722c4acc4.",
+  "assertions": [
+    {
+      "id": "steps-rc0",
+      "passed": true,
+      "evidence": "~/r18/steps.log: apt-prereqs .. desktop-ci all 'END ... rc=0'; desktop-dev LAUNCHED pid 13703 at 06:02:18Z."
+    },
+    {
+      "id": "typecheck",
+      "passed": true,
+      "evidence": "LINT_TSC_RESULT label=operator-core scope=all exit=0 status=clean head=b98518640b"
+    },
+    {
+      "id": "boot-health",
+      "passed": true,
+      "evidence": "06:15:49Z GET :3270/api/health -> {\"ok\":true,\"service\":\"papercusp-operator\",\"sha\":\"b9851864\"}."
+    },
+    {
+      "id": "window",
+      "passed": true,
+      "evidence": "xwininfo: 0xa00003 \"Papercusp\" 1278x775; the screenshot is a 1280x800 PNG."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-18",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

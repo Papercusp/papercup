@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4: no lockfile in the public cut resolves @codesandbox/nodebox or @mdxeditor/editor",
+  "framework": "operational",
+  "command": [
+    "git ls-files | grep -E '(package-lock.json|pnpm-lock.yaml|yarn.lock)$' | xargs grep -lE 'nodebox|mdxeditor' | wc -l",
+    "git grep -n -e '@codesandbox/nodebox' -e '@mdxeditor/editor' -- . ':!*.md'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:32:40Z",
+  "finishedAt": "2026-09-30T06:32:41Z",
+  "summary": "0 of 6 lockfiles in the cut mention nodebox or mdxeditor. The 4 remaining source mentions are comments or an advisory-baseline reason string, not dependencies.",
+  "assertions": [
+    {
+      "id": "no-lockfile-resolution",
+      "passed": true,
+      "evidence": "lockfiles total 6; lockfiles matching nodebox|mdxeditor: 0 (the public cut Papercusp/papercusp-app@b98518640b8d026adfc59b7149ed6334dcdd0c2f)."
+    },
+    {
+      "id": "remaining-mentions-are-prose",
+      "passed": true,
+      "evidence": "pinned-lock-deps.mjs:8 comment; setup-release-checkout.sh:1307 comment; check-licenses.mjs:12 comment; reachable-advisories-baseline.json:126 reason text."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-4",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

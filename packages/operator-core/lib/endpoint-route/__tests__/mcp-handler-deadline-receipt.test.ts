@@ -195,7 +195,9 @@ const { mcpHandler } = await import('../routes/transport/_mcp-handler');
 // request so importing pure helpers remains one-shot and side-effect-free.
 // Warm the production path once before reading the handlers captured by the
 // mocked adapter below.
-await mcpHandler(new Request('http://127.0.0.1/api/mcp'));
+// A LOCAL caller: a real one always sends a loopback Host, and a host-less outside request is
+// answered at the edge with the P-006 OAuth 401 before the host (and its handlers) ever load.
+await mcpHandler(new Request('http://127.0.0.1/api/mcp', { headers: { host: '127.0.0.1' } }));
 const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
 
 /* ─── One synthetic probe: sleeps well past the deadline, then returns a

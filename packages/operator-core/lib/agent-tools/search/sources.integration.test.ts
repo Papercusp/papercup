@@ -287,6 +287,27 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
     );
   `);
 
+  // ── text_chunks (1242-text-chunks.sql): the shared chunk store the registry
+  //    collections write (generic-rag-chunking P-010 reads it for turns). ──
+  await s.unsafe(`
+    CREATE TABLE harness_shared.text_chunks (
+      surface           TEXT    NOT NULL,
+      parent_key        TEXT[]  NOT NULL,
+      chunk_idx         INTEGER NOT NULL,
+      anchor            TEXT,
+      header            TEXT,
+      content           TEXT    NOT NULL,
+      parent_sha        TEXT    NOT NULL,
+      chunk_sha         TEXT    NOT NULL,
+      splitter_version  TEXT    NOT NULL,
+      embedding         public.vector(384),
+      embedding_mode    TEXT,
+      embedding_profile TEXT,
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (surface, parent_key, chunk_idx)
+    );
+  `);
+
   // ── coord_event_log (501 coord_message search leg) ───────────────────────
   // The coord-message source has no transcript session key. Keep a real
   // matching row in this fixture so its explicit-session fail-closed guard is
@@ -523,6 +544,49 @@ async function seedChunks(s: postgres.Sql): Promise<void> {
            WHERE workspace_id = ${WS_B} AND session_id = ${CH_SESSION}`;
 }
 
+/**
+ * generic-rag-chunking P-010 (D-017): the `turns` embedding leg reads each
+ * operator turn's window chunks from harness_shared.text_chunks (surface
+ * 'operator_turns', parent key [id]), less the 0.06 chunk margin. Its own
+ * workspace (WS_P010) so the WS_A/WS_B turn assertions above keep their counts.
+ *   LONG  — own vector far (θ=1.2), one chunk near (θ=0.05)
+ *   SHORT — own vector at θ=0.5, no chunks
+ *   EDGE  — own vector far (θ=1.3); its chunk (θ=0.45) beats SHORT's vector by
+ *           less than the margin, so it must rank BELOW SHORT
+ *   DECOY — another workspace's turn, own vector far, chunk exactly on the query
+ */
+const WS_P010 = 'ws-p010';
+const P010 = { long: '', short: '', edge: '', decoy: '' };
+
+async function seedTurnChunks(s: postgres.Sql): Promise<void> {
+  const [conv] = await s<{ id: string }[]>`
+    INSERT INTO harness_shared.operator_conversations (workspace_id, started_at) VALUES (${WS_P010}, 3) RETURNING id`;
+  const [convDecoy] = await s<{ id: string }[]>`
+    INSERT INTO harness_shared.operator_conversations (workspace_id, started_at) VALUES (${WS_B}, 4) RETURNING id`;
+  const turn = async (convId: string, seq: number, text: string, theta: number): Promise<string> => {
+    const [row] = await s<{ id: string }[]>`
+      INSERT INTO harness_shared.operator_turns (conversation_id, seq, role, text, text_embedding)
+      VALUES (${convId}, ${seq}, 'assistant', ${text}, ${vecLit(theta)}::vector) RETURNING id`;
+    return row!.id;
+  };
+  const chunk = async (turnId: string, idx: number, theta: number): Promise<void> => {
+    await s`INSERT INTO harness_shared.text_chunks
+              (surface, parent_key, chunk_idx, content, parent_sha, chunk_sha, splitter_version,
+               embedding, embedding_mode, embedding_profile)
+            VALUES ('operator_turns', ${[turnId]}::text[], ${idx}, 'window text', 'sha', ${`${turnId}-${idx}`}, 'test',
+                    ${vecLit(theta)}::vector, 'gemma', 'gemma-embeddinggemma-300m-768@v1')`;
+  };
+  P010.long = await turn(conv!.id, 0, `${'preamble '.repeat(250)} buried kubernetes answer`, 1.2);
+  await chunk(P010.long, 0, 1.1);
+  await chunk(P010.long, 1, 0.05);
+  P010.short = await turn(conv!.id, 1, 'short kubernetes reply', 0.5);
+  P010.edge = await turn(conv!.id, 2, `${'filler '.repeat(300)} edge`, 1.3);
+  await chunk(P010.edge, 0, 0.45);
+  // No query term in its text, so the WS_B lexical assertions above keep their count.
+  P010.decoy = await turn(convDecoy!.id, 0, 'decoy chunked turn', 1.4);
+  await chunk(P010.decoy, 0, 0);
+}
+
 const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => ({
   sql,
   query: 'kubernetes',
@@ -544,7 +608,45 @@ beforeAll(async () => {
   await seedP17(sql);
   await seedCompactToken(sql);
   await seedChunks(sql);
+  await seedTurnChunks(sql);
 }, 60_000);
+
+describe('P-010 — turns.embedding reads operator-turn chunks (D-017)', () => {
+  const run = () => embeddingOf('turns')({ ...params({ workspaceId: WS_P010 }), qVec: QVEC });
+  const ids = (out: Awaited<ReturnType<typeof run>>) => out.map((r) => r.row.source_id);
+
+  it('a turn whose only near match is a chunk past the cut ranks first, scored by that chunk less the margin', async () => {
+    const out = await run();
+    expect(ids(out)[0]).toBe(P010.long);
+    expect(out[0]!.row.score).toBeCloseTo(Math.cos(0.05) - 0.06, 5);
+    // One row per turn however many of its chunks matched.
+    expect(ids(out).filter((id) => id === P010.long)).toHaveLength(1);
+  });
+
+  it('the 0.06 margin keeps a chunk that only just beats a turn\'s own vector below it', async () => {
+    // Without the margin EDGE's chunk (cos 0.45 = .900) outranks SHORT's own vector (cos 0.5 = .878);
+    // with it (.840) it does not.
+    expect(Math.cos(0.45)).toBeGreaterThan(Math.cos(0.5));
+    expect(Math.cos(0.45) - 0.06).toBeLessThan(Math.cos(0.5));
+    const order = ids(await run());
+    expect(order.indexOf(P010.short)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(P010.short)).toBeLessThan(order.indexOf(P010.edge));
+  });
+
+  it('SECURITY — the chunk leg is scoped through the conversation: another workspace\'s on-query chunk never appears', async () => {
+    const out = await run();
+    expect(ids(out)).not.toContain(P010.decoy);
+    expect(ids(out).sort()).toEqual([P010.long, P010.short, P010.edge].sort());
+  });
+
+  it('a chunk embedded in another space is not read', async () => {
+    const out = await embeddingOf('turns')({
+      ...params({ workspaceId: WS_P010, embeddingProfile: { profileId: 'openai-text-embedding-3-small-768@v1', legacyMode: null } }),
+      qVec: QVEC,
+    });
+    expect(out).toEqual([]);
+  });
+});
 
 afterAll(async () => {
   await db?.cleanup();

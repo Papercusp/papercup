@@ -14,7 +14,7 @@
  *      which silently reduced the default enumeration to ~33 files.
  */
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ import { describe, expect, it } from 'vitest';
 // prettier disable below stays: it governs this import's line WIDTH, independent of the
 // removed directive.
 // eslint-disable-next-line prettier/prettier
-import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
+import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles, presentOnDisk } from '../../../scripts/lib/tracked-files.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -297,6 +297,45 @@ describe('tracked-files helper (WI-6730)', () => {
         }
       });
       expect(unreadable).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('omits a tracked path rm-ed from disk but not yet swept, and keeps a dangling tracked symlink (WI-10004173)', () => {
+    // THE REGRESSION, measured 2026-09-30: an agent deleted 11 tracked files with plain
+    // `rm` on the shared tree. Until git-sync committed the deletion the index still
+    // listed them, and three whole-tree guards that read every enumerated path went red
+    // with ENOENT for every agent that ran them in that window.
+    const root = mkdtempSync(join(tmpdir(), 'tracked-files-deleted-'));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      git('init', '-q');
+      git('config', 'user.email', 'test@example.invalid');
+      git('config', 'user.name', 'test');
+      writeFileSync(join(root, 'kept.ts'), 'x\n');
+      writeFileSync(join(root, 'deleted.ts'), 'x\n');
+      writeFileSync(join(root, 'target.ts'), 'x\n');
+      symlinkSync('target.ts', join(root, 'link.ts'));
+      git('add', '-A');
+      git('commit', '-qm', 'fixture');
+      rmSync(join(root, 'deleted.ts'));
+      // The symlink's TARGET goes too: the link itself is a real directory entry.
+      rmSync(join(root, 'target.ts'));
+
+      // Non-vacuity: the index really does still list the rm-ed path.
+      expect(git('ls-files').split('\n')).toContain('deleted.ts');
+
+      for (const scan of [listTrackedFiles(root), listFilesIncludingUntracked(root)] as Array<{ files: string[] }>) {
+        expect(scan.files).not.toContain('deleted.ts');
+        expect(scan.files).not.toContain('target.ts');
+        expect(scan.files).toContain('kept.ts');
+        expect(scan.files).toContain('link.ts');
+        // The downstream property: a guard can open every enumerated entry.
+        for (const file of scan.files) expect(() => lstatSync(join(root, file))).not.toThrow();
+      }
+      expect(presentOnDisk(['kept.ts', 'deleted.ts', 'link.ts'], root)).toEqual(['kept.ts', 'link.ts']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

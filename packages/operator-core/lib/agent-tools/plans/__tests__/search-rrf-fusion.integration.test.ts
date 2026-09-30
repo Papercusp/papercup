@@ -106,6 +106,7 @@ interface Hit {
   score: number;
   semantic?: true;
   similarity?: number;
+  matchedSection?: string;
   matches: Array<{ scope: string; snippet: string }>;
 }
 
@@ -191,6 +192,18 @@ describe('plans:search RRF fusion (WI-5683)', () => {
     expect(n1?.semantic).toBeUndefined();
     expect(n1?.similarity).toBe(0.5);
     expect(n1?.matches.some((m) => m.scope === 'now')).toBe(true);
+  });
+
+  it('a chunk match\'s section rides through fusion onto the hit, and only onto that hit (P-009)', async () => {
+    queryTopPlans.mockResolvedValue([
+      { slug: BURIED_SLUG, harness: HARNESS, title: 'The exact topic plan', status: 'active', archived: false, similarity: 0.91, matchedSection: 'D-014 Plans window split' },
+      { slug: SLUG_N1, harness: HARNESS, title: 'Gadget noise one', status: 'active', archived: false, similarity: 0.5 },
+    ]);
+    const { hits } = await runSearch('gadget');
+    expect(hits.find((h) => h.plan === BURIED_SLUG)?.matchedSection).toBe('D-014 Plans window split');
+    // A plan whose own vector matched (no section) and a lexical-only plan carry none.
+    expect(hits.find((h) => h.plan === SLUG_N1)?.matchedSection).toBeUndefined();
+    expect(hits.find((h) => h.plan === SLUG_N2)?.matchedSection).toBeUndefined();
   });
 
   it('fails open to lexical-only ranking when the semantic leg throws', async () => {

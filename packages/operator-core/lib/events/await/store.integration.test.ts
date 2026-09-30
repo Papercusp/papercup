@@ -61,6 +61,8 @@ const {
   countActiveAwaitsByPrefixes,
   countActiveAwaitsByKeyShapes,
   recordKeyFire,
+  keyFireId,
+  clearKeyFire,
   getKeyFireLatch,
   inspectEventKey,
   probeKeyFireEvidence,
@@ -703,45 +705,74 @@ describe('await-event store (PG)', () => {
   it('recordKeyFire reports announcementPending only while an unfired current announcement exists (WI-10003631)', async () => {
     const eventKey = 'gate:announce-probe';
     // No announcement → the emit may skip the locked stamp.
-    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    expect(await recordKeyFire({ eventKey })).toMatchObject({ announcementPending: false });
     await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
     // Unfired announcement → the emit must take the locked stamp path.
-    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: true });
+    expect(await recordKeyFire({ eventKey })).toMatchObject({ announcementPending: true });
     expect(await stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).toBe(1);
     // Latched → no pending gate; the latch still counts every fire.
-    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    expect(await recordKeyFire({ eventKey })).toMatchObject({ announcementPending: false });
     const [latch] = await rootSql`
       SELECT fire_count FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}
     `;
     expect(Number(latch.fire_count)).toBe(3);
   });
 
+  it('recordKeyFire returns the fire identity of exactly the fire it recorded; a clear + re-fire mints a new one (P-018 D-029 §2)', async () => {
+    const eventKey = 'gate:fire-identity-probe';
+    const first = await recordKeyFire({ eventKey });
+    const second = await recordKeyFire({ eventKey });
+    expect(first.fire?.count).toBe(1);
+    expect(second.fire?.count).toBe(2);
+    // first_fired_at survives the upsert, so the two fires differ only by count.
+    expect(first.fire?.firstFiredAtUs).toMatch(/^\d{16}$/);
+    expect(second.fire?.firstFiredAtUs).toBe(first.fire?.firstFiredAtUs);
+    const [row] = await rootSql`
+      SELECT floor(extract(epoch FROM first_fired_at) * 1000000)::bigint::text AS us
+        FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}
+    `;
+    expect(first.fire?.firstFiredAtUs).toBe(row.us);
+    expect(keyFireId(eventKey, second.fire!)).toBe(`${eventKey}@${row.us}#2`);
+
+    // A reopen clears the latch; the next fire restarts at count 1 with a NEW
+    // first_fired_at, so its id can never collide with the pre-clear fire #1.
+    await clearKeyFire(eventKey, { firedBefore: Date.now() + 1000 });
+    const refired = await recordKeyFire({ eventKey });
+    expect(refired.fire?.count).toBe(1);
+    expect(refired.fire?.firstFiredAtUs).not.toBe(first.fire?.firstFiredAtUs);
+    expect(keyFireId(eventKey, refired.fire!)).not.toBe(keyFireId(eventKey, first.fire!));
+  });
+
   it('recordKeyFire folds the active event-key subscriber read into the latch statement (WI-10003631)', async () => {
     const eventKey = 'gate:subscriber-fold-probe';
     const from = { workspaceId: 'ws-sub-fold', targetKind: 'event' };
     // Omitted scope → no subscriber field (the emit falls back to its own read).
-    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    expect(await recordKeyFire({ eventKey })).not.toHaveProperty('eventSubscribers');
     expect(await recordKeyFire({ eventKey, subscribersFrom: from }))
-      .toEqual({ announcementPending: false, eventSubscribers: [] });
+      .toMatchObject({ announcementPending: false, eventSubscribers: [] });
     await rootSql`
       INSERT INTO harness_shared.coord_entity_subscriptions
-        (id, workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, cancelled_at, expires_ts)
+        (id, workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, cancelled_at, expires_ts,
+         derived_from_kind, derived_from_ref)
       VALUES
-        (1, ${from.workspaceId}, 'late', 'event', ${eventKey}, 'full', now(), NULL, NULL),
-        (2, ${from.workspaceId}, 'early', 'event', ${eventKey}, 'muted', now() - interval '1 minute', NULL, NULL),
-        (3, ${from.workspaceId}, 'cancelled', 'event', ${eventKey}, 'full', now(), now(), NULL),
-        (4, ${from.workspaceId}, 'expired', 'event', ${eventKey}, 'full', now(), NULL, now() - interval '1 second'),
-        (5, 'other-ws', 'foreign', 'event', ${eventKey}, 'full', now(), NULL, NULL),
-        (6, ${from.workspaceId}, 'topic-sub', 'topic', ${eventKey}, 'full', now(), NULL, NULL)
+        (1, ${from.workspaceId}, 'late', 'event', ${eventKey}, 'full', now(), NULL, NULL, NULL, NULL),
+        (2, ${from.workspaceId}, 'early', 'event', ${eventKey}, 'muted', now() - interval '1 minute', NULL, NULL,
+         'identity-rule', 'su-wearer'),
+        (3, ${from.workspaceId}, 'cancelled', 'event', ${eventKey}, 'full', now(), now(), NULL, NULL, NULL),
+        (4, ${from.workspaceId}, 'expired', 'event', ${eventKey}, 'full', now(), NULL, now() - interval '1 second', NULL, NULL),
+        (5, 'other-ws', 'foreign', 'event', ${eventKey}, 'full', now(), NULL, NULL, NULL, NULL),
+        (6, ${from.workspaceId}, 'topic-sub', 'topic', ${eventKey}, 'full', now(), NULL, NULL, NULL, NULL)
     `;
-    // Active rows only, in created order; muted rows are returned (the emit filters them).
-    expect(await recordKeyFire({ eventKey, subscribersFrom: from })).toEqual({
-      announcementPending: false,
-      eventSubscribers: [
-        { subscriber_id: 'early', delivery_mode: 'muted' },
-        { subscriber_id: 'late', delivery_mode: 'full' },
-      ],
-    });
+    // Active rows only, in created order; muted rows are returned (the emit filters
+    // them), and the derived-from pair rides along so the emit can recognise
+    // machine-maintained rows by column (P-018 D-029 §2).
+    const folded = await recordKeyFire({ eventKey, subscribersFrom: from });
+    expect(folded.announcementPending).toBe(false);
+    expect(folded.fire?.count).toBe(4);
+    expect(folded.eventSubscribers).toEqual([
+      { subscriber_id: 'early', delivery_mode: 'muted', derived_from_kind: 'identity-rule', derived_from_ref: 'su-wearer' },
+      { subscriber_id: 'late', delivery_mode: 'full', derived_from_kind: null, derived_from_ref: null },
+    ]);
   });
 
   it('discovers fired announcement history after cancellation and ignores unannounced fire latches', async () => {

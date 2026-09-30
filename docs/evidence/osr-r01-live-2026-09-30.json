@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-1: every P-001 open question has a recorded plan decision",
+  "framework": "operational",
+  "command": [
+    "plans:get { slug:'open-source-release-2026-09-29', heading:'Decisions' } vs the '## Open questions' list"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:35:00Z",
+  "finishedAt": "2026-09-30T06:36:00Z",
+  "summary": "All 7 P-001 open questions (0-6) map to recorded Decisions D-001..D-020.",
+  "assertions": [
+    {
+      "id": "q0-repo-model",
+      "passed": true,
+      "evidence": "One repo or two -> D-004 (two repos) and D-016 (Papercusp/papercusp-app public, Papercusp/papercusp private)."
+    },
+    {
+      "id": "q1-license",
+      "passed": true,
+      "evidence": "License per layer -> D-003 (ELv2 product, libs/generic MIT/Apache)."
+    },
+    {
+      "id": "q2-cla",
+      "passed": true,
+      "evidence": "CLA vs DCO -> D-004 (CLA), implemented by CLA.md and cla.yml (R-21)."
+    },
+    {
+      "id": "q3-closed-set",
+      "passed": true,
+      "evidence": "What stays closed -> D-004, corrected by D-009 (publish-auth ships) and D-015 (cloud-tier boundary)."
+    },
+    {
+      "id": "q4-trademark",
+      "passed": true,
+      "evidence": "Trademark -> D-008: owner legal action tracked on WI-10004102 (needsOwnerAction)."
+    },
+    {
+      "id": "q5-sequencing",
+      "passed": true,
+      "evidence": "Sequencing vs preview invites -> D-004 and D-008."
+    },
+    {
+      "id": "q6-repo-name",
+      "passed": true,
+      "evidence": "Public repo name -> D-016 (Papercusp/papercusp-app)."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-1",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

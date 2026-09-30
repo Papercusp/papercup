@@ -450,7 +450,9 @@ const { registerMcpHost, mcpHostServerOptions, MCP_SERVER_CAPABILITIES, tryBuild
 // process-wide cleanup interval until the first real HTTP request. Warm that
 // production path once so this fixture can capture the same request handlers
 // while keeping direct helper imports one-shot and side-effect-free.
-await mcpHandler(new Request('http://127.0.0.1/api/mcp'));
+// A LOCAL caller: a real one always sends a loopback Host, and a host-less outside request is
+// answered at the edge with the P-006 OAuth 401 before the host (and its handlers) ever load.
+await mcpHandler(new Request('http://127.0.0.1/api/mcp', { headers: { host: '127.0.0.1' } }));
 
 /* ─── Synthetic probe tools ──────────────────────────────────────────── */
 

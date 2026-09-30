@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-22: the public default branch head is the gated commit",
+  "framework": "operational",
+  "command": [
+    "gh api repos/Papercusp/papercusp-app/commits/main --jq .sha",
+    "git clone --depth 1 && git rev-parse HEAD"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:05:30Z",
+  "finishedAt": "2026-09-30T06:05:31Z",
+  "summary": "The public main head is b98518640b8d026adfc59b7149ed6334dcdd0c2f, the commit the export gate passed and pushed (push-real.out).",
+  "assertions": [
+    {
+      "id": "head-equals-gated",
+      "passed": true,
+      "evidence": "api main=b98518640b8d026adfc59b7149ed6334dcdd0c2f; clone HEAD=b98518640b8d026adfc59b7149ed6334dcdd0c2f; gate log 'pushed b98518640b8d026adfc59b7149ed6334dcdd0c2f'."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-22",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}
