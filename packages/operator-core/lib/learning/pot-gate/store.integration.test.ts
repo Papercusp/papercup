@@ -17,6 +17,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { dropDatabaseWithLock, getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../../gym/gym-db-init';
@@ -25,10 +27,12 @@ import {
   disabledPotSlugs,
   getPotLearningScope,
   listPotLearningScope,
+  normalizePauseProvenance,
   potLearningEnabled,
   potScopeResolver,
   setPotLearningScope,
 } from './store';
+import { isDeliberatePause } from './core';
 
 let sql: postgres.Sql;
 let containerUri: string;
@@ -193,5 +197,126 @@ describe('learning-pot-scope store', () => {
     await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [POT], enabled: true, setBy: 'su-test' });
     expect(await potLearningEnabled(sql, { workspaceId: WS, potSlug: POT })).toBe(true);
     expect(await laneSnapshot()).toEqual(before); // restored to EXACTLY what was armed
+  });
+});
+
+// WI-10002099 — migration 1271: structured deliberate-pause provenance. Replaces
+// the hand-typed ' (owner directive)' suffix on set_by, which had already drifted
+// (absent on the one row that mattered) and misled a peer into filing a major bug
+// against a deliberate pause.
+describe('learning-pot-scope pause provenance (migration 1271)', () => {
+  const PWS = 'ws-pot-scope-pause';
+
+  it('round-trips reason / ownerDirected / reviewBy and reads them back as a deliberate pause', async () => {
+    const reviewBy = new Date('2026-12-01T00:00:00.000Z');
+    const [written] = await setPotLearningScope(sql, {
+      workspaceId: PWS,
+      potSlugs: ['paused-on-purpose'],
+      enabled: false,
+      setBy: 'su-test',
+      pauseReason: 'owner directive 2026-09-15: re-arm only on the owner\'s word (WI-10001478)',
+      ownerDirected: true,
+      reviewBy,
+    });
+    expect(written.setBy).toBe('su-test'); // bare identity — no provenance suffix
+    expect(written.ownerDirected).toBe(true);
+    expect(written.pauseReason).toContain('WI-10001478');
+    expect(written.reviewBy).toBe(reviewBy.getTime());
+    expect(isDeliberatePause(written)).toBe(true);
+
+    const read = await getPotLearningScope(sql, { workspaceId: PWS, potSlug: 'paused-on-purpose' });
+    expect(read).toEqual(written);
+  });
+
+  it('a bare switch-off is an UNEXPLAINED pause, not a deliberate one', async () => {
+    const [written] = await setPotLearningScope(sql, {
+      workspaceId: PWS,
+      potSlugs: ['bare-off'],
+      enabled: false,
+      setBy: 'su-test',
+    });
+    expect(written.pauseReason).toBeNull();
+    expect(written.ownerDirected).toBe(false);
+    expect(written.reviewBy).toBeNull();
+    expect(isDeliberatePause(written)).toBe(false);
+  });
+
+  it('re-enabling CLEARS the pause record so a learning pot never keeps a stale owner-directive stamp', async () => {
+    await setPotLearningScope(sql, {
+      workspaceId: PWS,
+      potSlugs: ['flip-back'],
+      enabled: false,
+      setBy: 'su-test',
+      pauseReason: 'owner directive #1',
+      ownerDirected: true,
+      reviewBy: new Date('2026-12-01T00:00:00.000Z'),
+    });
+    const [back] = await setPotLearningScope(sql, {
+      workspaceId: PWS,
+      potSlugs: ['flip-back'],
+      enabled: true,
+      setBy: 'su-test',
+      pauseReason: 'ignored while enabling',
+      ownerDirected: true,
+    });
+    expect(back.enabled).toBe(true);
+    expect(back.pauseReason).toBeNull();
+    expect(back.ownerDirected).toBe(false);
+    expect(back.reviewBy).toBeNull();
+  });
+
+  it('refuses ownerDirected without a citation — in the store AND (belt and braces) in the DB', () => {
+    expect(() => normalizePauseProvenance({ enabled: false, ownerDirected: true })).toThrow(/pauseReason/);
+    expect(() => normalizePauseProvenance({ enabled: false, ownerDirected: true, pauseReason: '  ' })).toThrow(/pauseReason/);
+    return expect(
+      sql`INSERT INTO harness_shared.learning_pot_scope (workspace_id, pot_slug, enabled, owner_directed)
+          VALUES (${PWS}, 'db-guard', false, true)`,
+    ).rejects.toThrow(/owner_directed_needs_reason/);
+  });
+
+  it('the DB refuses a pause record on an ENABLED row', async () => {
+    await expect(
+      sql`INSERT INTO harness_shared.learning_pot_scope (workspace_id, pot_slug, enabled, pause_reason)
+          VALUES (${PWS}, 'db-guard-2', true, 'stale')`,
+    ).rejects.toThrow(/pause_record_only_while_paused/);
+  });
+
+  it('migration backfill: a legacy " (owner directive)" set_by suffix becomes owner_directed + a bare identity', async () => {
+    // provisionGymDatabase applies every migration to an EMPTY table, so the
+    // backfill has nothing to convert at provision time. Seed the legacy shape
+    // (the new columns default to the pre-1271 state), then re-run the migration
+    // file itself — it is idempotent by construction (IF NOT EXISTS / guarded DO).
+    await sql`INSERT INTO harness_shared.learning_pot_scope (workspace_id, pot_slug, enabled, set_by)
+              VALUES (${PWS}, 'legacy-directive', false, 'su-8c2ebfa6 (owner directive)'),
+                     (${PWS}, 'legacy-plain', false, 'su-12459024'),
+                     (${PWS}, 'legacy-enabled', true, 'su-8c2ebfa6 (owner directive)')`;
+    const migration = readFileSync(
+      fileURLToPath(
+        new URL('../../../../../libs/papercusp/libs/db/sql/1271-learning-pot-scope-pause-provenance.sql', import.meta.url),
+      ),
+      'utf8',
+    );
+    await sql.unsafe(migration);
+
+    const byPot = async (pot: string) =>
+      (await getPotLearningScope(sql, { workspaceId: PWS, potSlug: pot }))!;
+
+    const directive = await byPot('legacy-directive');
+    expect(directive.setBy).toBe('su-8c2ebfa6');
+    expect(directive.ownerDirected).toBe(true);
+    expect(directive.pauseReason).toMatch(/legacy record/);
+    expect(isDeliberatePause(directive)).toBe(true);
+
+    // A disabled row with no suffix is NOT promoted to deliberate — the backfill
+    // converts what was recorded, it does not invent provenance.
+    const plain = await byPot('legacy-plain');
+    expect(plain.setBy).toBe('su-12459024');
+    expect(plain.ownerDirected).toBe(false);
+    expect(isDeliberatePause(plain)).toBe(false);
+
+    // The backfill is scoped to paused rows: an enabled row is left alone.
+    const enabledRow = await byPot('legacy-enabled');
+    expect(enabledRow.ownerDirected).toBe(false);
+    expect(enabledRow.setBy).toBe('su-8c2ebfa6 (owner directive)');
   });
 });

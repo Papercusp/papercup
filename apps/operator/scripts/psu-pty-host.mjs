@@ -1736,6 +1736,13 @@ export function eventLogPathForOwner(ownerId, dir = PSU_PTY_DIR) {
  *  on breach, same spirit as the turn-provenance ledger compaction. */
 const EVENT_LOG_MAX_BYTES = 256 * 1024;
 
+/** The persona-refresh `reason` the operator returns when a restart would activate a
+ *  priced Cupboard identity that has no funds behind it and cannot be dropped from the
+ *  stack (agent-economy-flywheel P-016, D-012). The respawn is refused on it, never
+ *  fail-soft. Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
+ *  packages/operator-core/lib/cupboard/identity-activation-restart.ts. */
+export const IDENTITY_ACTIVATION_REFUSED_REASON = 'identity-activation-refused';
+
 /** Append one durable host-event row ({ ts, kind, ...extra }) for `ownerId`.
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
@@ -10162,6 +10169,31 @@ export function hostThroughPty(o) {
           mode: respawnMode,
           reason: personaRefreshReason,
         });
+      }
+      // agent-economy-flywheel P-016 (decision D-012): the ONE refresh failure that is
+      // not fail-soft. The operator refused to activate a priced Cupboard identity it
+      // could neither fund nor drop from the stack. Booting the successor on the
+      // inherited render would activate that identity again, so the respawn is
+      // abandoned before anything is killed and the current session stays alive.
+      if (personaRefreshReason === IDENTITY_ACTIVATION_REFUSED_REASON) {
+        appendHostEvent(ownerId, 'respawn-failed', {
+          mode: respawnMode,
+          reason: IDENTITY_ACTIVATION_REFUSED_REASON,
+        });
+        try {
+          if (!recycleChild.identityActivationRefusedWarned) {
+            recycleChild.identityActivationRefusedWarned = true;
+            process.stderr.write(
+              `psu-pty-host: carry-respawn refused for ${ownerId}: a priced Cupboard identity on this ` +
+                `session has no funds behind it. Fund it or detach it, then respawn ` +
+                `(further refusals logged to the event log only)\n`,
+            );
+          }
+        } catch {
+          /* diagnostic only */
+        }
+        recycling = false;
+        return settleQuotaRecovery(false, IDENTITY_ACTIVATION_REFUSED_REASON);
       }
       let recycleArgs;
       let nativeId;

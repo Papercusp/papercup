@@ -158,13 +158,16 @@ function processTreePids(rootPid) {
   const children = new Map();
   let entries;
   try {
-    entries = readdirSync('/proc', { withFileTypes: true, encoding: 'utf8' });
+    // Names only: `withFileTypes` lstat()s entries, and a pid exiting mid-scan
+    // then throws ENOENT for the whole listing, collapsing the tree to its root
+    // (EI-24661719545676832). procStatus() rejects any non-pid name below.
+    entries = readdirSync('/proc');
   } catch {
     return [rootPid];
   }
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    const pid = Number(entry.name);
+  for (const name of entries) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
     const status = procStatus(pid);
     if (status?.parentPid == null) continue;
     const siblings = children.get(status.parentPid) ?? [];

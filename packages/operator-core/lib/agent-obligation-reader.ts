@@ -812,7 +812,9 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     },
     goalPortfolio: async (workspaceId, goalId) => {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
-      return readGoalPortfolioBrief({ workspaceId, goalId });
+      // Placement and planning obligations never read queue.claimable; its
+      // per-id floor count alone exceeded AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS.
+      return readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
     },
     goalPlacementProgress: async (workspaceId, ownerId, goalId, planRefs) =>
       (await import('./goal-placement-progress-store')).readGoalPlacementProgress({ workspaceId, ownerId, goalId, planRefs }),

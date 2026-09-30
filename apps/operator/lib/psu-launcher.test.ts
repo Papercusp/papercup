@@ -175,6 +175,7 @@ import {
   normalizeCodexResumeLocalLivenessEvidence,
   normalizeArgvProbeResumeLocalLivenessEvidence,
   sessionProcessHolder,
+  listProcPids,
   reportSessionResumed,
   acquireSessionResumeWithRecovery,
   reportSessionResumeFinalized,
@@ -12276,6 +12277,45 @@ describe("WI-2141892 — Claude resume local-liveness evidence", () => {
         }),
       ).toBeNull();
     }
+  });
+
+  it("lists /proc by name, so a pid exiting mid-listing cannot fail the scan", () => {
+    // EI-24661719545676832: `withFileTypes` makes Node lstat() entries, and a
+    // pid that exits between getdents() and that lstat() throws ENOENT for the
+    // WHOLE listing — refusing a recoverable resume as probe=no-proc. This
+    // readdir behaves like that: typed listings race, name listings do not.
+    const calls: unknown[] = [];
+    const racyReaddir = (path: string, options?: unknown) => {
+      calls.push(options);
+      if (options !== undefined) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}/4084343'`), {
+          code: "ENOENT",
+        });
+      }
+      return ["1", "self", "4084343", "sys", "77"];
+    };
+    expect(listProcPids({ readdir: racyReaddir })).toEqual([1, 4084343, 77]);
+    expect(calls).toEqual([undefined]);
+
+    // The real /proc, as a positive control that the default reads this host.
+    expect(listProcPids().length).toBeGreaterThan(0);
+  });
+
+  it("carries the listing's errno into a no-proc miss", () => {
+    const fail = (code: string) => () => {
+      throw Object.assign(new Error(`${code}: too many open files, scandir '/proc'`), { code });
+    };
+    expect(sessionProcessHolder("sess-abc", { listProcPids: fail("EMFILE") })).toEqual({
+      held: false, pid: null, cmdline: null, reason: "no-proc", error: "EMFILE",
+    });
+    // No code, or a non-errno value: the reason alone, never the message.
+    expect(
+      sessionProcessHolder("sess-abc", {
+        listProcPids: () => {
+          throw new Error("/proc listed no pids");
+        },
+      }),
+    ).toEqual({ held: false, pid: null, cmdline: null, reason: "no-proc" });
   });
 
   it("skips a pid that exits mid-scan rather than calling it a holder", () => {

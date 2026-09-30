@@ -12200,14 +12200,23 @@ export function sessionProcessHolder(
     selfPid = process.pid,
   } = {},
 ) {
-  const miss = (reason) => ({ held: false, pid: null, cmdline: null, reason });
+  const miss = (reason, error) => ({
+    held: false,
+    pid: null,
+    cmdline: null,
+    reason,
+    ...(error ? { error } : {}),
+  });
   const id = String(sessionId ?? "").trim();
   if (!id) return miss("no-session-id");
   let pids;
   try {
     pids = listProcPids();
-  } catch {
-    return miss("no-proc");
+  } catch (error) {
+    // Keep WHY the listing failed: a bare "no-proc" cost a day of guessing
+    // (EI-24661719545676832). Only an errno-shaped token, never a message.
+    const code = error?.code;
+    return miss("no-proc", typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : undefined);
   }
   if (!Array.isArray(pids) || pids.length === 0) return miss("scan-empty");
   const excluded = procAncestorPids(selfPid, { readStat });
@@ -12233,16 +12242,27 @@ export function sessionProcessHolder(
   return miss("clean-scan");
 }
 
-/** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
-function defaultListProcPids() {
+/**
+ * Numeric pid entries under `/proc`, by NAME only. Never `withFileTypes`: Node
+ * then lstat()s entries, and a pid that exits between getdents() and that
+ * lstat() throws ENOENT for the WHOLE listing (measured 2026-09-30: 9 of 5,740
+ * scans at load ~90). Resume scans right after an engine exits, when that race
+ * is likeliest, so it surfaced as `probe=no-proc` refusals of a recoverable
+ * session (EI-24661719545676832). Throws, with the errno, when the listing
+ * itself fails. Exported for tests.
+ * @param {{ readdir?: (path: string) => string[] }} [options]
+ * @returns {number[]}
+ */
+export function listProcPids({ readdir = readdirSync } = {}) {
   const out = [];
-  for (const entry of safeReaddir("/proc")) {
-    const name = typeof entry === "string" ? entry : entry?.name;
-    if (!name || !/^\d+$/.test(name)) continue;
-    out.push(Number(name));
+  for (const name of readdir("/proc")) {
+    if (typeof name === "string" && /^\d+$/.test(name)) out.push(Number(name));
   }
   if (out.length === 0) throw new Error("/proc listed no pids");
   return out;
+}
+function defaultListProcPids() {
+  return listProcPids();
 }
 
 /**

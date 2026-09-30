@@ -155,6 +155,21 @@ describe('structured exact resume preparation', () => {
     expect(m.acquire).not.toHaveBeenCalled();
   });
 
+  it('names the errno behind a failed /proc listing, and only an errno token', async () => {
+    const saved = fixture('claude');
+    m.witness.mockReturnValue(null);
+    m.holder.mockReturnValue({ held: false, reason: 'no-proc', pid: null, cmdline: null, error: 'EMFILE' });
+    const named = await prepareStructuredSuResume(saved).catch((value: unknown) => value);
+    expect((named as Error).message).toContain('probe=no-proc, error=EMFILE, held=false');
+    // Anything that is not errno-shaped (a message, a path) is dropped, not echoed.
+    m.holder.mockReturnValue({ held: false, reason: 'no-proc', pid: null, cmdline: null,
+      error: "ENOENT: no such file or directory, lstat '/proc/42'" });
+    const dropped = await prepareStructuredSuResume(saved).catch((value: unknown) => value);
+    expect((dropped as Error).message).toContain('probe=no-proc, held=false');
+    expect((dropped as Error).message).not.toContain('/proc/42');
+    expect(m.acquire).not.toHaveBeenCalled();
+  });
+
   it('waits for the old Claude process to exit before reserving an exact resume', async () => {
     m.holder.mockReturnValueOnce({ held: true, reason: 'argv-match', pid: 1234 })
       .mockReturnValue({ held: false, reason: 'clean-scan', pid: null });

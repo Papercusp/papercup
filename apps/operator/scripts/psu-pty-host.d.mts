@@ -2663,6 +2663,12 @@ export const TURN_ROW_CLASSIFIERS: Readonly<{
     codex: typeof classifyCodexTranscriptRow;
     claude: typeof classifyClaudeTranscriptRow;
 }>;
+/** The persona-refresh `reason` the operator returns when a restart would activate a
+ *  priced Cupboard identity that has no funds behind it and cannot be dropped from the
+ *  stack (agent-economy-flywheel P-016, D-012). The respawn is refused on it, never
+ *  fail-soft. Mirrors IDENTITY_ACTIVATION_REFUSED_REASON in
+ *  packages/operator-core/lib/cupboard/identity-activation-restart.ts. */
+export const IDENTITY_ACTIVATION_REFUSED_REASON: "identity-activation-refused";
 /**
  * WI-38292: persist the successor's marching orders — the child argv this host
  * had already minted (rotated native session id + the carry's

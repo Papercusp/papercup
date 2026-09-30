@@ -800,7 +800,9 @@ export interface GoalPortfolioBrief {
     blocked: number;
     needsHuman: number;
     claimable: number | null;
-    claimabilityScope: 'issue-family' | 'none' | 'unknown';
+    /** 'not-requested' = the caller opted out of the per-id floor count
+     *  (`claimability: 'skip'`); claimable is null, never a measured 0. */
+    claimabilityScope: 'issue-family' | 'none' | 'unknown' | 'not-requested';
   };
   launch: {
     settings: GoalLaunchSettings | null;
@@ -1473,6 +1475,13 @@ export async function readGoalPortfolioBrief(args: {
   now?: Date;
   /** Exact full-artifact reads from the caller's current session, never inferred from this projection. */
   reportArtifactReads?: GoalOwnerReportDraftInput['artifactReads'];
+  /**
+   * 'skip' omits the per-id claim-floor count behind `queue.claimable`. That
+   * count scales with the goal's open issue rows (333 on 60d3a8 cost ~1.1s)
+   * and alone pushed this read past the obligation reader's 900ms budget, so
+   * a caller that never reads the count must not pay for it. Default 'count'.
+   */
+  claimability?: 'count' | 'skip';
   launch?: {
     goalBrief: GoalLaunchBrief;
     settings: GoalLaunchSettings | null;
@@ -1832,10 +1841,11 @@ export async function readGoalPortfolioBrief(args: {
     const candidates = portfolioArray(queueRaw.issueCandidates)
       .map(portfolioObject)
       .filter((candidate): candidate is Record<string, unknown> => candidate !== null);
+    const skipClaimability = args.claimability === 'skip';
     let claimable: number | null = candidates.length === 0 ? 0 : null;
     let claimabilityScope: GoalPortfolioBrief['queue']['claimabilityScope'] =
-      candidates.length === 0 ? 'none' : 'unknown';
-    if (candidates.length > 0) {
+      candidates.length === 0 ? 'none' : skipClaimability ? 'not-requested' : 'unknown';
+    if (candidates.length > 0 && !skipClaimability) {
       try {
         const { explainIssueClaimFloors } = await import('./work-items');
         let admissible = 0;

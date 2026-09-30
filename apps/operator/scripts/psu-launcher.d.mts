@@ -3268,6 +3268,7 @@ export function sessionProcessHolder(sessionId: any, { listProcPids, readCmdline
     readStat?: ((pid: any) => string) | undefined;
     selfPid?: number | undefined;
 }): {
+    error?: any;
     held: boolean;
     pid: null;
     cmdline: null;
@@ -3278,6 +3279,20 @@ export function sessionProcessHolder(sessionId: any, { listProcPids, readCmdline
     cmdline: string;
     reason: string;
 };
+/**
+ * Numeric pid entries under `/proc`, by NAME only. Never `withFileTypes`: Node
+ * then lstat()s entries, and a pid that exits between getdents() and that
+ * lstat() throws ENOENT for the WHOLE listing (measured 2026-09-30: 9 of 5,740
+ * scans at load ~90). Resume scans right after an engine exits, when that race
+ * is likeliest, so it surfaced as `probe=no-proc` refusals of a recoverable
+ * session (EI-24661719545676832). Throws, with the errno, when the listing
+ * itself fails. Exported for tests.
+ * @param {{ readdir?: (path: string) => string[] }} [options]
+ * @returns {number[]}
+ */
+export function listProcPids({ readdir }?: {
+    readdir?: (path: string) => string[];
+}): number[];
 /** Normalize a wire value to one canonical local-liveness witness. */
 export function normalizeResumeLocalLivenessEvidence(value: any): any;
 /**
@@ -4564,7 +4579,6 @@ import { spawnSync } from "node:child_process";
 declare function api(path: any, opts?: {}): Promise<any>;
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
-/** Numeric pid entries under `/proc`. Exported for tests via the injectable. */
 declare function defaultListProcPids(): number[];
 declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchFreshSu(selections: any, args: any, { brain }?: {

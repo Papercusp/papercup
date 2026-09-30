@@ -492,6 +492,11 @@ export default defineTool({
       conflictJudge?.available === true &&
       conflictJudge.backend === 'jev' &&
       (await getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system').catch(() => false));
+    // Fail open, but never silently: when the check was wanted and no valid verdict
+    // came back (Jev error, timeout, malformed answer, or the neighbour search
+    // failing first), the save proceeds and both the stored row and the result say
+    // `substance_check: 'unchecked'`, so the content-free sweep (P-011) can find it.
+    let substanceUnchecked = substanceWanted;
 
     if (dedupWanted || conflictUsable) {
       try {
@@ -569,6 +574,7 @@ export default defineTool({
             judge: usableJudge,
             ...(substanceWanted ? { checkSubstance: true } : {}),
           });
+          if (conflict.substance) substanceUnchecked = false;
           // P-010: a content-free memory is refused before any conflict is considered;
           // `supersede` names a conflict to resolve, not a reason to store an empty claim.
           if (conflict.substance?.contentFree) {
@@ -645,6 +651,8 @@ export default defineTool({
           return w?.title ? { id, title: w.title } : null;
         }).catch(() => undefined)
       : undefined;
+
+    if (substanceUnchecked) metadata.substance_check = 'unchecked';
 
     let ids: string[];
     try {
@@ -811,6 +819,7 @@ export default defineTool({
               }
             : {}),
           ...(runbookHint ? { hint: runbookHint } : {}),
+          ...(substanceUnchecked ? { substance_check: 'unchecked' } : {}),
         }),
       }],
     };

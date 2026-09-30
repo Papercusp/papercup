@@ -44,6 +44,7 @@ import {
   handoffPathFor,
   MAX_CONTROL_PAYLOAD_BYTES,
   PSU_PTY_DIR,
+  IDENTITY_ACTIVATION_REFUSED_REASON,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
@@ -2874,9 +2875,14 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
    *  the guard can actually detect what it was written for. */
   const preFixMint = (a: string[]) => ({ args: [...a, '--session-id', 'pre-fix'], nativeId: 'pre-fix' });
 
-  /** `refreshed` = what the operator's persona-refresh hands back: a path, or null
-   *  when the refresh failed / was unavailable. `mint` defaults to the REAL one. */
-  async function driveRespawn(refreshed: string | null, mint?: (a: string[]) => unknown) {
+  /** `refreshed` = what the operator's persona-refresh hands back: a path, null when
+   *  the refresh failed / was unavailable, or a `{ reason }` refusal with no file.
+   *  `mint` defaults to the REAL one. A refused respawn never boots a second child, so
+   *  it is observed through its `respawn-failed` host event instead of a second BOOT. */
+  async function driveRespawn(
+    refreshed: string | null | { reason: string },
+    mint?: (a: string[]) => unknown,
+  ) {
     // Import the pure mint helper independently of the invoking operator's
     // endpoint. Tool-driven test runs may inherit a full MCP URL; validating
     // that unrelated live pin at module load is not this fixture's subject.
@@ -2893,8 +2899,20 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const stale = `/tmp/launch-context/session-STALE-${process.pid}.md`;
-    const refreshPersonaFile = async () => ({ promptFile: refreshed });
+    const refusal = refreshed !== null && typeof refreshed === 'object' ? refreshed : null;
+    const refreshPersonaFile = async () =>
+      refusal ? { promptFile: null, reason: refusal.reason } : { promptFile: refreshed as string | null };
     const { captured, io } = fakeIo();
+    const hostEvents = (): Array<Record<string, unknown>> => {
+      try {
+        return readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      } catch {
+        return [];
+      }
+    };
 
     let exitCode: number | null = null;
     const done = hostThroughPty({
@@ -2918,15 +2936,21 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     }, { timeout: 5000 });
 
     await controlInject(sock, 'recycle', '');
-    await vi.waitFor(() => {
-      expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(2);
-    }, { timeout: 5000 });
+    if (refusal) {
+      await vi.waitFor(() => {
+        expect(hostEvents().some((e) => e.kind === 'respawn-failed')).toBe(true);
+      }, { timeout: 5000 });
+    } else {
+      await vi.waitFor(() => {
+        expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(2);
+      }, { timeout: 5000 });
+    }
 
     const spfs = [...captured().matchAll(/SPF:(\S+)/g)].map((m) => m[1]);
     await rawInject(sock, 'QUIT\n');
     await done;
     expect(exitCode).toBe(0);
-    return { spfs, stale };
+    return { spfs, stale, events: hostEvents() };
   }
 
   it(
@@ -2970,6 +2994,24 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       expect(spfs).toHaveLength(2);
       expect(spfs[1]).toBe(stale); // the bug, reproduced
       expect(spfs[1]).not.toBe(fresh);
+    },
+    30_000,
+  );
+
+  it(
+    'REFUSES the respawn on an identity-activation refusal instead of booting the inherited render (P-016 D-012)',
+    async () => {
+      // agent-economy-flywheel P-016: the operator could neither fund nor drop a priced
+      // Cupboard identity. Fail-soft would boot the successor on the inherited render,
+      // which carries that identity, so the host must abandon the respawn and keep the
+      // current child. The fail-soft test above passes the same null promptFile and
+      // expects a second boot, so a host that ignored the reason fails here.
+      const { spfs, stale, events } = await driveRespawn({ reason: IDENTITY_ACTIVATION_REFUSED_REASON });
+      expect(IDENTITY_ACTIVATION_REFUSED_REASON).toBe('identity-activation-refused');
+      expect(spfs).toEqual([stale]);
+      expect(events).toContainEqual(
+        expect.objectContaining({ kind: 'respawn-failed', reason: IDENTITY_ACTIVATION_REFUSED_REASON }),
+      );
     },
     30_000,
   );

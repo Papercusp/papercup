@@ -10,10 +10,28 @@
  * that happens to insert rows first.
  */
 import { describe, expect, it } from 'vitest';
-import { disabledPotSet, potScopeEnabled, potScopeLookup, POT_DISABLED_REASON, type PotLearningScope } from './core';
+import {
+  disabledPotSet,
+  isDeliberatePause,
+  pauseReviewOverdue,
+  potScopeEnabled,
+  potScopeLookup,
+  POT_DISABLED_REASON,
+  type PotLearningScope,
+} from './core';
 
-function row(potSlug: string, enabled: boolean): PotLearningScope {
-  return { workspaceId: 'ws', potSlug, enabled, setBy: 'su-test', setAt: 1_700_000_000_000 };
+function row(potSlug: string, enabled: boolean, pause: Partial<PotLearningScope> = {}): PotLearningScope {
+  return {
+    workspaceId: 'ws',
+    potSlug,
+    enabled,
+    setBy: 'su-test',
+    setAt: 1_700_000_000_000,
+    pauseReason: null,
+    ownerDirected: false,
+    reviewBy: null,
+    ...pause,
+  };
 }
 
 describe('potScopeEnabled — the fail-open default', () => {
@@ -65,6 +83,53 @@ describe('potScopeLookup', () => {
   it('resolves a stored disabled slug to false and a stored enabled slug to true', () => {
     expect(lookup('off-pot')).toBe(false);
     expect(lookup('on-pot')).toBe(true);
+  });
+});
+
+describe('isDeliberatePause — WI-10002099: "is this pot off ON PURPOSE?" is one predicate, not a string suffix', () => {
+  it('is false for an absent row and for an enabled row, whatever stale provenance it carries', () => {
+    expect(isDeliberatePause(null)).toBe(false);
+    expect(isDeliberatePause(undefined)).toBe(false);
+    expect(isDeliberatePause(row('p', true))).toBe(false);
+    // The DB forbids this shape (CHECK), but the predicate must not trust that:
+    // a pot that is learning is never "deliberately paused".
+    expect(isDeliberatePause(row('p', true, { ownerDirected: true, pauseReason: 'stale' }))).toBe(false);
+  });
+
+  it('is true for an owner-directed pause and for any pause with a recorded reason', () => {
+    expect(isDeliberatePause(row('p', false, { ownerDirected: true, pauseReason: 'owner directive #481' }))).toBe(true);
+    expect(isDeliberatePause(row('p', false, { pauseReason: 'cost freeze, WI-10001478' }))).toBe(true);
+  });
+
+  it('is FALSE for a bare enabled:false — an unexplained pause must stay flaggable, not read as intentional', () => {
+    // This is the row the old convention got wrong: the main pot's switch-off
+    // carried no suffix, so a peer read it as an accident. The converse guard is
+    // that a bare off-switch is NOT quietly promoted to "deliberate" either.
+    expect(isDeliberatePause(row('p', false))).toBe(false);
+  });
+
+  it('does not treat a whitespace-only reason as a recorded reason', () => {
+    expect(isDeliberatePause(row('p', false, { pauseReason: '   ' }))).toBe(false);
+  });
+
+  it('does not parse the retired set_by suffix: only the structured fields decide', () => {
+    expect(isDeliberatePause(row('p', false, { setBy: 'su-x (owner directive)' }))).toBe(false);
+  });
+});
+
+describe('pauseReviewOverdue', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('is true only for a paused pot whose review date has arrived', () => {
+    expect(pauseReviewOverdue(row('p', false, { reviewBy: NOW - 1 }), NOW)).toBe(true);
+    expect(pauseReviewOverdue(row('p', false, { reviewBy: NOW }), NOW)).toBe(true);
+    expect(pauseReviewOverdue(row('p', false, { reviewBy: NOW + 1 }), NOW)).toBe(false);
+  });
+
+  it('is false for an open-ended pause, an enabled pot, and no row', () => {
+    expect(pauseReviewOverdue(row('p', false), NOW)).toBe(false);
+    expect(pauseReviewOverdue(row('p', true, { reviewBy: NOW - 1 }), NOW)).toBe(false);
+    expect(pauseReviewOverdue(null, NOW)).toBe(false);
   });
 });
 

@@ -5,6 +5,11 @@ import { z } from 'zod';
 // handler's runtime-failure catch matches what the test throws (the handler
 // imports the class from this same module shim). Exported under the real name
 // from the mock; the test imports it as MemoryUnavailableError below.
+// Real flag resolution by default; the P-010 kill-switch test overrides one call.
+vi.mock('@papercusp/flags/server', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/flags/server')>();
+  return { ...real, getFlag: vi.fn(real.getFlag) };
+});
 vi.mock('../../memory/write-journal', () => ({
   // Unit tests have no PG — journaling degrades to null (the pre-journal
   // path); write-journal's own behavior is covered in write-journal.test.ts.
@@ -283,6 +288,63 @@ describe('memory:remember — save-time content-free refusal (jev-performance-im
     expect(out).toMatchObject({ ok: true });
     // No neighbours and no substance question: nothing to ask.
     expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('asks Jev exactly once per save, with neighbours present, and adds no separate substance request', async () => {
+    const b = fakeBackend([{ id: 'n1', text: 'an unrelated neighbour about embeddings' }], [NEW_ID]);
+    useBackend(b);
+    const judge = jevJudge(0.97);
+    await useJevJudge(judge);
+
+    const res = await remember.handler({ content: 'The default embedder is harrier.', kind: 'project' }, fakeCtx);
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(out).toMatchObject({ ok: true, ids: [NEW_ID] });
+    expect(out).not.toHaveProperty('substance_check');
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(judge).toHaveBeenCalledWith(expect.objectContaining({ neighbors: [expect.objectContaining({ id: 'n1' })], checkSubstance: true }));
+  });
+
+  it.each([
+    ['the judge throws', vi.fn(async () => { throw new Error('jev timeout'); })],
+    ['the judge returns no substance verdict', vi.fn(async () => ({ conflicts: [] }))],
+  ])('fails open when %s: saves, and marks the result and the stored row unchecked', async (_label, judge) => {
+    const b = fakeBackend([], [NEW_ID]);
+    useBackend(b);
+    const { resolveConflictJudge } = await import('../../memory/conflict-judge');
+    vi.mocked(resolveConflictJudge).mockResolvedValueOnce({ available: true, backend: 'jev', judge });
+
+    const res = await remember.handler({ content: PROMOTER, kind: 'project' }, fakeCtx);
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(out).toMatchObject({ ok: true, ids: [NEW_ID], substance_check: 'unchecked' });
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(b.remember).toHaveBeenCalledWith(PROMOTER, expect.objectContaining({
+      metadata: expect.objectContaining({ substance_check: 'unchecked' }),
+    }));
+  });
+
+  it('turning the flag off restores the pre-check save: no substance question, the promoter is saved', async () => {
+    const b = fakeBackend([], [NEW_ID]);
+    useBackend(b);
+    const judge = jevJudge(0.02);
+    await useJevJudge(judge);
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    vi.mocked(getFlag).mockImplementation(async (key: string) => key !== FLAGS.MEMORY_CONTENT_FREE_REFUSAL);
+    try {
+      const res = await remember.handler({ content: PROMOTER, kind: 'project' }, fakeCtx);
+      const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+      expect(out).toMatchObject({ ok: true, ids: [NEW_ID] });
+      expect(out).not.toHaveProperty('substance_check');
+      // No neighbours and the question switched off: Jev is not asked at all, as before P-010.
+      expect(judge).not.toHaveBeenCalled();
+      expect(vi.mocked(getFlag)).toHaveBeenCalledWith(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system');
+    } finally {
+      const real = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+      vi.mocked(getFlag).mockImplementation(real.getFlag);
+    }
   });
 });
 
