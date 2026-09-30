@@ -2991,6 +2991,15 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       });
     }
   }
+  // P-012 / D-040(b): a governed identity wearer lists exactly what its kernel
+  // admits, and that set REPLACES the seed below. A seed could otherwise hide a
+  // class-granted tool the wearer has no other route to (tools:find and
+  // tools:invoke are themselves outside its grants) and show tools every call
+  // will refuse. Ungoverned and unresolved sessions come back null: unchanged.
+  const identityListings = spawnRes.kind === 'ok'
+    ? await identityAdmittedListings(spawnRes.ctx, result, extra)
+    : null;
+  if (identityListings) result = identityListings;
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
   // seeded session's surface GROWS at runtime via ctx.activateTools (tools:find)
   // + notifications/tools/list_changed. getSessionSurface returns that live set
@@ -2999,7 +3008,7 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // there's no seed at all. Keyed by the su session identity (uiClientId).
   const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
   const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
-  const allow = getSessionSurface(sessionKey, seed);
+  const allow = identityListings ? null : getSessionSurface(sessionKey, seed);
   // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
   // tool-definition-delivery-2026-09-21): `?tools=` says WHICH tools are
   // advertised, this says HOW MUCH of each one ships. A named tool keeps its
@@ -3019,6 +3028,95 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       compactInputSchema,
       summaryGuidanceDescription,
     ),
+  };
+}
+
+/**
+ * The identity-kernel view of a transport session: the fields the kernel's
+ * state read and grant gate resolve identity and workspace from, set exactly as
+ * `buildMcpToolContext` sets them for a real call.
+ */
+function identitySurfaceContext(spawn: BuiltSpawnContext): UnifiedToolContext {
+  return {
+    workspaceId: spawn.workspaceId,
+    harnessSlug: spawn.harnessSlug,
+    principal: synthesizeTransportPrincipal(spawn),
+    role: spawn.role,
+    uiClientId: spawn.uiClientId,
+    sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
+    isSuperuser: spawn.isSuperuser ?? false,
+    isPowerUser: spawn.isPowerUser ?? false,
+    log: () => {},
+    progress: () => {},
+    emit: () => {},
+    signal: new AbortController().signal,
+  } as UnifiedToolContext;
+}
+
+/** The MCP session a listing belongs to; tools/call on it rechecks the listing. */
+function mcpSessionKey(extra: unknown): string | null {
+  const sessionId = (extra as { sessionId?: unknown } | undefined)?.sessionId;
+  return typeof sessionId === 'string' && sessionId ? sessionId : null;
+}
+
+/**
+ * P-012 / D-040(b): the listings a governed identity's kernel admits, or null
+ * to leave the listing unchanged. Records what was shown so a later attach can
+ * be re-announced (D-040(c)). Visibility only: a failure here lists as before
+ * and every call is still gated by the kernel.
+ */
+async function identityAdmittedListings(
+  spawn: BuiltSpawnContext,
+  listings: ReturnType<typeof listMcpProjections>,
+  extra: unknown,
+): Promise<ReturnType<typeof listMcpProjections> | null> {
+  const nameOf = (listing: unknown) => (listing as { name?: unknown }).name;
+  const candidates = listings.flatMap((listing) => {
+    const name = nameOf(listing);
+    return typeof name === 'string' ? [{ name, capabilities: lookupByMcpName(name)?.capabilities ?? [] }] : [];
+  });
+  try {
+    const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
+    const ctx = identitySurfaceContext(spawn);
+    const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates);
+    const sessionKey = mcpSessionKey(extra);
+    if (sessionKey) surfaceModule.rememberListedIdentitySurface(sessionKey, { ctx, candidates, surface });
+    if (surface.kind !== 'governed') return null;
+    return listings.filter((listing) => {
+      const name = nameOf(listing);
+      return typeof name === 'string' && surface.admitted.has(name);
+    });
+  } catch (err) {
+    console.warn(`[mcp-host] identity tool surface unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * P-012 / D-040(c): after a tools/call, re-announce the listing if an attach
+ * changed what the identity kernel admits. Awaited before the call returns so
+ * `list_changed` rides the still-open request stream, as activateTools' does;
+ * throttled per session, so almost every call returns straight away.
+ */
+function withIdentitySurfaceRecheck<Req, Res>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return async (req, extra) => {
+    const result = await handler(req, extra);
+    const sessionKey = mcpSessionKey(extra);
+    const sendNotification = (
+      extra as { sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void> } | undefined
+    )?.sendNotification;
+    if (sessionKey && sendNotification) {
+      try {
+        const { recheckListedIdentitySurface } = await import('../../../capability-envelope/identity-tool-surface');
+        await recheckListedIdentitySurface(sessionKey, () =>
+          sendNotification({ method: 'notifications/tools/list_changed', params: {} }));
+      } catch (err) {
+        console.warn(`[mcp-host] identity surface recheck failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return result;
   };
 }
 
@@ -3160,7 +3258,7 @@ export function registerMcpHost(server: McpServer): void {
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
-    withFuzzyToolName(
+    withIdentitySurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
@@ -4645,7 +4743,7 @@ export function registerMcpHost(server: McpServer): void {
       };
     },
     MCP_FUZZY_DEPS,
-    ),
+    )),
   );
 
   // ── Resources ────────────────────────────────────────────────────
