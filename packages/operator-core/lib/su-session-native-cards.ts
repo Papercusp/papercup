@@ -25,6 +25,14 @@ export function rememberedApprovalLabel(updates: readonly PermissionUpdate[]): s
   return rules.length ? `Always allow ${rules.join(', ')} until this session's runtime stops` : undefined;
 }
 
+/** What the model is told when the owner skips (Esc / Decline) a question
+ * card. P-014: a skip is a normal choice, not a failure, so the wording must
+ * not read as an error the agent should apologise for or work around, and it
+ * must stop the agent re-asking the same question. An interrupt is different
+ * (the whole turn is ending) and keeps the generic denial. */
+export const SKIPPED_QUESTION_MESSAGE = 'The user skipped this question without answering. '
+  + 'This is not an error: continue without that answer, and do not ask the same question again.';
+
 export class SuNativeCards {
   private epoch = 0;
   /** `cwd` is the chat's launch directory; approval cards show paths relative to it. */
@@ -113,11 +121,13 @@ export class SuNativeCards {
         const choices = question.options.map((option) => ({ label: option.label,
           description: [option.description, option.preview].filter(Boolean).join('\n') }));
         const picks = await this.askAnswers(turnId, question.question, [...choices, { label: other }], question.multiSelect, options.signal);
-        if (!picks || epoch !== this.epoch || options.signal.aborted) return deny();
+        if (epoch !== this.epoch || options.signal.aborted) return deny();
+        if (!picks) return deny(SKIPPED_QUESTION_MESSAGE);
         const selected = picks.filter((pick) => pick !== other);
         if (picks.includes(other)) {
           const custom = await this.askAnswers(turnId, question.question, undefined, false, options.signal);
-          if (!custom || epoch !== this.epoch || options.signal.aborted) return deny();
+          if (epoch !== this.epoch || options.signal.aborted) return deny();
+          if (!custom) return deny(SKIPPED_QUESTION_MESSAGE);
           selected.push(...custom);
         }
         answers[question.question] = selected.join(', ');

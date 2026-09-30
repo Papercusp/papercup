@@ -63,8 +63,15 @@ describe('shared chunk store (live SQL, harness_shared.text_chunks)', () => {
     error: (message, meta) => logged.push({ level: 'error', message, meta }),
   };
   const tick = (s: ChunkSurface) => runChunkSyncTick({ sql, surfaces: [s], logger });
+  let chunkStores: readonly (typeof CHUNK_STORES)[number][] = CHUNK_STORES;
 
   beforeAll(async () => {
+    // Mutation-probe seam: PAPERCUSP_CHUNK_REGISTRY_SUBJECT is an absolute path
+    // to a copy of ./registry.ts (scripts/mutation-probe.sh points it at a
+    // mutant, so the tracked file is never modified). Unset, the real
+    // CHUNK_STORES is read by the R-38 embed-text check.
+    const subject = process.env.PAPERCUSP_CHUNK_REGISTRY_SUBJECT;
+    if (subject) chunkStores = ((await import(subject)) as { CHUNK_STORES: typeof CHUNK_STORES }).CHUNK_STORES;
     const dsn = inject('baselineSchemaDsn');
     await assertPgReachable(dsn, 'chunks/shared-store.integration');
     sql = postgres(dsn, { max: 1, onnotice: () => {} });
@@ -184,7 +191,7 @@ describe('shared chunk store (live SQL, harness_shared.text_chunks)', () => {
     expect([...new Set(rows.map((r) => r.parent_key[0]))]).toEqual(['60', '61', '62']);
     // The embed sweep's text for this store, evaluated on the stored rows. It
     // must be exactly what chunk_sha hashes and what the P-001 bench embedded.
-    const store = CHUNK_STORES.find((c) => c.table === TEXT_CHUNKS_TABLE);
+    const store = chunkStores.find((c) => c.table === TEXT_CHUNKS_TABLE);
     expect(store).toBeDefined();
     const embedded = await sql.unsafe<{ header: string | null; content: string; text: string }[]>(
       `SELECT header, content, ${store!.embeddedTextSql} AS text FROM harness_shared.text_chunks WHERE surface = $1`,

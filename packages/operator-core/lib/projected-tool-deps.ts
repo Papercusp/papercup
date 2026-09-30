@@ -58,6 +58,7 @@ import { lazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from './cap
 // Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
+import { enforceAppKeyScope } from './connected-apps/enforce';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
 // session is unconfined, with nothing thrown and nothing logged — so installation is bound to
@@ -784,6 +785,12 @@ export function installControlAnchorKernelResolver(): void {
  * common path and make negative behavior unit-testable without PG.
  */
 export const operatorKernelEnforcement: KernelEnforcementPort = async (request: KernelEnforcementRequest) => {
+  // A connected-app key (external-app-access P-003) is limited to its own workspace, harnesses
+  // and tool allowlist, and never reaches the hard-deny set. It runs FIRST and on every
+  // boundary, ahead of the installed resolver, so no resolver can re-open what it refuses.
+  // Never throws for an app principal (a failed read is an explicit denial).
+  const appScope = await enforceAppKeyScope(request);
+  if (appScope) return appScope;
   if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
   return evaluateOperatorKernelRequest(request, request.ctx.kernelState);
 };

@@ -133,6 +133,8 @@ import {
   findUnclassifiedShipmentModules,
   NEW_MODULE_GRACE_DAYS,
   partitionByGracePeriod,
+  GRACE_CLOCK_WINDOW,
+  resolveGraceClock,
   detectEntrypointMarkers,
   findInaccurateAcknowledgements,
   selectDetectorModules,
@@ -1434,6 +1436,28 @@ export function readModuleAddDates(modules) {
   return added;
 }
 
+/**
+ * Committer times (ms) of HEAD's most recent ancestry, newest-first, or [] when git cannot
+ * say. Feeds resolveGraceClock, which judges the grace against the tree being checked rather
+ * than the wall clock (WI-10004093). A window, not HEAD alone: repair-queue admission commits
+ * carry a deterministic 2000-01-01 stamp, so HEAD's own time is meaningless on a repair head.
+ */
+export function readRecentCommitTimesMs() {
+  try {
+    const out = execFileSync('git', ['log', `-n${GRACE_CLOCK_WINDOW}`, '--format=%ct', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    return out
+      .split('\n')
+      .map((line) => Number(line.trim()) * 1000)
+      .filter((ms) => Number.isFinite(ms) && ms > 0);
+  } catch {
+    return [];
+  }
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -1734,11 +1758,19 @@ function main() {
     // is in-flight work mid-wiring, not certified-but-dead code, and git-sync commits
     // that intermediate state on its own schedule. See partitionByGracePeriod.
     // The date lookup runs ONLY here, where something is already about to fail.
-    const { judged: judgedDead, inFlight: inFlightDead } = moduleAxis.unacknowledged.length
+    // Age is measured against HEAD's commit time, not Date.now(), so a frozen gate
+    // candidate cannot flip red as wall-clock time passes (see resolveGraceClock).
+    const graceClock = moduleAxis.unacknowledged.length
+      ? resolveGraceClock({ commitTimesMs: readRecentCommitTimesMs(), wallClockMs: Date.now() })
+      : null;
+    if (graceClock?.source === 'wall-clock') {
+      console.warn('⚠ HEAD commit times unreadable — grace period judged against the wall clock instead.');
+    }
+    const { judged: judgedDead, inFlight: inFlightDead } = graceClock
       ? partitionByGracePeriod({
           modules: moduleAxis.unacknowledged,
           addedAtByModule: readModuleAddDates(moduleAxis.unacknowledged.map((r) => r.module)),
-          now: Date.now(),
+          now: graceClock.now,
         })
       : { judged: [], inFlight: [] };
 

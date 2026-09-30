@@ -351,6 +351,43 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(thrown?.cause).toMatchObject({ message: 'synthetic pre-apply guard failure' });
   });
 
+  it('a missing pgvector names the embedded-postgres provisioning step (open-source-release P-008)', async () => {
+    const dir = await makeSqlDir({ '001-vec.sql': 'CREATE TABLE mrb4c_vec (id int);\n' });
+    let thrown: Error | undefined;
+    try {
+      await applyPendingMigrations({
+        client: sql,
+        sqlDir: dir,
+        dataDirWasReused: false,
+        beforeApply: () => {
+          throw new Error('type "vector" does not exist');
+        },
+      });
+    } catch (error) {
+      thrown = error instanceof Error ? error : new Error(String(error));
+    }
+    expect(thrown?.name).toBe('MigrationError');
+    expect(thrown?.message).toContain('pgvector extension is missing');
+    expect(thrown?.message).toContain('node scripts/install-embedded-pgvector.mjs');
+  });
+
+  it('an unrelated failure carries no pgvector hint', async () => {
+    const dir = await makeSqlDir({ '001-other.sql': 'CREATE TABLE mrb4d_other (id int);\n' });
+    let thrown: Error | undefined;
+    try {
+      await applyPendingMigrations({
+        client: sql,
+        sqlDir: dir,
+        beforeApply: () => {
+          throw new Error('relation "nope" does not exist');
+        },
+      });
+    } catch (error) {
+      thrown = error instanceof Error ? error : new Error(String(error));
+    }
+    expect(thrown?.message).not.toContain('pgvector');
+  });
+
   it('strips psql metacommand lines from execution but hashes the RAW contents', async () => {
     // Sent raw to postgres-js these metacommands would be "syntax error at or near \".
     const raw = [

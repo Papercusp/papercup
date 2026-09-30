@@ -93,12 +93,22 @@ interface ParityFixture {
   queries: Record<string, CapturedRow[]>;
 }
 
-const sessionTurn = SEARCH_SOURCES.find((s) => s.name === 'session_turn');
+/*
+ * Mutation-probe seam: PAPERCUSP_SOURCES_SUBJECT is an absolute path to a copy
+ * of sources.ts (scripts/mutation-probe.sh points it at a mutant, so the
+ * tracked file is never modified). Unset, the real SEARCH_SOURCES runs.
+ */
+let sessionTurn = SEARCH_SOURCES.find((s) => s.name === 'session_turn');
 
 describe('session-turn semantic leg parity (R-20)', () => {
   let sql: postgres.Sql;
 
   beforeAll(async () => {
+    const subject = process.env.PAPERCUSP_SOURCES_SUBJECT;
+    if (subject) {
+      const mod = (await import(subject)) as { SEARCH_SOURCES: typeof SEARCH_SOURCES };
+      sessionTurn = mod.SEARCH_SOURCES.find((s) => s.name === 'session_turn');
+    }
     const dsn = inject('baselineSchemaDsn');
     await assertPgReachable(dsn, 'search/session-turn-leg-parity.integration');
     sql = postgres(dsn, { max: 2, onnotice: () => {} });

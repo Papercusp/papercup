@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { _resetCardCorrelatorForTests, resolveCardResponse } from '@papercusp/agent-mcp';
-import { SuNativeCards } from './su-session-native-cards';
+import { SKIPPED_QUESTION_MESSAGE, SuNativeCards } from './su-session-native-cards';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
 
@@ -108,6 +108,39 @@ describe('native requests through the shared PUI card correlator', () => {
     await expect(pending).resolves.toMatchObject({ behavior: 'deny',
       message: expect.stringContaining('"Keep or change?":"Change"') });
     expect(f.events.filter((event) => event.type === 'card' && event.phase === 'opened')).toHaveLength(1);
+  });
+
+  // P-014: Esc on a question card is a skip. The model must be told so in
+  // words that are neither an error nor an invitation to ask again.
+  it('tells Claude a skipped question is a skip, not a failure (native and wrapped)', async () => {
+    for (const [toolName, input] of [
+      ['AskUserQuestion', { questions: [{ question: 'What next?', options: [{ label: 'Tests' }] }] }],
+      ['mcp__papercusp-su__tools_invoke', { name: 'AskUserQuestion',
+        args: { questions: [{ question: 'What next?', options: [{ label: 'Tests' }] }] } }],
+    ] as const) {
+      const f = fixture();
+      const pending = f.cards.handleClaude(toolName, input, 'turn', {
+        signal: new AbortController().signal, toolUseID: `skip-${toolName}`, requestId: 'skip-request' });
+      const opened = f.events.at(-1);
+      if (opened?.type !== 'card' || opened.phase !== 'opened') throw new Error('No question card');
+      expect(resolveCardResponse({ correlationId: opened.card.correlationId, action: 'decline',
+        expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+      const result = await pending;
+      expect(result).toEqual({ behavior: 'deny', message: SKIPPED_QUESTION_MESSAGE });
+      expect(f.events.at(-1)).toMatchObject({ type: 'card', phase: 'closed', resolution: 'declined' });
+      _resetCardCorrelatorForTests();
+    }
+    expect(SKIPPED_QUESTION_MESSAGE).not.toMatch(/fail|error:|declined or cancelled/i);
+  });
+
+  it('keeps the interrupt denial distinct from a skip', async () => {
+    const f = fixture(); const aborted = new AbortController();
+    const pending = f.cards.handleClaude('AskUserQuestion', { questions: [{ question: 'Still there?',
+      options: [{ label: 'Yes' }] }] }, 'turn', { signal: aborted.signal, toolUseID: 'interrupted', requestId: 'r' });
+    aborted.abort();
+    const result = await pending;
+    expect(result).toMatchObject({ behavior: 'deny' });
+    expect(result).not.toMatchObject({ message: SKIPPED_QUESTION_MESSAGE });
   });
 
   it('cancels only the aborted Claude request and leaves a concurrent permission answerable', async () => {

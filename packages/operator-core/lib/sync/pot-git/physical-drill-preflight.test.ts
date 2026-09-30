@@ -1,10 +1,19 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommsTrustEntry } from '../../trust/comms-trust';
 import { PHASE_D_TIER_HOLD_NOTE_PREFIX } from './physical-drill-phase-d';
 import {
   DRILL_PHASE_D_LOCK_OWNER_MARKER,
+  DRILL_SOURCE_DIR,
+  DRILL_SOURCE_SHA_ENV,
+  DRILL_TOWER_SOURCE_ENV,
+  drillSourceViolation,
+  gitBlobId,
+  observeDrillSource,
   PHYSICAL_DRILL_PREFLIGHT_CHECKS,
   PHYSICAL_DRILL_PREFLIGHT_FAILED,
   parseBuildStamp,
@@ -13,6 +22,7 @@ import {
   physicalDrillPreflightMode,
   runPhysicalDrillPreflight,
   vmPayloadProbeCommand,
+  type DrillSourceObservation,
   type PhysicalDrillPreflightDeps,
   type VmPayloadProbe,
 } from './physical-drill-preflight';
@@ -51,13 +61,28 @@ function vmProbe(overrides: Partial<VmPayloadProbe> = {}): VmPayloadProbe {
   };
 }
 
+const PIN = 'c'.repeat(40);
+const PHASE_D_WITH_LOCK = `const owner = \`${DRILL_PHASE_D_LOCK_OWNER_MARKER}\${runId}\`;`;
+const PHASE_D_PATH = 'packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.ts';
+const PHASE_E_PATH = 'packages/operator-core/lib/sync/pot-git/physical-drill-phase-e.ts';
+
+/** A pinned run whose tower snapshot equals the pinned commit (D-086). */
+function pinnedSource(
+  overrides: Partial<Extract<DrillSourceObservation, { pinned: true }>> = {},
+): DrillSourceObservation {
+  const blobs = new Map([
+    [PHASE_D_PATH, '1'.repeat(40)],
+    [PHASE_E_PATH, '2'.repeat(40)],
+  ]);
+  return { pinned: true, sha: PIN, commitBlobs: blobs, executedBlobs: new Map(blobs), phaseD: PHASE_D_WITH_LOCK, ...overrides };
+}
+
 /** A healthy rig; each test breaks exactly one thing. */
 function healthy(overrides: Partial<PhysicalDrillPreflightDeps> = {}): Required<PhysicalDrillPreflightDeps> {
   return {
     listTrust: vi.fn(async () => [trust(), trust({ githubUserId: TOWER_USER })]),
     readCanaryMode: vi.fn(async () => ({ mode: 'bridged', source: 'set' })),
-    gitStatus: vi.fn(async () => [' M packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.test.ts']),
-    readHeadFile: vi.fn(async () => `const owner = \`${DRILL_PHASE_D_LOCK_OWNER_MARKER}\${runId}\`;`),
+    observeDrillSource: vi.fn(async () => pinnedSource()),
     probeVm: vi.fn(async () => vmProbe()),
     readTowerStamp: vi.fn(async () => ({ serveSha256: SERVE, harnessSuSha256: HARNESS, composedAt: '2026-09-29T01:12:18Z' })),
     towerHealthStatus: vi.fn(async () => 200),
@@ -81,25 +106,71 @@ describe('runPhysicalDrillPreflight', () => {
     expect(report.results.every((result) => result.ok)).toBe(true);
   });
 
-  it('drill-source-committed: refuses uncommitted or untracked drill source, naming the files', async () => {
+  it('drill-source-committed (unpinned): refuses uncommitted or untracked drill source, naming the files', async () => {
     const failure = await refusal(
       healthy({
-        gitStatus: vi.fn(async () => [
-          ' M packages/operator-core/lib/sync/pot-git/physical-drill-phase-e.ts',
-          '?? packages/operator-core/lib/sync/pot-git/physical-drill-new.ts',
-        ]),
+        observeDrillSource: vi.fn(async (): Promise<DrillSourceObservation> => ({
+          pinned: false,
+          statusLines: [
+            ` M ${PHASE_E_PATH}`,
+            '?? packages/operator-core/lib/sync/pot-git/physical-drill-new.ts',
+            ' M packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.test.ts',
+          ],
+          phaseD: PHASE_D_WITH_LOCK,
+        })),
       }),
     );
     expect(failure.check).toBe('drill-source-committed');
     expect(failure.reason).toContain('physical-drill-phase-e.ts');
     expect(failure.reason).toContain('physical-drill-new.ts');
+    expect(failure.reason).not.toContain('phase-d.test.ts');
     expect(failure.reason).toContain('git archive');
   });
 
-  it('drill-source-committed: refuses a HEAD Phase D without the live dirt lock (WI-10003741)', async () => {
-    const failure = await refusal(healthy({ readHeadFile: vi.fn(async () => 'export const nothing = 1;') }));
+  it('drill-source-committed (unpinned): test-file edits alone are not drill source', () => {
+    expect(
+      drillSourceViolation({
+        pinned: false,
+        statusLines: [' M packages/operator-core/lib/sync/pot-git/physical-drill-phase-d.test.ts'],
+        phaseD: PHASE_D_WITH_LOCK,
+      }),
+    ).toBeNull();
+  });
+
+  it('drill-source-committed: refuses a Phase D without the live dirt lock (WI-10003741), pinned or not', async () => {
+    const pinned = await refusal(
+      healthy({ observeDrillSource: vi.fn(async () => pinnedSource({ phaseD: 'export const nothing = 1;' })) }),
+    );
+    expect(pinned.check).toBe('drill-source-committed');
+    expect(pinned.reason).toContain(DRILL_PHASE_D_LOCK_OWNER_MARKER);
+    expect(pinned.reason).toContain(`pinned commit ${PIN.slice(0, 12)}`);
+    expect(
+      drillSourceViolation({ pinned: false, statusLines: [], phaseD: 'export const nothing = 1;' }),
+    ).toContain(`HEAD ${PHASE_D_PATH}`);
+  });
+
+  it('drill-source-committed (pinned, D-086): refuses a tower snapshot that differs from the pinned commit, naming the file', async () => {
+    const failure = await refusal(
+      healthy({
+        observeDrillSource: vi.fn(async () =>
+          pinnedSource({ executedBlobs: new Map([[PHASE_D_PATH, '1'.repeat(40)], [PHASE_E_PATH, '9'.repeat(40)]]) }),
+        ),
+      }),
+    );
     expect(failure.check).toBe('drill-source-committed');
-    expect(failure.reason).toContain(DRILL_PHASE_D_LOCK_OWNER_MARKER);
+    expect(failure.reason).toContain(`differing: ${PHASE_E_PATH}`);
+    expect(failure.reason).toContain(`pinned commit ${PIN.slice(0, 12)}`);
+    const missingAndExtra = drillSourceViolation(
+      pinnedSource({ executedBlobs: new Map([[PHASE_D_PATH, '1'.repeat(40)], ['packages/operator-core/lib/sync/pot-git/x.ts', '3'.repeat(40)]]) }),
+    );
+    expect(missingAndExtra).toContain(`missing: ${PHASE_E_PATH}`);
+    expect(missingAndExtra).toContain('extra: packages/operator-core/lib/sync/pot-git/x.ts');
+  });
+
+  it('drill-source-committed (pinned): an empty pinned drill source is a refusal, not a vacuous match', () => {
+    expect(drillSourceViolation(pinnedSource({ commitBlobs: new Map(), executedBlobs: new Map() }))).toContain(
+      'has no drill source',
+    );
   });
 
   it('canary-mode-baseline: refuses a canary a crashed Phase E left in legacy', async () => {
@@ -289,6 +360,101 @@ describe('probe wiring', () => {
     const call = code.slice(preflight, code.indexOf('\n', code.indexOf('|| fail', preflight)));
     expect(call).toMatch(/\|\| fail /);
     expect(code.slice(code.lastIndexOf('\n', preflight), preflight)).toContain('PCUSP_VM_SSH="$VM"');
+  });
+
+  it('exports the D-086 pin (pinned sha + tower snapshot) before the rig-preflight call', () => {
+    const code = readFileSync(probePath, 'utf8')
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
+    const preflight = code.search(/"\$TSX" "\$PRODUCER" rig-preflight\b/);
+    const sha = code.indexOf(`export ${DRILL_SOURCE_SHA_ENV}="$source_sha"`);
+    const snapshot = code.indexOf(`export ${DRILL_TOWER_SOURCE_ENV}="$tower_source"`);
+    expect(sha).toBeGreaterThan(code.indexOf('source_sha="$(git'));
+    expect(snapshot).toBeGreaterThan(code.indexOf('stage_pinned_source tower'));
+    expect(sha).toBeLessThan(preflight);
+    expect(snapshot).toBeLessThan(preflight);
+  });
+});
+
+// D-086 behaviours through the REAL default gatherers against a throwaway git repo:
+// (1) a pinned run passes even while the live tree is dirty, because the dirt is not
+// part of the run; (2) the same dirt refuses an unpinned (standalone) preflight;
+// (3) a snapshot that drifted from its pinned commit refuses.
+describe('observeDrillSource against a real git repo (D-086)', () => {
+  let repo = '';
+  let snapshot = '';
+  let sha = '';
+  const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+  const write = (root: string, rel: string, body: string) => {
+    mkdirSync(join(root, rel, '..'), { recursive: true });
+    writeFileSync(join(root, rel), body);
+  };
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'd086-repo-'));
+    snapshot = mkdtempSync(join(tmpdir(), 'd086-snapshot-'));
+    git('init', '-q');
+    git('config', 'user.email', 'd086@test.invalid');
+    git('config', 'user.name', 'd086');
+    write(repo, PHASE_D_PATH, `${PHASE_D_WITH_LOCK}\n`);
+    write(repo, PHASE_E_PATH, 'export const e = 1;\n');
+    write(repo, `${DRILL_SOURCE_DIR}/physical-drill-phase-e.test.ts`, 'it.todo("e");\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'pinned');
+    sha = git('rev-parse', 'HEAD');
+    execFileSync('bash', ['-c', `git -C '${repo}' archive --format=tar ${sha} -- packages | tar -xf - -C '${snapshot}'`]);
+    // A peer's uncommitted edit AFTER the pin: exactly what used to refuse every rig run.
+    write(repo, PHASE_E_PATH, 'export const e = 2; // peer edit in flight\n');
+    vi.stubEnv('PAPERCUSP_REPO_DIR', repo);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(snapshot, { recursive: true, force: true });
+  });
+
+  it('gitBlobId matches git hash-object', () => {
+    expect(gitBlobId(Buffer.from('export const e = 1;\n'))).toBe(
+      execFileSync('bash', ['-c', `printf 'export const e = 1;\\n' | git hash-object --stdin`], { encoding: 'utf8' }).trim(),
+    );
+  });
+
+  it('(1) pinned: the live tree is dirty, the snapshot equals the pinned commit, so it PASSES', async () => {
+    const observed = await observeDrillSource({ [DRILL_SOURCE_SHA_ENV]: sha, [DRILL_TOWER_SOURCE_ENV]: snapshot });
+    expect(observed.pinned).toBe(true);
+    if (observed.pinned) {
+      expect([...observed.commitBlobs.keys()].sort()).toEqual([PHASE_D_PATH, PHASE_E_PATH]);
+    }
+    expect(drillSourceViolation(observed)).toBeNull();
+  });
+
+  it('(2) unpinned: the same live-tree dirt REFUSES, naming the file', async () => {
+    const violation = drillSourceViolation(await observeDrillSource({}));
+    expect(violation).toContain(PHASE_E_PATH);
+    expect(violation).toContain('unpinned');
+  });
+
+  it('(3) pinned: a snapshot that drifted from its commit REFUSES', async () => {
+    write(snapshot, PHASE_E_PATH, 'export const e = 3; // tampered\n');
+    const violation = drillSourceViolation(
+      await observeDrillSource({ [DRILL_SOURCE_SHA_ENV]: sha, [DRILL_TOWER_SOURCE_ENV]: snapshot }),
+    );
+    expect(violation).toContain(`differing: ${PHASE_E_PATH}`);
+  });
+
+  it('half a pin or a malformed sha is a wiring fault that fails the check', async () => {
+    await expect(observeDrillSource({ [DRILL_SOURCE_SHA_ENV]: sha })).rejects.toThrow('must be set together');
+    await expect(
+      observeDrillSource({ [DRILL_SOURCE_SHA_ENV]: 'HEAD', [DRILL_TOWER_SOURCE_ENV]: snapshot }),
+    ).rejects.toThrow('not a full commit sha');
+    const report = await runPhysicalDrillPreflight(
+      { checks: ['drill-source-committed'] },
+      { observeDrillSource: () => observeDrillSource({ [DRILL_TOWER_SOURCE_ENV]: snapshot }) },
+    );
+    expect(report.ok).toBe(false);
+    expect(report.firstFailure?.reason).toContain('could not be evaluated');
   });
 });
 

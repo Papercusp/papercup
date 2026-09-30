@@ -275,6 +275,38 @@ export function partitionByGracePeriod({ modules, addedAtByModule, now, graceMs,
     }[];
 };
 /**
+ * The clock the grace period is judged against: the JUDGED TREE's own newest commit time,
+ * never the wall clock.
+ *
+ * ⚠ A FROZEN GATE CANDIDATE MUST GET THE SAME VERDICT EVERY TIME IT IS JUDGED. With
+ * `Date.now()` the same sha passed at 00:36Z and failed at 01:39Z on 2026-09-30 (WI-10004093):
+ * a module's 7-day grace expired between the two runs while the content stayed byte-identical,
+ * so a queue that was converging went red on nothing anyone changed. Measuring age against the
+ * tree's commits makes the verdict a function of the sha alone. On a working tree git-sync
+ * commits every few minutes, so this trails the wall clock by minutes and the ordinary
+ * behaviour is unchanged.
+ *
+ * The NEWEST time in HEAD's recent ancestry, not HEAD's own: repair-queue admission commits
+ * carry a deterministic 2000-01-01 committer stamp, so on a repair head HEAD's time would put
+ * every module decades before its own add date and the axis could never fail there. Their
+ * ancestry reaches the frozen candidate, whose real time is the right clock.
+ *
+ * Falls back to the wall clock only when no commit time is readable, and says so via `source`,
+ * so a degraded lookup is visible instead of silently reintroducing the drift.
+ *
+ * Pure by design: the caller supplies both readings, so this is testable without git.
+ *
+ * @param {{commitTimesMs:number[], wallClockMs:number}} args
+ * @returns {{now:number, source:'commit-history'|'wall-clock'}}
+ */
+export function resolveGraceClock({ commitTimesMs, wallClockMs }: {
+    commitTimesMs: number[];
+    wallClockMs: number;
+}): {
+    now: number;
+    source: "commit-history" | "wall-clock";
+};
+/**
  * Source-level markers that a module is a HUMAN-INVOKED CLI ENTRYPOINT.
  *
  * ⚠ WHY THIS EXISTS. The reachability axis is keyed on IMPORT EDGES, so it structurally
@@ -346,6 +378,11 @@ export function findInaccurateAcknowledgements({ rows, acknowledgements }: {
  * intermediate state of a peer's in-flight work, several times a day, for everybody.
  */
 export const NEW_MODULE_GRACE_DAYS: 7;
+/**
+ * How many of HEAD's most recent commits the grace clock reads. Wide enough that a frozen
+ * repair queue's run of synthetic admission commits can never fill it.
+ */
+export const GRACE_CLOCK_WINDOW: 500;
 export type ShipmentReachabilityRow = {
     module: string;
     dead: boolean;

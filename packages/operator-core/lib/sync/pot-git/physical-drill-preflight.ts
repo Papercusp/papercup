@@ -13,9 +13,10 @@
  * reason says so): an unmeasured guard rail is not a passed one.
  */
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, readFile, readdir, readlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { listCommsTrust, type CommsTrustEntry } from '../../trust/comms-trust';
@@ -43,6 +44,16 @@ export const DRILL_SOURCE_DIR = 'packages/operator-core/lib/sync/pot-git' as con
 export const DRILL_PHASE_D_SOURCE = `${DRILL_SOURCE_DIR}/physical-drill-phase-d.ts` as const;
 /** Lock owner prefix `dirtyPhysicalPhaseDWorktree` takes; absent in HEAD = the VM runs the pre-fix Phase D. */
 export const DRILL_PHASE_D_LOCK_OWNER_MARKER = 'p505-phase-d:' as const;
+/**
+ * The pin the probe hands the preflight (p2p-public-release-endgame-2026-09-01#D-086):
+ * the superproject commit both hosts run, and the run-private tower snapshot cut from
+ * it. Both set = PINNED (verify the snapshot the run executes against that commit;
+ * live-tree dirt is irrelevant because it is not part of the run). Neither set =
+ * UNPINNED (a standalone preflight: the live tree must be committed). Exactly one set
+ * is a wiring fault and fails the check.
+ */
+export const DRILL_SOURCE_SHA_ENV = 'PHYSICAL_DRILL_SOURCE_SHA' as const;
+export const DRILL_TOWER_SOURCE_ENV = 'PHYSICAL_DRILL_TOWER_SOURCE' as const;
 
 /** The canary's recorded original mode (bridged since 2026-07-17; fact guard-rail:p505-phase-e-baseline-and-exit-trap). */
 export const DRILL_CANARY_BASELINE_MODE = 'bridged' as const;
@@ -85,13 +96,34 @@ export type VmPayloadProbe = {
 
 export type TowerComposedStamp = { serveSha256: string; harnessSuSha256: string; composedAt: string };
 
+/** Repo-relative path -> git blob id, restricted to drill source (see isDrillSourcePath). */
+export type DrillSourceBlobs = ReadonlyMap<string, string>;
+
+/** What `drill-source-committed` judges; gathered by observeDrillSource. */
+export type DrillSourceObservation =
+  | {
+      /** The probe pinned the run: judge the snapshot it EXECUTES against the commit it names. */
+      pinned: true;
+      sha: string;
+      commitBlobs: DrillSourceBlobs;
+      executedBlobs: DrillSourceBlobs;
+      /** Phase D at the pinned commit, or null when the commit has no such path. */
+      phaseD: string | null;
+    }
+  | {
+      /** No pin (a standalone preflight): the live tree is what a run would stage. */
+      pinned: false;
+      /** Porcelain status lines for uncommitted/untracked paths under the drill source dir. */
+      statusLines: readonly string[];
+      /** Phase D at HEAD, or null when HEAD has no such path. */
+      phaseD: string | null;
+    };
+
 export type PhysicalDrillPreflightDeps = {
   listTrust?: () => Promise<CommsTrustEntry[]>;
   readCanaryMode?: () => Promise<{ mode: string; source: string }>;
-  /** Porcelain status lines for uncommitted/untracked paths under `dir` (repo-relative). */
-  gitStatus?: (dir: string) => Promise<string[]>;
-  /** The HEAD blob of a repo-relative path, or null when HEAD has no such path. */
-  readHeadFile?: (path: string) => Promise<string | null>;
+  /** Gathers the drill-source observation (pinned or unpinned; D-086). */
+  observeDrillSource?: () => Promise<DrillSourceObservation>;
   probeVm?: () => Promise<VmPayloadProbe>;
   readTowerStamp?: () => Promise<TowerComposedStamp | null>;
   towerHealthStatus?: () => Promise<number>;
@@ -107,26 +139,65 @@ export type PhysicalDrillPreflightOptions = {
 
 // ── pure evaluations (one per check; null = satisfied) ──────────────────────
 
-/** Uncommitted drill source means the VM (which stages HEAD) runs different code from the tower. */
-export function drillSourceViolation(statusLines: readonly string[], headPhaseD: string | null): string | null {
-  const dirty = statusLines
-    .map((line) => line.slice(3).trim())
-    .map((path) => (path.includes(' -> ') ? path.split(' -> ')[1]! : path))
-    .filter((path) => path.endsWith('.ts') && !path.endsWith('.test.ts'));
-  if (dirty.length > 0) {
+/** Drill source = the non-test TypeScript the producer imports; test edits never change a run. */
+export function isDrillSourcePath(path: string): boolean {
+  return path.endsWith('.ts') && !path.endsWith('.test.ts');
+}
+
+function phaseDViolation(where: string, phaseD: string | null): string | null {
+  if (phaseD === null) return `${where} has no ${DRILL_PHASE_D_SOURCE}`;
+  if (!phaseD.includes(DRILL_PHASE_D_LOCK_OWNER_MARKER)) {
     return (
-      `uncommitted drill source (the VM stages HEAD via git archive, so it would run different code): ` +
-      `${dirty.join(', ')} — wait for git-sync or fire git-sync:run, then re-run`
-    );
-  }
-  if (headPhaseD === null) return `HEAD has no ${DRILL_PHASE_D_SOURCE}`;
-  if (!headPhaseD.includes(DRILL_PHASE_D_LOCK_OWNER_MARKER)) {
-    return (
-      `HEAD ${DRILL_PHASE_D_SOURCE} lacks the Phase D dirt lock (owner '${DRILL_PHASE_D_LOCK_OWNER_MARKER}<runId>', ` +
+      `${where} ${DRILL_PHASE_D_SOURCE} lacks the Phase D dirt lock (owner '${DRILL_PHASE_D_LOCK_OWNER_MARKER}<runId>', ` +
       `WI-10003741); a VM git-sync would sweep the planted file`
     );
   }
   return null;
+}
+
+/**
+ * The drill source a run executes must be the source a commit names (D-086).
+ * PINNED: the tower snapshot must equal the pinned commit, file for file (the VM
+ * stages that same commit, so the two hosts then run identical bytes); the live
+ * tree is not consulted, because its edits are not part of the run. UNPINNED: the
+ * live tree must have no uncommitted drill source (a run would stage HEAD).
+ */
+export function drillSourceViolation(observed: DrillSourceObservation): string | null {
+  if (!observed.pinned) {
+    const dirty = observed.statusLines
+      .map((line) => line.slice(3).trim())
+      .map((path) => (path.includes(' -> ') ? path.split(' -> ')[1]! : path))
+      .filter(isDrillSourcePath);
+    if (dirty.length > 0) {
+      return (
+        `uncommitted drill source (unpinned preflight: a run would stage HEAD via git archive, so it would run ` +
+        `different code): ${dirty.join(', ')} — wait for git-sync or fire git-sync:run, then re-run`
+      );
+    }
+    return phaseDViolation('HEAD', observed.phaseD);
+  }
+  const short = observed.sha.slice(0, 12);
+  const missing: string[] = [];
+  const differing: string[] = [];
+  for (const [path, blob] of observed.commitBlobs) {
+    const executed = observed.executedBlobs.get(path);
+    if (executed === undefined) missing.push(path);
+    else if (executed !== blob) differing.push(path);
+  }
+  const extra = [...observed.executedBlobs.keys()].filter((path) => !observed.commitBlobs.has(path));
+  if (missing.length + differing.length + extra.length > 0) {
+    const parts = [
+      differing.length ? `differing: ${differing.join(', ')}` : '',
+      missing.length ? `missing: ${missing.join(', ')}` : '',
+      extra.length ? `extra: ${extra.join(', ')}` : '',
+    ].filter(Boolean);
+    return (
+      `the tower snapshot does not match pinned commit ${short} (${parts.join('; ')}); ` +
+      `the run would execute drill source no commit names`
+    );
+  }
+  if (observed.commitBlobs.size === 0) return `pinned commit ${short} has no drill source under ${DRILL_SOURCE_DIR}`;
+  return phaseDViolation(`pinned commit ${short}`, observed.phaseD);
 }
 
 /** A crashed run leaves the canary in legacy; the next run would record legacy as the "original" and never restore bridged. */
@@ -219,27 +290,77 @@ export function hostsViolation(towerStatus: number, vmOwnerStatus: string): stri
 // ── default gatherers (read-only) ───────────────────────────────────────────
 
 const execFileAsync = promisify(execFile);
-const REPO_ROOT = process.env.PAPERCUSP_REPO_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+/** Read per call: the probe exports PAPERCUSP_REPO_DIR, and tests point it at a temp repo. */
+const repoRoot = () =>
+  process.env.PAPERCUSP_REPO_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
-async function defaultGitStatus(dir: string): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    'git',
-    ['-C', REPO_ROOT, 'status', '--porcelain=v1', '--untracked-files=all', '--', dir],
-    { timeout: 20_000, maxBuffer: 4 * 1024 * 1024 },
-  );
-  return stdout.split('\n').filter((line) => line.length > 3);
+async function git(args: readonly string[], maxBuffer = 16 * 1024 * 1024): Promise<string> {
+  const { stdout } = await execFileAsync('git', ['-C', repoRoot(), ...args], { timeout: 20_000, maxBuffer });
+  return stdout;
 }
 
-async function defaultReadHeadFile(path: string): Promise<string | null> {
+async function readCommitFile(ref: string, path: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', REPO_ROOT, 'show', `HEAD:${path}`], {
-      timeout: 20_000,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return stdout;
+    return await git(['show', `${ref}:${path}`]);
   } catch {
     return null;
   }
+}
+
+/** The git blob id of `bytes` — what `git ls-tree` reports for the same content. */
+export function gitBlobId(bytes: Buffer): string {
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+}
+
+async function listCommitBlobs(sha: string, dir: string): Promise<Map<string, string>> {
+  const blobs = new Map<string, string>();
+  for (const line of (await git(['ls-tree', '-r', '--full-tree', sha, '--', dir])).split('\n')) {
+    const match = line.match(/^\d+ blob ([0-9a-f]{40})\t(.+)$/);
+    if (match && isDrillSourcePath(match[2]!)) blobs.set(match[2]!, match[1]!);
+  }
+  return blobs;
+}
+
+async function hashTreeBlobs(root: string, dir: string): Promise<Map<string, string>> {
+  const blobs = new Map<string, string>();
+  let entries: string[];
+  try {
+    entries = await readdir(join(root, dir), { recursive: true });
+  } catch {
+    return blobs; // an absent snapshot dir reports every commit file as missing
+  }
+  for (const rel of entries) {
+    const path = `${dir}/${rel.split(sep).join('/')}`;
+    if (!isDrillSourcePath(path)) continue;
+    const abs = join(root, path);
+    const stat = await lstat(abs);
+    if (stat.isSymbolicLink()) blobs.set(path, gitBlobId(Buffer.from(await readlink(abs))));
+    else if (stat.isFile()) blobs.set(path, gitBlobId(await readFile(abs)));
+  }
+  return blobs;
+}
+
+/** Resolves the D-086 pin from the environment the probe exports; see DRILL_SOURCE_SHA_ENV. */
+export async function observeDrillSource(env: NodeJS.ProcessEnv = process.env): Promise<DrillSourceObservation> {
+  const sha = env[DRILL_SOURCE_SHA_ENV] ?? '';
+  const towerSource = env[DRILL_TOWER_SOURCE_ENV] ?? '';
+  if (!sha && !towerSource) {
+    const [status, phaseD] = await Promise.all([
+      git(['status', '--porcelain=v1', '--untracked-files=all', '--', DRILL_SOURCE_DIR], 4 * 1024 * 1024),
+      readCommitFile('HEAD', DRILL_PHASE_D_SOURCE),
+    ]);
+    return { pinned: false, statusLines: status.split('\n').filter((line) => line.length > 3), phaseD };
+  }
+  if (!sha || !towerSource) {
+    throw new Error(`${DRILL_SOURCE_SHA_ENV} and ${DRILL_TOWER_SOURCE_ENV} must be set together (D-086 pin)`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`${DRILL_SOURCE_SHA_ENV} is not a full commit sha: '${sha}'`);
+  const [commitBlobs, executedBlobs, phaseD] = await Promise.all([
+    listCommitBlobs(sha, DRILL_SOURCE_DIR),
+    hashTreeBlobs(towerSource, DRILL_SOURCE_DIR),
+    readCommitFile(sha, DRILL_PHASE_D_SOURCE),
+  ]);
+  return { pinned: true, sha, commitBlobs, executedBlobs, phaseD };
 }
 
 /** One ssh, read-only: the VM payload's stamp, its actual hashes, and the owner's health status. */
@@ -326,10 +447,7 @@ export async function runPhysicalDrillPreflight(
 
   const evaluate: Record<PhysicalDrillPreflightCheckId, () => Promise<string | null>> = {
     'drill-source-committed': async () =>
-      drillSourceViolation(
-        await (deps.gitStatus ?? defaultGitStatus)(DRILL_SOURCE_DIR),
-        await (deps.readHeadFile ?? defaultReadHeadFile)(DRILL_PHASE_D_SOURCE),
-      ),
+      drillSourceViolation(await (deps.observeDrillSource ?? (() => observeDrillSource()))()),
     'canary-mode-baseline': async () =>
       canaryModeViolation(await (deps.readCanaryMode ?? (() => readPhysicalPhaseEMode()))(), expectedMode),
     'vm-trust-hold-ready': async () =>

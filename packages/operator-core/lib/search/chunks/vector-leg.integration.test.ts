@@ -15,13 +15,17 @@
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
-import {
-  chunkAwareVectorLeg,
-  sharedChunkStore,
-  type ChunkAwareVectorLegOptions,
-  type ChunkSurface,
-  type PgHandle,
-} from '@papercusp/search';
+import * as searchLib from '@papercusp/search';
+import { sharedChunkStore, type ChunkAwareVectorLegOptions, type ChunkSurface, type PgHandle } from '@papercusp/search';
+
+/**
+ * Mutation-probe seam: PAPERCUSP_VECTOR_LEG_SUBJECT is an absolute path to a
+ * copy of libs/generic/search/src/chunks/vector-leg.ts (scripts/mutation-probe.sh
+ * points it at a mutant, so the tracked file is never modified). Unset, the real
+ * library export runs. The binding is NOT named chunkAwareVectorLeg: R-8's
+ * placement scan reads `let <library symbol>:` as a fork, and this is an alias.
+ */
+let legUnderTest: typeof searchLib.chunkAwareVectorLeg = searchLib.chunkAwareVectorLeg;
 
 const SCHEMA = `vleg_${process.pid}_${Date.now()}`;
 const DOCS = `${SCHEMA}.docs`;
@@ -65,7 +69,7 @@ describe('chunkAwareVectorLeg (P-006)', () => {
   let sql: postgres.Sql;
 
   const run = (over: Partial<ChunkAwareVectorLegOptions>) =>
-    chunkAwareVectorLeg(sql as unknown as PgHandle, {
+    legUnderTest(sql as unknown as PgHandle, {
       surface: surface(),
       qVec: vec(0),
       limit: 10,
@@ -77,6 +81,8 @@ describe('chunkAwareVectorLeg (P-006)', () => {
   const ids = (rows: Array<Record<string, unknown>>) => rows.map((r) => r.id);
 
   beforeAll(async () => {
+    const subject = process.env.PAPERCUSP_VECTOR_LEG_SUBJECT;
+    if (subject) legUnderTest = ((await import(subject)) as typeof searchLib).chunkAwareVectorLeg;
     const dsn = inject('baselineSchemaDsn');
     await assertPgReachable(dsn, 'search/chunks/vector-leg.integration');
     sql = postgres(dsn, { max: 2, onnotice: () => {} });

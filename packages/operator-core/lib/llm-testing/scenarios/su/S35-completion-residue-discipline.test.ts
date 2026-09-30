@@ -77,6 +77,9 @@ describe('S35 completion-residue discipline — fixture world', () => {
       .toMatchObject({ ok: true, effectReceipt: { effect: 'checkpoint-recorded' } });
     expect(await parse('tools:invoke', { name: 'work_items:checkpoint', args: JSON.stringify(JSON.stringify(checkpoint)) }))
       .toMatchObject({ ok: true, effectReceipt: { effect: 'checkpoint-recorded' } });
+    // An args string that does not parse is production's retryable invalid_args, not not_applicable.
+    expect(await parse('tools:invoke', { name: 'work_items:checkpoint', args: `${JSON.stringify(checkpoint)}}` }))
+      .toMatchObject({ ok: false, error: 'invalid_args' });
   });
 
   it('applies the production coverage partition to a terminal close, and then reports the item done', async () => {

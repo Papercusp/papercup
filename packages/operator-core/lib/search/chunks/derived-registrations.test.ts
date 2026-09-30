@@ -11,7 +11,7 @@
  * file, so the guard is proven able to fail without mutating the tree.
  */
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { HOT_SNAPSHOT_EXCLUDED_TABLE_DATA } from '@papercusp/backup/hook';
 import { TARGETS } from '../embed-backfill';
 import { PROSE_VECTOR_COLUMNS } from '../prose-vector-dims';
@@ -40,6 +40,21 @@ function registrationLists(): Record<string, string[]> {
   };
 }
 
+/*
+ * Mutation-probe seam: PAPERCUSP_COVERAGE_GATE_SUBJECT is an absolute path to a
+ * copy of ../coverage-gate.ts (scripts/mutation-probe.sh points it at a mutant
+ * that stops deriving from the registry, so the tracked file is never
+ * modified). Unset, the real SEARCH_SOURCE_SURFACES is checked.
+ */
+let searchSourceSurfaces = SEARCH_SOURCE_SURFACES;
+beforeAll(async () => {
+  const subject = process.env.PAPERCUSP_COVERAGE_GATE_SUBJECT;
+  if (subject) {
+    searchSourceSurfaces = ((await import(subject)) as { SEARCH_SOURCE_SURFACES: typeof SEARCH_SOURCE_SURFACES })
+      .SEARCH_SOURCE_SURFACES;
+  }
+});
+
 describe('chunk-store registrations derive from the registry (R-15)', () => {
   it('the registry names both known stores, each once', () => {
     const tables = CHUNK_STORES.map((s) => s.table);
@@ -61,11 +76,11 @@ describe('chunk-store registrations derive from the registry (R-15)', () => {
   it('every store reaches the coverage gate for each search source that reads it', () => {
     for (const s of CHUNK_STORES) {
       for (const source of s.searchSources) {
-        expect(SEARCH_SOURCE_SURFACES[source]).toContain(`${s.table}.${s.embedCol}`);
+        expect(searchSourceSurfaces[source]).toContain(`${s.table}.${s.embedCol}`);
       }
     }
     // The pre-P-005 hand-listed union survives the derivation unchanged.
-    expect(SEARCH_SOURCE_SURFACES.session_turn).toEqual([
+    expect(searchSourceSurfaces.session_turn).toEqual([
       'harness_shared.session_turns.text_embedding',
       'harness_shared.session_turn_chunks.embedding',
     ]);

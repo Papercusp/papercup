@@ -29,6 +29,7 @@ import {
   parseImportSpecifiers,
   parseReleasePathMentions,
   partitionByGracePeriod,
+  resolveGraceClock,
   resolveSpecifier,
   selectDetectorModules,
   selfExclusionPaths,
@@ -533,6 +534,58 @@ describe('grace period for newly-added modules', () => {
       now: NOW,
     });
     expect(judged[0]).toMatchObject({ testedButUnwired: true, testImporters: ['a.test.ts'] });
+  });
+});
+
+describe('grace clock — a frozen candidate gets the same verdict every time (WI-10004093)', () => {
+  // The measured incident: repair head 7652f8c9 (an admission commit, stamped 2000-01-01)
+  // on frozen candidate 5ec99902 (committed 2026-09-29T18:12:21Z) PASSED at 00:36Z and
+  // FAILED at 01:39Z, because this module's 7-day grace expired at 01:17:09Z in between.
+  const DAY = 24 * 60 * 60 * 1000;
+  const MODULE = 'apps/operator/lib/release/run-p2p-candidate-manifest.ts';
+  const ADDED = Date.parse('2026-09-23T01:17:09Z');
+  const ADMISSION_STAMP = Date.parse('2000-01-01T00:00:00Z');
+  const CANDIDATE = Date.parse('2026-09-29T18:12:21Z');
+  const REPAIR_HEAD_HISTORY = [ADMISSION_STAMP, ADMISSION_STAMP, CANDIDATE, CANDIDATE - DAY];
+
+  const verdictAt = (wallClockMs: number, commitTimesMs: number[], addedAt = ADDED) =>
+    partitionByGracePeriod({
+      modules: [{ module: MODULE }],
+      addedAtByModule: new Map([[MODULE, addedAt]]),
+      now: resolveGraceClock({ commitTimesMs, wallClockMs }).now,
+    }).judged.map((r) => r.module);
+
+  it('gives the same sha the same verdict before and after the wall clock crosses the grace', () => {
+    const before = verdictAt(Date.parse('2026-09-30T00:36:00Z'), REPAIR_HEAD_HISTORY);
+    const after = verdictAt(Date.parse('2026-09-30T01:39:00Z'), REPAIR_HEAD_HISTORY);
+    expect(before).toEqual([]);
+    expect(after).toEqual(before);
+  });
+
+  it('CONTROL: judged by the wall clock, the same inputs flip — the drift this clock removes', () => {
+    // Without this, the test above would also pass against a grace period that never judges.
+    expect(verdictAt(Date.parse('2026-09-30T00:36:00Z'), [])).toEqual([]);
+    expect(verdictAt(Date.parse('2026-09-30T01:39:00Z'), [])).toEqual([MODULE]);
+  });
+
+  it('still JUDGES an old module on a repair head whose own commit is stamped 2000-01-01', () => {
+    // Reading HEAD's time alone would put "now" decades before every add date, so the axis
+    // could never fail on a repair head. The newest time in the ancestry is the candidate's.
+    expect(verdictAt(Date.parse('2026-09-30T01:39:00Z'), REPAIR_HEAD_HISTORY, CANDIDATE - 30 * DAY)).toEqual([
+      MODULE,
+    ]);
+    expect(resolveGraceClock({ commitTimesMs: REPAIR_HEAD_HISTORY, wallClockMs: 0 })).toEqual({
+      now: CANDIDATE,
+      source: 'commit-history',
+    });
+  });
+
+  it('falls back to the wall clock, and says so, only when no commit time is readable', () => {
+    expect(resolveGraceClock({ commitTimesMs: [], wallClockMs: 123 })).toEqual({ now: 123, source: 'wall-clock' });
+    expect(resolveGraceClock({ commitTimesMs: [Number.NaN, 0], wallClockMs: 456 })).toEqual({
+      now: 456,
+      source: 'wall-clock',
+    });
   });
 });
 

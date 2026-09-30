@@ -140,6 +140,7 @@ import { authSafeToolsRemoveSet } from '../../../auth-config-overrides';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-token';
 import { isAppKeyShaped } from '../../../connected-apps/key';
 import { reportedClientAddress, resolveAppKeyToken } from '../../../connected-apps/principal';
+import { appKeyToolListFilter } from '../../../connected-apps/enforce';
 import {
   admissionCredentialDigest,
   type AdmissionAuthorityContext,
@@ -2957,6 +2958,18 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
       const projected = lookupByMcpName(name);
       return projected !== undefined && projected.capabilities.every((capability) => caps.has(capability));
     });
+    // external-app-access P-003: an app key sees only the tools its scopes let it call —
+    // the same policy the dispatch kernel seat enforces (connected-apps/enforce.ts).
+    const appFilter = await appKeyToolListFilter(
+      spawnRes.ctx.authenticatedPrincipal,
+      spawnRes.ctx.workspaceId,
+    );
+    if (appFilter) {
+      result = result.filter((listing) => {
+        const name = (listing as { name?: unknown }).name;
+        return typeof name === 'string' && appFilter(name);
+      });
+    }
   }
   // `?tools=` is the SEED, not a hard cap (dynamic-tool-surface-2026-07-01): a
   // seeded session's surface GROWS at runtime via ctx.activateTools (tools:find)

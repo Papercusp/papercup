@@ -15,7 +15,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { delimiter, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { stripCommentsAndStrings } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 
@@ -81,6 +81,17 @@ function candidateFiles(): string[] {
   }
 }
 
+/**
+ * Mutation-probe seam: PAPERCUSP_PLACEMENT_EXTRA_FILES is a path-delimited list
+ * of absolute paths scanned IN ADDITION to the tree. scripts/mutation-probe.sh
+ * points it at a copy of a real importer with a planted fork, so the proof that
+ * the tree scan catches a fork never plants one in the shared tree (git-sync
+ * would commit it).
+ */
+function extraScanFiles(): string[] {
+  return (process.env.PAPERCUSP_PLACEMENT_EXTRA_FILES ?? '').split(delimiter).filter(Boolean);
+}
+
 describe('R-8: the chunking mechanism is defined only in @papercusp/search', () => {
   it('calibration: the detector finds every symbol in the library file that owns it', () => {
     for (const [name, file] of Object.entries(OWNED)) {
@@ -123,8 +134,9 @@ describe('R-8: the chunking mechanism is defined only in @papercusp/search', () 
     const candidates = candidateFiles();
     // The scan must have seen real importers, or it proved nothing.
     expect(candidates).toContain('packages/operator-core/lib/agent-tools/search/sources.ts');
-    const violations = candidates.flatMap((path) =>
-      definedSymbols(readFileSync(resolve(REPO_ROOT, path), 'utf8'), path).map((name) => `${path}: ${name}`),
+    const scanned = [...candidates.map((path) => resolve(REPO_ROOT, path)), ...extraScanFiles()];
+    const violations = scanned.flatMap((path) =>
+      definedSymbols(readFileSync(path, 'utf8'), path).map((name) => `${path}: ${name}`),
     );
     expect(violations).toEqual([]);
   });
