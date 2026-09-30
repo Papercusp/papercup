@@ -4721,11 +4721,26 @@ impl App {
     /// The engine is restoring a saved conversation and no owner turn of this
     /// PUI is in flight. `Resuming` locks input like a running turn, but there
     /// is nothing for Esc to stop.
-    fn su_restoring_without_turn(&self) -> bool {
-        self.su_session.as_ref().is_some_and(|session| {
-            session.lifecycle == crate::su_session::SuSessionLifecycleState::Resuming
-        }) && self.su_pending_turn.is_none()
-            && self.su_active_command_id.is_none()
+    /// True when a SU session is open (or opening) but no turn is running: the
+    /// engine is still starting, restoring the saved conversation, or idle.
+    /// Esc must not send an interrupt then. WI-10004247 measured both
+    /// windows on real Claude: the reopened PUI sent its interrupt while the
+    /// engine still reported `starting` (before `resuming`), so checking
+    /// `resuming` alone missed it.
+    fn su_nothing_to_interrupt(&self) -> bool {
+        if self.su_pending_turn.is_some() || self.su_active_command_id.is_some() {
+            return false;
+        }
+        match self.su_session.as_ref() {
+            Some(session) => matches!(
+                session.lifecycle,
+                crate::su_session::SuSessionLifecycleState::Starting
+                    | crate::su_session::SuSessionLifecycleState::Resuming
+                    | crate::su_session::SuSessionLifecycleState::Ready
+                    | crate::su_session::SuSessionLifecycleState::Interrupted
+            ),
+            None => self.su_open_in_flight,
+        }
     }
 
     /// Stop the running turn (Esc in the composer, or Ctrl+X). Queued lines are
@@ -13373,7 +13388,7 @@ impl App {
                 // conversation being restored is not a running turn
                 // (WI-10004247: Esc on a just-reopened chat sent an interrupt to
                 // the resuming engine and left the owner stuck in the box).
-                KeyCode::Esc if self.chat_streaming && !self.su_restoring_without_turn() => {
+                KeyCode::Esc if self.chat_streaming && !self.su_nothing_to_interrupt() => {
                     self.interrupt_chat_turn()
                 }
                 KeyCode::Esc => {
@@ -19032,6 +19047,35 @@ mod tests {
     /// no interrupt goes to the resuming engine.
     #[test]
     fn chat_first_esc_while_restoring_leaves_the_box_without_interrupting() {
+        // Opening: no session bound yet, the open request is in flight.
+        let mut opening = chat_first_app();
+        opening.agent_chat_id = Some("chat-1".into());
+        opening.chat_streaming = true;
+        opening.su_open_in_flight = true;
+        opening.chat_composing = true;
+        let action = opening.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render, "no interrupt while the session opens");
+        assert!(!opening.chat_composing, "Esc leaves the message box while opening");
+
+        // Starting: the real reopened-Claude window (WI-10004247) — the
+        // engine reported `starting` when Esc arrived, before `resuming`.
+        let mut starting = chat_first_app();
+        starting.agent_chat_id = Some("chat-1".into());
+        starting.set_su_session_binding(su_binding());
+        let mut still_starting = su_event_base("lifecycle", 1);
+        still_starting["previousState"] = json!("starting");
+        still_starting["state"] = json!("starting");
+        still_starting["runtimeGeneration"] = json!(1);
+        // The event carries the session identity, so an interrupt WOULD be
+        // sendable: the assertion below tests the decision, not a missing id.
+        starting.apply_su_session_event(su_event(still_starting));
+        assert!(starting.su_session.as_ref().unwrap().identity.is_some());
+        starting.chat_streaming = true;
+        starting.chat_composing = true;
+        let action = starting.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render, "no interrupt while the engine starts");
+        assert!(!starting.chat_composing, "Esc leaves the message box while starting");
+
         let mut a = chat_first_app();
         a.agent_chat_id = Some("chat-1".into());
         a.set_su_session_binding(su_binding());
@@ -19051,6 +19095,21 @@ mod tests {
         a.su_active_command_id = Some("pui-1".into());
         let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_ne!(action, Action::Render, "a running turn is interrupted, got {action:?}");
+
+        // Calibration: a turn running on the engine (another client's, or
+        // one whose command already settled) is still interruptible.
+        let mut running = chat_first_app();
+        running.agent_chat_id = Some("chat-1".into());
+        running.set_su_session_binding(su_binding());
+        let mut engine_running = su_event_base("lifecycle", 1);
+        engine_running["previousState"] = json!("ready");
+        engine_running["state"] = json!("running");
+        engine_running["runtimeGeneration"] = json!(1);
+        running.apply_su_session_event(su_event(engine_running));
+        assert!(running.chat_streaming, "a running engine locks input");
+        running.chat_composing = true;
+        let action = running.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_ne!(action, Action::Render, "a running engine turn is interrupted, got {action:?}");
     }
 
     /// The progress surfaced while an archive is replayed must be a measured
