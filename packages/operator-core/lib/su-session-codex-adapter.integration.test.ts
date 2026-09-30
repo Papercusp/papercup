@@ -149,6 +149,37 @@ describe('Codex SU-session backend — real PUI entry and native rollout transla
     });
   });
 
+  it('replays a rollout idempotently: an early and a late snapshot each show a record once (WI-10004162)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'codex-su-replay-'));
+    tempDirs.push(dir);
+    const rolloutPath = join(dir, `rollout-2026-08-28T00-00-00-${ROLLOUT_A}.jsonl`);
+    const first = [
+      { type: 'session_meta', timestamp: '2026-08-28T00:00:00.000Z', payload: { id: ROLLOUT_A } },
+      { type: 'response_item', timestamp: '2026-08-28T00:00:01.000Z', payload: { type: 'message', id: 'owner-1', role: 'user', content: [{ type: 'input_text', text: 'hi' }] } },
+      { type: 'response_item', timestamp: '2026-08-28T00:00:02.000Z', payload: { type: 'message', id: 'assistant-1', role: 'assistant', content: [{ type: 'output_text', text: 'Hello there.' }] } },
+    ];
+    writeFileSync(rolloutPath, first.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const adapter = createCodexSuSessionAdapter(binding(), runtime(ROLLOUT_A, dir, rolloutPath), {
+      agentChatId: 'agent-chat-codex-replay', register: false,
+    });
+    const count = (role: string, content: string) => events(adapter).filter((event) =>
+      event.type === 'transcript' && event.phase === 'delta' && event.role === role && event.content === content).length;
+    try {
+      await adapter.consumeRolloutSnapshot({ preserveLifecycle: true });
+      await adapter.consumeRolloutSnapshot({ preserveLifecycle: true });
+      expect(count('owner', 'hi')).toBe(1);
+      expect(count('assistant', 'Hello there.')).toBe(1);
+      writeFileSync(rolloutPath, [...first,
+        { type: 'response_item', timestamp: '2026-08-28T00:00:03.000Z', payload: { type: 'message', id: 'assistant-2', role: 'assistant', content: [{ type: 'output_text', text: 'written since' }] } },
+      ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+      await adapter.consumeRolloutSnapshot({ preserveLifecycle: true });
+      expect(count('assistant', 'Hello there.')).toBe(1);
+      expect(count('assistant', 'written since')).toBe(1);
+    } finally {
+      adapter.dispose();
+    }
+  });
+
   it('creates through openPuiSuSession, delivers an owner turn, translates tools/text, and visibly refuses fork/cards', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'codex-su-session-'));
     tempDirs.push(dir);

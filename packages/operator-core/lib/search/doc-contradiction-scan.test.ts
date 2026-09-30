@@ -6,7 +6,9 @@ import {
   parseContradictionVerdict,
   runContradictionLeg,
   createGatewayContradictionJudge,
+  DOC_CONTRADICTION_JUDGE_MODEL,
 } from './doc-contradiction-scan';
+import { ANTHROPIC_JUDGE_MODEL } from '../memory/anthropic-judge';
 import type { DocOverlapFinding, DocSectionRef } from './doc-section-overlap';
 import type { JudgeSection } from './doc-contradiction-judge';
 
@@ -119,6 +121,13 @@ describe('createGatewayContradictionJudge', () => {
     const judge = createGatewayContradictionJudge({ apiKey: '' });
     const section = (id: string): JudgeSection => ({ id, title: id, content: id });
     await expect(judge({ a: section('a'), b: section('b') })).resolves.toBeNull();
+  });
+
+  it('asks the same live model as the memory judge, never a retired Claude 3.x id (WI-10004165)', () => {
+    // The judge pinned claude-3-5-haiku-latest after it was retired: every call
+    // 404'd into a null, so the leg could never find anything on any host.
+    expect(DOC_CONTRADICTION_JUDGE_MODEL).toBe(ANTHROPIC_JUDGE_MODEL);
+    expect(DOC_CONTRADICTION_JUDGE_MODEL).not.toMatch(/^claude-3/);
   });
 });
 

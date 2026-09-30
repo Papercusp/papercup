@@ -106,6 +106,35 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
     } finally { adapter.dispose(); }
   });
 
+  it('replays a session file idempotently: an early and a late snapshot each show a record once (WI-10004162)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-su-replay-'));
+    tempDirs.push(dir);
+    const transcriptPath = join(dir, `${Date.now()}_${THREAD_A}.jsonl`);
+    const first = [
+      { type: 'session', id: THREAD_A, timestamp: '2026-08-28T00:00:00.000Z', cwd: '/workspace' },
+      { type: 'message', id: 'user-1', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'message', id: 'assistant-1', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello there.' }], stopReason: 'stop' } },
+    ];
+    writeFileSync(transcriptPath, first.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const adapter = createOmpSuSessionAdapter(binding(), runtime(THREAD_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-omp-replay', register: false,
+    });
+    const count = (role: string, content: string) => events(adapter).filter((event) =>
+      event.type === 'transcript' && event.phase === 'delta' && event.role === role && event.content === content).length;
+    try {
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(count('owner', 'hi')).toBe(1);
+      expect(count('assistant', 'Hello there.')).toBe(1);
+      writeFileSync(transcriptPath, [...first,
+        { type: 'message', id: 'assistant-2', message: { role: 'assistant', content: [{ type: 'text', text: 'written since' }], stopReason: 'stop' } },
+      ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(count('assistant', 'Hello there.')).toBe(1);
+      expect(count('assistant', 'written since')).toBe(1);
+    } finally { adapter.dispose(); }
+  });
+
   it('repairs a stale shared-home attach handle to the tracked per-row OMP home', async () => {
     const returned = runtime(THREAD_A, '/home/test/.omp/agent').nativeSession;
     const resolved = await resolveOmpSuRuntime(binding(returned));

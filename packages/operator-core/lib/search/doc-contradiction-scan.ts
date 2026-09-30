@@ -34,6 +34,7 @@ import {
   type JudgeCandidate,
   type JudgeSection,
 } from './doc-contradiction-judge';
+import { ANTHROPIC_JUDGE_MODEL } from '../memory/anthropic-judge';
 
 /** A deterministic finding, with D-004's kind attributed to it. */
 export interface KindedFinding extends DocOverlapFinding, PairKindVerdict {}
@@ -170,8 +171,14 @@ export function contradictionJudgeAvailable(opts?: { apiKey?: string }): boolean
   return Boolean((opts?.apiKey ?? process.env.ANTHROPIC_API_KEY ?? '').trim());
 }
 
-/** Haiku-class: the question is narrow and the volume is what costs money. */
-const JUDGE_MODEL = 'claude-3-5-haiku-latest';
+/**
+ * Haiku-class: the question is narrow and the volume is what costs money.
+ * Shared with the memory judge so a model retirement is fixed in one place:
+ * this used to pin `claude-3-5-haiku-latest`, which now answers HTTP 404, so
+ * every pair came back as a judge error on any keyed host (WI-10004165).
+ */
+export const DOC_CONTRADICTION_JUDGE_MODEL = ANTHROPIC_JUDGE_MODEL;
+const JUDGE_MODEL = DOC_CONTRADICTION_JUDGE_MODEL;
 
 /**
  * The gateway-routed judge.

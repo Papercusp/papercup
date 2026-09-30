@@ -220,6 +220,66 @@ describe('Claude SU-session backend — PUI entry and native transcript translat
     }
   });
 
+  it('replays a transcript idempotently: an early and a late snapshot, and a live record, each show once (WI-10004162)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-su-replay-'));
+    tempDirs.push(dir);
+    const transcriptPath = join(dir, `${CLAUDE_SESSION_A}.jsonl`);
+    const line = (value: Record<string, unknown>) => JSON.stringify(value);
+    const first = [
+      line({ type: 'user', uuid: 'u-1', message: { role: 'user', content: 'hi' } }),
+      line({ type: 'assistant', uuid: 'a-1', message: { role: 'assistant', content: [{ type: 'text', text: 'Hi! What can I help you with?' }] } }),
+      'not json at all',
+    ];
+    writeFileSync(transcriptPath, first.join('\n') + '\n');
+    const adapter = createClaudeSuSessionAdapter(binding(), runtime(CLAUDE_SESSION_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-claude-replay', register: false,
+    });
+    const count = (role: string, content: string) => events(adapter).filter((event) =>
+      event.type === 'transcript' && event.phase === 'delta' && event.role === role && event.content === content).length;
+    const malformed = () => events(adapter).filter((event) => event.type === 'error' && event.code === 'claude_record_malformed').length;
+    try {
+      // The early replay (before the SDK launch) and the authoritative one
+      // after the SU tool connection read the same file on one host.
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(count('owner', 'hi')).toBe(1);
+      expect(count('assistant', 'Hi! What can I help you with?')).toBe(1);
+      expect(malformed()).toBe(1);
+
+      // A record the engine streamed live is not repeated by a later replay,
+      // while a record the runtime wrote since the last replay is added.
+      adapter.ingestNativeLine(line({ type: 'assistant', uuid: 'a-2', message: { role: 'assistant', content: [{ type: 'text', text: 'live reply' }] } }));
+      writeFileSync(transcriptPath, [...first,
+        line({ type: 'assistant', uuid: 'a-2', message: { role: 'assistant', content: [{ type: 'text', text: 'live reply' }] } }),
+        line({ type: 'assistant', uuid: 'a-3', message: { role: 'assistant', content: [{ type: 'text', text: 'written since' }] } }),
+      ].join('\n') + '\n');
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(count('owner', 'hi')).toBe(1);
+      expect(count('assistant', 'Hi! What can I help you with?')).toBe(1);
+      expect(count('assistant', 'live reply')).toBe(1);
+      expect(count('assistant', 'written since')).toBe(1);
+      expect(malformed()).toBe(1);
+    } finally {
+      adapter.dispose();
+    }
+
+    // Control: without the host's record ledger the same double replay shows
+    // the greeting twice, the duplicate seen in the P-006 review — so the
+    // counts above measure the dedup, not a quirk of the fixture.
+    const control = createClaudeSuSessionAdapter(binding(), runtime(CLAUDE_SESSION_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-claude-replay-control', register: false,
+    });
+    try {
+      control.host.claimNativeRecord = () => true;
+      await control.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      await control.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(events(control).filter((event) => event.type === 'transcript' && event.phase === 'delta'
+        && event.role === 'assistant' && event.content === 'Hi! What can I help you with?')).toHaveLength(2);
+    } finally {
+      control.dispose();
+    }
+  });
+
   it('maps interrupt/resume, preserves identity across replacement, and converges unexpected exit', async () => {
     const interrupt = vi.fn<ClaudeSuSessionControls['interrupt']>(async () => ({ ok: true }));
     const resume = vi.fn<ClaudeSuSessionControls['resume']>(async () => ({ ok: true }));
