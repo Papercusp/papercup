@@ -69,9 +69,10 @@ as_user() { sudo -u "$SVC_USER" XDG_RUNTIME_DIR="/run/user/$uid" "$@"; }
 # without it a fresh install auto-joins the dogfood `papercusp` hive and spends its first
 # hour folding that hive's seed into Postgres (WI-10004421), which is not customer idle.
 if [ ${#EXTRA_ENV[@]} -gt 0 ]; then
-  dropin="/home/$SVC_USER/.config/systemd/user/papercusp-server.service.d"
-  sudo install -d -o "$SVC_USER" -g "$SVC_USER" "/home/$SVC_USER/.config" "/home/$SVC_USER/.config/systemd" \
-    "/home/$SVC_USER/.config/systemd/user" "$dropin"
+  svc_home="${SVC_HOME:-/home/$SVC_USER}"
+  dropin="$svc_home/.config/systemd/user/papercusp-server.service.d"
+  sudo install -d -o "$SVC_USER" -g "$SVC_USER" "$svc_home/.config" "$svc_home/.config/systemd" \
+    "$svc_home/.config/systemd/user" "$dropin"
   { echo '[Service]'; for kv in "${EXTRA_ENV[@]}"; do echo "Environment=$kv"; done; } \
     | sudo -u "$SVC_USER" tee "$dropin/capacity-env.conf" >/dev/null
   for kv in "${EXTRA_ENV[@]}"; do echo "SERVER_ENV=$kv"; done
