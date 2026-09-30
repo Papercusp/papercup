@@ -239,19 +239,39 @@ describe('release:cut — constrained root selector', () => {
   it('accepts only the exact cutter-owned version residue for a completed-seed retry', async () => {
     const packageHead = '{\n  "name": "desktop",\n  "version": "0.0.17"\n}\n';
     const packageWorktree = '{\n  "name": "desktop",\n  "version": "0.0.18"\n}\n';
+    const cargoLockHead = [
+      '# @generated',
+      'version = 3',
+      '',
+      '[[package]]',
+      'name = "papercusp-desktop"',
+      'version = "0.0.17"',
+      'dependencies = []',
+      '',
+    ].join('\n');
+    const cargoLockWorktree = cargoLockHead.replace(
+      'name = "papercusp-desktop"\nversion = "0.0.17"',
+      'name = "papercusp-desktop"\nversion = "0.0.18"',
+    );
     const result = validateReleaseResumeResidue({
       superprojectStatus: ' m papercusp-desktop\n',
-      desktopStatus: ' M package.json\n',
+      desktopStatus: ' M package.json\n M src-tauri/Cargo.lock\n',
       version: '0.0.18',
-      files: { 'package.json': { head: packageHead, worktree: packageWorktree } },
+      files: {
+        'package.json': { head: packageHead, worktree: packageWorktree },
+        'src-tauri/Cargo.lock': { head: cargoLockHead, worktree: cargoLockWorktree },
+      },
     });
     expect(result).toEqual({ ok: true });
 
     expect(validateReleaseResumeResidue({
       superprojectStatus: ' m papercusp-desktop\n',
-      desktopStatus: ' M package.json\n M src/main.rs\n',
+      desktopStatus: ' M package.json\n M src-tauri/Cargo.lock\n M src/main.rs\n',
       version: '0.0.18',
-      files: { 'package.json': { head: packageHead, worktree: packageWorktree } },
+      files: {
+        'package.json': { head: packageHead, worktree: packageWorktree },
+        'src-tauri/Cargo.lock': { head: cargoLockHead, worktree: cargoLockWorktree },
+      },
     })).toMatchObject({ ok: false, reason: expect.stringMatching(/non-cutter path/) });
 
     expect(validateReleaseResumeResidue({
@@ -260,6 +280,60 @@ describe('release:cut — constrained root selector', () => {
       version: '0.0.18',
       files: { 'package.json': { head: packageHead, worktree: packageWorktree.replace('desktop', 'tampered') } },
     })).toMatchObject({ ok: false, reason: expect.stringMatching(/changes beyond/) });
+
+    expect(validateReleaseResumeResidue({
+      superprojectStatus: ' m papercusp-desktop\n',
+      desktopStatus: ' M src-tauri/Cargo.lock\n',
+      version: '0.0.18',
+      files: {
+        'src-tauri/Cargo.lock': {
+          head: cargoLockHead,
+          worktree: cargoLockWorktree.replace('dependencies = []', 'dependencies = ["tampered"]'),
+        },
+      },
+    })).toMatchObject({ ok: false, reason: expect.stringMatching(/changes beyond/) });
+  });
+
+  it('accepts only source-identical staged environment sidecars on a completed-seed retry', () => {
+    const stagedPath = 'src-tauri/env-sidecars/staging/harness/prompts/agent.tools.md';
+    const source = 'committed prompt bytes\n';
+    const input = {
+      superprojectStatus: ' m papercusp-desktop\n',
+      desktopStatus: ' M ' + stagedPath + '\n',
+      version: '0.0.18',
+      files: { [stagedPath]: { expectedSource: source, worktree: source } },
+    };
+    expect(validateReleaseResumeResidue(input)).toEqual({ ok: true });
+    expect(validateReleaseResumeResidue({
+      ...input,
+      files: { [stagedPath]: { expectedSource: source, worktree: source + 'tampered' } },
+    })).toMatchObject({ ok: false, reason: expect.stringMatching(/differs from its committed source sidecar/) });
+    expect(validateReleaseResumeResidue({
+      ...input,
+      desktopStatus: ' M src-tauri/env-sidecars/staging/bin/unapproved\n',
+      files: {
+        'src-tauri/env-sidecars/staging/bin/unapproved': { expectedSource: source, worktree: source },
+      },
+    })).toMatchObject({ ok: false, reason: expect.stringMatching(/non-cutter path/) });
+  });
+
+  it('loads the committed sidecar source snapshot when resolving a completed-seed retry', async () => {
+    const sourcePaths: string[] = [];
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => ' m papercusp-desktop\n',
+      desktopStatus: () => ' M src-tauri/env-sidecars/staging/serve.mjs\n',
+      canonicalPath: (candidate) => candidate,
+      headFile: (_root, relativePath) => {
+        sourcePaths.push(relativePath);
+        return 'committed serve bytes';
+      },
+      readFile: () => 'committed serve bytes',
+      exists: () => true,
+    }, { reuseSeedVersion: '0.0.18' });
+    expect(result).toMatchObject({ ok: true });
+    expect(sourcePaths).toEqual(['src-tauri/sidecar/serve.mjs']);
   });
 
   it('requires the completed seed manifest before admitting reuseSeed residue', async () => {
@@ -761,7 +835,7 @@ describe('release:cut — run (operator-gated write)', () => {
 
   it('reuseSeed dry-run restores only validated cutter-owned version files before relaunch', async () => {
     const b = body(await tool.handler({ ...runArgs, reuseSeed: true } as never, { role: 'operator' } as never));
-    expect(b.wouldRun).toContain('git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json &&');
+    expect(b.wouldRun).toContain('git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock &&');
     expect(b.wouldRun).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
     expect(launchM).not.toHaveBeenCalled();
   });

@@ -121,11 +121,10 @@ describe('bump_version_manifests (extracted from release-local.sh)', () => {
     expect(readFileSync(join(dir, 'src-tauri', 'Cargo.toml'), 'utf8')).toContain(`version = "${NEW}"`);
   });
 
-  // LOAD-BEARING: release:cut's reuseSeed residue validator accepts ONLY the three paths in
-  // RELEASE_RESUME_VERSION_PATHS as cutter-owned dirt. If the WORKTREE bump ever starts
-  // writing Cargo.lock too, every reuseSeed retry refuses the very root it must resume with
-  // "non-cutter path: src-tauri/Cargo.lock". The canonical writeback passes with-lock
-  // precisely because nothing regenerates the lock over there.
+  // LOAD-BEARING: the worktree version bump rewrites three manifests, then Cargo may update
+  // only the papercusp-desktop package version in Cargo.lock during the build. ReuseSeed must
+  // recognize that exact build residue while rejecting unrelated lockfile changes. Canonical
+  // writeback uses with-lock because Cargo does not regenerate the lock in that checkout.
   it('does NOT touch Cargo.lock without with-lock', () => {
     const dir = makeCheckout();
     const before = readFileSync(join(dir, 'src-tauri', 'Cargo.lock'), 'utf8');
@@ -168,6 +167,13 @@ describe('bump_version_manifests (extracted from release-local.sh)', () => {
       RELEASE_RESUME_VERSION_PATHS.map((p) => [p, readFileSync(join(dir, p), 'utf8')]),
     );
     expect(runBump(dir, false).status).toBe(0);
+    const lockPath = join(dir, 'src-tauri', 'Cargo.lock');
+    const lockWithBuildVersion = head['src-tauri/Cargo.lock']!.replace(
+      'name = "papercusp-desktop"\nversion = "' + OLD + '"',
+      'name = "papercusp-desktop"\nversion = "' + NEW + '"',
+    );
+    expect(lockWithBuildVersion).not.toBe(head['src-tauri/Cargo.lock']);
+    writeFileSync(lockPath, lockWithBuildVersion);
 
     const verdict = validateReleaseResumeResidue({
       superprojectStatus: ' m papercusp-desktop',

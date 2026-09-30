@@ -362,7 +362,7 @@ export function buildCutArgv(
   // so release-local.sh starts from a clean provenance baseline and reapplies the
   // same idempotent bump while preserving the ignored completed seed.
   const resumeReset = runtime.reuseSeed
-    ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json && '
+    ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json src-tauri/Cargo.lock && '
     : '';
   // The selected root owns the exact target bytes and artifact paths, while the
   // current tooling root owns retry orchestration. Invoking the selected root's
