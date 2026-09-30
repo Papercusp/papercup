@@ -653,6 +653,8 @@ export default defineTool({
             ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
             ...(res.admissionIdentity !== undefined ? { admissionIdentity: res.admissionIdentity } : {}),
             ...(res.dedupCoverage !== undefined ? { dedupCoverage: res.dedupCoverage } : {}),
+            // EI-23799808825983763: the refusal's own next action (retry / force).
+            ...(res.disposition !== undefined ? { disposition: res.disposition } : {}),
             ...(res.queueAdmission !== undefined ? { queueAdmission: res.queueAdmission } : {}),
           };
         }

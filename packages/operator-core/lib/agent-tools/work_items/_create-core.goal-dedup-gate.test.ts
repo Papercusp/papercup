@@ -133,8 +133,28 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     expect(r.error).toBe('dedup_unavailable');
     expect(r.message).toContain('goal-mode');
     expect(r.message).toContain('force:true');
+    // EI-23799808825983763: the refusal names its OWN next action — a bare hard refusal
+    // at the end of a unit of work reads as "filing is unavailable" and the finding dies
+    // with the session. Retry (transient) first, then the explicit audited escape.
+    expect(r.message).toMatch(/not lost/i);
+    expect(r.message).toMatch(/retry the\s+identical call/i);
+    expect(r.disposition).toEqual({
+      retryable: true,
+      retryAfterSec: 10,
+      ifPersistent: { retryWith: { force: true }, effect: expect.stringContaining('degraded coverage') },
+      structuralSignal: 'semantic-dedup-probe-alarm',
+    });
     expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
     expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('EI-23799808825983763: the retry disposition is ABSENT on a forced filing (nothing was refused)', async () => {
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'must land now (disposition)', force: true, goalDedupGate: true },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    expect((r as { disposition?: unknown }).disposition).toBeUndefined();
   });
 
   it('urgent condition-key filing + semantic leg down → creates with degraded coverage (the EI-21827949941920236 escape)', async () => {

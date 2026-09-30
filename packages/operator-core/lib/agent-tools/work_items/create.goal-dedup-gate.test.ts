@@ -128,6 +128,27 @@ describe('work_items:create × goal dedup gate derivation (P-004)', () => {
     );
   });
 
+  it('EI-23799808825983763: a dedup_unavailable refusal surfaces its `disposition` (retry / force) on the result entry', async () => {
+    const disposition = {
+      retryable: true,
+      retryAfterSec: 10,
+      ifPersistent: { retryWith: { force: true }, effect: 'files with degraded coverage recorded' },
+      structuralSignal: 'semantic-dedup-probe-alarm',
+    } as const;
+    createM.mockResolvedValueOnce({
+      ok: false,
+      error: 'dedup_unavailable',
+      message: 'goal-mode create … retry … or force:true',
+      dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true },
+      disposition,
+    } as CreateOneWorkItemResult);
+    const out = await body({ kind: 'bug', title: 'b' });
+    const entry = (out.results ?? [out])[0];
+    expect(entry.ok).toBe(false);
+    expect(entry.error).toBe('dedup_unavailable');
+    expect(entry.disposition).toEqual(disposition);
+  });
+
   it('flag ON + creator under NO goal → rail stays false', async () => {
     goalMocks.resolveGoalContext.mockResolvedValue(null);
     await body({ kind: 'bug', title: 'b' });
