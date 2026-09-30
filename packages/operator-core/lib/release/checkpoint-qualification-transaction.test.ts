@@ -1021,6 +1021,36 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: 'someone-else',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+
+    // Measured 2026-09-30 (queue 9a4319b70a): the preserved retry itself lost the git-sync lock
+    // and settled code-inconclusive on a TIP candidate while re-stamping the queue as its own.
+    // That no-verdict attempt must hand the retry marker forward, or the deadlock recurs one
+    // retry later. A red retry still fails closed (asserted above for the same queue shape).
+    const retryInconclusive = settleQualificationTransaction(
+      beginQualificationTransaction(null, {
+        attemptId: 'attempt-2',
+        declaredPaths: [],
+        candidate: 'tip-2',
+        evidenceRefs: ['gate-fire:attempt-2'],
+        nowMs: 500,
+      }).transaction,
+      { attemptId: 'attempt-2', reason: 'error', green: null, nowMs: 600 },
+    ).transaction;
+    expect(retryInconclusive.outcome.kind).toBe('code-inconclusive');
+    const restamped = { ...promoted, qualificationAttemptId: 'attempt-2' };
+    const nextSuccessor = { attemptId: 'attempt-3', declaredPaths: [], candidate: 'tip-3', nowMs: 700 };
+    expect(assessTerminalRepairQueueReconciliation(retryInconclusive, nextSuccessor, restamped)).toMatchObject({
+      status: 'preserved',
+      reason: 'promoted-awaiting-staging-bridge',
+      predecessorAttemptId: 'attempt-2',
+      successorAttemptId: 'attempt-3',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(retryInconclusive, nextSuccessor, {
+        ...restamped,
+        dispatchReservation: { token: 'fixer-1', claimedAtMs: 650, expiresAtMs: 9_999_999 },
+      }),
+    ).toMatchObject({ status: 'blocked' });
   });
 
   it('preserves a predecessor-linked repair head that is ready for its first verification', () => {

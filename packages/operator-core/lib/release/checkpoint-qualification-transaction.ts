@@ -1531,15 +1531,21 @@ export function assessTerminalRepairQueueReconciliation(
   // `queue-not-safe-unstarted` refused every successor (`skipped-qualification-conflict`
   // at 16:23Z and 17:24Z), so the bridge could never be retried, staging never absorbed the
   // promoted lineage, and no fresh cut could fast-forward main: a silent pipeline deadlock.
-  // Deliberately narrow: the terminal predecessor itself proved THIS head green and still
-  // owns the queue, and no dispatch reservation is live.
+  // Deliberately narrow: the terminal predecessor owns the queue, no dispatch reservation is
+  // live, and EITHER it proved THIS head green OR it was itself a bridge retry that ended
+  // with no verdict. The second arm closes the recurrence measured 2026-09-30 (queue
+  // 9a4319b70a): the 14:23Z retry lost the lock again and settled `code-inconclusive`, its
+  // attempt now owned the queue, and every later tick refused `skipped-qualification-conflict`
+  // — the same deadlock one retry later. An inconclusive attempt records no verdict, so it
+  // cannot have invalidated the green proof that `ready-to-promote` carries; a RED terminal
+  // still fails closed.
   if (
     originMatchesTerminal &&
     current.phase === 'terminal' &&
-    current.outcome.kind === 'green' &&
     queue.phase === 'ready-to-promote' &&
-    queue.repairHead === current.candidate &&
-    queue.dispatchReservation == null
+    queue.dispatchReservation == null &&
+    ((current.outcome.kind === 'green' && queue.repairHead === current.candidate) ||
+      current.outcome.kind === 'code-inconclusive')
   ) {
     return {
       status: 'preserved',
