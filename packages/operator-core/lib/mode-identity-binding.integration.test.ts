@@ -103,7 +103,7 @@ describe('installed identity pin and current SU mode source', () => {
         producerBindings: [{ identityId, artifact: bound.artifact }],
       });
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
-        kind: 'setting', ref: 'current-brief', producerRef: 'existing.brief', value,
+        kind: 'setting', ref: 'current-brief', producerRef: 'papercusp.mode-state@1', value,
       }));
       // Same real source and selected identity, with only the required output omitted.
       await expect(bindSelectedIdentityOutputArtifact({ ...selected, outputs: [guidance] }))

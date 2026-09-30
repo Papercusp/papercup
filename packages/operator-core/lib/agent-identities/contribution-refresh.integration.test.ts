@@ -17,7 +17,7 @@ describe('portable contribution refresh at the selected-identity boundary', () =
     writeFileSync(join(dir, 'blueprint.yaml'), stringify({
       id: 'refresh-fixture', extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
       contributions: [{ id: 'current-context', purpose: 'prompt', source: 'provider', refresh,
-        inputKind: 'prompt-file', ref: 'provider:fixture', producerRef: 'fixture:read',
+        inputKind: 'prompt-file', ref: 'provider:fixture', producerRef: 'papercusp.turn-start-orientation@1', verb: 'render',
         availability: 'optional' }],
     }));
     const input = { identityId: 'refresh-fixture', repoDir: root,

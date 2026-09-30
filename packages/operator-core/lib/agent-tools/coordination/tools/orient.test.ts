@@ -92,9 +92,9 @@ describe('coord:orient component receipt', () => {
       identityId: 'su', sourceRevision: expect.any(String),
       contributions: expect.arrayContaining([
         expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound',
-          producerRef: 'modes/store:agent_modes' }),
+          producerRef: 'papercusp.mode-state@1' }),
         expect.objectContaining({ contributionId: 'current-assignment', status: 'bound',
-          producerRef: 'coord:presence' }),
+          producerRef: 'papercusp.current-assignment@1' }),
       ]),
     });
   });

@@ -56,7 +56,7 @@ describe('selected identity recipe reaches its existing consumer', () => {
           refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:domain' },
         { id: 'current-guidance', purpose: 'prompt', source: 'provider',
           refresh: 'launch', inputKind: 'prompt-file', ref: 'current-guidance',
-          producerRef: 'existing.guidance' }],
+          producerRef: 'papercusp.turn-start-orientation@1', verb: 'render' }],
       };
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
         ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },

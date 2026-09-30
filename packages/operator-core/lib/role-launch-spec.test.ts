@@ -758,7 +758,7 @@ describe('buildRoleLaunchSpec', () => {
       const bound = await bindSelectedIdentityOutputArtifact({
         identityId: id, repoDir: dir,
         outputs: [
-          { contributionId: 'current-brief', value: { summary: 'Current brief.' } },
+          { contributionId: 'current-brief', value: [{ mode: 'research' }] },
           { contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' },
         ],
         scope: { workspace: 'workspace-a', harness: 'harness-a' },
@@ -792,29 +792,29 @@ describe('buildRoleLaunchSpec', () => {
       expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
         .toBe('selected-provider-model');
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
-        kind: 'setting', ref: 'current-brief', value: { summary: 'Current brief.' },
-        producerRef: 'existing.brief',
+        kind: 'setting', ref: 'current-brief', value: [{ mode: 'research' }],
+        producerRef: 'papercusp.mode-state@1',
       }));
       expect(launch.promptText.match(/CURRENT GUIDANCE FROM PRODUCER/g)).toHaveLength(1);
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'prompt-file', ref: 'current-guidance', bytes: 'CURRENT GUIDANCE FROM PRODUCER',
-        producerRef: 'existing.guidance',
+        producerRef: 'papercusp.turn-start-orientation@1',
       }));
       expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
         path: 'contribution.current-brief', decision: 'provider:turn',
-        producerRef: 'existing.brief',
+        producerRef: 'papercusp.mode-state@1',
       }));
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'blueprint-layer', ref: id, contentHash: bound.sourceRevision,
       }));
       expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
         path: 'contribution.current-guidance', decision: 'provider:launch',
-        producerRef: 'existing.guidance',
+        producerRef: 'papercusp.turn-start-orientation@1',
       }));
       const fresh = await bindSelectedIdentityOutputArtifact({
         identityId: id, repoDir: dir,
         outputs: [
-          { contributionId: 'current-brief', value: { summary: 'Fresh brief.' } },
+          { contributionId: 'current-brief', value: [{ mode: 'ideate' }] },
           { contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' },
         ],
         scope: { workspace: 'workspace-a', harness: 'harness-a' },
@@ -830,8 +830,8 @@ describe('buildRoleLaunchSpec', () => {
           entry.kind === 'blueprint-layer' && entry.ref === id),
       );
       expect(refreshed.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
-        kind: 'setting', ref: 'current-brief', value: { summary: 'Fresh brief.' },
-        producerRef: 'existing.brief',
+        kind: 'setting', ref: 'current-brief', value: [{ mode: 'ideate' }],
+        producerRef: 'papercusp.mode-state@1',
       }));
       for (const field of ['workItem', 'spine', 'fleet', 'assignment', 'launchSlot']) {
         expect(refreshed.specificationArtifact.configuration).not.toHaveProperty(field);
@@ -839,7 +839,7 @@ describe('buildRoleLaunchSpec', () => {
       const omitted = await bindSelectedIdentityOutputArtifact({
         identityId: id, repoDir: dir,
         outputs: [
-          { contributionId: 'current-brief', value: { summary: 'Current brief.' } },
+          { contributionId: 'current-brief', value: [{ mode: 'research' }] },
           { contributionId: 'current-guidance', omission: { reason: 'not-requested' } },
         ],
         scope: { workspace: 'workspace-a', harness: 'harness-a' },

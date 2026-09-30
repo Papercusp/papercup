@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
-import { builtinBlueprintPath, SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
+import { builtinBlueprintPath, resolveFirstPartyContextClass, SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
 import * as blueprint from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import {
@@ -40,15 +40,25 @@ describe('selected identity producer output binding', () => {
     expect([...censusRows.keys()].sort()).toEqual([...keys].sort());
     for (const entry of declarations) {
       const cells = censusRows.get(`${entry.identityId}/${entry.id}`)!;
-      expect(cells[1], entry.id).toContain(entry.producerRef ?? entry.ref);
+      // The census names the in-process producer behind each first-party class.
+      const firstParty = entry.producerRef ? resolveFirstPartyContextClass(entry.producerRef) : null;
+      expect(cells[1], entry.id).toContain(firstParty
+        ? firstParty.providerRef.replace(/^first-party:/, '') : entry.producerRef ?? entry.ref);
       expect(cells[2].replaceAll(' ', '-'), entry.id).toContain(entry.refresh);
       expect(cells[3], entry.id).toMatch(/\.test\.ts/);
     }
     for (const identityId of identities) {
       const provided = declarations.filter((entry) => entry.identityId === identityId && entry.source === 'provider');
       if (!provided.length) continue;
+      // A schema-valid value for each first-party JSON class (D-039).
+      const sampleSettings: Record<string, unknown> = {
+        'papercusp.mode-state@1': [{ mode: 'auto' }],
+        'papercusp.current-assignment@1': { ownerId: 'su-1', intent: null, currentPlanSlug: null },
+        'papercusp.coord-orientation@1': { ok: true },
+        'papercusp.fleet-leader-brief@1': { summary: { fleet: 'alpha' } },
+      };
       const output = (entry: typeof provided[number]) => ({ contributionId: entry.id,
-        value: entry.inputKind === 'prompt-file' ? `CURRENT ${entry.id}` : { current: entry.id } });
+        value: entry.inputKind === 'prompt-file' ? `CURRENT ${entry.id}` : sampleSettings[entry.producerRef!] });
       const outputs = provided.map(output);
       const input = { identityId, sourceTier: 'builtin' as const, outputs,
         scope: { workspace: 'ws-test', harness: 'papercusp', ownerId: 'su-1' }, observedAt };
@@ -82,16 +92,16 @@ describe('selected identity producer output binding', () => {
       identityId: 'su', sourceTier: 'builtin',
       outputs: [
         { contributionId: 'current-mode-state', value: [{ mode: 'auto' }] },
-        { contributionId: 'current-assignment', value: { itemId: 'WI-9' } },
+        { contributionId: 'current-assignment', value: { ownerId: 'su-1', intent: 'WI-9', currentPlanSlug: null } },
       ],
       scope,
       observedAt,
     });
     expect(bound.artifact.provenance).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: 'contribution.current-mode-state',
-        decision: 'provider:turn', producerRef: 'modes/store:agent_modes' }),
+        decision: 'provider:turn', producerRef: 'papercusp.mode-state@1' }),
       expect.objectContaining({ path: 'contribution.current-assignment',
-        decision: 'provider:turn', producerRef: 'coord:presence' }),
+        decision: 'provider:turn', producerRef: 'papercusp.current-assignment@1' }),
       expect.objectContaining({ path: 'contribution.su-practice-text',
         decision: 'fixed:source-change' }),
     ]));
@@ -255,13 +265,13 @@ describe('selected identity producer output binding', () => {
       const bound = await bindSelectedIdentityOutputArtifact({
         identityId: document.id,
         sourceTier: 'builtin',
-        outputs: [{ contributionId: 'current-mode-state', value: { mode: document.modes[0] } }],
+        outputs: [{ contributionId: 'current-mode-state', value: [{ mode: document.modes[0] }] }],
         scope,
         observedAt,
       });
       expect(bound.artifact.provenance, document.id).toContainEqual(expect.objectContaining({
         path: 'contribution.current-mode-state', decision: 'provider:turn',
-        producerRef: 'modes/store:agent_modes',
+        producerRef: 'papercusp.mode-state@1',
       }));
       expect(bound.artifact.provenance, document.id).toContainEqual(expect.objectContaining({
         path: `contribution.${document.modes[0]}-definition`, decision: 'fixed:source-change',

@@ -76,7 +76,11 @@ vi.mock('../severe-event-broadcast', () => ({
 const notify = vi.hoisted(() => ({ attention: vi.fn(async (..._args: unknown[]) => undefined) }));
 vi.mock('../attention-notify', () => ({ notifyAttention: notify.attention }));
 
-import { checkOriginFreshness, integratorBacklogAcrossDevices } from './origin-freshness-watchdog';
+import {
+  checkOriginFreshness,
+  integratorBacklogAcrossDevices,
+  RECENT_DIVERGENCE_BEHIND_MAX,
+} from './origin-freshness-watchdog';
 
 /**
  * A postgres-template-tag stand-in that routes on the statement text. Records
@@ -505,6 +509,34 @@ describe('integratorBacklogAcrossDevices (EI-22702954391733746)', () => {
     // The whole incident in one assertion: the old self-device read returned 0 here.
     expect(backlog).not.toBe(0);
     expect(backlog).toBe(26);
+  });
+
+  it('WI-10004251: counts a RECENTLY diverged publisher (2 behind) — the 22h freeze read null', async () => {
+    // Real measurement from the 2026-09-29/30 freeze: the only publisher stood 2 commits
+    // BEHIND frozen canonical 022775f4 and 397 ahead; every other device was abandoned.
+    const RECENT_NS = 'f8b4e96b23aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const backlog = await integratorBacklogAcrossDevices(
+      '/fake/papercusp',
+      CANONICAL_FROZEN,
+      fakeGit([SELF_NS, RECENT_NS, DIVERGENT_NS], {
+        [SELF_NS]: [945, 0],
+        [RECENT_NS]: [2, 397],
+        [DIVERGENT_NS]: [32708, 21],
+      }),
+    );
+    expect(backlog).toBe(397);
+  });
+
+  it('WI-10004251 boundary: divergence beyond RECENT_DIVERGENCE_BEHIND_MAX stays excluded', async () => {
+    const EDGE_NS = 'edge00000000000000000000000000000000000a';
+    const read = (behind: number) =>
+      integratorBacklogAcrossDevices(
+        '/fake/papercusp',
+        CANONICAL_FROZEN,
+        fakeGit([EDGE_NS], { [EDGE_NS]: [behind, 9] }),
+      );
+    expect(await read(RECENT_DIVERGENCE_BEHIND_MAX)).toBe(9);
+    expect(await read(RECENT_DIVERGENCE_BEHIND_MAX + 1)).toBeNull();
   });
 
   it('NEGATIVE CONTROL: healthy state reads 0 — the divergent device must not manufacture backlog', async () => {

@@ -132,7 +132,7 @@ describe('identity management service', () => {
         id: 'zz-provider-parent', extends: 'base', version: '1.0.0',
         slots: [{ slot: 'domain' }], contributions: [{ id: 'current-brief',
           purpose: 'operational', source: 'provider', refresh: 'launch', inputKind: 'setting',
-          ref: 'current-brief', producerRef: 'existing.brief' }],
+          ref: 'current-brief', producerRef: 'papercusp.fleet-leader-brief@1', verb: 'read' }],
       }));
       await writeFile(join(providerChildDir, 'blueprint.yaml'), stringifyYaml({
         id: 'zz-provider-child', extends: 'zz-provider-parent', version: '1.0.0', slots: [],
@@ -158,7 +158,7 @@ describe('identity management service', () => {
     });
     expect(JSON.stringify(data)).toBe(before);
     expect(bound).toMatchObject({ identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief',
-      producerRef: 'agent-tools/fleet/leader-brief:buildLeaderBrief', status: 'bound',
+      producerRef: 'papercusp.fleet-leader-brief@1', status: 'bound',
       scope: { fleet: 'alpha' } });
     expect(bound.outputRevision).toMatch(/^[0-9a-f]{64}$/);
     expect(bound.specificationRevision).toMatch(/^[0-9a-f]{64}$/);
