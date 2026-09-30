@@ -3703,6 +3703,41 @@ impl App {
         }
     }
 
+    /// P-010 / D-008 adoption: attach the SU session of the chat this pane is
+    /// bound to when nothing is attached yet — a live row, or an ended row
+    /// that can resume from its native transcript. At most once per
+    /// advSessionId, and never while this pane's own open is in flight.
+    /// Called when an inventory frame lands and when a chat load binds a chat,
+    /// because either can arrive second.
+    fn adopt_bound_su_session(&mut self) -> Option<Action> {
+        if self.su_session.is_some() || self.su_open_in_flight {
+            return None;
+        }
+        let bound = self.agent_chat_id.as_deref()?;
+        let (chat_id, adv_session_id, backend) = self
+            .su_session_inventory
+            .iter()
+            .find(|entry| {
+                entry.agent_chat_id == bound
+                    && match entry.reconciliation {
+                        crate::su_session::SuSessionReconciliation::Attached => !entry.terminal,
+                        crate::su_session::SuSessionReconciliation::EndedArchived => {
+                            !entry.native_session_id.is_empty()
+                        }
+                        _ => false,
+                    }
+            })
+            .map(|entry| (entry.agent_chat_id.clone(), entry.adv_session_id, entry.backend))?;
+        self.su_adopted_sessions
+            .insert(adv_session_id)
+            .then(|| Action::AttachSuSession {
+                harness: self.harness.clone(),
+                chat_id,
+                adv_session_id,
+                backend,
+            })
+    }
+
     pub fn reset_agent_chat_binding(&mut self) {
         self.session_setup_accepted = false;
         self.chat_load_token = self.chat_load_token.saturating_add(1);
@@ -11901,41 +11936,7 @@ impl App {
                 //  - at most once per advSessionId (see `su_adopted_sessions`);
                 //  - never while this pane's own open is in flight, since the
                 //    row it would adopt is the session that open is creating.
-                if self.su_session.is_none() && !self.su_open_in_flight {
-                    let adoptable = self
-                        .su_session_inventory
-                        .iter()
-                        .find(|entry| {
-                            Some(entry.agent_chat_id.as_str()) == self.agent_chat_id.as_deref()
-                                && match entry.reconciliation {
-                                    crate::su_session::SuSessionReconciliation::Attached => {
-                                        !entry.terminal
-                                    }
-                                    crate::su_session::SuSessionReconciliation::EndedArchived => {
-                                        !entry.native_session_id.is_empty()
-                                    }
-                                    _ => false,
-                                }
-                        })
-                        .map(|entry| {
-                            (
-                                entry.agent_chat_id.clone(),
-                                entry.adv_session_id,
-                                entry.backend,
-                            )
-                        });
-                    if let Some((chat_id, adv_session_id, backend)) = adoptable {
-                        if self.su_adopted_sessions.insert(adv_session_id) {
-                            return Action::AttachSuSession {
-                                harness: self.harness.clone(),
-                                chat_id,
-                                adv_session_id,
-                                backend,
-                            };
-                        }
-                    }
-                }
-                Action::Render
+                self.adopt_bound_su_session().unwrap_or(Action::Render)
             }
             Event::ConversationContextProjectionLoaded { target, projection } => {
                 // A slow response for the previously focused native session is
@@ -12035,6 +12036,18 @@ impl App {
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
                     self.refresh_open_conversation_picker();
+                    // WI-10004247: a load with no selected chat (startup, a
+                    // pot switch) picks its default chat HERE, after
+                    // `agent_chat_load` already delivered the inventory frame.
+                    // That frame found nothing bound, so the workbench showed
+                    // the ended chat with only the owner's turns and never
+                    // resumed it (D-008). Adopt against the inventory already
+                    // held. Chat-first resumes only through /resume (D-008).
+                    if !self.chat_first {
+                        if let Some(action) = self.adopt_bound_su_session() {
+                            return action;
+                        }
+                    }
                 }
                 Action::Render
             }
@@ -19587,6 +19600,57 @@ mod tests {
             Action::Render,
             "an ended row with no native id must not adopt"
         );
+    }
+
+    /// WI-10004247: on startup (no restored chat) `agent_chat_load` sends the
+    /// inventory frame BEFORE the load that picks the default chat. The frame
+    /// finds nothing bound, so adoption must also run when the load binds the
+    /// chat; before this fix the workbench showed the ended chat with only the
+    /// owner's turns and never resumed it. Chat-first resumes only via /resume.
+    #[test]
+    fn startup_load_adopts_the_default_chat_after_the_inventory_frame() {
+        let mut ended = inventory_row_for(
+            "chat-1",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        ended.lifecycle = crate::su_session::SuSessionLifecycleState::Ended;
+        ended.terminal = true;
+        let startup = |chat_first: bool| -> (Action, Action) {
+            let mut app = App::new();
+            app.chat_first = chat_first;
+            let token = app.next_agent_chat_load_token();
+            let harness = app.harness.clone();
+            let frame = app.update(Event::SuSessionInventory {
+                harness: harness.clone(),
+                selected_chat_id: None,
+                entries: vec![ended.clone()],
+            });
+            let load = app.update(Event::AgentChatLoaded {
+                harness,
+                chat_id: Some("chat-1".into()),
+                role: "operator".into(),
+                load_token: token,
+                summaries: vec![chat_summary_for("chat-1")],
+                messages: Vec::new(),
+                owner_turn_ids: Vec::new(),
+                approvals: Vec::new(),
+            });
+            (frame, load)
+        };
+        let (frame, load) = startup(false);
+        assert_eq!(frame, Action::Render, "nothing is bound when the frame lands");
+        assert_eq!(
+            load,
+            Action::AttachSuSession {
+                harness: "papercup".into(),
+                chat_id: "chat-1".into(),
+                adv_session_id: 42,
+                backend: crate::su_session::SuSessionBackend::Codex,
+            },
+            "the workbench resumes the default chat it landed on"
+        );
+        let (_, load) = startup(true);
+        assert_eq!(load, Action::Render, "chat-first never resumes on load");
     }
 
     /// P-010: failed rows are "preserved for inspection" and converged to an
