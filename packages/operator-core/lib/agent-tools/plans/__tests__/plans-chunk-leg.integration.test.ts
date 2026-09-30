@@ -136,7 +136,9 @@ describe('plans:search chunk-aware semantic leg (P-009)', () => {
     const tail = hits[0]!;
     expect(tail.matchedSection).toBe('D-777 Zebra');
     // pgvector stores float4 components, so similarity matches float64 math to ~1e-6.
-    expect(tail.similarity).toBeCloseTo(similarity(5), 5);
+    // A chunk win scores its window's similarity minus the surface's registered
+    // chunk margin (D-014, D-029), so read the margin rather than restating it.
+    expect(tail.similarity).toBeCloseTo(similarity(5) - (PLANS_CHUNK_SURFACE.chunkMargin ?? 0), 5);
     expect(tail.harness).toBe(HARNESS);
     expect(tail.title).toBe(SLUG_TAIL);
     // The plan's own vector won: no section.
