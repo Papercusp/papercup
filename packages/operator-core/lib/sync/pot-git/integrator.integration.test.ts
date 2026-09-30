@@ -116,6 +116,52 @@ describe('pot-git integrator (real bare repo)', () => {
     expect(await contains(repo, r.staging!, bHead)).toBe(true);
   });
 
+  it('WI-10004249: folds the accepted staging floor back in when own-head publish rewound the base', async () => {
+    // The incident shape: the integrator accepted S1 = merge(H0, M). Own-head
+    // publish then overwrote ns/<integrator>/refs/heads/staging with the local
+    // worktree head H1, which descends from H0 but never received S1. Without
+    // the floor, the next staging is not a descendant of S1 → receivers reject
+    // it as non-FF and canonical freezes.
+    const integ3 = dev();
+    const self = dev();
+    const member = dev();
+    const h0 = await commit(repo, { 's.txt': 's0' });
+    const m1 = await commit(repo, { 's.txt': 's0', 'm.txt': 'm1' }, h0);
+    await writeNamespaceRef(repo, self, WORK_REF, h0);
+    const first = await integrateMemberHeads(repo, integ3, [
+      { deviceHex: deviceNamespaceKey(self), sha: h0 },
+      { deviceHex: deviceNamespaceKey(member), sha: m1 },
+    ]);
+    const accepted = first.staging!;
+    expect(await contains(repo, accepted, m1)).toBe(true);
+
+    const h1 = await commit(repo, { 's.txt': 's1' }, h0);
+    // Own-head publish rewinds the integrator's staging ref to the local head.
+    await writeNamespaceRef(repo, integ3, 'refs/heads/staging', h1, undefined, accepted);
+    const heads = [
+      { deviceHex: deviceNamespaceKey(self), sha: h1 },
+      { deviceHex: deviceNamespaceKey(member), sha: m1 },
+    ];
+
+    // Control: without the floor the result is NOT a fast-forward of what was accepted.
+    const noFloor = await integrateMemberHeads(repo, integ3, heads);
+    expect(await contains(repo, noFloor.staging!, accepted)).toBe(false);
+    expect(noFloor.floorRestored).toBe(false);
+
+    await writeNamespaceRef(repo, integ3, 'refs/heads/staging', h1, undefined, noFloor.staging ?? undefined);
+    const withFloor = await integrateMemberHeads(repo, integ3, heads, { floorSha: accepted });
+    expect(withFloor.floorRestored).toBe(true);
+    expect(withFloor.advanced).toBe(true);
+    expect(await contains(repo, withFloor.staging!, accepted)).toBe(true);
+    expect(await contains(repo, withFloor.staging!, h1)).toBe(true);
+    expect(withFloor.skippedConflicts).toEqual([]);
+
+    // Already containing the floor is a no-op for the floor leg.
+    const again = await integrateMemberHeads(repo, integ3, heads, { floorSha: accepted });
+    expect(again.floorRestored).toBe(false);
+    expect(again.advanced).toBe(false);
+  });
+
   it('skips + reports a conflicting head; other members still integrate', async () => {
     const staging = (await readStaging(repo, integ))!;
     // C conflicts on a.txt (staging has a.txt='a1'); D-like clean edit via devC? Use
