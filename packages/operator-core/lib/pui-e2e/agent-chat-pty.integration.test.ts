@@ -2642,10 +2642,16 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
   const CONVERSATION_PICKER = 'Enter select · Esc close';
   const CONVERSATION_LOADING = 'Loading earlier conversations';
 
-  /** Relaunch pui in the chat's directory and pick the newest conversation. */
+  const occurrences = (screen: string, text: string) => screen.split(text).length - 1;
+
+  /** Relaunch pui in the chat's directory and pick the newest conversation.
+   * WI-10004162: the restored chat must show the agent's earlier reply before
+   * anything is typed, and after the pick it must still show it exactly once
+   * (not an empty pane until the next send, not a replayed duplicate). */
   async function resumeNewest(chat: RunningChat): Promise<PuiPane> {
     const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: chat.launchDir });
     await pane.waitFor(`Claude · ${chat.launchDir}`, { timeoutMs: 40_000 });
+    await pane.waitFor(chat.reply, { timeoutMs: 30_000 });
     pane.write('/resume');
     await pane.waitFor('/resume');
     pane.enter();
@@ -2657,6 +2663,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     pane.enter();
     await pane.waitForGone(CONVERSATION_PICKER, { timeoutMs: 30_000 });
     await pane.waitFor(chat.reply, { timeoutMs: 60_000 });
+    // A re-attach that drops or replays the history does so after the pick
+    // settles, so hold the check past it rather than read one early frame.
+    await sleep(2_000);
+    expect(occurrences(pane.screen(), chat.reply), `the resumed chat shows its earlier reply exactly once:\n${pane.screen()}`).toBe(1);
     return pane;
   }
 
