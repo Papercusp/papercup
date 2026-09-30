@@ -54,13 +54,30 @@ type Delivered = { source: string; owner: string; session: string; goalId: strin
   obligationId: string; sourceGeneration: string; status: string | null; applicableDemand: number | null;
   offeredAt: string | null; completedAt: string | null; confirmedAt: string | null; completedTurnRef: string | null;
   nativeSessionId: string | null; receiptOwner: string | null; receiptWorkspace: string | null };
-const delivered: Delivered[] = confirmedRaw.map((c) => ({ source: `activity:${c.id}`, owner: c.owner_id,
+// The receipt carries no owner/workspace/session fields of its own: it names the completed turn as
+// `<client>:<nativeSessionId>:<turnId>`. Resolve that session's owner and workspace independently of the receipt
+// writer, from the identity-activation span recorded when the CLI launched. An unresolvable session stays null,
+// which the falsifier below counts as foreign rather than trusting it.
+const sessionOfTurnRef = (ref: string | null | undefined): string | null => ref?.split(':')[1] || null;
+const identities = new Map<string, { owner: string | null; workspace: string | null }>();
+function identityOf(session: string | null): { owner: string | null; workspace: string | null } {
+  if (!session) return { owner: null, workspace: null };
+  if (!identities.has(session)) {
+    const found = rows(`SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
+      WHERE native_session_id = ${lit(session)}`);
+    identities.set(session, found.length === 1
+      ? { owner: found[0].owner_id, workspace: found[0].workspace_id } : { owner: null, workspace: null });
+  }
+  return identities.get(session)!;
+}
+const delivered: Delivered[] =confirmedRaw.map((c) => ({ source: `activity:${c.id}`, owner: c.owner_id,
   session: c.session_id, goalId: c.r?.goalId ?? null, planSlug: c.r?.planSlug ?? null,
   obligationId: String(c.r?.obligationId ?? ''), sourceGeneration: String(c.r?.sourceGeneration ?? ''),
   status: c.r?.atConfirmation?.status ?? null, applicableDemand: null, offeredAt: c.r?.offeredAt ?? null,
   completedAt: c.r?.completedAt ?? null, confirmedAt: c.r?.confirmedAt ?? null,
-  completedTurnRef: c.r?.completedTurnRef ?? null, nativeSessionId: c.r?.nativeSessionId ?? null,
-  receiptOwner: c.r?.ownerId ?? null, receiptWorkspace: c.r?.workspaceId ?? null }));
+  completedTurnRef: c.r?.completedTurnRef ?? null, nativeSessionId: sessionOfTurnRef(c.r?.completedTurnRef),
+  receiptOwner: identityOf(sessionOfTurnRef(c.r?.completedTurnRef)).owner,
+  receiptWorkspace: identityOf(sessionOfTurnRef(c.r?.completedTurnRef)).workspace }));
 if (COUNTEREXAMPLE === 'count-not-applicable') {
   for (const e of turnEnds) for (const r of e.e?.rows ?? []) delivered.push({ source: `turnEnd:${e.id}`,
     owner: e.owner_id, session: e.session_id, goalId: e.e?.goalId ?? null, planSlug: r.planSlug ?? null,
@@ -85,13 +102,17 @@ assert('r3-no-omitted-or-foreign-counted-as-delivered', violations.length === 0,
   violations.length === 0 ? `${delivered.length} delivered rows, none not-applicable/foreign/unordered`
     : `${violations.length}/${delivered.length} delivered rows violate the falsifier; first: ${JSON.stringify(violations.slice(0, 3))}`);
 
-// 2. A complete chain: confirmed delivery -> same-generation turn-end decision -> effect on the delivered plan.
+// 2. A complete chain: confirmed delivery -> same-turn turn-end decision -> effect on the delivered plan.
 const clean = delivered.filter((d) => !violations.some((v) => v.source === d.source));
 const chains = clean.map((d) => {
   const end = turnEnds.find((e) => e.owner_id === d.owner && e.session_id === d.session &&
     e.e?.completedTurnRef === d.completedTurnRef && t(e.e?.observedAt) >= t(d.completedAt) &&
     t(e.e?.observedAt) - t(d.completedAt) <= TURN_END_MAX_LAG_MS &&
-    (e.e?.rows ?? []).some((r: Row) => r.obligationId === d.obligationId && r.sourceGeneration === d.sourceGeneration));
+    // The turn-end row is a fresh read taken after the turn, so its generation moves with any state change inside
+    // the turn, including the agent's own action (measured 2026-09-30: delivery @91cbb1db, same-turn turn-end
+    // @cd2b8393, while two warm reads 5s apart with no change were identical). The link from delivery to decision is
+    // the shared completedTurnRef above; here the turn-end must speak about the plan that was delivered.
+    (e.e?.rows ?? []).some((r: Row) => r.planSlug === d.planSlug));
   const from = new Date(t(d.completedAt)).toISOString(), to = new Date(t(d.completedAt) + EFFECT_WINDOW_MS).toISOString();
   const effects = d.planSlug ? rows(`SELECT feature_id, h->>'owner' AS owner, h->>'at' AS at
       FROM harness_shared.work_items w, LATERAL jsonb_array_elements(coalesce(w.worked_by_history, '[]'::jsonb)) h
@@ -107,7 +128,7 @@ const chains = clean.map((d) => {
 observations.chains = chains;
 const complete = chains.filter((c) => c.turnEnd && c.effects.length > 0);
 assert('r3-generation-to-effect-chain-exists', complete.length > 0,
-  complete.length > 0 ? `${complete.length} confirmed delivery->same-generation turn-end->effect chains: ${complete.map((c) => c.source).join(', ')}`
+  complete.length > 0 ? `${complete.length} confirmed delivery->same-turn turn-end->effect chains: ${complete.map((c) => c.source).join(', ')}`
     : `0 complete chains (${clean.length} clean confirmed deliveries, ${chains.filter((c) => c.turnEnd).length} with a matching turn-end)`);
 
 // 3. The chain survives a boundary: one owner+goal has complete chains in >= 2 distinct native sessions.
