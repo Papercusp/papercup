@@ -18,6 +18,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadBlueprintFromFile, type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import type { PotCapabilityProviderBindingRow } from '../capability-class-registry-store';
+import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 import { matchesAny, PROTECTED_CAPABILITY_GLOBS, ROLE_ENVELOPES, type RoleEnvelope } from './policy';
 
 interface CacheEntry {
@@ -179,7 +180,13 @@ export function resolveIdentityGrantEnvelope(input: {
       if (required.has(classRef)) fail('provider-changed', classRef);
       continue;
     }
-    const classTools = [...new Set(Object.values(pin.verbBindings))];
+    // P-012 / D-040(e): a recipe provider's verbs name recipes; the grant is the
+    // tool reach its inspection recorded, the same reach install admitted.
+    const classTools = grantProviderToolReach(binding);
+    if (!classTools) {
+      if (required.has(classRef)) fail('provider-unbound', classRef);
+      continue;
+    }
     const permitted: string[] = [];
     for (const toolName of classTools) {
       const cause = identityGrantToolFailure({ ...input, toolName });

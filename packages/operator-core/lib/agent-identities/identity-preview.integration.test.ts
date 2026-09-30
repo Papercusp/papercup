@@ -213,14 +213,14 @@ describe('identity preview (runtime sink, worn guard and package receipts side b
   it('names a required grant the pot cannot satisfy, in validation, the declared surface and consent', async () => {
     const preview = await previewIdentity({ workspaceId: WS, potSlug: POT, source: {
       id: 'granted', extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-      grants: { requires: ['context.absent@1'] },
+      grants: { requires: ['context.absent@1.0.0'] },
     } });
     expect(preview.ok).toBe(false);
     expect(preview.validation.errors).toContainEqual(expect.objectContaining({
-      source: 'grants', code: 'required_capability_provider_absent', ref: 'context.absent@1',
+      source: 'grants', code: 'required_capability_provider_absent', ref: 'context.absent@1.0.0',
     }));
-    expect(preview.declared!.grants.requires).toEqual(['context.absent@1']);
-    expect(preview.consent!.grants).toEqual(['context.absent@1']);
+    expect(preview.declared!.grants.requires).toEqual(['context.absent@1.0.0']);
+    expect(preview.consent!.grants).toEqual(['context.absent@1.0.0']);
     expect(preview.consent!.contentOnly).toBe(false);
   }, 120_000);
 

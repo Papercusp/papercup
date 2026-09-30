@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
-import type { PotCapabilityProviderBindingRow } from '../capability-class-registry-store';
+import {
+  CAPABILITY_CLASS_EXACT_REF, compileAgentSpecification, GrantsSchema, type ResolvedCapabilityProviderInput,
+} from '@papercusp/orchestrator/blueprint';
+import {
+  CAPABILITY_CLASS_ID_PATTERN, CAPABILITY_CLASS_VERSION_PATTERN, type PotCapabilityProviderBindingRow,
+} from '../capability-class-registry-store';
 import { resolveIdentityGrantEnvelope } from './blueprint-envelopes';
+import { grantProviderToolReach, type GrantProviderEvidence } from '../agent-identities/grant-provider-kinds';
+import { recipeProviderPins } from '../cupboard/capability-grant-resolver';
 
 const CLASS = 'crm.email@1.0.0';
 const pin = (over: Partial<ResolvedCapabilityProviderInput> = {}): ResolvedCapabilityProviderInput => ({
@@ -117,5 +123,64 @@ describe('P-005 applied identity capability grants', () => {
       tools: new Map([...input.tools, ['acme:contacts', ['contacts:read']]]),
     });
     expect(result).toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
+  });
+});
+
+// P-012 / D-040(a): a need is a capability class at an exact class@version.
+describe('P-012 grants name classes, never tool ids', () => {
+  it('refuses a tool id or a major-only ref and accepts an exact class version', () => {
+    for (const ref of ['work_items:claim', 'acme:send', 'crm.email@1', 'crm.email']) {
+      const parsed = GrantsSchema.safeParse({ requires: [ref] });
+      expect(parsed.success, ref).toBe(false);
+      expect(JSON.stringify(parsed.error?.issues)).toContain('never a tool id');
+      expect(GrantsSchema.safeParse({ optional: [ref] }).success, ref).toBe(false);
+    }
+    expect(GrantsSchema.parse({ requires: [CLASS], optional: ['crm.contacts@2.1.0-beta.1'] }))
+      .toMatchObject({ requires: [CLASS], optional: ['crm.contacts@2.1.0-beta.1'] });
+  });
+
+  it('spells the grant ref exactly as the registry spells a class id and version', () => {
+    const strip = (pattern: RegExp) => pattern.source.replace(/^\^/, '').replace(/\$$/, '');
+    expect(CAPABILITY_CLASS_EXACT_REF.source)
+      .toBe(`^${strip(CAPABILITY_CLASS_ID_PATTERN)}@${strip(CAPABILITY_CLASS_VERSION_PATTERN)}$`);
+  });
+});
+
+// P-012 / D-040(e): a recipe provider's verbBindings name recipes. Its grant is
+// the tool reach its inspection recorded, the same reach install checks.
+describe('P-012 recipe-provided grant reach', () => {
+  const RECIPE = 'acme-send-recipe';
+  const recipeBinding = (toolNames: string[], recipeId = RECIPE) => ({
+    ...binding({ verbBindings: { send: RECIPE } }),
+    providerKind: 'recipe' as const, latencyClass: 'sync' as const,
+    recipeInspections: { send: { recipe: { id: recipeId, revision: 'r1' }, inspectionPin: { recipe: recipeId }, toolNames } },
+  }) as unknown as PotCapabilityProviderBindingRow;
+
+  it('grants the tools the inspected recipe calls, never the recipe id as a tool', () => {
+    const input = fixture({ requires: [CLASS] }, [pin({ verbBindings: { send: RECIPE } })]);
+    const result = resolveIdentityGrantEnvelope({ ...input, bindings: [recipeBinding(['acme:send'])] });
+    expect(result).toMatchObject({ applied: true, allowedTools: ['acme:send'], failures: [] });
+  });
+
+  it('closes the envelope when a recipe reach exceeds the ceiling or lacks inspection evidence', () => {
+    const input = fixture({ requires: [CLASS] }, [pin({ verbBindings: { send: RECIPE } })]);
+    const tools = new Map([...input.tools, ['acme:purge', ['mail:delete']]]);
+    expect(resolveIdentityGrantEnvelope({ ...input, tools, bindings: [recipeBinding(['acme:send', 'acme:purge'])] }))
+      .toMatchObject({ allowedTools: [], failures: [{ cause: 'outside-ceiling', toolName: 'acme:purge' }] });
+    expect(resolveIdentityGrantEnvelope({ ...input, bindings: [recipeBinding(['acme:send'], 'other-recipe')] }))
+      .toMatchObject({ allowedTools: [], failures: [{ cause: 'provider-unbound', classRef: CLASS }] });
+  });
+
+  it('reaches exactly the tools install admits for the same provider row', () => {
+    // The install seat's expression (validateIdentityInstallGrants), kept verbatim.
+    const installReach = (provider: GrantProviderEvidence) => {
+      const names = provider.providerKind === 'recipe'
+        ? recipeProviderPins(provider as never)?.flatMap((entry) => entry.toolNames) ?? null
+        : Object.values(provider.verbBindings);
+      return names ? [...new Set(names)].sort() : null;
+    };
+    for (const provider of [binding(), recipeBinding(['acme:send', 'acme:read']), recipeBinding(['acme:send'], 'other-recipe')]) {
+      expect(grantProviderToolReach(provider)).toEqual(installReach(provider));
+    }
   });
 });
