@@ -6859,7 +6859,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const fixturePath = path.join(home, `read-${nonce}.txt`);
     writeFileSync(fixturePath, fileResult + '\n');
     const fileRequest = `Use your file-reading tool to inspect ${fixturePath}, then reply with its contents. Do not modify any file.`;
-    const longRequest = `For interruption check PUI-CANCELLED-${nonce}, count from 1 through 10000, one number per line. Do not summarize or use tools.`;
+    // A plain task with a neutral list id (unique per run, so the saved turn is
+    // found by its text). A marker such as `PUI-CANCELLED-<id>` in the request
+    // was read by a real OMP model as a cancellation signal: it answered with
+    // the marker and 'Task cancelled.' instead of counting (WI-10004247 class F).
+    const longRequest = `Please write the numbers from 1 through 10000, one per line, with no other text. Do not summarize or use tools. (List id: ${nonce})`;
     const { prompt: followup, reply: followupReply, replyPattern: followupReplyPattern } =
       markerRequest(`pui-continued-${nonce}`, 'Do not resume the interrupted task. ');
     const launchDir = journeyDir('greeting');
