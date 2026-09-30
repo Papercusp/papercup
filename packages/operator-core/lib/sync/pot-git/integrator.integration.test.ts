@@ -125,8 +125,9 @@ describe('pot-git integrator (real bare repo)', () => {
     const integ3 = dev();
     const self = dev();
     const member = dev();
-    const h0 = await commit(repo, { 's.txt': 's0' });
-    const m1 = await commit(repo, { 's.txt': 's0', 'm.txt': 'm1' }, h0);
+    const r0 = await commit(repo, { 's.txt': 's0' });
+    const h0 = await commit(repo, { 's.txt': 's0', 'h.txt': 'h0' }, r0);
+    const m1 = await commit(repo, { 's.txt': 's0', 'm.txt': 'm1' }, r0);
     await writeNamespaceRef(repo, self, WORK_REF, h0);
     const first = await integrateMemberHeads(repo, integ3, [
       { deviceHex: deviceNamespaceKey(self), sha: h0 },
@@ -135,7 +136,8 @@ describe('pot-git integrator (real bare repo)', () => {
     const accepted = first.staging!;
     expect(await contains(repo, accepted, m1)).toBe(true);
 
-    const h1 = await commit(repo, { 's.txt': 's1' }, h0);
+    expect(accepted).not.toBe(m1); // a real merge commit, as in the incident
+    const h1 = await commit(repo, { 's.txt': 's1', 'h.txt': 'h0' }, h0);
     // Own-head publish rewinds the integrator's staging ref to the local head.
     await writeNamespaceRef(repo, integ3, 'refs/heads/staging', h1, undefined, accepted);
     const heads = [
