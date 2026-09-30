@@ -189,9 +189,9 @@ async function resolveStoredBlueprintPackage(
     return snapshotPackageDirectory({ packageKind: 'rule', ref: request.ref, revision: asset.version, dir, value });
   }
   if (request.kind === 'event') {
-    // Events are host registrations, never vendored content.
-    if (vendoredDir) return null;
-    const asset = resolveInstalledEvent(request.ref);
+    // A vendored event resolves from <repo>/packages/event/ (D-037, D-042);
+    // install claims its key before the async rule that fires on it.
+    const asset = resolveInstalledEvent(request.ref, only('event'));
     if (!asset) return null;
     const { dir, source: _source, ...value } = asset;
     return snapshotPackageDirectory({ packageKind: 'event', ref: request.ref, revision: asset.version, dir, value });
