@@ -544,10 +544,12 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       {
         name: 'sha',
         required: false,
-        describe: 'the local commit sha to wait for; omit to wake on the next git-sync commit',
+        describe:
+          'the FULL local commit sha to wait for (a short sha never fires); omit to wake on the next commit of your harness',
       },
     ],
-    describe: 'git-sync committed the tree locally (no claim about bridged origin/staging egress).',
+    describe:
+      'git-sync committed the tree locally (no claim about bridged origin/staging egress). The bare key fires once per git-sync install, submodule installs included, so events:await binds it to the caller harness (EI-24719187042784648).',
     emitter: 'git-sync action (packages/operator-core/lib/harness/git-sync/git-sync-events.ts)',
     exists: true, // P-102: git-sync-action fires `git-sync:committed[:<sha>]` on a synced tick
     replacesPoll: 'dev:pipeline_position (polling "is my edit committed yet")',
