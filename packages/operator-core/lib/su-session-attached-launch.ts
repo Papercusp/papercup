@@ -18,6 +18,7 @@ import type { NativeSessionHandle } from './native-session-handles';
 import { activeWorkspaceId } from './workspace-registry';
 import { prepareStructuredSuResume } from './su-session-resume';
 import { resolveCodexModelSelection } from './model-context-budget.mjs';
+import { grantSuClientLease, suClientLeaseConfig, superviseSuClientLease } from './su-session-client-lease';
 import { normalizeModelSpecForAgent } from '../../../apps/operator/scripts/psu-launcher.mjs';
 
 const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () => ({
@@ -53,6 +54,27 @@ export function _simulateLaunchingProcessLossForTest(input: {
   state.exits.delete(key);
   if (engine) _dropSuSessionHostForTest(engine.adapter.host);
   return engine;
+}
+
+/** Why an engine ended with nobody watching it (P-009). Shown on the chat. */
+export const UNATTENDED_END_REASON =
+  'Ended because no client was attached. Resume the conversation to continue it; /detach keeps a session running without a client.';
+
+/**
+ * pui-chat-first-ux-2026-09-28 P-009: an attached engine lives only while a
+ * client is watching it or its owner detached it. Grants the first-attach lease
+ * and ends the engine once the durable client lease lapses. Returns the release
+ * to call when this engine exits on its own.
+ */
+function superviseAttendance(advSessionId: number, engine: ClaudeSuEngine | SuRpcEngine): () => void {
+  void grantSuClientLease(advSessionId, suClientLeaseConfig().initialMs);
+  return superviseSuClientLease(advSessionId, async () => {
+    const host = engine.adapter.host;
+    try {
+      if (!host.snapshot().terminal) host.transition('ended', UNATTENDED_END_REASON);
+    } catch { /* a disposed host has nothing left to tell */ }
+    await engine.close();
+  });
 }
 
 /** Exact-resume attempts per reconnect: the original plus one automatic retry
@@ -233,6 +255,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         // missing transcript), which a repeat cannot fix.
         const supervise = async (current: Awaited<ReturnType<typeof startResumedEngine>>, attempt: number): Promise<void> => {
           const { engine, resume } = current;
+          const unsupervise = superviseAttendance(previous.advSessionId, engine);
           let retryable: unknown = null;
           try {
             try { await engine.ready; } catch (error) { if (isStartupTimeout(error)) retryable = error; throw error; }
@@ -242,6 +265,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
             await engine.close();
             await resume.release();
           } finally {
+            unsupervise();
             // Keep the slot reserved across a retry so a concurrent reconnect
             // waits on it instead of racing a second resume for the lease.
             if (state.engines.get(key) === engine && !(retryable && attempt < RESUME_STARTUP_ATTEMPTS)) state.engines.delete(key);
@@ -349,6 +373,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           { ...options, identity: await claudeEngineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
       state.engines.set(key, engine);
+      const unsupervise = superviseAttendance(result.sessionId, engine);
       trace?.stage('persist-descriptor');
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());
       const active = engine;
@@ -370,6 +395,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
           await active.close();
           await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true });
         } finally {
+          unsupervise();
           if (state.engines.get(key) === active) state.engines.delete(key);
         }
       })().catch((error: unknown) => console.warn('[su-session] engine exit bookkeeping failed', error)));

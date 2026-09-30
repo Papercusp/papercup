@@ -24,6 +24,13 @@ vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
 vi.mock('./harness-registry', () => ({ loadHarnessRegistry: mocks.registry }));
+// P-009's durable client lease is covered by su-session-client-lease.test.ts
+// and the real-PTY journey; here it must not write adv_sessions rows.
+vi.mock('./su-session-client-lease', () => ({
+  grantSuClientLease: vi.fn(async () => undefined),
+  suClientLeaseConfig: () => ({ ttlMs: 30_000, renewMs: 10_000, sweepMs: 5_000, initialMs: 60_000 }),
+  superviseSuClientLease: vi.fn(() => () => undefined),
+}));
 import { LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
   launchStageTracer } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
