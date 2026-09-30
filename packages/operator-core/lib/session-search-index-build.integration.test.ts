@@ -36,7 +36,11 @@ const runSessionSearchIndexBuildOnce: typeof runSessionSearchIndexBuildOnceRaw =
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = path.resolve(here, '../../../libs/papercusp/libs/db/sql');
 const M501 = path.join(SQL_DIR, '501-session-turns.sql');
-const M1273 = path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql');
+// The migration under test. scripts/mutation-probe.sh points this at a mutated COPY (copy-out mode)
+// so the falsifiability of these assertions is proven without ever mutating the tracked file.
+const M1273 =
+  process.env.P002_MIGRATION_SQL_UNDER_TEST ?? path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql');
+const GENERATED_SCHEMA = path.resolve(here, '../../../libs/papercusp/libs/db/src/schema/generated.ts');
 
 const TRGM = 'session_turns_text_trgm_idx';
 const TS_DESC = 'session_turns_ts_desc_idx';
@@ -159,6 +163,39 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
     const [{ t }] = await sql<Array<{ t: string | null }>>`
       SELECT to_regclass('harness_shared.session_turn_vocab_state')::text AS t`;
     expect(t).toBe('harness_shared.session_turn_vocab_state');
+  });
+
+  it('schema drift: the Drizzle projection (generated.ts) declares exactly the columns, nullability and constraints the replayed tables have', async () => {
+    const generated = readFileSync(GENERATED_SCHEMA, 'utf8');
+    for (const table of ['session_turn_vocab', 'session_turn_vocab_state']) {
+      const start = generated.indexOf(`harnessShared.table("${table}", {`);
+      expect(start, `${table} must be declared in generated.ts`).toBeGreaterThanOrEqual(0);
+      const end = generated.indexOf('\n]);', start);
+      const block = generated.slice(start, end);
+      // `key: type("col_name")` or, when the column name needs no casing, `col: type()`.
+      const declared = new Map<string, boolean>(); // column → declared NOT NULL / primary key
+      for (const m of block.matchAll(/^\t(\w+): \w+\((?:"([^"]+)")?[^\n]*$/gm)) {
+        const line = m[0];
+        declared.set(m[2] ?? m[1]!, /\.notNull\(\)|\.primaryKey\(\)/.test(line));
+      }
+      const live = await sql<Array<{ column_name: string; is_nullable: string }>>`
+        SELECT column_name, is_nullable FROM information_schema.columns
+         WHERE table_schema = 'harness_shared' AND table_name = ${table}`;
+      expect([...declared.keys()].sort(), `${table}: generated.ts columns`).toEqual(
+        live.map((c) => c.column_name).sort(),
+      );
+      for (const c of live) {
+        expect(declared.get(c.column_name), `${table}.${c.column_name} NOT NULL agrees`).toBe(
+          c.is_nullable === 'NO',
+        );
+      }
+    }
+    // The status CHECK is part of the contract the build module and the read path rely on.
+    expect(generated).toContain('session_turn_vocab_state_status_check');
+    const checks = await sql<Array<{ conname: string }>>`
+      SELECT conname FROM pg_constraint
+       WHERE conrelid = 'harness_shared.session_turn_vocab_state'::regclass AND contype = 'c'`;
+    expect(checks.map((c) => c.conname)).toContain('session_turn_vocab_state_status_check');
   });
 
   it('spec table and migration text agree on every index name and definition (drift pin)', () => {
