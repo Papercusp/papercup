@@ -840,7 +840,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('canonical E/G scenario driver is not executable');
     expect(physicalProbe).toContain('"$TSX" "$PRODUCER" preflight');
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"');
-    expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
+    // WI-10004062: both hosts stage the ONE commit pinned at probe start, never a
+    // HEAD re-resolved per host (a git-sync commit between them would split them).
+    expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar "$source_sha" --');
+    expect(physicalProbe).not.toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
     expect(physicalProbe).toContain(
       'packages libs scripts package.json tsconfig.base.json',
     );
@@ -860,7 +863,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     // trap the next time a submodule is added, so "it stages libs/papercusp" is not a
     // strong enough assertion to keep.
     expect(physicalProbe).toContain('--get-regexp');
-    expect(physicalProbe).toContain('archive --format=tar --prefix="$sm_path/" HEAD');
+    expect(physicalProbe).toContain(
+      'archive --format=tar --prefix="$sm_path/" "${staged_submodule_shas[$i]}"',
+    );
     expect(physicalProbe).toContain('staged_submodules+=("$sm_path")');
     // ...and pin the recurrence guard, so a staging regression fails at the probe
     // naming the missing path instead of downstream on the rig.
@@ -899,7 +904,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
     expect(physicalProbe).not.toContain('PCUSP_VM_SSH');
     expect(physicalProbe).not.toContain('PCUSP_VM_PHYSICAL_PRODUCER');
-    expect(physicalProbe).toContain('staged VM physical-drill producer does not match the tower working tree');
+    expect(physicalProbe).toContain('staged VM physical-drill producer does not match the pinned tower snapshot');
     expect(physicalProbe).toContain('tower identity command produced no JSON');
     expect(physicalProbe).toContain('VM identity command produced no JSON');
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE="$remote_source"');
