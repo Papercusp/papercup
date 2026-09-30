@@ -322,39 +322,43 @@ export async function readClaimSpecLaneHealth(args: ReadClaimSpecLaneHealthArgs)
     // The two family reads are independent; issuing them together keeps an
     // exact-plan preflight (both families reachable, ~350ms each measured
     // 2026-09-30) inside the obligation reader's 900ms optional-read budget.
+    // Resolve the admission module ONCE, before issuing the reads. Two
+    // concurrent import() calls of it left the feature read unissued under a
+    // vi.mock'd module (WI-10004356); one resolved module serves both reads.
+    const needsAdmission = Boolean(ws) && (
+      familyReachability.feature ||
+      (familyReachability.issue && args.issueFamilyTotalBudgetMs !== undefined)
+    );
+    const admission = needsAdmission ? await import('../scheduler/fleet-scope-admission') : null;
     const issueRead = familyReachability.issue
       ? args.issueFamilyTotalBudgetMs === undefined
         ? aggregateIssueClaimExclusions(args.spec.view.filter, {
             harness: args.harness, workspaceId: ws, states: args.spec.states,
             assignee: args.assignee, rigAvailable: args.rigAvailable,
           })
-        : ws
-          ? import('../scheduler/fleet-scope-admission').then(({ diagnoseFleetScopeIssueFloorMiss }) =>
-              diagnoseFleetScopeIssueFloorMiss({
-                scope: {
-                  ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
-                  record: args.record, workspaceId: ws,
-                },
-                harness: args.harness, workspaceId: ws, states: args.spec.states,
-                rigAvailable: args.rigAvailable, totalBudgetMs: args.issueFamilyTotalBudgetMs,
-              }),
-            )
+        : admission && ws
+          ? admission.diagnoseFleetScopeIssueFloorMiss({
+              scope: {
+                ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
+                record: args.record, workspaceId: ws,
+              },
+              harness: args.harness, workspaceId: ws, states: args.spec.states,
+              rigAvailable: args.rigAvailable, totalBudgetMs: args.issueFamilyTotalBudgetMs,
+            })
           : null
       : null;
-    const featureRead = familyReachability.feature && ws
-      ? import('../scheduler/fleet-scope-admission').then(({ diagnoseFleetScopeFeatureFamilyExclusions }) =>
-          diagnoseFleetScopeFeatureFamilyExclusions({
-            scope: {
-              // Population reads deliberately carry no claimant. The diagnostic's
-              // explicit null override below keeps caller-relative floors out of the
-              // fleet-wide total.
-              ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
-              record: args.record, workspaceId: ws,
-            },
-            harness: args.harness, workspaceId: ws, states: args.spec.states,
-            rigAvailable: args.rigAvailable, cooldownAssignee: args.assignee ?? null,
-          }),
-        )
+    const featureRead = familyReachability.feature && admission && ws
+      ? admission.diagnoseFleetScopeFeatureFamilyExclusions({
+          scope: {
+            // Population reads deliberately carry no claimant. The diagnostic's
+            // explicit null override below keeps caller-relative floors out of the
+            // fleet-wide total.
+            ownerId: args.assignee ?? '', fleetSlug: args.fleet, fleetRole: 'member',
+            record: args.record, workspaceId: ws,
+          },
+          harness: args.harness, workspaceId: ws, states: args.spec.states,
+          rigAvailable: args.rigAvailable, cooldownAssignee: args.assignee ?? null,
+        })
       : null;
     const [issueBreakdown, featureBreakdown] = await Promise.all([issueRead, featureRead]);
     if (familyReachability.issue && issueBreakdown == null) return null;
