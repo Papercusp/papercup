@@ -3294,6 +3294,33 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
     expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('protected submodule mutation\n');
     expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--', 'subA.txt')).toMatch(/subA\.txt/);
   });
+
+  it('EI-24712906810240170: a submodule probe lock taken after the pre-stage census never publishes the mutant', async () => {
+    // subA must already be dirty, or its pass never reaches the staging seam.
+    writeFileSync(join(repo, 'libs/subA', 'subA-other.txt'), 'ordinary submodule work\n');
+    const probeLock = { path: 'libs/subA/subA.txt', owner: 'su-probe', intent: 'mutation probe' };
+    let mutated = false;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      if (!mutated) {
+        // subA's pre-stage census has just read; the probe now locks and mutates.
+        mutated = true;
+        writeFileSync(join(repo, 'libs/subA', 'subA.txt'), 'MUTANT\n');
+        return [];
+      }
+      return [probeLock];
+    });
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', { repoPath: repo, refreshLiveLockHoldings, log: (m) => logs.push(m) });
+
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).toContain('libs/subA: post-stage guard held back');
+    expect(git(subAOrigin, 'show', 'main:subA.txt')).toBe('subA-v1');
+    expect(git(subAOrigin, 'log', '-p', 'main')).not.toContain('MUTANT');
+    expect(git(subAOrigin, 'ls-tree', '-r', '--name-only', 'main'), logs.join('\n')).toContain('subA-other.txt');
+    expect(out.skippedPaths).toContainEqual({ scope: 'libs/subA', path: 'subA.txt', owner: 'su-probe', intent: 'mutation probe' });
+    expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('MUTANT\n');
+  });
 });
 
 describe('runGitSync — EI-18 oversized-blob guard', () => {

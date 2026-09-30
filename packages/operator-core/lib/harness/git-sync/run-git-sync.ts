@@ -3638,15 +3638,32 @@ export async function guardStagedIndexBeforeCommit(opts: {
       .filter(Boolean)
       .filter((path) => stagedSet.has(path) && !lateLocked.has(path)),
   );
-  // A staged DELETION whose file has reappeared is untracked, so `git diff` cannot list it.
+  // A staged DELETION whose file has reappeared is untracked, so `git diff` cannot list it;
+  // ask for it as a non-ignored untracked file. An IGNORED file that stays on disk is the
+  // deliberate untracking of runtime state (EI-22737671025165479), not drift, and
+  // `--exclude-standard` leaves it out.
   const deletedRes = await runGit(
     ['diff', '--cached', '--name-only', '--no-renames', '-z', '--diff-filter=D'],
     repoPath,
   );
-  if (deletedRes.code === 0) {
-    for (const path of deletedRes.stdout.split('\0').filter(Boolean)) {
-      if (lateLocked.has(path) || drifted.has(path)) continue;
-      if ((await opts.readText(path)) !== null) drifted.add(path);
+  if (deletedRes.code !== 0) {
+    return {
+      ok: false,
+      error: `post-stage guard could not read staged deletions: ${(deletedRes.stderr || deletedRes.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  const stagedDeletions = deletedRes.stdout.split('\0').filter((path) => path && !lateLocked.has(path));
+  for (let i = 0; i < stagedDeletions.length; i += 500) {
+    const chunk = stagedDeletions.slice(i, i + 500);
+    const reappeared = await runGit(['ls-files', '-z', '--others', '--exclude-standard', '--', ...chunk], repoPath);
+    if (reappeared.code !== 0) {
+      return {
+        ok: false,
+        error: `post-stage guard could not check reappeared deletions: ${(reappeared.stderr || reappeared.stdout).trim().slice(0, 300)}`,
+      };
+    }
+    for (const path of reappeared.stdout.split('\0').filter(Boolean)) {
+      if (stagedSet.has(path)) drifted.add(path);
     }
   }
 
