@@ -1,9 +1,13 @@
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   PHYSICAL_DRILL_INCOMPLETE_EXIT,
   PhysicalDrillIncompleteEvidenceError,
+  physicalDrillFailureLine,
   physicalPhaseJMode,
   runPhysicalDrillCliToExit,
 } from './physical-drill-producer';
@@ -73,9 +77,64 @@ describe('runPhysicalDrillCliToExit', () => {
     expect(exit).not.toHaveBeenCalled();
     stderr.flush();
     await done;
-    expect(stderr.chunks).toEqual(['usage: physical-drill-producer phase-d-reset <run-id>\n']);
+    expect(stderr.chunks).toEqual([
+      'physical-drill-producer: phase-d-reset: usage: physical-drill-producer phase-d-reset <run-id>\n',
+    ]);
     expect(stdout.write).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  // Same-box run 20260930T054405Z: Phase A threw a bare `physical Phase A git ...`
+  // message and the drill summary reported "no prefixed reason line". The failure
+  // line must carry the prefix the summary reads, and the real summary script must
+  // name the phase and that reason from it.
+  it('prefixes a bare phase error so the drill summary names the phase and reason', async () => {
+    const stdout = deferredStream();
+    const stderr = deferredStream();
+    const exit = vi.fn();
+    const bare = 'physical Phase A git rev-parse --is-bare-repository failed for /x/gh-1.git: fatal: not a git repository';
+    const done = runPhysicalDrillCliToExit(['phase-a-observe', 'run-1'], {
+      run: async () => {
+        throw new Error(bare);
+      },
+      stdout,
+      stderr,
+      exit,
+    });
+    await vi.waitFor(() => expect(stderr.write).toHaveBeenCalledTimes(1));
+    stderr.flush();
+    await done;
+    const line = `physical-drill-producer: phase-a-observe: ${bare}`;
+    expect(stderr.chunks).toEqual([`${line}\n`]);
+    expect(exit).toHaveBeenCalledWith(1);
+
+    const dir = mkdtempSync(join(tmpdir(), 'pds-failure-line-'));
+    try {
+      const errFile = join(dir, 'physical-probe.stderr');
+      writeFileSync(
+        errFile,
+        [
+          'hive-git-physical-scenario: PHASE_START A phase_a_storage_join 2026-09-30T05:44:45.201Z',
+          '[vmcall port=18572 source=env]',
+          stderr.chunks.join('').trimEnd(),
+          'hive-git-physical-probe: preserved failed-run diagnostics at /tmp/x.failure-diagnostics',
+        ].join('\n') + '\n',
+      );
+      const summary = fileURLToPath(
+        new URL('../../../../../papercusp-desktop/bin/lib/physical-failure-summary.sh', import.meta.url),
+      );
+      const result = spawnSync('bash', [summary, errFile], { encoding: 'utf8', timeout: 20_000 });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe(`phase A (phase_a_storage_join): ${line}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a message that already carries a physical-drill module prefix unchanged', () => {
+    const own = 'physical-drill-host-receipt: cached announce identity/keychain mismatch at /x';
+    expect(physicalDrillFailureLine('phase-b-announce', own)).toBe(own);
+    expect(physicalDrillFailureLine(undefined, 'boom')).toBe('physical-drill-producer: <no mode>: boom');
   });
 
   // WI-10003811 / P-505 run 30: an observation read before the host converged
