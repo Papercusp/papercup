@@ -1,0 +1,41 @@
+{
+  "bar": "R-30",
+  "planItem": "P-013",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "clause": "After one sweep, every harness doc collection (each source_key harness:<slug> with at least one harness doc) has at least one doc_sections row with a non-null embedding.",
+  "measuredAt": "2026-09-30T11:26:40.727Z",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "database": "live operator DB (native PG :5432, database papercusp)",
+  "rerun": "dev:pg_query { sql: <censusSql>, allowUnscoped: true } and dev:pg_query { sql: <perCollectionSql>, allowUnscoped: true }",
+  "censusSql": "SELECT count(DISTINCT source_key) AS collections, count(*) AS sections, count(embedding) AS embedded, (SELECT count(*) FROM (SELECT source_key FROM harness_shared.doc_sections WHERE source_key LIKE 'harness:%' GROUP BY source_key HAVING count(embedding) = 0) z) AS collections_with_no_embedded_row, now() AS at FROM harness_shared.doc_sections WHERE source_key LIKE 'harness:%'",
+  "perCollectionSql": "SELECT source_key, count(*) n, count(embedding) e FROM harness_shared.doc_sections WHERE source_key LIKE 'harness:%' GROUP BY source_key ORDER BY source_key",
+  "summary": {
+    "collections": 20,
+    "sections": 4086,
+    "embedded": 4086,
+    "collectionsWithNoEmbeddedRow": 0
+  },
+  "perCollection": [
+    { "sourceKey": "harness:brood-box-alpha", "sections": 27, "embedded": 27 },
+    { "sourceKey": "harness:calendar", "sections": 2, "embedded": 2 },
+    { "sourceKey": "harness:email", "sections": 2, "embedded": 2 },
+    { "sourceKey": "harness:hive-canary", "sections": 24, "embedded": 24 },
+    { "sourceKey": "harness:oddsmith", "sections": 653, "embedded": 653 },
+    { "sourceKey": "harness:oddsmith-hive", "sections": 653, "embedded": 653 },
+    { "sourceKey": "harness:oddsmith-ops", "sections": 68, "embedded": 68 },
+    { "sourceKey": "harness:papercup-rust-mobile", "sections": 176, "embedded": 176 },
+    { "sourceKey": "harness:papercusp", "sections": 1426, "embedded": 1426 },
+    { "sourceKey": "harness:papercusp/libs/papercusp", "sections": 33, "embedded": 33 },
+    { "sourceKey": "harness:papercusp/papercusp-desktop", "sections": 5, "embedded": 5 },
+    { "sourceKey": "harness:phone-app", "sections": 6, "embedded": 6 },
+    { "sourceKey": "harness:portal", "sections": 2, "embedded": 2 },
+    { "sourceKey": "harness:quartermaster", "sections": 6, "embedded": 6 },
+    { "sourceKey": "harness:quartermaster-hive", "sections": 2, "embedded": 2 },
+    { "sourceKey": "harness:restart", "sections": 836, "embedded": 836 },
+    { "sourceKey": "harness:shared-hive-test", "sections": 4, "embedded": 4 },
+    { "sourceKey": "harness:shared-hive-test-hive-2", "sections": 4, "embedded": 4 },
+    { "sourceKey": "harness:sidestage", "sections": 137, "embedded": 137 },
+    { "sourceKey": "harness:spawn-demo", "sections": 20, "embedded": 20 }
+  ],
+  "note": "[self-imposed under AUTO #970, WI-10003944] Re-measured for P-015 after the rev-8 amendment staled the 05:26Z census (binding 16376). Same result shape as 04:07Z, 04:36Z and 05:26Z; one more section than at 05:26Z (4,086 vs 4,085), also embedded."
+}
