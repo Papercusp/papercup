@@ -4805,6 +4805,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
     });
     const fallbackModels: CodexModel[] = [
       model(
+        'gpt-6.1-sol',
+        'GPT-6.1-Sol',
+        'Latest Sol workhorse for coding and everyday tasks.',
+        17,
+        272_000,
+        1_000_000,
+        maxReasoningLevels,
+      ),
+      model(
         'gpt-6-astra',
         'GPT-6-Astra',
         'Our most capable model for complex, demanding work.',

@@ -298,7 +298,7 @@ export function modelWindowForTier(tier: Pick<ModelTier, 'spec' | 'contextWindow
  * the conservative role-cap derivation safe when the registry is absent.
  */
 export const CODEX_EXTENDED_WINDOW_FAMILY_RE =
-  /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna)|gpt-5\.4|sol|terra|luna)(?:\[[^\]]*\])?(?::[a-z0-9]+)?$/i;
+  /^(?:gpt-6\.1-sol|gpt-6-(?:astra|sol|luna)|gpt-5\.6-(?:sol|terra|luna)|gpt-5\.4|sol|terra|luna)(?:\[[^\]]*\])?(?::[a-z0-9]+)?$/i;
 
 export function isCodexExtendedWindowSpec(spec?: string | null): boolean {
   return spec != null && CODEX_EXTENDED_WINDOW_FAMILY_RE.test(spec.trim());
