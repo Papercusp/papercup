@@ -254,6 +254,9 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
     auth: 'loopback',
     async handler(req) {
       if (!deps.isLocal(req)) return jsonError('local_only', 403);
+      // A page on another site can POST a text/plain JSON body to 127.0.0.1 with no preflight; the
+      // Remote access screen's "Connect an app" is a same-origin caller (P-010), so refuse the rest.
+      if (!isSameOriginOrNonBrowser(req)) return jsonError('cross_origin_blocked', 403);
       const body = await readJson(req);
       if (!body) return jsonError('invalid_json', 400);
       const label = typeof body.label === 'string' ? sanitizeClientLabel(body.label) : '';

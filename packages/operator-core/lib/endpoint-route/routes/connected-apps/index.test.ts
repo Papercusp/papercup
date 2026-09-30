@@ -229,6 +229,18 @@ describe('Connect an app (local key creation)', () => {
     expect(t.created).toEqual([]);
   });
 
+  it('refuses a cross-site browser request (a page elsewhere cannot mint a key on this machine)', async () => {
+    const t = setup();
+    const res = await t.call('POST', '/connected-apps', { label: 'zapier', workspaceId: 'ws-local', tools: ['plans:list'] },
+      { headers: { origin: 'https://evil.example', 'sec-fetch-site': 'cross-site' } });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('cross_origin_blocked');
+    expect(t.created).toEqual([]);
+    const sameOrigin = await t.call('POST', '/connected-apps', { label: 'zapier', workspaceId: 'ws-local', tools: ['plans:list'] },
+      { headers: { origin: LOCAL, 'sec-fetch-site': 'same-origin' } });
+    expect(sameOrigin.status).toBe(201);
+  });
+
   it('refuses a label with nothing printable in it instead of naming the key for it', async () => {
     const t = setup();
     for (const label of ['', '   ', '\u0007', '\n\t']) {

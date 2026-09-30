@@ -380,7 +380,9 @@ export type IntegrationBaselineDeps = {
 export async function observeIntegrationBaseline(deps: IntegrationBaselineDeps = {}): Promise<IntegrationBaselineObservation> {
   const target = physicalDrillTarget();
   const repoPath = deps.repoPath ?? hiveGitRepoPath(target.potHome, target.repoKey);
-  const worktreePath = deps.worktreePath ?? (await projectDirForSlug(target.gitSyncSlug));
+  // Explicit workspace: the default resolves to an empty registry under a bare rig-profile
+  // env (measured on same-box rig r13), and the ratify queue below is read in this workspace.
+  const worktreePath = deps.worktreePath ?? (await projectDirForSlug(target.gitSyncSlug, PHASE_D_WORKSPACE));
   if (!worktreePath) throw new Error(`cannot resolve the ${target.gitSyncSlug} worktree`);
   const rev = async (cwd: string, ref: string): Promise<string | null> => {
     const result = await defaultRunGit(['rev-parse', '--verify', '-q', `${ref}^{commit}`], cwd);
