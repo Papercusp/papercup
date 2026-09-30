@@ -924,7 +924,8 @@ describe('runGitSync (real git, no submodule)', () => {
       refreshLiveLockHoldings,
     });
 
-    expect(refreshLiveLockHoldings).toHaveBeenCalledOnce();
+    // Pre-stage census + the EI-24712906810240170 post-stage census (normal.txt was staged).
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toEqual([{
       scope: 'superproject',
@@ -993,6 +994,111 @@ describe('runGitSync (real git, no submodule)', () => {
     }
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
+  });
+
+  // EI-24712906810240170: the pre-stage refresh cannot see a lock taken AFTER it. These
+  // reproduce a mutation probe racing the sweep: the probe locks, then mutates, between the
+  // pre-stage census (call 1) and `git add -A`. Call 2 is the post-stage census.
+  it('EI-24712906810240170: a lock taken between the pre-stage census and the add never publishes the mutant', async () => {
+    const original = readFileSync(join(repo, 'file.txt'), 'utf8');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const probeLock = { path: 'file.txt', owner: 'su-probe', intent: 'mutation probe' };
+    let calls = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        // The probe acquires its lock just after this census reads, then mutates.
+        writeFileSync(join(repo, 'file.txt'), 'MUTANT\n');
+        return [];
+      }
+      return [probeLock]; // still mid-probe at the post-stage census
+    });
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, refreshLiveLockHoldings });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe(original.trimEnd());
+    expect(git(originDir, 'log', '-p', 'main')).not.toContain('MUTANT');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(out.skippedPaths).toContainEqual({ scope: 'superproject', ...probeLock });
+    // The mutant stays in the working tree only, unstaged, for the probe to restore.
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('MUTANT\n');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+  });
+
+  it('EI-24712906810240170: a probe that restores and releases before the commit does not publish the staged mutant', async () => {
+    const original = readFileSync(join(repo, 'file.txt'), 'utf8');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let calls = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) writeFileSync(join(repo, 'file.txt'), 'MUTANT\n'); // mutated after this census
+      // By the post-stage census the probe has restored the file and released its lock,
+      // so no lock is visible: only the index still holds the mutant.
+      else writeFileSync(join(repo, 'file.txt'), original);
+      return [];
+    });
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'log', '-p', 'main')).not.toContain('MUTANT');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe(original.trimEnd());
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toBe('');
+    expect(logs.join('\n')).toContain('drifted after staging [file.txt]');
+  });
+
+  it('EI-24712906810240170: an edit that keeps changing after staging is deferred, then committed whole next tick', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'first half of an edit\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let calls = 0;
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings: async () => {
+        calls += 1;
+        if (calls === 2) writeFileSync(join(repo, 'file.txt'), 'finished edit\n');
+        return [];
+      },
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'log', '-p', 'main')).not.toContain('first half of an edit');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+
+    const next = await runGitSync('test', { repoPath: repo, config: cfg, refreshLiveLockHoldings: async () => [] });
+    expect(next.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('finished edit');
+  });
+
+  it('EI-24712906810240170: fails closed when the post-stage live-lock refresh rejects', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let calls = 0;
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings: async () => {
+        calls += 1;
+        if (calls === 2) throw new Error('lock store unavailable after staging');
+        return [];
+      },
+    });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((error) => error.message).join('\n')).toContain(
+        'post-stage live lock refresh failed (fail-closed): lock store unavailable after staging',
+      );
+    }
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
   });
 
   it('EI-21267378554087084: an ignored scratch exclusion does not strand legitimate tracked work', async () => {
@@ -3171,7 +3277,10 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       refreshLiveLockHoldings,
     });
 
-    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(3);
+    // One pre-stage census per repo (subA, subB, superproject), plus the EI-24712906810240170
+    // post-stage census in each repo that staged something (subB, superproject; subA's only
+    // dirty path was locked, so it staged nothing).
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(5);
     expect(out.status).toBe('synced');
     expect(out.skippedPaths).toContainEqual({
       scope: 'libs/subA',

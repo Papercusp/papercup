@@ -3536,6 +3536,143 @@ async function unstagePreStagedProtectedPaths(
   return { ok: true, paths: protectedStaged };
 }
 
+/** Outcome of {@link guardStagedIndexBeforeCommit}. */
+export type PostStageGuardResult =
+  | {
+      ok: true;
+      /** Holdings (this repo's coordinates) that overlap a staged path but were not visible pre-stage. */
+      lateLockedHoldings: GitSyncLockHolding[];
+      /** Staged paths whose working-tree content changed after they were staged. */
+      drifted: string[];
+      /** Every path removed from the index (late-locked + drifted + their dirty importers). */
+      unstaged: string[];
+    }
+  | { ok: false; error: string };
+
+/**
+ * EI-24712906810240170: close the window between STAGING and COMMIT.
+ *
+ * The pre-stage live-lock refresh protects every path locked BEFORE `git add`. It cannot
+ * protect a path whose lock is taken after that read: a mutation probe that acquires its
+ * file lock and mutates between the refresh and the add has its MUTANT staged, and a probe
+ * that then restores the file and releases the lock before the commit leaves no lock for
+ * anyone to see. `git commit` records the index, so either way the mutant would publish.
+ * That gap is why top-level probes used to need the fleet-wide exclusive git-sync lease.
+ *
+ * Call this after the final add and before the commit it guards. It unstages:
+ *  - LATE-LOCKED paths: staged paths that a live lock now covers;
+ *  - DRIFTED paths: staged paths whose working-tree content no longer matches the index
+ *    (the staged blob was a transient state, e.g. a probe's mutant since restored);
+ *  - their dirty importers, so an importer never lands without the module it needs.
+ * Unstaged paths stay dirty in the working tree and are re-examined by the next tick,
+ * with the full content guard pipeline, instead of being re-staged here unscanned.
+ *
+ * ⚠ ORDER IS LOAD-BEARING: the staged set is read first (the index is fixed after the add),
+ * then the lock census, then the working-tree drift. A probe locks before it mutates
+ * (L < M) and releases after it restores (R < Rel). A mutant is staged only when M < add.
+ * If the lock is still held at the census, the late-lock check catches it. If it was
+ * released before the census, the restore happened earlier still (R < Rel < census <
+ * drift read), so the drift check sees worktree ≠ index. Reading drift BEFORE the census
+ * would miss a restore+release that lands between the two reads.
+ *
+ * Submodule gitlinks are ignored by the drift read (`--ignore-submodules=all`): a moved or
+ * dirty submodule is not a transient superproject blob, and its files are guarded by that
+ * submodule's own pass. Fails closed (ok:false) when the lock plane or the index cannot be read.
+ */
+export async function guardStagedIndexBeforeCommit(opts: {
+  runGit: RunGit;
+  repoPath: string;
+  scope: string;
+  refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
+  readText: (relPath: string) => Promise<string | null>;
+  log: (message: string) => void;
+}): Promise<PostStageGuardResult> {
+  const { runGit, repoPath, scope, log } = opts;
+  // 1. The staged set. Fixed since the add, so reading it before the census is safe.
+  const stagedRes = await runGit(['diff', '--cached', '--name-only', '--no-renames', '-z'], repoPath);
+  if (stagedRes.code !== 0) {
+    return {
+      ok: false,
+      error: `post-stage guard could not read the index: ${(stagedRes.stderr || stagedRes.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  const staged = stagedRes.stdout.split('\0').filter(Boolean);
+  if (staged.length === 0) return { ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] };
+  const stagedSet = new Set(staged);
+
+  // 2. The lock census, AFTER the add.
+  let lateLockedHoldings: GitSyncLockHolding[] = [];
+  const lateLocked = new Set<string>();
+  if (opts.refreshLiveLockHoldings) {
+    let holdings: GitSyncLockHolding[];
+    try {
+      holdings = await opts.refreshLiveLockHoldings();
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      log(`[git-sync] ${scope}: post-stage live lock refresh failed (fail-closed) — ${detail}`);
+      return { ok: false, error: `post-stage live lock refresh failed (fail-closed): ${detail}` };
+    }
+    const byPath = new Map<string, GitSyncLockHolding>();
+    for (const holding of holdings) {
+      const lockPath = holding.path.trim().replace(/^\.\/+|\/+$/g, '');
+      if (!lockPath) continue;
+      const covered = staged.filter((path) => gitSyncPathsOverlap(path, lockPath));
+      if (covered.length === 0) continue;
+      for (const path of covered) lateLocked.add(path);
+      byPath.set(lockPath, { ...holding, path: lockPath });
+    }
+    lateLockedHoldings = [...byPath.values()];
+  }
+
+  // 3. Working-tree drift, AFTER the census.
+  const driftRes = await runGit(['diff', '--name-only', '--no-renames', '-z', '--ignore-submodules=all'], repoPath);
+  if (driftRes.code !== 0) {
+    return {
+      ok: false,
+      error: `post-stage guard could not compare the working tree to the index: ${(driftRes.stderr || driftRes.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  const drifted = new Set(
+    driftRes.stdout
+      .split('\0')
+      .filter(Boolean)
+      .filter((path) => stagedSet.has(path) && !lateLocked.has(path)),
+  );
+  // A staged DELETION whose file has reappeared is untracked, so `git diff` cannot list it.
+  const deletedRes = await runGit(
+    ['diff', '--cached', '--name-only', '--no-renames', '-z', '--diff-filter=D'],
+    repoPath,
+  );
+  if (deletedRes.code === 0) {
+    for (const path of deletedRes.stdout.split('\0').filter(Boolean)) {
+      if (lateLocked.has(path) || drifted.has(path)) continue;
+      if ((await opts.readText(path)) !== null) drifted.add(path);
+    }
+  }
+
+  const held = [...new Set([...lateLocked, ...drifted])];
+  if (held.length === 0) return { ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] };
+  // Same conservative importer rule as the pre-stage live-lock exclusion: the HEAD copy of a
+  // held module may lack the symbols a staged importer now uses, so hold every dirty importer.
+  const importerOffenders = await detectQuarantineImporters({
+    readText: opts.readText,
+    dirtyFiles: staged,
+    alreadyQuarantined: held,
+    exclusionLabel: 'post-stage late-lock/drift hold',
+    log,
+  });
+  const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
+  const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...held, ...importers], log);
+  if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
+  log(
+    `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
+      `late-locked [${[...lateLocked].join(', ')}], drifted after staging [${[...drifted].join(', ')}]` +
+      (importers.length > 0 ? `, dirty importers [${[...new Set(importers)].join(', ')}]` : '') +
+      ' — they stay dirty for the next tick',
+  );
+  return { ok: true, lateLockedHoldings, drifted: [...drifted], unstaged: unstage.paths };
+}
+
 /** The CI-skip suffix git-sync's message carries (e.g. ` [skip ci]`), so every per-agent
  *  commit skips CI exactly like the catch-all. Empty when the message has no such marker. */
 function skipCiSuffix(message: string): string {
@@ -3556,7 +3693,12 @@ export async function commitAttributedGroups(
   attribution: Map<string, FileAttribution>,
   excludePaths: string[],
   message: string,
-  opts: { diffSubjects?: boolean } = {},
+  opts: {
+    diffSubjects?: boolean;
+    /** EI-24712906810240170: runs after each group's add and before its commit (see
+     *  guardStagedIndexBeforeCommit). A failure aborts the phase with that error. */
+    beforeCommit?: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  } = {},
 ): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
   const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
@@ -3567,6 +3709,10 @@ export async function commitAttributedGroups(
   for (const g of groups) {
     if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
     await runGit(['add', '--', ...g.files], repoPath);
+    if (opts.beforeCommit) {
+      const guard = await opts.beforeCommit();
+      if (!guard.ok) return { committedAny, committedCount, error: guard.error };
+    }
     // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what this
     // commit actually contains — from the just-staged numstat); the agent's intent line
     // (the pre-WI-38594 subject) rides as the first BODY paragraph, ahead of the
@@ -4078,6 +4224,25 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       );
     }
     let committedAny = false;
+    // EI-24712906810240170: the post-stage guard for every commit below. A late lock is
+    // reported like a pre-stage one (skippedPaths), deduped by path.
+    const postStageGuard = async (): Promise<PostStageGuardResult> => {
+      const guard = await guardStagedIndexBeforeCommit({
+        runGit,
+        repoPath,
+        scope: o.scope,
+        refreshLiveLockHoldings: o.refreshLiveLockHoldings,
+        readText: (rel) => o.readText(repoPath, rel),
+        log: o.log,
+      });
+      if (guard.ok) {
+        for (const holding of guard.lateLockedHoldings) {
+          if (skippedPaths.some((p) => p.path === holding.path)) continue;
+          skippedPaths.push({ scope: o.scope, path: holding.path, owner: holding.owner, intent: holding.intent });
+        }
+      }
+      return guard;
+    };
     // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
     // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
     // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
@@ -4088,7 +4253,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         o.attribution,
         [...stagingExcludePaths, ...migrationCandidates, ...(o.forceCatchAllPaths ?? [])],
         message,
-        { diffSubjects: o.diffSubjects },
+        { diffSubjects: o.diffSubjects, beforeCommit: postStageGuard },
       );
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
@@ -4213,6 +4378,20 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           skippedPaths,
         };
       }
+    }
+    // EI-24712906810240170: a lock taken, or a transient edit made and undone, after the
+    // pre-stage refresh must not publish through the index this add just built.
+    const catchAllGuard = await postStageGuard();
+    if (!catchAllGuard.ok) {
+      return {
+        committedLocal: committedAny,
+        dirtyPathCount,
+        committedCount,
+        error: catchAllGuard.error,
+        oversized,
+        contentErrors,
+        skippedPaths,
+      };
     }
     // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the catch-all subject too is derived from
     // what is ACTUALLY staged (numstat over the staged set); the original message (the
