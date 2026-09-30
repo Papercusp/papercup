@@ -20,11 +20,13 @@
  * this never surfaces a copy-of-a-copy.
  */
 import type { Sql } from 'postgres';
+import { chunkAwareVectorLegSql, withIterativeScan, type PgHandle } from '@papercusp/search';
 import { DEFAULT_ARCHIVE_FLOOR } from './get-feedback-core';
 import {
   proseProfilePredicateSql,
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
+import { CONSULT_QUESTIONS_CHUNK_SURFACE } from '../search/chunks/registry';
 
 /** Cap on the surfaced one-liner — the fold is a hint, not the thread. */
 export const PEERS_KNOW_ANSWER_CAP = 280;
@@ -90,18 +92,39 @@ export async function peersKnowLookup(
     // closed_answered only; archive-served copies excluded; the SELECT doubles
     // as the capability probe (pgvector absent / column not migrated / dims
     // mismatch throws → degrade to null).
-    const rows = (await sql`
-      SELECT conversation_id, responder_id, outcome, closed_at,
-             1 - (query_embedding <=> ${qVec}::vector) AS sim
-        FROM harness_shared.consult_state
-       WHERE workspace_id = ${params.workspaceId}
-         AND state = 'closed_answered'
-         AND query_embedding IS NOT NULL
-         AND ${proseProfilePredicateSql(sql, query.profile, 'query_embedding_profile', 'query_embedding_mode')}
-         AND (outcome->>'source' IS DISTINCT FROM 'archive')
-    ORDER BY query_embedding <=> ${qVec}::vector
-       LIMIT 1
-    `) as unknown as PeersKnowRow[];
+    //
+    // Retrieve mode (generic-rag-chunking P-012, D-027): each settled question is
+    // ranked by the nearer of its own vector (first 2,000 characters) and its window
+    // chunks (less the D-016 chunk margin), so an intent matching only the tail of a
+    // long question still surfaces it. `sim` is 1 - that distance, so the archive
+    // floor applies to a chunk match after its margin.
+    const profile = query.profile;
+    const rows = (await withIterativeScan(sql as unknown as PgHandle, (handle) => {
+      const s = handle as unknown as Sql;
+      return s`
+        WITH best AS (${chunkAwareVectorLegSql(handle, {
+          surface: CONSULT_QUESTIONS_CHUNK_SURFACE,
+          parentAlias: 'c',
+          qVec,
+          limit: 1,
+          mode: 'retrieve',
+          parentFilter: s`c.workspace_id = ${params.workspaceId}
+                          AND c.state = 'closed_answered'
+                          AND (c.outcome->>'source' IS DISTINCT FROM 'archive')`,
+          // The embedding-space rule stays with the caller; a missing column fails closed.
+          spaceFilter: (cols) =>
+            cols.profileColumn && cols.modeColumn
+              ? proseProfilePredicateSql(s, profile, cols.profileColumn, cols.modeColumn)
+              : s`FALSE`,
+        })})
+        SELECT c.conversation_id, c.responder_id, c.outcome, c.closed_at, 1 - b.distance AS sim
+          FROM best b
+          JOIN harness_shared.consult_state c
+            ON c.workspace_id = b.workspace_id AND c.conversation_id = b.conversation_id
+      ORDER BY b.distance, c.conversation_id
+         LIMIT 1
+      `;
+    })) as unknown as PeersKnowRow[];
     const top = rows[0];
     if (!top || Number(top.sim) < floor) return null;
     const answer = extractSettledAnswer(top.outcome);
