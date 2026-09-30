@@ -654,7 +654,7 @@ export async function resolveInstalledReleasePackage(
   return null;
 }
 
-function promptMap(archive: BlueprintReleaseArchive | null): Map<string, { hash: string; text: string }> {
+function promptMap(archive: Pick<BlueprintReleaseArchive, 'pins'> | null): Map<string, { hash: string; text: string }> {
   const out = new Map<string, { hash: string; text: string }>();
   for (const pin of archive?.pins ?? []) {
     if (pin.packageKind !== 'blueprint') continue;
@@ -699,7 +699,15 @@ function promptPatch(path: string, before: string, after: string): string {
   return [`--- a/${path}`, `+++ b/${path}`, '@@ prompt text @@', removed, added].filter(Boolean).join('\n');
 }
 
-function releaseBurnKnobs(archive: BlueprintReleaseArchive | null): Map<string, unknown> {
+/**
+ * What sets a release's spend, keyed by path: root knobs, knobs of inherited
+ * blueprint layers (qualified `<ref>:`), model/effort/cadence declarations in
+ * roles and triggers, and the exact prompt bytes. One derivation, two readers:
+ * diffBlueprintReleases compares it between releases, and an identity listing
+ * declares it (identity-listing-surface.ts, agent-economy-flywheel P-015), so
+ * the storefront shows the same values the upgrade diff compares.
+ */
+export function releaseBurnKnobs(archive: Pick<BlueprintReleaseArchive, 'root' | 'pins'> | null): Map<string, unknown> {
   const out = new Map<string, unknown>();
   for (const pin of archive?.pins ?? []) {
     if (pin.packageKind !== 'blueprint') continue;
