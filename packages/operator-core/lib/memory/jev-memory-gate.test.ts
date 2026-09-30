@@ -94,7 +94,26 @@ describe('runJevMemoryGate — On', () => {
     const below = Math.round((JEV_MEMORY_ADMIT_THRESHOLD - 0.01) * 100) / 100;
     const h = harness('on', async () => answered({ m1: JEV_MEMORY_ADMIT_THRESHOLD, m2: below }));
     const r = await runJevMemoryGate({ message: 'where does deploy run', candidates: CANDS }, h.deps);
-    expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [JEV_MEMORY_ADMIT_THRESHOLD, below], keep: [true, false] });
+    expect(r).toEqual({
+      effective: 'on',
+      outcome: 'answered',
+      scores: [JEV_MEMORY_ADMIT_THRESHOLD, below],
+      keep: [true, false],
+      model: 'jev-1.13.0',
+    });
+  });
+
+  it('labels its ledger calls memory-injection by default, and lets the weekly monitor relabel them', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.9 }));
+    await runJevMemoryGate({ message: 'q', candidates: CANDS }, h.deps);
+    await runJevMemoryGate({ message: 'q', candidates: CANDS, consumer: 'memory-bench' }, h.deps);
+    expect(h.decideSpy.mock.calls.map((c) => c[1]?.consumer)).toEqual([JEV_MEMORY_CONSUMER, 'memory-bench']);
+  });
+
+  it('reports the model the provider says answered, not the pinned id', async () => {
+    const h = harness('on', async () => ({ ...(answered({ m1: 0.9, m2: 0.1 }) as object), model: 'jev-1.14.0' }) as never);
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS }, h.deps);
+    expect(r).toMatchObject({ outcome: 'answered', model: 'jev-1.14.0' });
   });
 
   it('uses the D-013 operating point: instructions encoding, P(yes) >= 0.3', async () => {
@@ -136,6 +155,6 @@ describe('runJevMemoryGate — On', () => {
     const h = harness('on', async () => answered({ m1: 0.1 }));
     const r = await runJevMemoryGate({ message: 'q', candidates: [{ id: 'blank', text: '  ' }, CANDS[1]] }, h.deps);
     expect(Object.keys(h.decideSpy.mock.calls[0][0].questions)).toEqual(['m1']);
-    expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [1, 0.1], keep: [true, false] });
+    expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [1, 0.1], keep: [true, false], model: 'jev-1.13.0' });
   });
 });
