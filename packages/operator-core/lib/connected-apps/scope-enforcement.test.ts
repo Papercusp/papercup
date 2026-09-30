@@ -50,6 +50,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   };
 });
 
+// Mutation-probe seam (copy-out tier): `scripts/mutation-probe.sh --test
+// 'PAPERCUSP_SCOPE_POLICY_PROBE={} …'` points the policy at a mutated COPY, so proving these
+// guards falsifiable never mutates the shared tree. scope-policy.ts has only a type-only
+// import, so the copy runs standalone. Unset (every normal run): the real module.
+vi.mock('./scope-policy', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_SCOPE_POLICY_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
+
 // The MCP host's transport setup calls a bare `require(...)` for the SDK schemas.
 (globalThis as { require?: NodeJS.Require }).require ??= createRequire(import.meta.url);
 process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/scope-enforcement-no-manifest.json';
