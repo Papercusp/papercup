@@ -2581,6 +2581,14 @@ pub struct App {
     pub su_open_in_flight: bool,
     pub su_active_command_id: Option<String>,
     su_rendered_owner_turns: BTreeSet<String>,
+    /// P-014: open question cards, correlation id → the prompt they show. A
+    /// card event carries no tool-call id, so the prompt is what joins a card
+    /// to the question tool that asked it (`question_tool_prompts`).
+    su_card_prompts: std::collections::BTreeMap<String, String>,
+    /// Question prompts whose card the user skipped (Esc/Decline) or answered,
+    /// consumed when the asking tool call completes.
+    su_skipped_prompts: BTreeSet<String>,
+    su_answered_prompts: BTreeSet<String>,
     pub conversation_id: Option<String>,
     /// The agent-chat id backing this pane's SU-session transcript. Distinct
     /// from `conversation_id`, the legacy operator-converse lane used by voice.
@@ -2983,6 +2991,9 @@ impl App {
             su_open_in_flight: false,
             su_active_command_id: None,
             su_rendered_owner_turns: BTreeSet::new(),
+            su_card_prompts: std::collections::BTreeMap::new(),
+            su_skipped_prompts: BTreeSet::new(),
+            su_answered_prompts: BTreeSet::new(),
             conversation_id: None,
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
@@ -3651,6 +3662,9 @@ impl App {
         self.su_session = None;
         self.su_connection_error = None;
         self.su_rendered_owner_turns.clear();
+        self.su_card_prompts.clear();
+        self.su_skipped_prompts.clear();
+        self.su_answered_prompts.clear();
         // The previous conversation's dispatch policy must not outlive its
         // binding: leaving it set would let the NEXT conversation's first turn be
         // routed by the LAST one's recorded home (P-011).
@@ -4049,10 +4063,29 @@ impl App {
                             .find(|tool| tool.id.as_deref() == Some(call_id.as_str()))
                         {
                             tool.result = output;
-                            tool.outcome = if is_error {
-                                ToolOutcome::Failed("SU-session tool failed".into())
-                            } else {
+                            // P-014: a question tool the user skipped ends in
+                            // an error result (the engine denies the call), but
+                            // skipping is a choice, not a failure. The MCP-
+                            // wrapped question reports even an ANSWERED card as
+                            // a denied wrapper call, which is not a failure either.
+                            let prompts = question_tool_prompts(&tool.name, tool.input.as_ref());
+                            let skipped = prompts
+                                .iter()
+                                .any(|p| self.su_skipped_prompts.contains(p));
+                            let answered = !prompts.is_empty()
+                                && prompts.iter().all(|p| self.su_answered_prompts.contains(p));
+                            for prompt in &prompts {
+                                self.su_skipped_prompts.remove(prompt);
+                                self.su_answered_prompts.remove(prompt);
+                            }
+                            tool.outcome = if !is_error {
                                 ToolOutcome::Ok
+                            } else if skipped {
+                                ToolOutcome::Skipped
+                            } else if answered {
+                                ToolOutcome::Ok
+                            } else {
+                                ToolOutcome::Failed("SU-session tool failed".into())
                             };
                             break;
                         }
@@ -4160,8 +4193,40 @@ impl App {
                 turn_id,
                 card,
                 correlation_id,
+                resolution,
                 ..
             } => {
+                // P-014: remember which prompt each card shows, so its
+                // resolution can reach the question tool row that asked it.
+                if phase == "opened" {
+                    let card_ref = card.as_ref();
+                    let id = card_ref
+                        .and_then(|c| c.get("correlationId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| correlation_id.clone());
+                    let prompt = card_ref
+                        .and_then(|c| c.get("prompt"))
+                        .and_then(Value::as_str);
+                    if let (Some(id), Some(prompt)) = (id, prompt) {
+                        self.su_card_prompts.insert(id, prompt.to_owned());
+                    }
+                } else if phase == "closed" {
+                    if let Some(prompt) = correlation_id
+                        .as_deref()
+                        .and_then(|id| self.su_card_prompts.remove(id))
+                    {
+                        match resolution.as_deref() {
+                            Some("submitted") => {
+                                self.su_answered_prompts.insert(prompt);
+                            }
+                            Some("declined") | Some("cancelled") => {
+                                self.su_skipped_prompts.insert(prompt);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // Reuse the existing CardSpec renderer/state channel.  The
                 // SU-session card event carries the same OpenCardSnapshot
                 // payload; wrapping it in a local VersionedSnapshot keeps one
@@ -5028,6 +5093,34 @@ impl App {
     ///   - text/date: type · Backspace · Enter submits · Esc declines/cancels
     ///   - slider:   ←/→ h/l (and j/k) nudge · Enter submits · Esc declines/cancels
     fn card_key(&mut self, code: KeyCode) -> Action {
+        // P-015: an answered card takes no input until the server closes it, and
+        // a repeat of the key that answered it must not answer the NEXT card.
+        if self
+            .card_state
+            .swallow_key(code, std::time::Instant::now())
+        {
+            return Action::Render;
+        }
+        let action = self.card_key_inner(code);
+        if let Action::CardRespond {
+            correlation_id,
+            action: verb,
+            payload,
+            ..
+        } = &action
+        {
+            let summary = self
+                .card_state
+                .focused()
+                .filter(|card| &card.correlation_id == correlation_id)
+                .map(|card| crate::card_view::answer_summary(card, verb, payload.as_ref()))
+                .unwrap_or_else(|| "Answered".to_string());
+            self.card_state.mark_answered(correlation_id, summary, code);
+        }
+        action
+    }
+
+    fn card_key_inner(&mut self, code: KeyCode) -> Action {
         use crate::card_view::CardPresentation;
         // Snapshot the focused card's shape (clone the small bits we branch on)
         // so we don't hold an immutable borrow across the mutable card_state ops.
@@ -5113,8 +5206,10 @@ impl App {
         }
     }
 
-    /// Freeze the conversation and card identity for the POST. Keep the card
-    /// visible until the server closes it, including after a failed POST.
+    /// Freeze the conversation and card identity for the POST. The card stays in
+    /// the queue until the server closes it; `card_key` collapses it to its
+    /// answered row meanwhile (P-015), and a failed POST
+    /// (`Event::CardRespondFailed`) makes it answerable again.
     fn card_respond_action(
         &mut self,
         action: String,
@@ -11704,6 +11799,18 @@ impl App {
                 Action::Render
             }
             // --- Inline cards (sentinel-tui-shared-backend-and-cards Phase 2a) ---
+            Event::CardRespondFailed {
+                correlation_id,
+                error,
+            } => {
+                // P-015: the answer never reached the agent, which is still
+                // waiting on this card. Reopen the card; the turn is not failed.
+                self.card_state.restore_answer(&correlation_id);
+                self.last_error = Some(format!(
+                    "Your answer didn't reach the agent ({error}). Answer the card again to retry."
+                ));
+                Action::Render
+            }
             Event::CardSnapshot(env) => {
                 self.card_state.apply_snapshot(env);
                 Action::Render
@@ -14747,6 +14854,35 @@ impl Default for App {
 }
 
 /// Shorten an owner id for a pane title: "su-8b77dde5-…" → "su-8b77d".
+/// The question prompts a tool call puts to the user, when it is a question
+/// tool: Claude's native `AskUserQuestion`, or the same request carried by the
+/// papercusp MCP `tools_invoke` wrapper (`{ name: "AskUserQuestion", args }`).
+/// Each prompt becomes one PUI question card showing exactly that text, which
+/// is how a card's resolution is joined back to its tool row (P-014). Empty
+/// for every other tool. Pure — unit-tested.
+fn question_tool_prompts(name: &str, input: Option<&Value>) -> Vec<String> {
+    let questions = if name == "AskUserQuestion" {
+        input.and_then(|v| v.get("questions"))
+    } else if name.ends_with("tools_invoke")
+        && input.and_then(|v| v.get("name")).and_then(Value::as_str) == Some("AskUserQuestion")
+    {
+        input
+            .and_then(|v| v.get("args"))
+            .and_then(|a| a.get("questions"))
+    } else {
+        None
+    };
+    questions
+        .and_then(Value::as_array)
+        .map(|qs| {
+            qs.iter()
+                .filter_map(|q| q.get("question").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Flip a wake mode for the P-008 toggle: `manual`→`auto`, anything else
 /// (auto / unset) → `manual`. Pure — unit-tested.
 fn next_wake_mode(current: Option<&str>) -> &'static str {
@@ -14977,7 +15113,23 @@ mod tests {
         );
         assert!(
             app.card_state.has_card(),
-            "a failed POST must leave the question answerable"
+            "the card stays queued until the server's authoritative close"
+        );
+        assert_eq!(
+            app.card_state.focused_answered().map(|a| a.summary.as_str()),
+            Some("Answered: Change"),
+            "P-015: the answered card collapses at once"
+        );
+        // A failed POST reopens exactly that card (and is not a turn failure).
+        app.update(Event::CardRespondFailed {
+            correlation_id: "question".into(),
+            error: "operator unreachable".into(),
+        });
+        assert!(app.card_state.focused_answered().is_none());
+        assert!(
+            app.last_error.as_deref().is_some_and(|e| e.contains("Answer the card again")),
+            "{:?}",
+            app.last_error
         );
         app.agent_chat_id = None;
         assert!(matches!(
@@ -14987,6 +15139,127 @@ mod tests {
         assert!(
             app.card_state.has_card(),
             "a missing conversation must not hide the question"
+        );
+    }
+
+    fn open_approval_card(app: &mut App, sequence: u64, id: &str, command: &str) {
+        let mut event = su_event_base("card", sequence);
+        event["turnId"] = json!("turn-1");
+        event["phase"] = json!("opened");
+        event["card"] = json!({"correlationId":id,"prompt":format!("Allow Bash?\n$ {command}"),
+            "createdAt":sequence,"presentation":{"kind":"radio","options":[
+                {"id":"0","label":"Approve"},{"id":"1","label":"Decline"}]}});
+        app.apply_su_session_event(su_event(event));
+    }
+
+    fn close_card(app: &mut App, sequence: u64, id: &str) {
+        let mut closed = su_event_base("card", sequence);
+        closed["turnId"] = json!("turn-1");
+        closed["phase"] = json!("closed");
+        closed["correlationId"] = json!(id);
+        closed["resolution"] = json!("answered");
+        app.apply_su_session_event(su_event(closed));
+    }
+
+    fn answered_id(action: &Action) -> Option<String> {
+        match action {
+            Action::CardRespond { correlation_id, .. } => Some(correlation_id.clone()),
+            _ => None,
+        }
+    }
+
+    /// P-015: Approve collapses the card to one "Approved" row at once, and
+    /// neither a repeat while it is in flight nor a repeat just after the
+    /// server closes it can answer the next card. A DIFFERENT key answers the
+    /// next card immediately (the user has read it and chosen).
+    #[test]
+    fn su_approval_card_collapses_at_once_and_a_repeat_cannot_answer_the_next_card() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        open_approval_card(&mut app, 1, "alpha", "echo ALPHA");
+        open_approval_card(&mut app, 2, "beta", "echo BETA");
+
+        let first = app.on_key(KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(answered_id(&first).as_deref(), Some("alpha"));
+        let answered = app.card_state.focused_answered().cloned();
+        assert_eq!(
+            answered.map(|a| (a.correlation_id, a.summary)),
+            Some(("alpha".to_string(), "Approved".to_string())),
+            "the answered card is replaced by its one-line row within the same frame"
+        );
+
+        // Repeats while ALPHA is in flight — the P-005 harness's second press.
+        for key in [KeyCode::Char('1'), KeyCode::Enter, KeyCode::Char('2'), KeyCode::Esc] {
+            let action = app.on_key(key, KeyModifiers::NONE);
+            assert_eq!(answered_id(&action), None, "{key:?} answered a card while ALPHA was in flight");
+        }
+
+        // The server closes ALPHA; BETA is focused, and an immediate repeat of the
+        // answering key still belongs to ALPHA.
+        close_card(&mut app, 3, "alpha");
+        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("beta"));
+        assert!(app.card_state.focused_answered().is_none());
+        let repeat = app.on_key(KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(answered_id(&repeat), None, "a repeated Approve answered BETA");
+        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("beta"));
+
+        // A different key is a deliberate choice about BETA.
+        let decline = app.on_key(KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(answered_id(&decline).as_deref(), Some("beta"));
+        assert_eq!(
+            app.card_state.focused_answered().map(|a| a.summary.as_str()),
+            Some("Declined")
+        );
+    }
+
+    /// P-015: once the repeat window lapses, the same key is a fresh answer —
+    /// the guard only swallows REPEATS, never a later deliberate press.
+    #[test]
+    fn su_approval_card_same_key_answers_the_next_card_after_the_repeat_window() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        open_approval_card(&mut app, 1, "alpha", "echo ALPHA");
+        open_approval_card(&mut app, 2, "beta", "echo BETA");
+        assert_eq!(
+            answered_id(&app.on_key(KeyCode::Char('1'), KeyModifiers::NONE)).as_deref(),
+            Some("alpha")
+        );
+        close_card(&mut app, 3, "alpha");
+        app.card_state.expire_repeat_guard();
+        assert_eq!(
+            answered_id(&app.on_key(KeyCode::Char('1'), KeyModifiers::NONE)).as_deref(),
+            Some("beta")
+        );
+    }
+
+    /// P-015: a failed card POST is not a turn failure — the agent is still
+    /// waiting on the card, so the streaming turn must stay live.
+    #[test]
+    fn a_failed_card_answer_reopens_the_card_without_failing_the_turn() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        open_approval_card(&mut app, 1, "alpha", "echo ALPHA");
+        app.chat_streaming = true;
+        assert_eq!(
+            answered_id(&app.on_key(KeyCode::Char('1'), KeyModifiers::NONE)).as_deref(),
+            Some("alpha")
+        );
+        app.update(Event::CardRespondFailed {
+            correlation_id: "alpha".into(),
+            error: "HTTP 502".into(),
+        });
+        assert!(app.chat_streaming, "a card POST failure ended the turn");
+        assert!(app.card_state.focused_answered().is_none());
+        // Retrying with the same key is not a "repeat": the first answer never landed.
+        assert_eq!(
+            answered_id(&app.on_key(KeyCode::Char('1'), KeyModifiers::NONE)).as_deref(),
+            Some("alpha")
         );
     }
 
@@ -15085,6 +15358,100 @@ mod tests {
             app.chat_messages.last().unwrap().tools[0].outcome,
             ToolOutcome::Ok
         );
+    }
+
+    /// pui-chat-first-ux-2026-09-28 P-014: Esc on an agent's question card is a
+    /// skip. The engine reports the question tool as an error, but the row must
+    /// read "skipped", while a question tool that genuinely errored stays failed.
+    #[test]
+    fn su_session_skipped_question_card_renders_skipped_not_failed() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let mut seq = 0u64;
+        let mut next = |kind: &str| {
+            seq += 1;
+            let mut e = su_event_base(kind, seq);
+            e["turnId"] = json!("turn-1");
+            e
+        };
+        let question = |prompt: &str| json!({"questions":[{"question":prompt,"options":[{"label":"Tests"}]}]});
+        // (call id, tool name, input, card resolution or None, isError, expected)
+        let cases: Vec<(&str, &str, Value, Option<&str>, bool, ToolOutcome)> = vec![
+            ("skip", "AskUserQuestion", question("What should we work on?"), Some("declined"), true, ToolOutcome::Skipped),
+            ("interrupt", "AskUserQuestion", question("Still there?"), Some("cancelled"), true, ToolOutcome::Skipped),
+            ("wrapped-answer", "mcp__papercusp-su__tools_invoke",
+                json!({"name":"AskUserQuestion","args":question("Keep or change?")}), Some("submitted"), true, ToolOutcome::Ok),
+            ("wrapped-skip", "mcp__papercusp-su__tools_invoke",
+                json!({"name":"AskUserQuestion","args":question("Which file?")}), Some("declined"), true, ToolOutcome::Skipped),
+            ("broken", "AskUserQuestion", question("Bad schema?"), None, true,
+                ToolOutcome::Failed("SU-session tool failed".into())),
+            ("bash-declined", "Bash", json!({"command":"ls"}), Some("declined"), true,
+                ToolOutcome::Failed("SU-session tool failed".into())),
+        ];
+        for (call, name, input, resolution, is_error, expected) in cases {
+            let mut started = next("tool");
+            started["phase"] = json!("started");
+            started["callId"] = json!(call);
+            started["name"] = json!(name);
+            started["input"] = input.clone();
+            app.apply_su_session_event(su_event(started));
+            if let Some(resolution) = resolution {
+                let prompt = question_tool_prompts(name, Some(&input))
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Allow Bash?".into());
+                let card_id = format!("card-{call}");
+                let mut opened = next("card");
+                opened["phase"] = json!("opened");
+                opened["card"] = json!({"correlationId":card_id,"prompt":prompt,"createdAt":1,
+                    "presentation":{"kind":"radio","options":[{"id":"0","label":"Tests"}]}});
+                app.apply_su_session_event(su_event(opened));
+                let mut closed = next("card");
+                closed["phase"] = json!("closed");
+                closed["correlationId"] = json!(card_id);
+                closed["resolution"] = json!(resolution);
+                app.apply_su_session_event(su_event(closed));
+            }
+            let mut done = next("tool");
+            done["phase"] = json!("completed");
+            done["callId"] = json!(call);
+            done["name"] = json!(name);
+            done["output"] = json!("The user skipped this question without answering.");
+            done["isError"] = json!(is_error);
+            app.apply_su_session_event(su_event(done));
+            let outcome = app
+                .chat_messages
+                .iter()
+                .flat_map(|m| m.tools.iter())
+                .find(|t| t.id.as_deref() == Some(call))
+                .map(|t| t.outcome.clone());
+            assert_eq!(outcome, Some(expected), "call {call}");
+        }
+        // Every question's resolution was consumed by the call that asked it, so
+        // a later question reusing a prompt starts clean. (An approval card's
+        // prompt has no question tool to consume it; it is dropped with the
+        // conversation.)
+        for prompt in ["What should we work on?", "Still there?", "Keep or change?", "Which file?"] {
+            assert!(!app.su_skipped_prompts.contains(prompt), "{prompt}");
+            assert!(!app.su_answered_prompts.contains(prompt), "{prompt}");
+        }
+        assert!(app.su_card_prompts.is_empty());
+    }
+
+    #[test]
+    fn question_tool_prompts_reads_native_and_wrapped_questions_only() {
+        let q = json!({"questions":[{"question":"A?"},{"question":"B?"}]});
+        assert_eq!(question_tool_prompts("AskUserQuestion", Some(&q)), vec!["A?", "B?"]);
+        let wrapped = json!({"name":"AskUserQuestion","args":q});
+        assert_eq!(
+            question_tool_prompts("mcp__papercusp-su__tools_invoke", Some(&wrapped)),
+            vec!["A?", "B?"]
+        );
+        let other = json!({"name":"work_items:list","args":q});
+        assert!(question_tool_prompts("mcp__papercusp-su__tools_invoke", Some(&other)).is_empty());
+        assert!(question_tool_prompts("Bash", Some(&q)).is_empty());
+        assert!(question_tool_prompts("AskUserQuestion", None).is_empty());
     }
 
     /// pui-chat-first-ux-2026-09-28 P-013: text an engine writes AFTER a tool
