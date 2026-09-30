@@ -13,8 +13,16 @@ const envelope = (over: Record<string, unknown> = {}) => ({
   },
 });
 
+/**
+ * A path-existence answer for the `ls-tree` probe `pathStaleness` makes before it will call
+ * an EMPTY log range `current` (WI-10002100): every fixture path exists in the tree unless a
+ * test says otherwise, so a test asserting "unchanged" models a real, tracked, quiet path.
+ */
+const lsTreeEntry = (args: string[]) => `100644 blob 0000000\t${args[args.length - 1]}`;
+
 /** A git seam that answers `log` per path from a fixture map; null ⇒ unreadable. */
 const gitFor = (byPath: Record<string, string | null>) => async (args: string[]) => {
+  if (args[0] === 'ls-tree') return lsTreeEntry(args);
   const relPath = args[args.length - 1];
   return relPath in byPath ? byPath[relPath] : '';
 };
@@ -63,6 +71,7 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
    * first case genuinely fails against an unbounded range.
    */
   const gitWithCommitAt = (iso: string) => async (args: string[]) => {
+    if (args[0] === 'ls-tree') return lsTreeEntry(args);
     const since = args.find((a) => a.startsWith('--since='))?.slice('--since='.length);
     return since && Date.parse(iso) < Date.parse(since) ? '' : 'deadbeef';
   };
@@ -106,7 +115,7 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
     const seen: string[][] = [];
     const git = async (args: string[]) => {
       seen.push(args);
-      return '';
+      return args[0] === 'ls-tree' ? lsTreeEntry(args) : '';
     };
     for (const over of [{ observedAt: undefined }, { observedAt: 'not-a-date' }]) {
       await getClaimTimeSourceGenerationSignal({
@@ -115,12 +124,15 @@ describe('claim-time source-generation measurement (EI-22283949842250645)', () =
         git,
       });
     }
-    // Two iterations, each making TWO git calls: the `.gitmodules` submodule probe
-    // added by EI-23812772755803731, then the log range itself. Split by call rather
+    // Two iterations, each making THREE git calls: the `.gitmodules` submodule probe
+    // added by EI-23812772755803731, the log range itself, then — because that range was
+    // empty — the `ls-tree` existence probe that keeps an empty range from being read as
+    // a measured zero for a path absent from the tree (WI-10002100). Split by call rather
     // than loosened to a bare count — the SEQUENCE is what makes an unintended extra
     // git call detectable, and that detectability is the point of asserting here.
-    expect(seen).toHaveLength(4);
+    expect(seen).toHaveLength(6);
     expect(seen.filter((args) => args[0] === 'config')).toHaveLength(2);
+    expect(seen.filter((args) => args[0] === 'ls-tree')).toHaveLength(2);
     const logCalls = seen.filter((args) => args[0] === 'log');
     expect(logCalls).toHaveLength(2);
     expect(logCalls.every((args) => args.every((a) => !a.startsWith('--since=')))).toBe(true);

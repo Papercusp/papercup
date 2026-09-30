@@ -83,7 +83,15 @@ export type StalenessUnknownReason =
    * definitive "no such submodule at that commit". Either way it stays UNKNOWN —
    * absence is never a positive verdict.
    */
-  | 'submodule-pin-unresolved';
+  | 'submodule-pin-unresolved'
+  /**
+   * The path does not exist in the tree ref at all, so its empty `git log` range is not
+   * a measured "no newer commit" — there is nothing there to be current OR stale. The
+   * reads SUCCEEDED (this is distinct from `git-unreadable`); the subject is simply not
+   * a tracked path, and reporting `current` for it would be a confident verdict about
+   * nothing (WI-10002100).
+   */
+  | 'path-absent-from-tree';
 
 export type ToolSchemaStaleness =
   | {
@@ -188,9 +196,20 @@ export async function pathStaleness(
     const commits = await git(['log', '--format=%H', ...sinceArgs, `${from}..${to}`, '--', pathArg]);
     if (commits === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
     const newerCommits = commits.split('\n').map((sha) => sha.trim()).filter(Boolean);
-    return newerCommits.length === 0
-      ? { state: 'current', relPath, deployedSha, treeRef }
-      : { state: 'stale', relPath, deployedSha, treeRef, newerCommits };
+    if (newerCommits.length > 0) return { state: 'stale', relPath, deployedSha, treeRef, newerCommits };
+    // An empty range is only a MEASURED "no newer commit" when the path actually exists
+    // in the tree being compared (WI-10002100). `git log -- <path>` answers '' for a
+    // path that is absent from the tree entirely — a typo, a rename, an untracked file,
+    // a path from another checkout — and that empty string is indistinguishable from
+    // "nothing changed". Probe the path at the tree ref: a deleted-in-range path already
+    // surfaced above as a stale deletion commit, so an absent path with an empty range
+    // was never tracked here at all. `ls-tree` exits 0 with EMPTY output for a missing
+    // path (null only when git itself failed), and lists a directory as one entry, so
+    // this answers for files and directories alike.
+    const present = await git(['ls-tree', to, '--', pathArg]);
+    if (present === null) return { state: 'unknown', relPath, reason: 'git-unreadable' };
+    if (present.trim() === '') return { state: 'unknown', relPath, reason: 'path-absent-from-tree' };
+    return { state: 'current', relPath, deployedSha, treeRef };
   };
 
   // A path INSIDE a submodule is not tracked by the superproject — which holds only a

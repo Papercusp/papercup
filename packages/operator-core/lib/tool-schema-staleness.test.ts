@@ -163,19 +163,82 @@ describe('pathStaleness (capture subject paths)', () => {
     expect(unbounded).toHaveBeenCalledWith(['log', '--format=%H', `${DEPLOYED}..staging`, '--', 'a.ts']);
   });
 
-  it('keeps a successful empty range current and git failures unknown', async () => {
+  /**
+   * A fake git that models the two reads `pathStaleness` makes on a non-submodule tree:
+   * `git log <range> -- <path>` (empty when nothing newer touched it, OR when the path does
+   * not exist at all — the two are indistinguishable from the log alone) and
+   * `git ls-tree <ref> -- <path>` (one entry when present, EMPTY with exit 0 when absent).
+   */
+  function plainGit(over: { present?: string[]; log?: string } = {}) {
+    const present = over.present ?? [];
+    return vi.fn(async (args: string[]) => {
+      if (args[0] === 'ls-tree') {
+        const path = String(args[args.length - 1]);
+        return present.includes(path) ? `100644 blob ${BLOB_A}\t${path}` : '';
+      }
+      if (args[0] === 'log') return over.log ?? '';
+      return ''; // the `.gitmodules` probe: no submodules
+    });
+  }
+
+  it('keeps a successful empty range current for a path that exists, and git failures unknown', async () => {
     const current = await pathStaleness('a.ts', {
       repoRoot: ROOT,
       deployedSha: () => DEPLOYED,
-      git: vi.fn(async () => ''),
+      git: plainGit({ present: ['a.ts'] }),
     });
-    expect(current.state).toBe('current');
+    expect(current).toEqual({ state: 'current', relPath: 'a.ts', deployedSha: DEPLOYED, treeRef: 'staging' });
     const unknown = await pathStaleness('a.ts', {
       repoRoot: ROOT,
       deployedSha: () => DEPLOYED,
       git: vi.fn(async () => null),
     });
     expect(unknown).toEqual({ state: 'unknown', relPath: 'a.ts', reason: 'git-unreadable' });
+  });
+
+  /**
+   * WI-10002100 — the non-submodule half of the empty-log-as-measured-zero bug.
+   *
+   * `git log <range> -- NOPE.ts` returns '' for a path that is not in the tree at all (a
+   * typo, a rename, an untracked file, a path from another checkout), and the code turned
+   * that empty string into a confident `current`. Measured at the time:
+   * `git ls-tree staging -- packages/operator-core/lib/NOPE-does-not-exist.ts` returned 0
+   * entries while the log range returned ''. The verdict must be UNKNOWN: there is nothing
+   * there to be current OR stale. Revert the fix and this flips back to `current`, which is a
+   * MISSING WARNING that raises no error of its own — hence a falsifiable guard.
+   */
+  it('reports UNKNOWN, not current, for a path absent from the tree entirely', async () => {
+    const git = plainGit({ present: ['a.ts'] });
+    const relPath = 'packages/operator-core/lib/NOPE-does-not-exist.ts';
+    const verdict = await pathStaleness(relPath, { repoRoot: ROOT, deployedSha: () => DEPLOYED, git });
+    expect(verdict).toEqual({ state: 'unknown', relPath, reason: 'path-absent-from-tree' });
+    // The existence probe asks the TREE ref (local staging, never origin) about that path.
+    expect(git).toHaveBeenCalledWith(['ls-tree', 'staging', '--', relPath]);
+  });
+
+  it('treats a directory with no newer commits as current (ls-tree lists it as one entry)', async () => {
+    const verdict = await pathStaleness('libs/generic', {
+      repoRoot: ROOT,
+      deployedSha: () => DEPLOYED,
+      git: plainGit({ present: ['libs/generic'] }),
+    });
+    expect(verdict.state).toBe('current');
+  });
+
+  it('keeps an unreadable existence probe unknown rather than a measured zero', async () => {
+    const git = vi.fn(async (args: string[]) => {
+      if (args[0] === 'ls-tree') return null; // the probe itself fails
+      return ''; // `.gitmodules` probe and the log range succeed, empty
+    });
+    const verdict = await pathStaleness('a.ts', { repoRoot: ROOT, deployedSha: () => DEPLOYED, git });
+    expect(verdict).toEqual({ state: 'unknown', relPath: 'a.ts', reason: 'git-unreadable' });
+  });
+
+  it('does not probe existence when newer commits already prove the path is tracked', async () => {
+    const git = plainGit({ log: BLOB_B });
+    const verdict = await pathStaleness('a.ts', { repoRoot: ROOT, deployedSha: () => DEPLOYED, git });
+    expect(verdict.state).toBe('stale');
+    expect(git).not.toHaveBeenCalledWith(expect.arrayContaining(['ls-tree']));
   });
 
   it('renders only positive stale paths and remains bounded', async () => {
@@ -217,16 +280,36 @@ describe('pathStaleness (submodule-backed paths)', () => {
   const PIN_OLD = '1111111111111111111111111111111111111111';
   const PIN_NEW = '2222222222222222222222222222222222222222';
 
-  function submoduleGit(over: { lsTree?: Record<string, string>; subLog?: string | null } = {}) {
+  function submoduleGit(
+    over: {
+      lsTree?: Record<string, string>;
+      subLog?: string | null;
+      /** Superproject paths present at the tree ref (WI-10002100 existence probe). */
+      present?: string[];
+      /** Whether the submodule-relative path exists at the submodule's tree pin. Default true. */
+      subPresent?: boolean;
+    } = {},
+  ) {
     const lsTree = over.lsTree ?? {
       [DEPLOYED]: `160000 commit ${PIN_OLD}\t${SUB}`,
       staging: `160000 commit ${PIN_NEW}\t${SUB}`,
     };
+    const present = over.present ?? ['packages/operator-core/lib/x.ts'];
     return vi.fn(async (args: string[]) => {
       if (args[0] === 'config') return `submodule.tooldef.path ${SUB}`;
-      if (args[0] === 'ls-tree') return lsTree[String(args[1])] ?? '';
+      if (args[0] === 'ls-tree') {
+        const path = String(args[args.length - 1]);
+        // The gitlink lookup is keyed by REF; the existence probe is keyed by PATH.
+        if (path === SUB) return lsTree[String(args[1])] ?? '';
+        return present.includes(path) ? `100644 blob ${BLOB_A}\t${path}` : '';
+      }
       if (args[0] === 'log') return ''; // the superproject log: always empty here
-      if (args[0] === '-C') return over.subLog === undefined ? `${BLOB_B}\n${BLOB_A}` : over.subLog;
+      if (args[0] === '-C') {
+        // `-C <sub> ls-tree <pin> -- <relPath>` is the in-submodule existence probe;
+        // `-C <sub> log …` is the range read.
+        if (args[2] === 'ls-tree') return over.subPresent === false ? '' : `100644 blob ${BLOB_A}\t${args[args.length - 1]}`;
+        return over.subLog === undefined ? `${BLOB_B}\n${BLOB_A}` : over.subLog;
+      }
       return '';
     });
   }
@@ -307,6 +390,15 @@ describe('pathStaleness (submodule-backed paths)', () => {
       relPath: `${SUB}/src/x.ts`,
       reason: 'git-unreadable',
     });
+  });
+
+  it('reports UNKNOWN for a path absent inside the submodule, not a measured current', async () => {
+    const git = submoduleGit({ subLog: '', subPresent: false });
+    const relPath = `${SUB}/src/NOPE-does-not-exist.ts`;
+    const verdict = await pathStaleness(relPath, { repoRoot: ROOT, deployedSha: () => DEPLOYED, git });
+    expect(verdict).toEqual({ state: 'unknown', relPath, reason: 'path-absent-from-tree' });
+    // The probe runs INSIDE the submodule, at its tree pin, for the submodule-relative path.
+    expect(git).toHaveBeenCalledWith(['-C', SUB, 'ls-tree', PIN_NEW, '--', 'src/NOPE-does-not-exist.ts']);
   });
 
   it('leaves a path OUTSIDE every submodule on the plain superproject range', async () => {
