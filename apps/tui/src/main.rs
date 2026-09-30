@@ -567,13 +567,152 @@ async fn main() -> Result<()> {
     )
     .ok();
     terminal.show_cursor().ok();
+    // pui-chat-first-ux P-009: end (or, after /detach, keep) the attached
+    // conversation's engine. This runs on every way out of `run`, including
+    // the error return a closed terminal causes, and before anything is
+    // printed: a write to a hung-up terminal must not be able to skip it.
+    let exit_note = finish_su_session_on_exit().await;
     // pui-chat-first-ux P-004 "clean scrollback": now that the alternate screen
     // is gone, print the conversation to the normal screen so it stays in the
     // terminal's own scrollback (set by `run` for the chat-first surface only).
-    if let Some(text) = EXIT_TRANSCRIPT.get() {
-        println!("{text}");
+    // `writeln!`, not `println!`: after SIGHUP stdout is gone and println panics.
+    {
+        use std::io::Write as _;
+        if let Some(text) = EXIT_TRANSCRIPT.get() {
+            let _ = writeln!(std::io::stdout(), "{text}");
+        }
+        if let Some(note) = exit_note {
+            let _ = writeln!(std::io::stderr(), "{note}");
+        }
     }
     result
+}
+
+/// pui-chat-first-ux P-009: what quitting does to the attached conversation's
+/// engine, handed from `run` (which owns the `App`) to `main`. Refreshed on
+/// every event instead of computed once at the end, because a closed terminal
+/// makes the next draw fail and `run` returns early with that error.
+static SU_SESSION_EXIT: std::sync::Mutex<Option<su_session::SuSessionExit>> =
+    std::sync::Mutex::new(None);
+
+/// How long quitting waits for the host to end (or detach) the engine. The
+/// host's attendance lease still ends an engine this call failed to reach.
+const SU_SESSION_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After a quit signal, pui exits within this long even if teardown hangs.
+const SIGNAL_QUIT_DEADLINE: Duration = Duration::from_secs(5);
+
+fn record_su_session_exit(app: &App) {
+    let plan = app.su_session_exit();
+    if let Ok(mut slot) = SU_SESSION_EXIT.lock() {
+        if *slot != plan {
+            *slot = plan;
+        }
+    }
+}
+
+/// Carry out the recorded quit plan and return the one line to tell the user.
+async fn finish_su_session_on_exit() -> Option<String> {
+    let plan = SU_SESSION_EXIT.lock().ok().and_then(|mut slot| slot.take())?;
+    let detach = matches!(plan, su_session::SuSessionExit::Detach { .. });
+    let outcome = tokio::time::timeout(SU_SESSION_EXIT_TIMEOUT, async move {
+        let client = OperatorClient::from_discovery().await?;
+        match plan {
+            su_session::SuSessionExit::End {
+                harness,
+                chat_id,
+                command,
+            } => client.send_su_session_command(&harness, &chat_id, command).await,
+            su_session::SuSessionExit::Detach { harness, chat_id } => {
+                client.detach_su_session(&harness, &chat_id).await
+            }
+        }
+    })
+    .await;
+    Some(su_session_exit_note(detach, outcome.map_err(|_| ())))
+}
+
+/// The line pui prints after quitting a conversation (P-009).
+fn su_session_exit_note(
+    detach: bool,
+    outcome: std::result::Result<Result<serde_json::Value>, ()>,
+) -> String {
+    let failure = match outcome {
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(format!("{error:#}")),
+        Err(()) => Some("the operator did not answer in time".to_string()),
+    };
+    match (detach, failure) {
+        (false, None) => {
+            "Conversation ended. Open pui and use /resume to continue it.".to_string()
+        }
+        (true, None) => {
+            "This conversation is still running. Open pui and use /resume to return to it."
+                .to_string()
+        }
+        (false, Some(why)) => format!(
+            "pui could not end this conversation ({why}); the operator ends it shortly because nothing is attached."
+        ),
+        (true, Some(why)) => format!(
+            "pui could not keep this conversation running ({why}); it ends shortly because nothing is attached."
+        ),
+    }
+}
+
+/// pui-chat-first-ux P-009: SIGHUP (the terminal closed), SIGTERM and SIGINT
+/// become an ordinary quit, so the attached conversation's engine ends as it
+/// does on /exit. Registering them replaces the default disposition, which
+/// killed pui with no teardown at all; so a watchdog bounds the quit, and a
+/// second signal exits at once.
+#[cfg(unix)]
+async fn terminate_signal_listener(tx: UnboundedSender<Event>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut hangup), Ok(mut terminate), Ok(mut interrupt)) = (
+        signal(SignalKind::hangup()),
+        signal(SignalKind::terminate()),
+        signal(SignalKind::interrupt()),
+    ) else {
+        return;
+    };
+    let mut received = false;
+    loop {
+        let (name, code) = tokio::select! {
+            _ = hangup.recv() => ("SIGHUP", 129),
+            _ = terminate.recv() => ("SIGTERM", 143),
+            _ = interrupt.recv() => ("SIGINT", 130),
+        };
+        if received {
+            std::process::exit(code);
+        }
+        received = true;
+        std::thread::spawn(move || {
+            std::thread::sleep(SIGNAL_QUIT_DEADLINE);
+            std::process::exit(code);
+        });
+        // A closed channel means the run loop already ended; main's teardown
+        // is running and the watchdog above bounds it.
+        let _ = tx.send(Event::Terminate(name));
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_signal_listener(_tx: UnboundedSender<Event>) {}
+
+#[cfg(test)]
+mod su_session_exit_tests {
+    use super::su_session_exit_note;
+
+    #[test]
+    fn the_exit_note_says_what_happened_to_the_conversation() {
+        let ended = su_session_exit_note(false, Ok(Ok(serde_json::json!({"ok": true}))));
+        assert!(ended.contains("ended") && ended.contains("/resume"));
+        let kept = su_session_exit_note(true, Ok(Ok(serde_json::json!({"ok": true}))));
+        assert!(kept.contains("still running") && kept.contains("/resume"));
+        let failed = su_session_exit_note(true, Ok(Err(anyhow::anyhow!("409 session_terminal"))));
+        assert!(failed.contains("could not keep") && failed.contains("409"));
+        let late = su_session_exit_note(false, Err(()));
+        assert!(late.contains("could not end") && late.contains("in time"));
+    }
 }
 
 /// The chat-first conversation as plain text, handed from `run` (which owns the
@@ -1294,6 +1433,7 @@ async fn run<B: Backend>(
         app.set_setup_note(note);
     }
     spawn_input_listener(tx.clone());
+    tokio::spawn(terminate_signal_listener(tx.clone()));
     let sync_pane = PaneFetchScope {
         pinned,
         selected: Arc::new(Mutex::new(app.tab)),
@@ -1391,6 +1531,7 @@ async fn run<B: Backend>(
     let mut tutorial_persisted = !app.show_tutorial;
 
     'event_loop: while let Some(ev) = rx.recv().await {
+        record_su_session_exit(&app);
         let prior_tab = app.tab;
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
@@ -2672,6 +2813,7 @@ async fn run<B: Backend>(
             }
         }
     }
+    record_su_session_exit(&app);
     // pui-chat-first-ux P-004 "clean scrollback": hand the chat-first transcript
     // to `main`, which prints it once the alternate screen is gone.
     if app.chat_first {

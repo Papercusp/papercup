@@ -202,6 +202,30 @@ export async function grantSuClientLease(advSessionId: number, ttlMs = suClientL
   }
 }
 
+export interface SuClientLeaseDiagnostics {
+  config: SuClientLeaseConfig;
+  /** advSessionId -> open event streams in this process. */
+  streams: Array<[number, number]>;
+  supervised: number[];
+  sweeping: boolean;
+  renewTimer: boolean;
+  sweepTimer: boolean;
+}
+
+/** This process's view of the lease machinery, for failure evidence: which
+ * streams it believes are open, which engines it supervises, and whether its
+ * timers run. The durable lease itself is the adv_sessions row. */
+export function suClientLeaseDiagnostics(): SuClientLeaseDiagnostics {
+  return {
+    config: suClientLeaseConfig(),
+    streams: [...state.streams.entries()],
+    supervised: [...state.supervised.keys()],
+    sweeping: state.sweeping,
+    renewTimer: state.renewTimer !== null,
+    sweepTimer: state.sweepTimer !== null,
+  };
+}
+
 /** The owner asked for this session to keep running with no client attached. */
 export async function detachSuClientLease(advSessionId: number): Promise<boolean> {
   if (!validId(advSessionId)) return false;
@@ -225,11 +249,12 @@ async function sweep(): Promise<void> {
       const supervision = state.supervised.get(advSessionId);
       if (!supervision) continue;
       state.supervised.delete(advSessionId);
-      try {
-        await supervision.onExpired();
-      } catch (error) {
-        console.warn(`[su-client-lease] ending unattended session ${advSessionId} failed`, error);
-      }
+      // Ending an engine awaits its process teardown. Not awaited here: one
+      // engine whose close hangs must not hold `sweeping` and so stop every
+      // later sweep in this process from ending anything else.
+      void Promise.resolve()
+        .then(() => supervision.onExpired())
+        .catch((error) => console.warn(`[su-client-lease] ending unattended session ${advSessionId} failed`, error));
     }
   } finally {
     state.sweeping = false;

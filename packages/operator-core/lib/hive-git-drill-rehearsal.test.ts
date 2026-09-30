@@ -134,6 +134,28 @@ describe('rig-profile.sh — one profile owns every host value', () => {
     expect(values.VM_REPO).toBe(join(rig.vmHome, '.papercusp/pot-git/same-box-pot/gh-1296269.git'));
   });
 
+  it('points the rig preflight at the rig owners (same-box) and adds nothing on the physical rig', () => {
+    const args = (env: NodeJS.ProcessEnv) =>
+      spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_apply >/dev/null || exit 9; rig_profile_preflight_args`], {
+        encoding: 'utf8',
+        env,
+      });
+    const physical = args(cleanEnv());
+    expect(physical.status, physical.stderr).toBe(0);
+    expect(physical.stdout).toBe('');
+    // same-box: hosts-answering must read the throwaway owners, never the live :3070.
+    const rig = stubRig();
+    const sameBox = args(cleanEnv({ HIVE_GIT_RIG: 'same-box', HIVE_GIT_SAME_BOX_RIG: rig.dir }));
+    expect(sameBox.status, sameBox.stderr).toBe(0);
+    expect(sameBox.stdout.trim().split('\n')).toEqual([
+      '--check', 'drill-source-committed', '--check', 'hosts-answering', '--tower-port', '41001', '--vm-port', '41002',
+    ]);
+    expect(sameBox.stderr).toMatch(/skipped=canary-mode-baseline,vm-trust-hold-ready,vm-payload-current/);
+    // The real probe hands those arguments to rig-preflight.
+    expect(probe).toMatch(/mapfile -t rig_preflight_args < <\(rig_profile_preflight_args\)/);
+    expect(probe).toMatch(/rig-preflight \\\n[^\n]*\n\s*\$\{rig_preflight_args\[@\]\+"\$\{rig_preflight_args\[@\]\}"\}/);
+  });
+
   it('the physical profile (the default) changes nothing', () => {
     const r = spawnSync('bash', ['-c', `VM=aviweiss@172.31.44.2; PATH_BEFORE="$PATH"; . ${JSON.stringify(profileLib)}; rig_profile_apply || exit 9; echo "$VM"; [ "$PATH" = "$PATH_BEFORE" ] && echo same-path`], {
       encoding: 'utf8',

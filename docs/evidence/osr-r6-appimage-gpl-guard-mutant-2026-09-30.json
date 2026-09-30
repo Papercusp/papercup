@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "open-source-release R-6: AppImage GPL guard suite FAILS against a mutant build-appimage.sh whose GPL-library guard never fires",
+  "framework": "node:test",
+  "command": [
+    "T=$(mktemp -d); mkdir -p $T/test $T/bin",
+    "cp papercusp-desktop/test/appimage-gpl-guard.test.js $T/test/; cp papercusp-desktop/bin/build-appimage.sh $T/bin/",
+    "perl -0pi -e 's/if \\[ -n \"\\$_gpl_hits\" \\]; then/if false; then/' $T/bin/build-appimage.sh",
+    "node --test $T/test/appimage-gpl-guard.test.js"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-30T03:51:01Z",
+  "finishedAt": "2026-09-30T03:51:01Z",
+  "summary": "Copy-out counterexample, so the shared tree was never mutated. The test resolves ../bin/build-appimage.sh from its own directory, so both files were copied to a temp tree and only the copy was mutated. The mutation turns the GPL-library guard (if [ -n \"$_gpl_hits\" ]) into if false, which lets a GPL-only library reach the AppDir without failing the build. The suite goes red (7 tests, 5 pass, 2 fail, exit 1). The failing tests are 'the guard fails the build when a GPL codec library reaches the AppDir' and 'D-013: the guard fails on each newly covered GPL library'. The unmutated copy in the same run passed 7/7, which gives a matched baseline. The mutant parses (bash -n ok).",
+  "assertions": [
+    {
+      "id": "mutant-killed",
+      "passed": true,
+      "evidence": "node --test on the mutant: # tests 7, # pass 5, # fail 2, exit 1. not ok 2 and not ok 6 are the guard tests."
+    },
+    {
+      "id": "matched-baseline-passed",
+      "passed": true,
+      "evidence": "Same temp layout, unmutated copy: 7 pass, 0 fail, exit 0."
+    },
+    {
+      "id": "mutation-not-a-no-op",
+      "passed": true,
+      "evidence": "cmp reported the mutant differs from the original, and bash -n parsed the mutant."
+    }
+  ],
+  "workItemId": "WI-10003960",
+  "specId": "R-6",
+  "testFile": "papercusp-desktop/test/appimage-gpl-guard.test.js",
+  "sourceFile": "papercusp-desktop/bin/build-appimage.sh"
+}

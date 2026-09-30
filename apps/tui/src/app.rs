@@ -2012,6 +2012,9 @@ impl OpenFilePicker {
 
 pub struct App {
     pub should_quit: bool,
+    /// `/detach` (pui-chat-first-ux P-009): quit but keep the conversation's
+    /// engine running. Without it, quitting ends the engine.
+    pub su_detach_on_exit: bool,
     pub status: String,
     /// The terminal's last known geometry (cols, rows), from startup and every
     /// `Event::Resize`. Below `ui::MIN_COLS`×`ui::MIN_ROWS` the screen is the
@@ -2774,6 +2777,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
+            su_detach_on_exit: false,
             status: "pui".to_string(),
             // Unknown until main reads the terminal; never "too small" before then.
             viewport: (u16::MAX, u16::MAX),
@@ -4357,6 +4361,51 @@ impl App {
         }
     }
 
+    /// Whether a running conversation is attached: one whose engine this client
+    /// could end or detach on the way out.
+    fn su_session_running(&self) -> bool {
+        self.agent_chat_id.is_some()
+            && self
+                .su_session
+                .as_ref()
+                .is_some_and(|state| state.is_live() && state.identity.is_some())
+    }
+
+    /// What quitting now does to the attached conversation's engine
+    /// (pui-chat-first-ux P-009). `None` when nothing is running, or when the
+    /// backend cannot end a session on command; the host's attendance lease
+    /// then ends it once this client stops renewing.
+    pub fn su_session_exit(&self) -> Option<crate::su_session::SuSessionExit> {
+        use crate::su_session::{SuSessionControl, SuSessionExit, CLIENT_EXIT_REASON};
+        if !self.su_session_running() {
+            return None;
+        }
+        let chat_id = self.agent_chat_id.clone()?;
+        let harness = self.harness.clone();
+        if self.su_detach_on_exit {
+            return Some(SuSessionExit::Detach { harness, chat_id });
+        }
+        let state = self.su_session.as_ref()?;
+        let identity = state.identity.as_ref()?;
+        let control = SuSessionControl::End {
+            reason: Some(CLIENT_EXIT_REASON.into()),
+        };
+        let unsupported = state
+            .descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.capabilities.commands.get(control.command_type()))
+            .is_some_and(|capability| capability.state == "unsupported");
+        if unsupported {
+            return None;
+        }
+        let command_id = format!("pui-{}-end-on-exit", identity.adv_session_id);
+        Some(SuSessionExit::End {
+            harness,
+            chat_id,
+            command: control.command_json(identity, &command_id, "pui"),
+        })
+    }
+
     /// Clear a decided HITL request: drop it from the pending set and stop its
     /// chip rendering as awaiting. Deliberately IDEMPOTENT — the same decision
     /// arrives twice (our own POST's confirmation and the loop's own
@@ -4577,6 +4626,19 @@ impl App {
                 Action::FetchSessionSwitcher {
                     query: String::new(),
                 }
+            }
+            SlashKind::Detach => {
+                if !self.su_session_running() {
+                    self.chat_toast(
+                        "info",
+                        "No conversation is running, so there is nothing to keep. Use /exit to quit."
+                            .into(),
+                    );
+                    return Action::Render;
+                }
+                self.su_detach_on_exit = true;
+                self.should_quit = true;
+                Action::Quit
             }
             SlashKind::Exit => {
                 self.should_quit = true;
@@ -10258,6 +10320,12 @@ impl App {
                 action
             }
             Event::Tick => self.on_tick(),
+            // A signal is a quit (P-009): the run loop's teardown then ends the
+            // attached conversation's engine, exactly as /exit does.
+            Event::Terminate(_) => {
+                self.should_quit = true;
+                Action::Quit
+            }
             // Repaint at the new geometry immediately (see Event::Resize).
             Event::Resize(cols, rows) => {
                 self.viewport = (cols, rows);
@@ -17905,6 +17973,83 @@ mod tests {
             Action::Render
         );
         assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
+    }
+
+    /// A chat with a running SU engine bound, as P-009's quit paths see it.
+    fn app_with_running_su_session() -> App {
+        let mut a = App::new();
+        a.agent_chat_id = Some("chat-1".into());
+        a.set_su_session_binding(su_binding());
+        a.su_session.as_mut().unwrap().identity = Some(serde_json::from_value(json!({
+            "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+            "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+        })).unwrap());
+        a
+    }
+
+    #[test]
+    fn quitting_ends_the_running_engine_as_the_client_leaves() {
+        let a = app_with_running_su_session();
+        match a.su_session_exit() {
+            Some(crate::su_session::SuSessionExit::End { chat_id, command, .. }) => {
+                assert_eq!(chat_id, "chat-1");
+                assert_eq!(command["type"], "end");
+                assert_eq!(command["reason"], crate::su_session::CLIENT_EXIT_REASON);
+                assert_eq!(command["target"]["advSessionId"], 7);
+            }
+            other => panic!("quitting must end the engine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detach_quits_and_keeps_the_engine_running() {
+        let mut a = app_with_running_su_session();
+        assert_eq!(a.run_slash_command("detach"), Action::Quit);
+        assert!(a.should_quit);
+        assert_eq!(
+            a.su_session_exit(),
+            Some(crate::su_session::SuSessionExit::Detach {
+                harness: a.harness.clone(),
+                chat_id: "chat-1".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn detach_with_nothing_running_says_so_and_does_not_quit() {
+        let mut a = App::new();
+        assert_eq!(a.run_slash_command("detach"), Action::Render);
+        assert!(!a.should_quit);
+        assert!(a.toast.as_ref().unwrap().message.contains("nothing to keep"));
+        assert_eq!(a.su_session_exit(), None);
+    }
+
+    #[test]
+    fn an_ended_engine_or_one_that_cannot_be_ended_is_left_to_the_lease() {
+        let mut ended = app_with_running_su_session();
+        ended.su_session.as_mut().unwrap().lifecycle =
+            crate::su_session::SuSessionLifecycleState::Ended;
+        assert_eq!(ended.su_session_exit(), None, "nothing left to end");
+
+        let mut unsupported = app_with_running_su_session();
+        unsupported.su_session.as_mut().unwrap().descriptor = Some(serde_json::from_value(json!({
+            "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+            "lifecycle":"ready", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+            "capabilities": {"commands": {"end":{"state":"unsupported","reason":"no end"}}, "features": {}},
+            "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+        })).unwrap());
+        assert_eq!(unsupported.su_session_exit(), None);
+    }
+
+    #[test]
+    fn a_quit_signal_quits_like_exit() {
+        let mut a = app_with_running_su_session();
+        assert_eq!(a.update(Event::Terminate("SIGHUP")), Action::Quit);
+        assert!(a.should_quit);
+        assert!(
+            matches!(a.su_session_exit(), Some(crate::su_session::SuSessionExit::End { .. })),
+            "a closed terminal ends the engine, it does not detach it"
+        );
     }
 
     /// Build an archived-session snapshot: ended lifecycle, terminal, and the

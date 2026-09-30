@@ -448,6 +448,7 @@ import elevenlabsPostCall from './elevenlabs/post-call';
 import miscScratch from './misc/scratch';
 import deviceQrSvg from './device/qr-svg';
 import devicePair from './device/pair';
+import connectedApps from './connected-apps';
 import deviceVoice from './device/voice';
 import deviceOperator from './device/operator';
 import deviceHarnesses from './device/harnesses';
@@ -946,6 +947,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(miscScratch as AnyRoute),
   ...flatten(deviceQrSvg as AnyRoute),
   ...flatten(devicePair as AnyRoute[]),
+  ...flatten(connectedApps as AnyRoute[]),
   ...flatten(deviceVoice as AnyRoute[]),
   ...flatten(deviceOperator as AnyRoute[]),
   ...flatten(deviceHarnesses as AnyRoute[]),

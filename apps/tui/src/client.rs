@@ -1306,6 +1306,25 @@ impl OperatorClient {
         .await
     }
 
+    /// Ask the host to keep this chat's engine running after pui quits
+    /// (pui-chat-first-ux P-009 `/detach`). Without it the engine ends once no
+    /// client has been attached for the host's attendance lease.
+    pub async fn detach_su_session(
+        &self,
+        harness: &str,
+        chat_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            &format!(
+                "/api/harness/{}/agent-chats/{}/su-session/detach",
+                su_segment(harness),
+                su_segment(chat_id)
+            ),
+            serde_json::json!({}),
+        )
+        .await
+    }
+
     async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
         let bytes = self.transport.sys_http("GET", path, None).await?;
         serde_json::from_slice(&bytes).with_context(|| format!("parse JSON from {path}"))

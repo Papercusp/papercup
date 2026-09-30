@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommsTrustEntry } from '../../trust/comms-trust';
 import { PHASE_D_TIER_HOLD_NOTE_PREFIX } from './physical-drill-phase-d';
 import {
+  DRILL_OWNER_PORT,
   DRILL_PHASE_D_LOCK_OWNER_MARKER,
   DRILL_SOURCE_DIR,
   DRILL_SOURCE_SHA_ENV,
@@ -246,6 +247,31 @@ describe('runPhysicalDrillPreflight', () => {
     expect(towerDown.reason).toContain('tower');
   });
 
+  it('hosts-answering reads the owner ports the run targets, not the live :3070 (same-box rig, D-003)', async () => {
+    // Physical rig: both owners on DRILL_OWNER_PORT.
+    const physical = healthy();
+    await runPhysicalDrillPreflight({ checks: ['hosts-answering'] }, physical);
+    expect(physical.towerHealthStatus).toHaveBeenCalledWith(DRILL_OWNER_PORT);
+    expect(physical.probeVm).toHaveBeenCalledWith(DRILL_OWNER_PORT);
+    // Same-box rig: two throwaway owners on their own ports. Reading :3070 here would measure
+    // the live operator and report a rig that is down as up.
+    const sameBox = healthy({
+      towerHealthStatus: vi.fn(async (port: number) => (port === 18471 ? 200 : 0)),
+      probeVm: vi.fn(async (port: number) => vmProbe({ ownerHealthStatus: port === 18571 ? '200' : '000' })),
+    });
+    const up = await runPhysicalDrillPreflight({ checks: ['hosts-answering'], towerPort: 18471, vmOwnerPort: 18571 }, sameBox);
+    expect(up.ok).toBe(true);
+    expect(sameBox.towerHealthStatus).toHaveBeenCalledWith(18471);
+    expect(sameBox.probeVm).toHaveBeenCalledWith(18571);
+    const down = await runPhysicalDrillPreflight(
+      { checks: ['hosts-answering'], towerPort: 18472, vmOwnerPort: 18572 },
+      healthy({ towerHealthStatus: vi.fn(async () => 0), probeVm: vi.fn(async () => vmProbe({ ownerHealthStatus: '000' })) }),
+    );
+    expect(down.firstFailure?.reason).toContain('tower :18472/api/health');
+    expect(down.firstFailure?.reason).toContain('VM owner :18572/api/health');
+    expect(down.firstFailure?.reason).not.toContain(`:${DRILL_OWNER_PORT}`);
+  });
+
   it('a check whose gatherer throws FAILS — an unmeasured guard rail is not a pass', async () => {
     const failure = await refusal(
       healthy({ listTrust: vi.fn(async () => Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:5432'))) }),
@@ -301,7 +327,22 @@ describe('physicalDrillPreflightMode (producer rig-preflight)', () => {
       vmGithubUserId: null,
     });
     expect(parsePhysicalDrillPreflightArgs(['--vm-github-user-id', '1567022']).vmGithubUserId).toBe(1567022);
-    for (const bad of [['--check', 'nope'], ['--check'], ['--vm-github-user-id', '0'], ['--force']]) {
+    expect(parsePhysicalDrillPreflightArgs(['--tower-port', '18471', '--vm-port', '18571'])).toEqual({
+      checks: [],
+      vmGithubUserId: null,
+      towerPort: 18471,
+      vmOwnerPort: 18571,
+    });
+    for (const bad of [
+      ['--check', 'nope'],
+      ['--check'],
+      ['--vm-github-user-id', '0'],
+      ['--force'],
+      ['--tower-port', '0'],
+      ['--tower-port', '65536'],
+      ['--vm-port', '3070;rm'],
+      ['--vm-port'],
+    ]) {
       expect(() => parsePhysicalDrillPreflightArgs(bad)).toThrow(/usage: physical-drill-producer rig-preflight/);
     }
   });
@@ -337,6 +378,13 @@ describe('VM probe plumbing', () => {
     expect(command).not.toMatch(/\/Users\//);
     expect(command).not.toMatch(/\b(rm|mv|cp|tee|kill)\b|>\s*[^&/]/);
     expect(vmPayloadProbeCommand("/tmp/it's")).toContain(`'/tmp/it'\\''s'/serve.mjs`);
+  });
+
+  it('reads the VM owner health on the port it is given, defaulting to the physical owner port', () => {
+    expect(vmPayloadProbeCommand()).toContain(`http://127.0.0.1:${DRILL_OWNER_PORT}/api/health`);
+    expect(vmPayloadProbeCommand(undefined, 18571)).toContain('http://127.0.0.1:18571/api/health');
+    expect(vmPayloadProbeCommand(undefined, 18571)).not.toContain(`:${DRILL_OWNER_PORT}/`);
+    expect(() => vmPayloadProbeCommand(undefined, 0)).toThrow(/not a TCP port/);
   });
 });
 

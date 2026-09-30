@@ -62,6 +62,7 @@ import {
   PTOOL_RETRY_JITTER_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
+  PTOOL_TOOL_NOT_OK_EXIT,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
   ptoolConnectAttemptTimeoutMs,
   resultToText,
@@ -71,6 +72,7 @@ import {
   scratchUriToPath,
   shouldPrintRawResult,
   timeoutForTool,
+  toolNotOkReason,
   unwrapOutputEnvelope,
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
@@ -1295,6 +1297,61 @@ describe('ptool result formatting', () => {
       log.mockRestore();
       error.mockRestore();
     }
+  });
+
+  describe('an ok:false answer exits PTOOL_TOOL_NOT_OK_EXIT, not 0 (EI-24654733539966460)', () => {
+    // The drill that found this: `ptool work_items:create … || fail` wrote a refusal and
+    // exited 0, so the phase waited 900s for a write that never existed.
+    const refusedCreate = {
+      ok: false,
+      results: [{ ok: false, error: 'duplicate key value violates unique constraint work_items_keyless_title_identity_uq' }],
+    };
+
+    async function run(result: unknown, raw: boolean) {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const code = await printResult(result, { raw, deliveryProbe: () => null });
+        return { code, stdout: log.mock.calls.map((c) => c[0]), stderr: error.mock.calls.map((c) => String(c[0])) };
+      } finally {
+        log.mockRestore();
+        error.mockRestore();
+      }
+    }
+
+    it('is a distinct non-zero status, not the generic failure code', () => {
+      expect(PTOOL_TOOL_NOT_OK_EXIT).not.toBe(0);
+      expect(PTOOL_TOOL_NOT_OK_EXIT).not.toBe(1);
+    });
+
+    it('a refused write exits non-zero and still prints the complete result', async () => {
+      for (const raw of [true, false]) {
+        const out = await run({ structuredContent: refusedCreate }, raw);
+        expect(out.code).toBe(PTOOL_TOOL_NOT_OK_EXIT);
+        expect(JSON.parse(String(out.stdout[0]))).toEqual(refusedCreate);
+        expect(out.stderr.join('\n')).toContain('work_items_keyless_title_identity_uq');
+      }
+    });
+
+    it('one failed entry in an otherwise-ok batch fails the call', async () => {
+      const batch = { ok: true, results: [{ ok: true, id: 'A' }, { ok: false, id: 'B', error: 'not found' }] };
+      const out = await run({ content: [{ type: 'text', text: JSON.stringify(batch) }] }, true);
+      expect(out.code).toBe(PTOOL_TOOL_NOT_OK_EXIT);
+      expect(out.stderr.join('\n')).toContain('1 of 2 result(s) ok:false; first: not found');
+    });
+
+    it('an ok answer, and a body with no ok field at all, still exit 0 (calibration)', async () => {
+      expect((await run({ structuredContent: { ok: true, results: [{ ok: true }] } }, true)).code).toBe(0);
+      // A --projection pick that dropped `ok` is not a refusal.
+      expect((await run({ structuredContent: { results: [{ id: 'A' }] } }, true)).code).toBe(0);
+      expect(toolNotOkReason('{"ok":null}')).toBeNull();
+      expect(toolNotOkReason('prose, not JSON')).toBeNull();
+    });
+
+    it('names the top-level reason when there is no batch', () => {
+      expect(toolNotOkReason(JSON.stringify({ ok: false, reason: 'loops_disabled' }))).toBe('loops_disabled');
+      expect(toolNotOkReason(JSON.stringify({ ok: false }))).toBe('no reason given');
+    });
   });
 
   it('escapes raw controls inside JSON text for jq-safe raw output', async () => {

@@ -270,6 +270,11 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     [160, 'announcedGates'],
     [170, 'held'],
     [180, 'inboxRecent'],
+    // D-027 (goal-brief-to-claimed-plan-work-2026-09-23): OTHER sessions' open
+    // directives are awareness, so they render after this session's own work. At
+    // order 20 they filled a goal holder's whole block and its obligation never
+    // rendered. The session's OWN directives keep the order-20 segment above.
+    [185, 'ownerDirectives'],
     [190, 'loopArmed'],
   ];
 

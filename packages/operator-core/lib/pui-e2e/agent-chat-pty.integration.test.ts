@@ -30,6 +30,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
+import { suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
@@ -2525,6 +2526,245 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       await pane.stop().catch(() => {});
     }
   }, 180_000);
+
+  // pui-chat-first-ux-2026-09-28 P-009 (D-007): a chat's engine must not
+  // outlive its client unattended. P-005 saw /exit return in 14 ms with the
+  // engine still PARKED in the next launch's picker, and killed clients leave
+  // their engines running for minutes. Every way out ends the engine within a
+  // bounded time unless the user detached it, and the conversation resumes.
+  const nativeAlive = (pid: number) => {
+    try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+  };
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const exitedWithin = (pane: PuiPane, ms: number) =>
+    Promise.race([pane['exit'].then(() => true), sleep(ms).then(() => false)]);
+  type RunningChat = Awaited<ReturnType<typeof chatWithRunningEngine>>;
+
+  /** A chat-first pui in a fresh directory whose engine has answered once. */
+  async function chatWithRunningEngine(tag: string) {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), `pui-p009-${tag}-`)));
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const enginesBefore = scriptedEngine.engines.length;
+    scriptedEngine.mode = 'success';
+    scriptedEngine.successText = `P9 reply ${tag}`;
+    const prompt = `P9 prompt ${tag}`;
+    await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+    pane.write(prompt);
+    await pane.waitFor(prompt);
+    pane.enter();
+    await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+    expect(scriptedEngine.engines.length).toBeGreaterThan(enginesBefore);
+    const engine = scriptedEngine.engines.at(-1)!;
+    const nativePid = engine.pid()!;
+    // Positive control: the engine these cases watch exists and is running.
+    expect(nativePid).toBeGreaterThan(0);
+    expect(nativeAlive(nativePid)).toBe(true);
+    const nativeSessionId = scriptedEngine.sdkSessions.at(-1)?.sessionId ?? null;
+    return { launchDir, pane, engine, nativePid, prompt, reply: scriptedEngine.successText, nativeSessionId };
+  }
+
+  async function expectEngineEnded(chat: RunningChat, withinMs: number): Promise<void> {
+    await vi.waitFor(() => expect(chat.engine.adapter.host.descriptor().lifecycle).toBe('ended'), {
+      timeout: withinMs, interval: 100,
+    });
+    await vi.waitFor(() => expect(nativeAlive(chat.nativePid), `native engine pid ${chat.nativePid} outlived its client`).toBe(false), {
+      timeout: 15_000, interval: 100,
+    });
+  }
+
+  const CONVERSATION_PICKER = 'Enter select · Esc close';
+
+  /** Relaunch pui in the chat's directory and pick the newest conversation. */
+  async function resumeNewest(chat: RunningChat): Promise<PuiPane> {
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: chat.launchDir });
+    await pane.waitFor(`Claude · ${chat.launchDir}`, { timeoutMs: 40_000 });
+    pane.write('/resume');
+    await pane.waitFor('/resume');
+    pane.enter();
+    // The picker's title, not a row suffix: a one-turn chat reads "· 1 turn".
+    await pane.waitFor(CONVERSATION_PICKER, { timeoutMs: 30_000 });
+    pane.enter();
+    await pane.waitForGone(CONVERSATION_PICKER, { timeoutMs: 30_000 });
+    await pane.waitFor(chat.reply, { timeoutMs: 60_000 });
+    return pane;
+  }
+
+  /** The durable lease row plus this process's view of it, sampled while a
+   * test waits on the lease, so a late or missing end names its cause. */
+  function sampleLease(advSessionId: number, chat: RunningChat): { samples: unknown[]; stop(): void } {
+    const samples: unknown[] = [];
+    const startedAt = performance.now();
+    let stopped = false;
+    void (async () => {
+      while (!stopped) {
+        const [row] = await db.adminSql`
+          SELECT round(extract(epoch FROM (su_client_lease_until - now())) * 1000)::int AS lease_remaining_ms,
+                 su_client_detached_at IS NOT NULL AS detached, ended_at IS NOT NULL AS ended
+            FROM harness_shared.adv_sessions WHERE id = ${advSessionId}`.catch(() => [null]);
+        const local = suClientLeaseDiagnostics();
+        samples.push({
+          atMs: Math.round(performance.now() - startedAt), row,
+          lifecycle: chat.engine.adapter.host.descriptor().lifecycle,
+          streams: local.streams.filter(([id]) => id === advSessionId),
+          supervised: local.supervised.includes(advSessionId), sweeping: local.sweeping, config: local.config,
+        });
+        await sleep(500);
+      }
+    })();
+    return { samples, stop: () => { stopped = true; } };
+  }
+
+  function p009Evidence(stage: string, chat: RunningChat | null, pane: PuiPane | null | undefined) {
+    return JSON.stringify({
+      stage, nativePid: chat?.nativePid, nativeAlive: chat ? nativeAlive(chat.nativePid) : null,
+      lifecycle: chat?.engine.adapter.host.descriptor().lifecycle, sessions: scriptedEngine.sdkSessions.slice(-3),
+      ...(pane ?? chat?.pane)?.failureEvidence(),
+    });
+  }
+
+  async function disposeChat(chat: RunningChat | null, ...panes: Array<PuiPane | null>): Promise<void> {
+    for (const pane of panes) await pane?.stop().catch(() => {});
+    await chat?.pane.stop().catch(() => {});
+    if (chat) rmSync(chat.launchDir, { recursive: true, force: true });
+  }
+
+  test('P-009 QUIT: /exit ends the engine, says so, and a relaunch resumes the conversation from its transcript', async ({ onTestFailed }) => {
+    const tag = randomUUID().slice(0, 8);
+    let stage = 'chat';
+    let chat: RunningChat | null = null;
+    let resumed: PuiPane | null = null;
+    onTestFailed(() => console.info('PUI_P009_QUIT_FAILURE', p009Evidence(stage, chat, resumed)));
+    try {
+      chat = await chatWithRunningEngine(tag);
+      expect(chat.nativeSessionId, 'a fresh start names its native session').toBeTruthy();
+      stage = 'exit';
+      const quitAt = performance.now();
+      chat.pane.write('/exit');
+      await chat.pane.waitFor('/exit');
+      chat.pane.enter();
+      expect(await exitedWithin(chat.pane, 15_000), 'pui exits on /exit').toBe(true);
+      await expectEngineEnded(chat, 15_000);
+      const endedMs = Math.round(performance.now() - quitAt);
+      expect(chat.pane.screen()).toContain('Conversation ended');
+
+      stage = 'resume';
+      const enginesBefore = scriptedEngine.engines.length;
+      resumed = await resumeNewest(chat);
+      scriptedEngine.successText = `P9 resumed reply ${tag}`;
+      resumed.write(`P9 again ${tag}`);
+      resumed.enter();
+      await resumed.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.engines.length, 'an ended engine is relaunched').toBeGreaterThan(enginesBefore);
+      expect(scriptedEngine.sdkSessions.at(-1)?.resume, 'and resumed from its own transcript').toBe(chat.nativeSessionId);
+      console.info('PUI_P009_QUIT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, endedMs, exitFrame: chat.pane.screen(), resumedFrame: resumed.screen(),
+      }));
+    } finally {
+      await disposeChat(chat, resumed);
+    }
+  }, 240_000);
+
+  test.for([{ signal: 'SIGHUP' as const }, { signal: 'SIGTERM' as const }])(
+    'P-009 SIGNAL: $signal to pui ends its engine',
+    { timeout: 180_000 },
+    async ({ signal }, { onTestFailed }) => {
+      const tag = randomUUID().slice(0, 8);
+      let stage = 'chat';
+      let chat: RunningChat | null = null;
+      onTestFailed(() => console.info('PUI_P009_SIGNAL_FAILURE', p009Evidence(stage, chat, null)));
+      try {
+        chat = await chatWithRunningEngine(tag);
+        stage = signal;
+        const signalledAt = performance.now();
+        process.kill(chat.pane.pty.pid, signal);
+        expect(await exitedWithin(chat.pane, 15_000), `pui exits on ${signal}`).toBe(true);
+        await expectEngineEnded(chat, 15_000);
+        console.info('PUI_P009_SIGNAL_ACCEPTANCE', JSON.stringify({
+          binary: bin, binarySha256, signal, endedMs: Math.round(performance.now() - signalledAt),
+        }));
+      } finally {
+        await disposeChat(chat);
+      }
+    },
+  );
+
+  // SIGKILL runs no teardown at all, so only the host's attendance lease can
+  // end this engine. The TTL override is the one the lease module reads per
+  // call; a production 30 s lease would only make this case slower.
+  test('P-009 LEASE: a pui killed outright leaves an engine that ends once its client lease lapses', async ({ onTestFailed }) => {
+    const ttlMs = 3_000;
+    const tag = randomUUID().slice(0, 8);
+    let stage = 'chat';
+    let chat: RunningChat | null = null;
+    let lease: ReturnType<typeof sampleLease> | null = null;
+    onTestFailed(() => console.info('PUI_P009_LEASE_FAILURE', p009Evidence(stage, chat, null),
+      JSON.stringify({ leaseTimeline: lease?.samples ?? [] })));
+    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = String(ttlMs);
+    try {
+      chat = await chatWithRunningEngine(tag);
+      lease = sampleLease(chat.engine.adapter.host.descriptor().identity.advSessionId, chat);
+      stage = 'kill';
+      const killedAt = performance.now();
+      process.kill(chat.pane.pty.pid, 'SIGKILL');
+      expect(await exitedWithin(chat.pane, 10_000)).toBe(true);
+      // Control: nothing on the way out ended it; the lease is what does.
+      expect(chat.engine.adapter.host.descriptor().lifecycle).not.toBe('ended');
+      stage = 'lease';
+      await expectEngineEnded(chat, 30_000);
+      console.info('PUI_P009_LEASE_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, ttlMs, endedMs: Math.round(performance.now() - killedAt),
+      }));
+    } finally {
+      lease?.stop();
+      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+      await disposeChat(chat);
+    }
+  }, 180_000);
+
+  test('P-009 DETACH: /detach keeps the engine running past its lease, and resuming reattaches to it', async ({ onTestFailed }) => {
+    const ttlMs = 3_000;
+    const tag = randomUUID().slice(0, 8);
+    let stage = 'chat';
+    let chat: RunningChat | null = null;
+    let resumed: PuiPane | null = null;
+    onTestFailed(() => console.info('PUI_P009_DETACH_FAILURE', p009Evidence(stage, chat, resumed)));
+    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = String(ttlMs);
+    try {
+      chat = await chatWithRunningEngine(tag);
+      stage = 'detach';
+      chat.pane.write('/detach');
+      await chat.pane.waitFor('/detach');
+      chat.pane.enter();
+      expect(await exitedWithin(chat.pane, 15_000), 'pui exits on /detach').toBe(true);
+      expect(chat.pane.screen()).toContain('still running');
+      await sleep(ttlMs * 3);
+      expect(chat.engine.adapter.host.descriptor().lifecycle, 'a detached engine outlives its lease').not.toBe('ended');
+      expect(nativeAlive(chat.nativePid)).toBe(true);
+
+      stage = 'reattach';
+      const enginesBefore = scriptedEngine.engines.length;
+      resumed = await resumeNewest(chat);
+      scriptedEngine.successText = `P9 reattached reply ${tag}`;
+      resumed.write(`P9 back ${tag}`);
+      resumed.enter();
+      await resumed.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.engines.length, 'resuming a running engine attaches to it').toBe(enginesBefore);
+
+      // Attaching cleared the detach, so quitting now ends the same engine.
+      stage = 'exit';
+      resumed.write('/exit');
+      await resumed.waitFor('/exit');
+      resumed.enter();
+      expect(await exitedWithin(resumed, 15_000)).toBe(true);
+      await expectEngineEnded(chat, 15_000);
+      console.info('PUI_P009_DETACH_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, ttlMs, detachFrame: chat.pane.screen(), exitFrame: resumed.screen(),
+      }));
+    } finally {
+      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+      await disposeChat(chat, resumed);
+    }
+  }, 240_000);
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {

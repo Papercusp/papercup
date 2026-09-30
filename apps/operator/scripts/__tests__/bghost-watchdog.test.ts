@@ -396,6 +396,13 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
         sh: async () => ({ err: null, stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
       }),
     ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
+    // ptool exits 5 on an ok:false answer (EI-24654733539966460): the refusal arrives
+    // WITH an exec error, and its reason must survive instead of collapsing to ptool_failed.
+    await expect(
+      requestCommittedHotPathRestart('abc', {
+        sh: async () => ({ err: new Error('Command failed: exit 5'), stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
   });
 
   it('wires activation before PG freshness and exits the poll after a real restart request', async () => {

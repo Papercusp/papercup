@@ -21,6 +21,7 @@
  * the row keeps sha256(key) in token_hash (see ./key.ts).
  */
 
+import type { Sql } from 'postgres';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { appKeyHashMatches, mintAppKey, parseAppKey } from './key';
@@ -117,26 +118,70 @@ export interface CreatedAppKey {
 const APP_COLUMNS = `id, user_email, workspace_id, kind, label, scopes, limits,
   paired_at, expires_at, paused_at, revoked_at, last_seen, last_ip`;
 
-export async function createAppKey(opts: CreateAppKeyOptions): Promise<CreatedAppKey> {
-  const scopes: AppKeyScopes = { capabilities: [...new Set(opts.capabilities ?? [])] };
-  if (opts.tools?.length) scopes.tools = [...new Set(opts.tools.map((t) => t.trim()))];
-  if (opts.harnesses?.length) scopes.harnesses = [...new Set(opts.harnesses.map((h) => h.trim()))];
+/** The scope fields a caller may ask for, before normalization. */
+export type AppKeyScopeRequest = Pick<CreateAppKeyOptions, 'capabilities' | 'tools' | 'harnesses' | 'knownTools'>;
+
+/**
+ * Normalize requested scopes (dedupe, trim) and check them against the scope policy. Throws
+ * `AppKeyScopeError` when any entry is something no key may hold (a hard-denied tool, an unknown
+ * exact tool, a malformed entry). Every path that creates a key goes through this — the
+ * "Connect an app" route, the device-code sign-in (P-005) and the access tools (P-012) — so no
+ * issuance path can grant what another would refuse.
+ */
+export function resolveAppKeyScopes(req: AppKeyScopeRequest): AppKeyScopes {
+  const scopes: AppKeyScopes = { capabilities: [...new Set(req.capabilities ?? [])] };
+  if (req.tools?.length) scopes.tools = [...new Set(req.tools.map((t) => t.trim()))];
+  if (req.harnesses?.length) scopes.harnesses = [...new Set(req.harnesses.map((h) => h.trim()))];
   // The catalog only matters when exact tools are named; capability rules need no catalog.
-  const catalog = opts.knownTools ?? (scopes.tools?.length ? projectedToolScopeCatalog() : undefined);
+  const catalog = req.knownTools ?? (scopes.tools?.length ? projectedToolScopeCatalog() : undefined);
   const problems = validateAppKeyScopes(scopes, catalog);
   if (problems.length > 0) throw new AppKeyScopeError(problems);
+  return scopes;
+}
+
+/** What `insertAppKey` needs once the scopes are already resolved. */
+export interface InsertAppKeyInput {
+  workspaceId: string;
+  userEmail: string;
+  label: string;
+  scopes: AppKeyScopes;
+  limits?: AppKeyLimits;
+  expiresAt?: Date | null;
+}
+
+/**
+ * Mint a key and insert its row inside an EXISTING workspace transaction (the caller's
+ * `withWorkspace` callback). Lets a caller make the key part of a larger atomic step — the
+ * device-code exchange consumes its grant and creates the key in one transaction, so two
+ * concurrent polls can never both receive a key. `scopes` must come from `resolveAppKeyScopes`.
+ */
+export async function insertAppKey(tx: Sql, input: InsertAppKeyInput): Promise<CreatedAppKey> {
   const minted = mintAppKey();
-  const rows = await withWorkspace(opts.workspaceId, async (tx) => tx<AppKeyRow[]>`
+  const rows = await tx<AppKeyRow[]>`
     INSERT INTO harness_shared.connected_apps
       (id, user_email, workspace_id, kind, label, scopes, limits, token_hash, expires_at, paired_at)
-    VALUES (${minted.id}, ${opts.userEmail}, ${opts.workspaceId}, 'app', ${opts.label},
-            ${JSON.stringify(scopes)}::jsonb, ${JSON.stringify(opts.limits ?? {})}::jsonb,
-            ${minted.tokenHash}, ${opts.expiresAt ?? null}, now())
+    VALUES (${minted.id}, ${input.userEmail}, ${input.workspaceId}, 'app', ${input.label},
+            ${JSON.stringify(input.scopes)}::jsonb, ${JSON.stringify(input.limits ?? {})}::jsonb,
+            ${minted.tokenHash}, ${input.expiresAt ?? null}, now())
     RETURNING ${tx.unsafe(APP_COLUMNS)}
-  `);
+  `;
   const app = rows[0];
-  if (!app) throw new Error('createAppKey: insert returned no row');
+  if (!app) throw new Error('insertAppKey: insert returned no row');
   return { app, key: minted.key };
+}
+
+export async function createAppKey(opts: CreateAppKeyOptions): Promise<CreatedAppKey> {
+  const scopes = resolveAppKeyScopes(opts);
+  return withWorkspace(opts.workspaceId, (tx) =>
+    insertAppKey(tx, {
+      workspaceId: opts.workspaceId,
+      userEmail: opts.userEmail,
+      label: opts.label,
+      scopes,
+      limits: opts.limits,
+      expiresAt: opts.expiresAt,
+    }),
+  );
 }
 
 /** Every app key in a workspace, newest first — revoked ones included, flagged by revoked_at. */

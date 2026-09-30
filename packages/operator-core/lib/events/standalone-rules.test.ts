@@ -124,6 +124,8 @@ describe('registerStandaloneReactionRule', () => {
   it.each([
     ['blank id', { id: '   ', on: 'coord:handoff', fire: FIRE }],
     ['blank on', { id: 'r1', on: '  ', fire: FIRE }],
+    // P-011 / D-023: a sync rule runs inline at a hook sink and is never a reaction.
+    ['sync delivery', { id: 'r1', on: 'coord:handoff', fire: FIRE, delivery: 'sync' as never }],
   ])('refuses %s without touching the class registry', async (_label, input) => {
     const result = await registerStandaloneReactionRule(sql, WS, input);
 

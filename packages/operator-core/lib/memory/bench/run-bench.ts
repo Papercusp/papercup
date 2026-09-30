@@ -33,6 +33,7 @@ import {
   renderScorecardMarkdown,
   runGoldSet,
   runRoundtrips,
+  searchFailureReason,
   seedCorpus,
   type BackendScorecard,
   type CorpusEntry,
@@ -321,7 +322,11 @@ async function benchOne(
     }
 
     log(`[${name}] replaying ${gold.length} gold queries…`);
-    const retrieval = await runGoldSet(ctx.backend, gold, { scope: BENCH_SCOPE, limit: 10, concurrency: 4 });
+    // Tolerated so one failing backend does not abort the whole comparison — but
+    // SURFACED: its errored queries score zero, so the scorecard must say so.
+    const retrieval = await runGoldSet(ctx.backend, gold, { scope: BENCH_SCOPE, limit: 10, concurrency: 4, tolerateSearchErrors: true });
+    const searchFailure = searchFailureReason(retrieval);
+    if (searchFailure) notes.push(`[${name}] ${searchFailure} — its retrieval metrics count those as misses`);
 
     log(`[${name}] write round-trips…`);
     const roundtrips = await runRoundtrips(ctx.backend, ROUNDTRIP_SPECS, { scope: BENCH_SCOPE });
@@ -352,7 +357,9 @@ async function benchOne(
         manifests.push(m);
         current = target;
         log(`[${name}] scale: replaying gold @${target}…`);
-        const r = await runGoldSet(ctx.backend, gold, { scope: BENCH_SCOPE, limit: 10, concurrency: 4 });
+        const r = await runGoldSet(ctx.backend, gold, { scope: BENCH_SCOPE, limit: 10, concurrency: 4, tolerateSearchErrors: true });
+        const scaleFailure = searchFailureReason(r);
+        if (scaleFailure) notes.push(`[${name}] scale @${target}: ${scaleFailure}`);
         scale.push({ size: target, p5: r.overall.p5, mrr: r.overall.mrr, searchP50Ms: r.latency.p50 });
       }
     }

@@ -183,8 +183,6 @@ describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', ()
   });
 });
 
-// EI-24649116564770033 / WI-10004077: a withheld manifest must not let the rest of an npm
-// dependency change land alone (observed: operator-core's dep without root entry + lockfile).
 describe('summarizeFetchFailure — a failed fetch keeps its reason (WI-10004103)', () => {
   it('prefers the disk-headroom refusal over surrounding git noise', () => {
     const stderr =
@@ -211,6 +209,8 @@ describe('summarizeFetchFailure — a failed fetch keeps its reason (WI-10004103
   });
 });
 
+// EI-24649116564770033 / WI-10004077: a withheld manifest must not let the rest of an npm
+// dependency change land alone (observed: operator-core's dep without root entry + lockfile).
 describe('expandNpmManifestClosure — npm manifests land together', () => {
   const dirty = [
     'package.json',

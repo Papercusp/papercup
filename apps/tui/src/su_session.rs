@@ -804,6 +804,27 @@ impl SuSessionControl {
     }
 }
 
+/// The reason a closing client stamps on its `end` command.
+pub const CLIENT_EXIT_REASON: &str = "client exited";
+
+/// What a closing client does to its session's engine (pui-chat-first-ux
+/// P-009). Quitting ends it, the way Claude Code and Codex end with their
+/// process; `/detach` asks the host to keep it running instead. A client that
+/// dies without doing either (SIGKILL, a crash) is covered by the host's
+/// attendance lease, which ends the engine once no client has renewed it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SuSessionExit {
+    End {
+        harness: String,
+        chat_id: String,
+        command: Value,
+    },
+    Detach {
+        harness: String,
+        chat_id: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuSessionEventEnvelope {

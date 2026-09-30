@@ -1,0 +1,363 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-521 full-installer compatibility (linux): real GUI+Server installers, offline, serving the minimal-witness bytes",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "p2p-public-release-endgame-2026-09-01",
+  "planItem": "P-521",
+  "workItem": "WI-10003962",
+  "governingDecisions": [
+    "D-079",
+    "D-080",
+    "D-083"
+  ],
+  "p521Journey": "full-installer-compat",
+  "observer": "su-5006a254-c284-4f5a-ba10-b9169b154471",
+  "command": [
+    "/tmp/pcv/claude-1000/-~-papercupai-workspace-papercusp/48b347da-082d-4eac-8e6b-98c19269780c/scratchpad/oij-driver-20260930T020904Z.sh --platform linux --gui-artifact /mnt/data/cargo-target/.papercusp-target-slots/pid3096222/release/bundle/deb/Papercusp\\ GUI_0.0.25_amd64.deb --server-artifact /mnt/data/cargo-target/.papercusp-target-slots/pid3096222/release/bundle/deb/Papercusp\\ Server_0.0.25_amd64.deb --ledger-json /tmp/pcv/claude-1000/-~-papercupai-workspace-papercusp/48b347da-082d-4eac-8e6b-98c19269780c/scratchpad/ledger-0025.json --join-evidence docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json --expected-version 0.0.25 --expected-health-sha cddbd8d5 --mcp-call ~/papercupai-workspace/papercusp/scripts/mcp-call.mjs --ssh-host tester@127.0.0.1 --ssh-port 2233 --ssh-key ~/.ssh/papercup-vm-linux --ssh-option StrictHostKeyChecking=no --ssh-option UserKnownHostsFile=/dev/null --evidence-out docs/evidence/p521-offline-installer-0025-linux-20260930T020904Z.json"
+  ],
+  "exitCode": 1,
+  "subject": {
+    "platform": "linux",
+    "artifact": "Papercusp Server_0.0.25_amd64.deb",
+    "artifactSha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23",
+    "version": "0.0.25",
+    "runtimeBuildSha": "93f1c72063bb422583c9c24e7092f1bed767f64f",
+    "artifacts": [
+      {
+        "role": "gui-installer",
+        "name": "Papercusp GUI_0.0.25_amd64.deb",
+        "sha256": "7fdae6ab530ca5a92b99c6ffbfe18404c96981756031422709f5a29846faff2b",
+        "bytes": 49819790
+      },
+      {
+        "role": "server-installer",
+        "name": "Papercusp Server_0.0.25_amd64.deb",
+        "sha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23",
+        "bytes": 6187029860
+      }
+    ],
+    "debSha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+  },
+  "physicalRun": {
+    "schemaVersion": 1,
+    "window": {
+      "startedAt": "2026-09-30T02:09:04Z",
+      "finishedAt": "2026-09-30T02:14:00Z"
+    },
+    "legVerdicts": [
+      {
+        "leg": "installer-identity",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:09:13Z"
+      },
+      {
+        "leg": "join-runtime-match",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:09:13Z"
+      },
+      {
+        "leg": "runtime-identity",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:09:35Z"
+      },
+      {
+        "leg": "preflight-fresh",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:09:36Z"
+      },
+      {
+        "leg": "os-prerequisites",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:11:04Z"
+      },
+      {
+        "leg": "offline",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:11:23Z"
+      },
+      {
+        "leg": "install",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:13:22Z"
+      },
+      {
+        "leg": "installed-bytes",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:13:28Z"
+      },
+      {
+        "leg": "witness-compat",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:13:28Z"
+      },
+      {
+        "leg": "first-launch",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:13:47Z"
+      },
+      {
+        "leg": "offline-restore",
+        "status": "fail",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:13:48Z"
+      },
+      {
+        "leg": "restart-reresolve",
+        "status": "pass",
+        "scope": "physical",
+        "observedAt": "2026-09-30T02:14:00Z"
+      }
+    ]
+  },
+  "schema": "p521-offline-installer-journey/v1",
+  "platform": "linux",
+  "startedAt": "2026-09-30T02:09:04Z",
+  "finishedAt": "2026-09-30T02:14:00Z",
+  "verdict": "FAIL",
+  "join": {
+    "evidencePath": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+    "evidenceSha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+    "runtimeSha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+  },
+  "candidate": {
+    "expectedVersion": "0.0.25",
+    "expectedSha": "93f1c72063bb422583c9c24e7092f1bed767f64f",
+    "expectedHealthSha": "cddbd8d5"
+  },
+  "installerIdentity": {
+    "gui": {
+      "name": "Papercusp GUI_0.0.25_amd64.deb",
+      "sha256": "7fdae6ab530ca5a92b99c6ffbfe18404c96981756031422709f5a29846faff2b",
+      "bytes": "49819790"
+    },
+    "server": {
+      "name": "Papercusp Server_0.0.25_amd64.deb",
+      "sha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23",
+      "bytes": "6187029860"
+    }
+  },
+  "witness": {
+    "artifact": {
+      "name": "Papercusp Server_0.0.25_amd64.deb",
+      "sha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23",
+      "bytes": "6187029860"
+    },
+    "runtime": {
+      "serve.mjs": "924b5718ae63975820e0d663c23e9bc7ce34d909db17a443ffe8f41422cd3910",
+      "bin/node": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db",
+      "build-provenance.json": "264ae3c62b5dc3c6be25becf7221fdc4b1e8a90c3442b80e434cb2f99a8ec840",
+      "db-sql.count": "1036",
+      "db-sql.digest": "23e6c1241f73a3f446a401c5e92d7320008380c7ea3ddcb4162608f79d32e19b",
+      "db-sql.head": "1237-blueprint-invocation-program-started.sql",
+      "version": "0.0.25",
+      "buildSha": "",
+      "gitHead": "93f1c72063bb422583c9c24e7092f1bed767f64f"
+    }
+  },
+  "installedRuntime": {
+    "serve.mjs": "924b5718ae63975820e0d663c23e9bc7ce34d909db17a443ffe8f41422cd3910",
+    "bin/node": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db",
+    "build-provenance.json": "264ae3c62b5dc3c6be25becf7221fdc4b1e8a90c3442b80e434cb2f99a8ec840",
+    "db-sql.count": "1036",
+    "db-sql.digest": "23e6c1241f73a3f446a401c5e92d7320008380c7ea3ddcb4162608f79d32e19b",
+    "db-sql.head": "1237-blueprint-invocation-program-started.sql",
+    "version": "0.0.25",
+    "buildSha": "",
+    "gitHead": "93f1c72063bb422583c9c24e7092f1bed767f64f"
+  },
+  "serving": {
+    "launch": {
+      "port": "24322",
+      "pid": "6567",
+      "sha": "cddbd8d5",
+      "version": "0.0.25",
+      "exe": "/usr/lib/Papercusp Server/sidecar/bin/node",
+      "exeSha": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db"
+    },
+    "restart": {
+      "port": "24322",
+      "pid": "6988",
+      "sha": "cddbd8d5",
+      "version": "0.0.25",
+      "exe": "/usr/lib/Papercusp Server/sidecar/bin/node",
+      "exeSha": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db"
+    }
+  },
+  "target": {
+    "uname": "Linux 6.8.0-117-generic x86_64",
+    "host": "tester@127.0.0.1"
+  },
+  "offline": {
+    "mode": "enforce",
+    "egressBefore": "reachable:https://archive.ubuntu.com/",
+    "egressAfter": "denied",
+    "firewall": "iptables"
+  },
+  "install": {
+    "needsDownload": "",
+    "installExit": "0",
+    "remoteFetches": "0",
+    "sshExit": "0"
+  },
+  "osPrerequisites": {
+    "declared.server.Depends": "libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0 ",
+    "declared.server.Recommends": " ",
+    "declared.gui.Depends": "libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0 ",
+    "declared.gui.Recommends": " ",
+    "satisfy": "libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0, libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0",
+    "provisioned": "aspell-en=2020.12.07-0-1 aspell=0.60.8.1-1build1 bubblewrap=0.9.0-1ubuntu0.3 dictionaries-common=1.29.7 emacsen-common=3.0.5 enchant-2=2.3.3-2build2 glib-networking-common=2.80.0-1build1 glib-networking-services=2.80.0-1build1 glib-networking=2.80.0-1build1 gstreamer1.0-gl=1.24.2-1ubuntu0.5 gstreamer1.0-plugins-base=1.24.2-1ubuntu0.5 gstreamer1.0-plugins-good=1.24.2-1ubuntu1.7 gstreamer1.0-x=1.24.2-1ubuntu0.5 hunspell-en-us=1:2020.12.07-2 libaa1=1.4p5-51.1 libaspell15=0.60.8.1-1build1 libasyncns0=0.8-6build4 libatomic1=14.2.0-4ubuntu2~24.04.1 libavc1394-0=0.5.4-5build3 libayatana-appindicator3-1=0.5.93-1build3 libayatana-ido3-0.4-0=0.10.1-1build2 libayatana-indicator3-7=0.9.4-1build1 libcaca0=0.99.beta20-4ubuntu0.2 libcdparanoia0=3.10.2+debian-14build3 libdbusmenu-glib4=18.10.20180917~bzr492+repack1-3.1ubuntu5 libdbusmenu-gtk3-4=18.10.20180917~bzr492+repack1-3.1ubuntu5 libdv4t64=1.0.0-17.1build1 libenchant-2-2=2.3.3-2build2 libflac12t64=1.4.3+ds-2.1ubuntu2 libgles2=1.7.0-1build1 libgraphene-1.0-0=1.10.8-3build2 libgstreamer-gl1.0-0=1.24.2-1ubuntu0.5 libgstreamer-plugins-base1.0-0=1.24.2-1ubuntu0.5 libgstreamer-plugins-good1.0-0=1.24.2-1ubuntu1.7 libharfbuzz-icu0=8.3.0-2build2 libhunspell-1.7-0=1.7.2+really1.7.2-10build3 libhyphen0=2.8.8-7build3 libiec61883-0=1.2.0-6build1 libjavascriptcoregtk-4.1-0=2.52.6-0ubuntu0.24.04.1 libmanette-0.2-0=0.2.7-1build2 libmp3lame0=3.100-6build1 libmpg123-0t64=1.32.5-1ubuntu1.1 libogg0=1.3.5-3build1 libopus0=1.4-1build1 liborc-0.4-0t64=1:0.4.38-1ubuntu0.1 libpipewire-0.3-0t64=1.0.5-1ubuntu3.3 libpipewire-0.3-common=1.0.5-1ubuntu3.3 libproxy1v5=0.5.4-4build1 libpulse0=1:16.1+dfsg1-2ubuntu10.1 libraw1394-11=2.1.2-2build3 libsecret-1-0=0.21.4-1build3 libsecret-common=0.21.4-1build3 libshout3=2.4.6-1build2 libsndfile1=1.2.2-1ubuntu5.24.04.1 libsoup-3.0-0=3.4.4-5ubuntu0.8 libsoup-3.0-common=3.4.4-5ubuntu0.8 libspa-0.2-modules=1.0.5-1ubuntu3.3 libspeex1=1.2.1-2ubuntu2.24.04.1 libtag1v5-vanilla=1.13.1-1build1 libtag1v5=1.13.1-1build1 libtheora0=1.1.1+dfsg.1-16.1build3 libtwolame0=0.4.0-2build3 libv4l-0t64=1.26.1-4build3 libv4lconvert0t64=1.26.1-4build3 libvisual-0.4-0=0.4.2-2build1 libvorbis0a=1.3.7-1build3 libvorbisenc2=1.3.7-1build3 libvpx9=1.14.0-1ubuntu2.3 libwavpack1=5.6.0-1build1 libwayland-server0=1.22.0-2.1build1 libwebkit2gtk-4.1-0=2.52.6-0ubuntu0.24.04.1 libwebpmux3=1.3.2-0.4build3 libwebrtc-audio-processing1=0.3.1-0ubuntu6 xdg-dbus-proxy=0.1.5-1ubuntu0.2 xdg-desktop-portal-gtk=1.15.1-1build2 xdg-desktop-portal=1.18.4-1ubuntu2.24.04.3",
+    "provisionedCount": "76",
+    "satisfyExit": "0"
+  },
+  "restore": {
+    "potListExit": "0",
+    "expectPot": "papercusp"
+  },
+  "legs": [
+    {
+      "leg": "installer-identity",
+      "status": "pass",
+      "at": "2026-09-30T02:09:13Z",
+      "detail": "GUI+Server installer sha256/bytes match the release ledger",
+      "log": null
+    },
+    {
+      "leg": "join-runtime-match",
+      "status": "pass",
+      "at": "2026-09-30T02:09:13Z",
+      "detail": "runtime sha256 dd38a3ac49925949 is the one the discovery-join evidence names",
+      "log": null
+    },
+    {
+      "leg": "runtime-identity",
+      "status": "pass",
+      "at": "2026-09-30T02:09:35Z",
+      "detail": "witness serve.mjs=924b5718ae639758 db-sql head=1237-blueprint-invocation-program-started.sql version=0.0.25 sha=93f1c72063bb",
+      "log": null
+    },
+    {
+      "leg": "preflight-fresh",
+      "status": "pass",
+      "at": "2026-09-30T02:09:36Z",
+      "detail": "Linux 6.8.0-117-generic x86_64; no prior install; prior operator record: none",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/preflight.log"
+    },
+    {
+      "leg": "os-prerequisites",
+      "status": "pass",
+      "at": "2026-09-30T02:11:04Z",
+      "detail": "76 packages provisioned online from the declared Depends+Recommends of both .debs (no Papercusp package)",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/os-prerequisites.log"
+    },
+    {
+      "leg": "offline",
+      "status": "pass",
+      "at": "2026-09-30T02:11:23Z",
+      "detail": "egress before=reachable:https://archive.ubuntu.com/; after=denied (mode=enforce, firewall=iptables)",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/offline-deny-egress.log"
+    },
+    {
+      "leg": "install",
+      "status": "pass",
+      "at": "2026-09-30T02:13:22Z",
+      "detail": "GUI+Server installers exit 0 (papercusp-gui=ii  papercusp-server=ii  ); 0 remote fetches",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/install.log"
+    },
+    {
+      "leg": "installed-bytes",
+      "status": "pass",
+      "at": "2026-09-30T02:13:28Z",
+      "detail": "installed serve.mjs=924b5718ae639758 db-sql head=1237-blueprint-invocation-program-started.sql",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/installed-bytes.log"
+    },
+    {
+      "leg": "witness-compat",
+      "status": "pass",
+      "at": "2026-09-30T02:13:28Z",
+      "detail": "installed runtime == minimal-witness runtime on all 9 fields",
+      "log": null
+    },
+    {
+      "leg": "first-launch",
+      "status": "pass",
+      "at": "2026-09-30T02:13:47Z",
+      "detail": "port=24322 pid=6567 sha=cddbd8d5 version=0.0.25 exe=/usr/lib/Papercusp Server/sidecar/bin/node",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/launch.log"
+    },
+    {
+      "leg": "offline-restore",
+      "status": "fail",
+      "at": "2026-09-30T02:13:48Z",
+      "detail": "pot 'papercusp' absent (pot:list exit 0)",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/offline-restore.log"
+    },
+    {
+      "leg": "restart-reresolve",
+      "status": "pass",
+      "at": "2026-09-30T02:14:00Z",
+      "detail": "new pid 6988 (was 6567); port=24322 pid=6988 sha=cddbd8d5 version=0.0.25 exe=/usr/lib/Papercusp Server/sidecar/bin/node",
+      "log": "/tmp/pcoij-run.gdWAzA/logs/restart.log"
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/installed-bytes.log",
+      "sha256": "54edda576ec2bad4e29018529d5f0f8d2a5be0ac4c1c7fed1e56e13ef05cf93c"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/install.log",
+      "sha256": "ed52f07c2b11ea2db724480b9eab8e4d473fc133812901c6493c9af4af3a59fc"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/launch.log",
+      "sha256": "7aa62a62428febcf2805a572312c6cc8e069cd948fcc0af1c7b2cd857bdd6c8a"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/offline-deny-egress.log",
+      "sha256": "c08da0f9b6d9fc84ef5fe5f7625a6e644f549df3cca1c03a5ac077b2ec950770"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/offline-restore.log",
+      "sha256": "9085457c060342b3c934191e4de89d09584070828c2c5d10cd9de5a154583e43"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/os-prerequisites.log",
+      "sha256": "ed9442e4dfc35a41c42930038da0e30541f9e596386edccae56524b56ca842df"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/preflight.log",
+      "sha256": "d0c5ae5cc181746b8e8e5e987c282aa79e464b6d38b95f20802e5b681b608286"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/push.log",
+      "sha256": "232d52a3113551595e509040d68df6577441f5f68f6e7dc531ffb7d872fa085b"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/restart.log",
+      "sha256": "c3f2b62ed2481106b9a3e0863a7aa0de57e7238d2e40b21ca59d1b98d4ce83f3"
+    },
+    {
+      "path": "/tmp/pcoij-run.gdWAzA/logs/witness-extract.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "runDir": "/tmp/pcoij-run.gdWAzA",
+  "scopeNote": "No live peer join here (plan D-083): the Discovery/join row proves joining; this row proves the full installers lay down and serve, offline, the same runtime bytes that row joined with (join-runtime-match).",
+  "redactions": [
+    "the operator's home directory is written as '~' (identity-leak content-lint)",
+    "the operator's username is written as '<user>' in every spelling, incl. dash-encoded paths"
+  ]
+}

@@ -199,6 +199,13 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
         sh: async () => ({ err: null, stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
       }),
     ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
+    // ptool exits 5 on an ok:false answer (EI-24654733539966460): the refusal arrives
+    // WITH an exec error, and its reason must survive instead of collapsing to ptool_failed.
+    await expect(
+      requestMcpProxyHotPathRestart('abc', {
+        sh: async () => ({ err: new Error('Command failed: exit 5'), stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }) }),
+      }),
+    ).resolves.toMatchObject({ ok: false, restarted: false, code: 'gate_collision' });
   });
 
   it('keeps activation in the existing poll cadence before liveness probing', async () => {

@@ -317,6 +317,20 @@ describe('stale bg-host remediation — guarded, injectable, and generation-veri
     });
   });
 
+  it('keeps a refused restart\'s reason when ptool exits non-zero on ok:false (EI-24654733539966460)', async () => {
+    const result = await restartStaleBgHostExecutor('port-3271', staleVerdict(), {
+      // Far past any cooldown an earlier test in this file may have armed.
+      now: () => 9_000_000_000_000,
+      run: async (command) =>
+        command === 'systemctl'
+          ? { stdout: '101\n' }
+          : { stdout: JSON.stringify({ ok: false, reason: 'gate_collision' }), error: 'Command failed: exit 5' },
+      ptoolScript: '/tmp/ptool.mjs',
+    });
+
+    expect(result).toMatchObject({ attempted: true, restarted: false, code: 'gate_collision' });
+  });
+
   it('only remediates the stale bg-host identity and keeps the safety rails on the ptool call', async () => {
     let nowMs = 1_000_000_000;
     const calls: Array<{ command: string; args: string[]; stdin: string; timeout: number }> = [];

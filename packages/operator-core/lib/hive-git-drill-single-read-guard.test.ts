@@ -29,7 +29,9 @@ import { describe, expect, it } from 'vitest';
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
 const POT_GIT = path.join(REPO, 'packages/operator-core/lib/sync/pot-git');
 const PRODUCER = path.join(POT_GIT, 'physical-drill-producer.ts');
-const SCENARIO = path.join(REPO, 'papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh');
+// Overridable so scripts/mutation-probe.sh can point the guard at a mutated COPY (never the tree).
+const SCENARIO =
+  process.env.HIVE_GIT_SINGLE_READ_SCENARIO ?? path.join(REPO, 'papercusp-desktop/bin/vm-rig/hive-git-physical-scenario.sh');
 
 // ─── 1. TS: hand-rolled poll loops ──────────────────────────────────────────
 
@@ -186,20 +188,7 @@ export function findSingleReads(scenario: string, modes: readonly string[]): str
  * annotates the pre-action baselines (`# single-read: <reason>`) or moves the call onto
  * vh_converge, and deletes the entry. Never add one.
  */
-const LEGACY_SINGLE_READS: readonly string[] = [
-  'phase_a_storage_join:phase-a-observe',
-  'phase_a_storage_join:phase-a-quarantine-observe',
-  'phase_b_ref_announce:phase-b-observe',
-  'phase_b_ref_announce:phase-b-observe',
-  'phase_b_ref_announce:phase-b-observe',
-  'phase_b_ref_announce:phase-b-observe',
-  'phase_d_worktree_materialization:phase-d-observe',
-  'phase_e_github_bridge:phase-e-observe',
-  'phase_h_observe_vm:phase-h-observe',
-  'phase_h_observe_tower:phase-h-observe',
-  'phase_j_apply_outage_replay:phase-j-observe',
-  'phase_j_apply_outage_replay:phase-j-observe',
-];
+const LEGACY_SINGLE_READS: readonly string[] = [];
 
 // ─── tests ──────────────────────────────────────────────────────────────────
 

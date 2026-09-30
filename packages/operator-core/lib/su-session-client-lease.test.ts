@@ -128,6 +128,21 @@ describe('su-session client lease', () => {
     warn.mockRestore();
   });
 
+  it('an engine whose close never settles does not stop later sweeps', async () => {
+    const hung = vi.fn(() => new Promise<void>(() => undefined));
+    const later = vi.fn();
+    superviseSuClientLease(19, hung);
+    await grantSuClientLease(19, 1);
+    mem.advance(2);
+    await _sweepSuClientLeasesForTest();
+    expect(hung).toHaveBeenCalledTimes(1);
+    superviseSuClientLease(21, later);
+    await grantSuClientLease(21, 1);
+    mem.advance(2);
+    await _sweepSuClientLeasesForTest();
+    expect(later).toHaveBeenCalledTimes(1);
+  });
+
   it('releasing a stale supervision never removes a newer one for the same session', async () => {
     const stale = vi.fn();
     const current = vi.fn();

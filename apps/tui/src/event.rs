@@ -77,6 +77,10 @@ pub enum Event {
     Resize(u16, u16),
     /// Idle tick (emitted when no input arrives within the poll window).
     Tick,
+    /// A signal asked pui to stop: SIGHUP when its terminal closes, SIGTERM,
+    /// or SIGINT (pui-chat-first-ux P-009). It quits exactly like `/exit`, so
+    /// the attached conversation's engine ends with it.
+    Terminate(&'static str),
     /// Fresh plans list from the backend poller.
     Plans(Vec<PlanSummary>),
     /// Fresh goals list from the backend poller (the Plans-tab spine, P-032).

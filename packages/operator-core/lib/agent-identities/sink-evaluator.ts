@@ -31,7 +31,10 @@
  * `@papercusp/orchestrator/blueprint` beside the blueprint schema.
  */
 import { pinModuleState } from '@papercusp/module-singleton';
-import type { InjectionPoint, PackageRenderableSink } from '@papercusp/orchestrator/blueprint';
+import type { HookContextSink, InjectionPoint, PackageRenderableSink } from '@papercusp/orchestrator/blueprint';
+
+/** What the host allocates from: a declared injection point, or a sync rule's context request (P-011). */
+export type SinkInjectionRequest = Pick<InjectionPoint, 'tokenBudget' | 'priority' | 'overBudget'>;
 
 /** Same approximation the rest of operator-core uses for prompt text. */
 export function estimateSinkTokens(text: string): number {
@@ -77,7 +80,7 @@ export interface SinkProviderCall {
 export interface SinkContributionRequest {
   readonly identityId: string;
   readonly contributionId: string;
-  readonly injection: InjectionPoint;
+  readonly injection: SinkInjectionRequest;
   readonly produce: (call: SinkProviderCall) => Promise<string>;
 }
 
@@ -85,7 +88,8 @@ export interface SinkInvocationIdentity {
   readonly sessionId: string;
   readonly turnId: string;
   readonly invocationId: string;
-  readonly sink: PackageRenderableSink;
+  /** A package-renderable sink, or a sync rule's hook context sink (P-011, D-023 §4). */
+  readonly sink: PackageRenderableSink | HookContextSink;
   /** The wearer's attachment/activation revision this invocation evaluated against. */
   readonly attachmentRevision: string;
 }

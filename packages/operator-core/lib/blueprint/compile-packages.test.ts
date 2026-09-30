@@ -238,6 +238,42 @@ describe('P-006 operator package adapter', () => {
     })).rejects.toThrow(/required capability class has no active pot provider binding/);
   });
 
+  // P-011 / D-023: a worn sync context rule binds through the contribution
+  // resolver and has no optional form — a provider that cannot serve it inline
+  // refuses the compile instead of omitting on every turn.
+  it('binds a sync context rule provider and refuses one that cannot run inline', async () => {
+    const loaded = blueprint([{ kind: 'rule', ref: 'recall-at-turn' }]);
+    const context = { ref: 'memory.recall@1', verb: 'recall', tokenBudget: 400, priority: 10, overBudget: 'truncate' };
+    const resolvePackage = async () => pinPackageInput({
+      packageKind: 'rule', ref: 'recall-at-turn', revision: '1.0.0', files: [{ path: 'rule.json', bytes: 'r' }],
+      value: { id: 'recall-at-turn', delivery: 'sync', sink: 'turn-start', context },
+    });
+    const resolution = (providerKind: string, latencyClass: string) => ({
+      ok: true as const, requestedClassRef: 'memory.recall@1', classRef: 'memory.recall@1.2.0', verb: 'recall',
+      contract: { inputSchema: {}, outputSchema: { type: 'object' } },
+      provider: {
+        classRef: 'memory.recall@1.2.0', providerPackage: 'acme-recall', providerVersion: '1.0.0',
+        verbBindings: { recall: 'acme:recall' }, conformanceRunId: 'run-1', registryRevision: 'registry-r1',
+        providerKind, latencyClass,
+      },
+    }) as never;
+    const compile = (resolveContextCapability: Parameters<typeof compileBlueprintWithPackages>[1]['resolveContextCapability']) =>
+      compileBlueprintWithPackages(loaded, { workspaceId: 'workspace-a', harnessSlug: 'harness-a', resolvePackage, resolveContextCapability });
+
+    const requests: unknown[] = [];
+    const artifact = await compile(async (request) => { requests.push(request); return resolution('tool', 'sync'); });
+    expect(requests).toEqual([{ potSlug: 'parent-pot', classRef: 'memory.recall@1', verb: 'recall' }]);
+    expect(artifact.inputs).toContainEqual(expect.objectContaining({
+      kind: 'capability-provider', ref: 'memory.recall@1.2.0', providerPackage: 'acme-recall',
+      context: expect.objectContaining({ requestedRef: 'memory.recall@1', verb: 'recall', latencyClass: 'sync' }),
+    }));
+
+    await expect(compile(async () => resolution('operation', 'sync'))).rejects.toThrow(/synchronous tool or recipe/);
+    await expect(compile(async () => resolution('tool', 'async'))).rejects.toThrow(/synchronous tool or recipe/);
+    await expect(compile(async () => ({ ok: false, requestedClassRef: 'memory.recall@1', code: 'class-unbound' })))
+      .rejects.toThrow('sync rule recall-at-turn context memory.recall@1#recall cannot bind: class-unbound');
+  });
+
   it('pins and provisions the existing seed-pack declaration with explicit replayable selection', async () => {
     const loaded = resolveBlueprint({ id: 'seed-fixture', knowledge: { pack: 'facts' },
       workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });

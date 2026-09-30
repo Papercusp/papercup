@@ -1,6 +1,16 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
+  MCP_CALL_TOOL_NOT_OK_EXIT,
+  toolResultNotOkReason,
   buildMcpCallParams,
   buildMcpSessionQuery,
   isInvokedDirectly,
@@ -431,5 +441,85 @@ describe('mcp-call shell-safe JSON input', () => {
       { jsonArgs: undefined, flags: { json: '-' } },
       { readFile: () => '{not-json' },
     )).toThrow('stdin is not valid JSON');
+  });
+});
+
+const MCP_CALL_SCRIPT = fileURLToPath(new URL('../../../scripts/mcp-call.mjs', import.meta.url));
+
+/** Run `run` against a local MCP endpoint that answers every tools/call with `toolResult`. */
+async function withFakeMcpEndpoint<T>(
+  toolResult: unknown,
+  run: (port: number, home: string) => Promise<T>,
+): Promise<T> {
+  const home = await mkdtemp(join(tmpdir(), 'mcp-call-exit-'));
+  await mkdir(join(home, '.papercusp'), { recursive: true });
+  await writeFile(join(home, '.papercusp', 'superuser-token'), 'test-token\n');
+  const server: Server = createServer((req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const { id } = JSON.parse(body) as { id: number };
+      const frame = { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(toolResult) }] } };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify(frame)}\n\n`);
+    });
+  });
+  await new Promise<void>((ready) => server.listen(0, ready));
+  try {
+    return await run((server.address() as AddressInfo).port, home);
+  } finally {
+    await new Promise<void>((closed) => server.close(() => closed()));
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+/** Spawn the real script with stdout on a pipe, the way a shell `$(...)` reads it. */
+function runMcpCall(port: number, home: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((done, fail) => {
+    const child = spawn(
+      process.execPath,
+      [MCP_CALL_SCRIPT, 'work_items:create', '{}', '--port', String(port), '--client', 'mcp-call-exit-test', '--workspace', 'test-ws'],
+      { env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', fail);
+    child.on('close', (code) => done({ code, stdout, stderr }));
+  });
+}
+
+describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
+  it('reports a top-level or batch-entry refusal, and nothing else', () => {
+    expect(toolResultNotOkReason({ ok: false, error: 'not found' })).toBe('not found');
+    expect(toolResultNotOkReason({ ok: false })).toBe('no reason given');
+    expect(toolResultNotOkReason({ ok: true, results: [{ ok: true }, { ok: false, error: 'duplicate key' }] }))
+      .toBe('1 of 2 result(s) ok:false; first: duplicate key');
+    // Only an explicit ok:false is a refusal: projections, prose and arrays are not.
+    for (const answer of [{ ok: true }, { results: [{ ok: true }] }, { state: 'open' }, [{ ok: false }], 'ok:false', null, undefined]) {
+      expect(toolResultNotOkReason(answer)).toBeNull();
+    }
+  });
+
+  it('uses the same exit code as ptool, so shell callers need one rule', async () => {
+    const { PTOOL_TOOL_NOT_OK_EXIT } = await import('./ptool.mjs');
+    expect(MCP_CALL_TOOL_NOT_OK_EXIT).toBe(PTOOL_TOOL_NOT_OK_EXIT);
+  });
+
+  it('exits 5 with the complete result on stdout when the tool answers ok:false', async () => {
+    // Large enough that exiting before stdout drains would truncate it.
+    const refusal = { ok: false, results: [{ ok: false, error: 'duplicate key' }], padding: 'x'.repeat(256 * 1024) };
+    const run = await withFakeMcpEndpoint(refusal, runMcpCall);
+    expect(run.code, run.stderr).toBe(MCP_CALL_TOOL_NOT_OK_EXIT);
+    expect(JSON.parse(run.stdout)).toEqual(refusal);
+    expect(run.stderr).toContain('the tool answered ok:false (1 of 1 result(s) ok:false; first: duplicate key)');
+  });
+
+  it('still exits 0 when the answer does not report failure', async () => {
+    const run = await withFakeMcpEndpoint({ ok: true, id: 'EI-1' }, runMcpCall);
+    expect(run.code, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual({ ok: true, id: 'EI-1' });
   });
 });
