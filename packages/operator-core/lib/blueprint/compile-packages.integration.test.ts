@@ -47,7 +47,7 @@ describe('compileBlueprintWithPackages production composition (integration)', ()
     const dir = join(root, 'home', kind === 'rule' ? 'rules' : 'events', 'installed', ref);
     mkdirSync(dir, { recursive: true });
     const definition = kind === 'rule'
-      ? { id: ref, on: 'portable:completed', fire: 'class:notice.send@1.0.0#send', args: { text: 'done' } }
+      ? { id: ref, delivery: 'async', on: 'portable:completed', fire: 'class:notice.send@1.0.0#send', args: { text: 'done' } }
       : { eventKey: 'portable:completed', keyPattern: 'portable:completed:*', tags: ['portable'] };
     const manifest = { schemaVersion: 1, title: 'Portable fixture', description: 'Pinned reactive package',
       version: '1.0.0', ...definition };

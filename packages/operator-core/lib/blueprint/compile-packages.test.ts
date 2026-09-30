@@ -210,6 +210,7 @@ describe('P-006 operator package adapter', () => {
     const compile = (providerVersion: string) => compileBlueprintWithPackages(loaded, {
       workspaceId: 'workspace-a',
       harnessSlug: 'harness-a',
+      readGrantCeiling: null,
       resolveCapabilityProvider: async (classRef, potSlug) => {
         expect(potSlug).toBe('parent-pot');
         return classRef === 'crm.email@1.0.0' ? binding(providerVersion) : null;
@@ -236,6 +237,49 @@ describe('P-006 operator package adapter', () => {
       harnessSlug: 'harness-a',
       resolveCapabilityProvider: async () => null,
     })).rejects.toThrow(/required capability class has no active pot provider binding/);
+  });
+
+  // P-012 / D-040(d), D-041: a required grant whose tool reach the current pot/role
+  // ceiling excludes refuses the launch compile; an optional one, an unreadable
+  // ceiling and an empty ceiling set never do (the per-call kernel still denies).
+  it('refuses a required grant above the pot/role ceiling and nothing else', async () => {
+    const loaded = resolveBlueprint({
+      id: 'ceiling-fixture', slots: [{ slot: 'domain' }],
+      grants: { requires: ['crm.email@1.0.0'], optional: ['calendar.read@1.0.0'] },
+      workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+    });
+    const binding = (classRef: string, verbBindings: Record<string, string>) => ({
+      classRef, providerPackage: 'acme', providerVersion: '1.0.0', verbBindings,
+      conformanceRunId: 'run-1', conformanceStatus: 'passed' as const, behavioralStatus: 'not-required',
+      behavioralRunRef: null, registryRevision: 'registry-r1', status: 'active', updatedAt: '2026-09-30T00:00:00.000Z',
+    });
+    const bindings: Record<string, ReturnType<typeof binding>> = {
+      'crm.email@1.0.0': binding('crm.email@1.0.0', { send: 'acme:send-email' }),
+      'calendar.read@1.0.0': binding('calendar.read@1.0.0', { read: 'acme:read-calendar' }),
+    };
+    const tools = new Map([['acme:send-email', ['email:send']], ['acme:read-calendar', ['calendar:read']]]);
+    const policy = (allowCapabilities: string[]) => ({ ceilings: [{ allowCapabilities }], tools, protectedAdditions: [] });
+    const compile = (readGrantCeiling: NonNullable<Parameters<typeof compileBlueprintWithPackages>[1]['readGrantCeiling']>) =>
+      compileBlueprintWithPackages(loaded, {
+        workspaceId: 'workspace-a', harnessSlug: 'harness-a', role: 'worker', readGrantCeiling,
+        resolveCapabilityProvider: async (classRef) => bindings[classRef] ?? null,
+      });
+
+    const outside = vi.fn(async () => policy(['calendar:*']));
+    await expect(compile(outside)).rejects.toThrow(
+      'required capability class exceeds the pot/role ceiling: acme:send-email is outside-ceiling');
+    // Only required classes are evaluated, against the launching role's ceiling.
+    expect(outside).toHaveBeenCalledWith({
+      workspaceId: 'workspace-a', harnessSlug: 'harness-a', role: 'worker', classRefs: ['crm.email@1.0.0'],
+    });
+    await expect(compile(async () => ({ ...policy(['email:*']), tools: new Map() })))
+      .rejects.toThrow('acme:send-email is tool-unavailable');
+
+    // The optional class sits outside this ceiling; it grants nothing but never refuses.
+    const artifact = await compile(async () => policy(['email:*']));
+    expect(artifact.inputs).toContainEqual(expect.objectContaining({ kind: 'capability-provider', ref: 'crm.email@1.0.0' }));
+    await expect(compile(async () => { throw new Error('identity grant target role is ambiguous'); })).resolves.toBeDefined();
+    await expect(compile(async () => ({ ceilings: [], tools, protectedAdditions: [] }))).resolves.toBeDefined();
   });
 
   // P-011 / D-023: a worn sync context rule binds through the contribution
