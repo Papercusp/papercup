@@ -52,7 +52,11 @@ export function __resetDecisionModelLedgerStatsForTest(): void {
 export interface RecordDecisionModelCallOptions {
   /** Defaults to the active workspace at write time. */
   readonly workspaceId?: string;
-  /** Token rates; TypeSafe publishes none, so cost_usd stays null without them. */
+  /**
+   * Token rates. The provider's response carries token counts but no price, so
+   * cost_usd stays null without these. The Jev caller passes JEV_PRICING
+   * (lib/memory/jev-settings.ts).
+   */
   readonly pricing?: DecisionPricing;
 }
 
