@@ -207,7 +207,9 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
   const connectApp = defineTool({
     method: 'POST',
     path: '/connected-apps',
-    auth: 'public',
+    // Loopback at the route stack as well as the in-handler isLocal check: only the
+    // person at this computer creates a key (auth-tier Wave 1: no public mutating routes).
+    auth: 'loopback',
     async handler(req) {
       if (!deps.isLocal(req)) return jsonError('local_only', 403);
       const body = await readJson(req);
@@ -249,7 +251,7 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
   const rotateKey = defineTool({
     method: 'POST',
     path: '/connected-apps/rotate',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       if (!deps.isLocal(req)) return jsonError('local_only', 403);
       if (!isSameOriginOrNonBrowser(req)) return jsonError('cross_origin_blocked', 403);
@@ -388,7 +390,7 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
   const deviceDecision = defineTool({
     method: 'POST',
     path: '/connected-apps/device/decision',
-    auth: 'public',
+    auth: 'loopback',
     async handler(req) {
       if (!deps.isLocal(req)) return jsonError('local_only', 403);
       if (!isSameOriginOrNonBrowser(req)) return jsonError('cross_origin_blocked', 403);
