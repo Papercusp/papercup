@@ -1,0 +1,54 @@
+{
+  "subject": "Jev save-time substance check: wording `trigger` at refusal threshold 0.4 replaces v1 at 0.5",
+  "workItem": "WI-10004428",
+  "plan": "jev-performance-improvements-2026-09-30",
+  "bars": ["R-2", "R-3"],
+  "jevModel": "jev-1.13.0",
+  "code": {
+    "wording": "packages/operator-core/lib/memory/jev-substance-wording.ts (JEV_SUBSTANCE_WORDING = 'trigger')",
+    "threshold": "packages/operator-core/lib/memory/jev-conflict-judge.ts (CONTENT_FREE_MAX_P_CONCRETE = 0.4)",
+    "bench": "packages/operator-core/lib/memory/bench/jev-substance-cli.ts --substance-wording, --exclude-sample-seed",
+    "heldout": "packages/operator-core/lib/memory/bench/jev-substance-heldout.ts (96 trigger-only promoters, 20 quote-plus-content memories)"
+  },
+  "rootCause": "Under v1, four bench self-promoters (topical:lg-036, hn-026, lg-030, lg-011) scored P(concrete) 0.55-0.82 because the gold query each quoted as its trigger reads like a fact; the model credited the memory with its trigger's words. The trigger clause says quoted trigger text is not information the memory states.",
+  "preRegistration": {
+    "thread": "WI-10004428",
+    "posts": [
+      { "id": 1151827, "at": "2026-09-30T21:24:05Z", "point": "trigger@0.5", "outcome": "failed R-3: 7/600 real refused" },
+      { "id": 1151838, "at": "2026-09-30T21:29:32Z", "point": "trigger@0.3 on fresh sample p010c", "outcome": "failed: hn-026 saved at P=0.31 in the memory:remember request shape" },
+      { "id": 1151850, "at": "2026-09-30T21:33:24Z", "point": "trigger@0.4 on third disjoint sample p010d", "outcome": "passed every criterion; adopted" }
+    ],
+    "disclosure": "Two pre-registered points failed before the adopted one. The adopted threshold 0.4 was first seen on sample p010c, then confirmed on sample p010d, which no decision had used."
+  },
+  "runs": [
+    {
+      "seed": "p010", "excluded": null,
+      "reports": [".papercusp/bench-reports/jev-substance-v1-2026-09-30T21-26-58-632Z.md", ".papercusp/bench-reports/jev-substance-trigger-2026-09-30T21-27-03-195Z.md"],
+      "failedCalls": { "v1": 0, "trigger": 0 },
+      "v1At0_5": { "benchSaved": 4, "realRefused": { "selection": 1, "confirmation": 1, "whole": 2 }, "heldoutCaught": 56, "heldoutConcreteRefused": 0 },
+      "triggerAt0_4": { "benchSavedAlone": 0, "realRefused": { "selection": 3, "confirmation": 1, "whole": 4 }, "heldoutCaught": 84, "heldoutConcreteRefused": 0 }
+    },
+    {
+      "seed": "p010c", "excluded": "p010",
+      "reports": [".papercusp/bench-reports/jev-substance-v1-2026-09-30T21-31-56-011Z.md", ".papercusp/bench-reports/jev-substance-trigger-2026-09-30T21-31-49-512Z.md"],
+      "failedCalls": { "v1": 0, "trigger": 0 },
+      "v1At0_5": { "benchSavedAlone": 4, "benchSavedPaired": 4, "realRefused": { "selection": 1, "confirmation": 1, "whole": 2 }, "heldoutCaught": 60, "heldoutConcreteRefused": 0 },
+      "triggerAt0_4": { "benchSavedAlone": 0, "benchSavedPaired": 0, "realRefused": { "selection": 1, "confirmation": 0, "whole": 1 }, "heldoutCaught": 84, "heldoutConcreteRefused": 0 }
+    },
+    {
+      "seed": "p010d", "excluded": "p010,p010c", "overlapWithEarlierSamples": 0, "confirmation": true,
+      "reports": [".papercusp/bench-reports/jev-substance-v1-2026-09-30T21-34-55-472Z.md", ".papercusp/bench-reports/jev-substance-trigger-2026-09-30T21-34-52-720Z.md"],
+      "failedCalls": { "v1": 0, "trigger": 0 },
+      "latencyMs": { "trigger": { "p50": 176, "p95": 269 }, "v1": { "p50": 181, "p95": 271 } },
+      "v1At0_5": { "benchSavedAlone": 4, "benchSavedPaired": 4, "realRefused": { "selection": 0, "confirmation": 0, "whole": 0 }, "heldoutCaught": 58, "heldoutConcreteRefused": 0 },
+      "triggerAt0_4": { "benchSavedAlone": 0, "benchSavedPaired": 0, "topBenchP": { "alone": 0.30, "paired": 0.26 }, "realRefused": { "selection": 1, "confirmation": 1, "whole": 2 }, "heldoutCaught": 84, "heldoutConcreteRefused": 0 }
+    }
+  ],
+  "pooledRealRefused": { "triggerAt0_4": "7/1800 = 0.39%", "v1At0_5": "4/1800 = 0.22%" },
+  "realRefusedCharacter": "Every real memory refused by trigger below 0.5 across the three samples is a tau2 bench transcript line (a customer utterance or 'Resolution applied: Let me look up your account.') or a test witness marker.",
+  "caveats": [
+    "The held-out wrapper w7 ('Tag: <statement>. Priority: critical...') asserts its statement unquoted, so those 8 memories are arguably concrete; all 8 stay saved under trigger. Recorded, not removed.",
+    "The request-shape shift (substance asked alone vs with three conflict neighbours) reached |dP| 0.070; the adopted threshold keeps a 0.09 margin over the highest bench self-promoter seen (hn-026, P=0.31 paired on p010c).",
+    "The admission filter's `substance` variant keeps the P-005 v1 wording it was measured with; only the save gate and the content-free sweep ask trigger."
+  ]
+}
