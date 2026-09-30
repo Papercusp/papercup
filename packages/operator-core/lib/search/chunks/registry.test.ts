@@ -31,7 +31,7 @@ describe('chunk surface registry', () => {
     expect(a).not.toBe(b);
   });
 
-  it('plans are registered with the D-014 bench arm (P-009)', () => {
+  it('plans are registered with the D-014 bench arm at the D-029 margin (P-009, P-015)', () => {
     expect(CHUNK_SURFACES).toContain(PLANS_CHUNK_SURFACE);
     const s = PLANS_CHUNK_SURFACE;
     expect(s.surface).toBe('plans');
@@ -39,10 +39,11 @@ describe('chunk surface registry', () => {
       table: 'harness_shared.harness_plans',
       key: ['workspace_id', 'harness_slug', 'plan_slug'],
     });
-    // D-014: 1,500-character windows, 250 overlap, up to 32 windows, no margin.
+    // D-014: 1,500-character windows, 250 overlap, up to 32 windows.
+    // D-029: chunk margin 0.02 (the live R-2 re-run failed at D-014's margin 0).
     expect(s.splitter).toEqual({ kind: 'window', size: 1500, overlap: 250 });
     expect(s.maxChunks).toBe(32);
-    expect(s.chunkMargin ?? 0).toBe(0);
+    expect(s.chunkMargin).toBe(0.02);
     // The plan's own vector is the gist leg (D-005 readers stay on it).
     expect(s.parentVector).toEqual({
       column: 'embedding',
@@ -77,7 +78,8 @@ describe('chunk surface registry', () => {
     // Pinned from the decisions, not read back from the registry: a registry edit
     // that drifts from its bench verdict fails here.
     const VERDICTS: Record<string, { maxChunks: number; chunkMargin: number; decision: string }> = {
-      plans: { maxChunks: 32, chunkMargin: 0, decision: 'D-014' },
+      // The margin is D-029's (P-015 live re-run), which amends D-014's margin 0.
+      plans: { maxChunks: 32, chunkMargin: 0.02, decision: 'D-014 + D-029' },
       work_items: { maxChunks: 4, chunkMargin: 0, decision: 'D-015' },
       consult_questions: { maxChunks: 8, chunkMargin: 0.04, decision: 'D-016' },
       operator_turns: { maxChunks: 8, chunkMargin: 0.06, decision: 'D-017' },

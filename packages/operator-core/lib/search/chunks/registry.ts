@@ -129,7 +129,10 @@ export const PLANS_CHUNK_SURFACE: PapercuspChunkSurface = {
   versionSql: 'p.updated_at',
   splitter: { kind: 'window', size: 1500, overlap: 250 },
   maxChunks: 32,
-  chunkMargin: 0,
+  // D-029 (P-015): D-014 chose margin 0, but the live re-run lowered short-row
+  // MRR by .0134 against R-2's .01 bound; 0.02 is the smallest margin that meets
+  // it on live data (.0054) and keeps tail recall@1 at .890 (.898 at margin 0).
+  chunkMargin: 0.02,
   parentVector: { column: 'embedding', profileColumn: 'embedding_profile', modeColumn: 'embedding_mode' },
 };
 
