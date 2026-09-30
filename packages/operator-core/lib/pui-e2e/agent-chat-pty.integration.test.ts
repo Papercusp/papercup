@@ -6322,6 +6322,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
+  // WI-10004247: each journey launches `pui` from its own directory. The
+  // workbench lands on, and resumes, the newest resumable chat started in its
+  // launch directory (P-010 / D-008), so a shared directory put the previous
+  // journey's conversation in front of the next one instead of a new session.
+  const journeyDir = (tag: string) => realpathSync(mkdtempSync(path.join(tmpdir(), `pui-real-${tag}-`)));
   // The installed Codex Default mode excludes request_user_input. Its native
   // Plan-mode controls still need their own PUI acceptance before this case
   // can claim a positive Codex question result.
@@ -6342,7 +6347,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           ? 'Use multiSelect false.'
           : 'Use question id choice, with one selection allowed.';
       const request = `I want to try the choice dialog in this conversation. Please use ${questionTool} to ask me: ${question} Give me two choices, Keep and Change, under the header Choice. ${questionShape} Wait for me to choose. Then confirm my choice with the sentence "You chose: <selected label>."`;
-      const pane = new PuiPane(bin, operatorPort, home);
+      const pane = new PuiPane(bin, operatorPort, home, { cwd: journeyDir('question') });
       try {
         await openComposer(pane);
         pane.write(request);
@@ -6498,7 +6503,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // toolApproval:'prompt' still requires the real Bash card below.
     const approvalRequest = `Continue the already-assigned PUI acceptance task ${REAL_APPROVAL_WORK_ITEM}. Use Bash to create the temporary fixture file '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline.`;
     const first = await startOperatorProcess();
-    const pane = new PuiPane(bin, first.port, home);
+    const launchDir = journeyDir('restore');
+    const pane = new PuiPane(bin, first.port, home, { cwd: launchDir });
     const frames: Record<string, string> = {};
     let saved: SuSessionDescriptor | undefined;
     let chatId: string | undefined;
@@ -6648,35 +6654,18 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     }));
     await putViewState('Plans');
     const second = await startOperatorProcess(first.port);
-    const resumedPane = new PuiPane(bin, second.port, home);
+    // Reopen from the same directory: the workbench lands on this chat (the
+    // newest resumable one started here) and resumes it by itself (D-008).
+    const resumedPane = new PuiPane(bin, second.port, home, { cwd: launchDir });
     let primaryFailure: { error: unknown } | null = null;
     try {
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
+      await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
+      frames.selectedConversation = resumedPane.screen();
       resumedPane.escape();
       await resumedPane.waitFor('i type · v speak');
-      resumedPane.write('l');
-      await resumedPane.waitFor('Conversation — Enter select');
-      frames.conversationPicker = resumedPane.screen();
-      // Select the saved identity explicitly. The picker starts at row zero,
-      // which can be another (empty) conversation in the production inventory.
-      await resumedPane.waitFor(chatId!);
-      const selectedHint = () => {
-        const rows = resumedPane.screen().split('\n');
-        const title = rows.findIndex((row) => row.includes('Conversation — Enter select'));
-        const index = rows.findIndex((row, index) => index > title && row.includes('│> '));
-        return index >= 0 ? (rows[index + 1] ?? '') : '';
-      };
-      for (let row = 0; row < 100 && !selectedHint().includes(chatId!); row++) {
-        const previous = selectedHint();
-        expect(previous, 'Conversation picker has no rendered selected row').not.toBe('');
-        resumedPane.write('j');
-        await vi.waitFor(() => expect(selectedHint()).not.toBe(previous), { timeout: 2_000, interval: 50 });
-      }
-      expect(selectedHint()).toContain(chatId!);
-      frames.selectedConversation = resumedPane.screen();
-      resumedPane.enter();
       resumedPane.write('i');
       await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
@@ -6772,7 +6761,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const greetingReply = `PUI-REPEAT-${nonce}`;
     const greeting = `Reply with exactly ${greetingReply} and no other text.`;
     const eventsBefore = scriptedEngine.events.length;
-    const pane = new PuiPane(bin, operatorPort, home);
+    const launchDir = journeyDir('repeat');
+    const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
     let chatId: string;
     try {
       await openComposer(pane);
@@ -6792,29 +6782,14 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       engine.adapter.dispose();
       await putViewState('Plans');
       const launched = scriptedEngine.engines.length;
-      const resumedPane = new PuiPane(bin, operatorPort, home);
+      // Reopening from the same directory lands on this chat and resumes it
+      // (D-008); the clock starts at the reopen that triggers the resume.
+      const started = Date.now();
+      const resumedPane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
       try {
         await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         resumedPane.write('o');
-        await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
-        resumedPane.escape();
-        await resumedPane.waitFor('i type · v speak');
-        resumedPane.write('l');
-        await resumedPane.waitFor('Conversation — Enter select');
-        const selectedHint = () => {
-          const rows = resumedPane.screen().split('\n');
-          const title = rows.findIndex((row) => row.includes('Conversation — Enter select'));
-          const index = rows.findIndex((row, i) => i > title && row.includes('│> '));
-          return index >= 0 ? (rows[index + 1] ?? '') : '';
-        };
-        for (let row = 0; row < 100 && !selectedHint().includes(chatId!); row++) {
-          const previous = selectedHint();
-          resumedPane.write('j');
-          await vi.waitFor(() => expect(selectedHint()).not.toBe(previous), { timeout: 2_000, interval: 50 });
-        }
-        expect(selectedHint()).toContain(chatId!);
-        const started = Date.now();
-        resumedPane.enter();
+        await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
         await vi.waitFor(() => expect(scriptedEngine.engines.length).toBeGreaterThan(launched),
           { timeout: 120_000, interval: 100 });
         const resumed = scriptedEngine.engines[launched]!;
@@ -6854,7 +6829,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const longRequest = `For interruption check PUI-CANCELLED-${nonce}, count from 1 through 10000, one number per line. Do not summarize or use tools.`;
     const followupReply = `PUI-CONTINUED-${nonce}`;
     const followup = `Reply with exactly ${followupReply} and no other text. Do not resume the interrupted task.`;
-    const pane = new PuiPane(bin, operatorPort, home);
+    const launchDir = journeyDir('greeting');
+    const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
     const frames: Record<string, string> = {};
     let streamingEvidence: Record<string, unknown> | undefined;
     try {
@@ -7068,7 +7044,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       console.info('PUI_NATIVE_TEARDOWN_DIAGNOSTIC', JSON.stringify(teardownRows));
       engine.adapter.dispose();
       await putViewState('Plans');
-      const resumedPane = new PuiPane(bin, operatorPort, home);
+      const resumedPane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
       let resumedDescriptor;
       const resumePrompt = `Reply exactly RESUMED:${greetingReply}. Do not use tools.`;
       const resumedReply = `RESUMED:${greetingReply}`;
@@ -7078,14 +7054,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       try {
         await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
         resumedPane.write('o');
-        // Opening Agent Chat starts at the new-conversation composer. Select
-        // the saved conversation before expecting any of its history.
-        await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
+        // Reopening from the same directory lands on the saved conversation
+        // and resumes it (D-008): no picker step, one resumed engine.
+        await resumedPane.waitFor(`chat ${firstChat.id.slice(0, 12)}`);
         resumedPane.escape();
         await resumedPane.waitFor('i type · v speak');
-        resumedPane.write('l');
-        await resumedPane.waitFor('Conversation — Enter select');
-        resumedPane.enter();
         await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
         const resumedEngine = scriptedEngine.engines[1];
         await resumedEngine.ready;

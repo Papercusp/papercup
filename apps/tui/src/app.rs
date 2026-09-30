@@ -3727,7 +3727,13 @@ impl App {
                         _ => false,
                     }
             })
-            .map(|entry| (entry.agent_chat_id.clone(), entry.adv_session_id, entry.backend))?;
+            .map(|entry| {
+                (
+                    entry.agent_chat_id.clone(),
+                    entry.adv_session_id,
+                    entry.backend,
+                )
+            })?;
         self.su_adopted_sessions
             .insert(adv_session_id)
             .then(|| Action::AttachSuSession {
@@ -19638,7 +19644,11 @@ mod tests {
             (frame, load)
         };
         let (frame, load) = startup(false);
-        assert_eq!(frame, Action::Render, "nothing is bound when the frame lands");
+        assert_eq!(
+            frame,
+            Action::Render,
+            "nothing is bound when the frame lands"
+        );
         assert_eq!(
             load,
             Action::AttachSuSession {
