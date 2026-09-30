@@ -790,6 +790,7 @@ async function killOwnerProcess(pid: number): Promise<boolean> {
   const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
   if (!alive()) return false;
   process.kill(pid, 'SIGKILL');
+  // converge-exempt: waits up to 5 s for a local child pid to exit after SIGKILL, not a remote observation
   for (let i = 0; i < 100 && alive(); i += 1) await new Promise((r) => setTimeout(r, 50));
   return !alive();
 }

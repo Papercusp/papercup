@@ -81,12 +81,9 @@ function drillModules(): string[] {
  * SHRINK-ONLY: hand-rolled poll loops that predate the shared helper. P-004 moves each
  * onto waitForConvergence and deletes its entry here. Never add one.
  */
-const LEGACY_HAND_ROLLED_LOOPS = new Set<string>([
-  'physical-drill-phase-d.ts:capturePhysicalPhaseDEvent',
-  'physical-drill-phase-e.ts:awaitPhysicalPhaseEStageMode',
-  'physical-drill-phase-e.ts:awaitFinishedFireSince',
-  'physical-drill-phase-i.ts:killOwnerProcess',
-]);
+// Empty since PDS P-004 migrated every drill poll loop onto waitForConvergence (a local
+// pid wait carries a `converge-exempt:` reason instead). Shrink-only: it stays empty.
+const LEGACY_HAND_ROLLED_LOOPS = new Set<string>([]);
 
 // ─── 2. Shell: single reads of observation modes ────────────────────────────
 

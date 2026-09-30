@@ -14,6 +14,7 @@ import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'n
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { inWorkspaceTxn, tryAcquire, tryRelease } from '@papercusp/locks';
+import { waitForConvergence } from '@papercusp/verification-harness';
 // Side-effect import: wires @papercusp/locks to the same embedded-pg admin URL
 // the operator (and this producer's getOrgPg) resolves on this host.
 import '../../agent-tools/locks/configure';
@@ -900,15 +901,14 @@ export async function capturePhysicalPhaseDEvent(
   deps: PhysicalPhaseDEventDeps = {},
 ): Promise<PhysicalPhaseDEvent> {
   const sql = deps.sql ?? getOrgPg().sql;
-  const nowMs = deps.nowMs ?? Date.now;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const waitMs = Math.max(0, Math.min(input.waitMs ?? 0, PHASE_D_EVENT_WAIT_MAX_MS));
-  const deadline = nowMs() + waitMs;
-  let matches: Array<{
+  type EventMatch = {
     row: { id: number; observed_at: string; body: Record<string, unknown> };
     payload: SignedStagingAdvance;
-  }>;
-  for (;;) {
+  };
+  // The shared convergence helper (PDS P-004): read now, then re-read until exactly one
+  // event matches. A duplicate is a producer defect, so the read throws at once.
+  const readMatches = async (): Promise<EventMatch[]> => {
     const rows = await sql<Array<{ id: number; observed_at: string; body: Record<string, unknown> }>>`
       SELECT id, ts::text AS observed_at, body
         FROM harness_shared.coord_event_log
@@ -921,7 +921,7 @@ export async function capturePhysicalPhaseDEvent(
        ORDER BY id ASC
        LIMIT 200
     `;
-    matches = rows.flatMap((row) => {
+    const matches = rows.flatMap((row): EventMatch[] => {
       const fed = row.body?.fed_event as Record<string, unknown> | undefined;
       const payload = fed?.payload;
       if (
@@ -941,16 +941,24 @@ export async function capturePhysicalPhaseDEvent(
         `physical Phase D found ${matches.length} ${PHASE_D_EVENT_DUPLICATE_MARKER} for the run-bound head (${seen}); expected exactly one`,
       );
     }
-    if (matches.length === 1) break;
-    const remaining = deadline - nowMs();
-    if (remaining <= 0) {
-      throw new Error(
-        `physical Phase D expected exactly one signed production staging event for the run-bound head; none arrived within ${Math.round(waitMs / 1000)}s`,
-      );
-    }
-    await sleep(Math.min(PHASE_D_EVENT_POLL_MS, remaining));
+    return matches;
+  };
+  const converged = await waitForConvergence({
+    what: `physical Phase D ${input.hostId} signed staging event for ${input.stagingSha}`,
+    observe: readMatches,
+    lagging: (matches) => (matches.length === 1 ? [] : ['no signed production staging event yet']),
+    budgetMs: waitMs,
+    pollMs: PHASE_D_EVENT_POLL_MS,
+    maxBudgetMs: PHASE_D_EVENT_WAIT_MAX_MS,
+    ...(deps.nowMs ? { now: deps.nowMs } : {}),
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+  });
+  if (!converged.converged) {
+    throw new Error(
+      `physical Phase D expected exactly one signed production staging event for the run-bound head; none arrived within ${Math.round(waitMs / 1000)}s`,
+    );
   }
-  const match = matches[0]!;
+  const match = converged.value[0]!;
   return {
     schemaVersion: PHASE_D_EVENT_SCHEMA,
     hostId: input.hostId,

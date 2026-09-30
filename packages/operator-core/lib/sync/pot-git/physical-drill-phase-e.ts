@@ -9,6 +9,7 @@
  * Caller-selected commands, repositories, refs, and remote URLs are absent.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { waitForConvergence } from '@papercusp/verification-harness';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { parseGithubUrl } from '../../harness/clone-github';
 import { fetchRepoPushPermission } from '../../harness/github-repo-permissions';
@@ -549,17 +550,18 @@ export async function awaitPhysicalPhaseEStageMode(
     throw new Error(`physical Phase E mode wait must be an integer 0..${PHASE_E_MODE_WAIT_MAX_MS}ms`);
   }
   const read = deps.readMode ?? readPotGitMode;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const now = deps.now ?? Date.now;
-  const deadline = now() + input.waitMs;
-  let mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql);
-  while (!stageModeReached(mode, input.stage)) {
-    const remaining = deadline - now();
-    if (remaining <= 0) break;
-    await sleep(Math.min(PHASE_E_MODE_POLL_MS, remaining));
-    mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql);
-  }
-  return mode;
+  // The shared convergence helper (PDS P-004): read now, re-read until the stage's mode shows.
+  const result = await waitForConvergence({
+    what: `physical Phase E ${input.stage} mode`,
+    observe: () => read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql),
+    lagging: (mode) => (stageModeReached(mode, input.stage) ? [] : [`mode=${mode.mode} (${mode.source})`]),
+    budgetMs: input.waitMs,
+    pollMs: PHASE_E_MODE_POLL_MS,
+    maxBudgetMs: PHASE_E_MODE_WAIT_MAX_MS,
+    ...(deps.now ? { now: deps.now } : {}),
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+  });
+  return result.value;
 }
 
 export type PhysicalPhaseEModeAwait = {
@@ -673,16 +675,19 @@ async function awaitFinishedFireSince(
   deadline: number,
   deps: Pick<PhaseEDeps, 'sleep' | 'now'>,
 ): Promise<boolean> {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = deps.now ?? Date.now;
-  let reached = finishedFireStartedSince(await routine(sql), sinceMs);
-  while (!reached) {
-    const remaining = deadline - now();
-    if (remaining <= 0) break;
-    await sleep(Math.min(PHASE_E_MODE_POLL_MS, remaining));
-    reached = finishedFireStartedSince(await routine(sql), sinceMs);
-  }
-  return reached;
+  // The shared convergence helper (PDS P-004); the budget is what is left of the caller's.
+  const result = await waitForConvergence({
+    what: 'physical Phase E git-sync fire finished since the judged start',
+    observe: async () => finishedFireStartedSince(await routine(sql), sinceMs),
+    lagging: (reached) => (reached ? [] : ['no finished git-sync fire started at/after the judged start']),
+    budgetMs: Math.min(Math.max(0, deadline - now()), PHASE_E_MODE_WAIT_MAX_MS),
+    pollMs: PHASE_E_MODE_POLL_MS,
+    maxBudgetMs: PHASE_E_MODE_WAIT_MAX_MS,
+    now,
+    ...(deps.sleep ? { sleep: deps.sleep } : {}),
+  });
+  return result.value;
 }
 
 /**
