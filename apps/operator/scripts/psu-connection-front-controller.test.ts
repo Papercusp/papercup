@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -541,7 +541,8 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
       `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
     );
     expect(terminals[0]?.initialInput).toBe(
-      `command -v psu >/dev/null && exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--role=su' '--label=it'\\''s mine'; ` +
+      `printf '\\033[H\\033[2J'; ` +
+        `command -v psu >/dev/null && exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 psu '--role=su' '--label=it'\\''s mine'; ` +
         `printf '%s\\n' 'psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.'\r`,
     );
     const sessions = portal.calls
@@ -554,19 +555,22 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
   });
 
   describe("the line typed into the workspace shell, run by a real bash (WI-10003949)", () => {
-    // The remote terminal turns the typed CR into a newline; a pipe does not.
+    // PATH is only `bin`: this box has a real psu in /usr/bin. The remote
+    // terminal turns the typed CR into a newline; a pipe does not.
     const typeInto = (bin: string, line: string) =>
       spawnSync("/bin/bash", ["--norc", "--noprofile", "-s"], {
         input: `${line.replace(/\r$/, "\n")}echo still-in-shell\n`,
-        env: { PATH: `${bin}:/usr/bin:/bin` },
+        env: { PATH: bin },
         encoding: "utf8",
       });
 
     it("stays in the shell and says why when the machine has no psu", () => {
       const result = typeInto(tempHome(), hostedForwardInput("psu", ["--role=su"]));
 
+      // The screen is cleared first, wiping the echoed copies of the typed line.
       expect(result.stdout).toBe(
-        "psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.\n" +
+        "\x1b[H\x1b[2J" +
+          "psu cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.\n" +
           "still-in-shell\n",
       );
       expect(result.stderr).toBe("");
@@ -580,10 +584,11 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
         '#!/bin/sh\necho "forwarded=$PAPERCUSP_PSU_CONNECTION_FORWARDED"\nfor cell in "$@"; do echo "[$cell]"; done\nexit 7\n',
       );
       chmodSync(join(bin, "psu"), 0o755);
+      symlinkSync("/usr/bin/env", join(bin, "env"));
 
       const result = typeInto(bin, hostedForwardInput("psu", ["--role=su", "--label=it's mine", "a b"]));
 
-      expect(result.stdout).toBe("forwarded=1\n[--role=su]\n[--label=it's mine]\n[a b]\n");
+      expect(result.stdout).toBe("\x1b[H\x1b[2Jforwarded=1\n[--role=su]\n[--label=it's mine]\n[a b]\n");
       expect(result.status).toBe(7);
     });
   });

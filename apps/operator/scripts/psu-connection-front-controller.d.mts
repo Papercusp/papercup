@@ -105,8 +105,9 @@ export function describeHostedWorkspace(profile: any, workspace: any, now?: numb
  * machines do not install psu for the workspace account yet (WI-10003949), and
  * a bare `exec` of a missing program exits 127 and closes the connection. So
  * the program is started only when the shell finds it; otherwise the shell says
- * so and stays open. The trailing CR is the Enter key: the remote terminal
- * turns it into a newline.
+ * so and stays open. The terminal echoes this line up to three times before it
+ * runs, so it clears the screen first. The trailing CR is the Enter key: the
+ * remote terminal turns it into a newline.
  */
 export function hostedForwardInput(program: any, forwardedArgv: any): string;
 /**

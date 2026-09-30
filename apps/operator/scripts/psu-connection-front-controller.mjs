@@ -1096,15 +1096,16 @@ async function awaitHostedLink(profile, workspace, budget, deps) {
  * machines do not install psu for the workspace account yet (WI-10003949), and
  * a bare `exec` of a missing program exits 127 and closes the connection. So
  * the program is started only when the shell finds it; otherwise the shell says
- * so and stays open. The trailing CR is the Enter key: the remote terminal
- * turns it into a newline.
+ * so and stays open. The terminal echoes this line up to three times before it
+ * runs, so it clears the screen first. The trailing CR is the Enter key: the
+ * remote terminal turns it into a newline.
  */
 export function hostedForwardInput(program, forwardedArgv) {
   const start = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}${forwardedArgv
     .map((cell) => ` ${shellQuote(cell)}`)
     .join("")}`;
   const missing = `${program} cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.`;
-  return `command -v ${program} >/dev/null && ${start}; printf '%s\\n' ${shellQuote(missing)}\r`;
+  return `printf '\\033[H\\033[2J'; command -v ${program} >/dev/null && ${start}; printf '%s\\n' ${shellQuote(missing)}\r`;
 }
 
 async function runHostedConnection(profile, workspaceId, forwardedArgv, transport, pickerAllowed, deps) {

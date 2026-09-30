@@ -153,6 +153,26 @@ export function contentFreeSummary(pConcrete: number, model: string): string {
   );
 }
 
+/** Ledger consumer label for the memory:sweep content-free layer (P-011). */
+export const JEV_CONTENT_FREE_SWEEP_CONSUMER = 'memory-content-free-sweep';
+
+/**
+ * P-011: ask ONLY the substance question about one STORED memory. It is the exact
+ * question memory:remember asks at save time, so the sweep and the save gate cannot
+ * disagree about what "content-free" means. Returns P(concrete), or `null` when there
+ * is no usable answer (empty text, inconclusive call, malformed answer). A thrown
+ * client error propagates; the sweep counts it as unanswered, never as concrete.
+ */
+export async function judgeSubstanceWithJev(text: string, deps: JevConflictJudgeDeps): Promise<number | null> {
+  if (!text.trim()) return null;
+  const { request, substanceId } = buildConflictRequest(text, [], { substance: true });
+  const outcome = await deps.client().decide(request, {
+    consumer: deps.consumer ?? JEV_CONTENT_FREE_SWEEP_CONSUMER,
+    timeoutMs: deps.timeoutMs ?? JEV_CONFLICT_TIMEOUT_MS,
+  });
+  return substancePConcrete(outcome, substanceId ?? SUBSTANCE_QUESTION_ID);
+}
+
 export interface ConflictVerdict {
   /** The highest-probability label. */
   readonly label: JevConflictLabel;

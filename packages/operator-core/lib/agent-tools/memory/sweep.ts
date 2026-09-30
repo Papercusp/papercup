@@ -56,6 +56,15 @@ export default defineTool({
       .max(20)
       .optional()
       .describe('LLM cost bound: max pools sent to the judge (default 4)'),
+    contentFree: z
+      .boolean()
+      .optional()
+      .describe('also flag content-free (self-promoting) rows via Jev; one call per row'),
+    forgetContentFreeIds: z
+      .array(z.string().min(1).max(200))
+      .max(500)
+      .optional()
+      .describe('apply mode: soft-forget these reviewer-confirmed ids if this run flags them again'),
   }),
   async handler(args) {
     const wired = await liveCorpusSweepDeps();
@@ -73,6 +82,8 @@ export default defineTool({
           pools: args.pools,
           judgeConflicts: args.judgeConflicts,
           maxPoolsJudged: args.maxPoolsJudged,
+          contentFree: args.contentFree,
+          forgetContentFreeIds: args.forgetContentFreeIds,
         },
         wired.deps,
       );
@@ -94,6 +105,11 @@ export default defineTool({
               duplicatesTruncated: result.duplicates.length > MAX_REPORTED,
               conflicts: result.conflicts.slice(0, MAX_REPORTED),
               conflictsTruncated: result.conflicts.length > MAX_REPORTED,
+              // When true, every contentFree:0 means NOT MEASURED.
+              contentFreeUnavailable: result.contentFreeUnavailable,
+              contentFree: result.contentFree.slice(0, MAX_REPORTED),
+              contentFreeTruncated: result.contentFree.length > MAX_REPORTED,
+              contentFreeUnconfirmed: result.contentFreeUnconfirmed,
             }),
           },
         ],

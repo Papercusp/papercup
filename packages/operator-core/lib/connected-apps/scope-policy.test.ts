@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   evaluateAppScope,
+  grantedToolCapabilities,
   hardDenyReason,
   scopeEntryMatches,
   validateAppKeyScopes,
@@ -147,5 +148,36 @@ describe('validateAppKeyScopes — issue-time refusal (R-6)', () => {
     ]);
     const problems = validateAppKeyScopes({ tools: ['harness:list', 'harness:shell', 'search:semantic', 'harness:nope'] }, catalog);
     expect(problems.map((p) => p.value)).toEqual(['harness:shell', 'search:semantic', 'harness:nope']);
+  });
+});
+
+describe('grantedToolCapabilities — the principal a key authenticates as (WI-10004317)', () => {
+  const catalog: AppScopeTool[] = [
+    harnessList,
+    plansGet,
+    { name: 'plans:list', capabilities: ['plans:read', 'plans:list'] },
+    { name: 'work_items:list', capabilities: ['work_items:read'] },
+    { name: 'harness:shell', capabilities: ['capability:bash'] },
+    { name: 'dev:restart', capabilities: ['dev:ops'] },
+    { name: 'search:semantic', capabilities: ['search:read'], crossWorkspace: true },
+  ];
+  const caps = (scopes: Parameters<typeof grantedToolCapabilities>[0]) =>
+    [...grantedToolCapabilities(scopes, catalog)].sort();
+
+  it('an exact-tool key with no explicit capabilities carries the capabilities its tools declare', () => {
+    expect(caps({ capabilities: [], tools: ['work_items:list'] })).toEqual(['work_items:read']);
+  });
+
+  it('a group entry covers every tool in the group; explicit capabilities are kept', () => {
+    expect(caps({ capabilities: ['x:y'], tools: ['plans:*'] })).toEqual(['plans:list', 'plans:read', 'x:y']);
+  });
+
+  it('a tampered row naming hard-denied or cross-workspace tools lifts none of their capabilities', () => {
+    expect(caps({ tools: ['harness:shell', 'dev:restart', 'search:semantic'] })).toEqual([]);
+  });
+
+  it('no tools named: only the explicit capabilities', () => {
+    expect(caps({ capabilities: ['harness:read'] })).toEqual(['harness:read']);
+    expect(caps(null)).toEqual([]);
   });
 });

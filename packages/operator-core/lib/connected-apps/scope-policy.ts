@@ -187,6 +187,33 @@ export function hardDenyReason(tool: Pick<AppScopeTool, 'name' | 'capabilities'>
   return null;
 }
 
+/**
+ * The capabilities an app key's principal carries (WI-10004317). A key's grant is its `tools`
+ * allowlist; the tools it names declare capabilities (`work_items:list` → `work_items:read`), and
+ * the generic tools/list filter and dispatch capability gate check THOSE against the principal. A
+ * key issued with exact tools and no capabilities (every "Connect an app" key) would otherwise
+ * list nothing and be refused `missing_capability` on every real tool.
+ *
+ * Adds the declared capabilities of every catalog tool the allowlist covers, skipping hard-denied
+ * and cross-workspace tools, so a tampered row naming one never lifts its capability into the
+ * principal. The dispatch seat (`evaluateAppScope`) still decides WHICH tools run: a capability
+ * shared with an ungranted tool does not reach that tool.
+ */
+export function grantedToolCapabilities(
+  scopes: AppKeyScopes | null | undefined,
+  catalog: Iterable<AppScopeTool>,
+): Set<string> {
+  const out = new Set<string>(scopes?.capabilities ?? []);
+  const entries = nonEmpty(scopes?.tools);
+  if (!entries) return out;
+  for (const tool of catalog) {
+    if (!entries.some((entry) => scopeEntryMatches(entry, tool.name))) continue;
+    if (tool.crossWorkspace || hardDenyReason(tool)) continue;
+    for (const cap of tool.capabilities) out.add(cap);
+  }
+  return out;
+}
+
 /** True when a scope allowlist entry covers the tool name. */
 export function scopeEntryMatches(entry: string, toolName: string): boolean {
   const e = entry.trim();

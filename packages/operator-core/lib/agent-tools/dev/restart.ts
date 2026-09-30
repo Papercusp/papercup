@@ -914,6 +914,9 @@ async function writeRestartAudit(
     /** WI-222053: a real restart that deliberately crossed an in-flight git-sync
      *  operation is attributable from the durable audit row. */
     gitSyncCollision?: { kind: string; overridden: boolean; resources: string[]; pids: number[] } | null;
+    /** target:staging: what papercup-staging-sync's checkout lock read when this
+     *  restart fired (the final pre-signal re-check wins over the first read). */
+    stagingSyncCollision?: { kind: string; lockPath: string; lockHeld: boolean | null } | null;
     /** The atomic legacy-resource barrier intentionally left to expire after
      *  systemctl has crossed the delayed handoff. */
     gitSyncBarrier?: { resource: string; expiresAt: string } | null;
