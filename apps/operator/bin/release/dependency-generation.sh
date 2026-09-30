@@ -1883,12 +1883,20 @@ dependency_generation_sweep_exact_scratch() {
   done
 }
 
-# Prints the scratch root on success. Exit 74 = the ref is not buildable from the live
-# trees (a typed miss that names why); any other non-zero = the build itself failed.
-dependency_generation_prepare_exact_ref_root() {
+# Stages the ref's dependency inputs in a fresh scratch root and judges them against the
+# live inputs. Leaves the scratch root in DEPENDENCY_GENERATION_EXACT_SCRATCH (the caller
+# cleans up) and the helper's verdict lines in DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT.
+# Exit 0 = install-equivalent; 74 = NOT equivalent (reasons in the verdict, NOT logged here,
+# because a prediction is not a failure); any other non-zero = the staging itself failed.
+# Shared by the exact-ref builder and `--predict-ref`, so the admit-time prediction and
+# the gate's build can never disagree about what is buildable.
+DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
+
+dependency_generation_stage_exact_ref_inputs() {
   local integration_root="$1" ref="$2" exact_input="$3"
-  local parent scratch have ref_manifest live_manifest verdict rc line drop trees=0
+  local parent scratch have ref_manifest live_manifest verdict rc
   local helper="${DEPENDENCY_GENERATION_LOCK_EQUIVALENCE:-$(dirname "${BASH_SOURCE[0]}")/dependency-lock-equivalence.mjs}"
+  DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
   parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
   mkdir -p "$parent" || return 1
   dependency_generation_sweep_exact_scratch "$parent"
@@ -1921,7 +1929,26 @@ dependency_generation_prepare_exact_ref_root() {
       --live-root "$integration_root" --live-manifest "$scratch/.live-inputs"
   )" || rc=$?
   rm -f -- "$scratch/.ref-inputs" "$scratch/.live-inputs"
-  if [ "$rc" -eq 3 ]; then
+  DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+  [ "$rc" -eq 3 ] && return 74
+  [ "$rc" -eq 0 ] || {
+    dependency_generation_log "FATAL: dependency-lock-equivalence failed rc=$rc for ref $ref"
+    return 1
+  }
+  return 0
+}
+
+# Prints the scratch root on success. Exit 74 = the ref is not buildable from the live
+# trees (a typed miss that names why); any other non-zero = the build itself failed.
+dependency_generation_prepare_exact_ref_root() {
+  local integration_root="$1" ref="$2" exact_input="$3"
+  local scratch verdict rc line drop trees=0
+  rc=0
+  dependency_generation_stage_exact_ref_inputs \
+    "$integration_root" "$ref" "$exact_input" || rc=$?
+  scratch="$DEPENDENCY_GENERATION_EXACT_SCRATCH"
+  verdict="$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT"
+  if [ "$rc" -eq 74 ]; then
     dependency_generation_log \
       "FATAL: no prewarmed dependency generation for input fingerprint $exact_input; exact-ref build refused: ref $ref dependency inputs are not install-equivalent to the live tree's:"
     while IFS= read -r line; do
@@ -1929,10 +1956,7 @@ dependency_generation_prepare_exact_ref_root() {
     done <<< "$verdict"
     return 74
   fi
-  [ "$rc" -eq 0 ] || {
-    dependency_generation_log "FATAL: dependency-lock-equivalence failed rc=$rc for ref $ref"
-    return 1
-  }
+  [ "$rc" -eq 0 ] || return "$rc"
 
   # 4. Hardlink the live trees (metadata only; the ordinary ensure copies from here).
   while IFS= read -r line; do
@@ -1966,6 +1990,7 @@ dependency_generation_prepare_exact_ref_root() {
 dependency_generation_main() {
   local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
+  local predict_ref='' predict_verdict='' predict_rc=0 line
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1976,10 +2001,18 @@ dependency_generation_main() {
       --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
+      --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
+  [ -z "$predict_ref" ] || {
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--predict-ref cannot be combined with another mode or --workspace-dir'
+      return 2
+    }
+  }
   [ -n "$integration_root" ] || {
     dependency_generation_log '--integration is required'
     return 2
@@ -2026,6 +2059,47 @@ dependency_generation_main() {
     )" || return $?
     printf 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=%s input=%s\n' \
       "$fingerprint_ref" "$exact_input"
+    return 0
+  fi
+  if [ -n "$predict_ref" ]; then
+    # Admit-time prediction (WI-10004151 part 2): would `--ensure-ref <ref>` succeed right
+    # now? Read-only against the store and the live trees; stages only the ref's lockfiles.
+    #   prewarmed  — a selector for the ref's inputs already exists
+    #   live-match — the ref's inputs equal the live tree's; ensure publishes from live
+    #   buildable  — install-equivalent modulo live-only links; the exact-ref builder builds it
+    #   refused    — needs a real install; each reason is a _REASON line
+    # Exit 0 for every verdict; non-zero only when the prediction itself failed.
+    predict_ref="$(git -C "$integration_root" rev-parse --verify "$predict_ref^{commit}" 2>/dev/null)" || {
+      dependency_generation_log "FATAL: --predict-ref is not a commit: $predict_ref"
+      return 74
+    }
+    exact_input="$(
+      dependency_generation_input_fingerprint_ref "$integration_root" "$predict_ref"
+    )" || return $?
+    live_input="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+    if [ -f "$generation_root/.inputs/$exact_input" ]; then
+      predict_verdict='prewarmed'
+    elif [ "$live_input" = "$exact_input" ]; then
+      predict_verdict='live-match'
+    else
+      dependency_generation_stage_exact_ref_inputs \
+        "$integration_root" "$predict_ref" "$exact_input" || predict_rc=$?
+      dependency_generation_cleanup_exact_scratch
+      case "$predict_rc" in
+        0) predict_verdict='buildable' ;;
+        74) predict_verdict='refused' ;;
+        *) return "$predict_rc" ;;
+      esac
+    fi
+    printf 'DEPENDENCY_GENERATION_PREDICTION schema=1 ref=%s input=%s live=%s verdict=%s links=%s\n' \
+      "$predict_ref" "$exact_input" "$live_input" "$predict_verdict" \
+      "$(printf '%s\n' "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" | grep -c '^DROP_LINK' || true)"
+    if [ "$predict_verdict" = 'refused' ]; then
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf 'DEPENDENCY_GENERATION_PREDICTION_REASON %s\n' "${line#NOT_EQUIVALENT$'\t'}"
+      done < <(printf '%s\n' "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" | grep '^NOT_EQUIVALENT' || true)
+    fi
     return 0
   fi
   if [ -n "$select_inputs_from" ]; then
