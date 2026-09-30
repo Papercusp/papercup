@@ -147,6 +147,22 @@ const legsWith = (lexicalCandidates: number) => {
 
 // The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
+// Jev (plan jev-decision-model-integration-2026-09-29): the owner's switch, driven
+// per-test. The default is Off, which is every test above this file's Jev block.
+const jev = vi.hoisted(() => ({
+  mode: 'off' as 'off' | 'shadow' | 'on',
+  decide: null as null | ((request: { questions: Record<string, unknown> }, options?: unknown) => Promise<unknown>),
+  clientBuilt: 0,
+}));
+vi.mock('./jev-settings', () => ({
+  getJevMode: vi.fn(async () => jev.mode),
+  resolveJevMemoryInjection: vi.fn(async () => ({ mode: jev.mode, keyPresent: jev.mode !== 'off', effective: jev.mode })),
+  ensureJevDecisionClient: vi.fn(() => {
+    jev.clientBuilt += 1;
+    return { decide: (request: { questions: Record<string, unknown> }, options?: unknown) => jev.decide!(request, options) };
+  }),
+}));
+
 let registryProjects: Array<{ slug: string; harness_kind?: string; hive_slug?: string }> = [];
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: registryProjects })),
@@ -223,6 +239,9 @@ it('cancels upstream search when the existing injection phase deadline expires',
 beforeEach(() => {
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
+  jev.mode = 'off';
+  jev.decide = null;
+  jev.clientBuilt = 0;
   sqlRows = [];
   sqlFailure = null;
   sqlDelayMs = 0;
@@ -1039,6 +1058,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         'budget',
         'dedup',
         'feedback',
+        'jev',
         'nearDuplicate',
         'pack',
         'workspace',
@@ -2195,3 +2215,84 @@ describe('identity-package eligibility on the push path (P-007)', () => {
     expect(backend.search.mock.calls[0][1]).not.toHaveProperty('archivedEligibility');
   });
 });
+
+describe('Jev on the push path (plan jev-decision-model-integration-2026-09-29, P-007/P-008, D-009)', () => {
+  const ROWS = [
+    { id: 'mj1', text: 'the deploy runs from papercup-release' },
+    { id: 'mj2', text: 'the tabs toolbar uses a 12px gap' },
+  ];
+  const INPUT = { userId: 'u1', workspaceId: 'ws', queryContext: 'where does the deploy run from' };
+  /** Answer every question in request order with the given P(yes) values. */
+  const answering = (pYes: number[]) => {
+    const calls: Array<{ request: { questions: Record<string, unknown> }; options?: unknown }> = [];
+    jev.decide = async (request, options) => {
+      calls.push({ request, options });
+      const answers = Object.fromEntries(Object.keys(request.questions).map((id, i) => [id, { type: 'yesNo', pYes: pYes[i] ?? 1 }]));
+      return { kind: 'answered', model: 'jev-1.13.0', answers, usage: { inputTokens: 1, outputTokens: 0 }, latencyMs: 5, attempts: 1 };
+    };
+    return calls;
+  };
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  const baseline = async (): Promise<string | null> => {
+    jev.mode = 'off';
+    useBackend(mockBackend(ROWS));
+    return buildMemoryContextBlock(INPUT);
+  };
+
+  it('Off (the default) never builds a client, makes zero decide() calls, and injects both memories', async () => {
+    const calls = answering([0, 0]);
+    const block = await baseline();
+    expect(jev.clientBuilt).toBe(0);
+    expect(calls).toHaveLength(0);
+    expect(block).toContain(ROWS[0]!.text);
+    expect(block).toContain(ROWS[1]!.text);
+  });
+
+  it('Log only fires ONE memory-injection request and injects the byte-identical block', async () => {
+    const off = await baseline();
+    jev.mode = 'shadow';
+    const calls = answering([0.9, 0.01]);
+    useBackend(mockBackend(ROWS));
+    const block = await buildMemoryContextBlock(INPUT);
+    await flush();
+    expect(block).toBe(off);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options).toMatchObject({ consumer: 'memory-injection', subjectIds: ['mj1', 'mj2'] });
+  });
+
+  it('On drops what Jev judges irrelevant and records the drop in the admission funnel', async () => {
+    jev.mode = 'on';
+    answering([0.9, 0.01]);
+    useBackend(mockBackend(ROWS));
+    const block = await buildMemoryContextBlock(INPUT);
+    await flush();
+    expect(block).toContain(ROWS[0]!.text);
+    expect(block).not.toContain(ROWS[1]!.text);
+    const { admission } = recordRecallStatsMock.mock.calls.at(-1)![1] as { admission: { dropped: Record<string, number> } };
+    expect(admission.dropped.jev).toBe(1);
+  });
+
+  it('On fails open: an inconclusive answer or a throwing client injects exactly the Off block', async () => {
+    const off = await baseline();
+    jev.mode = 'on';
+    jev.decide = async () => ({ kind: 'inconclusive', reason: 'timeout', latencyMs: 400, attempts: 1 });
+    useBackend(mockBackend(ROWS));
+    expect(await buildMemoryContextBlock(INPUT)).toBe(off);
+    jev.decide = async () => {
+      throw new Error('socket hang up');
+    };
+    useBackend(mockBackend(ROWS));
+    expect(await buildMemoryContextBlock(INPUT)).toBe(off);
+  });
+
+  it('On never reorders: a kept set is injected in retrieval order', async () => {
+    jev.mode = 'on';
+    answering([0.9, 0.95]);
+    useBackend(mockBackend(ROWS));
+    const block = (await buildMemoryContextBlock(INPUT))!;
+    expect(block.indexOf(ROWS[0]!.text)).toBeLessThan(block.indexOf(ROWS[1]!.text));
+  });
+});
+
