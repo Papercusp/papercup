@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 923,
+  "count": 925,
   "tools": [
     {
       "name": "ablation:report",
@@ -32121,6 +32121,37 @@
       }
     },
     {
+      "name": "triggers:create-webhook",
+      "http": {
+        "path": "/api/agent-tools/triggers/create-webhook",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a signed webhook trigger source (P-017): returns its URL(s) and an HMAC signing key, shown ONCE. An outside system POSTs signed JSON to start the bound blueprint operation.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "An automated outside system (CI, a SaaS webhook, a script) must start a blueprint operation without holding a user or app token.",
+        "notWhen": "An app acting on behalf of a person — issue it an app key instead. A provider with a native adapter (Gmail, Slack) — use triggers:create with that kind.",
+        "chaining": "triggers:create-webhook → give the sender the URL + key → triggers:bind { sourceId, eventPattern: \"ext:webhook:<event>\", operationHarnessSlug, operationId } → triggers:arm. Lost key → triggers:rotate-webhook-secret."
+      }
+    },
+    {
       "name": "triggers:disarm",
       "http": {
         "path": "/api/agent-tools/triggers/disarm",
@@ -32213,6 +32244,37 @@
         "when": "An external-trigger plan item tells you to read the triggering message. Pass payload.plan_run.runId as planRunId; the message is not embedded in the plan inputs.",
         "notWhen": "A run that did not originate from an external trigger, or to browse other runs — this returns only the event for the planRunId you name, inside your own workspace.",
         "chaining": "triggers:read-payload → compose the response → gmail:create-draft / slack:respond-in-thread with the SAME planRunId."
+      }
+    },
+    {
+      "name": "triggers:rotate-webhook-secret",
+      "http": {
+        "path": "/api/agent-tools/triggers/rotate-webhook-secret",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Replace a webhook source’s HMAC signing key (P-017). The new key is shown ONCE; the old one keeps verifying for overlapSec (default 24 h, 0 = invalid at once).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The signing key was lost or may have leaked, or on a scheduled rotation.",
+        "notWhen": "To stop a webhook entirely — disarm its bindings (triggers:disarm) or disable the source instead.",
+        "chaining": "triggers:rotate-webhook-secret → update the sender → the old key stops at previousValidUntil."
       }
     },
     {
