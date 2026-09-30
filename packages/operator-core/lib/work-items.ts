@@ -53,6 +53,7 @@ import { DEFAULT_COORD_WORKSPACE, withPgContentionRetry } from '@papercusp/coord
 // SEARCH_SOURCES (coverage-gate.test.ts), so adding a key there would fail the suite.
 import { assessSurfaceCoverage, type CoverageSnapshot, type SourceCoverageAssessment } from './search/coverage-gate';
 import { activeWorkspaceId } from './workspace-registry';
+import { canonicalizeAssigneeOwnerId } from './work-item-holder-identity';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
@@ -5301,6 +5302,22 @@ export async function claimWorkItem(
     agentReviewAdmission?: AgentReviewClaimAdmission;
   } = {},
 ): Promise<WorkItem | null> {
+  // EI-23701433507513915: the WRITE backstop — a truncated su- owner id is never persisted as
+  // `taken_by`. Every assign path funnels through here (the claim tool's `assignee`,
+  // plan-items:assign, dispatch): expand to the unique full owner id, or refuse the claim
+  // (null, this function's existing refusal) rather than store a prefix that every exact
+  // holder check will later mistake for someone else.
+  {
+    let scopeWorkspace: string | null = null;
+    try {
+      scopeWorkspace = activeWorkspaceId() ?? null;
+    } catch {
+      scopeWorkspace = null; // unscoped lookup: an ambiguous prefix still refuses
+    }
+    const canonical = await canonicalizeAssigneeOwnerId(assignee, { workspaceId: scopeWorkspace });
+    if (!canonical.ok) return null;
+    assignee = canonical.ownerId;
+  }
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
   // value for both the existence/family check below AND the actual claimIssue()
   // write. resolveIssuesScopeWorkspace()/issuesScopeWorkspace() re-derive their
