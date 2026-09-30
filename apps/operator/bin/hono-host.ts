@@ -39,11 +39,11 @@ import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
 import { externalIngressHandler, handler } from './host-handler';
 import { externalIngressPort } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { configureIngressListener } from '@papercusp/operator-core/lib/own-tunnel/runtime';
+import { markOwnTunnelListenerSeamConfigured } from '@papercusp/operator-core/lib/own-tunnel/service';
 import {
-  markOwnTunnelListenerSeamConfigured,
-  startOwnTunnelReconciler,
-} from '@papercusp/operator-core/lib/own-tunnel/service';
-import { startPortalRelayReconciler } from '@papercusp/operator-core/lib/remote-access/relay-opt-in';
+  httpServingProcessRole,
+  startRemoteAccessReconcilers,
+} from '@papercusp/operator-core/lib/remote-access/boot-reconcilers';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { requestOnlyHost } from '@papercusp/operator-core/lib/background-workers';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
@@ -864,8 +864,11 @@ const clusterHandle = sidecarMode ? null : startCluster({
     // never federating (su-72ce40f2's diagnosis, WI-5441, post 53143).
     void waitForBootMigrationGate().then(() => {
       startRequestServers();
-      // external-app-access P-009: open this process's own-tunnel listener now (idempotent).
-      startOwnTunnelReconciler();
+      // external-app-access P-009 + P-008: open this process's own-tunnel listener now
+      // (idempotent). A single-process host (one HTTP worker, e.g. the desktop app) never
+      // enters the clusterWorkers > 1 primary block below, and it is the host singleton, so
+      // it arms the relay reconciler here too (WI-10004423).
+      startRemoteAccessReconcilers(httpServingProcessRole(clusterHandle));
       // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
       // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
       // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
@@ -986,15 +989,11 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   // the same way; a request-only primary under the dedicated-bg-host topology stays
   // silent here too.
   const bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});
-  // external-app-access P-009: the primary is the process that may own the own-tunnel
-  // connector (cloudflared); request workers arm the same reconciler for their listener.
-  // Idempotent, never throws, and it re-reads the row every few seconds, so a first pass
-  // that runs before boot migrations have applied simply converges on a later tick.
-  startOwnTunnelReconciler();
-  // external-app-access P-008 (D-031): the opt-in Papercusp relay connector, the other route
-  // an install can use. Same shape: only the host singleton ever dials, a Papercusp-hosted
-  // machine never does, and a pass before boot migrations apply converges on a later tick.
-  startPortalRelayReconciler();
+  // external-app-access P-009 + P-008 (D-031): the primary may own the own-tunnel connector
+  // (cloudflared) and is the host singleton that dials the opt-in Papercusp relay; request
+  // workers arm only their own-tunnel listener (above). Idempotent, never throws, and a pass
+  // before boot migrations apply converges on a later tick.
+  startRemoteAccessReconcilers('cluster-primary');
   // WI-6594: relay each worker's P-009 stamp declarations to every other worker.
   // The primary is the hub because only it holds a handle to every worker; it also
   // applies each patch locally, since it runs the background machinery whose own
