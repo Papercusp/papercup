@@ -85,7 +85,7 @@ function repo(opts: { preexistingDrift?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'admit-lock-repo-'));
   TEMP.push(root);
   git(root, ['init', '-q', '-b', 'staging']);
-  const bDeps = opts.preexistingDrift ? { extra: '*' } : {};
+  const bDeps: Record<string, string> = opts.preexistingDrift ? { extra: '*' } : {};
   const candidate = sweep(
     root,
     {
