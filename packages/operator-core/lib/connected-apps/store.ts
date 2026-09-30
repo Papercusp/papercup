@@ -27,7 +27,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
-import { appKeyHashMatches, mintAppKey, parseAppKey } from './key';
+import { appKeyHashMatches, mintAppKey, parseAccessToken, parseAppKey } from './key';
 import {
   appScopeToolOf,
   validateAppKeyScopes,
@@ -87,9 +87,33 @@ export interface AppKeyRow {
   rotated_at: Date | null;
   /** While set and in the future, the key's previous secret still authenticates (R-11). */
   previous_token_valid_until: Date | null;
+  /**
+   * Set when the service key is an OAuth client-credentials client (P-016, migration 1261): how it
+   * authenticates at the token endpoint. Such a key is refused as a bearer ('token_endpoint_only');
+   * the app exchanges it for short-lived access tokens instead. Null = an ordinary bearer key.
+   */
+  client_auth: ClientAuthMethod | null;
 }
 
-export type AppKeyRefusal = 'malformed' | 'unknown' | 'mismatch' | 'rotated' | 'revoked' | 'paused' | 'expired';
+export type ClientAuthMethod = 'client_secret' | 'private_key_jwt';
+
+export type AppKeyRefusal =
+  | 'malformed'
+  | 'unknown'
+  | 'mismatch'
+  | 'rotated'
+  | 'revoked'
+  | 'paused'
+  | 'expired'
+  /** A client-credentials secret presented as a bearer: it is only valid at the token endpoint. */
+  | 'token_endpoint_only';
+
+/** The access token a bearer presented (P-016). Its principal is still the parent key. */
+export interface AccessTokenGrant {
+  id: string;
+  scopes: AppKeyScopes;
+  expires_at: Date;
+}
 
 export type AppKeyVerdict =
   | {
@@ -97,6 +121,8 @@ export type AppKeyVerdict =
       app: AppKeyRow;
       /** True when the key presented is the previous secret, inside its rotation overlap window. */
       viaPreviousKey: boolean;
+      /** Present when the bearer was a client-credentials access token rather than the key itself. */
+      accessToken?: AccessTokenGrant;
     }
   | { ok: false; reason: AppKeyRefusal };
 
@@ -159,7 +185,7 @@ const KEY_KINDS_SQL = `kind IN ('app', 'service')`;
 const APP_COLUMNS = `id, user_email, workspace_id, kind, label, scopes, limits,
   paired_at, expires_at, paused_at, revoked_at, last_seen, last_ip,
   spend_cap_cents::float8 AS spend_cap_cents, spend_cap_window_sec,
-  rotated_at, previous_token_valid_until`;
+  rotated_at, previous_token_valid_until, client_auth`;
 
 /** The scope fields a caller may ask for, before normalization. */
 export type AppKeyScopeRequest = Pick<CreateAppKeyOptions, 'capabilities' | 'tools' | 'harnesses' | 'knownTools'>;
@@ -341,8 +367,16 @@ export type StoredAppKeyRow = AppKeyRow & {
  *
  * Nothing here reads who created the key: a service key belongs to the workspace, so a change in
  * its creator's organization membership cannot refuse it (D-007, R-10).
+ *
+ *   3. A client-credentials key (client_auth set, P-016) is refused as a bearer
+ *      (`token_endpoint_only`); only the token endpoint verifies it, with `at: 'token-endpoint'`.
  */
-export function appKeyVerdictOf(row: StoredAppKeyRow | null | undefined, key: string, now: Date): AppKeyVerdict {
+export function appKeyVerdictOf(
+  row: StoredAppKeyRow | null | undefined,
+  key: string,
+  now: Date,
+  opts: { at?: 'bearer' | 'token-endpoint' } = {},
+): AppKeyVerdict {
   if (!parseAppKey(key)) return { ok: false, reason: 'malformed' };
   if (!row) return { ok: false, reason: 'unknown' };
   const { token_hash: tokenHash, previous_token_hash: previousHash, ...app } = row;
@@ -352,21 +386,85 @@ export function appKeyVerdictOf(row: StoredAppKeyRow | null | undefined, key: st
     if (!previousKeyStillValid(app.previous_token_valid_until, now)) return { ok: false, reason: 'rotated' };
     viaPreviousKey = true;
   }
-  if (app.revoked_at) return { ok: false, reason: 'revoked' };
-  if (app.paused_at) return { ok: false, reason: 'paused' };
-  if (app.expires_at && app.expires_at.getTime() <= now.getTime()) return { ok: false, reason: 'expired' };
+  const state = parentStateRefusal(app, now);
+  if (state) return { ok: false, reason: state };
+  if (app.client_auth && opts.at !== 'token-endpoint') return { ok: false, reason: 'token_endpoint_only' };
   return { ok: true, app, viaPreviousKey };
 }
 
+/** Revocation outranks pause outranks expiry, for a key and for every token it issued. */
+function parentStateRefusal(app: AppKeyRow, now: Date): 'revoked' | 'paused' | 'expired' | null {
+  if (app.revoked_at) return 'revoked';
+  if (app.paused_at) return 'paused';
+  if (app.expires_at && app.expires_at.getTime() <= now.getTime()) return 'expired';
+  return null;
+}
+
+/** An access-token row as verification reads it. */
+export interface StoredAccessTokenRow {
+  id: string;
+  token_hash: string;
+  app_id: string;
+  scopes: AppKeyScopes;
+  expires_at: Date;
+}
+
 /**
- * Verify a presented key: read its row by primary key and apply `appKeyVerdictOf`. Refuses a
- * malformed key, an unknown id, a secret that does not hash to a live digest, and a key that is
- * revoked, paused, or past its expiry.
+ * The verdict for a presented access token (P-016) — pure. The token's own digest and expiry come
+ * first; then the PARENT key's state, so revoking, pausing or expiring the client refuses every
+ * token it issued on the next call. The parent must still be a client-credentials key: switching a
+ * key out of that mode ends its tokens too. The verdict names the parent as the app.
+ */
+export function accessTokenVerdictOf(
+  token: StoredAccessTokenRow | null | undefined,
+  parent: AppKeyRow | null | undefined,
+  presented: string,
+  now: Date,
+): AppKeyVerdict {
+  const parsed = parseAccessToken(presented);
+  if (!parsed) return { ok: false, reason: 'malformed' };
+  if (!token || token.id !== parsed.id) return { ok: false, reason: 'unknown' };
+  if (!appKeyHashMatches(presented, token.token_hash)) return { ok: false, reason: 'mismatch' };
+  if (token.expires_at.getTime() <= now.getTime()) return { ok: false, reason: 'expired' };
+  if (!parent || parent.id !== token.app_id || parent.kind !== 'service' || !parent.client_auth) {
+    return { ok: false, reason: 'revoked' };
+  }
+  const state = parentStateRefusal(parent, now);
+  if (state) return { ok: false, reason: state };
+  return {
+    ok: true,
+    app: parent,
+    viaPreviousKey: false,
+    accessToken: { id: token.id, scopes: token.scopes, expires_at: token.expires_at },
+  };
+}
+
+/**
+ * Verify a presented bearer: an app or service key (`pcapp_`, by `appKeyVerdictOf`) or a
+ * client-credentials access token (`pcat_`, by `accessTokenVerdictOf`). Refuses a malformed
+ * bearer, an unknown id, a secret that does not hash to a live digest, a key or token that is
+ * revoked, paused or past its expiry, and a client-credentials key presented as a bearer.
  */
 export async function verifyAppKey(key: string, now: Date = new Date()): Promise<AppKeyVerdict> {
+  const { sql } = getOrgPg();
+  const token = parseAccessToken(key);
+  if (token) {
+    const tokens = await sql<StoredAccessTokenRow[]>`
+      SELECT id, token_hash, app_id, scopes, expires_at
+        FROM harness_shared.connected_app_access_tokens
+       WHERE id = ${token.id}
+       LIMIT 1
+    `;
+    const row = tokens[0];
+    const parents = row
+      ? await sql<AppKeyRow[]>`
+          SELECT ${sql.unsafe(APP_COLUMNS)} FROM harness_shared.connected_apps
+           WHERE id = ${row.app_id} AND ${sql.unsafe(KEY_KINDS_SQL)} LIMIT 1`
+      : [];
+    return accessTokenVerdictOf(row, parents[0], key, now);
+  }
   const parsed = parseAppKey(key);
   if (!parsed) return { ok: false, reason: 'malformed' };
-  const { sql } = getOrgPg();
   const rows = await sql<StoredAppKeyRow[]>`
     SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash
       FROM harness_shared.connected_apps
@@ -374,6 +472,85 @@ export async function verifyAppKey(key: string, now: Date = new Date()): Promise
      LIMIT 1
   `;
   return appKeyVerdictOf(rows[0], key, now);
+}
+
+/**
+ * The key row the token endpoint authenticates a client against (P-016): the stored row with both
+ * digests and the registered public JWK. Admin connection, like `verifyAppKey`. Null when no key
+ * has that id.
+ */
+export async function loadClientKeyRow(
+  id: string,
+): Promise<(StoredAppKeyRow & { client_jwk: Record<string, unknown> | null }) | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<(StoredAppKeyRow & { client_jwk: Record<string, unknown> | null })[]>`
+    SELECT ${sql.unsafe(APP_COLUMNS)}, token_hash, previous_token_hash, client_jwk
+      FROM harness_shared.connected_apps
+     WHERE id = ${id} AND ${sql.unsafe(KEY_KINDS_SQL)}
+     LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+/**
+ * The scope row the dispatch seat evaluates for an ACCESS TOKEN (P-016): the parent's state and
+ * workspace with the token's own (possibly narrowed) scopes and the earlier of the two expiries.
+ * The seat evaluates this AND the parent row, so a scope removed from the parent after issue
+ * applies to live tokens too. Null when the token is gone or no longer belongs to that key.
+ */
+export async function loadAccessTokenScopeRow(tokenId: string, appId: string): Promise<AppScopeRow | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<(AppScopeRow & { token_expires_at: Date })[]>`
+    SELECT a.id, a.workspace_id, t.scopes, a.revoked_at, a.paused_at, a.expires_at, t.expires_at AS token_expires_at
+      FROM harness_shared.connected_app_access_tokens t
+      JOIN harness_shared.connected_apps a ON a.id = t.app_id
+     WHERE t.id = ${tokenId} AND t.app_id = ${appId}
+       AND a.kind = 'service' AND a.client_auth IS NOT NULL
+     LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  const { token_expires_at: tokenExpiresAt, ...scopeRow } = row;
+  const parentExpiry = scopeRow.expires_at ? new Date(scopeRow.expires_at).getTime() : Infinity;
+  return { ...scopeRow, expires_at: new Date(Math.min(parentExpiry, new Date(tokenExpiresAt).getTime())) };
+}
+
+/** Thrown by `setClientCredentialsMode` for a mode no row may hold. */
+export class ClientCredentialsModeError extends Error {
+  constructor(readonly code: 'not_service_key' | 'invalid_jwk') {
+    super(code === 'not_service_key' ? 'only a service key can be a client-credentials client' : 'client_jwk must be a public JWK');
+    this.name = 'ClientCredentialsModeError';
+  }
+}
+
+/**
+ * Switch a live service key into client-credentials mode (`client_secret` or `private_key_jwt` with
+ * a public JWK), or back to an ordinary bearer key (`null`). Leaving the mode, or changing it, ends
+ * every access token the key issued. Returns null when no live key has that id; throws
+ * `ClientCredentialsModeError` for an app key or a JWK that is not a validated public key.
+ */
+export async function setClientCredentialsMode(
+  workspaceId: string,
+  id: string,
+  mode: { auth: ClientAuthMethod; jwk?: Record<string, unknown> | null } | null,
+): Promise<AppKeyRow | null> {
+  const jwk = mode?.auth === 'private_key_jwt' ? mode.jwk ?? null : null;
+  if (mode?.auth === 'private_key_jwt' && !jwk) throw new ClientCredentialsModeError('invalid_jwk');
+  return withWorkspace(workspaceId, async (tx) => {
+    const current = await tx<{ kind: AppKeyKind }[]>`
+      SELECT kind FROM harness_shared.connected_apps
+       WHERE id = ${id} AND ${tx.unsafe(KEY_KINDS_SQL)} AND revoked_at IS NULL`;
+    if (!current[0]) return null;
+    if (mode && current[0].kind !== 'service') throw new ClientCredentialsModeError('not_service_key');
+    const rows = await tx<AppKeyRow[]>`
+      UPDATE harness_shared.connected_apps
+         SET client_auth = ${mode?.auth ?? null},
+             client_jwk  = ${jwk ? JSON.stringify(jwk) : null}::jsonb
+       WHERE id = ${id} AND ${tx.unsafe(KEY_KINDS_SQL)} AND revoked_at IS NULL
+      RETURNING ${tx.unsafe(APP_COLUMNS)}`;
+    await tx`DELETE FROM harness_shared.connected_app_access_tokens WHERE app_id = ${id}`;
+    return rows[0] ?? null;
+  });
 }
 
 /**
