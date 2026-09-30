@@ -210,6 +210,7 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     acceptance_bar_rubric_revision: 're-derived on apply by the strict seed from the federated content + rubric (D-093, WI-10004146)',
     acceptance_bar_seeded_at: 'machine-local seed timestamp, re-stamped when the strict seed runs on apply (D-093, WI-10004146)',
     acceptance_bar_seeded_by: 'machine-local seed actor, re-stamped when the strict seed runs on apply (D-093, WI-10004146)',
+    acceptance_bar_verified_revision: 'machine-local: the LOCAL plan version a receiver verified its BAR state at (WI-10004146)',
   },
   coord_conversations: {
     accepted_post_id: 'local bigserial reference; the federated answer is `accepted_answer` (mapper doc)',

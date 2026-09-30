@@ -21,6 +21,17 @@ vi.mock('../../../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../../../workspace-registry')>('../../../workspace-registry');
   return { ...actual, activeWorkspaceId: () => h.workspace };
 });
+// On a real node the operator-home harness resolves to that node's own workspace; here
+// two workspaces stand in for two nodes, so plan-scope resolution (the snapshot's
+// clause reader) follows whichever node is being asked, like activeWorkspaceId above.
+vi.mock('../../../agent-tools/plans/source', async () => {
+  const actual = await vi.importActual<typeof import('../../../agent-tools/plans/source')>('../../../agent-tools/plans/source');
+  return {
+    ...actual,
+    resolvePlanScope: async (opts: { harnessSlug?: string } = {}) =>
+      ({ workspaceId: h.workspace, harnessSlug: opts.harnessSlug ?? 'papercusp' }),
+  };
+});
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
@@ -34,7 +45,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 const { hashPlanContent } = await import('../../../agent-tools/plans/content-hash');
-const { seedAcceptanceBarsInTransaction } = await import('../../../acceptance-bar-seed');
+const { seedAcceptanceBarsInTransaction, ACCEPTANCE_BAR_CONTRACT_EPOCH } = await import('../../../acceptance-bar-seed');
 const { buildHarnessPlansProjection } = await import('./harness-plans');
 const { readAndEvaluateAcceptanceBarLifecycle } = await import('../../../acceptance-bar-lifecycle-evaluator');
 const { deriveIndexFromContent } = await import('../../../agent-tools/plans/derive-index');
@@ -44,10 +55,11 @@ import type { SpecClauseSql } from '../../../agent-tools/plans/spec-clauses-stor
 const AUTHOR_WS = 'acceptance-bar-receiver-author';
 const RECEIVER_WS = 'acceptance-bar-receiver-peer';
 const HARNESS = 'papercusp';
-// Deliberately NOT the receiver's values: a receiver's local plan `version` and its
-// trigger-stamped epoch (1) must never be what the rebuild uses.
+// Deliberately NOT the receiver's value: a receiver's local plan `version` (a CAS
+// counter that starts at 0 on a remote insert) must never be what the rebuild uses.
 const AUTHOR_PLAN_VERSION = 3;
-const AUTHOR_EPOCH = 2;
+// The snapshot refuses any other epoch (bar_snapshot_cohort_incomplete).
+const AUTHOR_EPOCH = ACCEPTANCE_BAR_CONTRACT_EPOCH;
 
 const contentFor = (slug: string, extraBar = false) => `---
 title: ${slug}
@@ -90,6 +102,7 @@ afterAll(async () => {
 
 async function authorSeed(planSlug: string): Promise<{ plan: HarnessPlanRow; rubric: HarnessPlanRow }> {
   const content = contentFor(planSlug);
+  h.workspace = AUTHOR_WS;
   await db.adminSql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status, owner,
@@ -137,6 +150,7 @@ async function wireRow(workspaceId: string, planSlug: string): Promise<HarnessPl
 }
 
 async function applyRemote(row: HarnessPlanRow): Promise<void> {
+  h.workspace = RECEIVER_WS;
   hlc += 1000;
   const provenance: ProvenanceContext = {
     authorPubkey: 'srclog-A', origin: 'remote', ts: hlc, fedHlc: `h${hlc}`,
@@ -159,12 +173,21 @@ interface BarColumns {
   acceptance_bar_rubric_slug: string | null;
   acceptance_bar_rubric_revision: number | null;
   acceptance_bar_seeded_by: string | null;
+  acceptance_bar_verified_revision: number | string | null;
+}
+
+async function localPlanVersion(workspaceId: string, planSlug: string): Promise<number> {
+  const [row] = await db.adminSql<Array<{ version: number | string }>>`
+    SELECT version FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
+  return Number(row!.version);
 }
 
 async function barColumns(workspaceId: string, planSlug: string): Promise<BarColumns> {
   const [row] = await db.adminSql<BarColumns[]>`
     SELECT acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_set_hash,
-           acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_seeded_by
+           acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_seeded_by,
+           acceptance_bar_verified_revision
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
   return row!;
@@ -200,8 +223,11 @@ async function launchVerdict(workspaceId: string, planSlug: string) {
 async function expectConvergedWithAuthor(planSlug: string): Promise<void> {
   // Node B now answers the launch gate exactly as node A does.
   const authorVerdict = await launchVerdict(AUTHOR_WS, planSlug);
-  expect(authorVerdict).toEqual({ satisfied: true, codes: [] });
-  expect(await launchVerdict(RECEIVER_WS, planSlug)).toEqual(authorVerdict);
+  expect(authorVerdict.codes.join(',')).toBe('');
+  expect(authorVerdict.satisfied).toBe(true);
+  const receiverVerdict = await launchVerdict(RECEIVER_WS, planSlug);
+  expect(receiverVerdict.codes.join(',')).toBe('');
+  expect(receiverVerdict).toEqual(authorVerdict);
 
   const author = await barColumns(AUTHOR_WS, planSlug);
   const receiver = await barColumns(RECEIVER_WS, planSlug);
@@ -209,7 +235,7 @@ async function expectConvergedWithAuthor(planSlug: string): Promise<void> {
   expect(receiver).toMatchObject({
     acceptance_bar_set_hash: author.acceptance_bar_set_hash,
     acceptance_bar_rubric_slug: author.acceptance_bar_rubric_slug,
-    // The receiver's trigger stamped epoch 1; the rubric's contract pins the author's.
+    // Epoch/cohort come from the rubric's contract pins, not the receiver's insert trigger.
     acceptance_bar_epoch: AUTHOR_EPOCH,
     acceptance_bar_cohort: 'post-epoch',
     acceptance_bar_seeded_by: 'su-author',
@@ -223,6 +249,10 @@ async function expectConvergedWithAuthor(planSlug: string): Promise<void> {
   expect(receiverRubrics[0]!.template_data).toEqual(authorRubric!.template_data);
   // Revision numbers are local CAS counters: the plan column must name the LOCAL rubric's.
   expect(Number(receiver.acceptance_bar_rubric_revision)).toBe(Number(receiverRubrics[0]!.version));
+  // ...and the subject pin the snapshot compares is the receiver's own plan version,
+  // while the author keeps the rubric's pin (NULL here).
+  expect(author.acceptance_bar_verified_revision).toBeNull();
+  expect(Number(receiver.acceptance_bar_verified_revision)).toBe(await localPlanVersion(RECEIVER_WS, planSlug));
 
   // Spec clauses are machine-local; the receiver derives the same identities locally.
   const authorClauses = await clauseIds(AUTHOR_WS, planSlug);
@@ -300,6 +330,26 @@ describe('federated receiver acceptance-BAR seed (D-093 option B)', () => {
     const receiverRubrics = await rubricRows(RECEIVER_WS, planSlug);
     expect(receiverRubrics).toHaveLength(1);
     expect(receiverRubrics[0]!.template_data).toEqual(authorRubric!.template_data);
+  });
+
+  it('a BAR-changing plan revision after the seed re-opens the launch gate on the receiver', async () => {
+    const planSlug = 'receiver-drift-after-seed';
+    const { plan, rubric } = await authorSeed(planSlug);
+    await applyRemote(plan);
+    await applyRemote(rubric);
+    await expectConvergedWithAuthor(planSlug);
+    const verifiedAt = Number((await barColumns(RECEIVER_WS, planSlug)).acceptance_bar_verified_revision);
+
+    // The plan's next revision carries a BAR its rubric has not caught up with yet.
+    // The receiver seed defers, so the verification pin stays at the older local
+    // version and the snapshot must refuse, not keep answering "ready".
+    const drifted = contentFor(planSlug, true);
+    await applyRemote({ ...plan, content: drifted, content_hash: hashPlanContent(drifted) });
+    expect(await localPlanVersion(RECEIVER_WS, planSlug)).toBeGreaterThan(verifiedAt);
+    expect(Number((await barColumns(RECEIVER_WS, planSlug)).acceptance_bar_verified_revision)).toBe(verifiedAt);
+    const verdict = await launchVerdict(RECEIVER_WS, planSlug);
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.codes).toContain('bar_snapshot_rubric_revision_mismatch');
   });
 
   it('a local-origin apply does not run the receiver seed', async () => {

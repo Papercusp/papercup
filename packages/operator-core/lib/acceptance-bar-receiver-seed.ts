@@ -49,6 +49,7 @@ interface SubjectRow {
   content: string;
   title: string | null;
   status: string | null;
+  version: number | string;
   acceptance_bar_epoch: number | null;
   acceptance_bar_cohort: string | null;
 }
@@ -113,7 +114,7 @@ export async function seedAcceptanceBarsOnFederatedApply(
   try {
     return await inSavepoint(sql, async (tx) => {
       const [plan] = await tx<SubjectRow[]>`
-        SELECT template, content, title, status, acceptance_bar_epoch, acceptance_bar_cohort
+        SELECT template, content, title, status, version, acceptance_bar_epoch, acceptance_bar_cohort
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${subject.workspaceId}
            AND harness_slug = ${subject.harnessSlug}
@@ -188,16 +189,18 @@ export async function seedAcceptanceBarsOnFederatedApply(
 
       // The seed writes five columns; epoch/cohort are the trigger's insert-time
       // defaults on a receiver. Align them to the contract the rubric pins, so a
-      // legacy-backfilled subject does not read as post-epoch here.
+      // legacy-backfilled subject does not read as post-epoch here. The rubric's
+      // subjectPlanRevision is the AUTHOR's local counter, so record the LOCAL
+      // version this verification held at; the snapshot compares that instead, and
+      // any later local plan change re-opens the mismatch until this runs again.
       await tx`
         UPDATE harness_shared.harness_plans
            SET acceptance_bar_epoch = ${contract.adoptionEpoch},
-               acceptance_bar_cohort = ${contract.cohort}
+               acceptance_bar_cohort = ${contract.cohort},
+               acceptance_bar_verified_revision = ${Number(plan.version)}
          WHERE workspace_id = ${subject.workspaceId}
            AND harness_slug = ${subject.harnessSlug}
-           AND plan_slug = ${subject.planSlug}
-           AND (acceptance_bar_epoch IS DISTINCT FROM ${contract.adoptionEpoch}
-             OR acceptance_bar_cohort IS DISTINCT FROM ${contract.cohort})`;
+           AND plan_slug = ${subject.planSlug}`;
 
       return {
         status: 'seeded',

@@ -1271,7 +1271,9 @@ export async function seedAcceptanceBarsInTransaction(
            acceptance_bar_rubric_slug = ${rubricSlug},
            acceptance_bar_rubric_revision = ${rubricRevision},
            acceptance_bar_seeded_at = ${input.now},
-           acceptance_bar_seeded_by = ${input.actorId}
+           acceptance_bar_seeded_by = ${input.actorId},
+           -- WI-10004146: the rubric pin governs here; a receiver re-stamps this after.
+           acceptance_bar_verified_revision = NULL
      WHERE workspace_id = ${input.workspaceId}
        AND harness_slug = ${input.harnessSlug}
        AND plan_slug = ${input.planSlug}`;
