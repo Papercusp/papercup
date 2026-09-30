@@ -2,7 +2,7 @@
   "bar": "R-26",
   "planItem": "P-010",
   "plan": "generic-rag-chunking-2026-09-29",
-  "measuredAt": "2026-09-30T11:20:51.031Z",
+  "measuredAt": "2026-09-30T13:51:18.995Z",
   "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
   "database": "live operator DB, workspace papercusp-workspace",
   "queryMode": "sentence",
@@ -10,7 +10,7 @@
   "setup": null,
   "population": null,
   "summary": {
-    "at": "2026-09-30T11:20:51.031Z",
+    "at": "2026-09-30T13:51:18.995Z",
     "n": 60,
     "skipped": 265,
     "returned": 59,
@@ -40,7 +40,7 @@
       "results": 5,
       "returned": false,
       "rank": 0,
-      "ownVectorRank": 5266,
+      "ownVectorRank": 5269,
       "bestChunkRankAmongAllTurnChunks": 270,
       "bestChunkIdx": 3,
       "degraded": false
@@ -113,7 +113,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 1665,
+      "ownVectorRank": 1667,
       "bestChunkRankAmongAllTurnChunks": 131,
       "bestChunkIdx": 7,
       "degraded": false
@@ -456,7 +456,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 7370,
+      "ownVectorRank": 7372,
       "bestChunkRankAmongAllTurnChunks": 3,
       "bestChunkIdx": 5,
       "degraded": false
@@ -527,7 +527,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 19093,
+      "ownVectorRank": 19100,
       "bestChunkRankAmongAllTurnChunks": 1960,
       "bestChunkIdx": 4,
       "degraded": false
@@ -570,7 +570,7 @@
       "results": 5,
       "returned": true,
       "rank": 2,
-      "ownVectorRank": 30013,
+      "ownVectorRank": 30018,
       "bestChunkRankAmongAllTurnChunks": 47,
       "bestChunkIdx": 4,
       "degraded": false
@@ -618,7 +618,7 @@
       "results": 5,
       "returned": true,
       "rank": 3,
-      "ownVectorRank": 14625,
+      "ownVectorRank": 14626,
       "bestChunkRankAmongAllTurnChunks": 463,
       "bestChunkIdx": 4,
       "degraded": false
@@ -671,7 +671,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 11342,
+      "ownVectorRank": 11345,
       "bestChunkRankAmongAllTurnChunks": 1,
       "bestChunkIdx": 5,
       "degraded": false
@@ -854,7 +854,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 9970,
+      "ownVectorRank": 9974,
       "bestChunkRankAmongAllTurnChunks": 6,
       "bestChunkIdx": 6,
       "degraded": false
@@ -872,7 +872,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 936,
+      "ownVectorRank": 937,
       "bestChunkRankAmongAllTurnChunks": 150,
       "bestChunkIdx": 6,
       "degraded": false
@@ -885,7 +885,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 20887,
+      "ownVectorRank": 20894,
       "bestChunkRankAmongAllTurnChunks": 186,
       "bestChunkIdx": 2,
       "degraded": false
@@ -1041,7 +1041,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 5154,
+      "ownVectorRank": 5155,
       "bestChunkRankAmongAllTurnChunks": 2,
       "bestChunkIdx": 7,
       "degraded": false
@@ -1222,8 +1222,8 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 175,
-      "bestChunkRankAmongAllTurnChunks": 5,
+      "ownVectorRank": 176,
+      "bestChunkRankAmongAllTurnChunks": 6,
       "bestChunkIdx": 1,
       "degraded": false
     },
@@ -1321,7 +1321,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 11527,
+      "ownVectorRank": 11530,
       "bestChunkRankAmongAllTurnChunks": 440,
       "bestChunkIdx": 2,
       "degraded": false
@@ -1387,7 +1387,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 12818,
+      "ownVectorRank": 12824,
       "bestChunkRankAmongAllTurnChunks": 117,
       "bestChunkIdx": 3,
       "degraded": false
@@ -1430,7 +1430,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 19278,
+      "ownVectorRank": 19284,
       "bestChunkRankAmongAllTurnChunks": 28,
       "bestChunkIdx": 3,
       "degraded": false
@@ -1443,7 +1443,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 36337,
+      "ownVectorRank": 36361,
       "bestChunkRankAmongAllTurnChunks": 6,
       "bestChunkIdx": 5,
       "degraded": false
@@ -1575,7 +1575,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 18651,
+      "ownVectorRank": 18656,
       "bestChunkRankAmongAllTurnChunks": 1,
       "bestChunkIdx": 5,
       "degraded": false
@@ -1598,7 +1598,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 16353,
+      "ownVectorRank": 16355,
       "bestChunkRankAmongAllTurnChunks": 78,
       "bestChunkIdx": 4,
       "degraded": false
@@ -1671,8 +1671,8 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 9429,
-      "bestChunkRankAmongAllTurnChunks": 91,
+      "ownVectorRank": 9436,
+      "bestChunkRankAmongAllTurnChunks": 92,
       "bestChunkIdx": 3,
       "degraded": false
     },
@@ -1783,7 +1783,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 27691,
+      "ownVectorRank": 27698,
       "bestChunkRankAmongAllTurnChunks": 3,
       "bestChunkIdx": 6,
       "degraded": false
@@ -1811,7 +1811,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 20357,
+      "ownVectorRank": 20363,
       "bestChunkRankAmongAllTurnChunks": 1,
       "bestChunkIdx": 3,
       "degraded": false
@@ -1972,7 +1972,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 15609,
+      "ownVectorRank": 15610,
       "bestChunkRankAmongAllTurnChunks": 2711,
       "bestChunkIdx": 5,
       "degraded": false
@@ -2104,7 +2104,7 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 33151,
+      "ownVectorRank": 33157,
       "bestChunkRankAmongAllTurnChunks": 173,
       "bestChunkIdx": 6,
       "degraded": false
@@ -2117,11 +2117,22 @@
       "results": 5,
       "returned": true,
       "rank": 1,
-      "ownVectorRank": 15631,
+      "ownVectorRank": 15633,
       "bestChunkRankAmongAllTurnChunks": 8,
       "bestChunkIdx": 3,
       "degraded": false
     }
   ],
-  "batterySource": "// generic-rag-chunking P-010 R-26 live battery, unique-query variant. Same\n// sample rule as p010-live-r26-battery.mts (N turns over 6,000 characters in the\n// workspace, md5(id) order, one sentence past the first 2,000 characters that the\n// capped windows still cover), plus one uniform rule the first run showed was\n// needed: the query must be UNIQUE to the target turn. Operator turns hold many\n// machine-written digests (\"Cursed placement: ... failed N×\", \"Cleared — Queued\n// process admission\") that repeat word for word across hundreds of turns, so a\n// query cut from one of them matches many turns equally and \"the target turn\"\n// is not defined. A candidate sentence is kept only when a 40+ character run of\n// its raw text occurs in exactly one workspace turn (strpos over operator_turns).\n// Records whether the target comes back within search:semantic's default count\n// (scope ['turns']), its rank, its rank by its own turn vector alone, and its\n// best chunk's rank among all operator-turn chunks.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { OPERATOR_TURNS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst semantic = (await import(base + 'agent-tools/search/semantic.ts')).default;\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst sp = OPERATOR_TURNS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (OPERATOR_TURNS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst { sql } = getOrgPg();\n\nconst turns = await sql.unsafe<Array<{ id: string; text: string }>>(\n  `SELECT t.id::text AS id, t.text FROM harness_shared.operator_turns t\n     JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n    WHERE c.workspace_id = $1 AND length(t.text) > 6000\n    ORDER BY md5(t.id::text) LIMIT $2`,\n  [WS, N * 6],\n);\n\nconst STRIP = /[`*_#>|[\\]()]/;\nfunction longestPlainRun(raw: string): string {\n  let best = '';\n  for (const part of raw.split(/[`*_#>|[\\]()]|\\s{2,}/)) {\n    const p = part.trim();\n    if (p.length > best.length) best = p;\n  }\n  return best;\n}\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of turns) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const cands = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((raw) => ({ raw, q: raw.replace(new RegExp(STRIP, 'g'), ' ').replace(/\\s+/g, ' ').trim() }))\n    .filter((s) => s.q.split(' ').length >= 8 && s.q.length <= 220 && !head.includes(s.q.toLowerCase().slice(0, 40)));\n  // Walk outward from the 60% position; take the first sentence unique to this turn.\n  const start = Math.floor(cands.length * 0.6);\n  const order = cands.map((_, i) => i).sort((a, b) => Math.abs(a - start) - Math.abs(b - start) || a - b);\n  let query: string | undefined;\n  let fragment = '';\n  // The long turns here are largely digests that repeat items across many\n  // turns (measured: a 60-char cut at offset 3,000 recurred in 46 and 16 turns),\n  // so test every candidate's uniqueness in ONE scan per turn and take the\n  // unique candidate nearest the 60% position.\n  const frags = order.map((i) => ({ i, frag: longestPlainRun(cands[i]!.raw) })).filter((f) => f.frag.length >= 40).slice(0, 16);\n  const tried = frags.length;\n  if (frags.length > 0) {\n    const counts = await sql.unsafe<Array<{ f: string; n: number }>>(\n      `SELECT f, count(t.id)::int AS n\n         FROM unnest($2::text[]) AS f\n         LEFT JOIN (SELECT t.id, t.text FROM harness_shared.operator_turns t\n                      JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                     WHERE c.workspace_id = $1) t ON strpos(t.text, f) > 0\n        GROUP BY f`,\n      [WS, frags.map((f) => f.frag)],\n    );\n    const n = new Map(counts.map((c) => [c.f, c.n]));\n    const hit = frags.find((f) => n.get(f.frag) === 1);\n    if (hit) {\n      query = cands[hit.i]!.q;\n      fragment = hit.frag;\n    }\n  }\n  if (!query) {\n    rows.push({ turn: t.id, skipped: 'no sentence unique to this turn', tried });\n    continue;\n  }\n  const vec = `[${(await resolved.embed(query)).join(',')}]`;\n  const [ownRank] = await sql.unsafe<Array<{ rank: number }>>(\n    `WITH r AS (SELECT t.id, row_number() OVER (ORDER BY t.text_embedding <=> $2::vector) AS rank\n                  FROM harness_shared.operator_turns t\n                  JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                 WHERE c.workspace_id = $1 AND t.text_embedding IS NOT NULL)\n     SELECT rank::int FROM r WHERE id = $3::uuid`,\n    [WS, vec, t.id],\n  );\n  const [chunkRank] = await sql.unsafe<Array<{ rank: number; idx: number }>>(\n    `WITH r AS (SELECT parent_key, chunk_idx, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank\n                  FROM harness_shared.text_chunks\n                 WHERE surface = 'operator_turns' AND embedding IS NOT NULL)\n     SELECT rank::int, chunk_idx AS idx FROM r WHERE parent_key[1] = $2 ORDER BY rank LIMIT 1`,\n    [vec, t.id],\n  );\n  const res = (await semantic.handler({ query, scope: ['turns'] } as never, {\n    workspaceId: WS,\n    isSuperuser: true,\n    // search:semantic declares crossWorkspace:true, so the dispatcher hands it\n    // ctx.tx = the bare getOrgPg().sql handle; pass the same handle here.\n    tx: sql,\n  } as never)) as { content: Array<{ text: string }> };\n  const payload = JSON.parse(res.content[0]!.text) as { results?: Array<Record<string, unknown>>; legs?: unknown };\n  const results = payload.results ?? [];\n  const i = results.findIndex((h) => JSON.stringify(h).includes(t.id));\n  rows.push({\n    turn: t.id,\n    chars: t.text.length,\n    fragmentOffset: t.text.indexOf(fragment),\n    query,\n    results: results.length,\n    returned: i >= 0,\n    rank: i + 1,\n    ownVectorRank: ownRank?.rank ?? null,\n    bestChunkRankAmongAllTurnChunks: chunkRank?.rank ?? null,\n    bestChunkIdx: chunkRank?.idx ?? null,\n    degraded: (payload.legs as { degraded?: boolean } | undefined)?.degraded ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    skipped: rows.length - done.length,\n    returned: done.filter((r) => r.returned).length,\n    ownVectorInTop5: done.filter((r) => typeof r.ownVectorRank === 'number' && (r.ownVectorRank as number) <= 5).length,\n  }),\n);\nprocess.exit(0);\n"
+  "batterySource": "// generic-rag-chunking P-010 R-26 live battery, unique-query variant. Same\n// sample rule as p010-live-r26-battery.mts (N turns over 6,000 characters in the\n// workspace, md5(id) order, one sentence past the first 2,000 characters that the\n// capped windows still cover), plus one uniform rule the first run showed was\n// needed: the query must be UNIQUE to the target turn. Operator turns hold many\n// machine-written digests (\"Cursed placement: ... failed N×\", \"Cleared — Queued\n// process admission\") that repeat word for word across hundreds of turns, so a\n// query cut from one of them matches many turns equally and \"the target turn\"\n// is not defined. A candidate sentence is kept only when a 40+ character run of\n// its raw text occurs in exactly one workspace turn (strpos over operator_turns).\n// Records whether the target comes back within search:semantic's default count\n// (scope ['turns']), its rank, its rank by its own turn vector alone, and its\n// best chunk's rank among all operator-turn chunks.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { OPERATOR_TURNS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst semantic = (await import(base + 'agent-tools/search/semantic.ts')).default;\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst sp = OPERATOR_TURNS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (OPERATOR_TURNS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst { sql } = getOrgPg();\n\nconst turns = await sql.unsafe<Array<{ id: string; text: string }>>(\n  `SELECT t.id::text AS id, t.text FROM harness_shared.operator_turns t\n     JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n    WHERE c.workspace_id = $1 AND length(t.text) > 6000\n    ORDER BY md5(t.id::text) LIMIT $2`,\n  [WS, N * 6],\n);\n\nconst STRIP = /[`*_#>|[\\]()]/;\nfunction longestPlainRun(raw: string): string {\n  let best = '';\n  for (const part of raw.split(/[`*_#>|[\\]()]|\\s{2,}/)) {\n    const p = part.trim();\n    if (p.length > best.length) best = p;\n  }\n  return best;\n}\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of turns) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const cands = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((raw) => ({ raw, q: raw.replace(new RegExp(STRIP, 'g'), ' ').replace(/\\s+/g, ' ').trim() }))\n    .filter((s) => s.q.split(' ').length >= 8 && s.q.length <= 220 && !head.includes(s.q.toLowerCase().slice(0, 40)));\n  // Walk outward from the 60% position; take the first sentence unique to this turn.\n  const start = Math.floor(cands.length * 0.6);\n  const order = cands.map((_, i) => i).sort((a, b) => Math.abs(a - start) - Math.abs(b - start) || a - b);\n  let query: string | undefined;\n  let fragment = '';\n  // The long turns here are largely digests that repeat items across many\n  // turns (measured: a 60-char cut at offset 3,000 recurred in 46 and 16 turns),\n  // so test every candidate's uniqueness in ONE scan per turn and take the\n  // unique candidate nearest the 60% position.\n  const frags = order.map((i) => ({ i, frag: longestPlainRun(cands[i]!.raw) })).filter((f) => f.frag.length >= 40).slice(0, 16);\n  const tried = frags.length;\n  if (frags.length > 0) {\n    const counts = await sql.unsafe<Array<{ f: string; n: number }>>(\n      `SELECT f, count(t.id)::int AS n\n         FROM unnest($2::text[]) AS f\n         LEFT JOIN (SELECT t.id, t.text FROM harness_shared.operator_turns t\n                      JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                     WHERE c.workspace_id = $1) t ON strpos(t.text, f) > 0\n        GROUP BY f`,\n      [WS, frags.map((f) => f.frag)],\n    );\n    const n = new Map(counts.map((c) => [c.f, c.n]));\n    const hit = frags.find((f) => n.get(f.frag) === 1);\n    if (hit) {\n      query = cands[hit.i]!.q;\n      fragment = hit.frag;\n    }\n  }\n  if (!query) {\n    rows.push({ turn: t.id, skipped: 'no sentence unique to this turn', tried });\n    continue;\n  }\n  const vec = `[${(await resolved.embed(query)).join(',')}]`;\n  const [ownRank] = await sql.unsafe<Array<{ rank: number }>>(\n    `WITH r AS (SELECT t.id, row_number() OVER (ORDER BY t.text_embedding <=> $2::vector) AS rank\n                  FROM harness_shared.operator_turns t\n                  JOIN harness_shared.operator_conversations c ON c.id = t.conversation_id\n                 WHERE c.workspace_id = $1 AND t.text_embedding IS NOT NULL)\n     SELECT rank::int FROM r WHERE id = $3::uuid`,\n    [WS, vec, t.id],\n  );\n  const [chunkRank] = await sql.unsafe<Array<{ rank: number; idx: number }>>(\n    `WITH r AS (SELECT parent_key, chunk_idx, row_number() OVER (ORDER BY embedding <=> $1::vector) AS rank\n                  FROM harness_shared.text_chunks\n                 WHERE surface = 'operator_turns' AND embedding IS NOT NULL)\n     SELECT rank::int, chunk_idx AS idx FROM r WHERE parent_key[1] = $2 ORDER BY rank LIMIT 1`,\n    [vec, t.id],\n  );\n  const res = (await semantic.handler({ query, scope: ['turns'] } as never, {\n    workspaceId: WS,\n    isSuperuser: true,\n    // search:semantic declares crossWorkspace:true, so the dispatcher hands it\n    // ctx.tx = the bare getOrgPg().sql handle; pass the same handle here.\n    tx: sql,\n  } as never)) as { content: Array<{ text: string }> };\n  const payload = JSON.parse(res.content[0]!.text) as { results?: Array<Record<string, unknown>>; legs?: unknown };\n  const results = payload.results ?? [];\n  const i = results.findIndex((h) => JSON.stringify(h).includes(t.id));\n  rows.push({\n    turn: t.id,\n    chars: t.text.length,\n    fragmentOffset: t.text.indexOf(fragment),\n    query,\n    results: results.length,\n    returned: i >= 0,\n    rank: i + 1,\n    ownVectorRank: ownRank?.rank ?? null,\n    bestChunkRankAmongAllTurnChunks: chunkRank?.rank ?? null,\n    bestChunkIdx: chunkRank?.idx ?? null,\n    degraded: (payload.legs as { degraded?: boolean } | undefined)?.degraded ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    skipped: rows.length - done.length,\n    returned: done.filter((r) => r.returned).length,\n    ownVectorInTop5: done.filter((r) => typeof r.ownVectorRank === 'number' && (r.ownVectorRank as number) <= 5).length,\n  }),\n);\nprocess.exit(0);\n",
+  "remeasure": "re-run after D-032 (chunkAwareVectorLegSql scan option; vector-leg.ts edit staled the prior proof). Battery source unchanged; only the $HOME redaction in batterySource was undone to run it (EI-24693440162704684).",
+  "priorMeasurement": {
+    "measuredAt": "2026-09-30T11:20:51.031Z",
+    "summary": {
+      "at": "2026-09-30T11:20:51.031Z",
+      "n": 60,
+      "skipped": 265,
+      "returned": 59,
+      "ownVectorInTop5": 1
+    }
+  }
 }
