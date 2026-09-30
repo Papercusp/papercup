@@ -7,7 +7,7 @@
  * P013_MATRIX=1: the paired D-016 matrix (knobs as workload A:
  * P013_MODES P013_CONCURRENCIES P013_WARMUPS P013_WARM_SAMPLES P013_COLD_SAMPLES
  * P013_REPETITIONS P013_REPETITION_OFFSET; P013_DEDICATED_PG / P013_FIXTURE_EMBEDDER per D-022). */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
@@ -189,7 +189,21 @@ afterAll(async () => {
 
 describe('P-013 workload B fixture', () => {
   it('runs matching 3-item fork/join plan runs through run-now and the blueprint plan-target operation', async () => {
-    const runArm = (arm: P013BArm, index: number) => runP013WorkloadB(db.adminSql, warmTools, arm, index);
+    // plans:set-status emits a diagnostic console.warn when one status write crosses its 10 s
+    // slow-path threshold. Under matrix load that is an expected observation, not a fixture
+    // defect, and vitest-fail-on-console failed a 64-min matrix rep on it (WI-10002948, plan D-038).
+    // Count and report ONLY that diagnostic; every other warn still reaches fail-on-console.
+    const failOnConsoleWarn = console.warn;
+    let setStatusSlowWarns = 0;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((message?: unknown, ...rest: unknown[]) => {
+      if (typeof message === 'string' && message.startsWith('[plans:set-status] slow ')) { setStatusSlowWarns++; return; }
+      failOnConsoleWarn.call(console, message, ...rest);
+    });
+    onTestFinished(() => {
+      warnSpy.mockRestore();
+      console.info('P-013 workload B set-status slow-path diagnostics', JSON.stringify({ setStatusSlowWarns }));
+    });
+    const runArm =(arm: P013BArm, index: number) => runP013WorkloadB(db.adminSql, warmTools, arm, index);
     let sequence = 0;
     const samples: P013BSample[] = [];
     if (process.env.P013_MATRIX === '1') {
