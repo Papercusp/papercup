@@ -31,7 +31,7 @@ import path from 'node:path';
 
 import { getOrgPg } from '@papercusp/db-org';
 import { JEV_PINNED_MODEL } from '@papercusp/decision-model';
-import { runGoldSet, seedCorpus, type CandidateHit, type QueryOutcome } from '@papercusp/memory/bench';
+import { runGoldSet, seedCorpus, seedFailureReason, type CandidateHit, type QueryOutcome } from '@papercusp/memory/bench';
 import { rerank, type RerankDegradeReason } from '@papercusp/rerank';
 
 import { readCredentials } from '../../credentials';
@@ -210,12 +210,8 @@ try {
   // INSTRUMENT GUARDS. Measured 2026-09-30: seeding returned no ids for all 114
   // entries and every query then retrieved nothing; the bench still printed a
   // verdict. A report over a store that was never populated is not a measurement.
-  if (seeded.failed.length > 0) {
-    throw new Error(
-      `seeding failed for ${seeded.failed.length}/${corpus.length} corpus entries (e.g. ${seeded.failed.slice(0, 3).join(', ')}) — ` +
-        'refusing to report over a partially seeded store',
-    );
-  }
+  const seedFailure = seedFailureReason(seeded, corpus.length);
+  if (seedFailure) throw new Error(`${seedFailure} — refusing to report over a partially seeded store`);
 
   const replay = (floor: number) =>
     runGoldSet(ctx.backend, gold, {

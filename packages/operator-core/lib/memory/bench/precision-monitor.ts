@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { runGoldSet, seedCorpus, type SeedManifest } from '@papercusp/memory/bench';
+import { runGoldSet, seedCorpus, seedFailureReason, type SeedManifest } from '@papercusp/memory/bench';
 
 import { collectChildOutput } from '../../child-output';
 import { pushSearchFloors } from '../injection';
@@ -187,12 +187,12 @@ export async function runBenchInWorker(opts: {
  * quietly measures a different corpus than the one it reports is not usable.
  */
 export function assertCorpusSeeded(manifest: SeedManifest, expected: number): void {
-  const seeded = Object.keys(manifest.ids).length;
-  if (seeded === expected && manifest.failed.length === 0) return;
-  const sample = manifest.failed.slice(0, 3).join(', ');
+  // Shared with every bench; it quotes the first remember() error, not just the
+  // count ("114 failed" alone hid a NOT NULL schema fault for four weeks, WI-10004107).
+  const reason = seedFailureReason(manifest, expected);
+  if (reason === null) return;
   throw new Error(
-    `corpus seed incomplete: ${seeded}/${expected} seeded, ${manifest.failed.length} failed` +
-      (sample ? ` (e.g. ${sample})` : '') +
+    reason +
       ` — refusing to record a run. An unseeded corpus scores 0 for INFRASTRUCTURE reasons, not recall ` +
       `reasons; recording it would false-alarm the recall canary and poison its baseline (EI-10793).`,
   );

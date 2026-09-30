@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P2P coordination R-1: origin-visible delivery witnessed on the real two-machine rig (parity.sh receipts leg)",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "papercusp-desktop/bin/vm-rig/parity.sh",
+    "--only",
+    "receipts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T03:15:46Z",
+  "finishedAt": "2026-09-30T03:15:55Z",
+  "summary": "Tower (the tower host, bg-host :3270 sha 5a651a6bdf) sent a directed coord:send {wake:'required'} through its MCP tool surface (scripts/mcp-call.mjs) to su-live1-imac-probe, a live session homed on the Mac VM (Avis-iMac.local, operator sha aef4431553c9, embedded PG :18213). The message federated to the VM, was delivered into the target's inbox there, and exactly one delivery receipt with fed_event.payload.delivered=true federated back and is present at the ORIGIN (tower) for msg munj9abf-0000-f75ba14d6453412c9b902e486dbec1d2. This is an end-to-end send -> cross -> deliver -> receipt-back loop between two real machines, not a row-insert proxy: the sender is the tool-level coord:send, not a psql INSERT. Run under hive-git-physical-rig lock b442e86e (fence 47), holder su-c8f54c4f, work item WI-2144082.",
+  "assertions": [
+    {
+      "id": "two-real-machines",
+      "passed": true,
+      "evidence": "parity.sh preflight: tower the tower host PG ok; vm Avis-iMac.local PG ok (embedded, port 18213); banner 'rig: the tower host (src) <-> Avis-iMac.local (dst) [two real machines]'."
+    },
+    {
+      "id": "target-is-live-mac-homed-session",
+      "passed": true,
+      "evidence": "probe-session.sh status: su-live1-imac-probe mac loop ALIVE pid=16312; tower roster row FRESH (legs 2+3 runnable)."
+    },
+    {
+      "id": "origin-visible-delivery-receipt",
+      "passed": true,
+      "evidence": "PASS receipts: exactly 1 delivered receipt back on the tower host for munj9abf-0000-f75ba14d6453412c9b902e486dbec1d2 (fed_assert_delivery_receipts: count=1, bool_and(delivered)=true). An earlier run at 03:09:19Z also passed this leg for munj0zta-0000-2ee1322d556a42abb5d789478bf5ec2a."
+    }
+  ],
+  "disclosures": [
+    "The wake-bridge leg (P-002/P-003, a separate surface from R-1's delivery) was RED in the 03:09Z run: VM event_wake_deliveries id=12 stayed pending with last_error 'plan run 1 not found'. Cause is a runner defect, not the bridge: probe-session.sh defaults PCUSP_PROBE_PLAN_RUN_ID=1, which does not exist on the freshly re-joined VM (0 plan_runs), and its documented mint recipe is now refused by the acceptance-BAR start gate. Filed and owned as WI-10004115. It is NOT counted green here.",
+    "Scope limit: a delivery receipt proves the message reached the target's inbox on the Mac and that the receipt reached the origin. It does not prove an agent turn ran on the Mac (the Mac rig has no LLM credentials)."
+  ],
+  "workItemId": "WI-2144082",
+  "specId": "AUTO-BAR-R-1-P-008",
+  "planSlug": "p2p-coordination-public-release-2026-08-26",
+  "logs": [
+    ".papercusp/scratch/bash-b4df32a3-01c.log",
+    ".papercusp/scratch/bash-7c76100a-8ab.log"
+  ],
+  "sourceFile": "papercusp-desktop/bin/vm-rig/parity.sh"
+}

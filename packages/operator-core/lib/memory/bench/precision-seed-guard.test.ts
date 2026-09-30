@@ -27,7 +27,10 @@ const seedCorpusMock = vi.hoisted(() => vi.fn());
 const runGoldSetMock = vi.hoisted(() => vi.fn());
 const cleanupMock = vi.hoisted(() => vi.fn(async () => {}));
 
-vi.mock('@papercusp/memory/bench', () => ({
+// Keep the REAL pure helpers (seedFailureReason builds the refusal message);
+// replace only the two calls that would touch a backend.
+vi.mock('@papercusp/memory/bench', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/memory/bench')>()),
   seedCorpus: seedCorpusMock,
   runGoldSet: runGoldSetMock,
 }));
@@ -51,11 +54,18 @@ import { assertCorpusSeeded, benchMemoryPrecision, runMemoryPrecisionMonitor } f
 import { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR } from '../injection';
 
 /** A manifest whose `ids` covers `seeded` corpus keys and whose `failed` lists the rest. */
-const manifest = (seeded: string[], failed: string[] = []): SeedManifest => ({
+const manifest = (
+  seeded: string[],
+  failed: string[] = [],
+  errors: Record<string, string> = {},
+): SeedManifest => ({
   backend: 'hybrid',
   scope: 'bench-scope',
-  ids: Object.fromEntries(seeded.map((k) => [k, [`id-${k}`]])),
+  // Real seedCorpus records `ids[key] = []` for a FAILED key too — mirror that, so
+  // the "0/N seeded" count is asserted against the shape production produces.
+  ids: Object.fromEntries([...seeded.map((k) => [k, [`id-${k}`]]), ...failed.map((k) => [k, []])]),
   failed,
+  errors,
   rememberMs: [],
   totalChars: 0,
 });
@@ -82,6 +92,13 @@ describe('assertCorpusSeeded', () => {
 
   it('throws on a PARTIAL seed — a missing doc silently understates r@10, faking a regression', () => {
     expect(() => assertCorpusSeeded(manifest(['a', 'b'], ['c']), 3)).toThrow(/2\/3 seeded, 1 failed/);
+  });
+
+  it('quotes the first remember() ERROR, so the refusal names the cause (WI-10004107)', () => {
+    const errors = { a: 'null value in column "row_kind" of relation "memory_vec_harrier" violates not-null constraint' };
+    expect(() => assertCorpusSeeded(manifest([], ['a', 'b', 'c'], errors), 3)).toThrow(
+      /first error \(a\): null value in column "row_kind"/,
+    );
   });
 
   it('explains that the zero is an INFRASTRUCTURE failure, not a recall measurement', () => {
