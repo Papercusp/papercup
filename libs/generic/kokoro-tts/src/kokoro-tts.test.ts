@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { KokoroTts } from './kokoro-tts';
-import { normalizeText, phonemize } from './phonemize';
+import { EMSCRIPTEN_PROCESS_HOOKS, importWithoutProcessCrashHooks, normalizeText, phonemize } from './phonemize';
 import { configureKokoroTts, isKokoroTtsConfigured, __resetKokoroTtsHostForTests, type KokoroTransformersHost } from './config';
 
 describe('config seam', () => {
@@ -36,6 +36,62 @@ describe('normalizeText (pure)', () => {
   it('spells out Mr./Mrs./Dr. before a capitalized name', () => {
     expect(normalizeText('Dr. Smith')).toBe('Doctor Smith');
     expect(normalizeText('Mr. Jones')).toBe('Mister Jones');
+  });
+});
+
+describe('WI-10004324: phonemizer must not install process-wide crash handlers', () => {
+  const snapshot = () => new Map(EMSCRIPTEN_PROCESS_HOOKS.map((e) => [e, process.listeners(e)]));
+
+  it('the real phonemizer DOES add crash handlers on load, and the loader removes every one of them', async () => {
+    // Must be the first import of `phonemizer` in this worker: a cached module never
+    // re-evaluates, so the positive control below would read 0 and prove nothing.
+    const before = snapshot();
+    let addedDuringLoad = 0;
+    await importWithoutProcessCrashHooks(async () => {
+      const mod = await import('phonemizer');
+      for (const e of EMSCRIPTEN_PROCESS_HOOKS) addedDuringLoad += process.listenerCount(e) - before.get(e)!.length;
+      return mod;
+    });
+    // Positive control: without this the guard below would pass vacuously.
+    expect(addedDuringLoad).toBeGreaterThan(0);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('phonemize() leaves the process crash-handler set exactly as it found it', async () => {
+    const before = snapshot();
+    await phonemize('hello again');
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('keeps pre-existing listeners and removes only the ones the load added', async () => {
+    const hostHandler = () => {};
+    process.on('uncaughtException', hostHandler);
+    try {
+      const rethrow = (e: unknown) => {
+        throw e;
+      };
+      await importWithoutProcessCrashHooks(async () => {
+        process.on('uncaughtException', rethrow);
+        process.on('unhandledRejection', rethrow);
+        return 1;
+      });
+      expect(process.listeners('uncaughtException')).toContain(hostHandler);
+      expect(process.listeners('uncaughtException')).not.toContain(rethrow);
+      expect(process.listeners('unhandledRejection')).not.toContain(rethrow);
+    } finally {
+      process.removeListener('uncaughtException', hostHandler);
+    }
+  });
+
+  it('still removes added listeners when the load itself fails', async () => {
+    const before = snapshot();
+    await expect(
+      importWithoutProcessCrashHooks(async () => {
+        process.on('unhandledRejection', () => {});
+        throw new Error('load failed');
+      }),
+    ).rejects.toThrow('load failed');
+    expect(snapshot()).toEqual(before);
   });
 });
 

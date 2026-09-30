@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Jev save-time substance check: refusal rate on real memories and catch rate on self-promoters (P-010, bar R-3)",
+  "framework": "bench-cli",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/memory/bench/jev-substance-cli.ts",
+    "--sample",
+    "600",
+    "--seed",
+    "p010",
+    "--paired",
+    "150"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T16:04:00Z",
+  "finishedAt": "2026-09-30T16:08:09Z",
+  "summary": "The save-time substance question (jev-conflict-judge.ts buildConflictRequest { substance: true }, P-005 wording, jev-1.13.0) was asked of a seeded 600-memory sample drawn from 3,936 live real memories across 83 pools, and of 156 self-promoting memories. At the shipped threshold 0.5 it refused 3 of 600 real memories (0.5%, 95% CI 0.2% to 1.5%): 1 of 300 on the selection half and 2 of 300 on the confirmation half, both within the 1% budget. It caught 152 of 156 self-promoters (97.4%, CI 93.6% to 99.0%). Re-asking 150 rows gave no verdict flips (mean absolute P change 0.007). Latency p50 164 ms, p95 283 ms, 0 failures; 906 live Jev calls, all written to the decision ledger. Source report: .papercusp/bench-reports/jev-substance-2026-09-30T16-08-09-078Z.{md,json} (gitignored bench output; this file carries its verdict).",
+  "assertions": [
+    {
+      "id": "real-refusal-rate-within-1pct",
+      "passed": true,
+      "evidence": "Whole sample 3/600 = 0.5% refused at t=0.5; selection half 1/300 = 0.3%, confirmation half 2/300 = 0.7%. The three refused rows are 0e84a76b (text 'test', P=0.09), e740d749 (a P-104 federation witness marker, P=0.35) and 4be29121 (a WI3985 shareable marker string, P=0.11)."
+    },
+    {
+      "id": "sample-size-at-least-500",
+      "passed": true,
+      "evidence": "realSample 600 of 3,936 live real memories, seed p010, split 300/300 into selection and confirmation halves."
+    },
+    {
+      "id": "self-promoters-caught",
+      "passed": true,
+      "evidence": "152/156 self-promoting memories refused (97.4%). The 4 misses are topical self-promoters that quote a real gold question, P 0.55 to 0.82."
+    },
+    {
+      "id": "stable-under-repeat",
+      "passed": true,
+      "evidence": "150 rows re-asked: 0 flips across the 0.5 threshold, mean absolute delta 0.007, max 0.08."
+    }
+  ],
+  "workItemId": "WI-10004307",
+  "specId": "AUTO-BAR-R-3-P-010",
+  "testFile": "packages/operator-core/lib/memory/bench/jev-substance.test.ts",
+  "sourceFile": "packages/operator-core/lib/memory/jev-conflict-judge.ts"
+}

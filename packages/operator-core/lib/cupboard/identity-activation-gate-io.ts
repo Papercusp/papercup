@@ -274,34 +274,57 @@ function insideDir(dir: string, file: string): boolean {
  * installed → built-in), so only a layer the launch will actually load from the
  * installed tier counts. An installed directory without a release record was not
  * installed from a Cupboard release and is never priced.
+ *
+ * Each stack entry's whole `extends` chain is walked (D-012): a local or built-in
+ * layer that extends an installed priced identity loads that identity too, so it
+ * is charged and refused under the stack entry that pulled it in.
  */
 export async function resolveInstalledIdentityReleaseLayers(
   stack: readonly string[],
   repoDir: string | undefined,
 ): Promise<InstalledIdentityReleaseLayer[]> {
   if (stack.length === 0) return [];
-  const [{ stackBindingFromRefs }, { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends }, { localDirs }, { readBlueprintLifecycle }] =
+  const [{ stackBindingFromRefs, resolveLayers }, { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends }, { localDirs }, { readBlueprintLifecycle }, { parse: parseYaml }, { readFile }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('../blueprint/installed-blueprints'),
       import('../agent-identities/source'),
       import('./blueprint-release'),
+      import('yaml'),
+      import('node:fs/promises'),
     ]);
   const installedDir = INSTALLED_BLUEPRINTS_DIR();
   const resolve = operatorResolveExtends({ localDirs: localDirs(repoDir) });
+  const activeRelease = new Map<string, Promise<{ id: string; version: string } | null>>();
+  const releaseOf = (id: string) => {
+    let pending = activeRelease.get(id);
+    if (!pending) {
+      pending = readBlueprintLifecycle(installedDir, id).then((lifecycle) => lifecycle.active, () => null);
+      activeRelease.set(id, pending);
+    }
+    return pending;
+  };
   const out: InstalledIdentityReleaseLayer[] = [];
   for (const layer of stackBindingFromRefs(stack).layers) {
     const file = resolve(layer.id);
-    if (!file || !insideDir(installedDir, file)) continue;
-    let active: { id: string; version: string } | null = null;
-    try {
-      active = (await readBlueprintLifecycle(installedDir, layer.id)).active;
-    } catch {
-      active = null;
+    if (!file) continue;
+    const layerRef = `${layer.slot}:${layer.id}`;
+    // The launch compiler already resolved this same chain, so a parse failure
+    // here is a real fault: it propagates and refuses the activation rather than
+    // silently skipping a layer that could be priced.
+    const raw = parseYaml(await readFile(file, 'utf8')) as Record<string, unknown>;
+    const chain = resolveLayers(raw, resolve, file).layers;
+    const charged = new Set<string>();
+    for (const member of chain) {
+      if (!member.sourcePath || !insideDir(installedDir, member.sourcePath)) continue;
+      const active = await releaseOf(member.id);
+      if (!active) continue;
+      const identity = { id: active.id, version: active.version };
+      const skuRef = identityReleaseSkuRef(identity);
+      if (charged.has(skuRef)) continue;
+      charged.add(skuRef);
+      out.push({ layerRef, identity, skuRef });
     }
-    if (!active) continue;
-    const identity = { id: active.id, version: active.version };
-    out.push({ layerRef: `${layer.slot}:${layer.id}`, identity, skuRef: identityReleaseSkuRef(identity) });
   }
   return out;
 }

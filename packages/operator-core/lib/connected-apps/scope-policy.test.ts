@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   evaluateAppScope,
   grantedToolCapabilities,
@@ -8,6 +8,15 @@ import {
   type AppScopeRow,
   type AppScopeTool,
 } from './scope-policy';
+
+// Mutation-probe seam (copy-out tier): `scripts/mutation-probe.sh --test
+// 'PAPERCUSP_SCOPE_POLICY_PROBE={} …'` points these tests at a mutated COPY of the policy, so
+// proving them falsifiable never mutates the shared tree. Unset (every normal run): the real
+// module. vi.mock is hoisted above the static import.
+vi.mock('./scope-policy', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_SCOPE_POLICY_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
 
 const WS = 'ws-app';
 

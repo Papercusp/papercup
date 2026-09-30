@@ -1557,8 +1557,14 @@ const ensureCodexHome = defineTool({
       recoverMissingHome: sessionRow?.coordOwnerId === owner,
     });
     let rebuilt;
+    // agent-economy-flywheel P-016 (D-012): a repair is a restart. An unfunded
+    // priced identity is dropped from the repaired render (never kept by the
+    // fail-soft paths below) and reported; a refusal that cannot be cured by
+    // dropping stack entries is answered as a typed 402.
+    let identityActivation: { identityActivationRefusal: unknown; removedLayerRefs: readonly string[] } | null = null;
     try {
-      rebuilt = await rebuildSuLaunchArtifact({
+      const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
+      const funded = await rebuildSuLaunchArtifactFunded({
         ownerId: owner,
         operatorBaseUrl: new URL(req.url).origin,
         record: repairRecord,
@@ -1567,12 +1573,39 @@ const ensureCodexHome = defineTool({
           drainMode: record.drainMode,
           loopArmed: record.loopArmed,
         }),
-      });
+      }, { rebuild: rebuildSuLaunchArtifact });
+      rebuilt = funded.rebuilt;
+      if (funded.identityActivationRefusal) {
+        identityActivation = {
+          identityActivationRefusal: funded.identityActivationRefusal,
+          removedLayerRefs: funded.removedLayerRefs,
+        };
+      }
     } catch (error) {
+      const { isIdentityActivationRefusedError } = await import('../../../cupboard/identity-activation-gate');
+      if (isIdentityActivationRefusedError(error)) {
+        return new Response(JSON.stringify({
+          ok: false, owner, advSessionId, error: error.code, detail: error.message, refused: error.refused,
+        }), { status: 402, headers: JSON_HEADERS });
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (!message.startsWith('selected identity ')) throw error;
       const pinned = pinnedSuRecoveryPrompt(repairRecord);
       if (!pinned) throw error;
+      // The pinned bytes are the prior render, so the same gate applies to them
+      // (P-016 D-012). They cannot be degraded, only refused.
+      const { admitIdentityActivation } = await import('../../../cupboard/identity-activation-gate-io');
+      const pinnedAdmission = await admitIdentityActivation({
+        stack: repairRecord.stack ?? [],
+        repoDir: sessionRow?.cwd ?? undefined,
+        workspaceId: record.workspaceId,
+      });
+      if (!pinnedAdmission.ok) {
+        return new Response(JSON.stringify({
+          ok: false, owner, advSessionId, error: pinnedAdmission.code, detail: pinnedAdmission.detail,
+          refused: pinnedAdmission.refused,
+        }), { status: 402, headers: JSON_HEADERS });
+      }
       // Only the MCP connection settings come from a fresh, unselected spec.
       // The instruction bytes come from the verified prior artifact; a source
       // update must never silently apply a new identity during home recovery.
@@ -1626,6 +1659,7 @@ const ensureCodexHome = defineTool({
         advSessionId,
         ...r,
         ...(persistedRecord ? {} : { recoveredFrom: 'adv-session-row' }),
+        ...(identityActivation ?? {}),
       }),
       {
         status: 200,

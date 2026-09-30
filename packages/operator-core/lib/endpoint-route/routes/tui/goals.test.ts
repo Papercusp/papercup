@@ -75,6 +75,11 @@ describe('shapeTuiGoals', () => {
     expect(dto.lastActivityAt).toBeNull();
   });
 
+  it('passes unmeasured spend through as null, never $0 (WI-1074208)', () => {
+    const [dto] = shapeTuiGoals([row({ spendUsd: null })]);
+    expect(dto.spendUsd).toBeNull();
+  });
+
   it('shapes an empty resolver page to an empty list (no fabricated rows)', () => {
     expect(shapeTuiGoals([])).toEqual([]);
   });

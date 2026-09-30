@@ -338,8 +338,9 @@ pub struct GoalSummary {
     pub open_work_items: i64,
     #[serde(default)]
     pub needs_human: i64,
+    /// Goal-attributed spend; `None` = unmeasured (the server sends null), never $0.
     #[serde(default)]
-    pub spend_usd: f64,
+    pub spend_usd: Option<f64>,
     #[serde(default)]
     pub budget_cents: Option<i64>,
     #[serde(default)]
@@ -3550,6 +3551,21 @@ mod fleet_rate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn goal_spend_null_is_unmeasured_not_a_parse_failure() {
+        // /api/tui/goals sends spendUsd:null for an unmeasured goal (WI-1074208).
+        // An f64 field would reject the WHOLE goals page on that one null.
+        let j = r#"{"goals":[
+            {"id":"g-1","title":"measured","status":"active","spendUsd":1.4},
+            {"id":"g-2","title":"unmeasured","status":"active","spendUsd":null},
+            {"id":"g-3","title":"older server","status":"active"}
+        ]}"#;
+        let r: GoalsResponse = serde_json::from_str(j).unwrap();
+        assert_eq!(r.goals[0].spend_usd, Some(1.4));
+        assert_eq!(r.goals[1].spend_usd, None);
+        assert_eq!(r.goals[2].spend_usd, None);
+    }
 
     #[test]
     fn parses_coord_inbox_shape() {
