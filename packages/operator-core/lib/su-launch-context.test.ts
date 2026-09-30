@@ -63,6 +63,15 @@ describe('composeLaunchContext', () => {
     expect(out).toContain('**First move:** read `coord-port`');
   });
 
+  it('WI-10004449: a fleet LEADER is told to lead, never to claim the next item', () => {
+    const leader = composeLaunchContext({ harnessSlug: 'papercusp', planSlug: 'p1', fleetRole: 'leader' });
+    expect(leader).toContain("**First move:** you LEAD this plan's fleet");
+    expect(leader).toContain("do not claim the plan's items yourself");
+    expect(leader).not.toContain('claim its next actionable item');
+    const member = composeLaunchContext({ harnessSlug: 'papercusp', planSlug: 'p1', fleetRole: 'member' });
+    expect(member).toContain('claim its next actionable item');
+  });
+
   it('plan without a readable Now → falls back to a plans:get nudge', () => {
     const out = composeLaunchContext({ harnessSlug: 'papercup', planSlug: 'p', planNow: null });
     expect(out).toContain('bound to `p`');

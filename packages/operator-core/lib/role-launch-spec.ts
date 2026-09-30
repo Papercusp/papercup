@@ -1561,6 +1561,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     planTitle: input.planTitle ?? null,
     planNow: input.planNow ?? null,
     profile: launchProfile,
+    fleetRole: input.fleetRole ?? null,
   });
   // gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-004: mark the seam between the STABLE
   // playbook (byte-identical across a cohort — renderSuPlaybook is deterministic) and the
