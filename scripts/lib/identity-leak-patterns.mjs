@@ -512,8 +512,10 @@ export function resolveIdentityLiteralScopes(readCmd, env = process.env) {
   const box = {};
   try {
     const account = os.userInfo().username;
-    if (account && !GENERIC_ACCOUNTS.has(account))
+    if (account && !GENERIC_ACCOUNTS.has(account)) {
       box["build-user-name"] = account;
+      WORD_BOUNDED_LITERALS.add(account);
+    }
   } catch {
     /* best-effort */
   }
@@ -585,8 +587,14 @@ function escapeRegExp(s) {
 }
 
 /** The match rule for one literal — word-anchored and case-sensitive when low-entropy. */
+/** Box unix logins: matched as whole tokens regardless of length. Mirrors
+ *  _WORD_BOUNDED_LITERALS in papercusp-desktop/bin/audit-release-bundle.py — a
+ *  dictionary-word login (`tester`) as a substring rewrites vendor identifiers
+ *  (`createStereoPanner`); the home-path form is CLASS 2's job. */
+const WORD_BOUNDED_LITERALS = new Set();
+
 export function literalPattern(lit) {
-  return needsWordBoundary(lit)
+  return needsWordBoundary(lit) || WORD_BOUNDED_LITERALS.has(lit)
     ? new RegExp(`\\b${escapeRegExp(lit)}\\b`) // case-sensitive, same as the audit
     : new RegExp(escapeRegExp(lit));
 }
