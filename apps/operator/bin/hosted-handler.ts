@@ -19,6 +19,11 @@ import {
   type HostedWorkspaceAttachRequest,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
 import {
+  hostedDesktopAuditRow,
+  isHostedDesktopAuditAction,
+  recordDesktopAudit,
+} from "@papercusp/operator-core/lib/desktop/desktop-audit";
+import {
   AppRelayRateLimiter,
   DEFAULT_APP_RELAY_LIMITS,
   InMemoryHostedAppRelayUsageStore,
@@ -90,6 +95,22 @@ export function createHostedHandler(
   // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
   // `reachable` and terminal gate read, so a dead link stops reading as connected.
   const sessionBroker = new HostedWorkspaceSessionBroker({
+    // WI-10004167: the control plane's own copy of hosted desktop viewer starts, in
+    // the binding's control-plane workspace. The host writes these to its own
+    // database, which the customer-acceptance receipt cannot read. Only desktop
+    // starts are persisted: the broker also reports every relayed terminal frame.
+    onAudit: (event) => {
+      if (!isHostedDesktopAuditAction(event.action)) return;
+      recordDesktopAudit(hostedDesktopAuditRow(event), {
+        idPrefix: "hosted-relay-vnc",
+        workspaceId: () => event.controlPlaneWorkspaceId,
+        onError: (error) =>
+          console.warn(
+            `[hosted-relay] could not record ${event.action} for ${event.customerWorkspaceId} channel ${event.channelId ?? "?"}:`,
+            error instanceof Error ? error.message : error,
+          ),
+      });
+    },
     onConnectorLiveness: (binding, alive) => {
       if (!gateway) return;
       void gateway.recordLiveness(binding, alive, (error) => {

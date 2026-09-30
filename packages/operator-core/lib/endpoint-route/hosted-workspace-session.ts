@@ -46,6 +46,8 @@ export interface HostedWorkspaceRelaySocket {
 
 export interface HostedWorkspaceSessionAuditEvent {
   action: string;
+  /** The control-plane workspace the binding belongs to; where a persisted row lands. */
+  controlPlaneWorkspaceId: string;
   organizationId: string;
   customerWorkspaceId: string;
   hostId: string;
@@ -121,6 +123,10 @@ type BrowserSession = {
   socket: HostedWorkspaceRelaySocket;
   role: HostedWorkspaceTabRole;
   kind: HostedWorkspaceChannelKind;
+  /** The desktop this channel was opened for — the broker's copy, never the host's. */
+  desktopSessionId: string | null;
+  /** Set once the host's `desktop.ready` has been audited, so a repeat is not a second start. */
+  desktopStartAudited: boolean;
   connectorKey: string;
   controllerKey: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -305,6 +311,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         this.closeSession(session, 4000, message.reason ?? 'host_closed', false);
         return;
       }
+      if (session.kind === 'desktop') this.auditDesktopReady(session, message.payload);
       sendJson(session.socket, message.payload);
     };
     const onClose = () => {
@@ -377,6 +384,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       socket,
       role: 'controller',
       kind: 'app-http',
+      desktopSessionId: null,
+      desktopStartAudited: false,
       connectorKey: key,
       controllerKey: `${key}\u0000app:${channelId}`,
       idleTimer: null,
@@ -458,6 +467,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       socket,
       role,
       kind,
+      desktopSessionId: desktopSessionId ?? null,
+      desktopStartAudited: false,
       connectorKey: key,
       controllerKey: controlKey,
       idleTimer: null,
@@ -609,6 +620,32 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     this.audit(session.binding, 'browser_detached', session.channelId, reason);
   }
 
+  /**
+   * The control plane's own record that a hosted desktop viewer started (WI-10004167).
+   *
+   * The host audits the same event into ITS database, which nothing on the control
+   * plane can read — so a customer takeover was invisible here, including to the P-318
+   * customer-acceptance receipt that must verify it. The broker is a sound second
+   * witness because it holds every fact except one: it authenticated the browser
+   * principal, minted the channel, chose the role and relayed the desktop id. The one
+   * thing it takes from the host is that the dial SUCCEEDED, which is what
+   * `desktop.ready` says. The mode recorded is the broker's role, never the host's
+   * claim, and a host reporting a mode the broker did not open is audited as a
+   * mismatch rather than as a start.
+   */
+  private auditDesktopReady(session: BrowserSession, payload: unknown): void {
+    if (session.desktopStartAudited || payloadType(payload) !== 'desktop.ready') return;
+    session.desktopStartAudited = true;
+    const mode = session.role === 'controller' ? 'takeover' : 'watch';
+    const reported = (payload as { action?: unknown }).action;
+    const desktop = `desktop=${session.desktopSessionId ?? ''}`;
+    if (reported === mode) {
+      this.audit(session.binding, `desktop_${mode}_started`, session.channelId, desktop);
+    } else {
+      this.audit(session.binding, 'desktop_ready_mode_mismatch', session.channelId, `${desktop} reported=${String(reported)}`);
+    }
+  }
+
   private audit(
     binding: HostedConnectorBinding | HostedConnectorTicketBinding,
     action: string,
@@ -617,6 +654,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   ): void {
     this.onAudit({
       action,
+      controlPlaneWorkspaceId: binding.controlPlaneWorkspaceId,
       organizationId: binding.organizationId,
       customerWorkspaceId: binding.customerWorkspaceId,
       hostId: binding.hostId,
