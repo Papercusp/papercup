@@ -29,7 +29,8 @@
  * channel carries exactly one request.
  */
 import type { Sql } from 'postgres';
-import { isAppKeyShaped, parseAccessToken, parseAppKey } from '../connected-apps/key';
+import { isAppKeyShaped, parseAppKey } from '../connected-apps/key';
+import { isRelayableTokenAnswer, relayedBasic, relayedTokenFields } from '../connected-apps/mcp-oauth';
 import { publicOriginOf } from '../connected-apps/mcp-oauth-discovery';
 // portal-mcp-oauth imports this module for TYPES only, so this runtime import makes no cycle.
 import { portalResourceMetadataUrl } from '../connected-apps/portal-mcp-oauth';
@@ -172,46 +173,6 @@ export interface AppKeyMintChannelOptions {
  * secret. Same channel kind and one-request rule as the mint.
  */
 export const PORTAL_TOKEN_ROUTE_PATH = '/api/connected-apps/portal-token';
-/** The token-request form fields relayed, each a bounded string; nothing else crosses. */
-export const RELAYED_TOKEN_FIELDS = ['grant_type', 'scope', 'client_id', 'client_secret', 'client_assertion', 'client_assertion_type'] as const;
-const RELAYED_TOKEN_FIELD_MAX = 8192;
-const RELAYED_BASIC_MAX = 512;
-/** The statuses the machine's grant answers with (RFC 6749 §5.1 / §5.2); anything else is a fault. */
-const TOKEN_ANSWER_STATUSES = new Set([200, 400, 401]);
-
-/** The relayable subset of a token request's fields, or null when one is not a bounded string. */
-export function relayedTokenFields(input: unknown): Record<string, string> | null {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const out: Record<string, string> = {};
-  for (const name of RELAYED_TOKEN_FIELDS) {
-    const value = (input as Record<string, unknown>)[name];
-    if (value === undefined) continue;
-    if (typeof value !== 'string' || value.length > RELAYED_TOKEN_FIELD_MAX) return null;
-    out[name] = value;
-  }
-  return out;
-}
-
-/** Relayed client_secret_basic credentials: absent → null; malformed → undefined (refuse). */
-export function relayedBasic(input: unknown): { id: string; secret: string } | null | undefined {
-  if (input === null || input === undefined) return null;
-  if (typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const { id, secret } = input as { id?: unknown; secret?: unknown };
-  if (typeof id !== 'string' || typeof secret !== 'string' || id.length > RELAYED_BASIC_MAX || secret.length > RELAYED_BASIC_MAX) return undefined;
-  return { id, secret };
-}
-
-/**
- * A token answer the machine may relay: an OAuth status with an object body, and on 200 a
- * well-formed `pcat_` access token. A long-lived `pcapp_` key is never a token answer.
- */
-export function isRelayableTokenAnswer(status: unknown, body: unknown): body is Record<string, unknown> {
-  if (typeof status !== 'number' || !TOKEN_ANSWER_STATUSES.has(status)) return false;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-  if (status !== 200) return typeof (body as { error?: unknown }).error === 'string';
-  const token = (body as { access_token?: unknown }).access_token;
-  return typeof token === 'string' && parseAccessToken(token) !== null;
-}
 
 type MintAnswer =
   | { type: 'mint.issued'; requestId: string; key: string; scopes: unknown }

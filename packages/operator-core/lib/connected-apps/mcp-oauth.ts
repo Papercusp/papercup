@@ -22,6 +22,57 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { AppKeyScopeError, insertAppKey, resolveAppKeyScopes, type AppKeyScopes, type CreatedAppKey } from './store';
 import type { AppKeyScopeProblem } from './scope-policy';
+import { parseAccessToken } from './key';
+
+// ── the relayed client-credentials token request (P-016, D-022) ─────────────────────────────
+// The portal token endpoint relays a `grant_type=client_credentials` request to the workspace's
+// machine (portal-mcp-oauth.ts requestTokenOverRelay → workspace-host/hosted-app-relay.ts
+// AppKeyMintChannel → routes/connected-apps/oauth.ts /connected-apps/portal-token). Both ends
+// apply these checks, so they live here, below both, rather than in either.
+
+/** The token-request form fields relayed, each a bounded string; nothing else crosses. */
+export const RELAYED_TOKEN_FIELDS = ['grant_type', 'scope', 'client_id', 'client_secret', 'client_assertion', 'client_assertion_type'] as const;
+const RELAYED_TOKEN_FIELD_MAX = 8192;
+const RELAYED_BASIC_MAX = 512;
+/** The statuses a client-credentials answer may carry (RFC 6749 §5.1 / §5.2); anything else is a fault. */
+const TOKEN_ANSWER_STATUSES = new Set([200, 400, 401]);
+
+/** The relayable subset of a token request's fields, or null when one is not a bounded string. */
+export function relayedTokenFields(input: unknown): Record<string, string> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const out: Record<string, string> = {};
+  for (const name of RELAYED_TOKEN_FIELDS) {
+    const value = (input as Record<string, unknown>)[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || value.length > RELAYED_TOKEN_FIELD_MAX) return null;
+    out[name] = value;
+  }
+  return out;
+}
+
+/** Relayed client_secret_basic credentials: absent → null; malformed or oversized → undefined (refuse). */
+export function relayedBasic(input: unknown): { id: string; secret: string } | null | undefined {
+  if (input === null || input === undefined) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const { id, secret } = input as { id?: unknown; secret?: unknown };
+  if (typeof id !== 'string' || typeof secret !== 'string' || id.length > RELAYED_BASIC_MAX || secret.length > RELAYED_BASIC_MAX) {
+    return undefined;
+  }
+  return { id, secret };
+}
+
+/**
+ * A token answer that may cross the relay: an OAuth status with an object body; an error answer
+ * names its `error`; a 200 carries a well-formed short-lived `pcat_` token. A long-lived `pcapp_`
+ * key is never a token answer.
+ */
+export function isRelayableTokenAnswer(status: unknown, body: unknown): body is Record<string, unknown> {
+  if (typeof status !== 'number' || !TOKEN_ANSWER_STATUSES.has(status)) return false;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  if (status !== 200) return typeof (body as { error?: unknown }).error === 'string';
+  const token = (body as { access_token?: unknown }).access_token;
+  return typeof token === 'string' && parseAccessToken(token) !== null;
+}
 
 export const OAUTH_CLIENT_ID_PREFIX = 'pcoc_';
 export const OAUTH_REQUEST_HANDLE_PREFIX = 'paz_';

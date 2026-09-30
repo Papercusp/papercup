@@ -951,8 +951,9 @@ describe('immutable dependency generation', () => {
     // Indexed under the CANDIDATE's key, not the live tree's.
     expect(publishedInputFingerprint(built.stdout)).toBe(exactInput);
     const generation = publishedPath(built.stdout);
-    expect(readFileSync(join(generation, 'node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
-    expect(existsSync(join(generation, 'node_modules/@papercusp/extra'))).toBe(false);
+    expect(readFileSync(join(generation, 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(readFileSync(join(generation, 'tree/packages/a/node_modules/local/index.js'), 'utf8')).toBe('local-v1\n');
+    expect(existsSync(join(generation, 'tree/node_modules/@papercusp/extra'))).toBe(false);
     // The live tree is untouched and the private scratch root is gone.
     expect(existsSync(join(integration, 'node_modules/@papercusp/extra'))).toBe(true);
     expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
