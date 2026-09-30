@@ -1620,6 +1620,12 @@ export const FLAGS = {
   // arms a loop cold. OFF ⇒ every loop wake stays warm regardless of its carry marker. Read at
   // the wake-executor call-site (engine.ts) as the injected coldAutoEnabled dep.
   SU_COLD_AUTO: "papercusp-su-cold-auto",
+  // fuzzy-tool-name-resolution-2026-07-02 (P-006): runtime KILL-SWITCH for typo-recovering tool-name
+  // resolution (resolveMcpNameTagged's fuzzy stage). DEFAULT ON — it ships on (finished work is not
+  // dark). Read at the dispatch seams: OFF ⇒ seams call the canonical-only resolveMcpName, i.e. a
+  // typo returns unknown_tool exactly as before. The exact and canonical-fold stages are NOT gated
+  // (they are formatting tolerance, not guesses).
+  TOOL_NAME_FUZZY_RESOLVE: "papercusp-tool-name-fuzzy-resolve",
   // cold-with-carry-activation-2026-07-20 (owner-directed A+B, fact
   // cold-with-carry-activation-approved): loop:arm defaults an UNATTENDED HEADLESS
   // session's loop (host.bridgeTty===false ⇒ sessionClassForHost 'claude-headless')
