@@ -2999,6 +2999,14 @@ export function reportSessionPortLaunchFailure(prepared: any, failure: any, { fe
 export function sanitizeInheritedEnv(env: any): NodeJS.ProcessEnv;
 export function applyCodexDiagnosticEnv(env: any, agent: any): any;
 /**
+ * A headless Codex TUI must never publish an OAuth URL into the owner's desktop
+ * browser. If model or optional plugin auth is unexpectedly unavailable, Codex
+ * can fail visibly in its managed PTY/log, but it cannot open an outward-facing
+ * browser that nobody launched interactively. Applied in runWrapper so fresh,
+ * resume, carry-respawn and host-handoff paths share the same invariant.
+ */
+export function applyHeadlessCodexBrowserPolicy(env: any): any;
+/**
  * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook
  * enrollment guard, GENERALIZED (WI-4394) to any settings.json-wired CC hook,
  * not just coord-inbox.

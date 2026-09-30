@@ -10930,6 +10930,23 @@ export function applyCodexDiagnosticEnv(env, agent) {
 }
 
 /**
+ * A headless Codex TUI must never publish an OAuth URL into the owner's desktop
+ * browser. If model or optional plugin auth is unexpectedly unavailable, Codex
+ * can fail visibly in its managed PTY/log, but it cannot open an outward-facing
+ * browser that nobody launched interactively. Applied in runWrapper so fresh,
+ * resume, carry-respawn and host-handoff paths share the same invariant.
+ */
+export function applyHeadlessCodexBrowserPolicy(env) {
+  if (
+    env.PAPERCUSP_AGENT === "codex" &&
+    env.PAPERCUSP_PSU_HEADLESS === "1"
+  ) {
+    env.BROWSER = "false";
+  }
+  return env;
+}
+
+/**
  * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook
  * enrollment guard, GENERALIZED (WI-4394) to any settings.json-wired CC hook,
  * not just coord-inbox.
@@ -11431,6 +11448,7 @@ export function runWrapper(options) {
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  applyHeadlessCodexBrowserPolicy(env);
   const reportPreSpawnFailure = () =>
     onSpawnFailure
       ? onSpawnFailure()

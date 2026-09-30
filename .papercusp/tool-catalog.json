@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 925,
+  "count": 926,
   "tools": [
     {
       "name": "ablation:report",
@@ -8180,6 +8180,23 @@
       "guidance": {
         "when": "You need the supervisor's annotations on a harness — context the supervisor logged that's not in audit_log.",
         "notWhen": "For escalation flags + raw notes from the on-disk files, use `harness:escalation`. supervisor_notes is the PG-backed view."
+      }
+    },
+    {
+      "name": "cupboard:bind-identity-funding",
+      "http": {
+        "path": "/api/agent-tools/cupboard/bind-identity-funding",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bind a hosted payment channel as the funding for one Cupboard identity release in this workspace. Reads the channel back from the hosted owner-only route first and refuses one that is unknown or not yours. The activation gate still re-reads funds on every activation.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "A priced identity is refused with identity-activation-unfunded and the buyer already has an open payment channel for it.",
+        "notWhen": "Buying the identity (cupboard:checkout already binds its per-use channel). Prepaid credits need no binding."
       }
     },
     {
