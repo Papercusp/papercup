@@ -15,6 +15,7 @@ import { readActiveOperationModelPolicy, type ActiveOperationAttestationContext 
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { getWorkItem, type WorkItem } from '../work-items';
+import { workItemStorageSlug } from '../pot-membership';
 import { isSettledWorkItem } from '../work-items-events';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
@@ -307,8 +308,11 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
   }
   const controls = await readOperationControls(sql, ref);
   if (ref.target.kind === 'work-item') {
-    const item = await getWorkItem(ref.target.id, ref.harnessSlug);
-    if (!item || item.harness !== ref.harnessSlug) throw new Error('blueprint operation work item is missing or outside its harness');
+    // WI-10004360: the accepted item is stored under the harness's pot home slug when the
+    // harness is a pot MEMBER, so address it (and bound it) by that storage slug.
+    const storageHarness = await workItemStorageSlug(ref.harnessSlug, ref.workspaceId);
+    const item = await getWorkItem(ref.target.id, storageHarness);
+    if (!item || item.harness !== storageHarness) throw new Error('blueprint operation work item is missing or outside its harness');
     const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
       ? item.payload as Record<string, unknown> : null;
     const pin = payload?.blueprintOperation && typeof payload.blueprintOperation === 'object' &&

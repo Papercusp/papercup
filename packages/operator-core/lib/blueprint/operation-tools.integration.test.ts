@@ -46,6 +46,7 @@ import { openBlueprintOperationWait, type BlueprintOperationHandle } from './ope
 import { BLUEPRINT_OPERATION_TOOLS, BlueprintOperationStatusSchema } from './operation-contract';
 import { BlueprintOperationClient, createProjectedBlueprintOperationPort } from './operation-client';
 import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
+import { canonicalPotSlug } from '../platform-pot-slug';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -55,7 +56,21 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  // WI-10004360: member harness -> pot home slug, read by the potHomeSlugForHarness mock.
+  potHomes: {} as Record<string, string>,
+}));
+// WI-10004360: potHomeSlugForHarness is a harness-REGISTRY read. Overriding only it makes a
+// harness a pot MEMBER while the real resolveWorkItemPot / potExists / createWorkItem path runs.
+vi.mock('../hive-federation', async () => {
+  const actual = await vi.importActual<typeof import('../hive-federation')>('../hive-federation');
+  return {
+    ...actual,
+    potHomeSlugForHarness: async (...args: Parameters<typeof actual.potHomeSlugForHarness>) =>
+      h.potHomes[args[1]] ?? actual.potHomeSlugForHarness(...args),
+  };
+});
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -733,5 +748,40 @@ describe.each<Transport>(['http', 'mcp'])('WI-10004001 lazy blueprint projection
     expect(refusal.code).toBe('invalid_input');
     expect(refusal.message).toMatch(/^undeclared: harness declares no blueprint operations/);
     expect(await readBlueprintHashFromPg(db.sql, WORKSPACE, slug)).toBeNull();
+  });
+});
+
+// WI-10004360: createWorkItem re-homes a pot MEMBER harness's item to the pot home slug.
+// Replay (same key + input) and status used to read it back by the MEMBER slug and answer
+// "receipt points to a missing work item" / "missing or outside its harness".
+describe.each<Transport>(['http', 'mcp'])('WI-10004360 pot member harness over %s', (transport) => {
+  it('replays one item and reads its status when the item is stored under the pot home', async () => {
+    const POT_HOME = 'papercup-pot-home';
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.pots (
+      workspace_id text NOT NULL, pot_home_slug text NOT NULL, PRIMARY KEY (workspace_id, pot_home_slug))`;
+    await db.sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug)
+      VALUES (${WORKSPACE}, ${POT_HOME}) ON CONFLICT DO NOTHING`;
+    // resolveRealPot canonicalizes BEFORE the member lookup, and HARNESS ('papercup') is a
+    // legacy platform-pot spelling that folds to 'papercusp', so key the member map on both.
+    const memberKeys = [HARNESS, canonicalPotSlug(HARNESS)];
+    for (const k of memberKeys) h.potHomes[k] = POT_HOME;
+    try {
+      const { handle } = await ok<{ handle: BlueprintOperationHandle }>(
+        call(transport, ALPHA, T.submit, submitArgs('pot-member')));
+      if (handle.target.kind !== 'work-item') throw new Error('expected direct target');
+      expect(handle.harnessSlug).toBe(HARNESS);
+      // Positive control: the item really was re-homed, so this case exercises the bug.
+      const stored = await db.sql<{ harness_slug: string }[]>`SELECT harness_slug FROM harness_shared.work_items
+        WHERE workspace_id = ${WORKSPACE} AND feature_id = ${handle.target.id}`;
+      expect(stored.map((r) => r.harness_slug)).toEqual([POT_HOME]);
+      // Replay with the same key and input returns the same handle instead of a handler_error.
+      expect((await ok<{ handle: unknown }>(call(transport, ALPHA, T.submit, submitArgs('pot-member')))).handle)
+        .toEqual(handle);
+      // Status reads the re-homed item.
+      expect(await ok(call(transport, ALPHA, T.status, { handle }))).toMatchObject({ phase: 'accepted' });
+    } finally {
+      for (const k of memberKeys) delete h.potHomes[k];
+      await db.sql`DELETE FROM harness_shared.pots WHERE workspace_id = ${WORKSPACE} AND pot_home_slug = ${POT_HOME}`;
+    }
   });
 });
