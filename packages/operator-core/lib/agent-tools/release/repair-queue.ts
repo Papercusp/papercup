@@ -47,6 +47,10 @@ import {
 } from '../../release/hunk-exact-admission';
 import { containmentForPaths, integrationBranch } from '../../release/judged-sha-containment';
 import { importCompletenessPreflight } from '../../release/admission-import-completeness';
+import {
+  chainAdmissionPreflights,
+  lockfileManifestConsistencyPreflight,
+} from '../../release/admission-lockfile-consistency';
 import { admitPathsOntoRepairHead, realAdmissionGit, retractAdmission } from '../../release/repair-head-admission';
 import {
   createCheckpointTreeFixPrecheckRunner,
@@ -1203,11 +1207,19 @@ export default defineTool({
           // file, or the door refuses `admission-incomplete` naming the sibling to admit. The
           // The pinned whole-blob source is consulted when supplied; other modes preserve the
           // integration branch as the suggestion source. Nothing is admitted on the caller's behalf.
-          preflight: importCompletenessPreflight({
-            root,
-            probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
-            ...(wholeBlob ? { enforceSourceCohort: true } : {}),
-          }),
+          // WI-10004232: and a lockfile workspace entry it moves must still agree with its manifest,
+          // or npm install rewrites the lock and the promoted pin can never certify.
+          preflight: chainAdmissionPreflights(
+            importCompletenessPreflight({
+              root,
+              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+              ...(wholeBlob ? { enforceSourceCohort: true } : {}),
+            }),
+            lockfileManifestConsistencyPreflight({
+              root,
+              probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+            }),
+          ),
         });
       // Build the immutable candidate first. Publication is the effect boundary,
       // and must happen only while the condition claim row is locked below.
