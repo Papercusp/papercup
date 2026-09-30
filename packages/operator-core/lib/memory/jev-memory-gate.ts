@@ -52,8 +52,18 @@ export type JevMemoryGateResult =
   | { readonly effective: 'off' }
   /** Log only: the request was fired and nothing waits for it. */
   | { readonly effective: 'shadow'; readonly fired: boolean }
-  /** On, answered: `keep` is index-aligned with the candidates. */
-  | { readonly effective: 'on'; readonly outcome: 'answered'; readonly keep: readonly boolean[]; readonly scores: readonly number[] }
+  /**
+   * On, answered: `keep` is index-aligned with the candidates. `model` is the id
+   * the provider says answered (not the pin we asked for), so a served-model
+   * change is visible wherever the verdict is recorded (P-008).
+   */
+  | {
+      readonly effective: 'on';
+      readonly outcome: 'answered';
+      readonly keep: readonly boolean[];
+      readonly scores: readonly number[];
+      readonly model: string;
+    }
   /** On, no verdict: the caller keeps every candidate (fail open). */
   | { readonly effective: 'on'; readonly outcome: 'inconclusive'; readonly reason: string };
 
@@ -75,6 +85,12 @@ export interface JevMemoryGateInput {
   readonly message: string;
   /** Floor-admitted candidates in retrieval order. */
   readonly candidates: readonly JevGateCandidate[];
+  /**
+   * Ledger consumer label. Defaults to {@link JEV_MEMORY_CONSUMER}; the weekly
+   * precision monitor passes `memory-bench` so its replay calls are never
+   * counted as live injection traffic in decision_model_calls.
+   */
+  readonly consumer?: string;
 }
 
 export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemoryGateDeps = defaultDeps): Promise<JevMemoryGateResult> {
@@ -93,7 +109,7 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
   }
 
   const { request, questionIds } = buildAdmissionRequest(input.message, candidates, JEV_MEMORY_ENCODING);
-  const options = { consumer: JEV_MEMORY_CONSUMER, subjectIds: candidates.map((c) => c.id) };
+  const options = { consumer: input.consumer ?? JEV_MEMORY_CONSUMER, subjectIds: candidates.map((c) => c.id) };
 
   if (effective === 'shadow') {
     // Fire and forget. decide() never throws for expected failures; the catch is
@@ -112,7 +128,9 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
     // asked about); map back so `keep` stays aligned with the caller's list.
     const byId = new Map(candidates.map((c, i) => [c.id, p.scores[i]]));
     const scores = input.candidates.map((c) => byId.get(c.id) ?? 1);
-    return { effective, outcome: 'answered', scores, keep: scores.map((s) => s >= JEV_MEMORY_ADMIT_THRESHOLD) };
+    // admissionPYes only yields scores for an answered outcome; the guard is for the type.
+    const model = outcome.kind === 'answered' ? outcome.model : 'unknown';
+    return { effective, outcome: 'answered', scores, keep: scores.map((s) => s >= JEV_MEMORY_ADMIT_THRESHOLD), model };
   } catch (e) {
     return { effective, outcome: 'inconclusive', reason: `error: ${e instanceof Error ? e.message : String(e)}` };
   }
