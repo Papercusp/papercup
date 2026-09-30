@@ -7,6 +7,7 @@ import { applyPackageResourceDependent, beginPackageInstallation, beginPackageIn
 import { blueprintPackageProvisioners, provisionBlueprintPackages } from './compile-packages';
 import { planKnowledgePackageResources, releasePackageInstallation } from './package-knowledge-resources';
 import { planRecipePackageResource } from './package-recipe-resources';
+import { planKnowledgeDocResources } from './package-doc-resources';
 
 /** Package kinds whose rows the installation journal owns. Rubrics are
  * immutable seeds and stay outside it. */
@@ -81,6 +82,10 @@ async function expectedPackageResources(artifact: CompiledAgentSpecification, wo
       for (const write of planKnowledgePackageResources({ pin, workspaceId: scope.workspaceId,
         harnessSlug: scope.harnessSlug, memoryTarget: scope.memoryTarget!,
         shapes: scope.knowledgeSelection!.shapes, domains: scope.knowledgeSelection!.domains })) {
+        expect(expected, write.resourceKey, write.address.installedHash);
+      }
+      // P-009 / D-022: the pin's doc items are members of the same installation.
+      for (const write of planKnowledgeDocResources({ pin, workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug })) {
         expect(expected, write.resourceKey, write.address.installedHash);
       }
     },

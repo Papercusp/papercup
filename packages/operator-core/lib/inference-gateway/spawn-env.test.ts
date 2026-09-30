@@ -16,6 +16,28 @@ import {
   wakeAccountRouteFromArgv,
 } from './spawn-env';
 
+test('public build never routes a claude spawn through the gateway (P-019 gateway-reinjection)', () => {
+  const saved = {
+    profile: process.env.PAPERCUSP_DISTRIBUTION_PROFILE,
+    optIn: process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY,
+  };
+  try {
+    process.env.PAPERCUSP_DISTRIBUTION_PROFILE = 'public';
+    delete process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY;
+    assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-1' }), {});
+    process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY = '1';
+    assert.ok(gatewaySpawnEnv(true)[GATEWAY_BASE_URL_ENV], 'own-accounts opt-in restores the route');
+    process.env.PAPERCUSP_DISTRIBUTION_PROFILE = 'dogfood';
+    delete process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY;
+    assert.ok(gatewaySpawnEnv(true)[GATEWAY_BASE_URL_ENV], 'dogfood build keeps the gateway route');
+  } finally {
+    if (saved.profile === undefined) delete process.env.PAPERCUSP_DISTRIBUTION_PROFILE;
+    else process.env.PAPERCUSP_DISTRIBUTION_PROFILE = saved.profile;
+    if (saved.optIn === undefined) delete process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY;
+    else process.env.PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY = saved.optIn;
+  }
+});
+
 const orig = process.env.PAPERCUSP_GATEWAY_PORT;
 afterEach(() => {
   if (orig === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;

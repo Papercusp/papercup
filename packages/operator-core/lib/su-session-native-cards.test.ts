@@ -136,8 +136,9 @@ describe('native requests through the shared PUI card correlator', () => {
         { type: 'setMode', mode: 'acceptEdits', destination: 'session' },
       ],
     });
+    // P-008: the remembered choice names the tool the way the card does, never the raw MCP id.
     expect(openedChoiceLabels(f.events)).toEqual(['Approve', 'Decline',
-      `Always allow ${toolName} until this session's runtime stops`]);
+      "Always allow papercusp-su · orders disposition (MCP) until this session's runtime stops"]);
     expect(f.answer({ picks: ['2'] }).ok).toBe(true);
     // Never a settings-file write, and never a mode change the card did not name.
     await expect(pending).resolves.toEqual({ behavior: 'allow', updatedInput: { id: 282 },

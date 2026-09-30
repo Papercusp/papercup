@@ -577,6 +577,12 @@ function ensurePuiBinary(): string {
   return resolved;
 }
 
+/** Approval-card headlines (pui-chat-first-ux P-008): a native tool is asked
+ * about by action and target, `Allow Update(calc.js)?`; the SU's own tool by
+ * server and verb words, `Allow papercusp-su · work items claimable (MCP)?`. */
+const NATIVE_APPROVAL_HEADLINE = /^Allow ([A-Z][A-Za-z ]*?)(?:\(.*\))?\?$/;
+const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
+
 class PuiPane {
   readonly pty: IPty;
   private raw = '';
@@ -616,17 +622,19 @@ class PuiPane {
   settleSuToolApproval(): boolean {
     if (!this.suToolApprovals || Date.now() - this.suToolApprovalAt < 750) return false;
     const lines = this.screen().split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-    const tool = lines.map((line) => /^Allow (mcp__papercusp-su__[\w-]+)\?/.exec(line)?.[1]).find(Boolean);
-    const readAt = tool ? -1 : lines.findIndex((line) => /^Allow (Read|Grep|Glob)\?/.test(line));
+    const tool = lines.map((line) => SU_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
+    const readAt = tool ? -1 : lines.findIndex((line) => /^(Read|Search)$/.test(NATIVE_APPROVAL_HEADLINE.exec(line)?.[1] ?? ''));
+    // The full path is in the headline (outside the launch directory) or on
+    // the line under it (inside, where the headline shows it relative).
     const readPath = readAt < 0 ? undefined
-      : [...this.nativeReadPaths].find((p) => lines.slice(readAt + 1, readAt + 4).some((line) => line.includes(p)));
+      : [...this.nativeReadPaths].find((p) => lines.slice(readAt, readAt + 4).some((line) => line.includes(p)));
     if (!tool && !readPath) return false;
     const option = (label: string) => lines.map((line) => new RegExp(`^(?:› )?(\\d)\\. ${label}\\b`).exec(line)?.[1]).find(Boolean);
     const pick = readPath ? option('Approve') : option('Always allow') ?? option('Approve');
     if (!pick) return false;
     this.pty.write(pick);
     if (tool) this.suToolApprovals.push(tool);
-    else this.nativeReadApprovals.push(`${/^Allow (\w+)\?/.exec(lines[readAt])?.[1]} ${readPath}`);
+    else this.nativeReadApprovals.push(`${NATIVE_APPROVAL_HEADLINE.exec(lines[readAt])?.[1]} ${readPath}`);
     this.suToolApprovalAt = Date.now();
     return true;
   }
@@ -4005,7 +4013,7 @@ function installedManifest(): Record<string, unknown> {
 }
 /** A real engine's approval for the SU's own papercusp-su call (D-021). */
 function isSuToolApprovalCard(card: { prompt: string }): boolean {
-  return /^Allow mcp__papercusp-su__[\w-]+\?/.test(card.prompt);
+  return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '');
 }
 
 function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
@@ -6333,7 +6341,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (Date.now() - approvedAt < 750) return;
         const screen = pane.screen();
         const lines = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-        const tool = lines.map((line) => /^Allow ([A-Za-z][\w]*)\?/.exec(line)?.[1]).find((name) => name && !name.startsWith('mcp__'));
+        const tool = lines.map((line) => NATIVE_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
         const pick = tool && lines.map((line) => /^(?:› )?(\d)\. Approve\b/.exec(line)?.[1]).find(Boolean);
         if (!tool || !pick) return;
         frame(`${label}-approval-${approvals.length + 1}`, screen);
@@ -6353,7 +6361,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const open = pendingNativeCards().filter((card) => !isSuToolApprovalCard(card));
         const screen = pane.screen();
         // Tool approvals are cards too; only a card with no `Allow <tool>?` is a question.
-        const approval = screen.split('\n').some((line) => /^[\s│]*Allow [A-Za-z][\w]*\?/.test(line));
+        const approval = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim())
+          .some((line) => NATIVE_APPROVAL_HEADLINE.test(line) || SU_APPROVAL_HEADLINE.test(line));
         if (!open.length || approval || !screen.includes('Esc skip')) return;
         frame(`${label}-question-${questions.length + 1}`, screen);
         questions.push(`${label}: ${open[0].prompt}`);
@@ -6382,6 +6391,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           if (pane.screen().includes('send your message again') && Date.now() - retriedAt > 5_000) {
             if (retries.filter((entry) => entry.startsWith(`${label}:`)).length >= 2) {
               frame(`${label}-send-failed`, pane.screen());
+              // The plain sentence hides the raw error behind Ctrl-O; save
+              // that view too so the failure names its cause.
+              pane.pty.write('\u000f');
+              await new Promise((resolve) => setTimeout(resolve, 750));
+              frame(`${label}-send-failed-details`, pane.screen());
               throw new Error(`${label}: the message could not be sent after two retries`);
             }
             frame(`${label}-retry-${retries.length + 1}`, pane.screen());

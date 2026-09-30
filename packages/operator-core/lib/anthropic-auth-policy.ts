@@ -18,8 +18,13 @@
 export const PUBLIC_DISTRIBUTION_PROFILE = 'public';
 export const OWN_SUBSCRIPTION_RELAY_OPT_IN_ENV = 'PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY';
 
-/** The relays D-005 covers, named so a refusal says which one was withheld. */
-export type SubscriptionRelay = 'account-pool' | 'credential-sync' | 'honor-account';
+/**
+ * The relays D-005 covers, named so a refusal says which one was withheld.
+ * `gateway-reinjection` is the single-account case: even with pooling off, routing a
+ * `claude` spawn through the local inference gateway means the gateway holds the user's
+ * Claude.ai OAuth and re-injects it upstream — intermediating the credential (P-019).
+ */
+export type SubscriptionRelay = 'account-pool' | 'credential-sync' | 'honor-account' | 'gateway-reinjection';
 
 export function isPublicDistribution(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PAPERCUSP_DISTRIBUTION_PROFILE?.trim() === PUBLIC_DISTRIBUTION_PROFILE;

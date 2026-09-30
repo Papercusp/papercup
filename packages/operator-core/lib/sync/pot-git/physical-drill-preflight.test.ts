@@ -269,6 +269,29 @@ describe('VM probe plumbing', () => {
   });
 });
 
+describe('probe wiring', () => {
+  // Overridable so a copy-out mutation probe can point this guard at a mutated copy.
+  const probePath =
+    process.env.PHYSICAL_PROBE_UNDER_TEST ??
+    fileURLToPath(new URL('../../../../../papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh', import.meta.url));
+
+  it('runs rig-preflight after the readiness gate and before run_dir and the first rig ssh, failing closed', () => {
+    const probe = readFileSync(probePath, 'utf8');
+    const code = probe
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
+    const preflight = code.search(/"\$TSX" "\$PRODUCER" rig-preflight\b/);
+    expect(preflight).toBeGreaterThan(-1);
+    expect(code.indexOf('--require-ready')).toBeLessThan(preflight);
+    expect(preflight).toBeLessThan(code.indexOf('run_dir="$(mktemp'));
+    expect(preflight).toBeLessThan(code.search(/\bssh "\$\{SSH_OPTS\[@\]\}"/));
+    const call = code.slice(preflight, code.indexOf('\n', code.indexOf('|| fail', preflight)));
+    expect(call).toMatch(/\|\| fail /);
+    expect(code.slice(code.lastIndexOf('\n', preflight), preflight)).toContain('PCUSP_VM_SSH="$VM"');
+  });
+});
+
 describe('hold-note single source', () => {
   it('the hold Phase D writes carries the prefix the preflight recognises', () => {
     const phaseD = readFileSync(fileURLToPath(new URL('./physical-drill-phase-d.ts', import.meta.url)), 'utf8');

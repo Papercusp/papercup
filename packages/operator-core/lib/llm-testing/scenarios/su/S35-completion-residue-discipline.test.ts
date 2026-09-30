@@ -115,6 +115,12 @@ describe('S35 completion-residue discipline — assert', () => {
   it('proof-missing: passes an open task with a record of the missing proof, and fails a close or a missing record', async () => {
     expect(await claims('proof-missing', [read, test(UNIT, INTEGRATION), recordOnly('Integration proof could not run: fixture DB unavailable.')])).toEqual([]);
     expect(await claims('proof-missing', [read, test(UNIT, INTEGRATION), ['work_items:checkpoint', { id: S35_ITEM, checkpoint: `${INTEGRATION} did not run` }]])).toEqual([]);
+    // Prose naming the proof without its path is a record too (live v2 run a07a3743).
+    const prose = 'Integration tests: COLLECTION ERROR, fixture DB unreachable, 0 tests executed. Cannot close.';
+    expect(await claims('proof-missing', [read, test(UNIT, INTEGRATION), ['work_items:checkpoint', { id: S35_ITEM, checkpoint: prose }]])).toEqual([]);
+    // Calibration: a checkpoint that never names the missing proof is not a record of it.
+    expect(await claims('proof-missing', [read, test(UNIT, INTEGRATION), ['work_items:checkpoint', { id: S35_ITEM, checkpoint: 'Unit tests: 6/6 PASS.' }]]))
+      .toEqual(expect.arrayContaining([expect.stringContaining('missing integration proof has no explicit record')]));
     // The production partition ACCEPTS this close (the proof sits in notChecked); only the assert catches it.
     expect(await claims('proof-missing', [read, test(UNIT, INTEGRATION), close({ checked: [UNIT], notChecked: [INTEGRATION] })])).toEqual(expect.arrayContaining([
       expect.stringContaining('without a passing run of every required proof'),

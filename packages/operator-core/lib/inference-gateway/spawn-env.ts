@@ -199,7 +199,10 @@ export function gatewaySpawnEnv(
   enabled: boolean,
   opts: { accountId?: string; ownerId?: string; priority?: string; hardPin?: boolean } = {},
 ): Record<string, string> {
-  if (!enabled) return {};
+  // P-019 / D-005: the gateway re-injects the routed account's Claude.ai OAuth upstream, so a
+  // public build never routes a claude spawn through it (direct egress on the user's own
+  // login or API key instead) unless the user opted in for their own accounts.
+  if (!enabled || !subscriptionRelayAllowed('gateway-reinjection')) return {};
   const env: Record<string, string> = {
     [GATEWAY_BASE_URL_ENV]: `http://127.0.0.1:${gatewayPort()}`,
     // Client-side login-gate bypass (see GATEWAY_CLIENT_AUTH_TOKEN): the CLI only sends when it

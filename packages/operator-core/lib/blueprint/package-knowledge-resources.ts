@@ -2,9 +2,10 @@
  * This is not an activation host: callers promote in their existing transaction. */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { packageContentHash, type ResolvedPackageInput } from '@papercusp/orchestrator/blueprint';
+import type { ResolvedPackageInput } from '@papercusp/orchestrator/blueprint';
 import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
-import { filterByDomains, filterByShapes, type AppliesTo, type KnowledgePack } from '../knowledge-packs/pack-format';
+import { filterByDomains, filterByShapes, type AppliesTo } from '../knowledge-packs/pack-format';
+import { knowledgePackFromPin, packageDocDriver, prepareKnowledgeDocResources } from './package-doc-resources';
 import { packItemMemoryWrite, knowledgePackMemoryScope, type KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
 import { packageMemoryDriver } from './package-memory-driver';
 import { packageRecipeDriver } from './package-recipe-resources';
@@ -24,15 +25,8 @@ export interface KnowledgePackageResourceInput {
 
 /** Pure expected write set, reused at the atomic activation boundary. */
 export function planKnowledgePackageResources(input: KnowledgePackageResourceInput) {
-  const { contentHash, ...content } = input.pin;
-  if (input.pin.packageKind !== 'knowledge-pack' || packageContentHash(content) !== contentHash) {
-    throw new Error('package-hash-mismatch: knowledge resource pin is not intact');
-  }
-  const pack = input.pin.value as KnowledgePack;
-  if (!pack?.manifest || pack.manifest.id !== input.pin.ref || pack.manifest.version !== input.pin.revision ||
-      !Array.isArray(pack.items) || new Set(pack.items.map((item) => item.id)).size !== pack.items.length) {
-    throw new Error('knowledge resource requires an exact pack id/version and unique items');
-  }
+  const contentHash = input.pin.contentHash;
+  const pack = knowledgePackFromPin(input.pin);
   const scope = knowledgePackMemoryScope(input.memoryTarget);
   const selected = filterByDomains(filterByShapes(pack.items, input.shapes), input.domains);
   return selected.map((item) => {
@@ -61,6 +55,9 @@ export async function prepareKnowledgePackageResources(sql: Sql, input: Knowledg
   for (const { address, text, options } of writes) {
     receipts.push(await preparePackageResource(sql, address, input.dependentId, packageMemoryDriver(backend, text, options)));
   }
+  // P-009 / D-022: the same pin's doc items, as package-addressed doc parts.
+  receipts.push(...await prepareKnowledgeDocResources(sql, { pin: input.pin, workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug, dependentId: input.dependentId }));
   return receipts;
 }
 
@@ -82,7 +79,7 @@ export async function releasePackageInstallation(
       FROM harness_shared.blueprint_package_resources r
       JOIN harness_shared.blueprint_package_dependents d USING (workspace_id, resource_key)
       WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
-        AND r.resource_kind IN ('memory', 'code-recipe') ORDER BY r.resource_key`;
+        AND r.resource_kind IN ('memory', 'code-recipe', 'doc-part') ORDER BY r.resource_key`;
     const receipts: PackageResourceReceipt[] = [];
     for (const row of rows) {
       const address: PackageResourceAddress = { workspaceId, memoryScope: row.memory_scope,
@@ -91,6 +88,12 @@ export async function releasePackageInstallation(
         installedHash: row.installed_hash };
       if (row.resource_kind === 'code-recipe') {
         const receipt = await releasePackageResource(sql, address, dependentId, packageRecipeDriver(sql, address, null));
+        if (receipt) receipts.push(receipt);
+        continue;
+      }
+      if (row.resource_kind === 'doc-part') {
+        // An edited part is re-owned and preserved by the driver, never deleted.
+        const receipt = await releasePackageResource(sql, address, dependentId, packageDocDriver(sql, address, null));
         if (receipt) receipts.push(receipt);
         continue;
       }

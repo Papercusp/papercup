@@ -6,7 +6,7 @@ import {
   type SubscriptionRelay,
 } from './anthropic-auth-policy';
 
-const RELAYS: SubscriptionRelay[] = ['account-pool', 'credential-sync', 'honor-account'];
+const RELAYS: SubscriptionRelay[] = ['account-pool', 'credential-sync', 'honor-account', 'gateway-reinjection'];
 
 describe('anthropic-auth-policy (open-source-release D-005)', () => {
   it('leaves every relay on outside a public build', () => {

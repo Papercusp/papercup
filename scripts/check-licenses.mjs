@@ -584,8 +584,9 @@ export const NOTICES_FILE = 'THIRD-PARTY-NOTICES.md';
 /**
  * Render the notices document. Pure over its inputs so the guard test runs on fixtures.
  * @param {{ npm?: Array<{name:string,version:string,effective:string,tier:number}>, cargo?: Array<{name:string,version:string,effective:string,tier:number}> }} rowsByEco
+ * @param {{ installerComponents?: Array<{ name: string, license?: string, allow?: boolean, obligations?: string }>, sourceOfferRepo?: string }} [opts]
  */
-export function renderThirdPartyNotices(rowsByEco) {
+export function renderThirdPartyNotices(rowsByEco, { installerComponents = [], sourceOfferRepo = 'Papercusp/papercusp' } = {}) {
   const lines = [
     '# Third-party notices',
     '',
@@ -614,6 +615,42 @@ export function renderThirdPartyNotices(rowsByEco) {
       lines.push('', `### ${lic} (${pkgs.length})`, '', pkgs.join(', '));
     }
   }
+  // P-015: the desktop installers carry components beyond the lockfiles (runtime libraries,
+  // tools, models). Each reviewed component and the obligation its license imposes is listed
+  // here, and GPL/LGPL components get a written source offer.
+  const components = (installerComponents ?? []).filter((c) => c && c.name);
+  if (components.length > 0) {
+    lines.push(
+      '',
+      `## Components shipped in the desktop installers (${components.length})`,
+      '',
+      'The desktop installers (AppImage, .deb, macOS and Windows bundles) also contain the',
+      'components below. They are reviewed in scripts/installer-components.json and checked by',
+      'the installer license gate (scripts/check-licenses.mjs --installer-tree).',
+    );
+    for (const c of [...components].sort((a, b) => a.name.localeCompare(b.name))) {
+      const license = c.license || (c.allow ? 'reviewed exception' : 'see component');
+      lines.push('', `### ${c.name}`, '', `License: ${license}`);
+      if (c.obligations) lines.push('', c.obligations);
+    }
+    const copyleft = components.filter((c) => /\b(?:L?GPL|AGPL)/.test(c.license ?? '') || /\bsource\b/i.test(c.obligations ?? ''));
+    if (copyleft.length > 0) {
+      lines.push(
+        '',
+        '## Written offer for corresponding source',
+        '',
+        'Some installer components are licensed under the GNU GPL or LGPL:',
+        '',
+        ...copyleft.map((c) => `- ${c.name}`),
+        '',
+        'They are shipped unmodified. For at least three years after each release, anyone may',
+        'request the complete corresponding source of these components, for that release, by',
+        `opening an issue at https://github.com/${sourceOfferRepo}/issues. Most of them are`,
+        'unmodified distribution packages whose source is also available from the distribution',
+        'archive named in the component entry (for example the Ubuntu archive).',
+      );
+    }
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -634,7 +671,8 @@ export function collectThirdPartyNotices(root, { ecosystems = ['npm', 'cargo'] }
     undetermined.push(...collected.undetermined.map((u) => `${eco}: ${u}`));
     if (eco === 'npm' && rowsByEco[eco].length === 0) undetermined.push('npm: no packages collected');
   }
-  return { text: renderThirdPartyNotices(rowsByEco), undetermined, rowsByEco };
+  const installerComponents = readJson(INSTALLER_COMPONENTS_PATH).components ?? [];
+  return { text: renderThirdPartyNotices(rowsByEco, { installerComponents }), undetermined, rowsByEco };
 }
 
 function parseArgs(argv) {

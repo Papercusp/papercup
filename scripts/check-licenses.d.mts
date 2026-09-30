@@ -129,6 +129,7 @@ export function collectInstallerTree(root: any, components: any, prefix?: string
 /**
  * Render the notices document. Pure over its inputs so the guard test runs on fixtures.
  * @param {{ npm?: Array<{name:string,version:string,effective:string,tier:number}>, cargo?: Array<{name:string,version:string,effective:string,tier:number}> }} rowsByEco
+ * @param {{ installerComponents?: Array<{ name: string, license?: string, allow?: boolean, obligations?: string }>, sourceOfferRepo?: string }} [opts]
  */
 export function renderThirdPartyNotices(rowsByEco: {
     npm?: Array<{
@@ -143,6 +144,14 @@ export function renderThirdPartyNotices(rowsByEco: {
         effective: string;
         tier: number;
     }>;
+}, { installerComponents, sourceOfferRepo }?: {
+    installerComponents?: Array<{
+        name: string;
+        license?: string;
+        allow?: boolean;
+        obligations?: string;
+    }>;
+    sourceOfferRepo?: string;
 }): string;
 /**
  * Collect every package under `root` (lockfile census) and render the notices file.
