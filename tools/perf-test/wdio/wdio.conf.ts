@@ -16,7 +16,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:net";
-import os from "node:os";
 import path from "node:path";
 import {
   assertPrivateIpcFixture,
@@ -25,6 +24,7 @@ import {
   hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
+  readPublisherToken,
   recordBinaryIdentity,
   readBuildIdentity,
   recordHostPressure,
@@ -474,14 +474,13 @@ async function publishMeasures(): Promise<void> {
 
   // The ingest route requires a trusted bearer; the superuser token is the local
   // operator credential (resolves to trust:'trusted' — packages/agent-mcp/src/auth.ts).
-  const tokenPath = path.join(os.homedir(), ".papercusp", "superuser-token");
   let token: string;
   try {
-    token = readFileSync(tokenPath, "utf8").trim();
-  } catch {
+    token = readPublisherToken();
+  } catch (error) {
     // eslint-disable-next-line no-console
     console.error(
-      `[perf-report] cannot publish ${measures.length} measure(s): no readable token at ${tokenPath}`,
+      `[perf-report] cannot publish ${measures.length} measure(s): no readable scoped operator token: ${String(error)}`,
     );
     return;
   }
@@ -604,6 +603,9 @@ export const config: WebdriverIO.Config = {
     assertNativeWebDriverAvailable();
     assertInstallationComplete();
     initialPrivateIpcFixture = assertPrivateIpcFixture();
+    // A named acceptance run requires a receipt. Reject a missing scoped key
+    // before booting the native app or measuring an unpublishable sample.
+    if (process.env.PAPERCUSP_PERF_RUN_ID?.trim()) readPublisherToken();
     // Announce WHAT is being measured, with its age. This is the detector that was
     // missing: the resolver silently fell back to a six-week-old in-tree debug
     // binary for this suite's entire existence (see cargoTargetDir), and nothing in

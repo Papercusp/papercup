@@ -17,7 +17,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
-import { APP_MOUNT_TIMEOUT_MS, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
+import { APP_MOUNT_TIMEOUT_MS, readPlanPopupCandidates, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
 // not resolve here. The module is a pure function with no dependencies.
@@ -129,16 +129,20 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     }), { timeout: 20_000, timeoutMsg: 'Papercup chat sidebar not available' })
       .catch(() => undefined); // The diagnostic below records absent vs collapsed.
 
-    // 3. Wait for at least one plan row in the sidebar Plans face.
+    // 3. Wait for the requested scenario, preserving the matching snapshot.
+    let candidates: ReturnType<typeof readPlanPopupCandidates> = [];
     const rowsReady = await browser.waitUntil(
-      async () =>
-        await browser.execute(() =>
-          Boolean(document.querySelector('[data-testid^="plans-pane-row-"]')),
-        ),
+      async () => {
+        candidates = await browser.execute(readPlanPopupCandidates, {
+          maxRows: MAX_ROWS_TO_TRY,
+          requestedSlug: process.env.PAPERCUSP_PERF_PLAN_SLUG ?? null,
+        });
+        return candidates.length > 0;
+      },
       {
         timeout: 20_000,
         timeoutMsg:
-          "no plan rows in the sidebar Plans face within 20s (is the op-chat sidebar open, and are there plans?)",
+          "no matching scenario row in the sidebar Plans face within 20s (is the requested plan available?)",
       },
     ).then(() => true, () => false);
 
@@ -201,23 +205,6 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     //    rather than a truthful-but-meaningless 0. So try rows in order until
     //    one genuinely opens, and measure that one; only report a perf verdict
     //    for a sample that actually measured the interaction.
-    const candidates = await browser.execute(({ maxRows, requestedSlug }) => {
-      return Array.from(
-        document.querySelectorAll<HTMLElement>('[data-testid^="plans-pane-row-"]'),
-      )
-        .filter((el) => !requestedSlug || el.getAttribute('data-testid') === `plans-pane-row-${requestedSlug}`)
-        .slice(0, maxRows)
-        .map((el) => ({
-          slug: (el.getAttribute("data-testid") ?? "").replace(
-            "plans-pane-row-",
-            "",
-          ),
-          harness:
-            el.querySelector(".plans-pane__row-harness")?.textContent?.trim() ??
-            null,
-        }));
-    }, { maxRows: MAX_ROWS_TO_TRY, requestedSlug: process.env.PAPERCUSP_PERF_PLAN_SLUG ?? null });
-
     const attempts: string[] = [];
     let opened: { slug: string; harness: string | null } | null = null;
     let lastFailure: string | null = null;

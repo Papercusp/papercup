@@ -48,7 +48,10 @@ describe('remote-access reconcilers per process role', () => {
 });
 
 describe('boot wiring: hono-host.ts arms the remote-access reconcilers on BOTH boot paths (WI-10004423)', () => {
-  const source = readFileSync(path.join(__dirname, '../../../../apps/operator/bin/hono-host.ts'), 'utf8');
+  // BOOT_RECONCILERS_HONO_HOST points the check at a copy, so a mutation probe never edits the real file.
+  const honoHostPath = process.env.BOOT_RECONCILERS_HONO_HOST
+    ?? path.join(__dirname, '../../../../apps/operator/bin/hono-host.ts');
+  const source = readFileSync(honoHostPath, 'utf8');
   // Line and block comments are removed so a call named only in a comment cannot satisfy a check.
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -110,6 +110,68 @@ describe('mutationProbeRefusal narrowing', () => {
     } finally {
       rmSync(manifestDir, { recursive: true, force: true });
     }
+  });
+
+  describe('a lock that outlives the dirty window (EI-24720263797874266)', () => {
+    const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+    const admissionDirFor = (dir: string) => join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${sha(realpathSync(dir))}`);
+    function recordRestore(dir: string, path: string, original: string, rootField = realpathSync(dir)): void {
+      const subjectPath = join(realpathSync(dir), path);
+      const records = join(admissionDirFor(dir), 'restored');
+      mkdirSync(records, { recursive: true, mode: 0o700 });
+      writeFileSync(join(records, sha(subjectPath)), `${rootField}\0${subjectPath}\0${sha(original)}\0`);
+    }
+    const importsSubject = { ...base, 'tests/subject.test.ts': "import { subject } from '../src/mid';\nexport default subject;\n" };
+    let dirs: string[] = [];
+    afterEach(() => {
+      for (const dir of dirs) rmSync(admissionDirFor(dir), { recursive: true, force: true });
+      dirs = [];
+    });
+    const track = (dir: string) => { dirs.push(dir); return dir; };
+
+    it('refuses a test that reaches the locked subject when no restore was recorded (control)', async () => {
+      const dir = track(checkout(importsSubject));
+      await expect(mutationProbeRefusal(dir, ['tests/subject.test.ts'], probe('src/subject.ts')))
+        .resolves.toMatchObject({ error: 'mutation_probe_active' });
+    });
+
+    it('admits even a test importing the subject while its bytes still match the verified restore', async () => {
+      const dir = track(checkout(importsSubject));
+      recordRestore(dir, 'src/subject.ts', base['src/subject.ts']);
+      await expect(mutationProbeRefusal(dir, ['tests/subject.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+    });
+
+    it('fences again the moment the subject changes after the restore (a hand mutation or later edit)', async () => {
+      const dir = track(checkout(importsSubject));
+      recordRestore(dir, 'src/subject.ts', base['src/subject.ts']);
+      writeFileSync(join(dir, 'src/subject.ts'), 'export const subject = 2;\n');
+      const refusal = await mutationProbeRefusal(dir, ['tests/subject.test.ts'], probe('src/subject.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('src/subject.ts');
+    });
+
+    it('ignores a record that names another checkout root', async () => {
+      const dir = track(checkout(importsSubject));
+      recordRestore(dir, 'src/subject.ts', base['src/subject.ts'], '/elsewhere');
+      await expect(mutationProbeRefusal(dir, ['tests/subject.test.ts'], probe('src/subject.ts')))
+        .resolves.toMatchObject({ error: 'mutation_probe_active' });
+    });
+
+    it('covers each lock independently and fences only the uncovered one', async () => {
+      const dir = track(checkout({ ...importsSubject,
+        'tests/both.test.ts': "import { subject } from '../src/subject';\nimport { other } from '../src/other';\nexport default [subject, other];\n" }));
+      const realRoot = realpathSync(dir);
+      mkdirSync(admissionDirFor(dir), { recursive: true, mode: 0o700 });
+      writeFileSync(join(admissionDirFor(dir), 'original.manifest'),
+        `${realRoot}\0${join(realRoot, 'src/subject.ts')}\0${join(realRoot, 'snapshot.ts')}\0${process.pid}\0`);
+      const locks = probe('src/subject.ts', 'src/other.ts');
+      const refusal = await mutationProbeRefusal(dir, ['tests/both.test.ts'], locks);
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('mutation probe on src/other.ts and');
+      expect(refusal!.hint).not.toContain('src/subject.ts,');
+      recordRestore(dir, 'src/other.ts', base['src/other.ts']);
+      await expect(mutationProbeRefusal(dir, ['tests/both.test.ts'], locks)).resolves.toBeNull();
+    });
   });
 
   it('does not mistake a commented literal package import for a dynamic import', async () => {

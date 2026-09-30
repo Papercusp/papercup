@@ -9,6 +9,7 @@ import type { Browser } from "webdriverio";
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
+  readPlanPopupCandidates,
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
@@ -46,6 +47,39 @@ function retryingBrowser(): Browser {
     },
   } as unknown as Browser;
 }
+
+test("pinned plan readiness waits through unrelated cached rows", async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  let rowReads = 0;
+  const row = (slug: string) => ({
+    getAttribute: () => `plans-pane-row-${slug}`,
+    querySelector: () => ({ textContent: ' papercusp ' }),
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      querySelectorAll: () => ++rowReads < 3
+        ? [row('other-plan')]
+        : [row('other-plan'), row('pinned-plan')],
+    },
+  });
+  try {
+    let candidates: ReturnType<typeof readPlanPopupCandidates> = [];
+    await retryingBrowser().waitUntil(() => {
+      candidates = readPlanPopupCandidates({ maxRows: 1, requestedSlug: 'pinned-plan' });
+      return candidates.length > 0;
+    });
+    assert.equal(rowReads, 3);
+    assert.deepEqual(candidates, [{ slug: 'pinned-plan', harness: 'papercusp' }]);
+    assert.deepEqual(readPlanPopupCandidates({ maxRows: 1, requestedSlug: null }), [
+      { slug: 'other-plan', harness: 'papercusp' },
+    ]);
+    assert.deepEqual(readPlanPopupCandidates({ maxRows: 5, requestedSlug: 'absent' }), []);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'document', original);
+    else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
 
 test("terminal WebDriver session failures are recognized from protocol messages", () => {
   assert.equal(isTerminalWebDriverSessionError(new Error("WebDriverError: invalid session id")), true);

@@ -5589,11 +5589,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
     });
     try {
-      // Constant request headers (everything but the per-account Authorization/dispatcher, set per attempt).
-      // Every account is a Claude Max subscription OAuth credential → `Authorization: Bearer` + the
-      // required `oauth-2025-04-20` beta. There is NO x-api-key path: this deployment has no billed
-      // API key, and a raw key would 400 against the subscription-only beta (any x-api-key a bee
-      // sends is stripped above by STRIP_REQUEST). NOTE for raw-SDK callers routed through here on a
+      // Constant request headers (everything but the per-account credential/dispatcher, set per attempt).
+      // The credential SHAPE is per ATTEMPT (anthropic-credits-gateway-2026-09-30 P-006): a subscription
+      // OAuth account gets `Authorization: Bearer` + the `oauth-2025-04-20` beta; a Console API-key
+      // account gets `x-api-key` and must NOT carry that beta (the key 400s against it). So this base
+      // carries only the CLIENT's betas; `claudeAttemptHeaders` layers the auth + OAuth flag on for the
+      // account each attempt lands on (a caller's own authorization/x-api-key is stripped above by
+      // STRIP_REQUEST and again per attempt). NOTE for raw-SDK callers routed through here on a
       // Max token: the FIRST `system` block must be the Claude Code identifier or the request is
       // shunted to a far stricter bucket and 429s — the `claude` CLI bees already frame themselves.
       const baseHeaders: Record<string, string> = {};
@@ -5630,10 +5632,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
           );
         }
       }
-      baseHeaders['anthropic-beta'] = withOAuthBeta(
+      const clientBetas = withClientBetas(
         baseHeaders['anthropic-beta'] ?? (req.headers['anthropic-beta'] as string | undefined),
         context1m,
       );
+      if (clientBetas) baseHeaders['anthropic-beta'] = clientBetas;
+      else delete baseHeaders['anthropic-beta'];
       /** What the route record and the compaction watchdog mean by "served at 1M": the beta is in the
        *  header that actually leaves this machine, whichever of the two paths put it there. */
       const servedContext1m = hasContext1mBeta(baseHeaders['anthropic-beta']);

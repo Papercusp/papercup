@@ -62,6 +62,7 @@
  *     round-robin. The already-resolved account arrives as `initialAccount`, so a
  *     double-advance is structurally impossible rather than merely avoided.
  */
+import { claudeAttemptHeaders } from './credential-store';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -206,7 +207,8 @@ export interface ClaudeAdapterOptions {
   pool?: AccountPool;
   upstreamUrl: string;
   method: string;
-  /** Headers minus auth; `authorization` is layered on per attempt. */
+  /** Headers minus auth; the credential header and the OAuth beta are layered on per attempt
+   *  by `claudeAttemptHeaders`, according to the attempt account's auth mode. */
   baseHeaders: Record<string, string>;
   body: Uint8Array | null;
   /**
@@ -548,7 +550,10 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
       return {
         url: opts.upstreamUrl,
         method: opts.method,
-        headers: { ...opts.baseHeaders, authorization: `Bearer ${token}` },
+        // P-006: the credential SHAPE follows the account this attempt landed on, so a rotation
+        // from a subscription account to a Console API-key account switches Bearer+oauth-beta
+        // for x-api-key mid-request. An account with no recorded mode is a subscription account.
+        headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token),
         body: opts.body,
         accountId: account.accountId,
         dispatcher,

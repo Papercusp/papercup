@@ -1085,11 +1085,13 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
 
       const root = realpathSync(dir);
       const key = createHash('sha256').update(root).digest('hex');
-      const admissionDir = join('/tmp', 'papercusp-mutation-probe-' + process.getuid() + '-' + key);
+      const admissionDir = join('/tmp', 'papercusp-mutation-probe-' + process.getuid!() + '-' + key);
       const manifest = join(admissionDir, 'original.manifest');
       expect(existsSync(manifest)).toBe(true);
       const fields = readFileSync(manifest, 'utf8').split('\0');
       const scratchDir = dirname(fields[2]);
+      // The SIGKILLed probe never reached its own restore, so no record exists yet.
+      expect(restoredRecord()).toBeNull();
 
       const recovered = spawnSync('bash', [OVERLAY, root, '--', 'cat', subject], {
         encoding: 'utf8',
@@ -1100,6 +1102,7 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       expect(read()).toBe(ORIGINAL);
       expect(existsSync(manifest)).toBe(false);
       expect(existsSync(scratchDir)).toBe(false);
+      expect(restoredRecord()).toEqual(verifiedOriginal());
 
       const secondMarker = join(dir, 'guard-direct.pid');
       const secondCommand =

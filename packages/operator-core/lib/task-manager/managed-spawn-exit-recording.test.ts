@@ -71,6 +71,7 @@ import {
   SCOPE_HANDOFF_GRACE_MS,
   SCOPE_HANDOFF_RECHECK_MS,
 } from './managed-spawn';
+import { notifyTaskKillRequested } from './kill-notify';
 import { CGROUP_ROOT, type CgroupFs } from './cgroup-read';
 import { scopeCgroupRelPath, scopeUnitForTask, type TaskSpec } from './types';
 
@@ -226,6 +227,41 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(warn).not.toHaveBeenCalled();
     expect(info).toHaveBeenCalledTimes(1);
     expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
+  });
+
+  // WI-10004434: su-session-stdio-peer's close() SIGKILLs its own engine through
+  // killTask without marking the handle. killTask announces every kill on the
+  // kill-notify seam before signalling, so that announcement alone must be
+  // enough to make the deliberate kill an intentional teardown.
+  it('treats a killTask-announced signal for this task as intentional teardown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result } = await spawnConfined([3204532, 3204609, 3204726]);
+
+    notifyTaskKillRequested(result.taskId, 'SIGKILL');
+    emitter.emit('exit', null, 'SIGKILL');
+    await flushAfterHandoff();
+
+    expect(L.closed).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]![0])).toMatch(/Intentional teardown/);
+    expect(String(info.mock.calls[0]![0])).toMatch(/signal SIGKILL/);
+  });
+
+  it('keeps an unannounced signal loud when only a different task was killed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter, result } = await spawnConfined([3204532, 3204609, 3204726]);
+
+    notifyTaskKillRequested(`${result.taskId}-other`, 'SIGKILL');
+    emitter.emit('exit', null, 'SIGKILL');
+    await flushAfterHandoff();
+
+    expect(L.closed).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+    expect(String(warn.mock.calls[0]![0])).not.toMatch(/Intentional teardown/);
   });
 
   it('waits for a delayed scope handoff instead of closing a live task row', async () => {

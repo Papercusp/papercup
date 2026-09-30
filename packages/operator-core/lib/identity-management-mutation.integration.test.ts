@@ -87,6 +87,10 @@ vi.mock('./agent-identities/source', () => ({
   // The control-anchor refresh reads the selected mode catalog; getModes is mocked to [] below, so no
   // mode ever resolves against it and an empty snapshot is exact.
   getSelectedModeCatalog: vi.fn(async () => ({ revision: 'test-empty-mode-catalog', entries: [] })),
+  // role-launch-spec's selected-composition path destructures these; no named root is selected here
+  // and the fallback resolver needs no local blueprint directories.
+  localDirs: vi.fn(() => []),
+  resolveNamedIdentityCompositionSelection: vi.fn(async () => null),
 }));
 
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));

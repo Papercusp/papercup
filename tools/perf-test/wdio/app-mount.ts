@@ -33,6 +33,23 @@ import {
   type MountVerdict,
 } from "../../../libs/generic/gui-readiness/src/document-mount";
 
+/** Runs inside the webview; keep readiness and candidate selection identical.
+ * Unfiltered cached rows can mount before a pinned search resolves. */
+export function readPlanPopupCandidates({ maxRows, requestedSlug }: {
+  maxRows: number;
+  requestedSlug: string | null;
+}): Array<{ slug: string; harness: string | null }> {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[data-testid^="plans-pane-row-"]'),
+  )
+    .filter((el) => !requestedSlug || el.getAttribute('data-testid') === `plans-pane-row-${requestedSlug}`)
+    .slice(0, maxRows)
+    .map((el) => ({
+      slug: (el.getAttribute('data-testid') ?? '').replace('plans-pane-row-', ''),
+      harness: el.querySelector('.plans-pane__row-harness')?.textContent?.trim() ?? null,
+    }));
+}
+
 /**
  * WebdriverIO's `waitUntil` retries rejected predicates until its timeout.
  * That's useful for transient DOM/protocol errors, but an invalid session or a

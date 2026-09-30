@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P517 F6 fencing mutation probe (copy-out): submodule non-fast-forward retry must reauthorize (run-git-sync.ts)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+    "--fake-destructive --expect caught",
+    "--mutate 's/await opts\\.beforePush\\(args, cwd\\);/await opts.beforePush(args, cwd).catch(() => undefined);/'",
+    "--test 'D=$(dirname {}); if [ -L \"$D/run-git-sync.test.ts\" ]; then cp --remove-destination <repo>/packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts \"$D/run-git-sync.test.ts\" || exit 3; echo MATERIALIZED_TEST_COPY; fi; cd \"${D%/lib/harness/git-sync}\" && pwd && npx vitest run lib/harness/git-sync/run-git-sync.test.ts -t \"F6: submodule non-fast-forward retry reauthorizes\" --reporter=dot'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T21:15:48Z",
+  "finishedAt": "2026-09-30T21:17:03Z",
+  "summary": "Copy-out (default tier) mutation probe; the tracked tree was never mutated, so no file lock or git-sync lease was needed. The mutant lives only in the probe's repo mirror. The --test materializes a real copy of run-git-sync.test.ts beside the mirrored mutant, but only when the mirrored test is a symlink, so the real-tree baseline runs unchanged. Materializing the copy stops Vite from realpathing the symlinked test back into the real tree and importing the real module. Mutated control: 'F6: submodule non-fast-forward retry reauthorizes before another push'. The real-tree baseline passed 1 (155 skipped) and so did the unmutated-mirror baseline. The mutant swallows a beforePush (publication authority) refusal instead of refusing the push. That let the retry push proceed after the owner key became unavailable, and the test failed: expected 2 to be 1 (the push count). The probe reported MUTANT CAUGHT and verified run-git-sync.ts byte-identical afterwards. The unmutated mirror copy passed and the mutant failed on the push-count assertion, so the mutated module was the one loaded. This regenerates binding 16317, which went stale when WI-10004413 changed run-git-sync.ts (committed d86be6ed, blob af38742a).",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real-tree baseline ({} = tracked path, no copy step): Tests 1 passed | 155 skipped (156), exit 0."
+    },
+    {
+      "id": "unmutated-mirror-baseline-passed",
+      "passed": true,
+      "evidence": "Unmutated-copy baseline in the repo mirror printed MATERIALIZED_TEST_COPY, then Tests 1 passed | 155 skipped (156), exit 0."
+    },
+    {
+      "id": "reauth-refusal-swallow-caught",
+      "passed": true,
+      "evidence": "Mutant (run-git-sync.ts:4806 `await opts.beforePush(args, cwd);` -> `await opts.beforePush(args, cwd).catch(() => undefined);`, blob af38742a -> changed, copy-out): FAIL 'F6: submodule non-fast-forward retry reauthorizes before another push' AssertionError: expected 2 to be 1 // Object.is equality; Tests 1 failed | 155 skipped (156). MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1."
+    },
+    {
+      "id": "tree-integrity",
+      "passed": true,
+      "evidence": "[mutation-probe] tree integrity: VERIFIED — packages/operator-core/lib/harness/git-sync/run-git-sync.ts is byte-identical to its pre-probe state."
+    }
+  ],
+  "workItemId": "WI-2144478",
+  "specId": "ENDGAME-P-517-contract",
+  "testFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+  "sourceFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-517",
+    "refreshWorkItemId": "WI-10004432",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 16317,
+    "probeTier": "copy-out",
+    "superprojectHead": "549ebc0879a03172d415cbdd5e6a4dd1fb704948",
+    "subjectCommit": "d86be6ed69d05a14b087d150864033949518a37d",
+    "subjectBlob": "af38742ab17048af04270ee306b6b57bcf6f9bfd",
+    "subjectSha256": "039058fa677b21a22b65e95a5b0faceaa3c3ea728069a39d0c3a24cf537a1d7e",
+    "testBlob": "b557947458a7e62abae7d036e95e0b714cc0be02",
+    "testSha256": "14abbd6db65b0939759bed4e34dbbc255e461ad89895e50dfc8795907fe547b7",
+    "subjectAndTestCleanAtHead": true
+  }
+}

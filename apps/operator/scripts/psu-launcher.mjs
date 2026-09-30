@@ -12497,6 +12497,7 @@ async function launchResume(
   {
     brain = false,
     fork = false,
+    headless = false,
     passthrough = [],
     addDir = [],
     accountEnv = null,
@@ -12870,7 +12871,7 @@ async function launchResume(
         {
           requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
           model: resumeModel || lastActiveModelFor(session) || null,
-          headless: args.headless === true,
+          headless,
         },
       );
       // An exact resume reuses an older per-session CODEX_HOME. If that home
@@ -13475,6 +13476,7 @@ export async function launchTrackedFork(
   // side via accountEnv (it never hits bootstrap-su).
   const forkOpts = {
     fork: true,
+    headless: args.headless === true,
     passthrough: args.passthrough,
     addDir: args.addDir,
     accountEnv: forkFallbackAccountRoute(acct),
@@ -14783,6 +14785,7 @@ async function launchResolvedResume(source, args, { tracked }) {
   }
   await launchResume(source, {
     fork: args.fork,
+    headless: args.headless === true,
     passthrough: args.passthrough,
     addDir: args.addDir,
     accountEnv: account,

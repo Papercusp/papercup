@@ -38,6 +38,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { isTaskManagerEnabled } from './enabled';
+import { onTaskKillRequested } from './kill-notify';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import { closeTask, markSpawned, registerTask } from './store';
 import {
@@ -499,6 +500,19 @@ function wireExit(
   fs: CgroupFs,
 ): void {
   let closed = false;
+  // WI-10004434: a kill made through task-manager control (killTask /
+  // processes:kill) is deliberate by definition, so it marks this handle as an
+  // intentional teardown the same way markManagedSpawnTeardown does. The
+  // notification fires synchronously BEFORE the signal is sent, so the mark is
+  // in place when the client exits. Without it every caller had to remember to
+  // mark its own kill: su-session-stdio-peer's close() did not, and a real omp
+  // that outlived the 5s stdin-EOF grace turned its deliberate SIGKILL into an
+  // "abnormal client exit" warning that failed the exact-resume acceptance.
+  const stopKillNotify = onTaskKillRequested((killedTaskId) => {
+    if (killedTaskId === taskId) intentionalTeardownChildren.add(child);
+  });
+  child.once('exit', stopKillNotify);
+  child.once('error', stopKillNotify);
   const close = (state: 'exited' | 'killed', code: number | null, reason: string | null): void => {
     if (closed) return;
     closed = true;
