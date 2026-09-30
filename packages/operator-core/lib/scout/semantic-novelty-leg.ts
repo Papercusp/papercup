@@ -24,7 +24,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { EmbedderProfileSpec } from '@papercusp/memory';
-import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
+import { withIterativeScan } from '@papercusp/search';
 
 import { corpusNovelty, type CorpusEntry, type CorpusNovelty, type CorpusNoveltyOptions } from './critique-core';
 

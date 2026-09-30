@@ -64,7 +64,7 @@ import {
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
 import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
-import { withIterativeScan } from '../agent-tools/search/hnsw-iterative-scan';
+import { withIterativeScan } from '@papercusp/search';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
  * module's import graph free of the search engine (only the TYPE is shared). */

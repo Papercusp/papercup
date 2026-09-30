@@ -74,8 +74,7 @@
         "sha256": "b4b78a52ec0856a13e0417dc2537d8ef74b326f8bfcf665efca1ab63df4b5c84",
         "bytes": 66368727,
         "sources": [
-          "leg:mac",
-          "rehash"
+          "leg:mac"
         ],
         "sig": true
       },
@@ -85,8 +84,7 @@
         "bytes": 49819790,
         "sources": [
           "leg:linux",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       },
@@ -96,8 +94,7 @@
         "bytes": 67551933,
         "sources": [
           "leg:mac",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       },
@@ -107,8 +104,7 @@
         "bytes": 73805844,
         "sources": [
           "leg:windows",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       },
@@ -117,8 +113,7 @@
         "sha256": "d6b71e69aed490b27ba98b7adcc8e943aec71b439c9d32653dce287ac2e64517",
         "bytes": 5575815357,
         "sources": [
-          "leg:mac",
-          "rehash"
+          "leg:mac"
         ],
         "sig": true
       },
@@ -128,8 +123,7 @@
         "bytes": 6187029860,
         "sources": [
           "leg:linux",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       },
@@ -139,8 +133,7 @@
         "bytes": 5606139226,
         "sources": [
           "leg:mac",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       },
@@ -149,8 +142,7 @@
         "sha256": "d8d07420ea3290f3152da0284600c49bd7910bb4851efc83118f935d5e7e139d",
         "bytes": 2095625472,
         "sources": [
-          "leg:windows",
-          "rehash"
+          "leg:windows"
         ],
         "sig": false
       },
@@ -159,8 +151,7 @@
         "sha256": "ae1ebe99dedbd02f3b971928d140f724db2709637602cdc6fdd73252651a1f6b",
         "bytes": 2100000000,
         "sources": [
-          "leg:windows",
-          "rehash"
+          "leg:windows"
         ],
         "sig": false
       },
@@ -169,8 +160,7 @@
         "sha256": "bc36e4b385db94fa5cef13147bdaf1247f9e85fe37dd3ab844b71925096991d2",
         "bytes": 2100000000,
         "sources": [
-          "leg:windows",
-          "rehash"
+          "leg:windows"
         ],
         "sig": false
       },
@@ -179,8 +169,7 @@
         "sha256": "9b3112b0af1c666112568fd8f29b9f5247654ed34fc75acd0968ff46a5b2a245",
         "bytes": 1951989897,
         "sources": [
-          "leg:windows",
-          "rehash"
+          "leg:windows"
         ],
         "sig": false
       },
@@ -189,8 +178,7 @@
         "sha256": "a2574ab376174dd0c61e3785d1c04f2d7a9e2e8028d79827e33e7819498029c0",
         "bytes": 4374068,
         "sources": [
-          "leg:windows",
-          "rehash"
+          "leg:windows"
         ],
         "sig": true
       },
@@ -199,8 +187,7 @@
         "sha256": "f0a35596562271c07e47e0dfc05edafd370ce5445058292546df5bf9947b6919",
         "bytes": 8251990573,
         "sources": [
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": null
       },
@@ -210,8 +197,7 @@
         "bytes": 224123384,
         "sources": [
           "leg:linux",
-          "ledger",
-          "rehash"
+          "ledger"
         ],
         "sig": true
       }
@@ -297,7 +283,7 @@
     "ledger": {
       "gitSha": "93f1c72063bb422583c9c24e7092f1bed767f64f",
       "cutAt": "2026-09-29T17:55:29.967Z",
-      "publishedAt": null,
+      "publishedAt": "2026-09-30T01:18:31.144Z",
       "artifactCount": 7
     },
     "buildCommand": {
@@ -355,13 +341,13 @@
       },
       {
         "id": "rehash",
-        "status": "pass",
-        "detail": "14 artifact(s) re-hashed from disk and match"
+        "status": "warn",
+        "detail": "no artifact was re-hashed from disk; identity rests on the emitted records"
       },
       {
         "id": "ledger-corroboration",
-        "status": "pass",
-        "detail": "every one of the 7 ledger artifacts is corroborated by a build record or a fresh re-hash"
+        "status": "warn",
+        "detail": "vouched for ONLY by the ledger (no build record, no re-hash): Papercusp Server_0.0.25_x64-setup.zip"
       },
       {
         "id": "signatures",

@@ -130,9 +130,19 @@ pub struct OpenCard {
     pub prompt: String,
     pub presentation: CardPresentation,
     pub fallback_text: Option<String>,
+    /// The wire `details` field: shown only behind the details toggle.
+    pub details: Option<String>,
     pub allow_decline: bool,
     pub report: Option<Report>,
     pub created_at: f64,
+}
+
+impl OpenCard {
+    /// Supporting detail shown only behind Ctrl+R (pui-chat-first-ux P-008):
+    /// a tool approval's raw arguments under its readable prompt.
+    pub fn details(&self) -> Option<&str> {
+        self.details.as_deref()
+    }
 }
 
 /// A versioned per-run state snapshot, mirroring `VersionedSnapshot` /
@@ -196,6 +206,12 @@ fn parse_open_card(
         .get("fallbackText")
         .and_then(|t| t.as_str())
         .map(str::to_string);
+    let details = v
+        .get("details")
+        .and_then(|d| d.as_str())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
     // Default true (matches the server: only an explicit `false` hides decline).
     let allow_decline = v
         .get("allowDecline")
@@ -212,6 +228,7 @@ fn parse_open_card(
         prompt,
         presentation,
         fallback_text,
+        details,
         allow_decline,
         report,
         created_at,

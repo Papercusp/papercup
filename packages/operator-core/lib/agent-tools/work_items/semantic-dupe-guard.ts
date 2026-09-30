@@ -34,7 +34,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
-import { withIterativeScan } from '../search/hnsw-iterative-scan';
+import { withIterativeScan } from '@papercusp/search';
 import type { EmbedderProfileSpec } from '@papercusp/memory';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).

@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "kind": "p2p-candidate-sidecar-reproducibility",
+  "workItem": "WI-10002524",
+  "plan": "p2p-public-release-endgame-2026-09-01",
+  "planItem": "P-521",
+  "candidate": {
+    "id": "desktop-v0.0.25-alpha@93f1c72063bb",
+    "workspaceHead": "93f1c72063bb422583c9c24e7092f1bed767f64f",
+    "desktopHead": "cddbd8d530d8d3a7c49f22a371347d601a24ba47",
+    "role": "shakedown artifact (D-080); not the final candidate"
+  },
+  "method": {
+    "scope": "papercusp-desktop/bin/build-desktop-sidecar.sh only (the Linux sidecar payload). The Tauri bundle / .deb / AppImage were NOT rebuilt.",
+    "reference": {
+      "root": "~/papercupai-workspace/papercusp-relcut-0025/papercusp-desktop/src-tauri/sidecar",
+      "builtAtUtc": "2026-09-29T15:59:46Z",
+      "note": "the relcut-0025 sidecar dir; its serve.mjs sha256 equals the linux and windows legs' recorded sidecar.serveMjsSha256"
+    },
+    "reproduction": {
+      "root": "/mnt/data/papercusp-repro/papercusp-repro-0025/papercusp-desktop/src-tauri/sidecar",
+      "checkout": "apps/operator/bin/release/setup-release-checkout.sh --ref 93f1c720 (object-sourced, dep generation v1-048c49e3), SETUP_EXIT=0 at 2026-09-30T01:14:47Z",
+      "env": "mirrors release-local.sh: PAPERCUSP_RELEASE_AUDIT=1, PAPERCUSP_RELEASE_OWNER_NAME set at run time (value not recorded), SKIP_DEP_GENERATION=1, PROVENANCE_SOURCE_GIT_HEAD=93f1c720…, PROVENANCE_SOURCE_GIT_DIRTY=false, PAPERCUP_DOGFOOD_REPO_REF=desktop-v0.0.25-alpha",
+      "attempts": [
+        { "n": 1, "exit": 2, "cause": "missing PAPERCUSP_RELEASE_OWNER_NAME (precondition)" },
+        { "n": 2, "exit": 2, "cause": "PROVENANCE_SOURCE_GIT_HEAD supplied without PROVENANCE_SOURCE_GIT_DIRTY (precondition)" },
+        { "n": 3, "exit": 0, "startedAtUtc": "2026-09-30T01:18:58Z", "finishedAtUtc": "2026-09-30T01:27:17Z" }
+      ],
+      "filesystemNote": "the reproduction root is on /mnt/data; the integration tree and relcut-0025 are on /"
+    },
+    "comparison": "sha256 of every regular file in both trees (find -type f | sha256sum), joined on relative path under LC_ALL=C; symlink lists compared separately",
+    "manifestDigests": {
+      "reference": "c0824adb590f2f45f4d5cf72d7de8fb861f1c0f47a31ba5c3b0960b8fa23b91b",
+      "reproduction": "5db023014f71714d3980f8a44643361ae8a94deeada563dc74679617be6d8051",
+      "note": "sha256 of the sorted `sha256sum` listings; the listings themselves were not retained"
+    }
+  },
+  "headline": {
+    "serveMjs": {
+      "reproduced": true,
+      "sha256": "924b5718ae63975820e0d663c23e9bc7ce34d909db17a443ffe8f41422cd3910",
+      "bytes": 67049422
+    },
+    "mcpProxyMjs": {
+      "reproduced": true,
+      "sha256": "77e8394f7ee3ab24baab14742e30f085a0fcf821ec58fa48bbc787bbd5dfc02b"
+    }
+  },
+  "counts": {
+    "referenceFiles": 17600,
+    "reproductionFiles": 14632,
+    "identical": 14078,
+    "differ": 7,
+    "onlyInReference": 3515,
+    "onlyInReproduction": 547,
+    "symlinkListsIdentical": true
+  },
+  "differences": [
+    {
+      "paths": ["build-provenance.json", ".sidecar-build-stamp"],
+      "class": "timestamp",
+      "detail": "builtAtUtc / passedAtUtc / epochSec differ; serveSha256, mcpProxySha256 and gitHead fields are equal",
+      "basis": "measured (diff of the JSON)"
+    },
+    {
+      "paths": ["bin/pui", "pui-companion.wasm", "pui-install.json"],
+      "class": "rust-build-path",
+      "detail": "the reference binaries contain the relcut-0025 checkout path; sizes differ by 64 B (pui) and 561 B (wasm), consistent with a different embedded path; pui-install.json differs only in the recorded hashes and builtAtEpoch",
+      "basis": "inferred: the path string was measured in the reference; the reproduction's embedded path string was not located"
+    },
+    {
+      "paths": ["spa/index.html"],
+      "class": "live-state-input",
+      "detail": "the SPA bakes window.__PAPERCUSP_FLAGS__ from the live flag state at build time. Two keys differ: evaluatedAt and papercusp-accept-delegated-seats (false in the shipped 0.0.25 SPA, true at reproduction time). The build is therefore not hermetic with respect to flag overrides",
+      "basis": "measured (diff of the embedded JSON)",
+      "note": "whether the baked value governs runtime behaviour, or the operator's live flag state does, was NOT checked; potentially relevant to the delegated-seat-lifecycle journey"
+    },
+    {
+      "paths": ["db-seed.dump"],
+      "class": "unclassified",
+      "detail": "2874394 B vs 2874433 B; neither contains a checkout path",
+      "basis": "not investigated"
+    },
+    {
+      "paths": ["env-sidecars/staging/** (3477 files)", "source.tar.zst"],
+      "class": "out-of-scope-step",
+      "detail": "created in the reference AFTER build-desktop-sidecar.sh finished (mtimes 16:00:48Z and 16:20:30Z vs serve.mjs 15:57:01Z) by later cut steps (build-and-archive-deb.sh / the source archive); the reproduction ran build-desktop-sidecar.sh only",
+      "basis": "measured (mtimes; env-sidecars is referenced by build-and-archive-deb.sh and build-windows-cross.sh)"
+    },
+    {
+      "paths": ["spa/monaco/vs/** (28 files only in reference)"],
+      "class": "reference-defect",
+      "detail": "the shipped reference SPA carries 28 monaco files that are not in monaco-editor 0.56.0 min/vs (123 files). The canonical integration tree's public/monaco/vs has the same stale 151, and setup-monaco-runtime.sh skips the copy when .version matches. The reproduction has the clean 123",
+      "basis": "measured (file counts in node_modules, the canonical tree, both sidecars)",
+      "workItem": "WI-10004074"
+    },
+    {
+      "paths": ["spa/wake-runtime/*", "spa/vad-runtime/*", "spa/vditor/vditor/**", "spa/porcupine/porcupine/*"],
+      "class": "reproduction-defect",
+      "detail": "in the reproduction, the ORT runtime files sit one directory too deep (spa/wake-runtime/wake-runtime/, spa/vad-runtime/vad-runtime/), with extra nested vditor and porcupine copies. Cause: setup-release-checkout.sh provisions gitignored public/ assets with `cp -al || cp -a`. Across filesystems, cp -al fails after creating the destination, and cp -a then nests. Confirmed with a cross-FS vs same-FS scratch test. The shipped reference is NOT affected (same filesystem). verify-sidecar-bundle and the identity audit passed the broken tree",
+      "basis": "measured (directory listings + distinguishing test)",
+      "workItem": "WI-10004073"
+    }
+  ],
+  "verdict": {
+    "operatorPayloadReproducible": true,
+    "wholeSidecarReproducible": false,
+    "summary": "The operator payload (serve.mjs, mcp-proxy.mjs) reproduces byte-for-byte from the pinned source in a separate checkout on a different path and filesystem. 14078 of the 14085 files present in both trees are identical. Of the 7 that differ: 3 are timestamps, 2 are Rust build-path binaries (inferred), 1 is a live-flag snapshot and 1 (db-seed.dump) is unclassified. The file-set differences are two checkout-provisioning defects (WI-10004073, WI-10004074) plus later cut steps outside this rebuild's scope.",
+    "residue": [
+      "db-seed.dump difference not classified",
+      "reproduction Rust binaries' embedded path not located (build-path classification is inferred)",
+      "Tauri bundle / .deb / AppImage / Windows / mac legs not rebuilt",
+      "whether the baked papercusp-accept-delegated-seats=false affects runtime not checked"
+    ]
+  },
+  "recordedBy": "su-537352a3-23c0-4af1-930b-180ece60cc8d",
+  "recordedAtUtc": "2026-09-30T01:40:00Z"
+}

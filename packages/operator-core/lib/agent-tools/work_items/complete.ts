@@ -81,6 +81,7 @@ import {
   ROOT_CAUSE_VERIFICATION_CONTRACT_VERSION,
   ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES,
   missingRootCauseVerificationV2Fields,
+  hasEnumeratedVerificationCoverage,
   hasMalformedCoverageShape,
   stripNulBytesDeep,
   CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
@@ -2562,38 +2563,6 @@ export function claimsUniversalVerification(completion: {
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
     .join('\n');
   return UNIVERSAL_VERIFICATION_CLAIM_PATTERNS.some((pattern) => pattern.test(prose));
-}
-
-/**
- * A valid coverage record accounts for every named population entry and states
- * the residue explicitly. `residue: []` is the natural zero-residue form and
- * `residue: ['none']` remains accepted for compatibility; omission is not
- * silently treated as complete coverage.
- */
-export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage | undefined): boolean {
-  if (!coverage?.population?.length || coverage.residue === undefined) return false;
-  const population = coverage.population;
-  const populationSet = new Set(population);
-  // A population is an enumeration, not a bag of labels. Duplicate names make an
-  // apparently complete partition ambiguous, even when the status buckets are otherwise
-  // balanced.
-  if (populationSet.size !== population.length) return false;
-
-  const statusEntries = [
-    ...(coverage.checked ?? []),
-    ...(coverage.notChecked ?? []),
-    ...(coverage.notApplicable ?? []),
-  ];
-  const statusCounts = new Map<string, number>();
-  for (const entry of statusEntries) {
-    // Unknown entries and repeated entries both violate the exact partition. Keep the
-    // comparison verbatim: callers must copy population strings exactly, not normalize or
-    // replace them with prose descriptions.
-    if (!populationSet.has(entry)) return false;
-    statusCounts.set(entry, (statusCounts.get(entry) ?? 0) + 1);
-  }
-
-  return population.every((entry) => statusCounts.get(entry) === 1) && statusEntries.length === population.length;
 }
 
 /**

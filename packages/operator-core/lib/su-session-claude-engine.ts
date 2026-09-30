@@ -288,7 +288,7 @@ export function startClaudeSuEngine(
     if (event.type === 'card' && !closed && !adapter.host.snapshot().terminal) {
       adapter.host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running', 'Claude native question');
     }
-  });
+  }, boot.cwd);
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
   const su = (options.identity ?? 'su') === 'su';

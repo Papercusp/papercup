@@ -29,7 +29,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: mocks.sql }),
 }));
-vi.mock('../search/hnsw-iterative-scan', () => ({
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/search')>()),
   withIterativeScan: mocks.withIterativeScan,
 }));
 

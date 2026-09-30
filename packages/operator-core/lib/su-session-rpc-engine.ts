@@ -217,7 +217,7 @@ export function startSuRpcEngine(
     emit(event as SuSessionEventInput<Backend>);
     if (event.type === 'card') host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running',
       event.phase === 'opened' ? 'Native engine is waiting for your response' : 'Native response delivered');
-  });
+  }, boot.cwd);
   function nativeId(): string { return native.backend === 'codex' ? native.rolloutId ?? '' : native.ompThreadId ?? ''; }
   function resumeHandle(): NativeHandle {
     const persisted = Boolean(nativePath && existsSync(nativePath));

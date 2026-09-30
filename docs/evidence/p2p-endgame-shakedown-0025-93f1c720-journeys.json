@@ -1,13 +1,124 @@
 {
-  "journeys": {},
-  "bindings": [],
-  "unmapped": [
+  "journeys": {
+    "discovery-join": {
+      "verdict": "pass",
+      "reason": "exit 0; 12 assertion(s) passed; 7 physical leg(s) pass (docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json)",
+      "measuredAt": "2026-09-29T20:55:18Z",
+      "evidence": [
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+          "kind": "operational-test-evidence",
+          "detail": {
+            "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "binding": "this-candidate",
+            "artifactSha256s": [
+              "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+            ]
+          }
+        },
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.p521-journeys.json",
+          "kind": "p521-journey-mapping",
+          "detail": {
+            "evidenceSha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "decision": "p2p-public-release-endgame-2026-09-01#D-083"
+          }
+        }
+      ],
+      "artifactDigest": "26196b9958b398488bace99dc81ab8a5560850c0fb6ed7a3d3b47cbfa36e6d22",
+      "observedPeers": [
+        "tower",
+        "vm"
+      ]
+    },
+    "git-consistency-signed-scope": {
+      "verdict": "pass",
+      "reason": "exit 0; 12 assertion(s) passed; 7 physical leg(s) pass (docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json)",
+      "measuredAt": "2026-09-29T20:55:18Z",
+      "evidence": [
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+          "kind": "operational-test-evidence",
+          "detail": {
+            "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "binding": "this-candidate",
+            "artifactSha256s": [
+              "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+            ]
+          }
+        },
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.p521-journeys.json",
+          "kind": "p521-journey-mapping",
+          "detail": {
+            "evidenceSha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "decision": "p2p-public-release-endgame-2026-09-01#D-083"
+          }
+        }
+      ],
+      "artifactDigest": "26196b9958b398488bace99dc81ab8a5560850c0fb6ed7a3d3b47cbfa36e6d22",
+      "observedPeers": [
+        "tower",
+        "vm"
+      ]
+    },
+    "github-bridge": {
+      "verdict": "pass",
+      "reason": "exit 0; 12 assertion(s) passed; 7 physical leg(s) pass (docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json)",
+      "measuredAt": "2026-09-29T20:55:18Z",
+      "evidence": [
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+          "kind": "operational-test-evidence",
+          "detail": {
+            "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "binding": "this-candidate",
+            "artifactSha256s": [
+              "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+            ]
+          }
+        },
+        {
+          "ref": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.p521-journeys.json",
+          "kind": "p521-journey-mapping",
+          "detail": {
+            "evidenceSha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+            "decision": "p2p-public-release-endgame-2026-09-01#D-083"
+          }
+        }
+      ],
+      "artifactDigest": "26196b9958b398488bace99dc81ab8a5560850c0fb6ed7a3d3b47cbfa36e6d22",
+      "observedPeers": [
+        "tower",
+        "vm"
+      ]
+    }
+  },
+  "bindings": [
     {
       "path": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
       "sha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
-      "name": "P-505 run 34 live: the exact 0.0.25 Papercusp Server candidate (deb sha256 matched to the release handoff) passes the P-301 hive-git drill with zero skips, including same-run two-physical-machine legs A-G (tower + macOS VM) with both device keys attesting"
+      "journeys": [
+        "discovery-join",
+        "git-consistency-signed-scope",
+        "github-bridge"
+      ],
+      "declaredBy": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.p521-journeys.json",
+      "binding": "this-candidate",
+      "artifactSha256s": [
+        "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23"
+      ],
+      "verdict": "pass",
+      "reason": "exit 0; 12 assertion(s) passed; 7 physical leg(s) pass",
+      "measuredAt": "2026-09-29T20:55:18Z",
+      "observedPeers": [
+        "tower",
+        "vm"
+      ],
+      "selected": true
     }
   ],
+  "unmapped": [],
   "ignored": [
     {
       "path": "docs/evidence/EI-23994272399366731-launchdaemon-regression.json",
@@ -626,6 +737,18 @@
       "reason": "not an operational-test-evidence document"
     },
     {
+      "path": "docs/evidence/p2p-endgame-shakedown-0025-93f1c720-journeys.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-endgame-shakedown-0025-93f1c720-manifest.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-endgame-shakedown-0025-93f1c720-provenance.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
       "path": "docs/evidence/p319-live-self-signup-2026-09-29.json",
       "reason": "names no artifact sha256 in subject"
     },
@@ -940,6 +1063,21 @@
     {
       "path": "docs/evidence/work-item-completion-intent-mutation-2026-09-24.json",
       "reason": "names no artifact sha256 in subject"
+    }
+  ],
+  "mappings": [
+    {
+      "path": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.p521-journeys.json",
+      "evidencePath": "docs/evidence/p505-run34-exact-0025-physical-2026-09-29.json",
+      "evidenceSha256": "c00b6d275197a90251cdbcd2a7c2724cee0d01f12489012a1387d8a527dcc228",
+      "journeys": [
+        "discovery-join",
+        "git-consistency-signed-scope",
+        "github-bridge"
+      ],
+      "decision": "p2p-public-release-endgame-2026-09-01#D-083",
+      "applied": true,
+      "reason": "applied"
     }
   ]
 }

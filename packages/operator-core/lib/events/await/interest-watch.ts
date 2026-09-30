@@ -50,7 +50,7 @@
  * vectors; `startInterestWatchSweeper` is the prod binding.
  */
 import type { Sql } from 'postgres';
-import { withIterativeScan } from '../../agent-tools/search/hnsw-iterative-scan';
+import { withIterativeScan } from '@papercusp/search';
 import {
   proseProfilePredicateSql,
   resolveProseProfileIdSelection,

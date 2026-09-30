@@ -99,8 +99,7 @@ function isStringArray(value: unknown): value is string[] {
  * WI-213058: Zod's nested field errors used to reveal this contract one rule at a time
  * (and made `residue` look like a fifth partition bucket). Emit one actionable contract
  * error for malformed shape input before the child array schemas produce generic errors.
- * Semantic partition accounting still belongs to complete.ts because it needs the item
- * and the submitted population.
+ * Semantic partition accounting is hasEnumeratedVerificationCoverage below.
  */
 export function hasMalformedCoverageShape(value: unknown): boolean {
   if (!isCoverageRecord(value) || !isStringArray(value.population)) return true;
@@ -117,6 +116,42 @@ export function hasMalformedCoverageShape(value: unknown): boolean {
   // form. Shape preflight should only collapse scalar/non-string bucket values
   // into the repair contract.
   return residue !== undefined && !isStringArray(residue);
+}
+
+/**
+ * A valid coverage record accounts for every named population entry and states
+ * the residue explicitly. `residue: []` is the natural zero-residue form and
+ * `residue: ['none']` remains accepted for compatibility; omission is not
+ * silently treated as complete coverage.
+ *
+ * It lives here, beside the schema, rather than in complete.ts so a caller that
+ * only judges a partition (an LLM scenario oracle) does not import the whole
+ * completion tool and its dependency graph.
+ */
+export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage | undefined): boolean {
+  if (!coverage?.population?.length || coverage.residue === undefined) return false;
+  const population = coverage.population;
+  const populationSet = new Set(population);
+  // A population is an enumeration, not a bag of labels. Duplicate names make an
+  // apparently complete partition ambiguous, even when the status buckets are otherwise
+  // balanced.
+  if (populationSet.size !== population.length) return false;
+
+  const statusEntries = [
+    ...(coverage.checked ?? []),
+    ...(coverage.notChecked ?? []),
+    ...(coverage.notApplicable ?? []),
+  ];
+  const statusCounts = new Map<string, number>();
+  for (const entry of statusEntries) {
+    // Unknown entries and repeated entries both violate the exact partition. Keep the
+    // comparison verbatim: callers must copy population strings exactly, not normalize or
+    // replace them with prose descriptions.
+    if (!populationSet.has(entry)) return false;
+    statusCounts.set(entry, (statusCounts.get(entry) ?? 0) + 1);
+  }
+
+  return population.every((entry) => statusCounts.get(entry) === 1) && statusEntries.length === population.length;
 }
 
 /**

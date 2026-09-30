@@ -29,7 +29,7 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // scan stops at `hnsw.ef_search` (40) and silently returns fewer rows than the
 // engine's `candidateLimit = limit * 3` asked for — measured 40 rows for a
 // 600-row request on the live 302k-row corpus.
-import { withIterativeScan } from './hnsw-iterative-scan';
+import { withIterativeScan } from '@papercusp/search';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import {
   proseProfilePredicateSql,

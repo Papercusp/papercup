@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { cancelPendingCardsForRun, registerCard, resolveCardResponse } from '@papercusp/agent-mcp';
 import type { CanUseTool, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import { approvalCardText, humanToolName } from './su-session-approval-display';
 import type { SuSessionEventInput } from './su-session-host';
 import type { RpcFrame } from './su-session-stdio-peer';
 
@@ -16,17 +17,19 @@ export function sessionAllowRules(suggestions: readonly PermissionUpdate[] | und
     && update.rules.length ? [{ ...update, destination: 'session' as const }] : []);
 }
 
-/** The exact rule and lifetime the remembered choice grants. */
+/** The exact rule and lifetime the remembered choice grants, with the tool
+ * named the way the card names it (P-008: never a raw MCP id). */
 export function rememberedApprovalLabel(updates: readonly PermissionUpdate[]): string | undefined {
   const rules = updates.flatMap((update) => update.type === 'addRules'
-    ? update.rules.map((rule) => rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName) : []);
+    ? update.rules.map((rule) => rule.ruleContent ? `${humanToolName(rule.toolName)}(${rule.ruleContent})` : humanToolName(rule.toolName)) : []);
   return rules.length ? `Always allow ${rules.join(', ')} until this session's runtime stops` : undefined;
 }
 
 export class SuNativeCards {
   private epoch = 0;
+  /** `cwd` is the chat's launch directory; approval cards show paths relative to it. */
   constructor(private readonly workspaceId: string, private readonly runId: string,
-    private readonly emit: (event: SuSessionEventInput) => void) {}
+    private readonly emit: (event: SuSessionEventInput) => void, private readonly cwd?: string) {}
 
   cancel(): void { this.epoch++; cancelPendingCardsForRun(this.runId); }
 
@@ -36,7 +39,8 @@ export class SuNativeCards {
   }
 
   private async askAnswers(turnId: string, prompt: string,
-    choices?: Array<{ label: string; description?: string }>, multiSelect = false, signal?: AbortSignal): Promise<string[] | null> {
+    choices?: Array<{ label: string; description?: string }>, multiSelect = false, signal?: AbortSignal,
+    details?: string): Promise<string[] | null> {
     if (signal?.aborted) return null;
     const presentation = choices?.length
       ? { kind: multiSelect ? 'checkbox' as const : 'radio' as const,
@@ -52,7 +56,7 @@ export class SuNativeCards {
     signal?.addEventListener('abort', cancel, { once: true });
     this.emit({ type: 'card', phase: 'opened', turnId, card: {
       correlationId: card.correlationId, createdAt: Date.now(), prompt, fallbackText: prompt,
-      presentation, allowDecline: true,
+      ...(details ? { details } : {}), presentation, allowDecline: true,
     } });
     const response = await card.result.finally(() => signal?.removeEventListener('abort', cancel));
     this.emit({ type: 'card', phase: 'closed', turnId, correlationId: card.correlationId,
@@ -79,14 +83,16 @@ export class SuNativeCards {
         return deny(`PUI owner answered AskUserQuestion: ${JSON.stringify(answers)}. The MCP wrapper cannot execute this native tool; continue using the recorded answer without asking again.`);
       }
       if (toolName !== 'AskUserQuestion') {
-        const prompt = [options.title || `Allow ${toolName}?`, options.description, options.decisionReason,
-          JSON.stringify(input, null, 2)].filter(Boolean).join('\n');
+        // P-008: a readable question and the change itself; the raw arguments
+        // ride as the card's details, shown only behind the PUI's Ctrl+R.
+        const { prompt, details } = approvalCardText(toolName, input, {
+          title: options.title, description: options.description, decisionReason: options.decisionReason, cwd: this.cwd });
         // The broader remembered permission is a separate, labelled choice and
         // exists only when Claude offers one (PUBLIC_RELEASE_UX, Approvals).
         const remembered = sessionAllowRules(options.suggestions);
         const rememberLabel = rememberedApprovalLabel(remembered);
         const choice = await this.askAnswers(turnId, prompt,
-          [{ label: 'Approve' }, { label: 'Decline' }, ...(rememberLabel ? [{ label: rememberLabel }] : [])], false, options.signal);
+          [{ label: 'Approve' }, { label: 'Decline' }, ...(rememberLabel ? [{ label: rememberLabel }] : [])], false, options.signal, details);
         if (epoch !== this.epoch || options.signal.aborted) return deny();
         if (choice?.[0] === 'Approve') return { behavior: 'allow', updatedInput: input };
         return rememberLabel && choice?.[0] === rememberLabel

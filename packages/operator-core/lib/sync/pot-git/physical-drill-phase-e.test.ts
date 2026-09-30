@@ -55,6 +55,11 @@ function trigger(
   };
 }
 
+function finishedFire(startedAt: string): NonNullable<PhysicalPhaseEObservation['routine']['fire']> {
+  const start = Date.parse(startedAt);
+  return { active: false, phase: 'complete', startedAt: start, completedAt: start + 20_000, outcomeStatus: 'nothing' };
+}
+
 function observation(opts: {
   host: 'tower' | 'vm';
   key: string;
@@ -65,6 +70,7 @@ function observation(opts: {
   remote?: string;
   bridge?: PhysicalPhaseEObservation['routine']['githubBridge'];
   bridgeEscalation?: Record<string, unknown> | null;
+  fire?: PhysicalPhaseEObservation['routine']['fire'];
 }): PhysicalPhaseEObservation {
   return {
     schemaVersion: PHASE_E_OBSERVATION_SCHEMA,
@@ -85,6 +91,7 @@ function observation(opts: {
       watchdogErrorSweeps: 0,
       watchdogStallSweeps: 0,
       githubBridge: opts.bridge ?? null,
+      fire: opts.fire === undefined ? finishedFire('2026-08-13T20:19:00.000Z') : opts.fire,
     },
     refs: {
       canonicalStaging: opts.canonical ?? C,
@@ -131,7 +138,7 @@ function validInput(): PhysicalPhaseEInput {
       },
       towerTrigger: trigger('tower', 'tower-member', 2),
       vmTrigger: trigger('vm', 'vm-member', 3),
-      tower: observation({ host: 'tower', key: TOWER, stage: 'bridged-member', mode: 'bridged' }),
+      tower: observation({ host: 'tower', key: TOWER, stage: 'bridged-member', mode: 'bridged', bridge: clearBridge }),
       vm: observation({ host: 'vm', key: VM, stage: 'bridged-member', mode: 'bridged' }),
     },
     healthy: {
@@ -208,8 +215,9 @@ function validInput(): PhysicalPhaseEInput {
       trigger: trigger('tower', 'divergence-egress', 31),
       after: observation({
         host: 'tower', key: TOWER, stage: 'divergence-after', mode: 'bridged', canonical: D, upstream: B, remote: E,
-        bridge: { ...clearBridge, divergence: 'escalate' },
+        bridge: { ...clearBridge, at: Date.parse('2026-08-13T20:31:30.000Z'), divergence: 'escalate' },
         bridgeEscalation: { kind: 'github-bridge-divergence', signals: [{ kind: 'egress-non-ff', localSha: D, remoteSha: E }] },
+        fire: finishedFire('2026-08-13T20:31:10.000Z'),
       }),
       recovery: {
         schemaVersion: PHASE_E_RECOVERY_SCHEMA,
@@ -517,5 +525,126 @@ describe('validatePhysicalPhaseE', () => {
     const input = validInput();
     input.rollback.vm.mode.value = 'bridged';
     expect(validatePhysicalPhaseE(input).errors).toContain('Phase E legacy-after must observe mode legacy');
+  });
+});
+
+// WI-10004055: the 0.0.25 shakedown's divergence-after read the routine row once,
+// ~20ms before the triggered fire wrote divergence=escalate, and so judged the
+// healthy fire's row. These pin the wait and the causal check that replace it.
+describe('Phase E observations wait for the triggered git-sync fire (WI-10004055)', () => {
+  const RACE = 'divergence-after must be read after the divergence-egress git-sync fire finished';
+
+  it('names the race when divergence-after shows the previous fire (the 0.0.25 shape)', () => {
+    const input = validInput();
+    // Exactly what the run recorded: the healthy fire's clear verdict and finished marker.
+    input.divergence.after.routine.githubBridge = { ...input.healthy.observation.routine.githubBridge! };
+    input.divergence.after.routine.fire = finishedFire('2026-08-13T20:19:00.000Z');
+    const errors = validatePhysicalPhaseE(input).errors;
+    expect(errors.some((error) => error.includes(RACE))).toBe(true);
+  });
+
+  it('rejects a read taken while the triggered fire is still active', () => {
+    const input = validInput();
+    input.divergence.after.routine.fire = { ...finishedFire('2026-08-13T20:31:10.000Z'), active: true, completedAt: null };
+    expect(validatePhysicalPhaseE(input).errors.some((error) => error.includes(RACE))).toBe(true);
+  });
+
+  it('rejects a finished fire whose bridge row predates the trigger', () => {
+    const input = validInput();
+    input.divergence.after.routine.githubBridge!.at = Date.parse('2026-08-13T20:30:59.000Z');
+    expect(validatePhysicalPhaseE(input).errors.some((error) => error.includes(RACE))).toBe(true);
+  });
+
+  it('applies the same check to the healthy-egress and tower bridged-member reads', () => {
+    const input = validInput();
+    input.healthy.observation.routine.fire = finishedFire('2026-08-13T20:06:59.000Z');
+    input.activation.tower.routine.githubBridge = null;
+    const errors = validatePhysicalPhaseE(input).errors;
+    expect(errors.some((error) => error.includes('healthy-egress must be read after the healthy-egress git-sync fire finished'))).toBe(true);
+    expect(errors.some((error) => error.includes('bridged-member must be read after the tower-member git-sync fire finished'))).toBe(true);
+  });
+
+  describe('capturePhysicalPhaseEObservation afterFireStartedAt', () => {
+    const SINCE = '2026-08-13T20:31:00.000Z';
+    const sinceMs = Date.parse(SINCE);
+    const routineRow = (fire: Record<string, unknown>, bridgeAt: number) => ({
+      active: true,
+      last_fired_at: null,
+      metadata: {
+        push_mode: 'commit-only:bridged',
+        git_sync_activity: fire,
+        github_bridge: { at: bridgeAt, ran: true, divergence: bridgeAt >= sinceMs ? 'escalate' : 'clear' },
+      },
+    });
+    const previous = routineRow(
+      { active: false, phase: 'complete', started_at: sinceMs - 180_000, completed_at: sinceMs - 150_000 }, sinceMs - 150_000,
+    );
+    const inFlight = routineRow({ active: true, phase: 'post-legs', started_at: sinceMs + 5_000, completed_at: null }, sinceMs - 150_000);
+    const finished = routineRow({ active: false, phase: 'complete', started_at: sinceMs + 5_000, completed_at: sinceMs + 75_000 }, sinceMs + 74_000);
+
+    function harness(sequence: unknown[]) {
+      let clock = sinceMs + 45_000;
+      let reads = 0;
+      const sleeps: number[] = [];
+      const sql = (async (strings: TemplateStringsArray) => {
+        if (!strings.join('?').includes('harness_shared.routines')) return [];
+        const row = sequence[Math.min(reads, sequence.length - 1)];
+        reads += 1;
+        return [row];
+      }) as unknown as NonNullable<Parameters<typeof capturePhysicalPhaseEObservation>[1]>['sql'];
+      const deps: NonNullable<Parameters<typeof capturePhysicalPhaseEObservation>[1]> = {
+        sql,
+        loadRegistry: async () => ({
+          projects: [{ slug: 'hello-world-3-pot', github_remote: 'https://github.com/papercupai/hello-world-3-pot' }],
+        }),
+        readMode: async () => ({ mode: 'bridged', source: 'set' }),
+        runGit: async () => ({ code: 0, stdout: `${A}\n`, stderr: '' }),
+        now: () => clock,
+        sleep: async (ms: number) => { sleeps.push(ms); clock += ms; },
+      };
+      return { deps, sleeps, reads: () => reads };
+    }
+
+    it('keeps polling past the stale and in-flight rows until the triggered fire has finished', async () => {
+      const h = harness([previous, inFlight, inFlight, finished]);
+      const observation = await capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'vm', deviceKey: VM, stage: 'divergence-after', waitMs: 600_000, afterFireStartedAt: SINCE },
+        h.deps,
+      );
+      expect(observation.waitedForFire).toMatchObject({ since: SINCE, reached: true });
+      expect(h.sleeps).toEqual([PHASE_E_MODE_POLL_MS, PHASE_E_MODE_POLL_MS, PHASE_E_MODE_POLL_MS]);
+      expect(observation.routine.fire).toMatchObject({ active: false, phase: 'complete', startedAt: sinceMs + 5_000 });
+      expect(observation.routine.githubBridge).toMatchObject({ at: sinceMs + 74_000, divergence: 'escalate' });
+    });
+
+    it('returns the last read with reached:false at the deadline, so the validator names the race', async () => {
+      const h = harness([previous, inFlight]);
+      const observation = await capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'vm', deviceKey: VM, stage: 'divergence-after', waitMs: 12_000, afterFireStartedAt: SINCE },
+        h.deps,
+      );
+      expect(observation.waitedForFire).toEqual({ since: SINCE, reached: false, waitedMs: 12_000 });
+      expect(h.sleeps).toEqual([5_000, 5_000, 2_000]);
+      expect(observation.routine.fire?.active).toBe(true);
+    });
+
+    it('does not wait or add waitedForFire when no trigger start is given', async () => {
+      const h = harness([previous]);
+      const observation = await capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'vm', deviceKey: VM, stage: 'divergence-after' },
+        h.deps,
+      );
+      expect(observation.waitedForFire).toBeUndefined();
+      expect(h.sleeps).toEqual([]);
+    });
+
+    it('refuses a trigger start that is not an ISO-8601 UTC instant before touching the host', async () => {
+      const h = harness([previous]);
+      await expect(capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'vm', deviceKey: VM, stage: 'divergence-after', waitMs: 1_000, afterFireStartedAt: '1790727010' },
+        h.deps,
+      )).rejects.toThrow('ISO-8601 UTC instant');
+      expect(h.reads()).toBe(0);
+    });
   });
 });

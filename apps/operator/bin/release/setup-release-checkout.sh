@@ -1637,18 +1637,48 @@ rebuild_stale_native_addons
 # ONLY fills entries MISSING from the release tree, so anything tracked at
 # TARGET_SHA always wins; every failure is non-fatal (a missing asset must
 # surface as the owning test's red, never as an aborted tree setup).
+#
+# WI-10004073: every path must produce the SAME tree. The old
+# `cp -al SRC DST || cp -a SRC DST` did not: across filesystems `cp -al` fails
+# with EXDEV only AFTER creating DST, so the `cp -a` fallback copied INTO it and
+# shipped public/wake-runtime/wake-runtime/… (spa/wake-runtime had no top-level
+# ORT files; wake-word + VAD broken) on any release root not on the integration
+# tree's filesystem, e.g. /mnt/data. provision_runtime_asset stages each attempt
+# at a path that does not exist yet, discards a partial hard-link tree before
+# copying, and renames into place, so the fallback can never nest. Staging
+# lives in PROVISION_STAGE_DIR (outside public/, same filesystem as DST) so a
+# crash mid-copy cannot leave a half tree that vite would ship.
+provision_runtime_asset() {
+  _pra_src="$1"
+  _pra_dst="$2"
+  _pra_stage="${PROVISION_STAGE_DIR:-$(dirname "$_pra_dst")}"
+  _pra_tmp="$_pra_stage/.provision.$$.$(basename "$_pra_dst")"
+  mkdir -p "$(dirname "$_pra_dst")" "$_pra_stage" 2>/dev/null || return 1
+  rm -rf -- "$_pra_tmp"
+  if ! cp -al "$_pra_src" "$_pra_tmp" 2>/dev/null; then
+    rm -rf -- "$_pra_tmp"
+    if ! cp -a "$_pra_src" "$_pra_tmp" 2>/dev/null; then
+      rm -rf -- "$_pra_tmp"
+      return 1
+    fi
+  fi
+  if ! mv -- "$_pra_tmp" "$_pra_dst"; then
+    rm -rf -- "$_pra_tmp"
+    return 1
+  fi
+  return 0
+}
 PUBLIC_ASSET_REL="apps/operator/public"
 if [ -d "$INTEGRATION_ROOT/$PUBLIC_ASSET_REL" ]; then
   _provisioned_assets=0
+  PROVISION_STAGE_DIR="$RELEASE_ROOT/.provision-stage.$$"
   while IFS= read -r _ignored_entry; do
     [ -n "$_ignored_entry" ] || continue
     _asset_src="$INTEGRATION_ROOT/$_ignored_entry"
     _asset_dst="$RELEASE_ROOT/$_ignored_entry"
     [ -e "$_asset_src" ] || continue
     [ -e "$_asset_dst" ] && continue
-    mkdir -p "$(dirname "$_asset_dst")" 2>/dev/null || true
-    if cp -al "$_asset_src" "$_asset_dst" 2>/dev/null ||
-      cp -a "$_asset_src" "$_asset_dst" 2>/dev/null; then
+    if provision_runtime_asset "$_asset_src" "$_asset_dst"; then
       _provisioned_assets=$((_provisioned_assets + 1))
     else
       log "WARN could not provision gitignored runtime asset $_ignored_entry"
@@ -1657,6 +1687,8 @@ if [ -d "$INTEGRATION_ROOT/$PUBLIC_ASSET_REL" ]; then
 $(git -C "$INTEGRATION_ROOT" status --porcelain --ignored -- "$PUBLIC_ASSET_REL" 2>/dev/null |
     sed -n 's|^!! ||p' | sed 's|/$||')
 EOF
+  rm -rf -- "$PROVISION_STAGE_DIR"
+  unset PROVISION_STAGE_DIR
   log "provisioned $_provisioned_assets gitignored runtime asset(s) under $PUBLIC_ASSET_REL"
 fi
 

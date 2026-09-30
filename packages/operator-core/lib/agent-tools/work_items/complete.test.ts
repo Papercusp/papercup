@@ -169,7 +169,6 @@ import complete, {
   claimsUniversalVerification,
   contentIdentityAdviceForOrigin,
   completionEphemeralDeliverableReferences,
-  hasEnumeratedVerificationCoverage,
   isVerificationWorkItem,
 } from './complete';
 import {
@@ -183,6 +182,7 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import {
   CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
+  hasEnumeratedVerificationCoverage,
 } from '../../coord-lifecycle/records';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
