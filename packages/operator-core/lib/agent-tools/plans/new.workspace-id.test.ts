@@ -17,10 +17,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { WithPlanLockResult } from './with-plan-lock';
+import type { AppliedResult, WithPlanLockResult } from './with-plan-lock';
 
-/** Mirrors new.ts's own (unexported) `NewPlanValue` success branch. */
-type NewPlanValue = { ok: true; slug: string };
+/** Mirrors new.ts's own (unexported) `NewPlanValue`: success and the slug_exists refusal. */
+type NewPlanValue = { ok: true; slug: string } | { ok: false; code: 'slug_exists' };
 
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: vi.fn(() => 'offsite-planner-demo') }));
 vi.mock('../_harness-scope', async (orig) => ({
@@ -46,7 +46,7 @@ vi.mock('./item-parse-feedback', () => ({ summarizeItemParse: vi.fn(() => ({})) 
 // is the recurrence guard. The next required field added to `AppliedResult`
 // then strands HERE at `tsc`, where it is a one-line fix, instead of at runtime
 // in the green gate, where it blocks every agent's deploys.
-const appliedResult = (): WithPlanLockResult<NewPlanValue> => ({
+const appliedResult = (): AppliedResult<NewPlanValue> => ({
   kind: 'applied',
   value: { ok: true, slug: 'demo-plan-2026-07-18' },
   filePath: 'x',
@@ -96,12 +96,13 @@ describe('plans:new workspaceId opt-in (EI-1543)', () => {
   });
 
   it('WI-10004345: an exact-slug re-create reaches the locked create (slug_exists), not similar_exists naming itself', async () => {
+    // A dated slug is kept as given (an undated one gets today's date appended).
     vi.mocked(listPlanIndexRows).mockResolvedValue([{
-      planSlug: 'demo-plan', title: 'Demo plan', status: 'draft', archived: false,
+      planSlug: 'demo-plan-2026-07-18', title: 'Demo plan', status: 'draft', archived: false,
     }] as Awaited<ReturnType<typeof listPlanIndexRows>>);
     const exists: WithPlanLockResult<NewPlanValue> = { ...appliedResult(), value: { ok: false, code: 'slug_exists' } };
     withPlanLockM.mockResolvedValueOnce(exists);
-    const result = await call({ force: false });
+    const result = await call({ force: false, slug: 'demo-plan-2026-07-18' });
     expect(result.content[0]!.text).not.toContain('similar_exists');
     expect(withPlanLockM).toHaveBeenCalledTimes(1);
     expect(result.content[0]!.text).toContain('slug_exists');
