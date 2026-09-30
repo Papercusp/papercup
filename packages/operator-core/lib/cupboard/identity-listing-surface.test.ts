@@ -6,7 +6,8 @@
  * against real PG in third-party-portability.integration.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import type { ResolvedPackageInput } from '@papercusp/orchestrator/blueprint';
+import { pinPackageInput, type ResolvedPackageInput } from '@papercusp/orchestrator/blueprint';
+import { buildBlueprintReleaseArchive, diffBlueprintReleases } from './blueprint-release';
 import type { ClassContractPayloadEntry } from './class-contract-payload';
 import {
   IDENTITY_LISTING_SURFACE_MAX_CHARS,
@@ -72,7 +73,7 @@ const source = { ...input, raw: identityRaw };
 describe('identityListingSurface', () => {
   it('derives what a shopper previews from the closure alone', () => {
     expect(identityListingSurface(input)).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       identity: { id: 'acme-reviewer', version: '1.0.0', slots: ['domain'] },
       contributions: [
         { id: 'reviewer-rules', inputKind: 'prompt-file', ref: 'fixed:domain', refresh: 'source-change' },
@@ -97,6 +98,8 @@ describe('identityListingSurface', () => {
       ] }],
       classContracts: [{ ref: CLASS_REF, contractHash: '9'.repeat(64) }],
       grants: { requires: [CLASS_REF], optional: [CLASS_REF, 'zeta.optional@1.0.0'] },
+      // No knobs and no prompt files in this closure: only the byte count is declared.
+      burnKnobs: [{ path: 'promptBytes', value: 0 }],
       permissions: [
         'context:acmelabs.review-notes@1 read',
         'event:acme-notify on work.arrived',
@@ -138,6 +141,52 @@ describe('identityListingSurface', () => {
   });
 });
 
+describe('burn knobs on the identity listing (agent-economy-flywheel P-015)', () => {
+  function release(version: string, effort: string, intervalSec: number, persona: string) {
+    const base = pinPackageInput({
+      packageKind: 'blueprint', ref: 'acme-base', revision: version, files: [],
+      value: { id: 'acme-base', version, roles: { worker: { effort } }, knobs: { loop: { intervalSec } } },
+    });
+    const rootPin = pinPackageInput({
+      packageKind: 'blueprint', ref: 'acme-reviewer', revision: version,
+      files: [{ path: 'prompts/persona.md', bytes: persona }],
+      value: { id: 'acme-reviewer', version, extends: 'acme-base', slots: [{ slot: 'domain' }], knobs: { maxCostUsd: 2 } },
+      dependencies: [{ packageKind: 'blueprint', ref: 'acme-base', revision: version, contentHash: base.contentHash }],
+    });
+    const archive = buildBlueprintReleaseArchive([base, rootPin], 'acme-reviewer');
+    const surface = identityListingSurface({ id: 'acme-reviewer', version, grants: undefined, contributions: undefined, archive });
+    return { archive, surface };
+  }
+
+  it('declares root and inherited knobs, role effort and prompt bytes, sorted by path', () => {
+    expect(release('1.0.0', 'low', 60, 'review carefully\n').surface.burnKnobs).toEqual([
+      { path: 'acme-base:loop.intervalSec', value: 60 },
+      { path: 'acme-base:roles.worker.effort', value: 'low' },
+      { path: 'maxCostUsd', value: 2 },
+      { path: 'promptBytes', value: 17 },
+    ]);
+  });
+
+  it('declares the values the release diff compares, so an upgrade changes both', () => {
+    const before = release('1.0.0', 'low', 60, 'review carefully\n');
+    const after = release('2.0.0', 'high', 30, 'review carefully\n');
+    const diff = diffBlueprintReleases(before.archive, after.archive);
+    expect(diff.burnKnobs).toEqual([
+      { path: 'acme-base:loop.intervalSec', before: 60, after: 30 },
+      { path: 'acme-base:roles.worker.effort', before: 'low', after: 'high' },
+    ]);
+    const declared = (surface: IdentityListingSurface) => new Map(surface.burnKnobs.map((k) => [k.path, k.value]));
+    for (const change of diff.burnKnobs) {
+      expect(declared(before.surface).get(change.path)).toEqual(change.before);
+      expect(declared(after.surface).get(change.path)).toEqual(change.after);
+    }
+    // A listing that still declares the old knobs is refused for the new closure.
+    const stale = serializeIdentityListingSurface({ ...after.surface, burnKnobs: before.surface.burnKnobs });
+    expect(identityListingSurfaceMismatch(stale, after.surface)).toMatchObject({ reason: 'differs' });
+    expect(identityListingSurfaceMismatch(serializeIdentityListingSurface(after.surface), after.surface)).toBeNull();
+  });
+});
+
 describe('identityListingSurfaceMismatch', () => {
   const carried = identityListingSurface(input);
   const listed = serializeIdentityListingSurface(carried);
@@ -160,8 +209,15 @@ describe('identityListingSurfaceMismatch', () => {
   });
 
   it('reports a schema-version skew separately from a difference', () => {
-    expect(identityListingSurfaceMismatch(edit((surface) => ({ ...surface, schemaVersion: 2 })), carried))
-      .toMatchObject({ reason: 'schema-version', listed: { schemaVersion: 2 } });
+    // A listing published before burn knobs were declared (format 1) is refused
+    // as a skew, not waved through as a surface that merely lacks a field.
+    const older = edit((surface) => {
+      const { burnKnobs, ...rest } = surface;
+      void burnKnobs;
+      return { ...rest, schemaVersion: 1 };
+    });
+    expect(identityListingSurfaceMismatch(older, carried))
+      .toMatchObject({ reason: 'schema-version', listed: { schemaVersion: 1 } });
   });
 
   it('refuses a listing that describes less than the closure carries', () => {
