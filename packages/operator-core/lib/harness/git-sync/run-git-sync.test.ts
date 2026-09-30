@@ -793,6 +793,61 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain('removed 1 pre-staged protected path(s) from the commit index');
   });
 
+  it('WI-10004413: an ORPHANED index.lock at the unstage-protected-paths reset is reclaimed instead of failing "could not unstage protected paths" every tick', async () => {
+    // 2026-09-30: a writer died after staging a now-protected path, leaving a 0-byte
+    // .git/index.lock. The reset that unstages protected paths is the FIRST index
+    // writer of the tick, so without the shared stale-lock recovery every tick failed
+    // here and the superproject stayed frozen for over an hour until someone removed the lock by hand.
+    git(repo, 'checkout', '-q', '-b', 'repair-source');
+    writeFileSync(join(repo, 'file.txt'), 'repair-head blob\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'repair-head');
+    const repairHead = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    git(repo, 'checkout', '-q', repairHead, '--', 'file.txt');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('file.txt');
+
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, '');
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+    const logs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['file.txt'],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(logs.join('\n')).toContain('cleared STALE index.lock');
+    expect(logs.join('\n')).toContain('removed 1 pre-staged protected path(s) from the commit index');
+  });
+
+  it('WI-10004413: a FRESH index.lock at the unstage-protected-paths reset is NOT touched', async () => {
+    git(repo, 'checkout', '-q', '-b', 'repair-source');
+    writeFileSync(join(repo, 'file.txt'), 'repair-head blob\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'repair-head');
+    const repairHead = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', 'main');
+    git(repo, 'checkout', '-q', repairHead, '--', 'file.txt');
+
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, ''); // mtime = now: a live writer
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, excludePaths: ['file.txt'] });
+
+    expect(out.status).not.toBe('synced');
+    expect(existsSync(lockPath)).toBe(true);
+  });
+
   it('WI-10001350: refuses an unreserved migration before staging or committing it', async () => {
     const migration = 'libs/db/sql/999-unreserved-migration.sql';
     mkdirSync(join(repo, 'libs/db/sql'), { recursive: true });
