@@ -22,6 +22,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
 import { resolvePtoolOperatorBase } from "../scripts/ptool.mjs";
 import {
+  CODEX_SAFE_DEFAULT_MODEL,
   codexContextConfigArgs,
   codexContextConfigToml,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
@@ -1113,12 +1114,12 @@ describe("Codex missing-model posture", () => {
     );
 
     expect(body).toMatchObject({
-      model: "gpt-5.6-sol:xhigh",
+      model: CODEX_SAFE_DEFAULT_MODEL,
       model_source: "configured-default",
     });
     expect(body.launch_argv).toEqual(
       expect.arrayContaining([
-        "--model=gpt-5.6-sol:xhigh",
+        `--model=${CODEX_SAFE_DEFAULT_MODEL}`,
         "--model-source=configured-default",
       ]),
     );
@@ -1131,7 +1132,7 @@ describe("Codex missing-model posture", () => {
       "--model-source=configured-default",
     ]);
     expect(authorizedHeadless).toMatchObject({
-      model: "gpt-5.6-sol:xhigh",
+      model: CODEX_SAFE_DEFAULT_MODEL,
       modelSource: "configured-default",
     });
     expect(
@@ -1148,7 +1149,7 @@ describe("Codex missing-model posture", () => {
       ]),
     ).toMatchObject({
       picker: false,
-      model: "gpt-5.6-sol:xhigh",
+      model: CODEX_SAFE_DEFAULT_MODEL,
       modelSource: "configured-default",
     });
   });
@@ -4709,7 +4710,7 @@ describe("psu-launcher arg parsing", () => {
       plan: null,
       account: "codex-main",
       owner_id: "su-auditor-canonical",
-      model: "gpt-5.6-sol:xhigh",
+      model: CODEX_SAFE_DEFAULT_MODEL,
       model_source: "configured-default",
     });
     expect(
@@ -7618,7 +7619,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
         { targetAgent: "codex", modelSpec: null },
       ),
     ).toMatchObject({
-      modelSpec: "gpt-5.6-sol:xhigh",
+      modelSpec: CODEX_SAFE_DEFAULT_MODEL,
       modelSource: "configured-default",
     });
   });
@@ -7628,7 +7629,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       name: "configured default",
       args: { picker: true },
       selected: { targetAgent: "codex", modelSpec: null },
-      expectedModel: "gpt-5.6-sol:xhigh",
+      expectedModel: CODEX_SAFE_DEFAULT_MODEL,
       expectedSource: "configured-default",
     },
     {
