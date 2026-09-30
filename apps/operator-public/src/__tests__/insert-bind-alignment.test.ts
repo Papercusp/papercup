@@ -118,6 +118,7 @@ function captureInsert(): Promise<{ sql: string; binds: unknown[] }> {
       release_content_hash: 'v-release_content_hash',
       release_manifest_digest: 'v-release_manifest_digest',
       release_signature: 'v-release_signature',
+      identity_surface: 'v-identity_surface',
       release_published_at: 104,
       created_at: 105,
     });
@@ -210,6 +211,7 @@ describe('insertHarness ↔ fake-d1 bind alignment', () => {
       release_content_hash: 'v-release_content_hash',
       release_manifest_digest: 'v-release_manifest_digest',
       release_signature: 'v-release_signature',
+      identity_surface: 'v-identity_surface',
       release_published_at: 104,
       // written as a SQL literal, not a bind — the reason a naive
       // `columns[i] = binds[i]` zip would be off by one from here on.

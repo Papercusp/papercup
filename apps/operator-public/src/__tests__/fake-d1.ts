@@ -100,6 +100,7 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     release_content_hash: null,
     release_manifest_digest: null,
     release_signature: null,
+    identity_surface: null,
     release_published_at: null,
     pinned_commit_sha: null,
     pinned_tree_digest: null,
