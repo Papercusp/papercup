@@ -1,0 +1,147 @@
+import { describe, expect, it } from 'vitest';
+import { settleRevenue } from '../p2p/revenue-settlement';
+import {
+  IDENTITY_DAO_TAKE_BPS,
+  IDENTITY_MARKUP_METER_UNIT,
+  IDENTITY_SUGGESTED_MARKUP_BPS,
+  identityMarkupSplitManifest,
+  identityPerUseOfferTerms,
+  identityReleaseSkuRef,
+  parseIdentityMarkupPriceVersion,
+  parseIdentityReleaseSkuRef,
+  verifyIdentityPerUseOffer,
+} from './identity-per-use-offer';
+
+const ENGINEER = { id: 'papercusp-engineer', version: '1.2.0' };
+
+describe('identity release skuRef', () => {
+  it('round-trips, including a namespaced id', () => {
+    expect(identityReleaseSkuRef(ENGINEER)).toBe('identity-release:papercusp-engineer@1.2.0');
+    expect(parseIdentityReleaseSkuRef('identity-release:papercusp-engineer@1.2.0')).toEqual(ENGINEER);
+    expect(parseIdentityReleaseSkuRef('identity-release:acme/reviewer@2.0.0-rc.1')).toEqual({
+      id: 'acme/reviewer',
+      version: '2.0.0-rc.1',
+    });
+  });
+
+  it('rejects other namespaces and malformed refs', () => {
+    expect(parseIdentityReleaseSkuRef('sku-use')).toBeNull();
+    expect(parseIdentityReleaseSkuRef('identity-release:no-version')).toBeNull();
+    expect(parseIdentityReleaseSkuRef('identity-release:@1.0.0')).toBeNull();
+    expect(parseIdentityReleaseSkuRef('identity-release:bad id@1.0.0')).toBeNull();
+  });
+});
+
+describe('identityPerUseOfferTerms', () => {
+  it('defaults to the suggested 20% markup with the whole seller share to the creator', () => {
+    const result = identityPerUseOfferTerms({ identity: ENGINEER });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.markup).toEqual({ markupBps: IDENTITY_SUGGESTED_MARKUP_BPS, creatorBps: 9000, componentBps: 0 });
+    expect(result.terms).toEqual({
+      skuRef: 'identity-release:papercusp-engineer@1.2.0',
+      meterUnit: IDENTITY_MARKUP_METER_UNIT,
+      // 20% of a 1,000-micro inference block.
+      unitPriceMicros: 200,
+      priceVersion: 'identity-markup-v1;markup=2000;creator=9000;component=0;dao=1000',
+      splitManifestHash: identityMarkupSplitManifest({ creatorBps: 9000, componentBps: 0 }).manifestHash,
+    });
+    expect(result.manifest.sharesBps).toEqual({
+      creator: 9000, host: 0, component: 0, dao: IDENTITY_DAO_TAKE_BPS, reserve: 0, tax: 0, operating: 0,
+    });
+  });
+
+  it('gives the rest of the seller share to the creator when only a component share is named', () => {
+    const result = identityPerUseOfferTerms({ identity: ENGINEER, componentBps: 2500 });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.markup).toMatchObject({ creatorBps: 6500, componentBps: 2500 });
+  });
+
+  it('refuses a markup that is not a whole micro per block, and a split that does not leave the DAO 1000 bps', () => {
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 0 })).toMatchObject({ ok: false, code: 'invalid-markup' });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 15 })).toMatchObject({ ok: false, code: 'invalid-markup' });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 2000.5 })).toMatchObject({ ok: false, code: 'invalid-markup' });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, creatorBps: 10000, componentBps: 0 })).toMatchObject({
+      ok: false,
+      code: 'invalid-split',
+    });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, creatorBps: 5000, componentBps: 3000 })).toMatchObject({
+      ok: false,
+      code: 'invalid-split',
+    });
+    expect(identityPerUseOfferTerms({ identity: ENGINEER, creatorBps: -1, componentBps: 9001 })).toMatchObject({
+      ok: false,
+      code: 'invalid-split',
+    });
+  });
+
+  it('refuses an identity that cannot be named unambiguously in a skuRef', () => {
+    expect(identityPerUseOfferTerms({ identity: { id: 'a@b', version: '1.0.0' } })).toMatchObject({
+      ok: false,
+      code: 'invalid-identity-release',
+    });
+    expect(identityPerUseOfferTerms({ identity: { id: 'ok', version: '' } })).toMatchObject({
+      ok: false,
+      code: 'invalid-identity-release',
+    });
+  });
+
+  it('splits a settled markup payment so the DAO receives exactly 10%', () => {
+    const result = identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 3000, componentBps: 3000 });
+    if (!result.ok) throw new Error(result.detail);
+    // 1,234,560 micros of markup: a BYOC markup has no provider cost to deduct.
+    const settled = settleRevenue({
+      settlementId: 'identity-markup-1',
+      grossMicros: 1_234_560n,
+      providerCostMicros: 0n,
+      splitManifest: result.manifest,
+      daoTreasury: '0xDA0',
+    });
+    if (!settled.ok) throw new Error(settled.detail);
+    expect(settled.receipt.allocationsMicros.dao).toBe(123_456n);
+    expect(settled.receipt.allocationsMicros.creator).toBe(740_736n);
+    expect(settled.receipt.allocationsMicros.component).toBe(370_368n);
+  });
+});
+
+describe('verifyIdentityPerUseOffer', () => {
+  const derived = identityPerUseOfferTerms({ identity: ENGINEER, markupBps: 2500, componentBps: 1000 });
+  if (!derived.ok) throw new Error(derived.detail);
+  const terms = derived.terms;
+
+  it('accepts exactly the derived terms and returns the identity and markup they spell out', () => {
+    expect(verifyIdentityPerUseOffer(terms)).toMatchObject({
+      ok: true,
+      identity: ENGINEER,
+      markup: { markupBps: 2500, creatorBps: 8000, componentBps: 1000 },
+    });
+    expect(parseIdentityMarkupPriceVersion(terms.priceVersion)).toEqual({ markupBps: 2500, creatorBps: 8000, componentBps: 1000 });
+  });
+
+  it('refuses each term that disagrees with what the priceVersion derives', () => {
+    for (const bad of [
+      { meterUnit: 'tool-call' },
+      { unitPriceMicros: terms.unitPriceMicros + 1 },
+      { splitManifestHash: identityMarkupSplitManifest({ creatorBps: 9000, componentBps: 0 }).manifestHash },
+    ]) {
+      expect(verifyIdentityPerUseOffer({ ...terms, ...bad })).toMatchObject({ ok: false, code: 'identity-offer-mismatch' });
+    }
+  });
+
+  it('refuses a priceVersion that is not the identity scheme or that changes the DAO take', () => {
+    expect(verifyIdentityPerUseOffer({ ...terms, priceVersion: 'price-v1' })).toMatchObject({
+      ok: false,
+      code: 'identity-offer-mismatch',
+    });
+    expect(
+      verifyIdentityPerUseOffer({ ...terms, priceVersion: 'identity-markup-v1;markup=2500;creator=8500;component=1000;dao=500' }),
+    ).toMatchObject({ ok: false, code: 'identity-offer-mismatch' });
+  });
+
+  it('tells a non-identity offer apart from a malformed identity one', () => {
+    expect(verifyIdentityPerUseOffer({ ...terms, skuRef: 'sku-use' })).toMatchObject({ ok: false, code: 'not-an-identity-offer' });
+    expect(verifyIdentityPerUseOffer({ ...terms, skuRef: 'identity-release:missing-version' })).toMatchObject({
+      ok: false,
+      code: 'invalid-identity-release',
+    });
+  });
+});
