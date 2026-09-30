@@ -10,6 +10,8 @@
  * a class that cannot demonstrate it catches the instance the class was named for is
  * exactly the vacuous guard it exists to prevent.
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // Typed via scripts/check-vacuous-negative-assertions.d.mts — deliberately NOT a
 // `@ts-ignore`. Suppressing TS7016 here would silence the whole import, so these tests
@@ -17,8 +19,13 @@ import { describe, expect, it } from 'vitest';
 // cannot notice its subject changed, which is this file's own subject matter.
 // eslint-disable-next-line import/no-relative-packages
 import {
+  BASELINE_HIGH_WATERMARK,
+  baselineKey,
   driftFragment,
   createCorpusIncludes,
+  gateExitCode,
+  parseBaseline,
+  partitionAgainstBaseline,
   extractDocLiterals,
   extractNegativeLiterals,
   judgeDocFile,
@@ -143,6 +150,80 @@ describe('judgeFile — the motivating instance', () => {
   it('stays silent once the assertion is re-pointed at the current wording', () => {
     const fixed = text.replace('⚠ quiet-cut EXCLUDED', 'quiet-cut EXCLUDED');
     expect(judge(fixed, 'const note = `quiet-cut EXCLUDED ${n} commit(s)`;')).toEqual([]);
+  });
+});
+
+// WI-10004205 / D-099: the guard is a green-checkpoint leg with a shrink-only baseline.
+// These pin the gate DECISION end to end without building the real ~110M-char corpus.
+describe('shrink-only baseline — the gate decision', () => {
+  const drifted = judge(
+    [`it('x', () => {`, `  expect(String(b.note)).not.toMatch(/⚠ quiet-cut EXCLUDED/);`, `});`].join('\n'),
+    'const note = `quiet-cut EXCLUDED ${n} commit(s)`;',
+  );
+  const entryFor = (f: { file: string; kind: string; lit: string }) => ({ file: f.file, kind: f.kind, lit: f.lit });
+
+  it('POSITIVE CONTROL: a genuinely drifted assertion with an empty baseline exits 1', () => {
+    // The day-one configuration (0 entries). If this ever passes, the leg is decorative.
+    expect(drifted).toHaveLength(1);
+    expect(drifted[0]!.verdict).toBe('DRIFTED');
+    const p = partitionAgainstBaseline({ drifted, baseline: [] });
+    expect(p.fresh).toEqual(drifted);
+    expect(gateExitCode(p)).toBe(1);
+  });
+
+  it('a baselined finding is tolerated, and matching ignores the line number', () => {
+    const moved = drifted.map((f) => ({ ...f, line: f.line + 40 }));
+    const p = partitionAgainstBaseline({ drifted: moved, baseline: drifted.map(entryFor), watermark: 1 });
+    expect(p.fresh).toEqual([]);
+    expect(p.baselined).toHaveLength(1);
+    expect(gateExitCode(p)).toBe(0);
+  });
+
+  it('a different literal in the same file is NEW, not covered by its neighbour', () => {
+    const other = drifted.map((f) => ({ ...f, lit: `${f.lit} (reworded)` }));
+    const p = partitionAgainstBaseline({ drifted: other, baseline: drifted.map(entryFor), watermark: 1 });
+    expect(p.fresh).toHaveLength(1);
+    expect(p.stale).toHaveLength(1);
+    expect(gateExitCode(p)).toBe(1);
+  });
+
+  it('a stale entry (the assertion was fixed) never reds the gate', () => {
+    const p = partitionAgainstBaseline({ drifted: [], baseline: drifted.map(entryFor), watermark: 1 });
+    expect(p.stale).toHaveLength(1);
+    expect(gateExitCode(p)).toBe(0);
+  });
+
+  it('a baseline over the watermark reds even with no findings — growth needs the cap raised', () => {
+    const p = partitionAgainstBaseline({ drifted: [], baseline: drifted.map(entryFor), watermark: 0 });
+    expect(p.overWatermark).toBe(true);
+    expect(gateExitCode(p)).toBe(1);
+  });
+
+  it('keys on file, kind and literal', () => {
+    const base = { file: 'a.test.ts', kind: 'not.toMatch(/…/)', lit: 'some banner' };
+    expect(baselineKey(base)).not.toBe(baselineKey({ ...base, file: 'b.test.ts' }));
+    expect(baselineKey(base)).not.toBe(baselineKey({ ...base, kind: 'not.toContain' }));
+    expect(baselineKey(base)).not.toBe(baselineKey({ ...base, lit: 'other banner' }));
+  });
+});
+
+describe('parseBaseline', () => {
+  it('reads an absent file as the empty (strictest) baseline', () => {
+    expect(parseBaseline(null)).toEqual({ ok: true, entries: [] });
+  });
+
+  it('refuses malformed text instead of treating it as empty', () => {
+    expect(parseBaseline('{').ok).toBe(false);
+    expect(parseBaseline('{"entries":{}}').ok).toBe(false);
+    expect(parseBaseline('{"entries":[{"file":"a","kind":"k"}]}').ok).toBe(false);
+  });
+
+  it('pins the committed baseline: parseable and within the watermark', () => {
+    const text = readFileSync(resolve(__dirname, '../../../scripts/vacuous-negative-baseline.json'), 'utf8');
+    const parsed = parseBaseline(text);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.entries.length).toBeLessThanOrEqual(BASELINE_HIGH_WATERMARK);
   });
 });
 
