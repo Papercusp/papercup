@@ -57,15 +57,17 @@ export async function replaceIdentityRuleSubscriptions(tx: TransactionSql, input
   artifact: Pick<CompiledAgentSpecification, 'inputs' | 'specificationRevision'>;
 }): Promise<{ subscribed: number; cancelled: number }> {
   const planned = planIdentityRuleSubscriptions(input.ownerId, input.artifact);
-  const keep = planned.map((row) => `${row.subscriberId}\u0000${row.eventKey}`);
   const cancelled = await tx`
-    UPDATE harness_shared.coord_entity_subscriptions
+    UPDATE harness_shared.coord_entity_subscriptions AS s
        SET cancelled_at = now()
-     WHERE workspace_id = ${input.workspaceId}
-       AND derived_from_kind = ${IDENTITY_RULE_SUBSCRIPTION_KIND}
-       AND derived_from_ref = ${input.ownerId}
-       AND cancelled_at IS NULL
-       AND NOT (subscriber_id || chr(0) || target_ref = ANY(${keep}::text[]))`;
+     WHERE s.workspace_id = ${input.workspaceId}
+       AND s.derived_from_kind = ${IDENTITY_RULE_SUBSCRIPTION_KIND}
+       AND s.derived_from_ref = ${input.ownerId}
+       AND s.cancelled_at IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM unnest(${planned.map((row) => row.subscriberId)}::text[],
+                              ${planned.map((row) => row.eventKey)}::text[]) AS keep(subscriber_id, event_key)
+          WHERE keep.subscriber_id = s.subscriber_id AND keep.event_key = s.target_ref)`;
   let subscribed = 0;
   for (const row of planned) {
     const inserted = await tx`

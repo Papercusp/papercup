@@ -768,7 +768,7 @@ describe('await-event store (PG)', () => {
     // machine-maintained rows by column (P-018 D-029 §2).
     const folded = await recordKeyFire({ eventKey, subscribersFrom: from });
     expect(folded.announcementPending).toBe(false);
-    expect(folded.fire?.count).toBe(4);
+    expect(folded.fire?.count).toBe(3);
     expect(folded.eventSubscribers).toEqual([
       { subscriber_id: 'early', delivery_mode: 'muted', derived_from_kind: 'identity-rule', derived_from_ref: 'su-wearer' },
       { subscriber_id: 'late', delivery_mode: 'full', derived_from_kind: null, derived_from_ref: null },

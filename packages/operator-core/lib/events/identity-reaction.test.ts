@@ -34,6 +34,7 @@ import {
   buildWearerReactionCtx,
   enqueueIdentityReactions,
   executeIdentityReaction,
+  identityOperationRequestKey,
   IDENTITY_REACTION_SPAWN_ID,
   planIdentityReactions,
   UNRESOLVED_IDENTITY_FIRE,
@@ -151,13 +152,24 @@ function deps(db: ReturnType<typeof fakeDb>, over: Partial<IdentityReactionDeps>
     validateFire: vi.fn(async () => ({ ok: true as const, target: TARGET, capability: 'tasks:create' })),
     resolveFire: vi.fn(async () => ({
       status: 'resolved' as const, target: TARGET, tool: 'tasks:create', providerPackage: 'demo-tasks', providerVersion: '1.2.0',
+      providerKind: 'tool' as const,
     })),
     readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [], protectedAdditions: [] })),
     isRegisteredTool: vi.fn(() => true),
+    readOperationSubmit: vi.fn(async () => ({ tool: 'blueprint:submit', capabilities: ['work_items:write'] })),
     dispatch,
     ...over,
   };
   return { all, dispatch: (over.dispatch as typeof dispatch | undefined) ?? dispatch };
+}
+
+/** A pot binding that resolves the verb to a blueprint operation (D-030). */
+function operationFire(over: { operationHarnessSlug?: string | undefined } = { operationHarnessSlug: 'ops-harness' }) {
+  return vi.fn(async () => ({
+    status: 'resolved' as const, target: TARGET, tool: 'file-task', providerPackage: 'blueprint:ops-harness',
+    providerVersion: '1.0.0', providerKind: 'operation' as const,
+    ...('operationHarnessSlug' in over && over.operationHarnessSlug ? { operationHarnessSlug: over.operationHarnessSlug } : {}),
+  }));
 }
 
 let db: ReturnType<typeof fakeDb>;
@@ -284,6 +296,55 @@ describe('executeIdentityReaction', () => {
     expect(db.receipts.get(payload.receiptId)).toMatchObject({ status: 'failed', error: 'quota_exceeded: daily cap' });
   });
 
+  describe('operation providers (D-030)', () => {
+    it('submits the bound operation AS THE WEARER through blueprint:submit, held to class ∪ submit capabilities', async () => {
+      const payload = payloadFor();
+      const { all, dispatch } = deps(db, { resolveFire: operationFire() });
+      await expect(executeIdentityReaction(payload, all)).resolves.toEqual({ status: 'fired', tool: 'blueprint:submit' });
+      expect(dispatch.mock.calls[0]![0]).toEqual({
+        workspaceId: WS, ownerId: OWNER, role: 'su', harnessSlug: 'papercusp', tool: 'blueprint:submit',
+        args: {
+          harness: 'ops-harness', operationId: 'file-task',
+          requestKey: identityOperationRequestKey(payload.receiptId), input: { title: 'from rule' },
+        },
+        capabilities: ['tasks:create', 'work_items:write'],
+        cause: { depth: 1, chain: [PIN], ruleId: PIN, rootRunId: FIRE_ID },
+      });
+      expect(db.receipts.get(payload.receiptId)).toMatchObject({ status: 'fired', contributor: 'identity:ops-identity' });
+    });
+
+    it('a recovered re-dispatch of the same receipt reuses the same request key; another wearer gets another', async () => {
+      const payload = payloadFor();
+      const { all, dispatch } = deps(db, { resolveFire: operationFire() });
+      await executeIdentityReaction(payload, all);
+      // The crash window: dispatch returned, the terminal UPDATE never ran.
+      db.receipts.get(payload.receiptId)!.status = 'authorizing';
+      await executeIdentityReaction(payload, all);
+      await executeIdentityReaction(payloadFor('su-wearer-2'), all);
+      const keys = dispatch.mock.calls.map(([input]) => (input.args as { requestKey: string }).requestKey);
+      expect(keys[0]).toBe(keys[1]);
+      expect(keys[2]).not.toBe(keys[0]);
+    });
+
+    it('never widens past the class capability: an allowlist miss on it refuses before any submit', async () => {
+      const payload = payloadFor();
+      const { all, dispatch } = deps(db, {
+        resolveFire: operationFire(),
+        readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [{ allowCapabilities: ['work_items:*'] }], protectedAdditions: [] })),
+      });
+      await expect(executeIdentityReaction(payload, all)).resolves.toMatchObject({
+        status: 'refused', code: 'capability-empty', reason: expect.stringContaining('tasks:create'),
+      });
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+
+    it('keys stay within the blueprint request-key limit however long the receipt id is', () => {
+      const key = identityOperationRequestKey(`identity-reaction:${'x'.repeat(500)}`);
+      expect(key.length).toBeLessThanOrEqual(200);
+      expect(key).toBe(identityOperationRequestKey(`identity-reaction:${'x'.repeat(500)}`));
+    });
+  });
+
   it('THROWS on a failed live lookup and leaves the receipt authorizing, with nothing dispatched', async () => {
     const payload = payloadFor();
     const { all, dispatch } = deps(db, { readWearer: vi.fn(async () => { throw new Error('connection reset'); }) });
@@ -330,6 +391,24 @@ describe('executeIdentityReaction', () => {
       })],
       ['capability-empty', 'the pot/role ceiling denies the capability', () => ({
         readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [{ denyCapabilities: ['tasks:*'] }], protectedAdditions: [] })),
+      })],
+      ['unbound', 'an operation provider pins no harness', () => ({ resolveFire: operationFire({ operationHarnessSlug: undefined }) })],
+      ['unbound', 'no operation submit tool is registered', () => ({
+        resolveFire: operationFire(), readOperationSubmit: vi.fn(async () => null),
+      })],
+      ['unbound', 'the provider is a recipe, which a reaction does not dispatch', () => ({
+        resolveFire: vi.fn(async () => ({
+          status: 'resolved' as const, target: TARGET, tool: 'recipe-x', providerPackage: 'p', providerVersion: '1',
+          providerKind: 'recipe' as const,
+        })),
+      })],
+      ['capability-empty', 'the ceiling denies the operation submit capability', () => ({
+        resolveFire: operationFire(),
+        readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [{ denyCapabilities: ['work_items:*'] }], protectedAdditions: [] })),
+      })],
+      ['capability-empty', 'the ceiling allows the class capability but not the submit capability', () => ({
+        resolveFire: operationFire(),
+        readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [{ allowCapabilities: ['tasks:*'] }], protectedAdditions: [] })),
       })],
     ];
 

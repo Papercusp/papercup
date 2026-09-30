@@ -55,6 +55,21 @@ beforeAll(async () => {
       workspace_id text NOT NULL, source_kind text NOT NULL,
       session_id text NOT NULL, owner text
     );
+    -- The activation transaction also replaces the wearer's async-rule
+    -- subscriptions (applySessionPackageResources -> replaceIdentityRuleSubscriptions,
+    -- P-018). Faithful to 123 + WI-4119's derived_from pair + 1257's 'muted' mode.
+    CREATE TABLE harness_shared.coord_entity_subscriptions (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'default' CHECK (workspace_id <> ''),
+      subscriber_id text NOT NULL,
+      target_kind text NOT NULL CHECK (target_kind IN ('topic','object','fleet','event')),
+      target_ref text NOT NULL CHECK (target_ref <> ''),
+      delivery_mode text NOT NULL DEFAULT 'full' CHECK (delivery_mode IN ('full','digest','mention','muted')),
+      expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(), cancelled_at timestamptz,
+      follow_blockers boolean NOT NULL DEFAULT false, derived_from_kind text, derived_from_ref text
+    );
+    CREATE UNIQUE INDEX coord_entity_subscriptions_active_uq ON harness_shared.coord_entity_subscriptions
+      (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL;
   `);
   await applyMigrationForTest(db.sql, migration);
   await applyMigrationForTest(db.sql, carryMigration);
