@@ -415,3 +415,41 @@ describe("EI-22589054433344154 — aggregate disk admission precedes bulk alloca
     );
   });
 });
+
+describe("P-008 J1G — a file vanishing from the live tree does not fail the snapshot", () => {
+  // Measured 2026-09-30T03:17Z: a peer's atomic-write temp file under docs/evidence
+  // vanished mid-copy, rsync exited 24 and the whole L7 run died in prepare.
+  const copyStart = operatorSnapshotSource.indexOf("local snapshot_rc=0");
+  const copyEnd = operatorSnapshotSource.indexOf("\n  fi\n", copyStart) + 5;
+  const copyBlock = operatorSnapshotSource.slice(copyStart, copyEnd);
+
+  function copyWithRsyncExit(rc: number) {
+    const script = [
+      "set -uo pipefail",
+      "source_filters=(); REPO_DIR=/nonexistent; snapshot_root=/nonexistent",
+      `rsync() { return ${rc}; }`,
+      `copy() {\n${copyBlock}\necho copied\n}`,
+      "copy",
+    ].join("\n");
+    return spawnSync("bash", ["-c", script], { encoding: "utf8" });
+  }
+
+  it("lifts the real copy block", () => {
+    expect(copyStart).toBeGreaterThan(-1);
+    expect(copyBlock).toContain('rsync -a --delete "${source_filters[@]}"');
+    expect(copyBlock).toContain("FATAL: could not copy");
+  });
+
+  it.each([0, 24])("keeps the snapshot when rsync exits %i", (rc) => {
+    const result = copyWithRsyncExit(rc);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe("copied");
+  });
+
+  it.each([23, 12])("still refuses a snapshot when rsync exits %i", (rc) => {
+    const result = copyWithRsyncExit(rc);
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain("copied");
+    expect(result.stderr).toContain(`rsync exit ${rc}`);
+  });
+});
