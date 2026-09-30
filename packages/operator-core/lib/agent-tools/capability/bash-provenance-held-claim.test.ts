@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { resolveBashTaskProvenance } from './bash-task-provenance';
+import { BashProvenanceRefusal, resolveBashTaskProvenance } from './bash-task-provenance';
 
 const OWNER = 'su-b5f45c90-be2b-4ad6-b9fc-a03353f6b3bb';
 
@@ -72,6 +72,50 @@ describe('bash task provenance — goal ref that is NOT a work-item id', () => {
     });
     expect(p.workItemId).toBe('WI-1234');
     expect(p.planSlug).toBe('my-plan');
+  });
+});
+
+describe('bash task provenance — a caller-named work_item_id (WI-10004202)', () => {
+  // The incident: an EVL mutation run for WI-10004188 was ledgered against WI-10003976
+  // because that was the session's declared goal, and it counted in WI-10003976's
+  // loop-gate window. Naming the item must beat the goal ref.
+  it('wins over a goal ref that is itself a work-item id', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX,
+      'papercusp',
+      deps({ goalRef: 'WI-10003976', held: [{ id: 'WI-10003976' }, { id: 'WI-10004188' }] }),
+      { explicitWorkItemId: 'WI-10004188' },
+    );
+    expect(p.workItemId).toBe('WI-10004188');
+    expect(p.goalRef).toBe('WI-10003976');
+  });
+
+  it('refuses an item the caller does not hold', async () => {
+    await expect(
+      resolveBashTaskProvenance(CTX, 'papercusp', deps({ goalRef: 'WI-1', held: [{ id: 'WI-1' }] }), {
+        explicitWorkItemId: 'WI-999',
+      }),
+    ).rejects.toMatchObject({ name: 'BashProvenanceRefusal', code: 'work_item_not_held' });
+  });
+
+  it('refuses a value that is not a work-item id', async () => {
+    await expect(
+      resolveBashTaskProvenance(CTX, 'papercusp', deps({ held: [] }), { explicitWorkItemId: 'plan#P-004' }),
+    ).rejects.toBeInstanceOf(BashProvenanceRefusal);
+  });
+
+  it('stays fail-soft when the held-claim read throws: the named item is used', async () => {
+    const p = await resolveBashTaskProvenance(CTX, 'papercusp', deps({ goalRef: 'WI-1', throws: true }), {
+      explicitWorkItemId: 'WI-2',
+    });
+    expect(p.workItemId).toBe('WI-2');
+  });
+
+  it('a blank value is the same as omitting it', async () => {
+    const p = await resolveBashTaskProvenance(CTX, 'papercusp', deps({ goalRef: 'WI-1' }), {
+      explicitWorkItemId: '  ',
+    });
+    expect(p.workItemId).toBe('WI-1');
   });
 });
 

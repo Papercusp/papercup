@@ -132,6 +132,7 @@ import {
 import type { ResourceDemand } from '../../resource-governor/admission';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { resolveBashTaskProvenance } from '../capability/bash-task-provenance';
+import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import {
   prepareTestEvidence,
   finishTestEvidence,
@@ -3274,6 +3275,26 @@ export default defineTool({
           }
         : null;
     if (evidenceRequest && !evidenceScope) return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
+    // expensive-verification-loops P-001: a run that outlives the foreground clamp
+    // continues detached, and that detached run is the expensive attempt the loop
+    // detector counts per work-item. An evidence request names its item explicitly;
+    // otherwise use the caller's unambiguous held claim — the same rule capability:bash
+    // applies, so one agent's runs link identically through either door.
+    const attemptWorkItemId =
+      evidenceRequest?.workItemId ??
+      (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null)).workItemId ??
+      undefined;
+    // P-002 (WI-10004175): the loop gate capability:bash and release:cut apply. Its budget is
+    // the REQUESTED one, not the foreground clamp, because the detached run keeps going past
+    // the clamp; a run asked for <= SLOW_ATTEMPT_MIN_MS stays free for an audit's quick checks.
+    // Checked before evidence preparation so a refusal registers no pending rows.
+    const loopRefusal = await loopLaunchRefusal({
+      workspaceId: ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : null,
+      workItemId: attemptWorkItemId,
+      background: false,
+      timeoutMs: requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS,
+    });
+    if (loopRefusal) return { data: { ...loopRefusal, runId, root: rootSelection.root } };
     let prepared: Awaited<ReturnType<typeof prepareTestEvidence>> | undefined;
     if (evidenceRequest) {
       const selected = normalizeTestFilePaths(files, rootSelection.root);
@@ -3288,15 +3309,6 @@ export default defineTool({
         return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
       }
     }
-    // expensive-verification-loops P-001: a run that outlives the foreground clamp
-    // continues detached, and that detached run is the expensive attempt the loop
-    // detector counts per work-item. An evidence request names its item explicitly;
-    // otherwise use the caller's unambiguous held claim — the same rule capability:bash
-    // applies, so one agent's runs link identically through either door.
-    const attemptWorkItemId =
-      evidenceRequest?.workItemId ??
-      (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null)).workItemId ??
-      undefined;
     const result = await runTestFilesCore({
       files,
       runId,
