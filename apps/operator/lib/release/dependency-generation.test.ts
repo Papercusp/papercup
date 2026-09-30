@@ -985,6 +985,80 @@ describe('immutable dependency generation', () => {
     expect(readdirSync(exactScratch(integration))).toEqual([]);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  // WI-10004151 part 2: release:repair-queue admit asks this BEFORE publishing a lockfile
+  // admission, so a lock the gate can never build is refused at admit time, not an hour later.
+  const predictRef = (integration: string, ref: string, extra: string[] = []): ShellResult => {
+    const result = spawnSync('bash', [SCRIPT, '--integration', integration, '--predict-ref', ref, ...extra], {
+      encoding: 'utf8',
+      env: process.env,
+    });
+    return { status: result.status, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+  };
+  const predictionOf = (stdout: string) => {
+    const line = stdout.split('\n').find((l) => l.startsWith('DEPENDENCY_GENERATION_PREDICTION '));
+    if (!line) throw new Error(`missing prediction line in: ${stdout}`);
+    return Object.fromEntries(
+      line.split(' ').slice(1).map((kv) => kv.split('=') as [string, string]),
+    ) as Record<'schema' | 'ref' | 'input' | 'live' | 'verdict' | 'links', string>;
+  };
+
+  it('WI-10004151: --predict-ref names live-match, buildable, then prewarmed, agreeing with --ensure-ref', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'candidate lock without the staging-only link');
+    const exactInput = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+
+    const same = predictRef(integration, candidate);
+    expect(same.status, same.stderr).toBe(0);
+    expect(predictionOf(same.stdout)).toMatchObject({ verdict: 'live-match', input: exactInput, live: exactInput });
+
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({ ...PKG, 'node_modules/@papercusp/extra': { resolved: 'packages/b', link: true } }),
+    );
+    mkdirSync(join(integration, 'node_modules/@papercusp'), { recursive: true });
+    execFileSync('ln', ['-s', '../../packages/b', join(integration, 'node_modules/@papercusp/extra')]);
+
+    const buildable = predictRef(integration, candidate);
+    expect(buildable.status, buildable.stderr).toBe(0);
+    const verdict = predictionOf(buildable.stdout);
+    expect(verdict).toMatchObject({ schema: '1', ref: candidate, input: exactInput, verdict: 'buildable', links: '1' });
+    expect(verdict.live).not.toBe(exactInput);
+    // Read-only: no generation published, no scratch left, nothing FATAL logged.
+    expect(buildable.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(buildable.stderr).not.toContain('FATAL');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+
+    // The prediction is honoured by the real builder, after which it reads prewarmed.
+    expect(ensureRef(integration, candidate).status).toBe(0);
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: --predict-ref reports refused with each reason, exits 0, and leaves no scratch', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'candidate at pkg 1.0.0');
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({ 'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' } }),
+    );
+
+    const result = predictRef(integration, candidate);
+    expect(result.status, result.stderr).toBe(0);
+    expect(predictionOf(result.stdout)).toMatchObject({ verdict: 'refused', links: '0' });
+    expect(result.stdout).toContain(
+      'DEPENDENCY_GENERATION_PREDICTION_REASON node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)',
+    );
+    expect(result.stderr).not.toContain('FATAL');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+    // The builder agrees: the same ref is a typed exit-74 miss.
+    expect(ensureRef(integration, candidate).status).toBe(74);
+
+    const misuse = predictRef(integration, candidate, ['--ensure-ref', candidate]);
+    expect(misuse.status).toBe(2);
+    expect(misuse.stderr).toContain('--predict-ref cannot be combined');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('keeps a completed prewarm when live lockfiles drift mid-build, indexing the pre-build inputs', () => {
     const integration = makeIntegration();
     const candidate = commitFixture(integration, 'candidate');
