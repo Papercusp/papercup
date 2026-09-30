@@ -1,4 +1,4 @@
-// Operational probe for plan goal-brief-to-claimed-plan-work-2026-09-23, clause AUTO-BAR-R-2-P-003 @rev4 (READ-ONLY).
+// Operational probe for plan goal-brief-to-claimed-plan-work-2026-09-23, clauses AUTO-BAR-R-2-P-003 / R-2-P-007 @rev4 (READ-ONLY).
 // Run from the papercusp repo root:
 //   npx tsx docs/evidence/goal-brief-r2-live-probe-2026-09-29.mts > docs/evidence/goal-brief-r2-live-probe-2026-09-29.json
 //   R2_COUNTEREXAMPLE=scope-mismatch npx tsx <this file> > <this file stem>.counterexample.json   (must exit 1)
@@ -212,6 +212,10 @@ const subs = assertions.filter((a) => a.id.startsWith('r2-'));
 assert('auto-bar-r-2-p-003', subs.every((a) => a.passed),
   `${subs.filter((a) => a.passed).length}/${subs.length} R-2 sub-assertions passed over ${lineageResults.length} P-007 lineages `
   + `(${lineageResults.map((r) => `${r.goal.slice(-6)}=${r.verdict}`).join(', ')}); ${residualUnknowns.length} residual unknown(s) disclosed`);
+// AUTO-BAR-R-2-P-007 @rev4 carries the same behavior and falsifier text as R-2-P-003 (md5 a0eef71d… / 042c530d…,
+// measured 2026-09-30), so the same sub-assertions decide it.
+assert('auto-bar-r-2-p-007', subs.every((a) => a.passed),
+  `${subs.filter((a) => a.passed).length}/${subs.length} R-2 sub-assertions passed (clause text identical to AUTO-BAR-R-2-P-003 @rev4)`);
 
 const passed = assertions.filter((a) => a.passed).length;
 process.stdout.write(`${JSON.stringify({
@@ -226,16 +230,16 @@ process.stdout.write(`${JSON.stringify({
         mode: 'counterexample',
         counterexample: {
           id: COUNTEREXAMPLE,
-          targets: 'auto-bar-r-2-p-003',
+          targets: 'auto-bar-r-2-p-003,auto-bar-r-2-p-007',
           fault: 'each lineage is judged against the NEXT lineage\'s drain fleet (roster, leader, lease pair, claim filter) — a scope/lease mismatch',
-          expected: 'r2-clean-lineage-exists=false, auto-bar-r-2-p-003=false, exitCode 1 (caught)',
+          expected: 'r2-clean-lineage-exists=false, auto-bar-r-2-p-003=false, auto-bar-r-2-p-007=false, exitCode 1 (caught)',
         },
       }
     : {}),
   exitCode: passed === assertions.length ? 0 : 1,
   startedAt,
   finishedAt: new Date().toISOString(),
-  summary: `${passed}/${assertions.length} live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-2-P-003.`,
+  summary: `${passed}/${assertions.length} live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clauses AUTO-BAR-R-2-P-003/AUTO-BAR-R-2-P-007.`,
   assertions,
   plan: 'goal-brief-to-claimed-plan-work-2026-09-23',
   residualUnknowns,
