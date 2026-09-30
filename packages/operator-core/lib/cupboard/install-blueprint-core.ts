@@ -47,6 +47,8 @@ import {
   buildBlueprintReleaseArchive,
   commitBlueprintRelease,
   verifyListedBlueprintRelease,
+  type BlueprintJournalReport,
+  type BlueprintLifecycleJournal,
   type BlueprintActivationLayer,
   type BlueprintActivationPreflight,
   type BlueprintReleaseDiff,
@@ -78,6 +80,7 @@ import type {
 } from './capability-provider-package-closure';
 import type { IdentityGrantFailure } from '../capability-envelope/blueprint-envelopes';
 import type { CupboardReleaseManifest } from './listing-manifest';
+import type { InstallProviderBinding } from './blueprint-install-journal';
 import {
   identityConsentSubjects,
   identityInstallConsentRefusal,
@@ -158,6 +161,20 @@ export interface InstallBlueprintCoreResult {
   classContracts: ImportClassContractsResult | null;
   /** What the install needed consent for (contentOnly when nothing). */
   consent: IdentityConsentSubjects;
+  /** The pot install journal's outcome (P-014); null outside a pot. */
+  bindingJournal: BlueprintJournalReport | null;
+}
+
+/** Every pot binding the identity runs through, with its execution kind. */
+function journaledProviderBindings(resolution: CapabilityGrantResolutionVerdict | null): InstallProviderBinding[] {
+  if (!resolution) return [];
+  return [
+    ...resolution.requirements.flatMap((item) => item.binding ? [{ classRef: item.classRef,
+      providerPackage: item.binding.providerPackage, providerVersion: item.binding.providerVersion,
+      providerKind: item.binding.providerKind }] : []),
+    ...resolution.selected.map(({ classRef, providerPackage, providerVersion, providerKind }) =>
+      ({ classRef, providerPackage, providerVersion, providerKind })),
+  ];
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -194,9 +211,13 @@ export interface InstallBlueprintCoreDeps {
   installCapabilityProviderPackages?: (
     review: CapabilityProviderPackageClosureReview,
   ) => Promise<CapabilityProviderPackageInstallResult>;
-  commitCapabilitySelections?: (
-    selections: readonly CapabilityProviderSelection[],
-  ) => Promise<{ rollback: () => Promise<void> }>;
+  /** P-014 / D-034: the destination pot's install journal for this release's
+   * provider bindings — the ones it reuses and the ones it writes. The release
+   * lifecycle drives it under its lock; the file-tier switch is activation. */
+  blueprintInstallJournal?: (input: {
+    blueprintId: string;
+    bindings: readonly InstallProviderBinding[];
+  }) => BlueprintLifecycleJournal;
   /** Consent-bound writer into the destination capability-class registry
    * (`importCupboardClassContracts`, scoped to the install's workspace). */
   importClassContracts?: (
@@ -728,29 +749,18 @@ export async function installBlueprintFromCupboardCore(
       }
     }
 
-    let rollbackCapabilitySelections: (() => Promise<void>) | null = null;
-    if ((capabilityGrantResolution?.selected.length ?? 0) > 0) {
-      if (!deps.commitCapabilitySelections) {
-        throw new InstallBlueprintError(
-          'capability provider choices resolved but this install path cannot persist pot bindings',
-          500,
-          'capability_binding_writer_unavailable',
-          capabilityGrantResolution,
-        );
-      }
-      try {
-        rollbackCapabilitySelections = (
-          await deps.commitCapabilitySelections(capabilityGrantResolution!.selected)
-        ).rollback;
-      } catch (error) {
-        throw new InstallBlueprintError(
-          'capability provider binding failed before blueprint install: ' +
-            (error instanceof Error ? error.message : String(error)),
-          409,
-          'capability_provider_binding_failed',
-          capabilityGrantResolution,
-        );
-      }
+    // Every install into a pot is journaled, even one with no bindings: an
+    // update that no longer needs a binding fences the prior install's.
+    let journal: BlueprintLifecycleJournal | undefined;
+    if (input.capabilityContext && deps.blueprintInstallJournal) {
+      journal = deps.blueprintInstallJournal({ blueprintId: id, bindings: journaledProviderBindings(capabilityGrantResolution) });
+    } else if ((capabilityGrantResolution?.selected.length ?? 0) > 0) {
+      throw new InstallBlueprintError(
+        'capability provider choices resolved but this install path cannot persist pot bindings',
+        500,
+        'capability_binding_writer_unavailable',
+        capabilityGrantResolution,
+      );
     }
 
     let lifecycle: Awaited<ReturnType<typeof commitBlueprintRelease>>;
@@ -770,27 +780,12 @@ export async function installBlueprintFromCupboardCore(
           policyRef: modePolicyRef,
           approvedArtifactContentHash: input.modeApproval!.approvedArtifactContentHash,
         } : undefined,
+        ...(journal ? { journal } : {}),
       });
     } catch (error) {
-      let rollbackFailure: unknown;
-      if (rollbackCapabilitySelections) {
-        try {
-          await rollbackCapabilitySelections();
-        } catch (rollbackError) {
-          rollbackFailure = rollbackError;
-        }
-      }
-      if (rollbackFailure) {
-        throw new InstallBlueprintError(
-          'blueprint release failed and capability binding rollback also failed: ' +
-            (rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)),
-          500,
-          'capability_binding_rollback_failed',
-          { releaseError: error, capabilityGrants: capabilityGrantResolution },
-        );
-      }
       if (error instanceof BlueprintLifecycleError) {
-        throw new InstallBlueprintError(error.message, error.status);
+        throw new InstallBlueprintError(error.message, error.status, error.code,
+          error.code ? { capabilityGrants: capabilityGrantResolution } : undefined);
       }
       throw error;
     }
@@ -818,6 +813,7 @@ export async function installBlueprintFromCupboardCore(
       capabilityProviderInstalls,
       classContracts: classContractImport,
       consent,
+      bindingJournal: lifecycle.journal ?? null,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

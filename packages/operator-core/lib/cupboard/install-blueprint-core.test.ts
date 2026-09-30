@@ -25,7 +25,9 @@ import {
   prepareBlueprintPublicRelease,
   readBlueprintLifecycle,
   snapshotBlueprintReleaseSource,
+  type BlueprintLifecycleJournal,
 } from './blueprint-release';
+import type { InstallProviderBinding } from './blueprint-install-journal';
 import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 import type {
@@ -119,6 +121,23 @@ function makeDeps(over: Partial<InstallBlueprintCoreDeps> = {}): InstallBlueprin
     }),
     ...over,
   };
+}
+
+/** A P-014 pot install journal double: `prepare` is where bindings are written,
+ * so a refusal that precedes every write leaves it uncalled. */
+function fakeJournal(order?: string[]) {
+  const compensate = vi.fn(async () => {});
+  const prepare = vi.fn(async () => {
+    order?.push('bind-provider');
+    return { apply: async () => ({ pots: [], residue: [] }), compensate };
+  });
+  const blueprintInstallJournal = vi.fn(
+    (_input: { blueprintId: string; bindings: readonly InstallProviderBinding[] }): BlueprintLifecycleJournal =>
+      ({ recover: async () => [], prepare }),
+  );
+  /** The bindings the (single) journal was handed. */
+  const bindings = () => blueprintInstallJournal.mock.calls[0]?.[0].bindings;
+  return { blueprintInstallJournal, prepare, compensate, bindings };
 }
 
 /** Consent to exactly the subject the D-034 seat returns, then install — for
@@ -437,7 +456,7 @@ describe('installBlueprintFromCupboardCore', () => {
     async (cause) => {
       await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\ngrants: { requires: [crm.email@1.0.0] }');
       const install = vi.fn();
-      const bind = vi.fn();
+      const journal = fakeJournal();
       const validate = vi.fn(async () => [{
         code: 'capability_unsatisfied' as const, cause, classRef: 'crm.email@1.0.0',
         routes: ['operator-notify', 'suggest-provider', 'needs_human'] as const,
@@ -449,13 +468,13 @@ describe('installBlueprintFromCupboardCore', () => {
       }, makeDeps({
         capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] },
         validateCapabilityGrants: validate,
-        installCapabilityProviderPackages: install, commitCapabilitySelections: bind,
+        installCapabilityProviderPackages: install, blueprintInstallJournal: journal.blueprintInstallJournal,
       }))).rejects.toMatchObject({ code: 'capability_unsatisfied', status: 403,
         data: { failures: [{ cause, classRef: 'crm.email@1.0.0' }] } });
       expect(validate).toHaveBeenCalledWith(expect.objectContaining({ ok: true }),
         expect.objectContaining({ role: 'worker', potSlug: 'sales-ops' }));
       expect(install).not.toHaveBeenCalled();
-      expect(bind).not.toHaveBeenCalled();
+      expect(journal.prepare).not.toHaveBeenCalled();
       expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
     },
   );
@@ -512,8 +531,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const rollback = vi.fn(async () => {});
-    const commitCapabilitySelections = vi.fn(async () => ({ rollback }));
+    const journal = fakeJournal();
     const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -528,20 +546,44 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate()],
         },
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     );
 
-    expect(commitCapabilitySelections).toHaveBeenCalledWith([
-      expect.objectContaining({
-        classRef: 'crm.email@1.0.0',
-        providerPackage: 'acme-crm',
-        providerVersion: '2.0.0',
-        reason: 'evidence-policy',
-      }),
+    expect(journal.blueprintInstallJournal).toHaveBeenCalledOnce();
+    expect(journal.bindings()).toEqual([
+      { classRef: 'crm.email@1.0.0', providerPackage: 'acme-crm', providerVersion: '2.0.0', providerKind: 'tool' },
     ]);
-    expect(rollback).not.toHaveBeenCalled();
+    expect(result.capabilityGrants?.selected).toMatchObject([{ providerPackage: 'acme-crm', reason: 'evidence-policy' }]);
+    expect(journal.prepare).toHaveBeenCalledWith(result.release.packageContentHash);
+    expect(journal.compensate).not.toHaveBeenCalled();
+    expect(result.bindingJournal).toEqual({ recovered: [], pots: [], residue: [] });
     expect(result.capabilityGrants?.disclosures).toHaveLength(1);
+  });
+
+  it('journals a reused pot binding too, so an uninstall knows the identity held it', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nslots: [{ slot: domain }]' + '\ngrants: { requires: [crm.email@1.0.0] }');
+    const journal = fakeJournal();
+    const existing = { ...capabilityCandidate(), potSlug: 'sales-ops', boundBy: 'admin', boundAt: '2026-09-07T00:00:00.000Z' };
+    await installConsented(
+      { githubUrl: 'https://github.com/acme/neat-bp', capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' } },
+      makeDeps({
+        capabilityGrantDeps: { getPotBinding: async () => existing, listCandidates: async () => [] },
+        blueprintInstallJournal: journal.blueprintInstallJournal,
+      }),
+    );
+    expect(journal.bindings()).toEqual([
+      { classRef: 'crm.email@1.0.0', providerPackage: 'acme-crm', providerVersion: '2.0.0', providerKind: 'tool' },
+    ]);
+  });
+
+  it('refuses a pot install whose adapter cannot journal its bindings', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nslots: [{ slot: domain }]' + '\ngrants: { requires: [crm.email@1.0.0] }');
+    await expect(installConsented(
+      { githubUrl: 'https://github.com/acme/neat-bp', capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' } },
+      makeDeps({ capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] } }),
+    )).rejects.toMatchObject({ status: 500, code: 'capability_binding_writer_unavailable' });
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
   it('asks for a provider choice on an interactive install with two conformant candidates, before any identity bytes land', async () => {
@@ -551,7 +593,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const journal = fakeJournal();
     await expect(installBlueprintFromCupboardCore(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -566,7 +608,7 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
         },
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     )).rejects.toMatchObject({
       status: 409,
@@ -582,7 +624,7 @@ describe('installBlueprintFromCupboardCore', () => {
     // The ceiling seat precedes package installs, binding writes and the release
     // commit — so refusing the choice must leave nothing behind.
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
-    expect(commitCapabilitySelections).not.toHaveBeenCalled();
+    expect(journal.prepare).not.toHaveBeenCalled();
   });
 
   it('pins the exactly chosen provider on an interactive install, over the higher-ranked default', async () => {
@@ -592,7 +634,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const journal = fakeJournal();
     const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -608,20 +650,16 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
         },
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     );
 
     // acme-crm outranks globex-crm on conformance evidence, so pinning globex
     // proves the answer came from the CHOICE and not from the ranking.
-    expect(commitCapabilitySelections).toHaveBeenCalledWith([
-      expect.objectContaining({
-        classRef: 'crm.email@1.0.0',
-        providerPackage: 'globex-crm',
-        providerVersion: '1.5.0',
-        reason: 'explicit-selection',
-      }),
-    ]);
+    expect(journal.bindings()).toEqual([expect.objectContaining({
+      classRef: 'crm.email@1.0.0', providerPackage: 'globex-crm', providerVersion: '1.5.0',
+    })]);
+    expect(result.capabilityGrants?.selected).toMatchObject([{ providerPackage: 'globex-crm', reason: 'explicit-selection' }]);
     expect(result.capabilityGrants?.requiresChoice).toEqual([]);
     expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
   });
@@ -633,7 +671,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const journal = fakeJournal();
     const result = await installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -648,7 +686,7 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate(), rivalCapabilityCandidate()],
         },
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     );
 
@@ -656,7 +694,7 @@ describe('installBlueprintFromCupboardCore', () => {
     // above — agent mode resolves by documented evidence policy instead of
     // asking, so `requiresChoice` is unreachable here rather than merely empty.
     expect(result.capabilityGrants?.requiresChoice).toEqual([]);
-    expect(commitCapabilitySelections).toHaveBeenCalledWith([
+    expect(result.capabilityGrants?.selected).toEqual([
       expect.objectContaining({
         classRef: 'crm.email@1.0.0',
         providerPackage: 'acme-crm',
@@ -665,6 +703,7 @@ describe('installBlueprintFromCupboardCore', () => {
         disclosureRequired: true,
       }),
     ]);
+    expect(journal.bindings()).toEqual([expect.objectContaining({ providerPackage: 'acme-crm', providerVersion: '2.0.0' })]);
     expect(result.capabilityGrants?.disclosures).toHaveLength(1);
   });
 
