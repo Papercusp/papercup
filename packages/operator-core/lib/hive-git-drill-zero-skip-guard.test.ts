@@ -36,6 +36,8 @@ import {
   type PhysicalPhaseGInput,
 } from './sync/pot-git/physical-drill-phase-g';
 import { buildPhysicalPhaseHInput } from './sync/pot-git/physical-drill-phase-h.fixture';
+import { buildPhysicalPhaseIInput } from './sync/pot-git/physical-drill-phase-i.fixture';
+import { buildPhysicalPhaseJInput } from './sync/pot-git/physical-drill-phase-j.fixture';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -568,7 +570,7 @@ function physicalFixture(): Record<string, any> {
   const tower = generateEd25519KeypairDer();
   const vm = generateEd25519KeypairDer();
   const fixture: Record<string, any> = {
-    schemaVersion: 'hive-git-physical-evidence/v2',
+    schemaVersion: 'hive-git-physical-evidence/v3',
     plan: 'p2p-git-live-activation-2026-07-09',
     runId: physicalRunId,
     window: { startedAt: '2026-08-13T12:00:00Z', finishedAt: '2026-08-13T12:30:00Z' },
@@ -583,7 +585,7 @@ function physicalFixture(): Record<string, any> {
       { host: 'tower', path: towerLog, sha256: digest(towerLog) },
       { host: 'vm', path: vmLog, sha256: digest(vmLog) },
     ],
-    legVerdicts: [...'ABCDEFGH'].map((leg, index) => ({
+    legVerdicts: [...'ABCDEFGHIJ'].map((leg, index) => ({
       leg,
       status: 'pass',
       scope: 'physical',
@@ -607,6 +609,19 @@ function physicalFixture(): Record<string, any> {
       towerDeviceKey: tower.pubkeyBase64,
       vmDeviceKey: vm.pubkeyBase64,
       startMs: Date.parse('2026-08-13T12:20:00Z'),
+    }),
+    legI: buildPhysicalPhaseIInput({
+      runId: physicalRunId,
+      towerDeviceKey: tower.pubkeyBase64,
+      vmDeviceKey: vm.pubkeyBase64,
+      startMs: Date.parse('2026-08-13T12:25:00Z'),
+    }),
+    // PHASE_J_FIXTURE_WINDOW_MS is 5min, so 12:24–12:29 sits inside the 12:00–12:30 run window.
+    legJ: buildPhysicalPhaseJInput({
+      runId: physicalRunId,
+      towerDeviceKey: tower.pubkeyBase64,
+      vmDeviceKey: vm.pubkeyBase64,
+      startMs: Date.parse('2026-08-13T12:24:00Z'),
     }),
   };
   const bytes = physicalDrillSigningBytes(fixture);
@@ -1050,7 +1065,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     }
   });
 
-  it('installs the ready fixed A-H scenario but refuses physical mutation without the explicit execution grant', () => {
+  it('installs the ready fixed A-I scenario but refuses physical mutation without the explicit execution grant', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], {
       encoding: 'utf8',
       timeout: 120_000,
@@ -1061,7 +1076,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
       implementationState: 'ready-v1',
       ready: true,
-      phases: [...'ABCDEFGH'],
+      phases: [...'ABCDEFGHIJ'],
       phaseContracts: {
         A: 'executor-installed',
         B: 'executor-installed',
@@ -1071,6 +1086,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         F: 'executor-installed',
         G: 'executor-installed',
         H: 'executor-installed',
+        I: 'executor-installed',
+        J: 'executor-installed',
       },
     });
 
@@ -1112,7 +1129,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       physicalScenario.lastIndexOf('run_all_phases'),
     );
     expect(physicalScenario).toContain('physical_run_id="p505-physical-');
-    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(5);
+    // Phases D-H and J bind the one physical run id (A-C mint their own, by design).
+    // A floor, so a phase that stops deriving it fails while a new phase needs no bump.
+    expect((physicalScenario.match(/local run_id="\$physical_run_id"/g) ?? []).length).toBeGreaterThanOrEqual(6);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
       physicalScenario.lastIndexOf('run_all_phases'),
     );
@@ -2225,7 +2244,7 @@ esac
     expect(readiness.stderr).toBe('');
   });
 
-  it('accepts a same-run A-H physical artifact only with hash-matching witnesses from both hosts', () => {
+  it('accepts a same-run A-I physical artifact only with hash-matching witnesses from both hosts', () => {
     const fixture = physicalFixture();
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict).toMatchObject({ ok: true, runId: 'physical-run-2026-08-13T120000Z', errors: [] });
@@ -2265,7 +2284,7 @@ esac
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
-      schemaVersion: 'hive-git-physical-evidence/v2',
+      schemaVersion: 'hive-git-physical-evidence/v3',
     });
   }, VALIDATOR_TEST_TIMEOUT_MS);
 
@@ -2411,6 +2430,55 @@ esac
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(
       'legG: Phase G ephemeral protocol signers must not be represented as physical hosts',
+    );
+  });
+
+  it('rejects a physical run with no Leg J apply-outage evidence at all', () => {
+    const fixture = physicalFixture();
+    delete fixture.legJ;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legJ must be an object');
+  });
+
+  it('rejects a generic Leg J pass with no complete apply-outage replay evidence', () => {
+    const fixture = physicalFixture();
+    fixture.legJ = { planItem: 'P-521', status: 'pass' };
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legJ must contain the complete validated P-521 apply-outage replay evidence object');
+  });
+
+  it('revalidates the embedded Leg J object and rejects a cursor that skipped the missing write', () => {
+    const fixture = physicalFixture();
+    fixture.legJ.held[0].cursors[0].position += 1;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.some((error: string) => /^legJ: .*advanced past the missing write/.test(error))).toBe(true);
+  });
+
+  it('rejects Leg J evidence from another run, outside the run window, or bound to other devices', () => {
+    const foreignRun = physicalFixture();
+    foreignRun.legJ = buildPhysicalPhaseJInput({
+      runId: `${physicalRunId}-other`,
+      towerDeviceKey: foreignRun.legJ.identities.towerDeviceKey,
+      vmDeviceKey: foreignRun.legJ.identities.vmDeviceKey,
+      startMs: Date.parse('2026-08-13T12:24:00Z'),
+    });
+    expect(validatePhysicalDrillEvidence(foreignRun, trustedPhysicalAnchor(foreignRun)).errors).toContain(
+      'legJ.runId must match the enclosing physical run',
+    );
+
+    const lateWindow = physicalFixture();
+    lateWindow.legJ.window.finishedAt = '2026-08-13T12:31:00.000Z';
+    expect(validatePhysicalDrillEvidence(lateWindow, trustedPhysicalAnchor(lateWindow)).errors).toContain(
+      'legJ.window must fall inside the enclosing physical-run window',
+    );
+
+    const otherDevice = physicalFixture();
+    otherDevice.legJ.identities.vmDeviceKey = generateEd25519KeypairDer().pubkeyBase64;
+    expect(validatePhysicalDrillEvidence(otherDevice, trustedPhysicalAnchor(otherDevice)).errors).toContain(
+      'legJ identities must match the two attesting physical devices exactly',
     );
   });
 
