@@ -754,6 +754,60 @@ describe('text-recipe discriminator (P-026 / D-087)', () => {
   });
 });
 
+/**
+ * The N of every `left(<expr>, N)` in `sql`, with `<expr>` matched by BALANCED
+ * parentheses (string literals skipped), so the capped expression may nest calls to
+ * any depth. A fixed-depth regex silently missed `left(concat_ws(E'\n',
+ * nullif(header, ''), content), 2000)` — a correctly capped body read as uncapped.
+ */
+function leftCapsOf(sql: string): number[] {
+  const caps: number[] = [];
+  for (const m of sql.matchAll(/\bleft\(/gi)) {
+    let depth = 1;
+    let lastTopComma = -1;
+    let i = (m.index ?? 0) + m[0].length;
+    for (; i < sql.length && depth > 0; i++) {
+      const c = sql[i];
+      if (c === "'") {
+        i++;
+        while (i < sql.length) {
+          if (sql[i] === "'") {
+            if (sql[i + 1] === "'") {
+              i += 2;
+              continue;
+            }
+            break;
+          }
+          i++;
+        }
+        continue;
+      }
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+      else if (c === ',' && depth === 1) lastTopComma = i;
+    }
+    if (depth !== 0 || lastTopComma < 0) continue;
+    const n = sql.slice(lastTopComma + 1, i - 1).trim();
+    if (/^\d+$/.test(n)) caps.push(Number(n));
+  }
+  return caps;
+}
+
+describe('leftCapsOf — the EI-12967 guard instrument', () => {
+  it('finds the cap through nested calls and string literals', () => {
+    expect(leftCapsOf(`left(concat_ws(E'\\n', nullif(header, ''), content), 2000)`)).toEqual([2000]);
+    expect(leftCapsOf(`left(concat_ws(')', a), 10)`)).toEqual([10]);
+    expect(leftCapsOf(`left(coalesce(a, ''), 500) || ' ' || left(b, 300)`)).toEqual([500, 300]);
+    expect(leftCapsOf('LEFT(body, 4000)')).toEqual([4000]);
+  });
+
+  it('CONTROL: an uncapped body yields no cap, so the guard below can fail', () => {
+    expect(leftCapsOf('body')).toEqual([]);
+    expect(leftCapsOf(`coalesce(title, '') || ' ' || body`)).toEqual([]);
+    expect(leftCapsOf(`left(body)`)).toEqual([]);
+  });
+});
+
 describe('every TARGETS bodySql caps its free-text input (EI-12967)', () => {
   // The sidecar hard-rejects any text over 32000 chars with an UNRETRYABLE 400 — a row
   // whose embed input has no cap stays `embedCol IS NULL` forever and gets re-selected
@@ -770,14 +824,14 @@ describe('every TARGETS bodySql caps its free-text input (EI-12967)', () => {
       // left(<col-or-coalesce>, N). Constant/short expressions (verb, titles) are fine
       // uncapped; every target below DOES reference a free-text column, so demand a cap
       // present somewhere in the expression.
-      // The capped argument may be a bare column or ANY single-level call — COALESCE(…),
-      // or concat_ws(…) for a header + content body (harness_shared.text_chunks) — the
-      // property is that the whole embed input sits inside a left(…, N), not which
-      // function builds it.
-      const leftCaps = [...target.bodySql.matchAll(/left\(\s*(?:\w+\([^)]*\)|\w+)\s*,\s*(\d+)\s*\)/g)];
+      // The capped argument may be a bare column or ANY expression, nested to any depth —
+      // COALESCE(…), or concat_ws(E'\n', nullif(header, ''), content) for a header +
+      // content body (harness_shared.text_chunks) — the property is that the whole embed
+      // input sits inside a left(…, N), not which function builds it.
+      const leftCaps = leftCapsOf(target.bodySql);
       expect(leftCaps.length, `${target.table}.bodySql has no left(…, N) cap: ${target.bodySql}`).toBeGreaterThan(0);
-      for (const m of leftCaps) {
-        expect(Number(m[1]), `${target.table}.bodySql cap exceeds 2000: ${target.bodySql}`).toBeLessThanOrEqual(2000);
+      for (const n of leftCaps) {
+        expect(n, `${target.table}.bodySql cap exceeds 2000: ${target.bodySql}`).toBeLessThanOrEqual(2000);
       }
     }
   });
