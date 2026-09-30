@@ -55,7 +55,8 @@ describe('accepted blueprint operation worker binding', () => {
   it('derives the exact identity and tool set from the accepted item', async () => {
     const binding = await resolveAcceptedOperationWorkerBinding(args);
     expect(binding).toEqual({
-      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      workItemId: 'WI-1', harnessSlug: 'harness-a', storageHarnessSlug: 'harness-a',
+      operationId: 'run', specificationRevision: REVISION,
       pin,
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'],
@@ -66,7 +67,8 @@ describe('accepted blueprint operation worker binding', () => {
 
   it('matches only the exact pinned item for an active worker', () => {
     const binding = {
-      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      workItemId: 'WI-1', harnessSlug: 'harness-a', storageHarnessSlug: 'harness-a',
+      operationId: 'run', specificationRevision: REVISION,
       pin,
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
@@ -90,6 +92,14 @@ describe('accepted blueprint operation worker binding', () => {
     expect(matchOperationWorkerClaim({ status: 'none' }, { ...pinned, payload: {} })).toEqual({ allowed: true });
     expect(matchOperationWorkerClaim({ status: 'unavailable', reason: 'ended' }, pinned).allowed).toBe(false);
     expect(matchOperationWorkerClaim({ status: 'unavailable', reason: 'ended' }, { ...pinned, payload: {} }).allowed).toBe(false);
+
+    // WI-10004367: a pot MEMBER harness's row sits under the pot home, its pin under the member.
+    const potted = { ...read, binding: { ...binding, storageHarnessSlug: 'pot-home' } };
+    expect(matchOperationWorkerClaim(potted, { ...pinned, harness: 'pot-home' })).toEqual({ allowed: true });
+    expect(matchOperationWorkerClaim(potted, pinned).allowed).toBe(false);
+    expect(matchOperationWorkerClaim(potted, { ...pinned, harness: 'pot-home', payload: {
+      blueprintOperation: { ...pin, harnessSlug: 'pot-home' },
+    } }).allowed).toBe(false);
   });
 
   it('leaves ordinary work items on their existing role launch path', async () => {
@@ -120,7 +130,8 @@ describe('accepted blueprint operation worker binding', () => {
 
   it('selects only listed allowed/preferred models and preserves required effort', () => {
     const binding = {
-      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      workItemId: 'WI-1', harnessSlug: 'harness-a', storageHarnessSlug: 'harness-a',
+      operationId: 'run', specificationRevision: REVISION,
       pin, identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'], requiredTools: [],
       modelPolicy: { mode: 'allowed' as const, models: ['gpt-5.6-terra', 'gpt-5.6-sol'],

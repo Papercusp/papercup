@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { getWorkItem, type WorkItem } from '../work-items';
+import { workItemStorageSlug } from '../pot-membership';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import { getIdentitySource } from '../agent-identities/source';
@@ -13,7 +14,12 @@ import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from '
 
 export interface AcceptedOperationWorkerBinding {
   workItemId: string;
+  /** The harness the operation was accepted for: the launch harness and `pin.harnessSlug`. */
   harnessSlug: string;
+  /** The `harness_slug` the accepted work-item row is STORED under. createWorkItem re-homes
+   * a pot MEMBER harness's item to the pot home slug, so this differs from `harnessSlug`
+   * for a potted harness (WI-10004367). Row lookups use this; pin comparisons never do. */
+  storageHarnessSlug: string;
   operationId: string;
   specificationRevision: string;
   pin: AcceptedOperationPin;
@@ -135,8 +141,8 @@ export async function readActiveOperationModelPolicy(
   if (active.status !== 'bound') return active;
   try {
     return await runWithWorkspace(workspaceId, async () => {
-      const item = await getWorkItem(active.binding.workItemId, active.binding.harnessSlug);
-      if (!item || item.harness !== active.binding.harnessSlug) {
+      const item = await getWorkItem(active.binding.workItemId, active.binding.storageHarnessSlug);
+      if (!item || item.harness !== active.binding.storageHarnessSlug) {
         return { status: 'unavailable', reason: 'accepted operation work item is missing' } as const;
       }
       const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(getOrgPg().sql, workspaceId, item);
@@ -230,7 +236,7 @@ export function matchOperationWorkerClaim(
   }
   const accepted = pin as Record<string, unknown>;
   const binding = read.binding;
-  if (item.id !== binding.workItemId || item.harness !== binding.harnessSlug ||
+  if (item.id !== binding.workItemId || item.harness !== binding.storageHarnessSlug ||
       accepted.kind !== 'blueprint-operation' || accepted.harnessSlug !== binding.harnessSlug ||
       accepted.operationId !== binding.operationId ||
       accepted.specificationRevision !== binding.specificationRevision ||
@@ -260,8 +266,8 @@ export function operationWorkerClaimWhereSql(
   return sql`(
     ${sql.unsafe(columns.id)} = ${binding.workItemId}
     AND ${sql.unsafe(columns.harness)} = ${columns.harness === 'target.scope'
-      ? (binding.harnessSlug ? `harness:${binding.harnessSlug}` : 'operator')
-      : binding.harnessSlug}
+      ? (binding.storageHarnessSlug ? `harness:${binding.storageHarnessSlug}` : 'operator')
+      : binding.storageHarnessSlug}
     AND ${pin} ->> 'kind' = 'blueprint-operation'
     AND ${pin} ->> 'harnessSlug' = ${binding.harnessSlug}
     AND ${pin} ->> 'operationId' = ${binding.operationId}
@@ -457,6 +463,10 @@ export async function readActiveOperationWorkerClaimBinding(
         activation.attribution.sessionId !== ownerId) {
       return { status: 'unavailable', reason: 'active operation worker identity is not applied' };
     }
+    // WI-10004367: the accepted row lives under the pot home when the launch harness is a
+    // pot MEMBER. Resolved here, once, because the claim race fence is synchronous SQL.
+    // workItemStorageSlug fails open to the launch slug, which only ever narrows a claim.
+    const storageHarnessSlug = await workItemStorageSlug(row.launch_harness_slug, workspaceId);
     return {
       status: 'bound',
       receipt: {
@@ -470,6 +480,7 @@ export async function readActiveOperationWorkerClaimBinding(
       binding: {
         workItemId: accepted.workItemId,
         harnessSlug: row.launch_harness_slug,
+        storageHarnessSlug,
         operationId: accepted.operationId,
         specificationRevision: accepted.specificationRevision as string,
         pin: pin as AcceptedOperationPin,
@@ -492,8 +503,10 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
   repoDir: string;
 }): Promise<AcceptedOperationWorkerBinding | null> {
   return runWithWorkspace(input.workspaceId, async () => {
-    const item = await getWorkItem(input.workItemId, input.harnessSlug);
-    if (!item || item.harness !== input.harnessSlug) {
+    // WI-10004367: a pot MEMBER harness's accepted item is stored under the pot home slug.
+    const storageHarnessSlug = await workItemStorageSlug(input.harnessSlug, input.workspaceId);
+    const item = await getWorkItem(input.workItemId, storageHarnessSlug);
+    if (!item || item.harness !== storageHarnessSlug) {
       throw new Error('operation worker launch requires a work item in its harness');
     }
     const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
@@ -501,6 +514,9 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
     if (!payload?.blueprintOperation) return null;
 
     const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(input.sql, input.workspaceId, item);
+    if (pin.harnessSlug !== input.harnessSlug) {
+      throw new Error('operation worker launch requires a work item in its harness');
+    }
     if (operation.execution?.kind !== 'agent' || operation.execution.role !== input.role) {
       throw new Error('accepted blueprint operation does not authorize this worker role');
     }
@@ -520,7 +536,8 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
     const requiredTools = [...new Set(operation.policy.requiredTools)].sort();
     return {
       workItemId: item.id,
-      harnessSlug: item.harness,
+      harnessSlug: input.harnessSlug,
+      storageHarnessSlug,
       operationId: pin.operationId,
       specificationRevision: pin.specificationRevision,
       pin,

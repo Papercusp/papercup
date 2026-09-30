@@ -34,7 +34,21 @@ const readMigration = (f: string) =>
 // test/_work-items-schema.ts (D-014 fixture-completeness debt).
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  // WI-10004367: member harness -> pot home slug, read by the potHomeSlugForHarness mock.
+  potHomes: {} as Record<string, string>,
+}));
+// WI-10004367: potHomeSlugForHarness is a harness-REGISTRY read. Overriding only it makes a
+// harness a pot MEMBER while the real resolveWorkItemPot / potExists path runs.
+vi.mock('./hive-federation', async () => {
+  const actual = await vi.importActual<typeof import('./hive-federation')>('./hive-federation');
+  return {
+    ...actual,
+    potHomeSlugForHarness: async (...args: Parameters<typeof actual.potHomeSlugForHarness>) =>
+      h.potHomes[args[1]] ?? actual.potHomeSlugForHarness(...args),
+  };
+});
 const releaseReclaimedWorkItemLocks = vi.hoisted(() => vi.fn());
 const leaderDispatchAdmission = vi.hoisted(() => ({
   resolveFleetScopeContext: vi.fn(),
@@ -202,7 +216,11 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
     specificationRevision: operationRevision, operationVersion: '1.0.0', input: {},
   });
 
-  async function activateWorker(ownerId: string, itemId: string) {
+  async function activateWorker(
+    ownerId: string,
+    itemId: string,
+    launch: { harnessSlug: string; pin: ReturnType<typeof pin> } = { harnessSlug: H, pin: pin() },
+  ) {
     const activation = acknowledgeActivation(prepareActivation(desiredActivation(
       { actorId: ownerId, principalId: ownerId, sessionId: ownerId }, launchRevision,
     ), launchRevision), launchRevision);
@@ -210,12 +228,12 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
       INSERT INTO harness_shared.adv_sessions
         (workspace_id, coord_owner_id, role, launch_spec)
       VALUES ('default', ${ownerId}, 'worker', ${db.sql.json({
-        workspaceId: 'default', harnessSlug: H, role: 'worker', ...launchRevision,
+        workspaceId: 'default', harnessSlug: launch.harnessSlug, role: 'worker', ...launchRevision,
         specificationArtifact: { configuration: { grants: {} } },
         acceptedOperation: {
           kind: 'blueprint-operation-worker', workItemId: itemId, operationId: 'execute',
           specificationRevision: operationRevision,
-          pin: pin(),
+          pin: launch.pin,
           identity: { ref: 'worker', revision: '1.0.0', contentHash: 'd'.repeat(64) },
           requiredTools: ['work_items:claim'],
         },
@@ -249,6 +267,49 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
     await db.sql`UPDATE harness_shared.adv_sessions SET ended_at = now() WHERE coord_owner_id = 'worker-issue'`;
     await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'WI-op-issue'`;
     expect(await wi.claimWorkItem('WI-op-issue', 'worker-issue', { harness: H })).toBeNull();
+  });
+
+  // WI-10004367: createWorkItem re-homes a pot MEMBER harness's accepted item to the pot
+  // home slug, while its pin and the worker's launch receipt keep the member slug. The
+  // claim guard and its SQL race fence compared both to ONE slug, so no worker could ever
+  // claim a potted operation. The row must match the storage slug; the pin, the member.
+  it('lets the applied worker claim a pot member item stored under its pot home, and nothing wider', async () => {
+    const POT_HOME = 'claim-pot-home';
+    const OTHER_HOME = 'claim-other-pot-home';
+    const MEMBER = 'claim-pot-member';
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.pots (
+      workspace_id text NOT NULL, pot_home_slug text NOT NULL, PRIMARY KEY (workspace_id, pot_home_slug))`;
+    await db.sql`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug)
+      VALUES ('default', ${POT_HOME}), ('default', ${OTHER_HOME}) ON CONFLICT DO NOTHING`;
+    h.potHomes[MEMBER] = POT_HOME;
+    try {
+      const memberPin = { ...pin(), harnessSlug: MEMBER };
+      await seedFeature('WI-op-potted');
+      await seedFeature('WI-op-wrong-home');
+      await db.sql`UPDATE harness_shared.work_items
+        SET harness_slug = ${POT_HOME}, payload = ${db.sql.json({ blueprintOperation: memberPin })}
+        WHERE feature_id = 'WI-op-potted'`;
+      await db.sql`UPDATE harness_shared.work_items
+        SET harness_slug = ${OTHER_HOME}, payload = ${db.sql.json({ blueprintOperation: memberPin })}
+        WHERE feature_id = 'WI-op-wrong-home'`;
+      // Positive control: the row really sits under the pot home, not the member slug.
+      expect((await db.sql<{ harness_slug: string }[]>`SELECT harness_slug FROM harness_shared.work_items
+        WHERE feature_id = 'WI-op-potted'`)[0]?.harness_slug).toBe(POT_HOME);
+
+      expect(await wi.claimWorkItem('WI-op-potted', 'ordinary-su', { harness: POT_HOME })).toBeNull();
+      await activateWorker('worker-potted', 'WI-op-potted', { harnessSlug: MEMBER, pin: memberPin });
+      expect((await wi.claimWorkItem('WI-op-potted', 'worker-potted', { harness: POT_HOME }))?.assignee)
+        .toBe('worker-potted');
+
+      // Negative control: the same member pin stored under a pot home that is NOT the
+      // member's stays unclaimable, so the storage slug is resolved, not trusted from the row.
+      await activateWorker('worker-wrong-home', 'WI-op-wrong-home', { harnessSlug: MEMBER, pin: memberPin });
+      expect(await wi.claimWorkItem('WI-op-wrong-home', 'worker-wrong-home', { harness: OTHER_HOME })).toBeNull();
+    } finally {
+      delete h.potHomes[MEMBER];
+      await db.sql`DELETE FROM harness_shared.pots WHERE workspace_id = 'default'
+        AND pot_home_slug IN (${POT_HOME}, ${OTHER_HOME})`;
+    }
   });
 
   it('filters self-pull atomically to the applied operation item', async () => {
