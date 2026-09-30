@@ -639,7 +639,25 @@ export async function installBlueprintFromCupboardCore(
           );
         }
       }
+    }
 
+    // D-034: one consent to everything beyond package-private content, bound to
+    // this artifact, before any provider package, binding or byte is written.
+    const consent = identityConsentSubjects({
+      grants: declaredCapabilityGrants,
+      providerBindings: capabilityGrantResolution?.selected ?? [],
+      inputs: releaseArchive.pins,
+    });
+    if (!consent.contentOnly) {
+      const consentSubject = identityInstallConsentSubject(artifactContentHash, consent);
+      const refusal = identityInstallConsentRefusal(input.identityInstallConsent, consentSubject);
+      if (refusal) {
+        throw new InstallBlueprintError(`blueprint "${id}": ${refusal.detail}`, 409,
+          'identity_install_consent_' + refusal.code, { consentSubject, subjects: consent });
+      }
+    }
+
+    if (capabilityGrantResolution && input.capabilityContext) {
       if (capabilityGrantResolution.selected.length > 0) {
         if (!deps.reviewCapabilityProviderPackages) {
           throw new InstallBlueprintError(
@@ -788,6 +806,7 @@ export async function installBlueprintFromCupboardCore(
       capabilityProviderReview,
       capabilityProviderInstalls,
       classContracts: classContractImport,
+      consent,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

@@ -14,6 +14,7 @@
  * against this computation so a listing cannot advertise less than it carries.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { wornRulePins } from '../agent-identities/sync-hook-rules';
@@ -38,6 +39,12 @@ export interface IdentityInstallConsentSubject {
 }
 
 export type IdentityInstallConsent = IdentityInstallConsentSubject;
+
+/** The tool/route shape: the consentSubject echoed back verbatim. */
+export const identityInstallConsentSchema = z.object({
+  artifactContentHash: z.string().regex(/^[a-f0-9]{64}$/i),
+  subjectsHash: z.string().regex(/^[a-f0-9]{64}$/i),
+}).strict();
 
 const SHARED_CONTENT_KINDS = new Set(['recipe', 'rubric']);
 

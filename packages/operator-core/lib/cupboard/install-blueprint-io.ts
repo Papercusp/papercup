@@ -36,6 +36,7 @@ import { resolveCupboardBaseUrl } from './base-url';
 import { validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
 import type { CapabilityGrantResolverDeps, RecipeProviderConsent } from './capability-grant-resolver';
+import type { IdentityInstallConsent } from './identity-install-consent';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -96,6 +97,10 @@ export interface InstallBlueprintFromCupboardInput {
   /** P-013: consent to bind selected recipe providers, echoing the exact
    * `consentSubject` a `capability_recipe_provider_consent_required` refusal returned. */
   recipeProviderConsent?: RecipeProviderConsent;
+  /** P-014: consent to the release's grants, bindings, hooks, operations,
+   * plugin code and shared content, echoing the exact `consentSubject` an
+   * `identity_install_consent_required` refusal returned. */
+  identityInstallConsent?: IdentityInstallConsent;
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -469,6 +474,7 @@ export async function installBlueprintFromCupboard(
       expectedRelease,
       modeApproval,
       ...(input.classContractConsent ? { classContractConsent: input.classContractConsent } : {}),
+      ...(input.identityInstallConsent ? { identityInstallConsent: input.identityInstallConsent } : {}),
       ...(capabilityContext ? { capabilityContext } : {}),
     }, makeInstallCoreDeps(capabilityScope, workspaceId));
 
