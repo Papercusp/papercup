@@ -129,6 +129,8 @@ const state = pinModuleState('@papercusp/operator-core.su-client-lease', () => (
   sweepTimer: null as ManagedHandle | null,
   sweeping: false,
   warned: new Set<string>(),
+  /** Arm real timers inside a Vitest worker (see _armSuClientLeaseTimersForTest). */
+  timersInTest: false,
 }));
 
 function store(): SuClientLeaseStore {
@@ -161,7 +163,7 @@ function ensureRenewTimer(): void {
     } catch (error) {
       warnOnce('renew', error);
     }
-  }, { category: 'liveness', classification: 'must-sample' });
+  }, { category: 'liveness', classification: 'must-sample', allowInTest: state.timersInTest });
 }
 
 function stopRenewTimerIfIdle(): void {
@@ -210,6 +212,7 @@ export interface SuClientLeaseDiagnostics {
   sweeping: boolean;
   renewTimer: boolean;
   sweepTimer: boolean;
+  timersInTest: boolean;
 }
 
 /** This process's view of the lease machinery, for failure evidence: which
@@ -223,6 +226,7 @@ export function suClientLeaseDiagnostics(): SuClientLeaseDiagnostics {
     sweeping: state.sweeping,
     renewTimer: state.renewTimer !== null,
     sweepTimer: state.sweepTimer !== null,
+    timersInTest: state.timersInTest,
   };
 }
 
@@ -267,7 +271,7 @@ function ensureSweepTimer(): void {
   // D-004 'timeout-reaper': the lease lapsing IS the trigger, and a lapse is
   // the absence of renewals; there is no event for "nothing happened".
   state.sweepTimer = managedSetInterval('su-client-lease-sweep', suClientLeaseConfig().sweepMs,
-    () => sweep(), { category: 'liveness', classification: 'timeout-reaper' });
+    () => sweep(), { category: 'liveness', classification: 'timeout-reaper', allowInTest: state.timersInTest });
 }
 
 function stopSweepTimerIfIdle(): void {
@@ -307,9 +311,28 @@ export function _resetSuClientLeaseForTest(store: SuClientLeaseStore | null = nu
   state.sweepTimer = null;
   state.sweeping = false;
   state.warned.clear();
+  state.timersInTest = false;
 }
 
 /** Test-only: run one sweep now. */
 export function _sweepSuClientLeasesForTest(): Promise<void> {
   return sweep();
+}
+
+/**
+ * Test-only: an operator served inside a Vitest worker (the real-PTY suite)
+ * gets inert lease timers, because managedSetInterval disarms its default
+ * backend there. Its engines then never lapse and a /detach is never
+ * distinguishable from an attached engine. Arming replaces any timer already
+ * held (it may be one of those inert handles) and picks up the current
+ * PAPERCUSP_SU_CLIENT_LEASE_TTL_MS, so call it again after changing that.
+ */
+export function _armSuClientLeaseTimersForTest(arm: boolean): void {
+  state.timersInTest = arm;
+  state.renewTimer?.stop();
+  state.sweepTimer?.stop();
+  state.renewTimer = null;
+  state.sweepTimer = null;
+  if (state.streams.size > 0) ensureRenewTimer();
+  if (state.supervised.size > 0) ensureSweepTimer();
 }

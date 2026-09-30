@@ -30,7 +30,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
-import { suClientLeaseDiagnostics } from '../su-session-client-lease';
+import { _armSuClientLeaseTimersForTest, suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
@@ -2589,6 +2589,19 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     return pane;
   }
 
+  /** Shorten the client lease and arm its timers for real. The operator runs
+   * in this Vitest worker, where managed timers are inert, so without this no
+   * lease ever lapses and a detached engine is indistinguishable from one that
+   * nothing supervises. Returns the restore for `finally`. */
+  function useShortLease(ttlMs: number): () => void {
+    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = String(ttlMs);
+    _armSuClientLeaseTimersForTest(true);
+    return () => {
+      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+      _armSuClientLeaseTimersForTest(false);
+    };
+  }
+
   /** The durable lease row plus this process's view of it, sampled while a
    * test waits on the lease, so a late or missing end names its cause. */
   function sampleLease(advSessionId: number, chat: RunningChat): { samples: unknown[]; stop(): void } {
@@ -2699,9 +2712,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     let lease: ReturnType<typeof sampleLease> | null = null;
     onTestFailed(() => console.info('PUI_P009_LEASE_FAILURE', p009Evidence(stage, chat, null),
       JSON.stringify({ leaseTimeline: lease?.samples ?? [] })));
-    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = String(ttlMs);
+    const restoreLease = useShortLease(ttlMs);
     try {
       chat = await chatWithRunningEngine(tag);
+      // Control: the engine survived its chat while its client was attached,
+      // so renewal (not an idle sweep) is what kept it alive until now.
+      expect(chat.engine.adapter.host.descriptor().lifecycle).not.toBe('ended');
+      expect(suClientLeaseDiagnostics()).toMatchObject({ timersInTest: true, sweepTimer: true });
       lease = sampleLease(chat.engine.adapter.host.descriptor().identity.advSessionId, chat);
       stage = 'kill';
       const killedAt = performance.now();
@@ -2716,7 +2733,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
       }));
     } finally {
       lease?.stop();
-      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+      restoreLease();
       await disposeChat(chat);
     }
   }, 180_000);
@@ -2728,9 +2745,12 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
     let chat: RunningChat | null = null;
     let resumed: PuiPane | null = null;
     onTestFailed(() => console.info('PUI_P009_DETACH_FAILURE', p009Evidence(stage, chat, resumed)));
-    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = String(ttlMs);
+    const restoreLease = useShortLease(ttlMs);
     try {
       chat = await chatWithRunningEngine(tag);
+      // Control: the sweep that ends an unattended engine is live here, so
+      // surviving it below is the detach's doing (see P-009 LEASE).
+      expect(suClientLeaseDiagnostics()).toMatchObject({ timersInTest: true, sweepTimer: true });
       stage = 'detach';
       chat.pane.write('/detach');
       await chat.pane.waitFor('/detach');
@@ -2761,7 +2781,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
         binary: bin, binarySha256, ttlMs, detachFrame: chat.pane.screen(), exitFrame: resumed.screen(),
       }));
     } finally {
-      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+      restoreLease();
       await disposeChat(chat, resumed);
     }
   }, 240_000);

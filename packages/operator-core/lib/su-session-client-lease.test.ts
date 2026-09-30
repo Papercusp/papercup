@@ -4,6 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  _armSuClientLeaseTimersForTest,
   _resetSuClientLeaseForTest,
   _sweepSuClientLeasesForTest,
   detachSuClientLease,
@@ -126,6 +127,25 @@ describe('su-session client lease', () => {
     await _sweepSuClientLeasesForTest();
     expect(onExpired).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('inside a Vitest worker the sweep only runs on its own once armed for the test', async () => {
+    process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS = '600'; // sweep every 100ms
+    try {
+      const unarmed = vi.fn();
+      superviseSuClientLease(23, unarmed);
+      await grantSuClientLease(23, 1);
+      mem.advance(2);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      // The default timer backend is inert here: nothing sweeps on its own.
+      expect(unarmed).not.toHaveBeenCalled();
+
+      _armSuClientLeaseTimersForTest(true); // replaces the inert handle
+      await vi.waitFor(() => expect(unarmed).toHaveBeenCalledTimes(1), { timeout: 2_000, interval: 50 });
+    } finally {
+      _armSuClientLeaseTimersForTest(false);
+      delete process.env.PAPERCUSP_SU_CLIENT_LEASE_TTL_MS;
+    }
   });
 
   it('an engine whose close never settles does not stop later sweeps', async () => {
