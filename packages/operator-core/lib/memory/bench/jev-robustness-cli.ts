@@ -3,7 +3,12 @@
  *
  *   npx tsx packages/operator-core/lib/memory/bench/jev-robustness-cli.ts \
  *     [--threshold-b 0.4] [--threshold-c 0.35] [--floor-c 0.52] [--repeats 3] \
- *     [--llm-pairs 400] [--no-llm] [--concurrency 4] [--keep]
+ *     [--llm-pairs 400] [--no-llm] [--concurrency 4] [--keep] [--encoding state|instructions]
+ *
+ * `--encoding` picks the PRIMARY encoding: the one the repeats, the order probe,
+ * the adversarial step and the agreement step all run. Step 2 compares it with
+ * the other encoding. It defaults to `state`; P-015 runs `instructions`
+ * (decision D-012), with thresholds taken from a P-004 run on the same encoding.
  *
  * Runs on arms B (production floor + Jev) and C (lower floor + Jev), each at ONE
  * fixed admission threshold: by default the one P-004 run 5 selected
@@ -44,10 +49,12 @@ import { ensureJevDecisionClient, JEV_MEMORY_TIMEOUT_MS, readJevApiKey } from '.
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import {
+  alternateEncoding,
   ARM_C_FLOOR,
   buildAdmissionRequest,
   evaluateFilterArm,
   gradeDocId,
+  parseAdmissionEncoding,
   scoresFromDecision,
   type AdmissionEncoding,
   type QueryScores,
@@ -96,7 +103,9 @@ const llmPairs = Math.max(0, Math.floor(numArg('--llm-pairs', 400)));
 const withLlm = !process.argv.includes('--no-llm');
 const concurrency = Math.max(1, Math.floor(numArg('--concurrency', 4)));
 const keep = process.argv.includes('--keep');
-const log = (m: string) => console.log(new Date().toISOString().slice(11, 19), m);
+const primaryEncoding = parseAdmissionEncoding(argValue('--encoding'));
+const otherEncoding = alternateEncoding(primaryEncoding);
+const log =(m: string) => console.log(new Date().toISOString().slice(11, 19), m);
 
 /** Bounded-concurrency map that preserves index alignment. */
 async function mapPool<T, R>(items: readonly T[], width: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -191,24 +200,25 @@ try {
     clean: QueryOutcome[];
     runs: (QueryScores | undefined)[][];
     reversed: (QueryScores | undefined)[];
-    instructions: (QueryScores | undefined)[];
+    /** The same candidates judged under `otherEncoding` (step 2). */
+    alternate: (QueryScores | undefined)[];
     adversarial?: QueryOutcome[];
     adversarialScores?: (QueryScores | undefined)[];
   }
   const arms: ArmRun[] = [
-    { arm: 'B', label: `floor ${floorA} + Jev P(yes)`, floor: floorA, threshold: thresholdB, clean: cleanA, runs: [], reversed: [], instructions: [] },
-    { arm: 'C', label: `floor ${floorC} + Jev P(yes)`, floor: floorC, threshold: thresholdC, clean: cleanC, runs: [], reversed: [], instructions: [] },
+    { arm: 'B', label: `floor ${floorA} + Jev P(yes)`, floor: floorA, threshold: thresholdB, clean: cleanA, runs: [], reversed: [], alternate: [] },
+    { arm: 'C', label: `floor ${floorC} + Jev P(yes)`, floor: floorC, threshold: thresholdC, clean: cleanC, runs: [], reversed: [], alternate: [] },
   ];
 
   for (const a of arms) {
     for (let r = 1; r <= repeats; r++) {
-      log(`arm ${a.arm}: identical call ${r}/${repeats} (state encoding)…`);
-      a.runs.push(await judge(a.clean, 'state'));
+      log(`arm ${a.arm}: identical call ${r}/${repeats} (${primaryEncoding} encoding)…`);
+      a.runs.push(await judge(a.clean, primaryEncoding));
     }
     log(`arm ${a.arm}: reversed candidate order…`);
-    a.reversed = await judge(a.clean, 'state', 'reversed');
-    log(`arm ${a.arm}: instructions encoding…`);
-    a.instructions = await judge(a.clean, 'instructions');
+    a.reversed = await judge(a.clean, primaryEncoding, 'reversed');
+    log(`arm ${a.arm}: ${otherEncoding} encoding…`);
+    a.alternate = await judge(a.clean, otherEncoding);
   }
 
   // ── Adversarial: seed self-promoters into the SAME store, then replay again.
@@ -223,7 +233,7 @@ try {
   arms[1].adversarial = advC;
   for (const a of arms) {
     log(`arm ${a.arm}: judging candidates with self-promoters present…`);
-    a.adversarialScores = await judge(a.adversarial!, 'state');
+    a.adversarialScores = await judge(a.adversarial!, primaryEncoding);
   }
   const advBaseline = adversarialStats(advA, null, thresholdB);
 
@@ -304,8 +314,13 @@ try {
         r10AtT: t?.point.r10 ?? Number.NaN,
       };
     });
-    const vState = evalAt(a.runs[0]);
-    const vInstr = evalAt(a.instructions);
+    // The comparison is keyed by encoding NAME, whichever of the two is primary.
+    const byEncoding: Record<AdmissionEncoding, ReturnType<typeof evalAt>> =
+      primaryEncoding === 'state'
+        ? { state: evalAt(a.runs[0]), instructions: evalAt(a.alternate) }
+        : { state: evalAt(a.alternate), instructions: evalAt(a.runs[0]) };
+    const vState = byEncoding.state;
+    const vInstr = byEncoding.instructions;
     const advStats = adversarialStats(a.adversarial!, rows(a.adversarialScores!), a.threshold);
     const pairs = agreementByArm.get(a.arm);
     return robustnessVerdict({
@@ -317,7 +332,7 @@ try {
       consistency: consistencyStats(a.runs.map(rows), a.threshold),
       repeats: repeatVerdicts,
       encoding: {
-        flips: flipStats(rows(a.runs[0]), rows(a.instructions), a.threshold),
+        flips: flipStats(rows(a.runs[0]), rows(a.alternate), a.threshold),
         stateStatus: vState.status,
         instructionsStatus: vInstr.status,
         stateHardNegAdmitted: atT(vState)?.point.hardNegAdmitted ?? -1,
@@ -348,6 +363,7 @@ try {
       gold: gold.length,
       pushContract: `fusion ${pushFloors.fusionMode}, lexical bar ${pushFloors.minLexScore ?? 'backend default'}`,
       floors: `A/B ${floorA}, C ${floorC}`,
+      encoding: `${primaryEncoding} (primary: repeats, order, adversarial, agreement); compared with ${otherEncoding} in step 2`,
       thresholds: `B t=${thresholdB}, C t=${thresholdC} (P-004 run 5 selections unless overridden)`,
       jevModel: JEV_PINNED_MODEL,
       filterTimeoutMs: JEV_MEMORY_TIMEOUT_MS,
@@ -382,7 +398,7 @@ try {
       keys: (o.candidates ?? []).map(gradeDocId),
       runs: a.runs.map((r) => r[i]?.scores ?? r[i]?.failure ?? null),
       reversed: a.reversed[i]?.scores ?? a.reversed[i]?.failure ?? null,
-      instructions: a.instructions[i]?.scores ?? a.instructions[i]?.failure ?? null,
+      [otherEncoding]: a.alternate[i]?.scores ?? a.alternate[i]?.failure ?? null,
     })),
   );
   const adversarialPerQuery = arms.flatMap((a) =>

@@ -53,6 +53,7 @@ import {
   buildAdmissionRequest,
   evaluateFilterArm,
   gradeDocId,
+  parseAdmissionEncoding,
   readCachedScores,
   renderAdmissionMarkdown,
   scoresFromDecision,
@@ -74,8 +75,7 @@ function argValue(flag: string): string | undefined {
   return i !== -1 ? process.argv[i + 1] : undefined;
 }
 
-const encoding = (argValue('--encoding') ?? 'state') as AdmissionEncoding;
-if (encoding !== 'state' && encoding !== 'instructions') throw new Error(`--encoding must be state|instructions, got ${encoding}`);
+const encoding: AdmissionEncoding = parseAdmissionEncoding(argValue('--encoding'));
 const floorC = argValue('--floor-c') ? Number(argValue('--floor-c')) : ARM_C_FLOOR;
 const thresholds =
   argValue('--thresholds')?.split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 1) ?? [...ADMISSION_THRESHOLDS];

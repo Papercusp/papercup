@@ -7,6 +7,7 @@ import {
   ADDED_P95_BUDGET_MS,
   ADMISSION_THRESHOLDS,
   admissionRubricVersion,
+  alternateEncoding,
   applyAdmission,
   binomialUpperTailHalf,
   buildAdmissionRequest,
@@ -14,6 +15,7 @@ import {
   evaluateFilterArm,
   gradeDocId,
   JEV_LIST_USD_PER_MILLION_INPUT,
+  parseAdmissionEncoding,
   readCachedScores,
   renderAdmissionMarkdown,
   scoresFromDecision,
@@ -58,6 +60,24 @@ function live(scores: number[] | null, extra: Partial<QueryScores> = {}): QueryS
 function oracleScores(outcomes: readonly QueryOutcome[]): QueryScores[] {
   return outcomes.map((o) => live(o.candidates!.map((c) => (c.key !== null && o.expected.includes(c.key) ? 0.95 : 0.05))));
 }
+
+describe('parseAdmissionEncoding / alternateEncoding (P-015)', () => {
+  it('defaults an absent flag to state and accepts both encodings', () => {
+    expect(parseAdmissionEncoding(undefined)).toBe('state');
+    expect(parseAdmissionEncoding('state')).toBe('state');
+    expect(parseAdmissionEncoding('instructions')).toBe('instructions');
+  });
+
+  it('refuses an unknown value instead of silently running state', () => {
+    expect(() => parseAdmissionEncoding('instruction')).toThrow(/--encoding must be state\|instructions, got instruction/);
+    expect(() => parseAdmissionEncoding('')).toThrow(/--encoding/);
+  });
+
+  it('pairs each encoding with the other one', () => {
+    expect(alternateEncoding('state')).toBe('instructions');
+    expect(alternateEncoding('instructions')).toBe('state');
+  });
+});
 
 describe('buildAdmissionRequest', () => {
   const cands = [cand('q', 'a', 0), cand('q', 'b', 1), cand('q', 'c', 2)];
