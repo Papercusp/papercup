@@ -310,6 +310,10 @@
       "reason": "names no artifact sha256 in subject"
     },
     {
+      "path": "docs/evidence/content-free-sweep-review-2026-09-30.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
       "path": "docs/evidence/desktop-design-gate-p004-2026-09-08.json",
       "reason": "not an operational-test-evidence document"
     },
@@ -562,6 +566,10 @@
       "reason": "names no artifact sha256 in subject"
     },
     {
+      "path": "docs/evidence/osr-r15-dist-0026-2026-09-30.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
       "path": "docs/evidence/osr-r15-live-2026-09-30.json",
       "reason": "names no artifact sha256 in subject"
     },
@@ -767,6 +775,10 @@
     },
     {
       "path": "docs/evidence/p013-workload-b-2026-09-28.json",
+      "reason": "names no artifact sha256 in subject"
+    },
+    {
+      "path": "docs/evidence/p013-workload-b-2026-09-29.json",
       "reason": "names no artifact sha256 in subject"
     },
     {
@@ -1023,6 +1035,18 @@
     },
     {
       "path": "docs/evidence/p2p-endgame-shakedown-0025-93f1c720-reproducibility.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-final-candidate-0026-29bf7350-journeys.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-final-candidate-0026-29bf7350-manifest.json",
+      "reason": "not an operational-test-evidence document"
+    },
+    {
+      "path": "docs/evidence/p2p-final-candidate-0026-29bf7350-provenance.json",
       "reason": "not an operational-test-evidence document"
     },
     {

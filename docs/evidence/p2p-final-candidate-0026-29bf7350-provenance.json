@@ -52,6 +52,10 @@
       "sha256": "4797b4088a9b8d55ef9a1acd21c06d2df1297787fd5b0be6b37268940bee851b"
     },
     {
+      "name": "Papercusp Server_0.0.26_x64-setup.zip",
+      "sha256": "8e036f03b67e6f40c9af2232dd41861ec76cce2a89696ff579b50498f72e4d49"
+    },
+    {
       "name": "Papercusp_GUI_0.0.26_amd64.AppImage",
       "sha256": "1524fe4233560625b00fb498272b94a3f39e1598249f74082552be73b13fa2c3"
     }
@@ -63,7 +67,7 @@
     "sourceSha": "29bf735091518f662100b56b49821be8c83d9ee1",
     "desktopSha": "ac33407aea18c075b270b9e42800fd0ecef4fbf0",
     "buildSha": "ac33407a",
-    "candidateDigest": "b53863863de38c5fc61e748600727f20bd8f7de1a9a5a2e31827defed852cc85",
+    "candidateDigest": "4e819f04fadde1401760aa9f6d84eb7bb788e84c587f3ce0cc46466413b74a03",
     "artifacts": [
       {
         "name": "Papercusp GUI.app.tar.gz",
@@ -79,7 +83,8 @@
         "sha256": "ad0db4327536da2be280280997dc4c818fde995e775e0e41bb4dc7c23ab98753",
         "bytes": 49204196,
         "sources": [
-          "leg:linux"
+          "leg:linux",
+          "ledger"
         ],
         "sig": true
       },
@@ -88,7 +93,8 @@
         "sha256": "15fe6af60164ce8944355fd20f04eea7ad4d43cc6b7ac043df6482a70ff28729",
         "bytes": 66715192,
         "sources": [
-          "leg:mac"
+          "leg:mac",
+          "ledger"
         ],
         "sig": true
       },
@@ -97,7 +103,8 @@
         "sha256": "1bb407e5c50380f30c2e91246576b0214d9f38062133f8c6b320bdfda1c8a406",
         "bytes": 73005505,
         "sources": [
-          "leg:windows"
+          "leg:windows",
+          "ledger"
         ],
         "sig": true
       },
@@ -115,7 +122,8 @@
         "sha256": "12d098a06a6d13084ccc52b021d6721a6115fe28c3dbb532b7079ad6485250f3",
         "bytes": 5699539512,
         "sources": [
-          "leg:linux"
+          "leg:linux",
+          "ledger"
         ],
         "sig": true
       },
@@ -124,7 +132,8 @@
         "sha256": "9e23e30d27b24ab6ecdb156d6efdf80f2ff07c034f3a6c29047fc157f948fc33",
         "bytes": 5607657089,
         "sources": [
-          "leg:mac"
+          "leg:mac",
+          "ledger"
         ],
         "sig": true
       },
@@ -174,11 +183,22 @@
         "sig": true
       },
       {
+        "name": "Papercusp Server_0.0.26_x64-setup.zip",
+        "sha256": "8e036f03b67e6f40c9af2232dd41861ec76cce2a89696ff579b50498f72e4d49",
+        "bytes": 8241176796,
+        "sources": [
+          "ledger",
+          "rehash"
+        ],
+        "sig": null
+      },
+      {
         "name": "Papercusp_GUI_0.0.26_amd64.AppImage",
         "sha256": "1524fe4233560625b00fb498272b94a3f39e1598249f74082552be73b13fa2c3",
         "bytes": 166509048,
         "sources": [
-          "leg:linux"
+          "leg:linux",
+          "ledger"
         ],
         "sig": true
       }
@@ -261,7 +281,12 @@
         "artifactCount": 4
       }
     ],
-    "ledger": null,
+    "ledger": {
+      "gitSha": "29bf735091518f662100b56b49821be8c83d9ee1",
+      "cutAt": "2026-09-30T17:27:43.257Z",
+      "publishedAt": null,
+      "artifactCount": 7
+    },
     "buildCommand": {
       "tool": "release:cut",
       "invocationId": "30228504",
@@ -283,12 +308,12 @@
       {
         "id": "version-agreement",
         "status": "pass",
-        "detail": "every leg record 0.0.26/alpha"
+        "detail": "every leg and the ledger record 0.0.26/alpha"
       },
       {
         "id": "source-revision",
         "status": "pass",
-        "detail": "every leg captured workspace 29bf735091518f662100b56b49821be8c83d9ee1 at cut start"
+        "detail": "every leg captured workspace 29bf735091518f662100b56b49821be8c83d9ee1 at cut start and the ledger agrees"
       },
       {
         "id": "desktop-pin",
@@ -313,17 +338,17 @@
       {
         "id": "artifact-identity",
         "status": "pass",
-        "detail": "13 artifacts, each with exactly one sha256 across every record"
+        "detail": "14 artifacts, each with exactly one sha256 across every record"
       },
       {
         "id": "rehash",
-        "status": "warn",
-        "detail": "no artifact was re-hashed from disk; identity rests on the emitted records"
+        "status": "pass",
+        "detail": "1 artifact(s) re-hashed from disk and match"
       },
       {
         "id": "ledger-corroboration",
-        "status": "warn",
-        "detail": "no release ledger row was supplied"
+        "status": "pass",
+        "detail": "every one of the 7 ledger artifacts is corroborated by a build record or a fresh re-hash"
       },
       {
         "id": "signatures",

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-15 (distributed-build leg): the 0.0.26-alpha signed Linux installers, the next distributed build and the first to contain D-013, pass the Syft installer scan with no UNREVIEWED finding",
+  "framework": "operational",
+  "command": [
+    ".papercusp/scratch/osr/r0026/scan.sh: same scanner, same flags, over the 3 signed 0.0.26-alpha Linux installers from the release cut (log .papercusp/scratch/osr/r0026/scan.log)",
+    "curl -sI <0.0.26 AppImage r2 URL from /tmp/papercusp-latest-desktop-v0.0.26-alpha.json> -> 404; curl <r2 alpha latest.json> -> version 0.0.25 (publication status, 17:21Z)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T17:21:09Z",
+  "finishedAt": "2026-09-30T17:40:00Z",
+  "summary": "Scan of the exact signed bytes the 0.0.26-alpha updater manifest points at (release cut from main 29bf7350, which contains the D-013 GPL-library removal; cut verdict pass). All three Linux installers: LICENSE_GATE_RESULT status=pass, 0 denied, 0 unreviewed; no avcodec/avformat or GPL-only library in the scan log. Distribution status stated plainly: 0.0.26 was not yet uploaded at 17:21Z (the channel still served 0.0.25); publication is gated on P-521 journeys + P-401 GO. Once uploaded, the published files can be matched against the sha256 values recorded here.",
+  "assertions": [
+    {
+      "id": "disallowed-has-disposition",
+      "passed": true,
+      "evidence": "lic-audit9b Server deb: 'component aggregate PostgreSQL client tools linked with GNU readline — PostgreSQL AND GPL-3.0-or-later (6 item(s))' with the offer-source obligation; matches installer-components.json."
+    },
+    {
+      "id": "instrument-not-vacuous",
+      "passed": true,
+      "evidence": "build9.log in-build pass (no syft): all three 'UNDETERMINED ... spawnSync syft ENOENT' -> LICENSE_GATE_RESULT status=undetermined, never pass; and build8 lic-audit8c AppImage reported unreviewed=26 status=fail before the installer-components fix. The gate does report non-pass results."
+    },
+    {
+      "id": "next-distributed-candidate-0026-clean",
+      "passed": true,
+      "evidence": "0.0.26-alpha release cut (tag desktop-v0.0.26-alpha = main 29bf7350, which contains D-013 commit 7b58f326; /tmp/papercup-release-cut.log HARNESS_RESULT verdict=pass 17:07Z) signed Linux installers re-scanned 2026-09-30 17:22-17:40Z (.papercusp/scratch/osr/r0026/scan.log): GUI deb ad0db432… files=2048 payloads=4 covered=4 denied=0 unreviewed=0; Server deb 12d098a0… files=17711 syftPackages=649 covered=821 denied=0 unreviewed=0; AppImage 1524fe42… files=2852 payloads=612 covered=615 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass for all three; 0 avcodec/avformat/GPL-only matches in the log. These are the exact signed bytes the 0.0.26 updater manifest (/tmp/papercusp-latest-desktop-v0.0.26-alpha.json) points at."
+    },
+    {
+      "id": "distribution-status-disclosed",
+      "passed": true,
+      "evidence": "At 17:21Z the r2 alpha latest.json still served 0.0.25 and the 0.0.26 AppImage URL returned 404: 0.0.26 publishes only after P-521 journeys re-run and P-401 GO (su-537352a3, reply 17:3xZ). Until then the downloadable 0.0.25 AppImage predates D-013; the published hash can be checked against the sha256 values above once uploaded."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-15",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}
