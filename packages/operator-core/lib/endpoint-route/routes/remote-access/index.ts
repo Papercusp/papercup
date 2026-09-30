@@ -34,6 +34,7 @@ import {
 } from '../../../connected-apps/store';
 import { getRemoteAccess, setRemoteAccess, type RemoteAccessSetting } from '../../../connected-apps/remote-access';
 import { revokeDevice, setDevicePaused } from '../../../device-store';
+import { appActivitySummary, type AppActivitySummary } from '../../../connected-apps/activity';
 
 type AnyRoute = RouteDefinition<any>;
 
@@ -53,6 +54,8 @@ export interface RemoteAccessRouteDependencies {
   readonly setScopes: (workspaceId: string, id: string, scopes: AppKeyScopes) => Promise<AppKeyRow | null>;
   /** Push the change to open screens. */
   readonly invalidate: (workspaceId: string) => Promise<void>;
+  /** One key's spend against its cap and its recent calls (P-011). Absent = the route answers 404. */
+  readonly activity?: (workspaceId: string, appId: string, limit: number) => Promise<AppActivitySummary | null>;
 }
 
 const noStore = { 'cache-control': 'no-store' };
@@ -216,7 +219,28 @@ export function createRemoteAccessRoutes(deps: RemoteAccessRouteDependencies): R
     },
   });
 
-  return [getSwitch, setSwitch, pause, revoke, scopes];
+  /** GET /remote-access/activity?workspaceId=&appId=&limit= — one app's spend and recent calls. */
+  const activity = defineTool({
+    method: 'GET',
+    path: '/remote-access/activity',
+    auth: 'loopback',
+    async handler(req) {
+      const denied = guard(req, false);
+      if (denied) return denied;
+      const params = new URL(req.url).searchParams;
+      const workspaceId = params.get('workspaceId')?.trim() ?? '';
+      const appId = params.get('appId')?.trim() ?? '';
+      if (!workspaceId || !appId) return jsonError('invalid_request', 400);
+      if (!deps.workspaceExists(workspaceId)) return jsonError('workspace_not_found', 400);
+      if (!deps.activity) return jsonError('not_found', 404);
+      const limit = Number(params.get('limit') ?? 50);
+      const summary = await deps.activity(workspaceId, appId, Number.isFinite(limit) ? limit : 50);
+      if (!summary) return jsonError('not_found', 404);
+      return ok({ activity: summary });
+    },
+  });
+
+  return [getSwitch, setSwitch, pause, revoke, scopes, activity];
 }
 
 /** revokeDevice resolves void; the screen needs to know whether a live phone was hit. */
@@ -238,6 +262,7 @@ const routes: ReadonlyArray<AnyRoute> = createRemoteAccessRoutes({
   revokeDevice: revokeLiveDevice,
   resolveScopes: resolveAppKeyScopes,
   setScopes: setAppKeyScopes,
+  activity: appActivitySummary,
   invalidate: async (workspaceId) => {
     const { notifySyncInvalidate } = await import('../../../sync-sse');
     await notifySyncInvalidate(REMOTE_ACCESS_QUERY, { workspaceId });

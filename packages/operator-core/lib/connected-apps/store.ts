@@ -629,6 +629,17 @@ export async function loadAppScopeRow(id: string): Promise<AppScopeRow | null> {
   return rows[0] ?? null;
 }
 
+/** The fields an alert about a key shows (P-011): its label, kind and workspace. */
+export async function loadAlertedAppRow(id: string): Promise<{ id: string; workspace_id: string; kind: string; label: string | null } | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ id: string; workspace_id: string; kind: string; label: string | null }>>`
+    SELECT id, workspace_id, kind, label FROM harness_shared.connected_apps
+     WHERE id = ${id} AND ${sql.unsafe(KEY_KINDS_SQL)}
+     LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
 /**
  * Record that a key was just used. At most one write a minute per key (or on an
  * address change), so a busy app does not turn every request into an UPDATE.
