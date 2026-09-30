@@ -584,7 +584,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
 
   it('PERF-P-006: at least 95% of gold-eligible normal turns deliver useful recall within two seconds', () => {
     expect(setupError, String(setupError)).toBeUndefined();
-    expect(profiles.length).toBe(3);
+    expect(profiles.length).toBe(5);
     for (const profile of profiles.filter((p) => p.concurrency === 1)) {
       expect(
         summarize(profile.rows).usefulRate,
