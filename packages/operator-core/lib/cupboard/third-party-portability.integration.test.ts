@@ -1,43 +1,55 @@
 /**
  * portable-identity-packages P-020 / D-037 — the early third-party portability
  * proof. A NON-first-party publisher signs one identity that vendors its own
- * recipe provider, a synchronous pre-tool rule and a novel class contract; a
- * CLEAN destination (no pre-seeded class, binding, recipe or rule, and nothing
- * in its own package stores) installs it through the normal consent/review
- * path, verifies the provider itself, and launches and attaches it.
+ * recipe provider, a knowledge pack (one memory, one deterministic doc), a
+ * synchronous pre-tool rule and a novel class contract; a CLEAN destination (no
+ * pre-seeded class, binding, recipe or rule, and nothing in its own package
+ * stores) installs it through the normal consent/review path, verifies the
+ * provider itself, launches and attaches it, refuses a stale or tampered proof
+ * before activation, and uninstalls/rolls back without damaging what it retains.
  *
  * Real: publish signing + closure hashing through the shared served-source seam,
  * install validation, the signed-manifest pin check, the class-contract importer,
  * destination recipe inspection + conformance journal, the production grant
  * resolver + ceiling validator, the P-014 binding journal, the immutable release
  * store and its retained closure (the D-037 installed-package tier), the launch
- * compiler, launch/wearer provisioning, recipes:get and the pre-tool guard.
+ * compiler, per-wearer package journals (recipe, canonical memory, doc parts),
+ * recipes:get, the pre-tool guard and the release uninstall/rollback lifecycle.
  * Substituted: the git clone (a directory copy), the ceiling POLICY source (a
  * fixture ceiling fed to the real validator), the provider-package closure review
- * (the provider is the release being installed), and the saved-recipe adapter
- * the inspector reads (it serves the vendored bytes that travelled).
+ * (the provider is the release being installed), the saved-recipe adapter the
+ * inspector reads (it serves the vendored bytes that travelled), and the
+ * embedder (a fixed vector in front of the real canonical managed writes).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Pool } from 'pg';
 import { stringify as stringifyYaml } from 'yaml';
 import type { Sql } from 'postgres';
 import { layerContentHash } from '@papercusp/orchestrator/blueprint';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { Mem0Backend } from '@papercusp/memory';
 import type { ProjectedTool } from '@papercusp/tooldef';
+import { CanonicalManagedWrites } from '../../../../libs/generic/memory/src/canonical-managed-writes';
+import { EMBEDDER_DIM_SPECS } from '../../../../libs/generic/memory/src/embedder-dims';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 import { getCapabilityClass, getPotCapabilityProviderBinding, recordProviderConformance } from '../capability-class-registry-store';
 import { validateIdentityInstallGrants } from '../capability-envelope/identity-grants-port';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../role-launch-spec';
+import { applySessionPackageResources, releaseSupersededSessionPackages } from '../blueprint/session-package-resources';
+import { resolveWearerPackageDocKeys } from '../blueprint/package-memory-visibility';
+import { PACKAGE_DOC_USER_OWNED } from '../blueprint/package-doc-resources';
 import recipeGetTool from '../agent-tools/recipes/get';
 import type { SavedRecipeAdapter } from '../agent-tools/orchestration/saved-recipe-adapter';
 import { inspectIdentityRecipeClassProvider } from '../agent-identities/recipe-provider-conformance';
 import { identityCeilingRefusal } from '../agent-identities/wearer-authority';
 import { toolGuardText } from '../endpoint-route/routes/agent-mcp/identity-hook-sinks';
-import { prepareBlueprintPublicRelease, readBlueprintLifecycle, resolveInstalledReleasePackage } from './blueprint-release';
+import { prepareBlueprintPublicRelease, readBlueprintLifecycle, resolveInstalledReleasePackage,
+  rollbackBlueprintRelease, uninstallBlueprintRelease } from './blueprint-release';
 import { blueprintInstallJournal } from './blueprint-install-journal';
 import type { RecipeProviderConsent, RecipeProviderConsentSubject } from './capability-grant-resolver';
 import { capabilityGrantDepsForPot } from './install-blueprint-io';
@@ -55,6 +67,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
       return callback(tx);
     }) as Promise<T>,
 }));
+// The pack's memory lands through the real canonical managed writes; only the embedder is fixed.
+const memory = vi.hoisted(() => ({ backend: null as unknown }));
+vi.mock('../memory/backend', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../memory/backend')>()),
+  getMemoryBackend: () => memory.backend,
+}));
 
 const WS = 'p020-clean-destination';
 const POT = 'p020-pot';
@@ -64,6 +82,11 @@ const CLASS_ID = `${PUBLISHER}.review-notes`;
 const CLASS_REF = `${CLASS_ID}@1.0.0`;
 const RECIPE = 'acme-notes';
 const RULE = 'acme-no-rm';
+const PACK = 'acme-review-kb';
+const MEMORY_TEXT = 'Acme reviewers read the review notes before approving a change.';
+const DOC_PART = `pack:${PACK}@1.0.0:review-steps`;
+const DOC_BODY = 'Read the notes, run the checks, then approve.';
+const VECTOR = Array(EMBEDDER_DIM_SPECS.local.targetDims).fill(0.1);
 const NOTES_SCHEMA = {
   type: 'object', properties: { notes: { type: 'string' } }, required: ['notes'], additionalProperties: false,
 };
@@ -72,6 +95,7 @@ const PROMPT = 'ACME REVIEWER DOMAIN RULES\n';
 const CEILING = { potSlug: POT, ceilings: [{ allowCapabilities: ['notes:*'] }], protectedAdditions: [] as string[] };
 
 let db: OrgTestDb;
+let pool: Pool | undefined;
 let root = '';
 let repo = '';
 
@@ -79,6 +103,10 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   pg.sql = db.adminSql;
   pg.appSql = db.appSql;
+  pool = new Pool({ connectionString: db.adminDsn });
+  memory.backend = new Mem0Backend({ getClient: async () => null, managedWrites: new CanonicalManagedWrites({
+    pool: async () => pool!, schema: 'harness_shared', vecTable: 'memory_vec_local', dims: VECTOR.length,
+    embed: async () => VECTOR }) });
   root = await fs.mkdtemp(join(tmpdir(), 'p020-portability-'));
   // The destination's state root: empty package stores, empty installed tier.
   vi.stubEnv('PAPERCUSP_HOME', join(root, 'destination-home'));
@@ -89,6 +117,7 @@ afterAll(async () => {
   vi.unstubAllEnvs();
   pg.sql = null;
   pg.appSql = null;
+  await pool?.end();
   if (root) await fs.rm(root, { recursive: true, force: true });
   await db?.cleanup();
 }, 30_000);
@@ -105,6 +134,7 @@ async function authorPublisherRepo() {
     bundles: [
       { kind: 'recipe', ref: RECIPE, version: '1.0.0' },
       { kind: 'rule', ref: RULE, version: '1.0.0' },
+      { kind: 'knowledge-pack', ref: PACK, version: '1.0.0' },
     ],
     grants: { requires: [CLASS_REF] },
     contributions: [{ id: 'reviewer-rules', purpose: 'prompt', source: 'fixed',
@@ -125,6 +155,14 @@ async function authorPublisherRepo() {
     guard: { deny: { 'input.command': { matches: 'rm -rf' } }, reason: 'no recursive deletes' },
   });
   await writeJson(join(repo, 'packages', 'rule', RULE, 'listing.json'), { kind: 'rule', version: '1.0.0' });
+  const pack = join(repo, 'packages', 'knowledge-pack', PACK);
+  await fs.mkdir(join(pack, 'docs'), { recursive: true });
+  await fs.writeFile(join(pack, 'manifest.yaml'), stringifyYaml({
+    id: PACK, title: 'Acme review knowledge', description: 'What an Acme reviewer knows.', version: '1.0.0',
+  }));
+  await fs.writeFile(join(pack, 'read-notes.md'), `---\nid: read-notes\ntitle: Read notes first\nkind: reference\n---\n${MEMORY_TEXT}\n`);
+  await fs.writeFile(join(pack, 'docs', 'review-steps.md'),
+    `---\nid: review-steps\ntitle: Review steps\nsection: Review\nkind: recipe\n---\n${DOC_BODY}\n`);
   await writeJson(join(repo, 'class-contracts', 'review-notes.json'), {
     id: CLASS_ID, version: '1.0.0', title: 'Read review notes', description: 'Notes a reviewer reads before acting.',
     interfaceVerbs: { read: { inputSchema: { type: 'object' }, outputSchema: NOTES_SCHEMA, capability: 'notes:read' } },
@@ -214,12 +252,33 @@ async function verifyRecipeProviderAtDestination(recipeRevision: string, script:
   });
 }
 
+type LaunchArtifact = Awaited<ReturnType<typeof compileLaunchSpecificationArtifact>>;
+
+/** One wearer's activation, as a production launch/attach host runs it: provision, apply, release what it superseded. */
+async function wear(ownerId: string, artifact: LaunchArtifact) {
+  const revision = { specificationRevision: artifact.specificationRevision, stateRevision: artifact.stateRevision };
+  await provisionLaunchIdentityResources(artifact, db.adminSql, { ownerId });
+  const { superseded } = await db.adminSql.begin((tx) => applySessionPackageResources(tx,
+    { ownerId, workspaceId: WS, revision, artifact: artifact.specificationArtifact }));
+  await releaseSupersededSessionPackages(db.adminSql, superseded);
+}
+
+const packMemories = async () => (await db.adminSql<Array<{ data: string }>>`
+  SELECT payload->>'data' AS data FROM harness_shared.memory_canonical
+   WHERE payload->>'data' LIKE ${'%' + MEMORY_TEXT + '%'}`).map((row) => row.data);
+const packDocs = () => db.adminSql<Array<{ part_key: string; body: string; author: string | null }>>`
+  SELECT part_key, body, author FROM harness_shared.harness_doc_parts
+   WHERE workspace_id = ${WS} AND part_key LIKE ${`pack:${PACK}@%`} ORDER BY part_key`;
+const recipeResult = async () => ((await recipeGetTool.handler({ id: RECIPE }, {} as never)) as
+  { data: { results: Array<Record<string, unknown>> } }).data.results[0];
+
 describe('P-020 third-party identity portability into a clean destination (real PG)', () => {
   let manifest: Awaited<ReturnType<typeof publish>>['manifest']['release'];
   let classConsent: ClassContractConsent;
   let recipeConsent: RecipeProviderConsent;
   let identityConsent: IdentityInstallConsent;
   let recipePin: { contentHash: string; value?: unknown };
+  let packPin: { contentHash: string };
 
   const install = (overrides: {
     classConsent?: ClassContractConsent; recipeConsent?: RecipeProviderConsent; identityConsent?: IdentityInstallConsent;
@@ -240,9 +299,10 @@ describe('P-020 third-party identity portability into a clean destination (real 
     const pins = published.source.archive.pins;
     // The vendored content travelled inside the signed closure.
     expect(pins.map((pin) => `${pin.packageKind}:${pin.ref}`)).toEqual(expect.arrayContaining([
-      `recipe:${RECIPE}`, `rule:${RULE}`, `blueprint:${ID}`,
+      `recipe:${RECIPE}`, `rule:${RULE}`, `knowledge-pack:${PACK}`, `blueprint:${ID}`,
     ]));
     recipePin = pins.find((pin) => pin.packageKind === 'recipe' && pin.ref === RECIPE)!;
+    packPin = pins.find((pin) => pin.packageKind === 'knowledge-pack' && pin.ref === PACK)!;
     expect(published.source.archive.classContracts.map((entry) => entry.ref)).toEqual([CLASS_REF]);
 
     // A clean destination: nothing seeded, nothing in its own stores.
@@ -265,15 +325,29 @@ describe('P-020 third-party identity portability into a clean destination (real 
 
     // 3. The destination verifies the vendored recipe provider itself.
     const value = recipePin.value as { script: string };
-    const conformance = await verifyRecipeProviderAtDestination(recipePin.contentHash.replace(/^sha256:/, ''), value.script);
+    const shippedRevision = recipePin.contentHash.replace(/^sha256:/, '');
+    const conformance = await verifyRecipeProviderAtDestination(shippedRevision, value.script);
     expect(conformance.binding).toMatchObject({ classRef: CLASS_REF, providerKind: 'recipe' });
 
     // 4. Binding a recipe provider needs consent to the exact pins the destination just inspected (D-019).
     const recipeAsk = await install({ classConsent }).catch((error: unknown) => error);
     expect(recipeAsk).toMatchObject({ code: 'capability_recipe_provider_consent_required' });
     const recipeSubject = (recipeAsk as { data: { consentSubject: RecipeProviderConsentSubject } }).data.consentSubject;
-    expect(recipeSubject.providers).toMatchObject([{ classRef: CLASS_REF, providerPackage: ID }]);
+    expect(recipeSubject.providers).toMatchObject([{ classRef: CLASS_REF, providerPackage: ID,
+      recipes: [{ verb: 'read', recipeId: RECIPE, recipeRevision: shippedRevision }] }]);
     recipeConsent = { ...recipeSubject, decision: 'approved' };
+
+    // 4b. A stale proof refuses before anything activates: the destination's current
+    // proof is of a different recipe revision than the one the administrator approved.
+    await verifyRecipeProviderAtDestination('f'.repeat(64), value.script);
+    await expect(install({ classConsent, recipeConsent }))
+      .rejects.toMatchObject({ code: 'capability_recipe_provider_consent_mismatch' });
+    expect(await getPotCapabilityProviderBinding(db.adminSql, {
+      workspaceId: WS, potSlug: POT, classId: CLASS_ID, classVersion: '1.0.0', providerKinds: ['recipe'],
+    })).toBeNull();
+    expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toMatchObject({ active: null });
+    // Re-proved at the shipped revision, the same approval covers it again.
+    await verifyRecipeProviderAtDestination(shippedRevision, value.script);
 
     // 5. The identity consent names the grant, the binding it resolves here and the shared content.
     const identityAsk = await install({ classConsent, recipeConsent }).catch((error: unknown) => error);
@@ -303,27 +377,37 @@ describe('P-020 third-party identity portability into a clean destination (real 
       .filter((input) => input.kind === 'package')
       .map((input) => `${(input as { packageKind: string }).packageKind}:${(input as { ref: string }).ref}#${(input as { contentHash: string }).contentHash}`)
       .sort();
-    expect(packageInputs(launch)).toEqual(expect.arrayContaining([`recipe:${RECIPE}#${recipePin.contentHash}`]));
+    expect(packageInputs(launch)).toEqual(expect.arrayContaining([`recipe:${RECIPE}#${recipePin.contentHash}`,
+      `knowledge-pack:${PACK}#${packPin.contentHash}`]));
 
-    // Launch provisioning makes the vendored recipe callable through the existing resolver.
-    const before = await recipeGetTool.handler({ id: RECIPE }, {} as never);
-    expect((before as { data: { results: Array<Record<string, unknown>> } }).data.results[0])
-      .toMatchObject({ ok: false, error: 'not_found' });
-    await provisionLaunchIdentityResources(launch, db.adminSql);
-    const read = await recipeGetTool.handler({ id: RECIPE }, {} as never);
-    expect((read as { data: { results: Array<Record<string, unknown>> } }).data.results[0]).toMatchObject({
+    // Launch: the wearer's journal makes the vendored recipe callable and delivers the pack's memory and doc.
+    expect(await recipeResult()).toMatchObject({ ok: false, error: 'not_found' });
+    expect(await packMemories()).toEqual([]);
+    await wear('p020-launcher', launch);
+    expect(await recipeResult()).toMatchObject({
       ok: true, id: RECIPE, recipe: { script: 'return tools.notes.read({});', authorRole: 'blueprint-bundle' },
     });
+    expect(await packMemories()).toEqual([expect.stringContaining(MEMORY_TEXT)]);
+    expect(await packDocs()).toEqual([{ part_key: DOC_PART, body: `**Review steps**\n\n${DOC_BODY}`,
+      author: expect.stringMatching(/^blueprint-package-resource:/) }]);
+    const launcherDocs = await resolveWearerPackageDocKeys(db.adminSql, { workspaceId: WS, ownerId: 'p020-launcher' });
+    expect(launcherDocs).toHaveLength(1);
 
-    // Mid-session attach: the same compile, provisioned through the wearer's journal.
+    // Mid-session attach: the same compile delivers the same memory and doc, shared rather than duplicated.
     const attach = await compile();
     expect(attach.specificationRevision).toBe(launch.specificationRevision);
     expect(packageInputs(attach)).toEqual(packageInputs(launch));
-    await provisionLaunchIdentityResources(attach, db.adminSql, { ownerId: 'p020-wearer' });
-    const [journal] = await db.adminSql<Array<{ phase: string }>>`
-      SELECT phase FROM harness_shared.blueprint_package_installations
-       WHERE workspace_id = ${WS} AND owner_id = 'p020-wearer'`;
-    expect(journal).toBeDefined();
+    await wear('p020-wearer', attach);
+    expect(await resolveWearerPackageDocKeys(db.adminSql, { workspaceId: WS, ownerId: 'p020-wearer' })).toEqual(launcherDocs);
+    expect(await packMemories()).toHaveLength(1);
+    expect((await packDocs()).map((row) => row.part_key)).toEqual([DOC_PART]);
+    const holders = await db.adminSql<Array<{ resource_kind: string; wearers: number }>>`
+      SELECT r.resource_kind, count(*)::int AS wearers FROM harness_shared.blueprint_package_dependents d
+        JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
+       WHERE d.workspace_id = ${WS} AND d.dependent_id LIKE 'session-package:%' AND d.phase = 'applied'
+       GROUP BY r.resource_key, r.resource_kind ORDER BY r.resource_kind`;
+    expect(holders).toEqual([{ resource_kind: 'code-recipe', wearers: 2 }, { resource_kind: 'doc-part', wearers: 2 },
+      { resource_kind: 'memory', wearers: 2 }]);
 
     // The worn synchronous rule refuses the one call it names, from the applied artifact.
     const revision = { specificationRevision: attach.specificationRevision, stateRevision: attach.stateRevision };
@@ -354,4 +438,53 @@ describe('P-020 third-party identity portability into a clean destination (real 
 
     expect(await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).toEqual(lifecycleBefore);
   }, 120_000);
+
+  it('uninstalls and rolls back through the pot journal, and releases shared resources without damaging retained ones', async () => {
+    const lifecycle = (operation: 'uninstall' | 'rollback') =>
+      blueprintInstallJournal({ sql: db.adminSql, workspaceId: WS, blueprintId: ID }, { operation });
+    const potBinding = () => getPotCapabilityProviderBinding(db.adminSql, {
+      workspaceId: WS, potSlug: POT, classId: CLASS_ID, classVersion: '1.0.0', providerKinds: ['recipe'],
+    });
+
+    // Rollback to the retained release re-converges exactly the binding its install recorded.
+    const rolled = await rollbackBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id: ID, target: '1.0.0',
+      journal: lifecycle('rollback') });
+    expect(rolled.journal?.pots).toMatchObject([{ potSlug: POT, bindings: [`${CLASS_REF} → ${ID}@1.0.0`] }]);
+    expect(rolled.journal?.residue).toEqual([]);
+    expect(await potBinding()).toMatchObject({ providerKind: 'recipe', boundBy: expect.stringMatching(/^cupboard:install-blueprint#/) });
+    expect((await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).active?.version).toBe('1.0.0');
+
+    // Uninstall: the file tier and the install's own pot binding go; the destination's
+    // imported contract and its conformance proof are its own, and stay.
+    const removed = await uninstallBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id: ID, journal: lifecycle('uninstall') });
+    expect(removed.journal).toMatchObject({ residue: [], pots: [{ potSlug: POT }] });
+    expect(await potBinding()).toBeNull();
+    expect((await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), ID)).active).toBeNull();
+    expect(await getCapabilityClass(db.adminSql, WS, CLASS_ID, '1.0.0')).toMatchObject({ id: CLASS_ID });
+    const [proof] = await db.adminSql`SELECT status FROM harness_shared.capability_class_provider_bindings
+      WHERE workspace_id = ${WS} AND class_id = ${CLASS_ID} AND provider_package = ${ID}`;
+    expect(proof).toEqual({ status: 'active' });
+
+    // Wearers release the shared resources. The destination edits the delivered doc first.
+    const edited = 'Our own review steps, edited after install.';
+    await db.adminSql`UPDATE harness_shared.harness_doc_parts SET body = ${edited}
+      WHERE workspace_id = ${WS} AND part_key = ${DOC_PART}`;
+    const detached = await compileLaunchSpecificationArtifact({
+      promptText: 'Review the change.', cwd: root, workspaceId: WS, harnessSlug: POT,
+      role: 'worker', stack: [], state: { schemaVersion: 1 }, renderStack: true,
+    });
+    await wear('p020-wearer', detached);
+    // One wearer still holds everything: nothing is removed.
+    expect(await recipeResult()).toMatchObject({ ok: true, id: RECIPE });
+    expect(await packMemories()).toHaveLength(1);
+    expect(await resolveWearerPackageDocKeys(db.adminSql, { workspaceId: WS, ownerId: 'p020-wearer' })).toEqual([]);
+
+    // The last wearer releases: pristine content is removed, the edited doc is re-owned and kept.
+    await wear('p020-launcher', detached);
+    expect(await recipeResult()).toMatchObject({ ok: false, error: 'not_found' });
+    expect(await packMemories()).toEqual([]);
+    expect(await packDocs()).toEqual([{ part_key: DOC_PART, body: edited, author: PACKAGE_DOC_USER_OWNED }]);
+    expect(await db.adminSql`SELECT phase FROM harness_shared.blueprint_package_installations
+      WHERE workspace_id = ${WS} AND dependent_id LIKE 'session-package:%' AND phase NOT IN ('released')`).toEqual([]);
+  }, 180_000);
 });
