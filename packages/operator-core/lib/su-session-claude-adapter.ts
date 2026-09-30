@@ -37,6 +37,7 @@ import {
 } from './launch-agent';
 import { nativeSessionHandleForAdvSession, type ClaudeNativeSessionHandle } from './native-session-handles';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
+import { SuOwnerTurnReceiptMatcher, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { findSessionTranscript } from './claude-sessions';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import { createAgentTimelineParser } from './endpoint-route/routes/harness/streams';
