@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   selectSpecTriadFilings,
@@ -5,6 +7,7 @@ import {
   planRowIsSweepLive,
   planRef,
   SPEC_TRIAD_MAX_FILINGS_PER_RUN,
+  SPEC_TRIAD_EXCLUDED_TEMPLATES,
   LIVE_PLAN_STATUSES,
   type PlanContentRow,
   type SpecTriadOpenFiling,
@@ -215,6 +218,7 @@ describe('selectSpecTriadReconciliations — dangling/moot filings close, live o
     status: o.status === undefined ? 'active' : o.status,
     archived: o.archived ?? false,
     is_legacy: o.is_legacy ?? false,
+    template: o.template === undefined ? null : o.template,
   });
 
   const sel = (
@@ -283,14 +287,62 @@ describe('selectSpecTriadReconciliations — dangling/moot filings close, live o
     // from the real list, so widening LIVE_PLAN_STATUSES flows through without
     // this test needing to know the new value...
     for (const status of LIVE_PLAN_STATUSES) {
-      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false })).toBe(true);
+      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false, template: null })).toBe(true);
     }
     // ...and the statuses the sweep refuses to file for must close one. This
     // half is the control: a predicate regressed to `always live` fails here.
     for (const status of ['shipped', 'superseded', 'draft', 'proposed', 'needs-human']) {
-      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false })).toBe(false);
+      expect(planRowIsSweepLive({ status, archived: false, is_legacy: false, template: null })).toBe(false);
     }
-    expect(planRowIsSweepLive({ status: 'active', archived: true, is_legacy: false })).toBe(false);
-    expect(planRowIsSweepLive({ status: 'active', archived: false, is_legacy: true })).toBe(false);
+    expect(planRowIsSweepLive({ status: 'active', archived: true, is_legacy: false, template: null })).toBe(false);
+    expect(planRowIsSweepLive({ status: 'active', archived: false, is_legacy: true, template: null })).toBe(false);
+  });
+
+  // WI-10004229: acceptance rubrics live in the plan store as `template: rubric`
+  // rows with no items and no triad sections BY DESIGN. The sweep filed "write
+  // the spec triad" against them; following such a filing rewrites a rubric
+  // under its vetting attestation / independent grades.
+  describe('rubric rows (template: rubric) are never sweep-live', () => {
+    it('a rubric row is not live in ANY live status', () => {
+      for (const t of SPEC_TRIAD_EXCLUDED_TEMPLATES) {
+        for (const status of [...LIVE_PLAN_STATUSES, null]) {
+          expect(planRowIsSweepLive({ status, archived: false, is_legacy: false, template: t })).toBe(false);
+        }
+      }
+    });
+
+    it('CONTROL: a non-excluded template stays live, so the exclusion is not a blanket template filter', () => {
+      expect(planRowIsSweepLive({ status: 'active', archived: false, is_legacy: false, template: 'recurring' })).toBe(
+        true,
+      );
+    });
+
+    it('closes an open filing whose plan row is a rubric, naming why', () => {
+      const s = sel(
+        [filing({ id: 'WI-9', ref: 'ws/home/acceptance-x' })],
+        [locator({ slug: 'acceptance-x', status: 'active', template: 'rubric' })],
+      );
+      expect(s.toClose).toHaveLength(1);
+      expect(s.toClose[0].reason).toBe('plan-not-live');
+      expect(s.toClose[0].detail).toContain("a 'rubric' template");
+    });
+
+    it('keeps an open filing whose live plan row is an ordinary plan (template null)', () => {
+      const s = sel([filing({ ref: 'ws/home/p' })], [locator({ slug: 'p', status: 'active' })]);
+      expect(s.toClose).toHaveLength(0);
+      expect(s.kept).toBe(1);
+    });
+
+    it('PIN: the phase-1 candidate SQL excludes the same templates the predicate does', () => {
+      // planRowIsSweepLive claims to be an EXACT mirror of phase 1. The SQL is a
+      // tagged template against a live pool, so pin its text: dropping the clause
+      // re-opens filings the reconciliation leg then closes, forever.
+      const src = readFileSync(fileURLToPath(new URL('./spec-triad-sweep.ts', import.meta.url)), 'utf8');
+      const phase1 = src.slice(src.indexOf('// Phase 1 — metadata only.'), src.indexOf('// Phase 2 — content'));
+      expect(phase1.length).toBeGreaterThan(0);
+      expect(phase1).toContain('SPEC_TRIAD_EXCLUDED_TEMPLATES');
+      const recon = src.slice(src.indexOf('SELECT workspace_id, harness_slug, plan_slug, status, archived, is_legacy'));
+      expect(recon.split('\n')[0]).toContain('template');
+    });
   });
 });
