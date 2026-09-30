@@ -13,11 +13,22 @@ import { validatePhysicalDrillEvidence } from './physical-drill-evidence';
 import { physicalDrillPreflightMode } from './physical-drill-preflight';
 import {
   capturePhysicalPhaseARepo,
+  physicalDrillTarget,
   quarantineAndObservePhysicalPhaseAAbsence,
   quarantinePhysicalPhaseARepo,
   validatePhysicalPhaseA,
   type PhysicalPhaseAInput,
 } from './physical-drill-phase-a';
+
+/** A same-box rehearsal is diagnostic (D-003 (4)): it never signs or finalizes evidence. */
+export function refuseDiagnosticEvidence(mode: 'sign' | 'finalize'): void {
+  const target = physicalDrillTarget();
+  if (target.diagnostic) {
+    throw new Error(
+      `physical-drill-producer: ${mode} refused — the same-box target ${target.potHome}/${target.repoKey} is diagnostic and can never be release evidence`,
+    );
+  }
+}
 import {
   capturePhysicalPhaseBRepo,
   createPhysicalPhaseBCommit,
@@ -265,6 +276,7 @@ async function cli(argv: string[]): Promise<unknown> {
     };
   }
   if (mode === 'sign') {
+    refuseDiagnosticEvidence('sign');
     const [evidencePath, hostId, cachePath] = args;
     if (!evidencePath || !hostId || !cachePath) {
       throw new Error('usage: physical-drill-producer sign <unsigned-evidence.json> <host-id> <absolute-cache-path>');
@@ -807,6 +819,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, hive, samplesPath, count: samples.length, sample };
   }
   if (mode === 'finalize') {
+    refuseDiagnosticEvidence('finalize');
     const [unsignedEvidencePath, towerReceiptPath, vmReceiptPath, evidencePath, trustPath] = args;
     if (!unsignedEvidencePath || !towerReceiptPath || !vmReceiptPath || !evidencePath || !trustPath) {
       throw new Error(
