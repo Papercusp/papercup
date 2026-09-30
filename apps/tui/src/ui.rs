@@ -3362,7 +3362,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.su_connection_error.is_some() {
         (
-            " Session unavailable — Esc, then l: choose session to reconnect ",
+            // The bar must follow Esc: once the owner has left the message
+            // box it names the keys that now work, not the Esc already
+            // pressed (WI-10004247: a startup resume refused before the owner
+            // touched anything left the bar saying "Esc, then l" forever).
+            if app.chat_composing {
+                " Session unavailable — Esc, then l: choose session to reconnect "
+            } else {
+                " Session unavailable — l: choose session to reconnect · i type · v speak "
+            },
             format!("> {}", app.chat_input),
             Theme::warn(),
         )
@@ -7700,6 +7708,19 @@ mod tests {
         let text = render(&app, 100, 24);
         assert!(text.contains("native transcript is unavailable"), "{text}");
         assert!(text.contains("choose session to reconnect"), "{text}");
+        // WI-10004247: the bar follows Esc. In the message box it says to
+        // press Esc first; out of it, it names the keys that work now.
+        app.chat_composing = true;
+        let composing = render(&app, 120, 24);
+        assert!(composing.contains("Esc, then l: choose session"), "{composing}");
+        assert!(!composing.contains("i type · v speak"), "{composing}");
+        app.chat_composing = false;
+        let normal = render(&app, 120, 24);
+        assert!(
+            normal.contains("l: choose session to reconnect · i type · v speak"),
+            "{normal}"
+        );
+        assert!(!normal.contains("Esc, then l"), "{normal}");
         app.reset_agent_chat_binding();
         assert!(!render(&app, 100, 24).contains("native transcript is unavailable"));
     }
