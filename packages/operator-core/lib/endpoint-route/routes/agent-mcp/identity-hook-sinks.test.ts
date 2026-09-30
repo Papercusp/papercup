@@ -133,6 +133,16 @@ describe('POST /agent-mcp/tool-guard', () => {
     expect(out.text).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
   });
 
+  it('gives a Codex call the verdict a Claude call gets: the client is recorded, never read', async () => {
+    readAppliedWornRulesMock.mockResolvedValue(noRmRules());
+    for (const [client, tool] of [['claude', 'Bash'], ['codex', 'shell']] as const) {
+      const denied = await post('/agent-mcp/tool-guard', { owner: 'o', workspace: 'w', client, tool, input: { command: 'rm -rf /' } });
+      expect(denied.text).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
+      expect(await post('/agent-mcp/tool-guard', { owner: 'o', workspace: 'w', client, tool, input: { command: 'ls' } }))
+        .toEqual({ ok: true, text: '' });
+    }
+  });
+
   it('drops a cut input rather than evaluating a partial one', async () => {
     readAppliedWornRulesMock.mockResolvedValue(noRmRules());
     const out = await post('/agent-mcp/tool-guard', {
