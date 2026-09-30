@@ -764,6 +764,25 @@ export function writeCodexLockHooks(
     });
   }
 
+  // IDENTITY HOOK ports (portable-identity-packages-2026-09-26 P-011, D-023 §2):
+  // a worn identity's pre-tool guards, stop rules and compaction rules, through
+  // the same dispatcher and the same baked sid as the two context ports above.
+  // Every matcher is '.*' — which tools a guard names, and which SessionStart
+  // sources mean a fresh context, are decided by the operator and the adapter
+  // (codex's schemas are read in adapters/codex.mjs). The guard renders only a
+  // deny for the one pending call, so it can never auto-approve (D-027).
+  const stop: CodexHook[] = [];
+  if (opts.injectSid && existsSync(injectDispatcher)) {
+    const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
+    const identityHook = (event: string): CodexHook => ({
+      matcher: '.*',
+      hooks: [{ type: 'command', command: `${injectIdentity} ${injectDispatcher} --client=codex --event=${event}` }],
+    });
+    preToolUse.push(identityHook('PreToolUse'));
+    stop.push(identityHook('Stop'));
+    sessionStart.push(identityHook('SessionStart'));
+  }
+
   // UserPromptSubmit is emitted ONLY when non-empty: an empty MatcherGroup array
   // is meaningless, and a key that is always present would make "is turn-start
   // registered on this home?" un-answerable by reading hooks.json.
@@ -772,6 +791,7 @@ export function writeCodexLockHooks(
       PreToolUse: preToolUse,
       PostToolUse: postToolUse,
       ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
+      ...(stop.length > 0 ? { Stop: stop } : {}),
       ...(sessionStart.length > 0 ? { SessionStart: sessionStart } : {}),
       ...(sessionEnd.length > 0 ? { SessionEnd: sessionEnd } : {}),
       ...(preCompact.length > 0 ? { PreCompact: preCompact } : {}),

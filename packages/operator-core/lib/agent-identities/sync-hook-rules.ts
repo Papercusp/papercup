@@ -28,6 +28,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { HookContextSink, ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 import { parseRulePackage, RULE_PACKAGE_SCHEMA_VERSION, type SyncRuleDeclaration } from '../cupboard/rule-store';
@@ -399,6 +400,10 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string)
      LIMIT 1`;
   const applied = rows[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
   if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return null;
+  const cacheKey = [workspaceId, ownerId, applied.specificationRevision, applied.stateRevision].join('\u0000');
+  const cached = wornRulesCache.byRevision.get(cacheKey);
+  if (cached && 'worn' in cached) return cached.worn;
+  if (cached && cached.unreadableUntil > Date.now()) throw new Error('applied identity artifact unreadable');
   const [{ readGateSelectedLaunchSpec }, { appliedIdentityArtifact }] = await Promise.all([
     import('../agent-tools/coordination/control-anchor'),
     import('../capability-envelope/identity-grants-port'),
@@ -406,8 +411,37 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string)
   const artifact = appliedIdentityArtifact(await readGateSelectedLaunchSpec(sql, ownerId, workspaceId), {
     specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision,
   });
-  if (!artifact) throw new Error('applied identity artifact unreadable');
-  return wornSyncRules(artifact);
+  if (!artifact) {
+    rememberWornRules(cacheKey, { unreadableUntil: Date.now() + WORN_RULES_UNREADABLE_TTL_MS });
+    throw new Error('applied identity artifact unreadable');
+  }
+  const worn = wornSyncRules(artifact);
+  rememberWornRules(cacheKey, { worn });
+  return worn;
+}
+
+/**
+ * Worn rules by (workspace, owner, applied revision). The pre-tool guard reads
+ * them on EVERY tool call, and both revisions are content hashes, so a resolved
+ * entry can never go stale: a changed identity is a different key. Only the
+ * cheap applied-revision read stays on the per-call path.
+ *
+ * An UNREADABLE revision is remembered briefly, not forever: the launch record
+ * can gain the applied revision's receipt after the control state moves, and
+ * until then every tool call would otherwise repeat the expensive read.
+ */
+const WORN_RULES_CACHE_MAX = 256;
+const WORN_RULES_UNREADABLE_TTL_MS = 30_000;
+type WornRulesCacheEntry = { readonly worn: WornSyncRules } | { readonly unreadableUntil: number };
+const wornRulesCache = pinModuleState('@papercusp/operator-core.agent-identities.worn-sync-rules', () => ({
+  byRevision: new Map<string, WornRulesCacheEntry>(),
+}));
+
+function rememberWornRules(cacheKey: string, entry: WornRulesCacheEntry): void {
+  const cache = wornRulesCache.byRevision;
+  cache.delete(cacheKey);
+  if (cache.size >= WORN_RULES_CACHE_MAX) cache.delete(cache.keys().next().value!);
+  cache.set(cacheKey, entry);
 }
 
 /** Production wiring: the control anchor, the gate-selected launch record and the read-only provider path. */
