@@ -168,6 +168,8 @@ function detail(over: Partial<GoalDetailInput> = {}): GoalDetailInput {
       status: 'active',
       killCriterion: 'Stop if no paying user by day 30.',
       spendUsd: 310,
+      // The ceiling reads the enforced snapshot, not the lifetime figure (WI-1074208).
+      spentCents: 31_000,
       budgetCents: 50_000,
       ...over.goal,
     },

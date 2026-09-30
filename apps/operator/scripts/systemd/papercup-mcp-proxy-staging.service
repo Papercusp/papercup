@@ -1,0 +1,29 @@
+[Unit]
+Description=Papercusp resilient MCP proxy for STAGING (:9171 → :3170) — keeps the staging operator's TCP endpoint alive across its frequent sync/deploy restarts (EI-24402391758483336)
+# Same binary and semantics as papercup-mcp-proxy.service (:9071 → :3070), a second
+# instance pointed at the staging host. An explicit TARGET_PORT pin is
+# single-candidate fail-closed: this proxy never substitutes another operator, so a
+# session pinned to staging stays on the staging build and simply rides out its
+# restart windows (retry-on-refused, MCP_PROXY_RETRY_WINDOW_MS).
+# psu routes an explicit :3170 PAPERCUSP_OPERATOR_URL pin through this port when it is live.
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=6
+
+[Service]
+Type=simple
+WorkingDirectory=%h/papercupai-workspace/papercusp/apps/operator
+Environment=PAPERCUSP_MCP_PROXY_PORT=9171
+Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3170
+Environment=PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE=64
+Environment=PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT=32
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:%h/.cargo/bin:%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/bash -c 'exec npx tsx bin/mcp-proxy.ts'
+Restart=always
+RestartSec=5
+MemoryAccounting=yes
+MemorySwapMax=0
+CPUAccounting=yes
+
+[Install]
+WantedBy=default.target

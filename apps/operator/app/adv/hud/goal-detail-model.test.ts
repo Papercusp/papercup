@@ -405,16 +405,26 @@ describe('spendStack', () => {
 });
 
 describe('ceilingLine', () => {
-  it('reads spend against the ceiling', () => {
-    const line = ceilingLine({ id: 'g', title: 't', status: 'active', spendUsd: 310, budgetCents: 50_000 });
-    expect(line.text).toBe('$310 of $500');
+  it('reads the ENFORCED spend against the ceiling, with its window', () => {
+    const line = ceilingLine({
+      id: 'g', title: 't', status: 'active',
+      spendUsd: 9_999, spentCents: 31_000, budgetCents: 50_000, budgetWindowSec: 604_800,
+    });
+    expect(line.text).toBe('$310 of $500 per 7d');
     expect(line.pct).toBe(62);
     expect(line.over).toBe(false);
   });
 
   it('flags reaching the ceiling — one of only two things that can stop a goal', () => {
-    const line = ceilingLine({ id: 'g', title: 't', status: 'active', spendUsd: 500, budgetCents: 50_000 });
+    const line = ceilingLine({ id: 'g', title: 't', status: 'active', spentCents: 50_000, budgetCents: 50_000 });
     expect(line.over).toBe(true);
+  });
+
+  it('reads an unmeasured level as unmeasured, never as $0 under the ceiling (WI-1074208)', () => {
+    const line = ceilingLine({ id: 'g', title: 't', status: 'active', spendUsd: 310, budgetCents: 50_000 });
+    expect(line.text).toBe('Unmeasured of $500');
+    expect(line.pct).toBeNull();
+    expect(line.over).toBe(false);
   });
 
   it('says so plainly when no ceiling was set', () => {

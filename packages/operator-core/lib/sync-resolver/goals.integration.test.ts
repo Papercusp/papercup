@@ -130,6 +130,8 @@ async function goal(
     tripwires?: unknown;
     launchSettings?: unknown;
     metadata?: Record<string, unknown> | null;
+    /** ISO; default now(). Attributed spend is bounded below by it. */
+    createdAt?: string;
   } = {},
 ): Promise<void> {
   await sql`
@@ -141,7 +143,7 @@ async function goal(
             ${sql.json((over.tripwires ?? []) as never)},
             ${over.launchSettings === undefined ? null : sql.json(over.launchSettings as never)},
             ${over.metadata === undefined ? null : sql.json(over.metadata as never)},
-            now(), now())
+            COALESCE(${over.createdAt ?? null}::timestamptz, now()), now())
   `;
 }
 
@@ -245,11 +247,11 @@ async function agentOnGoal(ownerId: string, subject: string = GOAL): Promise<voi
   `;
 }
 
-async function usage(slug: string, tsMs: number, costUsd: number): Promise<void> {
+async function usage(slug: string, tsMs: number, costUsd: number, goalId: string | null = null): Promise<void> {
   await sql`
     INSERT INTO harness_shared.agent_usage_samples
-      (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source)
-    VALUES (${WS}, ${tsMs}, ${slug}, ${costUsd}, 'b', 'anthropic', 'sonnet', 'test')
+      (workspace_id, ts, harness_slug, cost_usd, bucket_key, provider, model_class, source, goal_id)
+    VALUES (${WS}, ${tsMs}, ${slug}, ${costUsd}, 'b', 'anthropic', 'sonnet', 'test', ${goalId})
   `;
 }
 
@@ -332,12 +334,15 @@ describe('goals.* resolvers against real SQL', () => {
 
   it('resolveGoalDetail RUNS and returns every section the detail view reads', async () => {
     const { resolveGoalDetail } = await import('./goals');
-    await goal();
+    await goal({ createdAt: '2026-07-01T00:00:00Z' });
     await pot('alpha');
     await workItem('WI-open');
     await workItem('WI-wall', { needsHuman: true });
-    await usage('alpha', Date.parse('2026-08-01T10:00:00Z'), 3);
-    await usage('alpha', Date.parse('2026-08-02T10:00:00Z'), 8);
+    // The chart and the total are the goal-attributed stream (WI-1074208): the
+    // pot-harness sample with no goal_id must NOT appear in either.
+    await usage('alpha', Date.parse('2026-08-01T10:00:00Z'), 3, GOAL);
+    await usage('alpha', Date.parse('2026-08-02T10:00:00Z'), 8, GOAL);
+    await usage('alpha', Date.parse('2026-08-03T10:00:00Z'), 50);
 
     const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
       goal: { id: string } | null;
@@ -354,7 +359,8 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.waitingOnYou.map((w) => w.id)).toEqual(['WI-wall']);
     expect(out.activity).toHaveLength(2);
     expect(out.spendByDay.map((d) => d.day)).toEqual(['2026-08-01', '2026-08-02']);
-    expect(out.spendLabel).toBe('fleet spend');
+    expect((out.goal as { spendUsd?: number | null } | null)?.spendUsd).toBe(11);
+    expect(out.spendLabel).toBe('goal-attributed spend');
     expect(out.goalModeState).toMatchObject({
       status: 'unknown',
       unknown: { code: 'no-canonical-goal-holder' },

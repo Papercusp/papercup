@@ -1368,7 +1368,7 @@ describe('dev:restart staging-sync collision guard', () => {
 
   it('rechecks after the drain and refuses a late collision before audit or spawn', async () => {
     stagingSyncCollisionM.mockResolvedValueOnce(clearStagingSyncCollision()).mockResolvedValueOnce(blocked());
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
       status: 'held',
@@ -1376,8 +1376,8 @@ describe('dev:restart staging-sync collision guard', () => {
       expires_ts: new Date(),
       shared_holders: [],
       fence_seq: 23,
-    } as never);
-    guardM.mockImplementation(runGuard(fenceOk(23)) as never);
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(23)));
 
     const b = body(
       await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }),

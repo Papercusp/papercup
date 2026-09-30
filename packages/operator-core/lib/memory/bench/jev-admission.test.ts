@@ -15,6 +15,7 @@ import {
   evaluateFilterArm,
   gradeDocId,
   JEV_LIST_USD_PER_MILLION_INPUT,
+  negativeJudgePairs,
   parseAdmissionEncoding,
   readCachedScores,
   renderAdmissionMarkdown,
@@ -388,5 +389,23 @@ describe('grade cache (search_judge_grades)', () => {
   it('gradeDocId prefers the stable corpus key', () => {
     expect(gradeDocId({ id: 'x', key: 'k' })).toBe('k');
     expect(gradeDocId({ id: 'x', key: null })).toBe('id:x');
+  });
+
+  it('negativeJudgePairs grades only hard-negative candidates, once per (query, memory) across floors', () => {
+    const floorA = [
+      outcome('hn1', 'hard-negative', [], ['m1', 'm2']),
+      outcome('lg1', 'lexical-gap', ['ans'], ['ans', 'm1']),
+    ];
+    // Arm C's lower floor retrieves the same m1 plus one more for hn1, and a new negative.
+    const floorC = [
+      outcome('hn1', 'hard-negative', [], ['m1', 'm2', 'm3']),
+      outcome('hn2', 'hard-negative', [], ['m4']),
+      outcome('lg1', 'lexical-gap', ['ans'], ['ans', 'm1', 'm5']),
+    ];
+    const pairs = negativeJudgePairs([floorA, floorC]);
+    expect(pairs.map((p) => `${p.queryId}|${p.docId}`)).toEqual(['hn1|m1', 'hn1|m2', 'hn1|m3', 'hn2|m4']);
+    expect(pairs[0].text).toBe('text of m1');
+    // A negative with no floor-surviving candidate contributes nothing to grade.
+    expect(negativeJudgePairs([[outcome('hn9', 'hard-negative', [], [])]])).toEqual([]);
   });
 });

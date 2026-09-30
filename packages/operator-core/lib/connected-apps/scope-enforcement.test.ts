@@ -310,3 +310,47 @@ describe('MCP /api/mcp — app key scope (R-5, R-6)', () => {
     }
   });
 });
+
+// ── A key as the Connect-an-app wizard issues it (WI-10004317) ──────────────────
+// The wizard grants EXACT TOOLS and no capabilities, and real tools declare a capability
+// (`work_items:list` declares `work_items:read`). The fixtures above declare none, which is how
+// an empty tools/list for every real key went unseen until a live run (P-014 B1 run 2).
+
+const DECLARES_CAPABILITY = 'fix:app-read';
+const DECLARED_CAPABILITY = 'fix:read';
+
+describe('a wizard-issued key (exact tools, no capabilities) reaches a tool that declares a capability', () => {
+  beforeEach(() => {
+    registerProjectedTool(echoTool(DECLARES_CAPABILITY, { capabilities: [DECLARED_CAPABILITY] }));
+    db.row = appRow(minted.tokenHash, minted.id, { scopes: { capabilities: [], tools: [DECLARES_CAPABILITY] } });
+  });
+
+  it('MCP tools/list shows the granted tool and nothing else', async () => {
+    const names = await withMcpClient(async (client) => (await client.listTools()).tools.map((t) => t.name));
+    expect(names).toEqual([DECLARES_CAPABILITY]);
+  });
+
+  it('MCP tools/call runs the granted tool as app:<id>', async () => {
+    const res = await withMcpClient((client) => client.callTool({ name: DECLARES_CAPABILITY, arguments: {} }));
+    expect(mcpText(res)).toContain(`app:${minted.id}`);
+    expect(res.isError ?? false).toBe(false);
+    expect(db.runs).toEqual([DECLARES_CAPABILITY]);
+  });
+
+  it('HTTP runs the granted tool as app:<id>', async () => {
+    const res = await httpCall(DECLARES_CAPABILITY, {});
+    expect(res.text).toContain(`app:${minted.id}`);
+    expect(res.status).toBe(200);
+    expect(db.runs).toEqual([DECLARES_CAPABILITY]);
+  });
+
+  it('an ungranted tool declaring the same capability stays hidden and refused', async () => {
+    const other = 'fix:app-read-other';
+    registerProjectedTool(echoTool(other, { capabilities: [DECLARED_CAPABILITY] }));
+    const names = await withMcpClient(async (client) => (await client.listTools()).tools.map((t) => t.name));
+    expect(names).not.toContain(other);
+    const res = await withMcpClient((client) => client.callTool({ name: other, arguments: {} }));
+    expect(res.isError).toBe(true);
+    expect(db.runs).not.toContain(other);
+  });
+});

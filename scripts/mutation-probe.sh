@@ -233,10 +233,12 @@
 # the caller's file may then change without changing this run's program.
 if [ "${MUTATION_PROBE_FROZEN_SOURCE:-}" != "$0" ]; then
   frozen_source="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-source.XXXXXX")" || exit 2
+  original_source="$(realpath -e "$0")" || exit 2
   trap 'rm -f -- "$frozen_source"' EXIT
   cp -- "$0" "$frozen_source" || exit 2
   bash -n "$frozen_source" || exit 2
   export MUTATION_PROBE_FROZEN_SOURCE="$frozen_source"
+  export MUTATION_PROBE_SOURCE_PATH="$original_source"
   exec bash "$frozen_source" "$@"
 fi
 trap 'rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"' EXIT
@@ -671,7 +673,15 @@ if [ "$IN_TREE" -eq 1 ]; then
   PROBE_MANIFEST="$ADMISSION_DIR/original.manifest"
   exec {PROBE_ADMISSION_FD}>"$ADMISSION_DIR/admission.lock"
   flock -x "$PROBE_ADMISSION_FD" || die "cannot acquire mutation admission lock"
-  [ ! -e "$PROBE_MANIFEST" ] || die "another mutation probe has an active or orphaned snapshot: $PROBE_MANIFEST"
+  source "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/mutation-probe-admission.sh"
+  if [ -e "$PROBE_MANIFEST" ]; then
+    probe_admission_read_manifest "$ADMISSION_ROOT" "$PROBE_MANIFEST" ||
+      die "another mutation probe has an invalid snapshot manifest: $PROBE_MANIFEST"
+    probe_admission_owner_alive &&
+      die "another mutation probe has an active snapshot: $PROBE_MANIFEST"
+    probe_admission_recover_orphan "$ADMISSION_ROOT" "$PROBE_MANIFEST" ||
+      die "could not safely recover orphaned mutation-probe snapshot: $PROBE_MANIFEST"
+  fi
 fi
 BASE="$SCRATCH/$(basename "$FILE").orig"
 cp "$FILE" "$BASE" || die "could not snapshot $FILE"

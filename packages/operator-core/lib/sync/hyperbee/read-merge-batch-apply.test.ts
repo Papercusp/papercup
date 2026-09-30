@@ -74,6 +74,10 @@ class FakeDb {
 
   private async exec(text: string, vals: unknown[], reserved: boolean): Promise<Result> {
     this.statements.push(text.startsWith('WRITE') ? `WRITE ${String(vals[0])}` : text);
+    const hang = text.startsWith('WRITE ')
+      ? this.hangs.get(String(vals[0]))
+      : this.hangs.get(text);
+    if (hang) await hang;
     const verb = text.split(' ')[0];
     const top = () => this.stack![this.stack!.length - 1]!;
     switch (text) {
@@ -109,8 +113,6 @@ class FakeDb {
     }
     if (verb !== 'WRITE') throw new Error(`unexpected statement ${text}`);
     const key = String(vals[0]);
-    const hang = this.hangs.get(key);
-    if (hang) await hang;
     if (this.failWrites.has(key)) throw Object.assign(new Error(`fk violation on ${key}`), { code: '23503' });
     if (reserved && this.stack) top().set(key, vals[1]);
     else this.committed.set(key, vals[1]);
@@ -348,6 +350,38 @@ describe('P-002 step 2: batched fold commits', () => {
     });
     expect([...db.committed.keys()].sort()).toEqual(['k0', 'k1', 'k2', 'k2-extra', 'k3', 'k4']);
     expect(cursor.positions.get('A')).toBe(5);
+  });
+
+  it('bounds a rollback stranded on the reserved connection and rewinds the batch', async () => {
+    const db = new FakeDb();
+    db.failWrites.add('k0');
+    let releaseRollback: () => void = () => {};
+    db.hangs.set(
+      'ROLLBACK TO SAVEPOINT read_merge_op',
+      new Promise<void>((resolve) => {
+        releaseRollback = resolve;
+      }),
+    );
+    const cursor = createMergeCursor();
+    const startedAt = Date.now();
+
+    const res = await mergeAdmittedLogsIncremental([memLog('A', [put('k0', 1000, { k: 0 })])], cursor, {
+      applyImpl: sink(db),
+      getTimeoutMs: 0,
+      batchApply: { maxOps: 50, commitTimeoutMs: 20, ...NO_AGE_BOUND },
+    });
+
+    // The fake connection is FIFO: this query never resolves, so later statements
+    // remain queued as they do on postgres.js 3.4.9 after its server connection dies.
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(res.batch?.rewinds).toBe(1);
+    expect(cursor.positions.get('A')).toBe(0);
+    expect(cursor.winners.size).toBe(0);
+
+    // Let the simulated dead connection drain so the test leaves no delayed release behind.
+    db.hangs.delete('ROLLBACK TO SAVEPOINT read_merge_op');
+    releaseRollback();
+    await vi.waitFor(() => expect(db.releases).toBe(db.reserves));
   });
 
   it('a sink that never asks for the batch handle runs exactly as the serial path', async () => {

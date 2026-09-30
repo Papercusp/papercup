@@ -511,10 +511,38 @@ export function resolveOperatorTarget({
           `this session bypasses deploy-restart resilience (WI-1457). Unset the override (or point it at :${proxyPort}) to ride the proxy.`,
       );
     }
+    // EI-24402391758483336: the staging host (:3170) restarts on every staging sync
+    // and deploy, so a direct :3170 pin is refused for a whole restart window — psu
+    // fails ("refused connections for 30s") and a session's MCP goes dark. When the
+    // staging proxy (:9171 → :3170, papercup-mcp-proxy-staging.service) is live,
+    // ride it instead: it fronts the SAME operator (single-candidate, fail-closed),
+    // so the pin's build choice is preserved while restarts become invisible.
+    // Launched children inherit the proxied URL (env.PAPERCUSP_OPERATOR_URL below).
+    const stagingProxyPort =
+      Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) > 0
+        ? Number(env.PAPERCUSP_MCP_STAGING_PROXY_PORT)
+        : 9171;
+    const pinsStaging = /^https?:\/\/(127\.0\.0\.1|localhost):3170$/.test(pinned);
+    const stagingProxy = `http://127.0.0.1:${stagingProxyPort}`;
+    const source =
+      env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
+        ? "managed-env" : "env";
+    if (
+      pinsStaging &&
+      env.PAPERCUSP_MCP_STAGING_PROXY !== "0" &&
+      !proxyOptedOut &&
+      probe(stagingProxyPort)
+    ) {
+      warn(
+        `psu: PAPERCUSP_OPERATOR_URL pins staging ${pinned}; routing through the staging proxy ${stagingProxy} ` +
+          `(same operator) so its restarts don't drop this launch or its sessions (EI-24402391758483336). ` +
+          `PAPERCUSP_MCP_STAGING_PROXY=0 connects directly.`,
+      );
+      return { url: stagingProxy, source, startedAt: null };
+    }
     return {
       url: pinned,
-      source: env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
-        ? "managed-env" : "env",
+      source,
       startedAt: null,
     };
   }

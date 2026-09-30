@@ -24,9 +24,10 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createTextCollector } from './child-output';
 
 /**
@@ -1038,6 +1039,99 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     ).toBe(0);
     expect(read()).toBe(ORIGINAL);
   });
+
+  it('restores and clears an orphaned admission manifest after the probe is killed before its trap', async () => {
+    const marker = join(dir, 'guard.pid');
+    const command =
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then ' +
+      'printf "%s\\n" "$BASHPID" > ' +
+      JSON.stringify(marker) +
+      '; exec sleep 20; fi; grep -q "^beta$" {}';
+    const child = spawn(
+      'bash',
+      [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject, '--mutate', 's/beta/BETA/', '--test', command],
+      { stdio: 'ignore' },
+    );
+    const childExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+      child.once('close', (code, signal) => resolveExit({ code, signal }));
+    });
+    let guardPid = 0;
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
+      expect(existsSync(marker)).toBe(true);
+      guardPid = Number(readFileSync(marker, 'utf8').trim());
+      expect(Number.isInteger(guardPid) && guardPid > 0).toBe(true);
+      expect(read()).toBe('alpha\nBETA\ngamma\n');
+
+      child.kill('SIGKILL');
+      const outcome = await Promise.race([childExit, sleep(10_000).then(() => null)]);
+      expect(outcome).toEqual({ code: null, signal: 'SIGKILL' });
+      try { process.kill(guardPid, 'SIGKILL'); } catch { /* the probe may have reaped it first */ }
+
+      const root = realpathSync(dir);
+      const key = createHash('sha256').update(root).digest('hex');
+      const admissionDir = join('/tmp', 'papercusp-mutation-probe-' + process.getuid() + '-' + key);
+      const manifest = join(admissionDir, 'original.manifest');
+      expect(existsSync(manifest)).toBe(true);
+      const fields = readFileSync(manifest, 'utf8').split('\0');
+      const scratchDir = dirname(fields[2]);
+
+      const recovered = spawnSync('bash', [OVERLAY, root, '--', 'cat', subject], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      expect(recovered.status, recovered.stderr).toBe(0);
+      expect(recovered.stdout).toBe(ORIGINAL);
+      expect(read()).toBe(ORIGINAL);
+      expect(existsSync(manifest)).toBe(false);
+      expect(existsSync(scratchDir)).toBe(false);
+
+      const secondMarker = join(dir, 'guard-direct.pid');
+      const secondCommand =
+        'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then ' +
+        'printf "%s\\n" "$BASHPID" > ' +
+        JSON.stringify(secondMarker) +
+        '; exec sleep 20; fi; grep -q "^beta$" {}';
+      const secondChild = spawn(
+        'bash',
+        [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject, '--mutate', 's/beta/BETA/', '--test', secondCommand],
+        { stdio: 'ignore' },
+      );
+      let secondGuardPid = 0;
+      const secondChildExit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+        secondChild.once('close', (code, signal) => resolveExit({ code, signal }));
+      });
+      try {
+        const secondDeadline = Date.now() + 10_000;
+        while (!existsSync(secondMarker) && Date.now() < secondDeadline) await sleep(25);
+        expect(existsSync(secondMarker)).toBe(true);
+        secondGuardPid = Number(readFileSync(secondMarker, 'utf8').trim());
+        expect(Number.isInteger(secondGuardPid) && secondGuardPid > 0).toBe(true);
+        secondChild.kill('SIGKILL');
+        const secondOutcome = await Promise.race([secondChildExit, sleep(10_000).then(() => null)]);
+        expect(secondOutcome).toEqual({ code: null, signal: 'SIGKILL' });
+        try { process.kill(secondGuardPid, 'SIGKILL'); } catch { /* the probe may have reaped it first */ }
+        const secondScratchDir = dirname(readFileSync(manifest, 'utf8').split('\0')[2]);
+
+        expect(runProbe(['--in-tree', ACCEPT_SWEEP, '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'grep -q "^beta$" {}']))
+          .toBe(0);
+        expect(read()).toBe(ORIGINAL);
+        expect(existsSync(manifest)).toBe(false);
+        expect(existsSync(secondScratchDir)).toBe(false);
+      } finally {
+        if (secondChild.exitCode === null && secondChild.signalCode === null) secondChild.kill('SIGKILL');
+        if (secondGuardPid > 0) {
+          try { process.kill(secondGuardPid, 'SIGKILL'); } catch { /* already exited */ }
+        }
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (guardPid > 0) {
+        try { process.kill(guardPid, 'SIGKILL'); } catch { /* already exited */ }
+      }
+    }
+  }, 30_000);
 
   /**
    * EI-19455888914364007 — the `{}` requirement is MODE-SPECIFIC, and this pins the asymmetry

@@ -101,6 +101,15 @@ export function savePsuConnectionStore(store: any, path?: string): void;
 export function describePsuConnectionProfile(profile: any): string;
 export function describeHostedWorkspace(profile: any, workspace: any, now?: number): string;
 /**
+ * The line psu types into the shell on a hosted workspace. Papercusp-hosted
+ * machines do not install psu for the workspace account yet (WI-10003949), and
+ * a bare `exec` of a missing program exits 127 and closes the connection. So
+ * the program is started only when the shell finds it; otherwise the shell says
+ * so and stays open. The trailing CR is the Enter key: the remote terminal
+ * turns it into a newline.
+ */
+export function hostedForwardInput(program: any, forwardedArgv: any): string;
+/**
  * @returns {Promise<{ handled: boolean, argv: string[], exitCode?: number }>}
  */
 export function runPsuConnectionFrontController(argv: any, overrides?: {}): Promise<{

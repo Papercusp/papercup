@@ -453,6 +453,16 @@ vi.mock('../su-session-claude-engine', async (original) => {
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
+/**
+ * The TUI's held-key repeat window (P-015), read from its Rust source so the
+ * P-015 harness precondition cannot drift from the product constant.
+ */
+const TUI_CARD_REPEAT_WINDOW_MS = (() => {
+  const source = readFileSync(path.join(TUI_DIR, 'src', 'card_view.rs'), 'utf8');
+  const match = /pub const CARD_REPEAT_WINDOW: Duration = Duration::from_millis\((\d+)\);/.exec(source);
+  if (!match) throw new Error('CARD_REPEAT_WINDOW is no longer a from_millis constant in apps/tui/src/card_view.rs');
+  return Number(match[1]);
+})();
 
 vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
@@ -1295,8 +1305,21 @@ async function waitForCorrelatedReply(
  * the marker instead of copying it. `reply` is what the screen shows;
  * `replyPattern` tolerates the backticks, quotes or full stop a model may add
  * around the code, while the code itself stays exact.
+ *
+ * The code must stay short: a real Claude model asked to uppercase a
+ * 36-character UUID code typed one character twice (…0FC6EEA2 for …0FC6EA2) on
+ * an otherwise correct answer (WI-10004247 H2, rehearsal 0f06f9d5d6). Build
+ * codes from `shortMarkerId()`; a longer code is refused here.
  */
+const MAX_MARKER_LENGTH = 32;
+/** Eight random hex characters: unique within one acceptance run, easy to copy. */
+function shortMarkerId(): string {
+  return randomUUID().slice(0, 8);
+}
 function markerRequest(marker: string, lead = ''): { prompt: string; reply: string; replyPattern: RegExp } {
+  if (marker.length > MAX_MARKER_LENGTH) {
+    throw new Error(`markerRequest code ${JSON.stringify(marker)} is longer than ${MAX_MARKER_LENGTH} characters; build it from shortMarkerId()`);
+  }
   const reply = marker.toUpperCase();
   const escaped = reply.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return {
@@ -1891,6 +1914,17 @@ beforeEach(async () => {
         traceTiming('diagnostic-warning', { label: args[0] });
         timeoutDegradations.push(args[0]);
         console.info('PUI_TIMEOUT_DEGRADATION_DIAGNOSTIC', args[0]);
+      } else if (args.length === 1 && typeof args[0] === 'string'
+        && /^\[su-launch\] \S+ (stage=\S+ took \d+ms|not finished after \d+ms; stalled in stage=\S+ for \d+ms)$/.test(args[0])) {
+        // The launch stage tracer (su-session-attached-launch.ts) reports a slow
+        // or still-running launch step so a stall names its step. On a slow
+        // host that report is advisory, like D-024's degradations: the
+        // journey's own readiness assertions judge the launch. Rehearsal
+        // 0f06f9d5d6 failed a passing native-question journey on
+        // `stage=persist-descriptor took 11239ms` (WI-10004247 H1).
+        traceTiming('diagnostic-warning', { label: args[0] });
+        timeoutDegradations.push(args[0]);
+        console.info('PUI_LAUNCH_TIMING_DIAGNOSTIC', args[0]);
       } else {
         warn(...args);
       }
@@ -5888,6 +5922,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     scriptedEngine.mode = 'approval';
     const pane = new PuiPane(bin, operatorPort, home);
     let repeatsSent = 0;
+    // When each held-key byte was written, so a starved timer is visible.
+    const holdSentAtMs: number[] = [];
+    let holdGapMs = 0;
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval collapse probe');
       const peerCommand = String(peer.input.command);
@@ -5896,9 +5933,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       const before = pane.rawSince(0).length;
 
       pane.write('1'); // Approve — then hold it.
+      holdSentAtMs.push(performance.now());
       const repeat = setInterval(() => {
         pane.write('1');
         repeatsSent += 1;
+        holdSentAtMs.push(performance.now());
       }, 50);
       try {
         await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), {
@@ -5913,6 +5952,23 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
         clearInterval(repeat);
       }
       expect(repeatsSent).toBeGreaterThan(10);
+
+      // Harness precondition, judged BEFORE the product. The TUI treats the
+      // answering key as a repeat only while presses arrive less than
+      // CARD_REPEAT_WINDOW apart (apps/tui/src/card_view.rs); a later press is
+      // deliberately a fresh answer. A test worker that stalls for longer than
+      // that has stopped holding the key, so a second verdict would be the
+      // designed behaviour, not a defect. Rehearsal 0f06f9d5d6 measured exactly
+      // that: observerMaxLateMs 1616 and 11 repeats in a hold of several
+      // seconds (WI-10004247 H3).
+      holdGapMs = Math.max(0, ...holdSentAtMs.slice(1).map((at, i) => at - holdSentAtMs[i]!));
+      if (holdGapMs >= TUI_CARD_REPEAT_WINDOW_MS) {
+        throw new Error(
+          `HARNESS STALL, not a product verdict: the held Approve key went ${Math.round(holdGapMs)}ms without a `
+            + `repeat (the TUI's repeat window is ${TUI_CARD_REPEAT_WINDOW_MS}ms), so the test worker stopped `
+            + `holding the key${describeObserverBlock(Math.round(holdGapMs))}`,
+        );
+      }
 
       // The held key answered exactly the focused request, once.
       expect(scriptedEngine.approvalVerdicts).toHaveLength(1);
@@ -5945,13 +6001,14 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(scriptedEngine.approvalVerdicts[1]).toMatchObject({ tag: peer.tag, verdict: { behavior: 'deny' } });
       console.info(
         'PUI_P015_ACCEPTANCE',
-        JSON.stringify({ binary: bin, binarySha256, approved: focused.tag, repeatsSent, approvedAt, peerAt,
+        JSON.stringify({ binary: bin, binarySha256, approved: focused.tag, repeatsSent, holdGapMs, approvedAt, peerAt,
           peerDeclined: peer.tag }),
       );
     } catch (error) {
       console.info(
         'PUI_P015_FAILURE',
-        JSON.stringify({ ...pane.failureEvidence(), repeatsSent, verdicts: scriptedEngine.approvalVerdicts, cardReplies }),
+        JSON.stringify({ ...pane.failureEvidence(), repeatsSent, holdGapMs, verdicts: scriptedEngine.approvalVerdicts,
+          cardReplies }),
       );
       throw error;
     } finally {
@@ -6513,7 +6570,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
 
   test('restores the same native conversation after the operator OS process exits', async () => {
     const manifest = installedManifest();
-    const processMarker = `pui-process-${randomUUID()}`;
+    const processMarker = `pui-process-${shortMarkerId()}`;
     const { prompt: greeting, reply: greetingReply } = markerRequest(processMarker);
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
     const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
@@ -6790,7 +6847,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   // advance by exactly one. PUI_RESUME_REPEAT sets N (default 3).
   test('exact resume reaches readiness on every repetition without a startup timeout', async () => {
     const repeats = Math.max(1, Number(process.env.PUI_RESUME_REPEAT ?? '3'));
-    const nonce = randomUUID();
+    const nonce = shortMarkerId();
     const { prompt: greeting, reply: greetingReply, replyPattern: greetingReplyPattern } =
       markerRequest(`pui-repeat-${nonce}`);
     const eventsBefore = scriptedEngine.events.length;
@@ -6850,7 +6907,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
 
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();
-    const nonce = randomUUID();
+    const nonce = shortMarkerId();
     const { prompt: greeting, reply: greetingReply, replyPattern: greetingReplyPattern } =
       markerRequest(`pui-hello-${nonce}`, 'Hi. ');
     // The answer is intentionally absent from the request: only reading this

@@ -548,6 +548,35 @@ export function gradeDocId(c: Pick<CandidateHit, 'id' | 'key'>): string {
   return c.key ?? `id:${c.id}`;
 }
 
+/** One (hard-negative query, retrieved memory) pair to grade with the LLM relevance judge. */
+export interface NegativeJudgePair {
+  readonly queryId: string;
+  readonly docId: string;
+  readonly text: string;
+}
+
+/**
+ * The distinct (query, memory) pairs that survive the cosine floor for HARD-NEGATIVE
+ * queries, across every replay passed in (arm A's floor and arm C's lower floor).
+ * These are the only pairs that can make a hard negative count as "admitted", so
+ * grading them is what verifies the label: a pair the judge calls relevant means the
+ * query is not really off-topic and must be replaced (jev-performance P-002).
+ */
+export function negativeJudgePairs(runs: readonly (readonly QueryOutcome[])[]): NegativeJudgePair[] {
+  const seen = new Map<string, NegativeJudgePair>();
+  for (const outcomes of runs) {
+    for (const o of outcomes) {
+      if (o.expected.length !== 0) continue;
+      for (const c of o.candidates ?? []) {
+        const docId = gradeDocId(c);
+        const k = `${o.queryId}|${docId}`;
+        if (!seen.has(k)) seen.set(k, { queryId: o.queryId, docId, text: c.text });
+      }
+    }
+  }
+  return [...seen.values()];
+}
+
 interface CachedGradeRow {
   doc_id: string;
   doc_text_hash: string;

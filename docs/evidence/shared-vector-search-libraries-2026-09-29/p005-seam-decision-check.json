@@ -3,7 +3,11 @@
   "kind": "operational-test-evidence",
   "name": "SPEC-P-005-SEAM-DECISION: a plan Decision assigns every backfill responsibility named in P-005 to either the generic sweep or a papercusp hook",
   "framework": "operational",
-  "command": "plans:items { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', item: 'P-005' } (oracle: the responsibility list) ; plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-004' } (subject: the seam) ; grep -n -F <symbol> packages/operator-core/lib/search/embed-backfill.ts (instrument: each responsibility exists in today's source)",
+  "command": [
+    "plans:items { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', item: 'P-005' }",
+    "plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-004' }",
+    "grep -n -F <symbol> packages/operator-core/lib/search/embed-backfill.ts"
+  ],
   "exitCode": 0,
   "startedAt": "2026-09-30T15:41:00Z",
   "finishedAt": "2026-09-30T15:45:00Z",

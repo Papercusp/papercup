@@ -236,15 +236,25 @@ describe('goalColumn', () => {
 });
 
 describe('goalSpendLabel', () => {
-  it('shows spend against the ceiling when one is set', () => {
-    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 310, budgetCents: 50_000 }))
-      .toBe('$310 / $500');
+  it('shows the ENFORCED spend against the ceiling when one is set', () => {
+    // The ceiling is judged on the rollup snapshot (spentCents), never on the
+    // lifetime figure — a lifetime $9,999 must not read as over a weekly $500.
+    expect(
+      goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 9_999, spentCents: 31_000, budgetCents: 50_000 }),
+    ).toBe('$310 / $500');
+  });
+  it('names the rolling window the ceiling applies to', () => {
+    expect(
+      goalSpendLabel({ id: 'g', title: 't', status: 'active', spentCents: 31_000, budgetCents: 50_000, budgetWindowSec: 604_800 }),
+    ).toBe('$310 / $500 per 7d');
   });
   it('shows bare spend when no ceiling was set', () => {
     expect(goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 310 })).toBe('$310');
   });
-  it('reads a missing spend as zero, not NaN', () => {
-    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active' })).toBe('$0');
+  it('reads a missing spend as UNMEASURED, never $0 (WI-1074208)', () => {
+    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active' })).toBe('spend unmeasured');
+    expect(goalSpendLabel({ id: 'g', title: 't', status: 'active', spendUsd: 310, budgetCents: 50_000 }))
+      .toBe('unmeasured / $500');
   });
 });
 
@@ -274,13 +284,22 @@ describe('goalBurn — the RATE behind the level (P-003)', () => {
 
   it('reports a MEASURED zero as a real answer, distinct from no reading at all', () => {
     const burn = goalBurn(
-      g({ spendUsd: 400, budgetCents: 50_000, spendRecentUsd: 0, spendRecentWindowDays: 7 }),
+      g({ spentCents: 40_000, budgetCents: 50_000, spendRecentUsd: 0, spendRecentWindowDays: 7 }),
       NOW,
     );
     expect(burn).not.toBeNull();
     expect(burn!.perDayUsd).toBe(0);
     // Named, not blank: the goal is idle against a real ceiling, worth SAYING.
     expect(burn!.etaAbsent).toBe('no-recent-spend');
+  });
+
+  it('names an UNMEASURED enforced level instead of projecting from a guessed zero', () => {
+    const burn = goalBurn(
+      g({ spendUsd: 400, budgetCents: 50_000, spendRecentUsd: 70, spendRecentWindowDays: 7 }),
+      NOW,
+    )!;
+    expect(burn.etaAbsent).toBe('spend-unmeasured');
+    expect(burn.ceilingEtaMs).toBeNull();
   });
 
   it('reports the MISSING CEILING ahead of the rate, because it is the more basic fact', () => {
@@ -322,7 +341,7 @@ describe('goalBurn — the RATE behind the level (P-003)', () => {
     // The lifetime average over 90 days would be $3.33/day and put the ceiling
     // 60 days out — which is exactly the misreading this item is about.
     const burn = goalBurn(
-      g({ spendUsd: 300, budgetCents: 50_000, spendRecentUsd: 70, spendRecentWindowDays: 7 }),
+      g({ spentCents: 30_000, budgetCents: 50_000, spendRecentUsd: 70, spendRecentWindowDays: 7 }),
       NOW,
     )!;
     expect(burn.etaAbsent).toBeNull();
@@ -333,12 +352,12 @@ describe('goalBurn — the RATE behind the level (P-003)', () => {
     const base = { spendRecentUsd: 70, spendRecentWindowDays: 7 };
     expect(goalBurn(g({ ...base, spendUsd: 10 }), NOW)!.etaAbsent).toBe('no-ceiling');
     expect(
-      goalBurn(g({ ...base, spendUsd: 600, budgetCents: 50_000 }), NOW)!.etaAbsent,
+      goalBurn(g({ ...base, spentCents: 60_000, budgetCents: 50_000 }), NOW)!.etaAbsent,
     ).toBe('already-over');
     // A ceiling reachable only in ~2000 years is arithmetic, not information.
     expect(
       goalBurn(
-        g({ spendUsd: 0, budgetCents: 5_000_000, spendRecentUsd: 0.7, spendRecentWindowDays: 7 }),
+        g({ spentCents: 0, budgetCents: 5_000_000, spendRecentUsd: 0.7, spendRecentWindowDays: 7 }),
         NOW,
       )!.etaAbsent,
     ).toBe('beyond-horizon');
@@ -380,11 +399,22 @@ describe('buildGoalBoard', () => {
 
   it('flags spend at or over the ceiling with the alarm tone', () => {
     const board = buildGoalBoard(
-      [{ id: 'g1', title: 'Ship', status: 'active', spendUsd: 310, budgetCents: 30_000 }],
+      [{ id: 'g1', title: 'Ship', status: 'active', spentCents: 31_000, budgetCents: 30_000 }],
       { nowMs: NOW },
     );
     const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
     expect(card.badges.find((b) => b.id === 'g1:spend')?.tone).toBe('bad');
+  });
+
+  it('never alarms on an UNMEASURED level, and says it is unmeasured', () => {
+    const board = buildGoalBoard(
+      [{ id: 'g1', title: 'Ship', status: 'active', spendUsd: 310, budgetCents: 30_000 }],
+      { nowMs: NOW },
+    );
+    const card = board.columns.flatMap((c) => c.cards).find((c) => c.id === 'g1')!;
+    const spend = card.badges.find((b) => b.id === 'g1:spend')!;
+    expect(spend.tone).toBe('neutral');
+    expect(spend.label).toBe('unmeasured / $300');
   });
 
   it('leaves spend below the ceiling neutral', () => {
@@ -523,7 +553,7 @@ describe('buildGoalBoard', () => {
   it('promotes the projected ceiling date onto the label when it is close enough to act on', () => {
     // $350 over 7d = $50/day against $200 of headroom -> 4 days out.
     const badge = burnBadge({
-      spendUsd: 300,
+      spentCents: 30_000,
       budgetCents: 50_000,
       spendRecentUsd: 350,
       spendRecentWindowDays: 7,
@@ -535,7 +565,7 @@ describe('buildGoalBoard', () => {
   it('keeps a distant projection to the rate alone, so only real warnings shout', () => {
     // $70 over 7d = $10/day against $200 of headroom -> 20 days out.
     const badge = burnBadge({
-      spendUsd: 300,
+      spentCents: 30_000,
       budgetCents: 50_000,
       spendRecentUsd: 70,
       spendRecentWindowDays: 7,
@@ -558,7 +588,7 @@ describe('buildGoalBoard', () => {
     // has been passed would be noise contradicting it.
     expect(
       burnBadge({
-        spendUsd: 600,
+        spentCents: 60_000,
         budgetCents: 50_000,
         spendRecentUsd: 70,
         spendRecentWindowDays: 7,
@@ -1229,7 +1259,7 @@ describe('buildGoalBoard — subdirectives (P-017)', () => {
 
   /** Parent + two children, the fixture both item texts call for. */
   const FAMILY: HudGoalInput[] = [
-    { id: 'parent', title: 'Ship a paid app', status: 'active', spendUsd: 300, budgetCents: 50_000 },
+    { id: 'parent', title: 'Ship a paid app', status: 'active', spendUsd: 300, spentCents: 30_000, budgetCents: 50_000 },
     { id: 'kid1', title: 'Rewrite onboarding', status: 'active', parentId: 'parent', spendUsd: 120 },
     { id: 'kid2', title: 'Cut the trial to 7 days', status: 'achieved', parentId: 'parent', spendUsd: 80 },
   ];

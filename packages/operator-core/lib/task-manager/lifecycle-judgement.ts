@@ -14,6 +14,7 @@
  * task-manager process through the existing identity-safe control primitives.
  */
 
+import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 
 import { getOrgPg } from '@papercusp/db-org';
@@ -21,7 +22,7 @@ import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracl
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { mergeWorkItemPayload } from '../work-items';
+import { claimWorkItem, mergeWorkItemPayload, releaseWorkItem } from '../work-items';
 import { getTask, listLifecycleJudgementTasks, mergeTaskLifecycleProbes } from './store';
 import { killScopeUnit, killTask, type ControlOutcome, type ScopeControlOutcome } from './control';
 import { isAutoReapExempt, isTerminalState, type TaskRow } from './types';
@@ -129,6 +130,8 @@ export interface OpenLifecycleCandidateItem {
   harnessSlug: string | null;
   /** A claim is dispatch ownership, even when the item still has open status. */
   takenBy?: string | null;
+  /** Issue-family work-items store their claim holder in `assignee`, not `taken_by`. */
+  assignee?: string | null;
 }
 
 export interface LifecycleJudgementDeps {
@@ -144,10 +147,16 @@ export interface LifecycleJudgementDeps {
     fallbackHarness: string,
   ): Promise<{ id: string | null }>;
   listOpenCandidateItems(workspaceId: string): Promise<OpenLifecycleCandidateItem[]>;
+  claimOpenCandidateItems(
+    items: readonly OpenLifecycleCandidateItem[],
+    assignee: string,
+  ): Promise<OpenLifecycleCandidateItem[]>;
+  releaseCandidateItems(items: readonly OpenLifecycleCandidateItem[], expectedAssignee: string): Promise<void>;
   spawnJudge(input: {
     workspaceId: string;
     harnessSlug: string;
     idempotencyKey: string;
+    spawnId: string;
     brief: string;
   }): Promise<{ ok: boolean; spawnId: string | null; deduped?: boolean; error?: string | null }>;
 }
@@ -592,10 +601,32 @@ export async function runLifecycleJudgementSweep(
   const open = (await deps.listOpenCandidateItems(input.workspaceId)).filter(
     (item) =>
       !item.takenBy &&
+      !item.assignee &&
       !settledVerdictTaskIds.has(item.taskId) &&
       latestVerdicts.get(item.taskId)?.decision !== 'gone',
   );
   if (open.length === 0) {
+    return {
+      rowsInspected: rows.length,
+      candidates: evaluation.candidates.length,
+      suppressedByKeep: evaluation.suppressedByKeep.length,
+      suppressedByVerdict: evaluation.suppressedByVerdict.length,
+      probesPersisted,
+      enforcement,
+      candidateItems,
+      openItems: [],
+      judge: { attempted: false, idempotencyKey: null },
+    };
+  }
+
+  // Reserve ownership before the asynchronous child boot. The first version
+  // spawned an agent and left the candidate rows unclaimed until its first turn;
+  // an hourly boundary could then use a new idempotency key to launch a duplicate.
+  // `spawnAgentInHarness` accepts a pre-minted spawnId, so the child owns exactly
+  // the same claims when it starts and can idempotently claim them again in its brief.
+  const spawnId = `s-${nowMs}-${randomUUID().slice(0, 8)}`;
+  const claimed = await deps.claimOpenCandidateItems(open, spawnId);
+  if (claimed.length === 0) {
     return {
       rowsInspected: rows.length,
       candidates: evaluation.candidates.length,
@@ -614,8 +645,15 @@ export async function runLifecycleJudgementSweep(
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,
     idempotencyKey,
-    brief: lifecycleJudgeBrief(open),
+    spawnId,
+    brief: lifecycleJudgeBrief(claimed),
   });
+  // A failure or an idempotency hit on a different spawn did not attach this
+  // preclaim to a child. Compare-and-release only our own claims; a concurrent
+  // holder can never be cleared by this recovery path.
+  if (!spawned.ok || spawned.deduped || spawned.spawnId !== spawnId) {
+    await deps.releaseCandidateItems(claimed, spawnId);
+  }
   return {
     rowsInspected: rows.length,
     candidates: evaluation.candidates.length,
@@ -624,7 +662,7 @@ export async function runLifecycleJudgementSweep(
     probesPersisted,
     enforcement,
     candidateItems,
-    openItems: open.map((item) => item.id),
+    openItems: claimed.map((item) => item.id),
     judge: {
       attempted: true,
       idempotencyKey,
@@ -722,17 +760,25 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
 
   async listOpenCandidateItems(workspaceId) {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ id: string; task_id: string; harness_slug: string | null; taken_by: string | null }>>`
+    const rows = await sql<Array<{
+      id: string;
+      task_id: string;
+      harness_slug: string | null;
+      taken_by: string | null;
+      assignee: string | null;
+    }>>`
       SELECT feature_id AS id,
              payload #>> '{processLifecycleCandidate,taskId}' AS task_id,
-             harness_slug, taken_by
+             harness_slug, taken_by, assignee
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          -- Open is not unclaimed: the judge leaves status open while working.
-         -- A dead holder is released by the existing stale-claim reaper;
-         -- do not launch another judge against a still-owned candidate.
+         -- Feature-family rows store their holder in taken_by; issue-family rows
+         -- store it in assignee. A dead holder is released by the stale-claim
+         -- reaper; do not launch another judge against either still-owned form.
          AND (taken_by IS NULL OR taken_by = '')
+         AND (assignee IS NULL OR assignee = '')
          AND COALESCE(payload #>> '{processLifecycleCandidate,taskId}', '') <> ''
        ORDER BY updated_ts ASC, feature_id ASC
     `;
@@ -741,10 +787,29 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       taskId: row.task_id,
       harnessSlug: row.harness_slug ?? null,
       takenBy: row.taken_by,
+      assignee: row.assignee,
     }));
   },
 
-  spawnJudge: ({ workspaceId, harnessSlug, idempotencyKey, brief }) =>
+  async claimOpenCandidateItems(items, assignee) {
+    const claimed: OpenLifecycleCandidateItem[] = [];
+    for (const item of items) {
+      const result = await claimWorkItem(item.id, assignee, { harness: item.harnessSlug ?? undefined });
+      if (result) claimed.push({ ...item, takenBy: assignee, assignee });
+    }
+    return claimed;
+  },
+
+  async releaseCandidateItems(items, expectedAssignee) {
+    await Promise.all(items.map((item) => releaseWorkItem(item.id, {
+      harness: item.harnessSlug ?? undefined,
+      expectedAssignee,
+      releasingOwnerId: expectedAssignee,
+      announceClaimable: false,
+    })));
+  },
+
+  spawnJudge: ({ workspaceId, harnessSlug, idempotencyKey, spawnId, brief }) =>
     spawnAgentInHarness({
       workspaceId,
       harness: harnessSlug,
@@ -753,6 +818,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       tier: 'quick',
       accountOverride: 'auto',
       brief,
+      spawnId,
       spawnCaller: 'task-manager/lifecycle-judgement',
       parentRole: 'system:task-reconcile',
       turnTrigger: 'cron',

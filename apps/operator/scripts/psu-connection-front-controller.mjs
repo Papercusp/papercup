@@ -1091,6 +1091,22 @@ async function awaitHostedLink(profile, workspace, budget, deps) {
   );
 }
 
+/**
+ * The line psu types into the shell on a hosted workspace. Papercusp-hosted
+ * machines do not install psu for the workspace account yet (WI-10003949), and
+ * a bare `exec` of a missing program exits 127 and closes the connection. So
+ * the program is started only when the shell finds it; otherwise the shell says
+ * so and stays open. The trailing CR is the Enter key: the remote terminal
+ * turns it into a newline.
+ */
+export function hostedForwardInput(program, forwardedArgv) {
+  const start = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}${forwardedArgv
+    .map((cell) => ` ${shellQuote(cell)}`)
+    .join("")}`;
+  const missing = `${program} cannot start on this cloud workspace yet, so you are in its shell. Start agents from New Session in the portal; type exit to leave.`;
+  return `command -v ${program} >/dev/null && ${start}; printf '%s\\n' ${shellQuote(missing)}\r`;
+}
+
 async function runHostedConnection(profile, workspaceId, forwardedArgv, transport, pickerAllowed, deps) {
   const budget = { polls: HOSTED_RECONNECT_POLLS };
   const workspaces = await listHostedWorkspaces(profile, deps);
@@ -1137,9 +1153,7 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
   const session =
     transport.sessionKey ??
     hostedSessionKey(profile, workspace.id, forwardedArgv, program);
-  const initialInput = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}${forwardedArgv
-    .map((cell) => ` ${shellQuote(cell)}`)
-    .join("")}\r`;
+  const initialInput = hostedForwardInput(program, forwardedArgv);
   // Each pass mints a fresh single-use ticket; the same session key means a
   // retry lands on the same shell if one was already started.
   for (;;) {

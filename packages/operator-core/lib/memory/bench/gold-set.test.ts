@@ -85,3 +85,59 @@ describe('gold-set.v1 fixture', () => {
     expect(offenders, offenders.join(' | ')).toEqual([]);
   });
 });
+
+describe('gold-set.v2 fixture (jev-performance-improvements P-002)', () => {
+  const v2 = loadGoldSetFixture('v2');
+  const v2Corpus = loadCorpusFixture(v2.corpusVersion);
+  const corpusText = v2Corpus.map((e) => ({ key: e.key, text: `${e.text} ${e.description ?? ''}`.toLowerCase() }));
+
+  it('inherits every v1 query verbatim, in order, as its first 150', () => {
+    expect(v2.corpusVersion).toBe(fixture.corpusVersion);
+    expect(v2.inheritedIds).toEqual(fixture.queries.map((q) => q.id));
+    expect(v2.queries.slice(0, fixture.queries.length)).toEqual(fixture.queries);
+  });
+
+  it('has at least 90 hard negatives, keeping the v1 30 as a named subset', () => {
+    const negatives = v2.queries.filter((q) => q.class === 'hard-negative');
+    expect(negatives.length).toBeGreaterThanOrEqual(90);
+    const v1Negatives = fixture.queries.filter((q) => q.class === 'hard-negative').map((q) => q.id);
+    expect(v1Negatives).toHaveLength(30);
+    expect(negatives.slice(0, 30).map((q) => q.id)).toEqual(v1Negatives);
+    expect(v2.count).toBe(v2.queries.length);
+    expect(v2.classes['hard-negative']).toBe(negatives.length);
+  });
+
+  it('every added query is a unique, well-formed hard negative that expects nothing', () => {
+    const ids = new Set(fixture.queries.map((q) => q.id));
+    const texts = new Set(fixture.queries.map((q) => q.query.toLowerCase()));
+    for (const q of v2.queries.slice(fixture.queries.length)) {
+      expect(q.class, q.id).toBe('hard-negative');
+      expect(q.expected, q.id).toEqual([]);
+      expect(ids.has(q.id), `dup id ${q.id}`).toBe(false);
+      expect(texts.has(q.query.toLowerCase()), `dup query ${q.id}`).toBe(false);
+      ids.add(q.id);
+      texts.add(q.query.toLowerCase());
+    }
+  });
+
+  it('every added negative names absent terms that occur in its query and in no corpus entry', () => {
+    const offenders: string[] = [];
+    for (const q of v2.queries.slice(fixture.queries.length)) {
+      const terms = q.absentTerms ?? [];
+      if (terms.length === 0) offenders.push(`${q.id}: no absentTerms`);
+      for (const term of terms) {
+        if (!q.query.toLowerCase().includes(term)) offenders.push(`${q.id}: "${term}" is not in its query`);
+        const covering = corpusText.filter((e) => e.text.includes(term)).map((e) => e.key);
+        if (covering.length > 0) offenders.push(`${q.id}: "${term}" appears in ${covering.join(',')}`);
+      }
+    }
+    expect(offenders, offenders.join(' | ')).toEqual([]);
+  });
+
+  it('the absence check is falsifiable: a term the corpus does contain is caught', () => {
+    // Positive control: without it, a broken corpusText (empty, wrong field)
+    // would pass the absence test above vacuously.
+    expect(corpusText.length).toBe(v2Corpus.length);
+    expect(corpusText.some((e) => e.text.includes('kopia'))).toBe(true);
+  });
+});

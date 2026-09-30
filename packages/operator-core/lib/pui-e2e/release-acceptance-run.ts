@@ -22,6 +22,33 @@ import {
   type AcceptanceMatrixFile, type Candidate, type EvidenceRow, type Verdict,
 } from './release-acceptance';
 import type { EvidenceFile } from './release-acceptance-reporter';
+import { startDedicatedNativePg } from '@papercusp/test-config/pg';
+
+/**
+ * One dedicated native Postgres shared by every leg (WI-10004247 H4). Without
+ * it each leg resolves the fleet's shared, reused Docker test-PG container,
+ * which can be recreated between legs: rehearsal 0f06f9d5d6 lost every omp test
+ * to `ECONNREFUSED 127.0.0.1:32785` after the claude leg had passed on the same
+ * container. Docker container creation also stalls on this host
+ * (WI-10003403). Host PG binaries need neither. A caller that already set
+ * PAPERCUSP_TEST_PG_ADMIN_URL keeps its own server.
+ */
+async function startAcceptancePg(work: string): Promise<{ env: Record<string, string>; stop(): Promise<void> }> {
+  if (process.env.PAPERCUSP_TEST_PG_ADMIN_URL) return { env: {}, stop: async () => {} };
+  const pg = await startDedicatedNativePg({
+    baseDir: work,
+    settings: {
+      max_connections: '500',
+      fsync: 'off',
+      synchronous_commit: 'off',
+      full_page_writes: 'off',
+      // The legs run under spawnSync, which leaves this child's stderr pipe
+      // undrained; the collector keeps server logs off that pipe.
+      logging_collector: 'on',
+    },
+  });
+  return { env: { PAPERCUSP_TEST_PG_ADMIN_URL: pg.getConnectionUri() }, stop: () => pg.stop() };
+}
 
 export const RELEASE_SUITES = [
   'packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts',
@@ -362,6 +389,8 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   // writing the acceptance verdict, but avoid launching expensive live legs.
   const legsToRun = !cloudDeviceStart.ok || stockMachines.some((machine) => machine.status !== 0)
     ? [] : [null, ...(options.real ?? [])];
+  const acceptancePg = legsToRun.length ? await startAcceptancePg(work) : { env: {}, stop: async () => {} };
+  try {
   for (const leg of legsToRun) {
     const engine = leg ? leg.backend : 'scripted';
     const evidence = path.join(work, `evidence-${engine}.json`);
@@ -374,6 +403,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
       cwd: OPERATOR_CORE, encoding: 'utf8', timeout: 90 * 60_000, maxBuffer: 512 * 1024 * 1024,
       env: {
         ...inherited,
+        ...acceptancePg.env,
         PUI_BIN: installed,
         // The store install.sh wrote. Suites run PUI under their own HOME, so a
         // journey that reads the release store must be pointed at this one.
@@ -388,6 +418,9 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     const harvested = existsSync(evidence) ? (JSON.parse(readFileSync(evidence, 'utf8')) as EvidenceFile).rows : [];
     rows.push(...harvested);
     legs.push({ engine, status: run.status, evidence, rows: harvested.length });
+  }
+  } finally {
+    await acceptancePg.stop();
   }
 
   const candidate: Candidate = {
