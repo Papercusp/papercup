@@ -233,6 +233,7 @@ export default defineTool({
               harnessSlug,
               error: conversationGate.code ?? 'conversation_audit_required',
               message: conversationGate.message,
+              ...(conversationGate.unresolvedItems ? { unresolvedItems: conversationGate.unresolvedItems } : {}),
             };
           }
         }

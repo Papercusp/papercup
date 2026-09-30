@@ -118,7 +118,25 @@ export function readLicense(path: string): string;
  * @param {string} mono the materialized commit
  * @param {string} into the export being assembled
  */
-export function copyDesktopShell(mono: string, into: string): void;
+export function copyDesktopShell(mono: string, into: string, { env, auditScript }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    auditScript?: string | undefined;
+}): number;
+/**
+ * The SAME audit-owned identity scrub source-tree-select.sh applies to the shared
+ * selection (--source-leakers finds the files, --scrub-text redacts each on the COPY).
+ * Anything added to the export after the selection must pass through it too: the desktop
+ * shell's own dev scripts and tests name the maintainers, and a bare copy shipped them
+ * verbatim until the gate refused (open-source-release P-004/P-013).
+ * @param {string} dir the export being assembled
+ * @param {string[]} entries top-level entries of `dir` to scan
+ * @param {{ env?: NodeJS.ProcessEnv, auditScript?: string }} [opts]
+ * @returns {number} how many files were redacted
+ */
+export function scrubIdentity(dir: string, entries: string[], { env, auditScript }?: {
+    env?: NodeJS.ProcessEnv;
+    auditScript?: string;
+}): number;
 /**
  * The public target's community files, read from `dir` (scripts/public-release/ by
  * default — beside the LICENSE). Refuses when any is missing or empty.

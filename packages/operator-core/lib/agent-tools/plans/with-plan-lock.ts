@@ -43,7 +43,7 @@ import {
   type PlanLockHolderSnapshot,
 } from './plan-lock-key';
 import {
-  conversationAuditRequiredValue,
+  activationGateRefusalValue,
   entersActivationPlanStatus,
   evaluateConversationActivationGate,
   isActivationAuditExemptTemplate,
@@ -537,7 +537,7 @@ export async function withPlanLock<T>(
         if (!gate.satisfied) {
           return {
             kind: 'applied',
-            value: conversationAuditRequiredValue(slug) as T,
+            value: activationGateRefusalValue(slug, gate) as T,
             filePath,
             version: curVersion,
             scope: { workspaceId, harnessSlug },

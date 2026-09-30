@@ -12,6 +12,7 @@
 import { DEFAULT_GATEWAY_PORT } from './launch';
 import { ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, OWNER_HEADER, PRIORITY_HEADER } from './gateway';
 import { accountFromArgv } from '../agent-config-constants';
+import { subscriptionRelayAllowed } from '../anthropic-auth-policy';
 import {
   accountProviderForInteractiveBackend,
   interactiveBackendFromSpawnBackend,
@@ -436,7 +437,12 @@ export async function resolveSpawnGatewayEnv(opts: {
     const pinSlug = process.env.PAPERCUSP_SPAWN_ACCOUNT_PIN_SLUG?.trim();
     if (pinAccount && (!pinSlug || pinSlug === opts.slug)) {
       accountId = pinAccount;
-    } else if (await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')) {
+    } else if (
+      // D-005 (open-source-release-2026-09-29): a public build never pools Claude.ai
+      // subscriptions on a user's behalf unless that user opts in for their own accounts.
+      subscriptionRelayAllowed('account-pool')
+      && await getFlag(FLAGS.INFERENCE_GATEWAY_MULTI_ACCOUNT, 'system')
+    ) {
       const { selectSpawnAccount } = await import('../deployment/account-pool-store');
       accountId = await selectSpawnAccount(opts.workspaceId, opts.slug, undefined, provider).catch(() => undefined);
     }

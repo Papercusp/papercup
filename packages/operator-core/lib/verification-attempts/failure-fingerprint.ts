@@ -8,16 +8,22 @@
  * it must never be derived from volatile text (timestamps, pids, temp dirs, run ids).
  *
  * Three sources, strongest first:
- *  1. `structured` — the harness told us: phase / step / reason code. A line
- *     `VERIFY_RESULT phase=<p> step=<s> reason=<code>` in the log (the P-003 runner's
- *     output contract) or the caller's own object.
- *  2. `log` — the hive-git physical drill's `phase <X> (<fn>): <reason>` summary line,
- *     else the LAST error-shaped line of the log tail, with volatile tokens masked.
+ *  1. `structured` — the harness told us: phase / step / reason code. The failing
+ *     `HARNESS_RESULT … first_failure=<phase>/<step>/<reason>` line that every
+ *     verification-harness adopter prints (P-003 runner and bin/vh.sh), read with the
+ *     contract's own `parseSummaryLine` so the line has one owner; or the caller's object.
+ *     WI-10004032: this used to look for a `VERIFY_RESULT` line nothing emits, so every
+ *     adopter fell through to (2) and fingerprinted the HARNESS_RESULT line itself, run id
+ *     and all — two runs of the SAME failure never compared equal.
+ *  2. `log` — the hive-git physical drill's `phase <X> (<fn>): <reason>` summary (alone on
+ *     a line, or inside its `… adapter failed (exit N) in phase …` line), else the LAST
+ *     error-shaped line of the log tail, with volatile tokens masked.
  *  3. `exit` — nothing readable: the exit reason and code alone.
  *
  * Pure: no I/O. The ledger (attempt-ledger.ts) reads the log tail and calls this.
  */
 import { createHash } from 'node:crypto';
+import { parseSummaryLine } from '@papercusp/verification-harness';
 
 export type FailureFingerprintSource = 'structured' | 'log' | 'exit';
 
@@ -45,11 +51,13 @@ export interface FailureFingerprint {
   structured: StructuredFailure | null;
 }
 
-/** The output contract a conforming harness prints on failure (P-003). */
-export const VERIFY_RESULT_LINE_RE =
-  /\bVERIFY_RESULT\s+phase=(\S+)(?:\s+step=(\S+))?\s+reason=(\S+)/;
-
-const DRILL_SUMMARY_RE = /^phase ([A-Za-z0-9_-]+) \(([^)]+)\): (.+)$/;
+/**
+ * The drill summary `phase <X> (<fn>): <reason>`, alone on a line (physical-failure-summary.sh)
+ * or embedded in hive-git-drill.sh's `✗ physical E/G adapter failed (exit N) in phase …` line.
+ * The trailing `— evidence kept in <per-run dir>` is not part of the reason: it differs on
+ * every run and would make two runs of the same failure look distinct.
+ */
+const DRILL_SUMMARY_RE = /(?:^|\bin )phase ([A-Za-z0-9_-]+) \(([^)]+)\): (.+?)(?:\s+— evidence kept in \S+)?$/;
 
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const ERRORISH_RE =
@@ -107,9 +115,16 @@ export function failureFingerprint(input: FailureFingerprintInput): FailureFinge
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const contract = lastMatch(lines, VERIFY_RESULT_LINE_RE);
-  if (contract) {
-    return fromStructured({ phase: contract[1]!, step: contract[2] ?? null, reasonCode: contract[3]! });
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const summary = parseSummaryLine(lines[i]!);
+    if (!summary) continue;
+    // The newest HARNESS_RESULT line is the run's verdict. A passing one (or one with no
+    // named failure) says nothing about why the attempt failed; fall through to the log.
+    const ff = summary.firstFailure;
+    if (summary.verdict !== 'pass' && ff?.phase) {
+      return fromStructured({ phase: ff.phase, step: ff.step, reasonCode: ff.reasonCode ?? 'unspecified' });
+    }
+    break;
   }
 
   const drill = lastMatch(lines, DRILL_SUMMARY_RE);

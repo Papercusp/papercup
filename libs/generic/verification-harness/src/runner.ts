@@ -240,6 +240,41 @@ export function formatSummaryLine(result: HarnessRunResult): string {
   );
 }
 
+/** The identifying fields of a `HARNESS_RESULT` line — what {@link parseSummaryLine} reads back. */
+export interface SummaryLineFields {
+  harness: string;
+  verdict: string;
+  runId: string;
+  /** null when the line says `first_failure=none`. `-` placeholders read back as null. */
+  firstFailure: { phase: string; step: string | null; reasonCode: string | null } | null;
+}
+
+const SUMMARY_LINE_RE = /\bHARNESS_RESULT\s+harness=(\S+)\s+verdict=(\S+)\s+run=(\S+)\s+first_failure=(\S+)/;
+
+/**
+ * The inverse of {@link formatSummaryLine}, for consumers that only have the log (the attempt
+ * ledger's failure fingerprint). Keeping both halves here means the line has one owner: a
+ * format change that the parser does not follow fails this package's round-trip test.
+ * `first_failure` is `phase/step/reason`; the phase is the first segment and the reason the
+ * last, so a step containing `/` still reads back whole. Returns null for any other line.
+ */
+export function parseSummaryLine(line: string): SummaryLineFields | null {
+  const m = SUMMARY_LINE_RE.exec(line);
+  if (!m) return null;
+  const [, harness, verdict, runId, first] = m as unknown as [string, string, string, string, string];
+  if (first === 'none') return { harness, verdict, runId, firstFailure: null };
+  const a = first.indexOf('/');
+  const z = first.lastIndexOf('/');
+  if (a < 0 || z === a) return { harness, verdict, runId, firstFailure: null };
+  const dash = (s: string): string | null => (s === '-' || s === '' ? null : s);
+  return {
+    harness,
+    verdict,
+    runId,
+    firstFailure: { phase: first.slice(0, a), step: dash(first.slice(a + 1, z)), reasonCode: dash(first.slice(z + 1)) },
+  };
+}
+
 /**
  * Runs the guard rails that apply to `tags` into `evidenceDir`. Returns the report plus a
  * preflight outcome: any rail that does not hold (or a source that cannot answer) fails it.

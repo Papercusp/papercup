@@ -47,6 +47,7 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import type { ItemProvenanceDeclaration, ItemProvenanceLabel } from './activation-item-provenance';
 import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
   planAdvisoryLockKey,
@@ -186,12 +187,30 @@ export interface ActivationAuditMapping {
   disposition: 'covered' | 'repaired' | 'rejected' | 'open';
 }
 
+/** Server-written reverse-coverage verdict stored on an activation audit (P-002). */
+export interface ItemProvenanceCheck {
+  /** True when this audit was held to the rule (refused on any unresolved item). */
+  enforced: boolean;
+  /** Current non-dropped items at the audited revision, with their label. */
+  items: Record<string, ItemProvenanceLabel>;
+  /** Items that were unresolved at this audit (always empty when enforced). */
+  unresolved: string[];
+}
+
 export interface ActivationAuditPayload {
   sourceRanges: ActivationAuditSourceRange[];
   mappings: ActivationAuditMapping[];
   repairedOmissions: string[];
   rejectedOrSuperseded: string[];
   unresolvedBlockers: string[];
+  /** plan-item-provenance-2026-09-29 P-002: the auditor's explicit declarations for
+   *  items that no owner turn backs directly (derived / agent-added). Carried forward
+   *  across re-audits; a re-declaration for the same item replaces the prior one. */
+  itemProvenance?: ItemProvenanceDeclaration[];
+  /** Server-written only (P-002/P-003): the reverse-coverage verdict computed at this
+   *  audit. `enforced:false` marks a plan whose earlier audits predate item provenance
+   *  (recorded with a warning); the lifecycle gate enforces only `enforced:true`. */
+  itemProvenanceCheck?: ItemProvenanceCheck;
   /** Server-written only. Repeated re-audits must stay pending until the
    * reviewed BAR amendment advances the stale subject pin. */
   barSeedPendingAmendment?: {
@@ -342,8 +361,22 @@ export function mergeActivationAuditCoverage(
       repairedOmissions: unique([...previous.repairedOmissions, ...submitted.repairedOmissions]),
       rejectedOrSuperseded: unique([...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded]),
       unresolvedBlockers: unique([...previous.unresolvedBlockers, ...submitted.unresolvedBlockers]),
+      ...mergeItemProvenanceDeclarations(previous.itemProvenance, submitted.itemProvenance),
     },
   };
+}
+
+/** Carry prior item declarations forward; a submitted declaration for the same item
+ *  replaces the prior one (a re-audit may re-classify an item, never silently lose it). */
+export function mergeItemProvenanceDeclarations(
+  previous: readonly ItemProvenanceDeclaration[] | undefined,
+  submitted: readonly ItemProvenanceDeclaration[] | undefined,
+): { itemProvenance?: ItemProvenanceDeclaration[] } {
+  if (!previous?.length && !submitted?.length) return {};
+  const byItem = new Map<string, ItemProvenanceDeclaration>();
+  for (const declaration of previous ?? []) byItem.set(declaration.itemId, declaration);
+  for (const declaration of submitted ?? []) byItem.set(declaration.itemId, declaration);
+  return { itemProvenance: [...byItem.values()] };
 }
 
 export interface AuditedPlanRevision {

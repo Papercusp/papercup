@@ -45,6 +45,7 @@ import {
   type PgvectorIndexOperatorClass,
 } from '@papercusp/memory';
 import type { Sql } from 'postgres';
+import { chunkStoreVectorColumns } from './chunks/registry';
 
 /**
  * Width of every shared prose embedding column, per migration 727.
@@ -290,7 +291,11 @@ export function storedProseIdentityMatches(
  */
 export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
   { table: 'harness_shared.session_turns', column: 'text_embedding' },
-  { table: 'harness_shared.session_turn_chunks', column: 'embedding' },
+  // Every chunk store (session_turn_chunks, and migration 1242's shared
+  // text_chunks for every registered collection past the 2,000-char window):
+  // DERIVED from search/chunks/registry.ts CHUNK_STORES (generic-rag-chunking
+  // P-005). Chunk vectors share the prose width by construction.
+  ...chunkStoreVectorColumns(),
   { table: 'harness_shared.operator_turns', column: 'text_embedding' },
   { table: 'harness_shared.work_items', column: 'embedding' },
   { table: 'harness_shared.doc_sections', column: 'embedding' },
@@ -327,10 +332,6 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   // its TARGETS entry. (The other, carry_notes.note_embedding, was dropped by
   // migration 1243: nothing read it, generic-rag-chunking-2026-09-29 D-020.)
   { table: 'harness_shared.coord_thread_posts', column: 'body_embedding' },
-  // Migration 1242 (generic-rag-chunking-2026-09-29 P-003): the shared chunk
-  // store for rows longer than the 2,000-char window — one table any registered
-  // collection writes into, so its vectors share the prose width.
-  { table: 'harness_shared.text_chunks', column: 'embedding' },
 ];
 
 /**

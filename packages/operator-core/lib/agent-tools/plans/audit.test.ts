@@ -67,6 +67,16 @@ vi.mock('./spec-clauses-store', async (importOriginal) => ({
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
+// plan-item-provenance-2026-09-29 P-002: this file's activation fixtures cite turns the
+// shared mockOrgSql never returns rows for. Classify every cited ref as owner-typed so
+// these tests keep measuring what they were written for; the reverse item-provenance
+// check itself (including the real session_turns lookup) is covered by
+// audit-item-provenance.test.ts.
+vi.mock('../../activation-item-provenance', async (orig) => ({
+  ...(await orig<typeof import('../../activation-item-provenance')>()),
+  dbRefOriginLookup: () => async (refs: readonly string[]) =>
+    new Map(refs.map((ref) => [ref, 'owner-typed' as const])),
+}));
 
 import {
   getEffectiveItemAudits,

@@ -38,6 +38,7 @@ import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { recentContextResetWake } from '../../session-reset-continuation';
 import {
   NATIVE_SESSION_ID_RE,
+  classifyOwnerNativeSession,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
 } from '../../adv-sessions';
@@ -81,7 +82,9 @@ const todoSchema = z
  * activity result so the hook never grows a second, drifting classifier.
  */
 type ActivityReportResult = Awaited<ReturnType<typeof recordActivity>> & {
-  session_end_disposition?: 'terminal' | 'continuation';
+  /** `foreign` (WI-10003957): the ending native session is not the owner's bound
+   *  incarnation — a nested CLI that inherited PAPERCUSP_SID. Never reaped. */
+  session_end_disposition?: 'terminal' | 'continuation' | 'foreign';
 };
 
 export default defineTool({
@@ -282,6 +285,30 @@ export default defineTool({
     // trusted role-scoped launch env; exact-match only keeps ordinary roles on
     // the existing always-arm/self-heal path.
     const isJudge = args.role?.trim() === 'judge';
+    // WI-10003957: every lifecycle effect below is keyed on the OWNER, but the
+    // report comes from whichever native CLI fired the hook. PAPERCUSP_SID is
+    // inherited by every descendant of an su, so a nested CLI (a test's
+    // `claude -p` probe inside a capability:bash job, a CLI run from native Bash)
+    // reports SessionStart/SessionEnd AS the su. Measured 2026-09-29: such a
+    // probe's SessionStart re-anchored su-075445e6's adv row to itself, and its
+    // SessionEnd then read as the owner's terminal end: leases and locks were
+    // released, inbox-wake cancelled, and lifecycle-report.sh fleet:kill'ed the
+    // live host. Classify the reporting session against the owner's bound
+    // incarnation once. Fails open (null → today's behavior) on a read error.
+    const reportedSessionId = args.session_id?.trim() ?? '';
+    const sessionBinding = phase && NATIVE_SESSION_ID_RE.test(reportedSessionId)
+      ? await classifyOwnerNativeSession({
+          ownerId: owner,
+          sessionId: reportedSessionId,
+          advSessionId: args.adv_session_id ?? null,
+        }).catch((e) => {
+          console.warn(
+            `[activity:report] native-session binding check for ${owner} failed, treating the session as the owner's: ${e instanceof Error ? e.message : e}`,
+          );
+          return null;
+        })
+      : null;
+    const foreignSession = sessionBinding?.binding === 'foreign';
     if (phase) {
       try {
         if (phase === 'start') {
@@ -312,7 +339,19 @@ export default defineTool({
           // same UUID shape the respawn report requires, so a malformed or
           // already-current id is a safe no-op. Best-effort: reanchor hygiene
           // must never fail this report.
-          if (args.session_id && NATIVE_SESSION_ID_RE.test(args.session_id.trim())) {
+          // WI-10003957: a FOREIGN start re-anchors only on evidence of the
+          // legitimate in-place reset above (a psu-socket-reset/recycle wake just
+          // landed for this owner). Otherwise it is a nested CLI, and re-anchoring
+          // would rebind the owner's row to it (and re-open an ended row).
+          const reanchorAllowed = !foreignSession
+            || (await recentContextResetWake(owner).catch(() => null)) != null;
+          if (!reanchorAllowed) {
+            console.warn(
+              `[activity:report] SessionStart re-anchor REFUSED for ${owner}: native session ${reportedSessionId} is not the owner's bound incarnation ` +
+                `${sessionBinding?.boundSessionId} (adv ${sessionBinding?.advSessionId}) and no context-reset wake landed — a nested CLI that inherited PAPERCUSP_SID (WI-10003957)`,
+            );
+          }
+          if (reanchorAllowed && args.session_id && NATIVE_SESSION_ID_RE.test(args.session_id.trim())) {
             const reanchor = args.adv_session_id != null
               ? reanchorAdvSessionNativeId(args.adv_session_id, args.session_id.trim())
               : reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim());
@@ -322,7 +361,7 @@ export default defineTool({
               );
             });
           }
-        } else {
+        } else if (!foreignSession) {
           await cancelInboxWake(owner, ctx.principal?.workspaceId); // D-003: cancel on clean end
         }
       } catch (e) {
@@ -330,7 +369,16 @@ export default defineTool({
           `[activity:report] inbox-wake ${phase} for ${owner} failed: ${e instanceof Error ? e.message : e}`,
         );
       }
-      if (phase === 'end') {
+      if (phase === 'end' && foreignSession) {
+        // WI-10003957: not the owner's incarnation ending, so no owner-keyed
+        // effect (lease/lock release, carry-marker consume, and — via the
+        // non-terminal disposition — no lifecycle-report.sh fleet:kill).
+        result.session_end_disposition = 'foreign';
+        console.warn(
+          `[activity:report] session-end IGNORED for ${owner}: native session ${reportedSessionId} is not the owner's bound incarnation ` +
+            `${sessionBinding?.boundSessionId} (adv ${sessionBinding?.advSessionId}) — a nested CLI that inherited PAPERCUSP_SID, not the owner's death (WI-10003957)`,
+        );
+      } else if (phase === 'end') {
         // EI-18676518990229124: a carry-respawn (session:request-compaction,
         // deterministic-context-carry P-018/P-022) ends THIS process under the
         // SAME ownerId and relaunches it seconds later — that SessionEnd is a

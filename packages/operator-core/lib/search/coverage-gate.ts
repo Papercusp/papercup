@@ -38,6 +38,7 @@ import {
   RECENT_COVERAGE_FLOOR,
   MIN_RECENT_SAMPLE,
 } from './embed-coverage';
+import { withChunkSearchColumns } from './chunks/registry';
 
 /**
  * Minimal structural handle — mirrors the `sql.unsafe` call shape used by
@@ -68,7 +69,7 @@ export interface CoverageSqlHandle {
  * PROSE_VECTOR_COLUMNS (P-034): an unenumerated vector column is skipped in
  * silence, and silence is the failure mode we are paying to remove.
  */
-export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>> = {
+export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>> = withChunkSearchColumns({
   escalations: ['harness_shared.harness_escalations.body_embedding'],
   brainstorm: ['harness_shared.harness_brainstorm.content_embedding'],
   turns: ['harness_shared.operator_turns.text_embedding'],
@@ -83,11 +84,11 @@ export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>>
   // coord_message source's own note in sources.ts.
   coord_message: [],
   // P-034 union: a turn is findable via its parent vector OR any chunk vector.
-  session_turn: [
-    'harness_shared.session_turns.text_embedding',
-    'harness_shared.session_turn_chunks.embedding',
-  ],
-};
+  // The chunk columns of every source are DERIVED from search/chunks/registry.ts
+  // (generic-rag-chunking P-005): a dedicated store names its source
+  // (session_turn_chunks -> session_turn), a shared-store entry names its own.
+  session_turn: ['harness_shared.session_turns.text_embedding'],
+});
 
 /**
  * How old a sample may be before it stops counting as evidence.

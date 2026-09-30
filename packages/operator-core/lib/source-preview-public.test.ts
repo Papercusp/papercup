@@ -28,7 +28,9 @@ import {
   resolveTarget,
 } from '../../../scripts/source-preview.mjs';
 import {
+  DESKTOP_OWNER_NAMING_FILE,
   DROPPED,
+  FIXTURE_ENV,
   PUBLIC_DESKTOP_DROPPED,
   PUBLIC_DESKTOP_SHIPPED,
   childEnv,
@@ -108,6 +110,11 @@ describe('public target — licensed export', () => {
     // P-004: the public cut carries the desktop shell, minus generated/internal paths.
     for (const p of PUBLIC_DESKTOP_SHIPPED) expect(existsSync(join(out, p)), p).toBe(true);
     for (const p of PUBLIC_DESKTOP_DROPPED) expect(existsSync(join(out, p)), p).toBe(false);
+    // The shell is copied after the shared selection, so it must get the same identity scrub.
+    const rigNotes = readFileSync(join(out, DESKTOP_OWNER_NAMING_FILE), 'utf8');
+    expect(rigNotes).toContain('echo ok');
+    expect(rigNotes).not.toContain(FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME);
+    expect(readFileSync(join(fx.repo, DESKTOP_OWNER_NAMING_FILE), 'utf8')).toContain(FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME);
     expect(manifest.submodules.map((s: { path: string }) => s.path)).not.toContain('papercusp-desktop'); // a plain dir in the fixture
     for (const p of DROPPED.filter((d) => !d.startsWith('papercusp-desktop/'))) expect(existsSync(join(out, p)), p).toBe(false);
     expect(readme).toContain('PAPERCUSP_POSTHOG_KEY');

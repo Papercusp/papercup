@@ -66,6 +66,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import { sessionClaudeRoot } from '@papercusp/orchestrator/session-launch-dirs';
 import { readClaudeKeychainOAuthBundle, writeClaudeKeychainOAuthBundle } from './agent-auth-detect';
+import { subscriptionRelayAllowed } from './anthropic-auth-policy';
 
 /** Upper bound on a plausible interactive-OAuth `expiresAt` distance: real
  *  access tokens live ~8h; anything claiming >30d out is garbage or forged. */
@@ -339,6 +340,9 @@ export function startClaudeCredentialSync(opts: {
   const pass = async (trigger: string) => {
     if (stopped) return;
     try {
+      // D-005 (open-source-release-2026-09-29): a public build never rewrites Claude.ai
+      // OAuth bundles on a user's behalf unless they opt in for their own accounts.
+      if (!subscriptionRelayAllowed('credential-sync')) return;
       if (!(await isEnabled())) return;
       const r = reconcileClaudeCredentials({ home, sessionRoot });
       if (r.updated.length > 0 && r.winner) {

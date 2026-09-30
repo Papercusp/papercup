@@ -516,7 +516,7 @@ export async function exportSnapshot({
     if (sel.status !== 0) {
       throw new PreviewError(`source-tree-select refused (exit ${sel.status}): ${(sel.stderr || sel.stdout).trim().slice(-2000)}`, sel.status === 2 ? 2 : 1);
     }
-    if (target.key === 'public') copyDesktopShell(mono, partial);
+    if (target.key === 'public') log(`desktop shell: identity scrub redacted ${copyDesktopShell(mono, partial, { env })} file(s)`);
     const files = await listFiles(partial);
     const vcs = files.filter((f) => f === '.git' || f.startsWith('.git/') || f.includes('/.git/') || f.endsWith('/.git'));
     if (vcs.length) throw new PreviewError(`export contains git metadata: ${vcs.slice(0, 5).join(', ')}`);
@@ -579,7 +579,7 @@ export function readLicense(path) {
  * @param {string} mono the materialized commit
  * @param {string} into the export being assembled
  */
-export function copyDesktopShell(mono, into) {
+export function copyDesktopShell(mono, into, { env = process.env, auditScript = AUDIT_SCRIPT } = {}) {
   const from = join(mono, DESKTOP_DIR);
   if (!existsSync(from) || readdirSync(from).length === 0) {
     throw new PreviewError(`public target needs the desktop shell at ${DESKTOP_DIR}/ in the source commit`, 2);
@@ -588,6 +588,31 @@ export function copyDesktopShell(mono, into) {
   run('mkdir', ['-p', dest]);
   const excludes = DESKTOP_PUBLIC_EXCLUDES.map((p) => `--exclude=${p}`);
   run('bash', ['-c', 'set -euo pipefail; src="$1"; dst="$2"; shift 2; tar -C "$src" -cf - "$@" . | tar -C "$dst" -xf -', '_', from, dest, ...excludes]);
+  // Rooted at the shell itself: --source-leakers skips `papercusp-desktop/*` paths (the
+  // installer's self-reference), so scanning from `into` would silently find nothing.
+  return scrubIdentity(dest, readdirSync(dest), { env, auditScript });
+}
+
+/**
+ * The SAME audit-owned identity scrub source-tree-select.sh applies to the shared
+ * selection (--source-leakers finds the files, --scrub-text redacts each on the COPY).
+ * Anything added to the export after the selection must pass through it too: the desktop
+ * shell's own dev scripts and tests name the maintainers, and a bare copy shipped them
+ * verbatim until the gate refused (open-source-release P-004/P-013).
+ * @param {string} dir the export being assembled
+ * @param {string[]} entries top-level entries of `dir` to scan
+ * @param {{ env?: NodeJS.ProcessEnv, auditScript?: string }} [opts]
+ * @returns {number} how many files were redacted
+ */
+export function scrubIdentity(dir, entries, { env = process.env, auditScript = AUDIT_SCRIPT } = {}) {
+  const leak = spawnSync('python3', [auditScript, '--source-leakers', dir, ...entries], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
+  if (leak.status !== 0) throw new PreviewError(`identity scrub: --source-leakers failed (exit ${leak.status}): ${(leak.stderr || leak.stdout).trim().slice(-1000)}`, 2);
+  const files = leak.stdout.split('\n').map((l) => l.trim()).filter((rel) => rel && existsSync(join(dir, rel)));
+  for (const rel of files) {
+    const s = spawnSync('python3', [auditScript, '--scrub-text', join(dir, rel)], { encoding: 'utf8', env });
+    if (s.status !== 0) throw new PreviewError(`identity scrub: --scrub-text ${rel} failed (exit ${s.status}): ${(s.stderr || s.stdout).trim().slice(-500)}`, 2);
+  }
+  return files.length;
 }
 
 /**

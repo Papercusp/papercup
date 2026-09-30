@@ -32,11 +32,34 @@ export function isActivationAuditExemptTemplate(template: string | null | undefi
   return template === RUBRIC_TEMPLATE_NAME;
 }
 
+/** The stored reverse-coverage verdict, read defensively from the activation JSON. */
+function itemProvenanceCheckOf(
+  activation: unknown,
+): { enforced: boolean; items: Record<string, string> } | null {
+  const parsed = typeof activation === 'string' ? safeJson(activation) : activation;
+  const check = (parsed as { itemProvenanceCheck?: unknown } | null)?.itemProvenanceCheck as
+    | { enforced?: unknown; items?: unknown }
+    | undefined;
+  if (!check || typeof check !== 'object' || check.enforced !== true) return null;
+  const items = check.items && typeof check.items === 'object' ? (check.items as Record<string, string>) : {};
+  return { enforced: true, items };
+}
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 export interface ConversationActivationGateVerdict {
   satisfied: boolean;
-  code?: 'conversation_audit_required';
+  code?: 'conversation_audit_required' | 'item_provenance_unresolved';
   message?: string;
   auditSeq?: number;
+  /** P-003: current items the enforced audit did not resolve. */
+  unresolvedItems?: string[];
   /** Existing ready/active plan with no audit: activated before this gate could enforce. */
   grandfathered?: boolean;
 }
@@ -53,8 +76,8 @@ export async function evaluateConversationActivationGate(
   tx: Tx,
   scope: { workspaceId: string; harnessSlug: string; planSlug: string },
 ): Promise<ConversationActivationGateVerdict> {
-  const rows = await tx<Array<{ audit_seq: number }>>`
-    SELECT audit_seq
+  const rows = await tx<Array<{ audit_seq: number; activation: unknown }>>`
+    SELECT audit_seq, activation
       FROM harness_shared.plan_audits
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
@@ -63,7 +86,41 @@ export async function evaluateConversationActivationGate(
      ORDER BY audit_seq DESC
      LIMIT 1`;
   const row = rows[0];
-  if (row) return { satisfied: true, auditSeq: Number(row.audit_seq) };
+  if (row) {
+    // plan-item-provenance-2026-09-29 P-003: an ENFORCED audit resolved a specific
+    // item set. An item added (or un-dropped) after it has no recorded provenance, so
+    // the lifecycle doors refuse it until a re-audit resolves it. Unenforced (legacy)
+    // audits keep passing — they were recorded with the gap as a warning.
+    const check = itemProvenanceCheckOf(row.activation);
+    if (check?.enforced) {
+      const planRows = await tx<Array<{ content: string }>>`
+        SELECT content
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND plan_slug = ${scope.planSlug}
+         LIMIT 1`;
+      const unresolved = planRows[0]?.content
+        ? parsePlan(planRows[0].content, { filePath: `${scope.planSlug}.md` }).items
+            .filter((item) => item.storedStatus !== 'dropped')
+            .map((item) => item.id)
+            .filter((id) => !check.items[id] || check.items[id] === 'unresolved')
+        : [];
+      if (unresolved.length > 0) {
+        return {
+          satisfied: false,
+          code: 'item_provenance_unresolved',
+          auditSeq: Number(row.audit_seq),
+          unresolvedItems: unresolved,
+          message:
+            `Plan '${scope.planSlug}' has item(s) with no recorded provenance since activation audit #${row.audit_seq}: ` +
+            `${unresolved.join(', ')}. Re-run plans:audit { phase:'activation' } citing the owner turn for each, or ` +
+            'declare it in itemProvenance (derived / agent-added with a reason).',
+        };
+      }
+    }
+    return { satisfied: true, auditSeq: Number(row.audit_seq) };
+  }
 
   // EI-21514925652793324: recorder + enforcer can deploy together after plans
   // were already activated on an older operator. A plan already sitting in
@@ -95,25 +152,46 @@ export async function evaluateConversationActivationGate(
       };
 }
 
-export interface ConversationAuditRequiredValue {
+export type ActivationGateRefusalCode = NonNullable<ConversationActivationGateVerdict['code']>;
+
+/** The non-throwing refusal withPlanLock returns when a lifecycle door fails the
+ *  activation gate. It carries the gate's OWN verdict — a missing conversation audit
+ *  and an item with no recorded provenance (plan-item-provenance-2026-09-29 P-003)
+ *  need different repairs, so the door must not collapse one into the other. */
+export interface ActivationGateRefusalValue {
   ok: false;
-  code: 'conversation_audit_required';
+  code: ActivationGateRefusalCode;
   message: string;
+  unresolvedItems?: string[];
 }
 
-export function conversationAuditRequiredValue(planSlug: string): ConversationAuditRequiredValue {
+export function activationGateRefusalValue(
+  planSlug: string,
+  verdict: ConversationActivationGateVerdict,
+): ActivationGateRefusalValue {
   return {
     ok: false,
-    code: 'conversation_audit_required',
-    message: conversationAuditRequiredMessage(planSlug),
+    code: verdict.code ?? 'conversation_audit_required',
+    message: verdict.message ?? conversationAuditRequiredMessage(planSlug),
+    ...(verdict.unresolvedItems?.length ? { unresolvedItems: verdict.unresolvedItems } : {}),
   };
 }
 
+const ACTIVATION_GATE_REFUSAL_CODES: ReadonlySet<string> = new Set<ActivationGateRefusalCode>([
+  'conversation_audit_required',
+  'item_provenance_unresolved',
+]);
+
 /** Typed guard for the non-throwing refusal returned by withPlanLock. */
-export function isConversationAuditRequiredValue(value: unknown): value is ConversationAuditRequiredValue {
+export function isActivationGateRefusalValue(value: unknown): value is ActivationGateRefusalValue {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<ConversationAuditRequiredValue>;
-  return candidate.ok === false && candidate.code === 'conversation_audit_required' && typeof candidate.message === 'string';
+  const candidate = value as Partial<ActivationGateRefusalValue>;
+  return (
+    candidate.ok === false &&
+    typeof candidate.code === 'string' &&
+    ACTIVATION_GATE_REFUSAL_CODES.has(candidate.code) &&
+    typeof candidate.message === 'string'
+  );
 }
 
 export function domainFailureMessage(value: unknown): string | undefined {

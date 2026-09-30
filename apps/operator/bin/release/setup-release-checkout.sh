@@ -1300,6 +1300,50 @@ prune_stale_pnpm_store() {
 }
 prune_stale_pnpm_store
 
+# 3a¾. Pinned-lockfile reconcile (WI-10003918) --------------------------------
+# The live-tree copy above installs STAGING's dependency set, not the target's.
+# A dependency removed or re-versioned on staging after the pin is therefore
+# missing from the release tree, and with freeze-and-converge main trails staging
+# by hours: @mdxeditor/editor's removal failed the SPA build of green pin 9a9473af
+# AND of the rollback to the serving sha (2026-09-29). pinned-lock-deps.mjs checks
+# only the paths where the pinned lock and the integration lock disagree, and
+# backfills each one at its pinned version from an immutable dependency
+# generation. Runs BEFORE patch-package so a backfilled package is patched too.
+# Skipped for a pinned generation (already exact) and for --node-modules skip.
+# Unresolved drift WARNS rather than aborts: a drifted package nothing imports
+# must not freeze a deploy that works today; one that is imported fails the SPA
+# build or boot below, now with its name already in this log. Named function
+# for sed-extraction unit tests (setup-release-checkout-deps.test.ts pattern).
+reconcile_pinned_lock_deps() {
+  local pinned_lock out rc=0
+  local helper="${PINNED_LOCK_DEPS_HELPER:-$_HERE/pinned-lock-deps.mjs}"
+  [ -z "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] || return 0
+  [ "${NODE_MODULES_MODE:-auto}" != "skip" ] || return 0
+  [ -n "${TARGET_SHA:-}" ] || return 0
+  [ -f "$INTEGRATION_ROOT/package-lock.json" ] || return 0
+  pinned_lock="${TMPDIR:-/tmp}/setup-release-pinned-lock.$$.json"
+  if ! git -C "$INTEGRATION_ROOT" show "$TARGET_SHA:package-lock.json" >"$pinned_lock" 2>/dev/null; then
+    rm -f "$pinned_lock"
+    return 0
+  fi
+  # `&& rc=0 || rc=$?` keeps a non-zero helper exit from tripping set -e.
+  out="$(node "$helper" \
+    --pinned-lock "$pinned_lock" \
+    --integration-lock "$INTEGRATION_ROOT/package-lock.json" \
+    --release "$RELEASE_ROOT" \
+    --generations "${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}" \
+    --backfill 2>&1)" && rc=0 || rc=$?
+  rm -f "$pinned_lock"
+  [ -z "$out" ] || while IFS= read -r line; do log "$line"; done <<<"$out"
+  if [ "$rc" = "3" ]; then
+    log "WARN pinned-lock drift unresolved: the release tree lacks dependencies the target ${TARGET_SHA:0:10} lockfile pins (named above) and no dependency generation holds them"
+  elif [ "$rc" != "0" ]; then
+    log "WARN pinned-lock reconcile did not run cleanly (exit $rc); continuing with the copied tree"
+  fi
+  return 0
+}
+reconcile_pinned_lock_deps
+
 # 3b. Dependency patches (patch-package) -------------------------------------
 # patch-package patches apply at INSTALL time, but this tree never `npm install`s
 # — it copies node_modules from the integration tree (step 3). That copy
@@ -1662,10 +1706,17 @@ fi
 # `dist-chunk-retention-default-2026-07-26` P-002 — do not "fix" this by adding =0.
 if [ "$BUILD_SPA" = "1" ]; then
   log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
-  (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build 1>/dev/null) || {
-    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting" >&2
+  # WI-10003918: vite-build-singleflight writes vite's own error to STDOUT, and a
+  # retain-mode build leaves no failure record, so discarding stdout left only
+  # `npm error code 1` in the deploy log and the next build overwrote the cause.
+  _spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
+  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$_spa_log" 2>&1; then
+    rm -f "$_spa_log"
+  else
+    tail -n 60 "$_spa_log" >&2
+    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $_spa_log)" >&2
     exit 1
-  }
+  fi
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"

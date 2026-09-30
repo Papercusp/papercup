@@ -1768,6 +1768,75 @@ export async function reanchorAdvSessionNativeIdByOwner(
   }
 }
 
+/** How a reported native session id relates to the owner's tracked incarnation. */
+export type OwnerNativeSessionBinding = 'bound' | 'unbound' | 'foreign';
+
+export interface OwnerNativeSessionRow {
+  id: number;
+  session_id: string | null;
+  active: boolean;
+}
+
+/**
+ * Pure verdict behind {@link classifyOwnerNativeSession}. The candidates are the
+ * owner's ACTIVE rows when it has any, else its newest row:
+ *   - `bound`   — some candidate is already bound to `sessionId`.
+ *   - `unbound` — no candidate carries a native id yet (first binding; the
+ *                 SessionStart reanchor is how it gets one).
+ *   - `foreign` — the owner's incarnation is bound to a DIFFERENT native session.
+ *
+ * WI-10003957: `foreign` is what a nested CLI looks like. `PAPERCUSP_SID` is
+ * inherited by every descendant of an su (native Bash, capability:bash jobs,
+ * test-spawned `claude -p` probes), so that CLI's hooks report SessionStart /
+ * SessionEnd AS the su. Owner-keyed lifecycle effects must not fire for it.
+ */
+export function classifyOwnerNativeSessionRows(
+  rows: readonly OwnerNativeSessionRow[],
+  sessionId: string,
+): { binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null } {
+  const active = rows.filter((r) => r.active);
+  const candidates = active.length > 0 ? active : rows.slice(0, 1);
+  const match = candidates.find((r) => r.session_id?.trim() === sessionId);
+  if (match) return { binding: 'bound', boundSessionId: sessionId, advSessionId: Number(match.id) };
+  const bound = candidates.find((r) => r.session_id?.trim());
+  if (!bound) {
+    return { binding: 'unbound', boundSessionId: null, advSessionId: candidates[0] ? Number(candidates[0].id) : null };
+  }
+  return { binding: 'foreign', boundSessionId: bound.session_id!.trim(), advSessionId: Number(bound.id) };
+}
+
+/**
+ * Is `sessionId` the native session the owner's adv_sessions row is bound to?
+ * With `advSessionId` (the launcher-exported PAPERCUSP_ADV_SESSION_ID) only that
+ * row is consulted, when it belongs to the owner. Throws on a PG error, so the
+ * caller decides the fail direction.
+ */
+export async function classifyOwnerNativeSession(opts: {
+  ownerId: string;
+  sessionId: string;
+  advSessionId?: number | null;
+}): Promise<{ binding: OwnerNativeSessionBinding; boundSessionId: string | null; advSessionId: number | null }> {
+  const { sql } = getOrgPg();
+  let rows: OwnerNativeSessionRow[] = [];
+  if (opts.advSessionId != null) {
+    rows = await sql<OwnerNativeSessionRow[]>`
+      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+        FROM harness_shared.adv_sessions
+       WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
+    `;
+  }
+  if (rows.length === 0) {
+    rows = await sql<OwnerNativeSessionRow[]>`
+      SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${opts.ownerId}
+       ORDER BY (ended_at IS NULL AND ended_by IS NULL) DESC, id DESC
+       LIMIT 20
+    `;
+  }
+  return classifyOwnerNativeSessionRows(rows, opts.sessionId);
+}
+
 /**
  * Persist the RESOLVED su persona render inputs on the session's row (migration
  * 738), so a carry-respawn can re-render the launch context from current prompt

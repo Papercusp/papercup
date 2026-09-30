@@ -1282,6 +1282,20 @@ describe('resolveHonorAccount (WI-5316, pure core)', () => {
     expect(listPoolAccountIds).not.toHaveBeenCalled();
   });
 
+  it('public build (D-005) serves auto/pin on the host login without touching the pool; opt-in restores pooling', async () => {
+    const listPoolAccountIds = vi.fn(async () => ['acct-a']);
+    const probeLocalLogin = vi.fn(() => ({ usable: true, evidence: 'credentials-file' as const, detail: 'bundle present' }));
+    const env = { PAPERCUSP_DISTRIBUTION_PROFILE: 'public' } as NodeJS.ProcessEnv;
+    for (const requested of ['auto', 'acct-a']) {
+      const r = await resolveHonorAccount(requested, { listPoolAccountIds, probeLocalLogin, env });
+      expect(r).toMatchObject({ ok: true, account: 'default' });
+    }
+    expect(listPoolAccountIds).not.toHaveBeenCalled();
+    const optedIn = { ...env, PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY: '1' } as NodeJS.ProcessEnv;
+    expect(await resolveHonorAccount('auto', { listPoolAccountIds, probeLocalLogin, env: optedIn }))
+      .toEqual({ ok: true, account: 'auto' });
+  });
+
   it('auto with a non-empty pool ⇒ keeps auto', async () => {
     expect(await resolveHonorAccount('auto', withPool(['acct-1']))).toEqual({ ok: true, account: 'auto' });
   });

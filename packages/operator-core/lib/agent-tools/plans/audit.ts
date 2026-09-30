@@ -59,6 +59,11 @@ import {
   SESSION_SOURCE_KINDS,
 } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
+import {
+  dbRefOriginLookup,
+  evaluateActivationItemProvenance,
+  itemProvenanceMissingProblems,
+} from '../../activation-item-provenance';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
 import { assertSourceSpan } from '../../activation-source-span';
@@ -159,6 +164,25 @@ const activationMappingSchema = z.object({
   }
 });
 
+// plan-item-provenance-2026-09-29 P-002: the REVERSE direction of the audit. Every
+// current item must trace to an owner turn; items that do not are declared here.
+const itemIdSchema = z.string().regex(/^P-\d{3,}$/);
+const itemProvenanceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    itemId: itemIdSchema,
+    kind: z.literal('derived'),
+    from: z.array(z.string().min(1).max(500)).min(1).max(50).describe(
+      'Owner-backed plan targets this item follows from (P-NNN, D-NNN, R-N or section:<heading>). At least one must itself be owner-backed.',
+    ),
+    note: z.string().min(1).max(2000).optional(),
+  }),
+  z.object({
+    itemId: itemIdSchema,
+    kind: z.literal('agent-added'),
+    reason: z.string().min(1).max(2000).describe('Why the agent added an item the owner did not ask for. Shown to the owner.'),
+  }),
+]);
+
 // RSR-P-008-A: the activation rules are reported alongside any shape defect.
 const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
@@ -180,6 +204,9 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   ),
   mappings: z.array(activationMappingSchema).max(300).optional().describe(
     'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current R-N acceptance bars, P-NNN items, D-NNN decisions, or section:<heading> targets. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior mappings forward.',
+  ),
+  itemProvenance: z.array(itemProvenanceSchema).max(200).optional().describe(
+    'Activation phase: declare each current item no owner-turn mapping backs — `derived` (from owner-backed targets) or `agent-added` (with a reason). Carried forward across re-audits; the first audit refuses item_provenance_missing while any item is unresolved.',
   ),
   repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
   rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),
@@ -213,7 +240,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
     if (!args.items) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
     }
-    for (const field of ['sourceRanges', 'mappings', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+    for (const field of ['sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
       if (args[field] !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is activation-phase only` });
       }
@@ -392,6 +419,7 @@ export default defineTool({
         repairedOmissions: args.repairedOmissions ?? [],
         rejectedOrSuperseded: args.rejectedOrSuperseded ?? [],
         unresolvedBlockers: args.unresolvedBlockers ?? [],
+        ...(args.itemProvenance?.length ? { itemProvenance: args.itemProvenance } : {}),
       };
 
       if (
@@ -566,6 +594,57 @@ export default defineTool({
         } };
       }
 
+      // plan-item-provenance-2026-09-29 P-002: the reverse check. Every current item
+      // must trace to an OWNER turn (not an assistant or machine-injected one), a valid
+      // derivation, or an explicit agent-added declaration.
+      const provenance = currentPlan
+        ? await evaluateActivationItemProvenance({
+            planContent: currentPlan.content,
+            mappings,
+            declarations: activation.itemProvenance ?? [],
+            previous: {
+              exists: previousAudit != null,
+              check: previousAudit?.activation?.itemProvenanceCheck ?? null,
+            },
+            lookupOrigins: dbRefOriginLookup(sql as Parameters<typeof dbRefOriginLookup>[0], workspaceId),
+          })
+        : null;
+      if (provenance && provenance.problems.length > 0) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+          error: 'item_provenance_invalid' as const,
+          problems: provenance.problems,
+          message: `${provenance.problems.length} itemProvenance declaration problem(s); nothing was recorded.`,
+        } };
+      }
+      if (provenance?.refuse) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...(dryRun ? { dryRun: true as const, preview: true as const } : {}),
+          error: 'item_provenance_missing' as const,
+          unresolvedItems: provenance.check.unresolved,
+          problems: itemProvenanceMissingProblems(provenance.summary),
+          message:
+            `${provenance.check.unresolved.length} plan item(s) do not trace to anything the owner said: ` +
+            `${provenance.check.unresolved.join(', ')}. Cite the owner turn in a mapping targeting the item, or declare it ` +
+            'in itemProvenance as derived (from an owner-backed target) or agent-added (with a reason). Nothing was recorded.',
+        } };
+      }
+      if (provenance) activation.itemProvenanceCheck = provenance.check;
+      const itemProvenanceResult = provenance
+        ? {
+            enforced: provenance.check.enforced,
+            counts: provenance.summary.counts,
+            unresolved: provenance.check.unresolved,
+            ...(provenance.warning ? { warning: provenance.warning } : {}),
+          }
+        : null;
+
       if (dryRun) {
         const targetProblems = validateActivationAuditPlanTargets(activation, currentPlan!.content);
         if (targetProblems.length > 0) {
@@ -707,6 +786,7 @@ export default defineTool({
           carriedMappingIds: merged.carriedMappingIds,
           coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
           sourceRefsResolved: resolutions.length,
+          itemProvenance: itemProvenanceResult,
           planSnapshot: {
             version: currentPlan!.version,
             contentHash: currentPlan!.contentHash,
@@ -925,6 +1005,7 @@ export default defineTool({
         sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,
         repairedOmissions: activation.repairedOmissions.length,
         rejectedOrSuperseded: activation.rejectedOrSuperseded.length,
+        itemProvenance: itemProvenanceResult,
         derivedSpecClauses,
         activationReadiness,
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),

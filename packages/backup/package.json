@@ -21,6 +21,11 @@
       "types": "./src/snapshot-admission.ts",
       "import": "./src/snapshot-admission.ts",
       "default": "./src/snapshot-admission.ts"
+    },
+    "./hook": {
+      "types": "./src/hook.ts",
+      "import": "./src/hook.ts",
+      "default": "./src/hook.ts"
     }
   },
   "scripts": {

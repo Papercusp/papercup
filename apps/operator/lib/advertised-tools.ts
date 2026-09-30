@@ -167,6 +167,13 @@ export async function captureAdvertisedTools(
         'CLAUDE_CODE_USE_VERTEX',
       ])
         delete env[k];
+      // WI-10003957: never let the probe act AS the agent running the test. The
+      // global ~/.claude hooks fire inside this `claude -p`; with an inherited
+      // PAPERCUSP_SID its SessionEnd once read as the su's terminal death and
+      // fleet:kill'ed the live session. Drop every Papercusp identity/route var.
+      for (const k of Object.keys(env)) {
+        if (k.startsWith('PAPERCUSP_')) delete env[k];
+      }
 
       // Caller-supplied env LAST so a test can force or clear a key (e.g. ENABLE_TOOL_SEARCH)
       // without losing the auth/route scrubbing above. An explicit `undefined` clears.

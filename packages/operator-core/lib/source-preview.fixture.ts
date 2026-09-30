@@ -56,6 +56,8 @@ export const SHIPPED = [
 ];
 
 /** Desktop-shell paths only the PUBLIC target ships (P-004); the preview drops the whole shell. */
+/** A desktop-shell file that names the fixture owner; it ships in the public cut, scrubbed. */
+export const DESKTOP_OWNER_NAMING_FILE = 'papercusp-desktop/bin/rig-notes.sh';
 export const PUBLIC_DESKTOP_SHIPPED = ['papercusp-desktop/README.md', 'papercusp-desktop/src-tauri/Cargo.toml'];
 
 /** Desktop-shell paths the public target still leaves out (generated, local state, internal rigs). */
@@ -128,6 +130,9 @@ export function makeSuperproject(root: string): Superproject {
   write(repo, 'scratch/notes.md', 'scratch\n');
   write(repo, '.papercusp/pi-sessions/s1.jsonl', '{"turn":1}\n');
   write(repo, 'papercusp-desktop/README.md', '# desktop shell\n');
+  // A shipped desktop dev script naming the owner: the public export must redact it,
+  // because the shell is copied after the shared selection's scrub (P-004/P-013).
+  write(repo, DESKTOP_OWNER_NAMING_FILE, `#!/bin/sh\n# rig maintained by ${FIXTURE_ENV.PAPERCUSP_RELEASE_OWNER_NAME}\necho ok\n`);
   write(repo, 'papercusp-desktop/src-tauri/Cargo.toml', '[package]\nname = "papercusp-desktop"\nlicense = "Elastic-2.0"\n');
   for (const p of PUBLIC_DESKTOP_DROPPED) write(repo, p, 'internal\n');
   write(repo, 'packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json', '{"entries":[]}\n');

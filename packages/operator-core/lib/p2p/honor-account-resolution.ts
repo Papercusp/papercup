@@ -31,6 +31,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { subscriptionRelayAllowed } from '../anthropic-auth-policy';
 
 /**
  * Classify a `--account` value into its routing MODE. A faithful mirror of
@@ -217,6 +218,8 @@ export interface ResolveHonorAccountDeps {
   /** Probe the direct-login (`--account=default`) route on this host. Returns the
    *  EVIDENCE, not a bare boolean — see {@link LocalLoginEvidence}. */
   probeLocalLogin: () => LocalLoginProbe;
+  /** Environment for the D-005 subscription-relay policy (defaults to process.env). */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -233,6 +236,17 @@ export async function resolveHonorAccount(
   // at the routing layer (a genuinely logged-out box is a separate, rare failure
   // psu surfaces at boot; it never REFUSES the default route the way it refuses auto/pin).
   if (mode === 'default') return { ok: true, account: 'default' };
+
+  // D-005 (open-source-release-2026-09-29): a public build does not honor a peer's request
+  // to run on a pooled Claude.ai subscription — the delegated member runs on this host's
+  // own login unless its user opted in for their own accounts.
+  if (!subscriptionRelayAllowed('honor-account', deps.env)) {
+    return {
+      ok: true,
+      account: 'default',
+      note: `public build: --account=${requestedAccount} served by this host's own login (D-005 subscription-relay policy)`,
+    };
+  }
 
   if (mode === 'auto') {
     const ids = await deps.listPoolAccountIds();

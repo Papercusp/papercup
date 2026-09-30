@@ -54,6 +54,7 @@ import {
   type DiskRootChildScan,
 } from './disk';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
+import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
@@ -167,7 +168,10 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   session_archive_files: `permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; ${NOT_AGE_PRUNABLE}`,
   session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
   session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
-  session_turn_chunks: 'derived cache — migration 749 ON DELETE CASCADE from session_turns; inherits parent retention',
+  // Every chunk store (session_turn_chunks, text_chunks, …): DERIVED from
+  // search/chunks/registry.ts CHUNK_STORES, each with its deleting mechanism
+  // (generic-rag-chunking P-005).
+  ...Object.fromEntries(CHUNK_STORES.map((s) => [bareTableName(s.table), s.retention])),
   work_items: `canonical work ledger — ${NOT_AGE_PRUNABLE}`,
   memory_canonical: `canonical memory store — ${NOT_AGE_PRUNABLE}`,
   memory_vec_harrier: `canonical memory vectors — ${NOT_AGE_PRUNABLE}`,

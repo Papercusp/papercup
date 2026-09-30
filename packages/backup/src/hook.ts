@@ -56,7 +56,12 @@ import {
 // clean restore gets functions/triggers/indexes, but omit DATA for high-volume,
 // derived telemetry tables. Release-critical state (plans, work items, backup
 // metadata, settings, etc.) remains included with data.
-const EXCLUDED_TABLE_DATA = [
+//
+// Exported (subpath @papercusp/backup/hook) so operator-core's chunk-store
+// guard (search/chunks/derived-registrations.test.ts) fails when a registered
+// chunk store is missing here: this package cannot import operator-core's
+// registry, so the list is pinned by that test instead of derived.
+export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   'harness_shared.route_invocations',
   'harness_shared.tool_invocations',
   'harness_shared.harness_run_output',
@@ -68,6 +73,10 @@ const EXCLUDED_TABLE_DATA = [
   'harness_shared.session_turns',
   'harness_shared.session_turn_chunks',
   'harness_shared.session_turn_parts',
+  // Every chunk store is a derived cache its sync pass rebuilds from the parent
+  // rows (generic-rag-chunking-2026-09-29); the shared store sits beside
+  // session_turn_chunks for the same reason.
+  'harness_shared.text_chunks',
   'harness_shared.decision_ledger',
   'harness_shared.agent_activity',
   'harness_shared.coord_event_log',
@@ -519,7 +528,7 @@ async function dumpPg(opts: {
     '-e', 'vector',
     '-e', 'pg_trgm',
     '-e', 'pgcrypto',
-    ...EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
+    ...HOT_SNAPSHOT_EXCLUDED_TABLE_DATA.map((table) => `--exclude-table-data=${table}`),
   ];
   const guard = resolveKopiaBackupGuard();
   const dumpCommand = guard ?? 'pg_dump';

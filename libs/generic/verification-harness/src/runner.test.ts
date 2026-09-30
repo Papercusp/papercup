@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, runHarness } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, runHarness } from './runner.js';
 import { parseSelectionArgs, planSelection } from './select.js';
 
 const contract: HarnessContract = {
@@ -54,6 +54,13 @@ describe('runHarness', () => {
     expect(result.verdict).toBe('fail');
     expect(result.firstFailure).toEqual({ phase: 'leg-a', step: 'clone', reasonCode: 'clone-timeout' });
     expect(formatSummaryLine(result)).toContain('first_failure=leg-a/clone/clone-timeout passed=2 failed=1 blocked=1');
+    // The line has one owner: what formatSummaryLine writes, parseSummaryLine reads back.
+    expect(parseSummaryLine(formatSummaryLine(result))).toEqual({
+      harness: 'drill',
+      verdict: 'fail',
+      runId: 'r1',
+      firstFailure: { phase: 'leg-a', step: 'clone', reasonCode: 'clone-timeout' },
+    });
     expect((await loadRunResult(path.join(root, 'r1'))).verdict).toBe('fail');
     expect(readlinkSync(path.join(root, 'latest'))).toBe('r1');
   });
@@ -105,6 +112,28 @@ describe('runHarness', () => {
     ]);
     expect(result.phases[0]!.reusedFromRunId).toBe('first');
     expect(result.verdict).toBe('pass');
+  });
+});
+
+describe('parseSummaryLine', () => {
+  const line = (first: string) =>
+    `  HARNESS_RESULT harness=h verdict=fail run=20260930T000000Z-42 first_failure=${first} passed=0 failed=1 evidence=/x`;
+
+  it('reads no failure, placeholder steps, a step containing "/" and a guard-rail reason', () => {
+    expect(parseSummaryLine(line('none'))?.firstFailure).toBeNull();
+    expect(parseSummaryLine(line('build/-/exit-1'))?.firstFailure).toEqual({ phase: 'build', step: null, reasonCode: 'exit-1' });
+    expect(parseSummaryLine(line('leg/a/b/timeout'))?.firstFailure).toEqual({ phase: 'leg', step: 'a/b', reasonCode: 'timeout' });
+    expect(parseSummaryLine(line('preflight/guard-rails/guard-rail:daemon-up'))?.firstFailure).toEqual({
+      phase: 'preflight',
+      step: 'guard-rails',
+      reasonCode: 'guard-rail:daemon-up',
+    });
+    expect(parseSummaryLine(line('x'))?.firstFailure).toBeNull();
+  });
+
+  it('returns null for any other line', () => {
+    expect(parseSummaryLine('VH_RUN harness=h run=r evidence=/x')).toBeNull();
+    expect(parseSummaryLine('')).toBeNull();
   });
 });
 
@@ -175,6 +204,9 @@ vh_finish
     }
     expect(code).toBe(1);
     expect(out).toMatch(/HARNESS_RESULT harness=shell-drill verdict=fail .*first_failure=leg-a\/clone\/clone-timeout passed=1 failed=2 blocked=1/);
+    // The shell half prints the same line the parser reads (the attempt ledger's fingerprint input).
+    const summary = out.split('\n').find((l) => l.includes('HARNESS_RESULT')) ?? '';
+    expect(parseSummaryLine(summary)?.firstFailure).toEqual({ phase: 'leg-a', step: 'clone', reasonCode: 'clone-timeout' });
     const result = JSON.parse(readFileSync(path.join(root, 'latest', 'result.json'), 'utf8'));
     expect(result.phases.map((p: { phase: string; status: string; reasonCode: string | null }) => [p.phase, p.status, p.reasonCode])).toEqual([
       ['setup', 'passed', null],
