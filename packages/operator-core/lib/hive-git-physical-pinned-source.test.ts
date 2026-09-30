@@ -11,7 +11,7 @@
 // against a fixture repository whose working tree is dirty, and pin the ordering
 // that keeps every tower producer call on the snapshot.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -108,6 +108,8 @@ describe('hive-git-physical-probe.sh — the tower producer runs a pinned commit
       'printf "HOISTED_LINK=%s\\n" "$(readlink "$tower_source/node_modules/hoisted-dep")"',
       'printf "REPO_DIR=%s\\n" "$PAPERCUSP_REPO_DIR"',
       'printf "TOWER_SOURCE=%s\\n" "$tower_source"',
+      // Resolved here, while the snapshot exists: the exit trap removes it before the assertions run.
+      'printf "TOWER_SOURCE_REAL=%s\\n" "$(readlink -f "$tower_source")"',
       'printf "SHA=%s\\n" "$source_sha"',
     ].join('\n');
     const run = spawnSync('bash', ['-c', harness], { encoding: 'utf8', env: { ...process.env, TMPDIR: tmp } });
@@ -124,7 +126,7 @@ describe('hive-git-physical-probe.sh — the tower producer runs a pinned commit
     expect(out.PRODUCER.startsWith(`${root}/`)).toBe(false);
     expect(out.SHA).toBe(git(root, 'rev-parse', 'HEAD').trim());
     // Workspace imports resolve INTO the snapshot; third-party ones into the install.
-    expect(out.WS_LINK).toBe(join(realpathSync(towerSource), 'libs', 'fixture-sub'));
+    expect(out.WS_LINK).toBe(join(out.TOWER_SOURCE_REAL, 'libs', 'fixture-sub'));
     expect(out.HOISTED_LINK).toBe(join(root, 'node_modules', 'hoisted-dep'));
     expect(out.NESTED_LINK).toBe(join(root, 'packages', 'operator-core', 'node_modules', '@scope', 'pinned'));
     // Repo-aware producer modes still inspect the live repository.
