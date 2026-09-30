@@ -31,6 +31,16 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { homedir } from "node:os";
+
+/** Match the operator's scoped bearer reader; a missing scoped key must not use the box key. */
+export function readPublisherToken(
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): string {
+  const operatorHome = env.PAPERCUSP_HOME || path.join(home, ".papercusp");
+  return readFileSync(path.join(operatorHome, "superuser-token"), "utf8").trim();
+}
 
 export interface PrivateIpcFixture {
   pid: number;

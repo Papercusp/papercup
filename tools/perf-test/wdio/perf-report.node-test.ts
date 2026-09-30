@@ -6,12 +6,30 @@ import path from "node:path";
 import test from "node:test";
 import type { Browser } from "webdriverio";
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+
+test("native receipt publishing uses the selected operator credential", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "wdio-publisher-token-"));
+  const scopedHome = path.join(home, "workspace", ".papercusp");
+  try {
+    mkdirSync(path.join(home, ".papercusp"), { recursive: true });
+    mkdirSync(scopedHome, { recursive: true });
+    writeFileSync(path.join(home, ".papercusp", "superuser-token"), "box-credential\n");
+    writeFileSync(path.join(scopedHome, "superuser-token"), "workspace-credential\n");
+    assert.equal(readPublisherToken({ PAPERCUSP_HOME: scopedHome }, home), "workspace-credential");
+    assert.equal(readPublisherToken({}, home), "box-credential");
+    assert.equal(readPublisherToken({ PAPERCUSP_HOME: "" }, home), "box-credential");
+    rmSync(path.join(scopedHome, "superuser-token"));
+    assert.throws(() => readPublisherToken({ PAPERCUSP_HOME: scopedHome }, home), /ENOENT/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 function retryingBrowser(): Browser {
   return {

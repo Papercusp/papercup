@@ -74,6 +74,11 @@ On Linux, a named run using a private `PAPERCUSP_HOME` must also set
 `PAPERCUSP_DEV_API_TARGET` to the target port (for example, `3170`). The runner
 checks the private IPC PID and socket before measuring and again before
 publishing; an API restart makes that sample invalid and prevents a receipt.
+The receipt publisher reads `PAPERCUSP_HOME/superuser-token`, with
+`~/.papercusp/superuser-token` as the unscoped fallback, matching the operator.
+A private fixture home must contain the credential of its selected API; keep
+that injected credential outside the repository. A missing scoped credential
+does not fall back to a different operator's credential.
 
 ## Architecture vs the in-process `/tests` page
 
