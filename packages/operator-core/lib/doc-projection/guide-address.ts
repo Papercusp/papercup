@@ -22,7 +22,12 @@
  * raw-SQL writes, the same way `validateDocPart` mirrors 781's CHECKs.
  */
 
-export const GUIDE_ADDRESS_KINDS = ['blueprint', 'slot', 'role'] as const;
+/**
+ * `package` (portable-identity-packages P-009 / D-022) addresses ONE exact installed
+ * pack-doc resource by its 64-hex `packageResourceKey`. It is workspace-unique, so a
+ * package token matches across guide harnesses; the other kinds stay per harness.
+ */
+export const GUIDE_ADDRESS_KINDS = ['blueprint', 'slot', 'role', 'package'] as const;
 export type GuideAddressKind = (typeof GUIDE_ADDRESS_KINDS)[number];
 
 export interface GuideAddress {
@@ -32,9 +37,15 @@ export interface GuideAddress {
 
 /** `<kind>:<value>` — kind from the closed set, value non-blank with no whitespace or ':'. */
 export function parseGuideAddress(token: string): GuideAddress | null {
-  const m = /^(blueprint|slot|role):([^\s:]+)$/.exec(token);
+  const m = /^(blueprint|slot|role|package):([^\s:]+)$/.exec(token);
   if (!m) return null;
+  if (m[1] === 'package' && !/^[a-f0-9]{64}$/.test(m[2])) return null;
   return { kind: m[1] as GuideAddressKind, value: m[2] };
+}
+
+/** True for a `package:<resourceKey>` token (matched across guide harnesses). */
+export function isPackageGuideAddress(token: string): boolean {
+  return parseGuideAddress(token)?.kind === 'package';
 }
 
 export function formatGuideAddress(addr: GuideAddress): string {
@@ -101,6 +112,11 @@ export interface GuideWearer {
   role?: string | null;
   /** The bound stack: static layers + the session binding (fleet posture, mode axes, …). */
   layers: readonly GuideWearerLayer[];
+  /**
+   * P-009 / D-022: the exact pack-doc resource keys this wearer's installation holds
+   * (never another owner's). Omit ⇒ no package tokens.
+   */
+  packageResources?: readonly string[];
 }
 
 /**
@@ -117,6 +133,10 @@ export function guideAddressesForWearer(wearer: GuideWearer): string[] {
     const id = (layer.id ?? '').trim();
     if (slot) out.add(formatGuideAddress({ kind: 'slot', value: slot }));
     if (id) out.add(formatGuideAddress({ kind: 'blueprint', value: id }));
+  }
+  for (const key of wearer.packageResources ?? []) {
+    const token = formatGuideAddress({ kind: 'package', value: key.trim() });
+    if (parseGuideAddress(token)) out.add(token);
   }
   return [...out].sort();
 }

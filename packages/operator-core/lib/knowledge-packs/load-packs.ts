@@ -23,8 +23,10 @@ import { workspacesRoot } from '../workspace-registry';
 import {
   parseLearningFile,
   parseManifest,
+  parsePackDocFile,
   validatePack,
   type LearningItem,
+  type PackDocItem,
   type KnowledgePack,
   type KnowledgePackSource,
   type KnowledgePackSummary,
@@ -191,7 +193,32 @@ async function readPackDir(
     else if (error) warnings.push(`${manifest.id}: ${error}`);
   }
 
-  const pack: KnowledgePack = { manifest, items };
+  // P-009 / D-022: optional `docs/` — procedure sections an identity package
+  // installs as addressed doc parts. An absent dir is the normal case.
+  const docsDir = join(dir, 'docs');
+  const docFiles = (await fs.readdir(docsDir).catch(() => [] as string[]))
+    .filter((f) => f.endsWith('.md'))
+    .sort();
+  const docReads = await Promise.all(
+    docFiles.map(async (file) => {
+      try {
+        return { file, raw: await fs.readFile(join(docsDir, file), 'utf8') };
+      } catch {
+        warnings.push(`${manifest.id}/docs/${file}: unreadable`);
+        return null;
+      }
+    }),
+  );
+  const docs: PackDocItem[] = [];
+  for (const read of docReads) {
+    if (!read) continue;
+    const { doc, error } = parsePackDocFile(read.raw, read.file.replace(/\.md$/, ''));
+    if (doc) docs.push(doc);
+    else if (error) warnings.push(`${manifest.id}: ${error}`);
+  }
+
+  // `docs` is omitted when empty so a doc-less pack pins byte-identically.
+  const pack: KnowledgePack = { manifest, items, ...(docs.length > 0 ? { docs } : {}) };
   const packErrors = validatePack(pack);
   if (packErrors.length > 0) {
     return { errors: packErrors.map((e) => `${manifest.id}: ${e}`) };

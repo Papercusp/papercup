@@ -115,9 +115,38 @@ export interface LearningItem {
   text: string;
 }
 
+/**
+ * Doc-part kinds a pack doc may project as — the projecting subset of
+ * `harness_doc_parts.kind` (`prose` never projects, so a pack never ships it).
+ */
+export const PACK_DOC_KINDS = ['invariant', 'pointer', 'recipe'] as const;
+export type PackDocKind = (typeof PACK_DOC_KINDS)[number];
+
+/**
+ * A procedure/guide section a pack ships beside its learnings
+ * (portable-identity-packages P-009 / D-022). On disk `docs/<id>.md`; installed
+ * by an identity package as ONE doc part addressed to that exact installation
+ * (`stack_scope {package:<resourceKey>}`), so only its wearers receive it.
+ */
+export interface PackDocItem {
+  /** Kebab-case, unique among the pack's docs. Defaults from the filename stem. */
+  id: string;
+  title: string;
+  /** The Project-guide section the part renders under (`target_section`). */
+  section: string;
+  kind: PackDocKind;
+  /** The part body (markdown), stored verbatim. */
+  body: string;
+}
+
 export interface KnowledgePack {
   manifest: KnowledgePackManifest;
   items: LearningItem[];
+  /**
+   * OPTIONAL and omitted when a pack ships none: the pack is pinned by content
+   * hash, so an always-present empty array would change every existing pin.
+   */
+  docs?: PackDocItem[];
 }
 
 /** Where a pack was resolved from (./load-packs). */
@@ -276,6 +305,43 @@ export function parseLearningFile(
   return { item: { id, title, kind, appliesTo, ...(domains ? { domains } : {}), text } };
 }
 
+/**
+ * Parse one `docs/<doc-id>.md`. Strict like a learning: title, section and a
+ * non-empty body are required — an installed doc part must name the section
+ * it renders under (`projected_needs_section`).
+ */
+export function parsePackDocFile(
+  raw: string,
+  fallbackId: string,
+): { doc?: PackDocItem; error?: string } {
+  const fm = parseFrontmatter(raw);
+  if (!fm) return { error: `docs/${fallbackId}: missing frontmatter block` };
+
+  const end = raw.indexOf('\n---', 4);
+  const afterFence = raw.indexOf('\n', end + 1);
+  const body = (afterFence >= 0 ? raw.slice(afterFence + 1) : '').trim();
+  if (!body) return { error: `docs/${fallbackId}: empty doc body` };
+
+  const id = typeof fm.id === 'string' && fm.id ? fm.id : fallbackId;
+  if (!isKebab(id)) return { error: `docs/${fallbackId}: id not kebab-case: ${id}` };
+
+  const title = typeof fm.title === 'string' ? fm.title.trim() : '';
+  if (!title) return { error: `docs/${id}: title missing` };
+
+  const section = typeof fm.section === 'string' ? fm.section.trim() : '';
+  if (!section) return { error: `docs/${id}: section missing` };
+
+  let kind: PackDocKind = 'recipe';
+  if (fm.kind !== undefined) {
+    if (typeof fm.kind !== 'string' || !(PACK_DOC_KINDS as readonly string[]).includes(fm.kind)) {
+      return { error: `docs/${id}: kind must be one of ${PACK_DOC_KINDS.join('|')} (got ${String(fm.kind)})` };
+    }
+    kind = fm.kind as PackDocKind;
+  }
+
+  return { doc: { id, title, section, kind, body } };
+}
+
 /* ────────────────────────────────────────────────────────────────────────
  * Pack-level validation + filtering
  * ──────────────────────────────────────────────────────────────────────── */
@@ -288,7 +354,13 @@ export function validatePack(pack: KnowledgePack): string[] {
     if (seen.has(item.id)) errors.push(`duplicate learning id: ${item.id}`);
     seen.add(item.id);
   }
-  if (pack.items.length === 0) errors.push('pack has no learnings');
+  const seenDocs = new Set<string>();
+  for (const doc of pack.docs ?? []) {
+    if (seenDocs.has(doc.id)) errors.push(`duplicate doc id: ${doc.id}`);
+    seenDocs.add(doc.id);
+  }
+  // A docs-only pack is a procedure pack; a pack with neither teaches nothing.
+  if (pack.items.length === 0 && seenDocs.size === 0) errors.push('pack has no learnings');
   return errors;
 }
 
