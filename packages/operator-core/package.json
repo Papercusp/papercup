@@ -18,6 +18,7 @@
     "test:lane-stateful": "PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "test:coverage-attribution-venue": "PAPERCUSP_TEST_ATTRIBUTION=1 PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp vitest run --config vitest.integration.config.ts lib/coverage-census/attribution/persistence-venue.integration.test.ts",
+    "test:integration:federated-column-completeness": "vitest run --config vitest.integration.config.ts lib/sync/hyperbee/__tests__/federated-column-completeness.integration.test.ts",
     "test:integration:prose-vector-dims": "vitest run --config vitest.integration.config.ts lib/search/prose-vector-dims.integration.test.ts",
     "test:integration:resource-governor-queue": "vitest run --config vitest.integration.config.ts lib/resource-governor/queue.integration.test.ts",
     "test:integration:sessions-read": "vitest run --config vitest.integration.config.ts lib/agent-tools/sessions/read.integration.test.ts",

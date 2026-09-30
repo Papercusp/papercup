@@ -151,6 +151,9 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // the row's real (federated) content instead.
     embedding: 'embedder-mode-specific vector, machine-local (mig 551) — foreign-space noise if federated, re-embedded locally instead',
     embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 551)',
+    // WI-10004160: the guard did not run 2026-08-29 → 2026-09-30 (no gate route; integration
+    // tier is opt-in), so these landed undeclared. Same family as embedding/embedding_mode.
+    embedding_profile: 'exact embedding-space identity of the machine-local `embedding` (mig 1154) — describes a vector that never federates',
   },
   harness_issues_consolidated: {
     // Issues federate every content column — only PROVENANCE is local. (Empty.)
@@ -195,9 +198,26 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // federated `content` locally rather than shipped over the wire.
     embedding: 'embedder-mode-specific vector, machine-local (mig 553) — foreign-space noise if federated, re-embedded locally instead',
     embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 553)',
+    embedding_profile: 'exact embedding-space identity of the machine-local `embedding` (mig 1154) — describes a vector that never federates',
+    // Acceptance-BAR contract seed (mig 1111). D-093 of p2p-public-release-endgame-2026-09-01:
+    // do NOT federate — every node re-derives it by running the strict seed when a plan OR its
+    // bar rubric arrives (either order), the same re-derive-on-apply rule as items/decisions.
+    // epoch/cohort are also stamped by the local BEFORE INSERT trigger stamp_acceptance_bar_epoch.
+    acceptance_bar_epoch: 're-derived on apply: local insert trigger + strict seed (D-093, WI-10004146)',
+    acceptance_bar_cohort: 're-derived on apply: local insert trigger + strict seed (D-093, WI-10004146)',
+    acceptance_bar_set_hash: 're-derived on apply by the strict seed from the federated content + rubric (D-093, WI-10004146)',
+    acceptance_bar_rubric_slug: 're-derived on apply by the strict seed from the federated content + rubric (D-093, WI-10004146)',
+    acceptance_bar_rubric_revision: 're-derived on apply by the strict seed from the federated content + rubric (D-093, WI-10004146)',
+    acceptance_bar_seeded_at: 'machine-local seed timestamp, re-stamped when the strict seed runs on apply (D-093, WI-10004146)',
+    acceptance_bar_seeded_by: 'machine-local seed actor, re-stamped when the strict seed runs on apply (D-093, WI-10004146)',
   },
   coord_conversations: {
     accepted_post_id: 'local bigserial reference; the federated answer is `accepted_answer` (mapper doc)',
+    // mig 1181 (EI-23245293187768303): authorization provenance validated against the opener's
+    // LIVE local claim. A receiver cannot re-validate a sender's claim, and the column contract is
+    // "NULL = cannot authorize recovered-owner supersession", so landing NULL on a peer fails closed.
+    plan_slug: 'recovered-owner supersession provenance validated against a LOCAL live claim (mig 1181); NULL on a peer fails closed by design',
+    work_item_id: 'recovered-owner supersession provenance validated against a LOCAL live claim (mig 1181); NULL on a peer fails closed by design',
   },
   coord_event_log: {
     // id is a local autoincrement pk (auto-detected); msg_id is the fed key.
@@ -289,6 +309,13 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // machine-local, re-embedded locally from the row's federated content.
     embedding: 'embedder-mode-specific vector, machine-local (mig 776) — foreign-space noise if federated, re-embedded locally instead',
     embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 776)',
+    embedding_profile: 'exact embedding-space identity of the machine-local `embedding` (mig 1154) — describes a vector that never federates',
+    // The VIEW re-exposes base-table columns, so the base table's own classification applies and
+    // the information_schema GENERATED auto-exemption cannot see through the view.
+    last_released_by: 'per-machine claim-cooldown bookkeeping, local work state (mig 485; same as the base table)',
+    last_released_at: 'per-machine claim-cooldown bookkeeping, local work state (mig 485; same as the base table)',
+    claim_hold: 'GENERATED ALWAYS from payload._claimHold on the base table (mig 1110); payload federates, so each peer re-derives it',
+    needs_owner_action: 'GENERATED ALWAYS from payload.needsOwnerAction on the base table (mig 1110); payload federates, so each peer re-derives it',
     // EI-21467654382027859 (mig 965): the other NINE columns this guard named
     // (admission/admitted_at/admitted_by, state_changed_at, tags, parent_id,
     // source_plan_slug, source_plan_item_ids, expected_cost_cents) now federate —
