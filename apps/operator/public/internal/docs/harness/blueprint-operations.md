@@ -192,6 +192,29 @@ await client.signal(handle, { channel: 'note', payload: { text: 'hi' }, requestK
 Here `invoke(toolName, args)` must return the tool's decoded structured result and
 throw on a refusal.
 
+## Calling from outside apps
+
+The seven tools are also reachable from apps that run somewhere else: another server, a CI
+job, a laptop on another network, or a chat product such as Claude.ai or ChatGPT. Such an app
+never uses an owner sign-in; it uses a limited **app key** (`pcapp_…`) whose scope lists the
+operations it may call (`blueprint:*`), and every call is attributed to that app.
+
+* **Through the Papercusp portal** (a hosted workspace, or your own computer linked through the
+  opt-in relay): the HTTP projection is at
+  `https://<portal>/api/workspaces/<workspaceId>/agent-tools/blueprint/<verb>` and MCP at
+  `…/<workspaceId>/mcp`.
+* **Through your own tunnel**: only MCP is served, at `https://<your-tunnel>/api/mcp`.
+  Plain-HTTP tool routes answer `404 not_served_on_external_ingress` there.
+* **From a provider event**: a signed webhook (`triggers:create-webhook`) starts whatever
+  operation its armed trigger binding names; see [External-event triggers](#external-event-triggers).
+
+The handle, request-key idempotency, results and refusals are the same as for a local caller,
+plus the app-access refusals (`403 remote_access_off`, `spend_cap_reached`, the relay's
+`429` and `503`). The [External-app quickstart](/internal/docs/harness/external-app-quickstart)
+has curl, MCP-client and TypeScript examples; the
+[Remote access guide](/internal/docs/harness/remote-access-guide) covers keys, tunnels, the relay
+and alerts from the owner's side.
+
 ## Plan-target operations
 
 An operation may instead target a declared plan template. Submission then starts one
@@ -401,17 +424,17 @@ cold p95 at most 1.75x + 500 ms, and throughput at 8 concurrent callers at least
 
 | Metric     | Callers | Control | Candidate | Limit   | Result |
 | ---------- | ------- | ------- | --------- | ------- | ------ |
-| warm p50   | 1       | 479 ms  | 468 ms    | 566 ms  | pass   |
-| warm p95   | 1       | 562 ms  | 553 ms    | 727 ms  | pass   |
-| warm p99   | 1       | 1365 ms | 679 ms    | 2097 ms | pass   |
-| cold p95   | 1       | 3088 ms | 3190 ms   | 5903 ms | pass   |
-| warm p50   | 8       | 2346 ms | 2185 ms   | 2712 ms | pass   |
-| warm p95   | 8       | 3106 ms | 3156 ms   | 3907 ms | pass   |
-| warm p99   | 8       | 3723 ms | 3575 ms   | 5634 ms | pass   |
-| cold p95   | 8       | 2834 ms | 2880 ms   | 5460 ms | pass   |
-| throughput | 8       | 3.21/s  | 3.20/s    | 2.57/s  | pass   |
+| warm p50   | 1       | 633 ms  | 643 ms    | 743 ms  | pass   |
+| warm p95   | 1       | 951 ms  | 1074 ms   | 1214 ms | pass   |
+| warm p99   | 1       | 1740 ms | 1428 ms   | 2660 ms | pass   |
+| cold p95   | 1       | 4159 ms | 4509 ms   | 7779 ms | pass   |
+| warm p50   | 8       | 2363 ms | 2113 ms   | 2733 ms | pass   |
+| warm p95   | 8       | 3707 ms | 3265 ms   | 4659 ms | pass   |
+| warm p99   | 8       | 4171 ms | 4148 ms   | 6307 ms | pass   |
+| cold p95   | 8       | 4494 ms | 4739 ms   | 8365 ms | pass   |
+| throughput | 8       | 2.95/s  | 3.28/s    | 2.36/s  | pass   |
 
-Evidence: `docs/evidence/p013-workload-a-2026-09-28.json`.
+Evidence: `docs/evidence/p013-workload-a-2026-09-29.json`.
 
 Not proven by this workload:
 
@@ -422,17 +445,17 @@ Not proven by this workload:
 
 | Metric     | Callers | Control  | Candidate | Limit    | Result |
 | ---------- | ------- | -------- | --------- | -------- | ------ |
-| warm p50   | 1       | 2001 ms  | 2006 ms   | 2316 ms  | pass   |
-| warm p95   | 1       | 2650 ms  | 2459 ms   | 3337 ms  | pass   |
-| warm p99   | 1       | 4862 ms  | 3547 ms   | 7343 ms  | pass   |
-| cold p95   | 1       | 6526 ms  | 7566 ms   | 11920 ms | pass   |
-| warm p50   | 8       | 12549 ms | 11381 ms  | 14447 ms | pass   |
-| warm p95   | 8       | 14814 ms | 13357 ms  | 18543 ms | pass   |
-| warm p99   | 8       | 15684 ms | 14863 ms  | 23576 ms | pass   |
-| cold p95   | 8       | 15888 ms | 11388 ms  | 28304 ms | pass   |
-| throughput | 8       | 0.63/s   | 0.68/s    | 0.51/s   | pass   |
+| warm p50   | 1       | 1693 ms  | 1767 ms   | 2056 ms  | pass   |
+| warm p95   | 1       | 3182 ms  | 2428 ms   | 4027 ms  | pass   |
+| warm p99   | 1       | 5115 ms  | 3923 ms   | 7773 ms  | pass   |
+| cold p95   | 1       | 7829 ms  | 7911 ms   | 14201 ms | pass   |
+| warm p50   | 8       | 9948 ms  | 10121 ms  | 11963 ms | pass   |
+| warm p95   | 8       | 15794 ms | 13752 ms  | 19792 ms | pass   |
+| warm p99   | 8       | 25654 ms | 14768 ms  | 38581 ms | pass   |
+| cold p95   | 8       | 5447 ms  | 9222 ms   | 10032 ms | pass   |
+| throughput | 8       | 0.72/s   | 0.75/s    | 0.58/s   | pass   |
 
-Evidence: `docs/evidence/p013-workload-b-2026-09-28.json`.
+Evidence: `docs/evidence/p013-workload-b-2026-09-29.json`.
 
 Not proven by this workload:
 
@@ -467,17 +490,17 @@ Not proven by this workload:
 
 | Metric     | Callers | Control | Candidate | Limit   | Result |
 | ---------- | ------- | ------- | --------- | ------- | ------ |
-| warm p50   | 1       | 78 ms   | 110 ms    | 166 ms  | pass   |
-| warm p95   | 1       | 89 ms   | 131 ms    | 255 ms  | pass   |
-| warm p99   | 1       | 103 ms  | 151 ms    | 431 ms  | pass   |
-| cold p95   | 1       | 236 ms  | 318 ms    | 1589 ms | pass   |
-| warm p50   | 8       | 197 ms  | 176 ms    | 346 ms  | pass   |
-| warm p95   | 8       | 244 ms  | 253 ms    | 527 ms  | pass   |
-| warm p99   | 8       | 318 ms  | 335 ms    | 914 ms  | pass   |
-| cold p95   | 8       | 278 ms  | 297 ms    | 1694 ms | pass   |
-| throughput | 8       | 39.49/s | 42.71/s   | 25.67/s | pass   |
+| warm p50   | 1       | 81 ms   | 108 ms    | 171 ms  | pass   |
+| warm p95   | 1       | 102 ms  | 120 ms    | 279 ms  | pass   |
+| warm p99   | 1       | 132 ms  | 127 ms    | 497 ms  | pass   |
+| cold p95   | 1       | 234 ms  | 421 ms    | 1585 ms | pass   |
+| warm p50   | 8       | 205 ms  | 189 ms    | 357 ms  | pass   |
+| warm p95   | 8       | 247 ms  | 258 ms    | 533 ms  | pass   |
+| warm p99   | 8       | 299 ms  | 279 ms    | 873 ms  | pass   |
+| cold p95   | 8       | 291 ms  | 468 ms    | 1727 ms | pass   |
+| throughput | 8       | 38.63/s | 39.82/s   | 25.11/s | pass   |
 
-Evidence: `docs/evidence/p013-workload-d-2026-09-28.json`.
+Evidence: `docs/evidence/p013-workload-d-2026-09-29.json`.
 
 Not proven by this workload:
 

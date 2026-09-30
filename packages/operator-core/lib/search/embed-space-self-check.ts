@@ -28,6 +28,12 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { ResolvedEmbedder } from '@papercusp/memory';
+import {
+  DEFAULT_DESYNC_DISTANCE_THRESHOLD,
+  cosineDistance,
+  parseVectorText,
+  runStoredRowSelfCheck,
+} from '@papercusp/search';
 import { resolveBackfillEmbedder, TARGETS, modeColOf, type BackfillTarget } from './embed-backfill';
 import {
   openEscalation,
@@ -57,7 +63,7 @@ const SUBJECT_SIGNATURE = 'embed-space-self-check';
  * (float noise / minor backend nondeterminism); a genuine desync (wrong
  * space, a stale/foreign vector, a dimension mismatch) lands far above it.
  */
-export const DEFAULT_DISTANCE_ALERT_THRESHOLD = 0.05;
+export const DEFAULT_DISTANCE_ALERT_THRESHOLD = DEFAULT_DESYNC_DISTANCE_THRESHOLD;
 
 export interface EmbedSpaceSelfCheckResult {
   ok: boolean;
@@ -68,34 +74,10 @@ export interface EmbedSpaceSelfCheckResult {
   mode?: string;
 }
 
-/** Parse a pgvector `::text` literal ("[0.1,0.2,...]") into a plain number array. */
-export function parseVectorText(v: string): number[] {
-  return v
-    .slice(v.indexOf('[') + 1, v.lastIndexOf(']'))
-    .split(',')
-    .map(Number);
-}
-
-/**
- * Cosine DISTANCE (1 - cosine similarity) — mirrors pgvector's `<=>` operator
- * so this stays consistent with how memory:search itself ranks. A dimension
- * mismatch is itself a desync signal, not an error to swallow: it returns
- * maximal distance (1) rather than throwing.
- */
-export function cosineDistance(a: readonly number[], b: readonly number[]): number {
-  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 1;
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  if (na === 0 || nb === 0) return 1;
-  const cosSim = dot / (Math.sqrt(na) * Math.sqrt(nb));
-  return 1 - cosSim;
-}
+/** The vector math and the alert rule live in @papercusp/search's stored-row
+ * self-check (shared-vector-search-libraries P-001); re-exported for the
+ * existing papercusp importers. */
+export { cosineDistance, parseVectorText };
 
 export interface CanaryRow {
   target: BackfillTarget;
@@ -219,72 +201,58 @@ export async function runEmbedSpaceSelfCheckTick(
     return { ok: false, skipped: 'pg_unavailable' };
   }
 
-  let canary: CanaryRow | null;
-  try {
-    canary = await pickCanary(sql, resolved.mode);
-  } catch {
-    return { ok: false, skipped: 'canary_read_failed' };
-  }
-  if (!canary) return { ok: true, skipped: 'no_row_in_active_space', mode: resolved.mode };
-
-  let freshVec: number[];
-  try {
-    freshVec = await resolved.embed(canary.body);
-  } catch {
-    return { ok: false, skipped: 'embed_failed', table: canary.target.table };
-  }
-
-  const storedVec = parseVectorText(canary.storedVectorText);
-  // A dimension mismatch against the expected width is itself worth noting,
-  // but cosineDistance() already treats any length mismatch as maximal
-  // distance (1) — no separate branch needed here. (This used to carry a
-  // `void EMBEDDER_DIM;` purely to keep an otherwise-unused import alive;
-  // the width now lives in `search/prose-vector-dims` and this file has no
-  // need of it.)
-  const distance = cosineDistance(freshVec, storedVec);
-
-  let openRec: EscalationRecord | null = null;
-  try {
-    openRec = findOpenSelfCheckEscalation(await listOpen());
-  } catch {
-    openRec = null;
-  }
-
-  if (distance <= threshold) {
-    if (openRec) {
+  // The measurement and the alert rule are @papercusp/search's; this host keeps
+  // the embedder, the canary SQL and the escalation plumbing. A length
+  // mismatch reads as maximal distance there, so a width drift alerts too.
+  let canary: CanaryRow | null = null;
+  const result = await runStoredRowSelfCheck({
+    embed: (text) => resolved.embed(text),
+    pickCanary: async () => {
+      canary = await pickCanary(sql, resolved.mode);
+      return canary ? { body: canary.body, storedVector: canary.storedVectorText, keyLabel: canary.keyLabel } : null;
+    },
+    threshold,
+    clear: async ({ canary: c, distance }) => {
+      let openRec: EscalationRecord | null = null;
       try {
-        await resolveOpen(
-          openRec.msg_id,
-          'auto-resolved',
-          `embed-space self-check healthy again (distance=${distance.toFixed(4)} on ${canary.keyLabel})`,
-        );
+        openRec = findOpenSelfCheckEscalation(await listOpen());
       } catch {
-        /* a resolve failure must never crash the request worker */
+        openRec = null;
       }
-    }
-    return { ok: true, table: canary.target.table, keyLabel: canary.keyLabel, distance, mode: resolved.mode };
-  }
+      if (!openRec) return;
+      await resolveOpen(
+        openRec.msg_id,
+        'auto-resolved',
+        `embed-space self-check healthy again (distance=${distance.toFixed(4)} on ${c.keyLabel})`,
+      );
+    },
+    alert: ({ canary: c, distance }) => {
+      const target = (canary as CanaryRow).target;
+      return escalate({
+        severity: 'advisory',
+        summary:
+          `[embed-space-desync] re-embedding ${c.keyLabel}'s own stored text under the ACTIVE ` +
+          `'${resolved.mode}' space produced a vector ${distance.toFixed(4)} cosine-distant from what's ` +
+          `on disk (expected ~0)`,
+        body:
+          `EI-8913 detector (WI-3644): the embedder resolved for mode='${resolved.mode}' does not ` +
+          `reproduce the stored vector for a row already tagged as living in that space ` +
+          `(${target.table}.${modeColOf(target)}). memory:search / semantic recall ` +
+          `against this table is ranking against at least one mismatched vector — likely a wider ` +
+          `embedder/version/config drift, not a one-row fluke. Investigate: has the resolved ` +
+          `embedder's model/version changed without a mode bump? Is the mode column trustworthy? ` +
+          `Re-check via search:embed-space-self-check-tick or npm's search/embed-backfill tests.`,
+        meta: { dedupKind: DEDUP_KIND, subjectSignature: SUBJECT_SIGNATURE },
+      });
+    },
+  });
 
-  try {
-    await escalate({
-      severity: 'advisory',
-      summary:
-        `[embed-space-desync] re-embedding ${canary.keyLabel}'s own stored text under the ACTIVE ` +
-        `'${resolved.mode}' space produced a vector ${distance.toFixed(4)} cosine-distant from what's ` +
-        `on disk (expected ~0)`,
-      body:
-        `EI-8913 detector (WI-3644): the embedder resolved for mode='${resolved.mode}' does not ` +
-        `reproduce the stored vector for a row already tagged as living in that space ` +
-        `(${canary.target.table}.${modeColOf(canary.target)}). memory:search / semantic recall ` +
-        `against this table is ranking against at least one mismatched vector — likely a wider ` +
-        `embedder/version/config drift, not a one-row fluke. Investigate: has the resolved ` +
-        `embedder's model/version changed without a mode bump? Is the mode column trustworthy? ` +
-        `Re-check via search:embed-space-self-check-tick or npm's search/embed-backfill tests.`,
-      meta: { dedupKind: DEDUP_KIND, subjectSignature: SUBJECT_SIGNATURE },
-    });
-  } catch {
-    /* an alarm-send failure must never crash the request worker */
+  const table = (canary as CanaryRow | null)?.target.table;
+  if ('skipped' in result) {
+    if (result.skipped === 'no_row_in_active_space') return { ok: true, skipped: result.skipped, mode: resolved.mode };
+    return result.skipped === 'embed_failed'
+      ? { ok: false, skipped: result.skipped, table }
+      : { ok: false, skipped: result.skipped };
   }
-
-  return { ok: true, table: canary.target.table, keyLabel: canary.keyLabel, distance, mode: resolved.mode };
+  return { ok: true, table, keyLabel: result.keyLabel, distance: result.distance, mode: resolved.mode };
 }

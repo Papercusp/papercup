@@ -23,7 +23,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { chunkAwareVectorLegSql, type PgHandle } from '@papercusp/search';
@@ -87,11 +88,18 @@ export interface CensusSite {
 }
 
 /** Every non-test call to a pre-move filter under packages/, apps/ and libs/,
- * sorted and line-free (a moved line is not a new site). */
+ * sorted and line-free (a moved line is not a new site).
+ *
+ * `--untracked` makes the answer independent of git-sync timing: without it a
+ * call site in a file nobody has committed yet is invisible, and the census
+ * changes the moment the sweep commits it. This module is excluded because it
+ * is the instrument: its own reproductions of the filters are not call sites
+ * (it self-matched once git-sync committed it, 2026-09-30). */
 export function censusFilterCallSites(repoRoot: string): CensusSite[] {
+  const self = relative(repoRoot, fileURLToPath(import.meta.url)).split(sep).join('/');
   const files = execFileSync(
     'git',
-    ['grep', '-lE', FILTER_FUNCTIONS.join('|'), '--', 'packages', 'apps', 'libs', ':!*.test.ts', ':!*.test.tsx'],
+    ['grep', '--untracked', '-lE', FILTER_FUNCTIONS.join('|'), '--', 'packages', 'apps', 'libs', ':!*.test.ts', ':!*.test.tsx', `:!${self}`],
     { cwd: repoRoot, encoding: 'utf8' },
   ).trim().split('\n').filter(Boolean);
   const sites: CensusSite[] = [];

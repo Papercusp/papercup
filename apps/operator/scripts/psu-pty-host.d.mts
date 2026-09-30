@@ -6,17 +6,24 @@
  *  against a COPY outside the checkout — never by mutating this file in the
  *  shared tree, which git-sync would sweep into a commit mid-probe. */
 export function hashHostScript(path?: string): string | null;
-/** WI-38292: is this host executing code older than what is on disk?
- *  `stale` is true ONLY when both hashes are known and differ — an unreadable file
+/** WI-38292: is this host or its launcher executing code older than disk?
+ *  `stale` is true when either component's known hashes differ — an unreadable file
  *  degrades to "not stale" so a transient fs error can never turn a working respawn
  *  path into a warning storm. Pure + exported for tests. */
-export function hostCodeStaleness({ loaded, path, }?: {
+export function hostCodeStaleness({ loaded, path, launcherLoaded, launcherPath, }?: {
     loaded?: string | null | undefined;
     path?: string | undefined;
+    launcherLoaded?: string | null | undefined;
+    launcherPath?: string | undefined;
 }): {
     stale: boolean;
     loaded: string | null;
     onDisk: string | null;
+    launcher: {
+        stale: boolean;
+        loaded: string | null;
+        onDisk: string | null;
+    };
 };
 /** WI-38292: does the process that launched us promise to re-run us if we exit
  *  with the sentinel? The shim exports `PAPERCUSP_PSU_REEXEC=<code>`; anything
