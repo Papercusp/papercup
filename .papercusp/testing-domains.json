@@ -2249,6 +2249,14 @@
                 "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh"
               ],
               "label": "offline-installer journey evidence: the operator's home dir and username are redacted in every spelling, incl. the dash-encoded scratch dir, while the guest's /home/tester paths survive (WI-10004119)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh"
+              ],
+              "label": "linux-test-vm ports: a running VM's ports are read from its own qemu argv, each ad-hoc name gets its own slot at boot, and a stopped ad-hoc name fails loudly instead of resolving to another agent's VM (WI-10004354)"
             }
           ]
         }

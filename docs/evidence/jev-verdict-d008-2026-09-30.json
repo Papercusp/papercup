@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "plan-decision-snapshot",
+  "name": "Jev variant verdict against D-001 (bar R-1): snapshot of Decision D-008 (reopened P-004 and P-006)",
+  "planSlug": "jev-performance-improvements-2026-09-30",
+  "planVersion": 55,
+  "planContentHash": "886df0f5c8b81d1b0cb2f04e0fe6bac5eb9d6714b05fe4b1f0d74cfd20f439c4",
+  "decisionId": "D-008",
+  "decisionTitle": "D-006 verdict: neither score (P-006) nor pair (P-004) replaces the shipped v2-content; production unchanged",
+  "recheck": "plans:get { slug: 'jev-performance-improvements-2026-09-30', harness: 'papercusp', decisionId: 'D-008' } returns the verbatim body; its sha256 is verbatimBodySha256. The only difference from this body is the redaction below.",
+  "verbatimBodySha256": "4a4e0d1145ca5b5d05f239e4aa8db9ab533666d2f350a45b1555aa27154276cf",
+  "redaction": "The owner's name is removed from the one owner-provenance tag ([owner:<name> 2026-09-30 directive #1049] -> [owner 2026-09-30 directive #1049]) because shipped files may not carry names (identity lint). Nothing else is changed.",
+  "itemsInScope": [
+    "P-004",
+    "P-006"
+  ],
+  "baseline": "v2-content",
+  "built": [
+    {
+      "variant": "score",
+      "item": "P-006"
+    },
+    {
+      "variant": "pair",
+      "item": "P-004"
+    }
+  ],
+  "dropped": [],
+  "body": "Date: 2026-09-30\nDate: 2026-09-30\n[self-imposed, su-f7ad1084, AUTO] Verdict under the D-001 bar against BASE = production v2-content at t=0.35 (D-004/D-006), with same-run v1 baselines. [owner 2026-09-30 directive #1049] asked for Jev better than shipped; the bar is self-imposed. Variants built: score (P-006) and pair (P-004), both reopened by D-006 after D-003 had dropped them.\n\nRuns: admission on gold-set.v2 (210 queries, 90 hard negatives), fresh, --no-rerank, LLM-judged negatives, one battery 19:20-19:57Z on jev-1.13.0: v1 .papercusp/bench-reports/jev-admission-2026-09-30T19-23-58-509Z, v2-content T19-26-42-761Z, score T19-29-38-696Z, pair T19-34-36-829Z (state encoding, concurrency 1). Robustness (same battery): v1 jev-robustness-2026-09-30T19-39-32-900Z at 0.3, v2-content T19-43-56-932Z at 0.35, score T19-48-13-475Z at 0.5, pair T19-57-32-502Z at 0.55. Verdict computed by replaying each report's stored per-candidate scores at the operating threshold (.papercusp/scratch/jev-reopen-verdict.mts); positive control: every replay reproduces its report's own point (after fixing the replay to treat a timed-out judgment, stored as the string \"timeout\", as fail-open admit, which is what the report and production do).\n\nBASE v2-content@0.35: hard negatives admitted 7/90, R@10 91.4, exact-id MRR 0.943, p95 244 ms, self-promotion 1.8% (11/150 questions admit any), order flip 1.1%. Reference v1@0.3: 11/90, R@10 91.4, p95 265 ms.\n\nscore@0.5 (P-006): (1) FAIL: 1a self-promotion 1.8%->1.3%, questions 11->9, one-sided McNemar p(better)=0.313; 1b hard negatives 7->11/90, p(better)=0.984. (2) PASS: p(worse) 1b 0.109, 1a 0.938; R@10 dCI [-0.8,0.0]pp; exact-id dCI [0,0]. (4) FAIL: timeouts 3.0% > 2%; p95 360 ms; flip 1.8%; cost 1.10x v1. Does not replace base.\n\npair@0.55 (P-004): (1) FAIL: 1a self-promotion rate 1.8%->2.5% (dCI [-1.7,4.0]pp), questions 11->6 but onlyBase=3/onlyCand=8, p(better)=0.113; 1b hard negatives 7->11/90 (onlyBase=4, onlyCand=0), p(better)=1.00. (2) PASS narrowly: 1b p(worse)=0.0625. R@10 91.4->91.8 dCI [0.0,1.3]pp; exact-id dCI [0,0]. (4) PASS: p95 305 ms (61 ms added over base, under the 400 ms budget), timeouts 0.6%, flip 2.0%, cost per query 1.899e-4 USD = 1.30x base, 1.37x v1, 4549 input tokens per call. Does not replace base.\n\n(3) stability repeats were not run: they are required only for a variant that passes (1), (2) and (4), and none did.\n\nOutcome: production keeps v2-content at threshold 0.35 (unchanged since D-004). Both variants stay in the code as measured, unadopted, bench-selectable options (jev-admission-request.ts). P-004 and P-006 are complete as measurement items.\nRelated: P-004, P-006, D-001, D-004, D-006"
+}

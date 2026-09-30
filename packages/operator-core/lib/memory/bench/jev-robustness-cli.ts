@@ -4,7 +4,7 @@
  *   npx tsx packages/operator-core/lib/memory/bench/jev-robustness-cli.ts \
  *     [--threshold-b 0.4] [--threshold-c 0.35] [--floor-c 0.52] [--repeats 3] \
  *     [--llm-pairs 400] [--no-llm] [--concurrency 4] [--keep] [--encoding state|instructions] \
- *     [--variant v1|v2-content|substance]
+ *     [--variant v1|v2-content|substance|score|pair]
  *
  * `--encoding` picks the PRIMARY encoding: the one the repeats, the order probe,
  * the adversarial step and the agreement step all run. Step 2 compares it with
@@ -52,12 +52,12 @@ import { loadGoldSetFixture } from './gold-set';
 import {
   alternateEncoding,
   ARM_C_FLOOR,
-  buildAdmissionRequest,
   evaluateFilterArm,
   gradeDocId,
+  judgeAdmission,
   parseAdmissionEncoding,
   parseAdmissionVariant,
-  scoresFromDecision,
+  scoresFromJudgement,
   type AdmissionEncoding,
   type QueryScores,
 } from './jev-admission';
@@ -159,10 +159,12 @@ async function judge(
     if (!q) throw new Error(`replayed query ${o.queryId} is not in the gold set`);
     const perm = order === 'reversed' ? reversedOrder(cands.length) : cands.map((_, i) => i);
     const shown: CandidateHit[] = permute(cands, perm);
-    const { request, questionIds, substanceIds } = buildAdmissionRequest(q.query, shown, encoding, variant);
-    liveJevCalls += 1;
-    const outcome = await client.decide(request, { consumer: 'memory-bench', subjectIds: shown.map(gradeDocId) });
-    const s = scoresFromDecision(outcome, questionIds, substanceIds);
+    const s = scoresFromJudgement(
+      await judgeAdmission(q.query, shown, encoding, variant, (request, call) => {
+        liveJevCalls += 1; // per request: a `pair` query sends one per candidate
+        return client.decide(request, { consumer: 'memory-bench', subjectIds: call.candidates.map((ci) => gradeDocId(shown[ci])) });
+      }),
+    );
     return { ...s, scores: unpermuteScores(s.scores, perm) };
   });
 }

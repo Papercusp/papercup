@@ -22,6 +22,7 @@ vi.mock('./agent-tools/dev/systemd-service-probe', async (importOriginal) => {
 import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
 import {
   gitPipelinePosition,
+  withGitReadBudget,
   assessPipelinePosition,
   assessGateVerdict,
   assessGateCandidate,
@@ -515,6 +516,60 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     for (const resolve of containmentResolvers) resolve('0');
     resolveCandidates({ judgingSha: null, nextCandidateSha: null });
     await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
+  });
+});
+
+describe('gitPipelinePosition git read budget + dedupe (EI-24040329952723202)', () => {
+  // Measured on a real call: 39 git reads, only 26 distinct — `log -1 HEAD -- <path>` ran 5x
+  // concurrently at ~3.3s each under contention, and nothing bounded the TOTAL (p95 17.8s, one 67.5s
+  // outlier against the 60s MCP abort). These pin both halves of the fix.
+  it('shares ONE subprocess across identical concurrent reads; a different argv or repo stays separate', async () => {
+    const base = vi.fn(async (_repo: string, args: string[]) => `out:${args.join(' ')}`);
+    const { git, stats } = withGitReadBudget(base);
+    const same = await Promise.all(Array.from({ length: 5 }, () => git('/r', ['log', '-1', '--', 'p'])));
+    expect(same).toEqual(Array(5).fill('out:log -1 -- p'));
+    expect(base).toHaveBeenCalledTimes(1);
+    await git('/r', ['log', '-1', '--', 'q']); // control: different argv is NOT collapsed
+    await git('/other', ['log', '-1', '--', 'p']); // control: different repo is NOT collapsed
+    expect(base).toHaveBeenCalledTimes(3);
+    expect(stats).toEqual({ requested: 7, spawned: 3, deduped: 4, refused: 0 });
+  });
+
+  it('stops spawning once the total budget is spent: later reads resolve null, onExhausted fires once', async () => {
+    let t = 1_000;
+    const onExhausted = vi.fn();
+    const base = vi.fn(async () => 'ok');
+    const { git, stats } = withGitReadBudget(base, { budgetMs: 500, now: () => t, onExhausted });
+    await expect(git('/r', ['a'])).resolves.toBe('ok');
+    t += 499; // control: still inside the budget, so it must still spawn
+    await expect(git('/r', ['b'])).resolves.toBe('ok');
+    t += 1; // exactly spent
+    await expect(git('/r', ['c'])).resolves.toBeNull();
+    await expect(git('/r', ['d'])).resolves.toBeNull();
+    await expect(git('/r', ['a'])).resolves.toBe('ok'); // an already-settled read costs no subprocess, so it is still served
+    expect(base).toHaveBeenCalledTimes(2);
+    expect(onExhausted).toHaveBeenCalledTimes(1);
+    expect(stats.refused).toBe(2);
+  });
+
+  it('end to end: a spent budget keeps gitPipelinePosition from spawning ANY git read and says so in notes', async () => {
+    const base = vi.fn(fakeGit({}));
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      { git: base, gitReadBudget: { budgetMs: 0 }, loadDeploy: async () => deploy(), loadSnapshot: async () => snap({}) },
+    );
+    expect(base).not.toHaveBeenCalled();
+    expect(res.notes.join('\n')).toContain('Git read budget');
+  });
+
+  it('control: the default budget still runs git and raises no budget note', async () => {
+    const base = vi.fn(fakeGit({}));
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      { git: base, loadDeploy: async () => deploy(), loadSnapshot: async () => snap({}) },
+    );
+    expect(base).toHaveBeenCalled();
+    expect(res.notes.join('\n')).not.toContain('Git read budget');
   });
 });
 

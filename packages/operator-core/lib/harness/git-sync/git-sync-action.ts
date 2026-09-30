@@ -2268,6 +2268,8 @@ async function writeGitSyncActivity(
     completed_at: number | null;
     outcome_status: GitSyncOutcome['status'] | null;
     settlement_progress?: GitSyncSettlementProgress;
+    /** EI-24496143892913296: the post-legs leg that just started (e.g. 'git-sync:ref-announce'). */
+    leg?: string;
   },
 ): Promise<void> {
   await patchRoutineMetadata(slug, workspaceId, { git_sync_activity: activity });
@@ -3616,8 +3618,41 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       await activity;
     },
   });
+  // EI-24496143892913296: the activity marker was written once at 'post-legs' and after
+  // that only by the settlement's own progress callback, so once settlement ended (or hit
+  // its 90s budget) every later leg — bootstrap, own-head-publish, ref-announce,
+  // integrator, worktree-bridge — ran under a marker still reading
+  // phase:'completion-settlement' with a frozen N/200 and a frozen updated_at.
+  // routines:list then reported a healthy fire as "in flight, still recording progress"
+  // and, after three intervals, as stuck (observed 2026-09-28 and 2026-09-30).
+  // `postLegsMarker` tracks the last phase this action wrote (null until the explicit
+  // 'post-legs' write below); a leg boundary restamps it when the marker is not already
+  // a fresh 'post-legs' one. A full-object write also drops the stale settlement_progress.
+  let postLegsMarker: { phase: GitSyncActivityPhase; at: number } | null = null;
+  const stampPostLegsBoundary = async (leg: string): Promise<void> => {
+    if (postLegsMarker === null || postLegsLiveness.timedOut) return;
+    // The settlement leg owns the marker through its own progress callback.
+    if (leg === 'git-sync:completion-settlement') return;
+    const now = Date.now();
+    if (postLegsMarker.phase === 'post-legs' && now - postLegsMarker.at < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS) {
+      return;
+    }
+    postLegsMarker = { phase: 'post-legs', at: now };
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: true,
+      phase: 'post-legs',
+      started_at: activityStartedAt,
+      updated_at: now,
+      completed_at: null,
+      outcome_status: outcome.status,
+      leg,
+    }).catch(() => {});
+  };
   const guardedPostLegs = <T>(phase: string, operation: () => Promise<T>): Promise<T> =>
-    postLegsLiveness.run(operation, phase);
+    postLegsLiveness.run(async () => {
+      await stampPostLegsBoundary(phase);
+      return operation();
+    }, phase);
 
   try {
     // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
@@ -3661,6 +3696,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       completed_at: null,
       outcome_status: outcome.status,
     });
+    postLegsMarker = { phase: 'post-legs', at: Date.now() };
 
     // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
     // edit a local git commit yet". Remote origin/staging egress is a distinct,
@@ -3727,6 +3763,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
                         return settlementProgressWrite;
                       }
                       lastSettlementProgressAt = now;
+                      postLegsMarker = { phase: 'completion-settlement', at: now };
                       settlementProgressWrite = settlementProgressWrite
                         .catch(() => {})
                         .then(() =>
@@ -3770,6 +3807,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         } finally {
           if (settlementBudgetTimer) clearTimeout(settlementBudgetTimer);
           postLegsLiveness.signal.removeEventListener('abort', abortSettlementOnActionTimeout);
+          // EI-24496143892913296: a progress write queued before the budget abort must land
+          // BEFORE the next leg restamps the marker, or it overwrites that restamp with a
+          // stale 'completion-settlement' N/total.
+          await settlementProgressWrite.catch(() => {});
         }
         return settlementTimeout;
       }

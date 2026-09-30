@@ -574,6 +574,31 @@ describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)
     expect(verdict.reason).toContain('FAIL: non-macOS host should be a no-op');
     expect(verdict.reason).toContain("failed to push some refs");
   });
+
+  it('WI-10004397: a full local disk names the DISK, keeps the clause through truncation, never blames the reaper', () => {
+    // The real 2026-09-30 shape: the actionable clause sits behind a ~110-char generic prefix,
+    // and the 240-char headline cut used to drop it ("Cause: libs/token-kit: fetch failed; …").
+    const lastError = [
+      'libs/generic/cache: fetch failed; submodule remote state could not be verified before superproject ' +
+        'publication: git fetch stopped for disk headroom at /repo/.git/modules/libs/generic/cache/objects: ' +
+        '25012805632 bytes available; critical reserve 40279831019 bytes',
+      'libs/token-kit: fetch failed; HEAD has unpushed commits not on origin/main (cannot reconcile): git fetch ' +
+        'stopped for disk headroom at /repo/.git/modules/libs/token-kit/objects: 25012805632 bytes available; ' +
+        'critical reserve 40279831019 bytes',
+    ].join('\n');
+    const verdict = evaluateGitSyncStall({ ...base, headUnchangedMs: 40 * M, lastError, errorSweeps: 3 }, NOW);
+    expect(isStrandingVerdict(verdict)).toBe(true);
+    expect(verdict.errorHeadline).toMatch(/^libs\/generic\/cache: git fetch stopped for disk headroom/);
+    expect(verdict.errorHeadline).toContain('critical reserve');
+
+    const d = gitSyncStallDiagnosis(verdict, 'papercusp');
+    expect(d.summary).toMatch(/LOCAL DISK FULL/);
+    expect(d.summary).toContain('git fetch stopped for disk headroom');
+    expect(d.title).toMatch(/disk/i);
+    expect(d.why).toMatch(/DISK SPACE/);
+    expect(d.why).not.toMatch(/executor reaping|engine wedge/i);
+    expect(d.why).not.toMatch(/rescue-commit the tree/i);
+  });
 });
 
 describe('WI-41567 head-clock re-arm — the stranding clock measures time-since-FAULT-ONSET, not time-since-last-commit', () => {

@@ -1120,6 +1120,40 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     );
   });
 
+  it('EI-24496143892913296: the first post-leg after settlement restamps the activity marker and drops the stale N/total', async () => {
+    // Before the fix the marker stayed phase:'completion-settlement' (frozen 9/200, frozen
+    // updated_at) for every leg that ran after settlement ended, so routines:list read a
+    // healthy fire as "in flight, still recording progress" and then as stuck.
+    const servingWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    potGitMode = 'p2p-only';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    reconcileProposedCompletionsAtCommitMock.mockImplementationOnce(async (_sha, _scope, progress) => {
+      await progress.onProgress({ completed: 9, total: 200, featureId: 'WI-2146779' });
+      return { inspected: 200, upgraded: [], residual: 0, unreadable: [] };
+    });
+    try {
+      await action(ctx);
+    } finally {
+      log.mockRestore();
+      servingWarning.mockRestore();
+    }
+
+    const patches = gitSyncActivityPatches();
+    const settlementAt = patches.findIndex((patch) => patch.phase === 'completion-settlement');
+    expect(settlementAt).toBeGreaterThan(-1);
+    const afterSettlement = patches[settlementAt + 1];
+    expect(afterSettlement).toMatchObject({
+      active: true,
+      phase: 'post-legs',
+      leg: 'git-sync:bootstrap',
+      outcome_status: 'synced',
+    });
+    expect(afterSettlement).not.toHaveProperty('settlement_progress');
+    expect(patches.at(-1)).toMatchObject({ active: false, phase: 'complete', outcome_status: 'synced' });
+  });
+
   it('scopes every registry read and runs the exact path pinned by a manual fire when an ambient sibling exists', async () => {
     const canonicalRepo = join(tmpRoot, 'canonical-repo');
     const ambientSibling = join(tmpRoot, 'ambient-sibling');

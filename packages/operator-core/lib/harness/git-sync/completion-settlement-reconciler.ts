@@ -11,6 +11,11 @@ import {
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import {
+  COMPLETION_SETTLEMENT_HEALTH_KEY,
+  recordCompletionSettlementHealth,
+  type SettlementFireObservation,
+} from './completion-settlement-health';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_CANDIDATES = 200;
@@ -236,16 +241,119 @@ export interface CompletionSettlementReconcilerDeps {
   onProgress?: (progress: { completed: number; total: number; featureId: string }) => void | Promise<void>;
   /** Cancels an in-flight Git child and prevents late settlement writes after timeout. */
   signal?: AbortSignal;
+  /**
+   * WI-10004400 standing-guard seam: receives one observation per measured fire. Production
+   * (no `sql` injected) persists it on the git-sync routine's metadata; a test that injects
+   * `sql` without this seam records nothing, so the pre-existing fixtures stay hermetic.
+   */
+  recordHealth?: (observation: SettlementFireObservation) => Promise<void>;
 }
 
-/** Reconcile a bounded batch of proposed code completions against the exact emitted commit. */
+type ReconcileResult = {
+  inspected: number;
+  upgraded: string[];
+  residual: number;
+  unreadable: string[];
+  /** Zero residual but the SQL authority floor kept the row 'proposed' — a TS/SQL proof disagreement. */
+  floorRejected: string[];
+};
+
+/**
+ * Reconcile a bounded batch of proposed code completions against the exact emitted commit,
+ * and record the fire's outcome for the standing guard (WI-10004400): this function's
+ * per-fire result used to be DISCARDED by its only caller, so a regression of the
+ * never-attempted-first ordering or the floor-rejection fix was invisible until a hand census.
+ */
 export async function reconcileProposedCompletionsAtCommit(
   commitSha: string,
   scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
   deps: CompletionSettlementReconcilerDeps = {},
-): Promise<{ inspected: number; upgraded: string[]; residual: number; unreadable: string[] }> {
+): Promise<ReconcileResult> {
+  // A no-op call (bad sha / blank root) measured nothing, so it is not a fire to judge.
   if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
-    return { inspected: 0, upgraded: [], residual: 0, unreadable: [] };
+    return reconcileProposedCompletionsCore(commitSha, scope, deps);
+  }
+  let result: ReconcileResult;
+  try {
+    result = await reconcileProposedCompletionsCore(commitSha, scope, deps);
+  } catch (error) {
+    // The pass was cut short (budget / action timeout abort, or a failure), so its per-row
+    // stats are unknown — the guard records that as null, never as a fabricated zero.
+    await observeSettlementFire(scope, deps, {
+      outcome: deps.signal?.aborted ? 'budget-exceeded' : 'error',
+      neverAttemptedRemaining: null,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+  await observeSettlementFire(scope, deps, {
+    outcome: 'completed',
+    inspected: result.inspected,
+    upgraded: result.upgraded.length,
+    residual: result.residual,
+    unreadable: result.unreadable.length,
+    floorRejected: result.floorRejected.length,
+    neverAttemptedRemaining: null,
+  });
+  return result;
+}
+
+/**
+ * Fill in the DB-measured never-attempted count (measurable even for a cut-short pass),
+ * then hand the observation to the recorder. Never throws: a guard that could fail the
+ * settlement pass it watches would be worse than no guard.
+ */
+async function observeSettlementFire(
+  scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
+  deps: CompletionSettlementReconcilerDeps,
+  observation: SettlementFireObservation,
+): Promise<void> {
+  // Injected `sql` without an injected recorder = an existing hermetic fixture: stay out.
+  if (!deps.recordHealth && deps.sql) return;
+  try {
+    const neverAttemptedRemaining = await countNeverAttemptedCandidates(scope, { sql: deps.sql }).catch(() => null);
+    const measured = { ...observation, neverAttemptedRemaining } as SettlementFireObservation;
+    if (deps.recordHealth) {
+      await deps.recordHealth(measured);
+      return;
+    }
+    const { sql } = getOrgPg();
+    await recordCompletionSettlementHealth(measured, {
+      readPrevious: async () => {
+        const rows = await sql<{ h: unknown }[]>`
+          SELECT metadata -> ${COMPLETION_SETTLEMENT_HEALTH_KEY}::text AS h
+            FROM harness_shared.routines
+           WHERE install_slug = ${scope.installSlug} AND workspace_id = ${scope.workspaceId}
+             AND target_role = 'system:git-sync'
+           LIMIT 1`;
+        return rows[0]?.h ?? null;
+      },
+      // The same top-level JSONB merge git-sync's own patchRoutineMetadata performs — a
+      // `<subsystem>_health` key is what routines:list projects with no reader change.
+      write: async (patch) => {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb, updated_at = now()
+           WHERE install_slug = ${scope.installSlug} AND workspace_id = ${scope.workspaceId}
+             AND target_role = 'system:git-sync'`;
+      },
+    });
+  } catch (error) {
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: could not record the standing-guard observation: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+async function reconcileProposedCompletionsCore(
+  commitSha: string,
+  scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
+  deps: CompletionSettlementReconcilerDeps,
+): Promise<ReconcileResult> {
+  if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
+    return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [] };
   }
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
@@ -253,6 +361,15 @@ export async function reconcileProposedCompletionsAtCommit(
   // contract. Tests opt into history explicitly; production uses the safe Git reader.
   const historyLookup = deps.historyLookup ?? (deps.lookup ? undefined : completionBlobHistoryContains);
   const emit = deps.emit ?? emitAwaitedEvent;
+  // EI-24710716781971154: two-tier selection. A row whose manifest has no `residualPaths`
+  // key has NEVER been attempted — it is the only kind a fresh close can be, and the
+  // only kind that can still settle at this commit for the first time. Every attempt
+  // bumps `updated_ts`, so ordering by it alone put a new close behind a FULL rotation
+  // of every row that cannot settle (measured 2026-09-30: 527 of 555 candidates, one
+  // rotation ≈ 2.4h at ~66 rows per 90s fire). Never-attempted rows go first; attempted
+  // rows follow in the same oldest-touched-first rotation as before. The tier is
+  // NULL-safe on purpose: an absent key makes `jsonb_typeof(...) = 'array'` NULL, and
+  // NULLs sort LAST ascending, which would have put the fresh rows at the back.
   const rows = await sql<CandidateRow[]>`
     SELECT feature_id, harness_slug, payload
       FROM harness_shared.work_items
@@ -260,7 +377,8 @@ export async function reconcileProposedCompletionsAtCommit(
        AND authority = 'proposed'
        AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
-     ORDER BY updated_ts ASC, feature_id ASC
+     ORDER BY (jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS NOT DISTINCT FROM 'array') ASC,
+              updated_ts ASC, feature_id ASC
      LIMIT ${MAX_CANDIDATES}`;
 
   if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
@@ -274,6 +392,8 @@ export async function reconcileProposedCompletionsAtCommit(
   // four days with not one line of output. Skipping is still correct — one malformed
   // row must not stall the batch — but it must never again be SILENT.
   const unreadableByIndex: Array<string | undefined> = [];
+  // Zero residual, UPDATE matched, yet the authority floor kept the row 'proposed'.
+  const floorRejectedByIndex: Array<string | undefined> = [];
   let completed = 0;
   const settleRow = async (row: CandidateRow, index: number): Promise<void> => {
     try {
@@ -313,8 +433,40 @@ export async function reconcileProposedCompletionsAtCommit(
       if (!residualPaths) return;
       residualByIndex[index] = residualPaths.length;
       const nextManifest = { ...parsed.data, residualPaths };
+      // EI-24710716781971154: the migration-1207 floor requires a proof for EVERY identity
+      // entry whose close-time working blob differs from head — not only the ones a later
+      // commit superseded. A MIXED row (some paths still exact in the emitted tree, some
+      // superseded) cannot refresh treeStamp (see confirmedTreeStampForSettlement) and used
+      // to attest only its history matches, so the floor rejected the exact-tree paths:
+      // the UPDATE to 'committed' was reverted by the trigger on every rotation (134 of 555
+      // candidates, measured 2026-09-30). Attest those paths too. It is truthful: a path
+      // whose emitted-tree blob IS the close-time blob trivially held it within
+      // [closeHead, emittedCommit]. The selection mirrors the floor's own inputs
+      // (treeStamp.contentIdentity entries it would still call unproven), so a path the floor
+      // does not read is never attested — an extra entry that failed the floor's binding
+      // checks would invalidate the whole attestation and downgrade rows that pass today.
+      const attestedPaths = new Map(historyMatches);
+      if (residualPaths.length === 0 && historyMatches.size > 0 && emittedTree) {
+        const stampIdentity = (evidence?.treeStamp as { contentIdentity?: unknown } | undefined)?.contentIdentity;
+        if (Array.isArray(stampIdentity)) {
+          const declaredByPath = new Map(parsed.data.contentIdentity.map((entry) => [entry.path, entry as SettlementIdentity]));
+          const normalizedPaths = new Set(parsed.data.normalizedPaths);
+          for (const raw of stampIdentity) {
+            const entry = (raw ?? {}) as Record<string, unknown>;
+            const path = entry.path;
+            const blob = entry.workingTreeBlobSha;
+            if (typeof path !== 'string' || typeof blob !== 'string' || attestedPaths.has(path)) continue;
+            if (entry.deletion === true || entry.outOfRepoArtifact === true) continue;
+            if (entry.headBlobSha === blob) continue; // exact-proven at close; the floor needs nothing more
+            const declared = declaredByPath.get(path);
+            if (!normalizedPaths.has(path) || declared?.workingTreeBlobSha !== blob || declared.deletion === true) continue;
+            const actual = emittedTree.get(path);
+            if (actual?.status === 'resolved' && actual.sha === blob) attestedPaths.set(path, blob);
+          }
+        }
+      }
       const historyAttestation: SettlementHistoryAttestation | null =
-        residualPaths.length === 0 && historyMatches.size > 0
+        residualPaths.length === 0 && attestedPaths.size > 0
           ? {
               version: 1,
               generation: parsed.data.generation,
@@ -322,7 +474,7 @@ export async function reconcileProposedCompletionsAtCommit(
               repositoryRoot: parsed.data.repositoryRoot,
               closeHeadSha: parsed.data.headSha,
               emittedCommitSha: commitSha,
-              paths: [...historyMatches.entries()].map(([path, workingTreeBlobSha]) => ({
+              paths: [...attestedPaths.entries()].map(([path, workingTreeBlobSha]) => ({
                 path,
                 workingTreeBlobSha,
                 fromHeadSha: parsed.data.headSha,
@@ -347,7 +499,7 @@ export async function reconcileProposedCompletionsAtCommit(
           ...(confirmedTreeStamp ? { treeStamp: confirmedTreeStamp } : {}),
         },
       };
-      const result = await sql<{ feature_id: string }[]>`
+      const result = await sql<{ feature_id: string; authority?: string }[]>`
       UPDATE harness_shared.work_items
          SET payload = ${sql.json(nextPayload)},
              authority = CASE WHEN ${residualPaths.length} = 0 THEN 'committed' ELSE authority END,
@@ -359,8 +511,17 @@ export async function reconcileProposedCompletionsAtCommit(
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'generation']}::text[] = ${String(parsed.data.generation)}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
-       RETURNING feature_id`;
-      if (residualPaths.length === 0 && result[0]) {
+       RETURNING feature_id, authority`;
+      // EI-24710716781971154: RETURNING reflects the row AFTER migration 972/1207's
+      // `downgrade_unproven_committed_close` trigger, which silently reverts an
+      // unproven 'committed' to 'proposed' on this very write. A returned row is therefore
+      // NOT proof of an upgrade: only `authority === 'committed'` is. Counting it anyway
+      // reported a settlement and fired `work-item:settled:<id>` for a row the floor had
+      // rejected, again on every rotation. Track it instead, so it is visible.
+      if (residualPaths.length === 0 && result[0] && result[0].authority !== 'committed') {
+        floorRejectedByIndex[index] = result[0].feature_id;
+      }
+      if (residualPaths.length === 0 && result[0] && result[0].authority === 'committed') {
         const id = result[0].feature_id;
         upgradedByIndex[index] = id;
         // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
@@ -408,7 +569,16 @@ export async function reconcileProposedCompletionsAtCommit(
   if (failure?.status === 'rejected') throw failure.reason;
   const upgraded = upgradedByIndex.filter((id): id is string => id !== undefined);
   const unreadable = unreadableByIndex.filter((id): id is string => id !== undefined);
+  const floorRejected = floorRejectedByIndex.filter((id): id is string => id !== undefined);
   const residualCount = residualByIndex.reduce((sum, count) => sum + count, 0);
+  if (floorRejected.length > 0) {
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: ${floorRejected.length} of ${rows.length} ` +
+        'proposed completion(s) proved settled by the reconciler but were kept proposed by the ' +
+        'completion authority floor (migration 1207); the TS proof and the SQL floor disagree for: ' +
+        `${floorRejected.slice(0, 10).join(', ')}${floorRejected.length > 10 ? ` (+${floorRejected.length - 10} more)` : ''}`,
+    );
+  }
   if (unreadable.length > 0) {
     // Named ids, not just a count: the whole point is that someone can go LOOK at one.
     console.warn(
@@ -418,5 +588,29 @@ export async function reconcileProposedCompletionsAtCommit(
         `${unreadable.slice(0, 10).join(', ')}${unreadable.length > 10 ? ` (+${unreadable.length - 10} more)` : ''}`,
     );
   }
-  return { inspected: rows.length, upgraded, residual: residualCount, unreadable };
+  return { inspected: rows.length, upgraded, residual: residualCount, unreadable, floorRejected };
+}
+
+/**
+ * WI-10004400: how many proposed candidates for this checkout have NEVER been attempted —
+ * the tier `reconcileProposedCompletionsAtCommit` orders first (its manifest carries no
+ * `residualPaths` array). Same scope predicate as the candidate SELECT above, deliberately
+ * uncapped by MAX_CANDIDATES: the standing guard needs the true waiting population, and a
+ * count of the capped batch would read 200 forever and hide a starved tail. Measurable even
+ * when the pass itself was cut short by its budget, which is exactly when it is needed.
+ */
+export async function countNeverAttemptedCandidates(
+  scope: { workspaceId: string; repositoryRoot: string },
+  deps: { sql?: ReturnType<typeof getOrgPg>['sql'] } = {},
+): Promise<number> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId}
+       AND authority = 'proposed'
+       AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
+       AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
+       AND jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS DISTINCT FROM 'array'`;
+  return Number(rows[0]?.n ?? 0);
 }

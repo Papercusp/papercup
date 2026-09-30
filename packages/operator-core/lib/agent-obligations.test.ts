@@ -474,6 +474,58 @@ describe('provider recovery operation boundary', () => {
     }
   });
 
+  // WI-10004401: the tool normalizes an arg (fleet name -> 60-char slug) BEFORE the boundary
+  // sees it, while the provider authored the raw value. An exact compare of one normalized
+  // side against one raw side is unsatisfiable for every value the normalization changes.
+  it('compares a tool-normalized arg after the SAME normalization on both sides', () => {
+    const rawName = `papercusp-${'x'.repeat(50)}-plan-fleet`;
+    const clamp = (key: string, value: unknown) =>
+      key === 'name' && typeof value === 'string' ? value.slice(0, 60) : value;
+    const longNameObligation = placement({
+      action: {
+        kind: 'delegate',
+        summary: 'launch the provider-selected plan fleet',
+        tool: 'fleet:launch-on-plan',
+        args: { name: rawName, plan: 'plan-a', harness: 'papercusp', leader: 'spawn', headless: true },
+      },
+    });
+    const evaluate = (name: string, normalizeArg?: (key: string, value: unknown) => unknown) =>
+      evaluateAgentObligationRecoveryBoundary({
+        obligation: longNameObligation,
+        boundary: 'fleet:launch-on-plan',
+        phase: 'operation',
+        operation: operation({ name }),
+        ...(normalizeArg ? { normalizeArg } : {}),
+      });
+    // Calibration: the fixture is the failing shape (the clamp really changes the value).
+    expect(rawName.length).toBeGreaterThan(60);
+    expect(clamp('name', rawName)).not.toBe(rawName);
+
+    // The pre-fix behaviour: a clamped request never equals the raw provider name.
+    expect(evaluate(clamp('name', rawName) as string)).toMatchObject({
+      allowed: false,
+      code: 'goal-plan-placement-prerequisite',
+    });
+    // Normalizing BOTH sides admits the provider's own args, whether the caller sends the raw or the clamped name.
+    expect(evaluate(rawName, clamp)).toMatchObject({ allowed: true });
+    expect(evaluate(clamp('name', rawName) as string, clamp)).toMatchObject({ allowed: true });
+    // ...but the normalization is not a loosening: a different fleet still refuses.
+    expect(evaluate(`other-${'x'.repeat(50)}-plan-fleet`, clamp)).toMatchObject({
+      allowed: false,
+      code: 'goal-plan-placement-prerequisite',
+    });
+    // And the hook only touches the keys it names: a wrong plan still refuses under the same hook.
+    expect(
+      evaluateAgentObligationRecoveryBoundary({
+        obligation: longNameObligation,
+        boundary: 'fleet:launch-on-plan',
+        phase: 'operation',
+        operation: operation({ name: rawName, plan: 'plan-b' }),
+        normalizeArg: clamp,
+      }),
+    ).toMatchObject({ allowed: false, code: 'goal-plan-placement-prerequisite' });
+  });
+
   it('refuses an extra launch when no placement demand is eligible', () => {
     for (const status of ['satisfied', 'not-applicable'] as const) {
       const obligation = placement({

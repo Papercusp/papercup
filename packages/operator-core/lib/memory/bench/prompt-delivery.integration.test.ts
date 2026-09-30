@@ -20,6 +20,7 @@ import {
   disposeMemoryClient,
   getResolvedProfile,
   HybridBackend,
+  CanonicalVectorStore,
   LexicalLegBackend,
   Mem0Backend,
   type ExtractionLlm,
@@ -32,8 +33,11 @@ import { setupBenchMemoryHost } from './bench-host';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { assertCorpusSeeded } from './precision-monitor';
+import * as recallStats from '../recall-stats';
+import * as corpusRecallIo from '../corpus-recall-io';
 import { buildMemoryContextBlock, pushSearchFloors } from '../injection';
 import { getMemoryBlockBoundedResult, MEMORY_BLOCK_COLD_DEADLINE_MS } from '../injection-block-cache';
+import { withMemoryTimeout } from '../op-deadline';
 
 let db: OrgTestDb;
 let backend: MemoryBackend;
@@ -60,25 +64,16 @@ vi.mock('@papercusp/db-org', async (original) => ({
   },
 }));
 vi.mock('../backend', () => ({ getMemoryBackend: () => backend }));
-vi.mock('../corpus-recall-io', () => ({
-  recallCorpusContext: async () => ({
-    block: null,
-    lines: [],
-    dropped: [],
-    embedderAvailable: true,
-    candidateCount: 0,
-    outcome: 'disabled',
-  }),
-}));
 vi.mock('../../session-brief', () => ({ getSessionBriefAmbientExcludedRefs: async () => new Set() }));
 // Advisory feature policy is pinned for this profile; retrieval floors, ranking,
 // feedback, dedup and rendering remain the actual production implementations.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
-vi.mock('../recall-stats', async (original) => {
-  const actual = await original<typeof import('../recall-stats')>();
-  return {
-    ...actual,
-    recordRecallStats: (...args: Parameters<typeof actual.recordRecallStats>) => {
+const actualRecordRecallStats = recallStats.recordRecallStats;
+function installRecallStatsSpy() {
+  // Concurrent dynamic imports can bypass vi.mock through Vitest's shared
+  // manual-mock callstack. Observe the real export without replacing its module.
+  vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(
+    (...args: Parameters<typeof actualRecordRecallStats>) => {
       recallStatsCalls += 1;
       const row = context.getStore();
       if (row) {
@@ -86,13 +81,13 @@ vi.mock('../recall-stats', async (original) => {
         recallStatsCallsByQuery.set(row.queryId, (recallStatsCallsByQuery.get(row.queryId) ?? 0) + 1);
       }
       if (process.env.PAPERCUSP_P006_RECALL_STATS === 'off') return Promise.resolve();
-      const p = actual.recordRecallStats(...args);
+      const p = actualRecordRecallStats(...args);
       writes.add(p);
       void p.finally(() => writes.delete(p));
       return p;
     },
-  };
-});
+  );
+}
 
 interface Reading {
   queryId: string;
@@ -112,6 +107,7 @@ interface Reading {
   relevantDelivered: string[];
   legs?: SearchLegStats;
   error?: string;
+  work: Array<{ phase: string; startedMs: number; elapsedMs?: number; outcome?: 'ready' | 'error' }>;
 }
 const context = new AsyncLocalStorage<Reading>();
 const attempts: Reading[] = [];
@@ -127,6 +123,29 @@ const quantile = (values: number[], p: number) => {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.max(0, Math.ceil(sorted.length * p) - 1)] ?? null;
 };
+
+async function traceWork<T>(phase: string, run: () => Promise<T>): Promise<T> {
+  const row = context.getStore();
+  const span: Reading['work'][number] = { phase, startedMs: performance.now() };
+  row?.work.push(span);
+  try {
+    const value = await run();
+    span.outcome = 'ready';
+    return value;
+  } catch (error) {
+    span.outcome = 'error';
+    throw error;
+  } finally {
+    span.elapsedMs = performance.now() - span.startedMs;
+  }
+}
+
+function unfinishedWork(row: Reading) {
+  return row.work.filter((span) => !span.outcome).map((span) => ({
+    phase: span.phase,
+    elapsedMs: performance.now() - span.startedMs,
+  }));
+}
 
 function summarize(rows: Reading[]) {
   // Eligibility is fixed BEFORE retrieval from the gold set. A failed or empty
@@ -189,6 +208,7 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
     retrieved: [],
     delivered: [],
     relevantDelivered: [],
+    work: [],
   };
   return context.run(row, async () => {
     const id = `delivery-${process.pid}-${++sequence}`;
@@ -221,6 +241,10 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
       .filter(([, memoryIds]) => memoryIds.some((memoryId) => ids.has(memoryId)))
       .map(([key]) => key);
     row.relevantDelivered = row.delivered.filter((key) => query.expected.includes(key));
+    if (result.status !== 'ready') {
+      console.log('[P-006 unfinished-work]', JSON.stringify({ queryId: row.queryId, phase,
+        callerStatus: result.status, work: row.work, pending: unfinishedWork(row) }));
+    }
     // Preserve the caller outcome BEFORE joining late work. Joining drains the
     // current bounded burst and makes teardown unable to erase its evidence.
     await build?.catch((error) => {
@@ -234,6 +258,29 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
 describe('P-006 frozen real-corpus prompt delivery', () => {
   beforeAll(async () => {
     try {
+      installRecallStatsSpy();
+      // Observe the real SQL boundary without replacing retrieval. A search
+      // wrapper can time out while its provider promise remains unsettled;
+      // completed-duration totals alone must never label that as a SQL stall.
+      const actualVectorSearch = CanonicalVectorStore.prototype.search;
+      vi.spyOn(CanonicalVectorStore.prototype, 'search').mockImplementation(function (this: CanonicalVectorStore, ...args) {
+        return traceWork(`vector-sql:limit=${args[1] ?? 5}`, () => actualVectorSearch.apply(this, args));
+      });
+      const actualLexicalSearch = CanonicalVectorStore.prototype.lexicalSearch;
+      vi.spyOn(CanonicalVectorStore.prototype, 'lexicalSearch').mockImplementation(function (this: CanonicalVectorStore, ...args) {
+        return traceWork('lexical-sql', () => actualLexicalSearch.apply(this, args));
+      });
+      vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockResolvedValue({
+        block: null,
+        lines: [],
+        dropped: [],
+        embedderAvailable: true,
+        candidateCount: 0,
+        outcome: 'disabled',
+        rerank: 'nothing-to-reorder',
+        legs: null,
+        retrievalDepth: 0,
+      });
       console.log('[P-006 setup] creating isolated org database');
       db = await createOrgTestDb();
       console.log('[P-006 setup] isolated org database ready');
@@ -256,7 +303,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
               const start = performance.now();
               if (row) row.embedCalls += 1;
               try {
-                return await resolved.embed(text, signal);
+                return await traceWork(`embed:${hash(text).slice(0, 12)}`, () => resolved.embed(text, signal));
               } finally {
                 if (row) row.embedMs += performance.now() - start;
               }
@@ -283,13 +330,13 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
               const row = context.getStore();
               const start = performance.now();
               try {
-                const entries = await target.search(query, {
+                const entries = await traceWork('hybrid-search', () => target.search(query, {
                   ...opts,
                   onLegStats: (legs) => {
                     if (row) row.legs = legs;
                     opts.onLegStats?.(legs);
                   },
-                });
+                }));
                 if (row) row.retrieved = entries.map((entry) => String(entry.metadata?.corpus_key ?? entry.id));
                 return entries;
               } catch (error) {
@@ -326,6 +373,27 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         JSON.stringify({ elapsedMs: Math.round(performance.now() - seedStarted) }),
       );
       const queries = loadGoldSetFixture().queries;
+      // Fail before the whole matrix when the representative search is stuck.
+      // Keep this probe out of coverage/telemetry counts and discard its client
+      // before each measured profile so it cannot manufacture a warm pass.
+      const probe = queries.find((query) => query.id === 'lg-007')!;
+      const preflight: Reading = {
+        queryId: probe.id, phase: 'preflight', telemetryCalls: 0, className: probe.class,
+        expected: probe.expected, status: 'unmeasured', callerMs: 0, buildMs: 0,
+        availableMs: 0, searchMs: 0, embedMs: 0, embedCalls: 0,
+        retrieved: [], delivered: [], relevantDelivered: [], work: [],
+      };
+      const controller = new AbortController();
+      await context.run(preflight, async () => {
+        try {
+          await withMemoryTimeout(backend.search(probe.query, { scope, ...pushSearchFloors(),
+            signal: controller.signal }), 'P-006 search preflight', MEMORY_BLOCK_COLD_DEADLINE_MS, controller);
+        } finally {
+          console.log('[P-006 preflight]', JSON.stringify({ queryId: probe.id,
+            work: preflight.work, pending: unfinishedWork(preflight),
+            recallStatsStrict: process.env.PAPERCUSP_P006_RECALL_STATS_STRICT === 'on' }));
+        }
+      });
       const sourcePaths = [
         'packages/operator-core/lib/memory/injection.ts',
         'packages/operator-core/lib/memory/injection-block-cache.ts',

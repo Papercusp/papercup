@@ -345,6 +345,39 @@ describe('classifyGitSyncFailingLeg (EI-19275994927087666)', () => {
     expect(decision.broadcast).not.toContain('cause unclassified');
   });
 
+  it('WI-10004397: a disk-headroom refusal is classified as the DISK, never as push or unclassified', () => {
+    // The two real 2026-09-30 forms (object-store path shortened). Root sat at ~25 GB free
+    // against a ~40 GB reserve; every superproject commit on the box stopped for ~40 min.
+    const verifyForm =
+      'fetch failed; submodule remote state could not be verified before superproject publication: ' +
+      'git fetch stopped for disk headroom at /repo/.git/modules/libs/generic/cache/objects: ' +
+      '25012805632 bytes available; critical reserve 40279831019 bytes';
+    const unpushedForm =
+      'fetch failed; HEAD has unpushed commits not on origin/main (cannot reconcile): ' +
+      'git fetch stopped for disk headroom at /repo/.git/modules/libs/token-kit/objects: ' +
+      '25012805632 bytes available; critical reserve 40279831019 bytes';
+    expect(classifyGitSyncFailingLeg(verifyForm, 'push')).toBe('disk-headroom');
+    // "unpushed" contains "push": without the disk arm first this read as a PUSH failure.
+    expect(classifyGitSyncFailingLeg(unpushedForm, 'push')).toBe('disk-headroom');
+    expect(classifyGitSyncFailingLeg('error: unable to write file: No space left on device', 'push')).toBe(
+      'disk-headroom',
+    );
+    // A measurement failure is not evidence the disk is full.
+    expect(classifyGitSyncFailingLeg('git fetch disk headroom unmeasured at /repo/.git/objects', 'push')).toBe(
+      'unknown',
+    );
+
+    const decision = decideGitSyncEscalation({
+      ...base,
+      status: 'error',
+      consecutiveErrorTicks: PUSH_FAILURE_ESCALATION_TICKS,
+      errors: [{ scope: 'libs/token-kit', message: unpushedForm }],
+    });
+    expect(decision.broadcast).toContain('LOCAL DISK FULL');
+    expect(decision.broadcast).not.toContain('cause unclassified');
+    expect(decision.broadcast).not.toContain('NOT reaching origin');
+  });
+
   it('infers commit for a commit-only member when the error text is unusable', () => {
     // A commit-only:* member never pushes, so its failure cannot be a push failure.
     expect(classifyGitSyncFailingLeg(null, 'commit-only:bridged')).toBe('commit');

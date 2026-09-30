@@ -2,7 +2,7 @@
  * Jev admission bench CLI (plan jev-decision-model-integration-2026-09-29, P-004).
  *
  *   npx tsx packages/operator-core/lib/memory/bench/jev-admission-cli.ts \
- *     [--encoding state|instructions] [--variant v1|v2-content|substance] \
+ *     [--encoding state|instructions] [--variant v1|v2-content|substance|score|pair] \
  *     [--floor-c 0.52] [--thresholds 0.3,0.4,…] \
  *     [--fresh] [--no-rerank] [--concurrency 4] [--keep]
  *
@@ -54,15 +54,15 @@ import {
   ADMISSION_THRESHOLDS,
   ARM_C_FLOOR,
   admissionRubricVersion,
-  buildAdmissionRequest,
   evaluateFilterArm,
   gradeDocId,
+  judgeAdmission,
   negativeJudgePairs,
   parseAdmissionEncoding,
   parseAdmissionVariant,
   readCachedScores,
   renderAdmissionMarkdown,
-  scoresFromDecision,
+  scoresFromJudgement,
   summarizeArm,
   writeCachedScores,
   type AdmissionEncoding,
@@ -155,6 +155,8 @@ const runId = `jev-admission-${randomUUID()}`;
 const sql = getOrgPg().sql as unknown as GradeCacheSql;
 const warn = (m: string) => console.warn(`[jev-admission] ${m}`);
 const client = ensureJevDecisionClient();
+/** Live Jev requests sent (a cached query sends none; a `pair` query sends one per candidate). */
+let liveJevCalls = 0;
 
 async function cachedOr(
   scope: GradeCacheScope,
@@ -187,14 +189,14 @@ async function jevScores(outcomes: readonly QueryOutcome[], floor: number): Prom
     const cands = o.candidates ?? [];
     if (cands.length === 0) return undefined; // nothing admitted, nothing to judge, no call
     const query = gold[i].query;
-    return cachedOr(scope, query, cands, o.queryId, async () => {
-      const { request, questionIds, substanceIds } = buildAdmissionRequest(query, cands, encoding, variant);
-      const outcome = await client.decide(request, {
-        consumer: 'memory-bench',
-        subjectIds: cands.map(gradeDocId),
-      });
-      return scoresFromDecision(outcome, questionIds, substanceIds);
-    });
+    return cachedOr(scope, query, cands, o.queryId, async () =>
+      scoresFromJudgement(
+        await judgeAdmission(query, cands, encoding, variant, (request, call) => {
+          liveJevCalls += 1;
+          return client.decide(request, { consumer: 'memory-bench', subjectIds: call.candidates.map((ci) => gradeDocId(cands[ci])) });
+        }),
+      ),
+    );
   });
 }
 
@@ -360,8 +362,8 @@ try {
   ];
 
   // The ledger writer is fire-and-forget by design; give it a bounded moment so
-  // the row count this report quotes is the real one.
-  const liveJevCalls = [...scoresB, ...scoresC].filter((s) => s && !s.cached).length;
+  // the row count this report quotes is the real one. `liveJevCalls` counts requests,
+  // not queries: a `pair` query writes one ledger row per candidate.
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const st = decisionModelLedgerStats();

@@ -1,0 +1,196 @@
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { encodeChunk, type RecordedExchange } from './record-proxy';
+import type { Corpus, SessionMeta } from './record-session';
+import { drive, parseCgroupStats, selectSessions, sessionFor, summarize, systemdRunArgs, wrapperScript, STATS_MARKER } from './load-driver';
+
+function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
+  const repo = over.repo ?? 'r';
+  return {
+    sessionId: over.id,
+    corpusVersion: 1,
+    task: { id: 't1', repo, profile: over.profile ?? 'light', prompt: 'Do the thing.' },
+    repo: { name: repo, sha: 'abc', kind: 'k' },
+    cli: over.cli ?? 'claude',
+    cliVersion: 'v',
+    claudeModel: 'sonnet',
+    startedAt: '2026-09-30T00:00:00Z',
+    wallMs: over.wallMs ?? 100,
+    exitCode: over.exitCode === undefined ? 0 : over.exitCode,
+    timedOut: over.timedOut ?? false,
+    exchanges: 2,
+    toolCalls: {},
+    diffBytes: 0,
+  };
+}
+
+describe('selection and scheduling', () => {
+  const metas = [
+    meta({ id: 'claude-b', profile: 'typical' }),
+    meta({ id: 'claude-a' }),
+    meta({ id: 'codex-a', cli: 'codex' }),
+    meta({ id: 'claude-failed', exitCode: 1 }),
+    meta({ id: 'claude-timeout', timedOut: true }),
+  ];
+
+  it('filters by cli/profile, drops failed or timed-out recordings, and sorts by id', () => {
+    expect(selectSessions(metas, 'cli=claude', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'claude-b']);
+    expect(selectSessions(metas, 'profile=light', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'codex-a']);
+    expect(selectSessions(metas, 'cli=claude,cli=codex,profile=light', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'codex-a']);
+  });
+
+  it('takes explicit ids verbatim and rejects unknown ids or keys', () => {
+    expect(selectSessions(metas, undefined, ['codex-a', 'claude-b']).map((m) => m.sessionId)).toEqual(['codex-a', 'claude-b']);
+    expect(() => selectSessions(metas, undefined, ['nope'])).toThrow(/no recorded session/);
+    expect(() => selectSessions(metas, 'model=x', undefined)).toThrow(/bad --select/);
+  });
+
+  it('round-robins sessions across slots and iterations', () => {
+    const s = [meta({ id: 'a' }), meta({ id: 'b' }), meta({ id: 'c' })];
+    expect([0, 1, 2, 3].map((slot) => sessionFor(s, slot, 0).sessionId)).toEqual(['a', 'b', 'c', 'a']);
+    expect([0, 1, 2].map((it) => sessionFor(s, 1, it).sessionId)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('cgroup accounting', () => {
+  it('parses the last epilogue line and tolerates a missing value', () => {
+    expect(parseCgroupStats(`noise\n${STATS_MARKER} peak=1048576 usage_usec=2500000\n`)).toEqual({ memPeakBytes: 1048576, cpuUsec: 2500000 });
+    expect(parseCgroupStats(`${STATS_MARKER} peak= usage_usec=7\n`)).toEqual({ memPeakBytes: null, cpuUsec: 7 });
+    expect(parseCgroupStats('')).toEqual({ memPeakBytes: null, cpuUsec: null });
+  });
+
+  it('the wrapper preserves the CLI exit status and appends one epilogue line', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'capdrv-wrap-'));
+    try {
+      const stats = path.join(dir, 'stats');
+      let status = 0;
+      try {
+        execFileSync('bash', ['-c', wrapperScript(stats), 'capdrv', 'bash', '-c', 'exit 3'], { stdio: 'ignore' });
+      } catch (e) {
+        status = (e as { status: number }).status;
+      }
+      expect(status).toBe(3);
+      const text = readFileSync(stats, 'utf8');
+      expect(text.trim().split('\n')).toHaveLength(1);
+      expect(text.startsWith(`${STATS_MARKER} peak=`)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('systemd-run args put the unit in capdrv.slice and skip env values setenv cannot carry', () => {
+    const args = systemdRunArgs('capdrv-x', '/w', { A: '1', BASH_FUNC_f: '() {\n}', 'bad-key': 'v' }, '/s', ['claude', '-p', 'hi']);
+    expect(args).toContain('--slice=capdrv.slice');
+    expect(args).toContain('--setenv=A=1');
+    expect(args.some((a) => a.startsWith('--setenv=BASH_FUNC') || a.startsWith('--setenv=bad-key'))).toBe(false);
+    expect(args.slice(-3)).toEqual(['claude', '-p', 'hi']);
+  });
+});
+
+describe('event-loop hygiene', () => {
+  it('never copies, removes or spawns synchronously (the replay server shares the event loop)', () => {
+    // A synchronous 1.2 GB checkout copy starved every running agent's replies in the first
+    // real smoke run; the same class once hung the recording proxy behind spawnSync.
+    const src = readFileSync(path.join(__dirname, 'load-driver.ts'), 'utf8');
+    expect(src).not.toMatch(/\b(cpSync|rmSync|spawnSync)\s*\(/);
+  });
+});
+
+describe('drive (end to end with a fake CLI)', () => {
+  let root: string;
+  const oldPath = process.env.PATH;
+
+  // A stand-in `claude`: sends the requests a two-turn session would (2 then 4 messages),
+  // plus one extra when FAKE_EXTRA=1 so the replay diverges; prints the -p prompt it got.
+  const FAKE = `#!/usr/bin/env node
+const base = process.env.ANTHROPIC_BASE_URL;
+const prompt = process.argv[process.argv.indexOf('-p') + 1];
+const call = async (n) => {
+  const r = await fetch(base + '/v1/messages?beta=true', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-5-5', stream: true, messages: Array(n).fill({}), tools: Array(20).fill({}) }) });
+  return [r.status, await r.text()];
+};
+(async () => {
+  const out = [await call(2), await call(4)];
+  if (process.env.FAKE_EXTRA === '1') out.push(await call(6));
+  console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset' }));
+  process.exit(out.every(([s]) => s === 200) ? 0 : 1);
+})();
+`;
+
+  const corpus: Corpus = { version: 1, suffix: 'SUFFIX', timeoutSec: { light: 30, typical: 30, heavy: 30 }, repos: {}, tasks: [] };
+
+  const exch = (seq: number, messages: number): RecordedExchange => ({
+    seq,
+    sessionId: 'claude-s1',
+    startedAt: '2026-09-30T00:00:00Z',
+    method: 'POST',
+    path: '/v1/messages?beta=true',
+    req: { bytes: 1, sha256: 'x', model: 'claude-sonnet-5-5', stream: true, messages, tools: 20 },
+    status: 200,
+    contentType: 'text/event-stream',
+    ttfbMs: 0,
+    totalMs: 0,
+    resBytes: 0,
+    chunks: [encodeChunk(0, Buffer.from(`data: reply-${seq}\n\n`))],
+  });
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'capdrv-e2e-'));
+    mkdirSync(path.join(root, 'bin'));
+    writeFileSync(path.join(root, 'bin', 'claude'), FAKE);
+    chmodSync(path.join(root, 'bin', 'claude'), 0o755);
+    process.env.PATH = `${path.join(root, 'bin')}:${oldPath}`;
+    mkdirSync(path.join(root, 'cache', 'prepared', 'r'), { recursive: true });
+    writeFileSync(path.join(root, 'cache', 'prepared', 'r', 'README'), 'repo');
+    mkdirSync(path.join(root, 'corpus', 'claude-s1'), { recursive: true });
+    writeFileSync(path.join(root, 'corpus', 'claude-s1', 'exchanges.jsonl'), [exch(1, 4), exch(0, 2)].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  });
+  afterEach(() => {
+    process.env.PATH = oldPath;
+    delete process.env.FAKE_EXTRA;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const run = (agents: number) =>
+    drive({
+      cacheDir: path.join(root, 'cache'),
+      agents,
+      sessions: [meta({ id: 'claude-s1' })],
+      corpus,
+      corpusDir: path.join(root, 'corpus'),
+      outDir: path.join(root, 'out'),
+      runId: 'T',
+      speed: 0,
+      staggerMs: 0,
+      durationSec: 0,
+      isolation: 'none',
+      keepWork: false,
+    });
+
+  it('replays one recording to N concurrent agents, each with its own state, and cleans up', async () => {
+    const runs = await run(3);
+    expect(runs).toHaveLength(3);
+    for (const r of runs) {
+      expect(r).toMatchObject({ exitCode: 0, timedOut: false, diverged: false, served: { exact: 2, shape: 0, path: 0, exhausted: 0 } });
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${r.instance}.cli.jsonl`), 'utf8'));
+      expect(printed.prompt).toBe('Do the thing.\n\nSUFFIX');
+      expect(printed.cfg).toBe('set');
+      expect(printed.out.map((o: [number, string]) => o[1])).toEqual(['data: reply-0\n\n', 'data: reply-1\n\n']);
+    }
+    expect(readFileSync(path.join(root, 'out', 'agents.jsonl'), 'utf8').trim().split('\n')).toHaveLength(3);
+    expect(readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n')).toHaveLength(6);
+    expect(() => readFileSync(path.join(root, 'cache', 'replay-work', 'T', 's0-i0', 'README'))).toThrow();
+    expect(summarize(runs)).toMatchObject({ runs: 3, clean: 3, failed: 0, diverged: 0, served: { exact: 6, exhausted: 0 } });
+  });
+
+  it('flags a replay that ran past its recording as diverged and failed', async () => {
+    process.env.FAKE_EXTRA = '1';
+    const [r] = await run(1);
+    expect(r).toMatchObject({ exitCode: 1, diverged: true, served: { exact: 2, exhausted: 1 } });
+    expect(summarize([r])).toMatchObject({ clean: 0, failed: 1, diverged: 1 });
+  });
+});

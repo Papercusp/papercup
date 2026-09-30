@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-11 (production leg): a fresh PRODUCTION-mode public build sends no telemetry before opt-in",
+  "framework": "operational",
+  "command": [
+    "VM osr18b: apt install 'Papercusp Server_0.0.25_amd64.deb' (sha256 8427b0d0..., built from public Papercusp/papercusp-app@3c1ed9a1d7dd with zero source patches, the R-15 build9 artifact) + launch the GUI AppImage (sha256 5a6e7e19...) with a fresh HOME=/tmp/r11home3, no opt-in, PAPERCUSP_INTERNAL_BUILD/PAPERCUSP_POSTHOG_* unset. Script: .papercusp/scratch/osr/r18/guest-r11prod3.sh (sha256 b6dee92a...)",
+    "OS background updaters stopped first (apt-daily*, unattended-upgrades, packagekit, update-notifier, snapd, fwupd, motd-news); none running during the window (os-updaters-running.txt empty)",
+    "sudo tcpdump -n -i any '(udp port 53) or (tcp SYN && !ACK && not 127/8 && not 10.0.2.2)' plus 'ss -tunp' socket sampling every 2s (187 samples), 18:41:59Z-18:48:27Z; operator ready 18:43:27Z, so 300s of idle production runtime",
+    "positive control at ready+150s: getent hosts r11prod3-positive-control.example.com; curl https://example.com",
+    "raw artifacts: docs/evidence/osr-r11-prod-2026-09-30/ (tcpdump.txt, ss-samples.txt, sidecar-env.txt, health*.json, SHA256SUMS), recovered read-only from the VM overlay after the VM stopped"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T18:41:59Z",
+  "finishedAt": "2026-09-30T18:48:27Z",
+  "summary": "This is the production-mode repair the independent grader asked for (EI-24710158395281724: the earlier capture was a README dev boot, where telemetry-flush never forwards). The packaged Tauri shell spawns the operator sidecar with NODE_ENV=production (papercusp-desktop/src-tauri/src/main.rs .env(\"NODE_ENV\",\"production\")), and /proc/<pid>/environ of every serve.mjs process confirms NODE_ENV=production, PAPERCUSP_DISTRIBUTION_PROFILE=public, HOME=/tmp/r11home3 (plus a leftover earlier fresh-profile instance, HOME=/tmp/r11home2, also production). /api/health returned {ok:true, sha:3c1ed9a1, version 0.0.25} at the start (18:43:27Z) and end (18:48:27Z) of the window. With the operator up for 300s and no opt-in, the only outbound TCP SYN was the control curl (104.20.23.154:443); the only DNS names were the two control names and the VM's own hostname papercusp-testvm, which was answered on loopback (0 of 372 of those packets on enp0s2). The ss samples show no non-loopback connection owned by any Papercusp process; the only established remote socket was curl (pid 65220). The telemetry target in this build is POSTHOG_PUBLIC_DEFAULTS.host = https://flags.papercuspai.com (packages/operator-core/lib/posthog-public-defaults.ts); it was never looked up, and no ~/.papercusp/posthog.json discovery file exists. Disclosed attempts that do NOT count: the GUI AppImage alone starts no sidecar (it waits for the Server bundle), and a v2 capture (~/r18/r11prod2) was contaminated by OS apt/launchpad traffic triggered by the package install itself.",
+  "assertions": [
+    {
+      "id": "production-mode-exercised",
+      "passed": true,
+      "evidence": "sidecar-env.txt: every serve.mjs process has NODE_ENV=production and PAPERCUSP_DISTRIBUTION_PROFILE=public; health.json and health-end.json: ok:true sha 3c1ed9a1."
+    },
+    {
+      "id": "no-egress-before-opt-in",
+      "passed": true,
+      "evidence": "tcpdump.txt: 770 lines; one outbound SYN, 10.0.2.15:57010 > 104.20.23.154:443 at 18:45:57Z = the control curl (ss: users:((\"curl\",pid=65220))). DNS names: example.com, r11prod3-positive-control.example.com (controls) and papercusp-testvm (loopback only)."
+    },
+    {
+      "id": "telemetry-host-never-contacted",
+      "passed": true,
+      "evidence": "flags.papercuspai.com (posthog-public-defaults.ts:29) appears in no DNS query; posthog-discovery.txt: no posthog.json."
+    },
+    {
+      "id": "per-process-attribution",
+      "passed": true,
+      "evidence": "ss-samples.txt: 187 samples; the only non-loopback established socket belongs to curl; Papercusp processes show only listeners."
+    },
+    {
+      "id": "instrument-positive-control",
+      "passed": true,
+      "evidence": "control.txt: curl 200; both control names and the control SYN appear in tcpdump.txt and ss-samples.txt, so a telemetry request would have been seen."
+    },
+    {
+      "id": "clean-window",
+      "passed": true,
+      "evidence": "os-updaters-running.txt is empty: no apt/packagekit/snap/update-notifier/fwupd unit running during the capture."
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-11",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}

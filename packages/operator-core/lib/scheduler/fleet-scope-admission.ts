@@ -23,6 +23,7 @@ import {
   type ClaimSpecSubject,
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
+import { reviewableMiss } from './reviewable-miss';
 import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 import { boundedPgReadTxn, PG_READ_QUERY_CALL_OVERHEAD_MS } from '../pg-read-query';
 import { interpretFleetClaimability } from '../fleet/lane-health';
@@ -2098,6 +2099,13 @@ export function fleetScopedMiss(
     breakdown != null &&
     breakdown.matchedByFilter > 0 &&
     breakdown.claimable === 0;
+  // WI-10004358: a floor-gated lane whose spec rows are pending PEER REVIEW is not idle — that
+  // floor never self-clears, and this member is exactly who can review them. Only computed for a
+  // floor-gated miss (0 claimable, not paused/cooldown/divergent/spec-empty), so every other miss
+  // shape — and a lane with claimable rows, which should be claimed first — is unchanged.
+  const reviewable = floorGated
+    ? reviewableMiss(breakdown!.queueControl, { harness: opts?.harness, spec: scope.fleetSlug })
+    : null;
   // EI-15185: derive the ready-made `payload_filter` for a `work-item:claimable`
   // idle-park await from the member's OWN claim-spec view — the missing "how do I
   // scope this await" answer that led members to register an UNSCOPED await and
@@ -2266,7 +2274,8 @@ export function fleetScopedMiss(
           (cooldownExpirySec != null ? ` (earliest expiry in ~${cooldownExpirySec}s)` : '') +
           '; this is NOT a scope/spec mismatch — do not re-author the claim spec for this miss.'
         : floorGated
-          ? `POOL BLOCKED, NOT SPEC-BROKEN (EI-18741523426513509): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+          ? (reviewable ? `${reviewable.message} ` : '') +
+            `POOL BLOCKED, NOT SPEC-BROKEN (EI-18741523426513509): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             `view.filter matched ${breakdown!.matchedByFilter} issue-family row(s), but every one is presently excluded by a claim floor ` +
             '(see `excludedBreakdownSummary`) — an uncleared plan-lane blocker, a peer\'s claim-hold, needs-human, or similar. This is an ' +
             'EFFECT (the pool is momentarily gated), not a CAUSE (a wrong/over-narrow spec) — the two have opposite remedies (await/re-poll ' +
@@ -2296,7 +2305,10 @@ export function fleetScopedMiss(
     // Certifying a drain here is the most harmful variant of the three, because unlike a
     // transient divergence it never resolves on its own: every member re-pulls, re-bounces, and
     // stands down in turn, and the fleet goes quiet with work still on the board.
-    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !staleBlockedLane,
+    // WI-10004358: fourth route to the same harmful call — rows pending PEER REVIEW never
+    // self-clear, and this member can review them, so the lane is not drained for it.
+    windDown: !divergent && !unconfirmedSurvivors && !featureFamilyMiss && !staleBlockedLane && !reviewable,
+    ...(reviewable ? { reviewable: reviewable.route } : {}),
     // EI-15185: the ready-made payload_filter derived from THIS member's own claim
     // spec — present only when the spec can be narrowed over the claimable payload's
     // fields (id/kind/title/plan/tags/goal). It is a candidate hint, not proof that
@@ -2467,7 +2479,8 @@ export function fleetScopedMiss(
           ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on the standing work-item:claimable watch) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
         : breakdown
-          ? 'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
+          ? (reviewable ? `${reviewable.advice} ` : '') +
+            'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
             (claimablePayloadFilter
               ? 'You may still park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn — do not pass targetKind with wake:true; its wake is a HINT and the watch remains armed.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')

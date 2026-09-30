@@ -164,7 +164,7 @@ export interface GoalDrainRespawnLedgerLike {
  * The drain-fleet WORKER leg's liveness verdict, resolved per declared fleet.
  * `unknown` exists so a degraded read suppresses rather than false-alarms.
  */
-export type DrainFleetLiveness = 'alive' | 'dead' | 'not-found' | 'unknown';
+export type DrainFleetLiveness = 'alive' | 'dead' | 'not-found' | 'unknown' | 'uncoupled';
 
 /**
  * P-014: a live fleet LEADER is supervision, not proof that a drain WORKER is
@@ -201,10 +201,18 @@ export function classifyDelegatedDrainFleetLiveness(
   if (!leaderOwnerId || leaderOwnerId === holderOwnerId) return 'dead';
   const leader = verdicts.get(leaderOwnerId);
   if (!leader) return 'unknown';
-  if (!holderCountsAsAlive(leader) || !coupled) return 'dead';
-  return classifyDrainWorkerLiveness(
+  if (!holderCountsAsAlive(leader)) return 'dead';
+  const workers = classifyDrainWorkerLiveness(
     leaderOwnerId, memberOwnerIds.filter((id) => id !== holderOwnerId), verdicts,
   );
+  // EI-24556293106348130: a live leader and a live worker that merely lack the
+  // holder coupling are UNCOUPLED, not dead. That is the normal state right after
+  // a goal-holder lease handoff (the edge names the predecessor), and the fix is an
+  // in-place coupling repair. Reporting it as 'dead' alarmed the holder with a false
+  // drain-fleet-dead and sent it down the relaunch path, whose preconditions could
+  // fail before the coupling repair ever ran (measured 2026-09-30, goal 60d3a8).
+  if (!coupled) return workers === 'alive' ? 'uncoupled' : 'dead';
+  return workers;
 }
 
 export type GoalDrainReason =
@@ -711,7 +719,9 @@ export function classifyGoalDrainFleet(
   }
 
   const verdict = fleetLiveness.get(fleetKey(goal.workspaceId, goal.drainFleet)) ?? 'unknown';
-  if (verdict === 'unknown') return null;
+  // 'uncoupled' is repaired in place by the sweep (EI-24556293106348130); it is not
+  // a dead fleet and never alarms or charges the relaunch budget.
+  if (verdict === 'unknown' || verdict === 'uncoupled') return null;
   if (verdict !== 'alive') {
     return {
       ...base,
@@ -845,6 +855,8 @@ export interface GoalDrainFleetSweepDeps {
   clearDrainLedger: (goal: GoalDrainRowLike) => Promise<void>;
   /** Mint rows (idempotent) + launch one headless member into the lane. Throws on failure. */
   relaunchDrainFleet: (alert: GoalDrainAlert, goal: GoalDrainRowLike) => Promise<GoalDrainRelaunchResult>;
+  /** EI-24556293106348130: re-couple a live holder with its live drain leader in place. True when an edge now exists. */
+  repairDrainCoupling: (goal: GoalDrainRowLike & { drainFleet: string }, holderOwnerId: string) => Promise<boolean>;
   /** Tell the live holder(s) what the platform just did for them. Fail-soft. */
   notifyRelaunch: (alert: GoalDrainAlert, goal: GoalDrainRowLike, result: GoalDrainRelaunchResult) => Promise<void>;
   /** The budget is spent: ONE deduped human-facing escalation. */
@@ -1364,6 +1376,33 @@ async function defaultRelaunchFlagEnabled(): Promise<boolean> {
  * is what makes bootstrap-su stamp membership and auto-kick the member so it
  * pulls instead of parking (see goals:start §3.5).
  */
+/**
+ * EI-24556293106348130: re-couple a live holder with the fleet's recorded leader,
+ * in place. Deliberately NOT the relaunch path: no mint, no claim-spec or launch
+ * preconditions, no dead stamp and no budget charge, because nothing is dead —
+ * the successor of a holder handoff simply has no edge yet. Idempotent.
+ */
+export async function defaultRepairDrainCoupling(
+  goal: GoalDrainRowLike & { drainFleet: string },
+  holderOwnerId: string,
+): Promise<boolean> {
+  const [{ ensureGoalDrainLeaderCoupling }, { getFleet }] = await Promise.all([
+    import('../goals/drain-fleet-mint'),
+    import('../agent-fleets-store'),
+  ]);
+  const fleet = await getFleet(goal.workspaceId, goal.drainFleet);
+  const leaderOwnerId = fleet?.leaderOwnerId ?? null;
+  if (!leaderOwnerId || leaderOwnerId === holderOwnerId) return false;
+  return await ensureGoalDrainLeaderCoupling({
+    workspaceId: goal.workspaceId,
+    goalId: goal.goalId,
+    fleetSlug: goal.drainFleet,
+    holderOwnerId,
+    leaderOwnerId,
+    declaredBy: WATCHDOG_IDENTITY.ownerId,
+  });
+}
+
 export async function defaultRelaunchDrainFleet(
   sql: Sql,
   alert: GoalDrainAlert,
@@ -1737,6 +1776,7 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalDrainFleetSweepDeps>): GoalD
     reserveRelaunchSlot: (goal, nowMs) => reserveGoalDrainFleetRelaunchSlot(sql, goal, nowMs),
     clearDrainLedger: (goal) => clearGoalDrainFleetLedger(sql, goal),
     relaunchDrainFleet: (alert, goal) => defaultRelaunchDrainFleet(sql, alert, goal),
+    repairDrainCoupling: (goal, holderOwnerId) => defaultRepairDrainCoupling(goal, holderOwnerId),
     notifyRelaunch: defaultNotifyRelaunch,
     escalateRelaunchExhausted: defaultEscalateRelaunchExhausted,
     deadGraceMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
@@ -1907,6 +1947,27 @@ export async function runGoalDrainFleetSweepOnce(
       !!verdicts.get(h.ownerId) && holderCountsAsAlive(verdicts.get(h.ownerId)!))?.ownerId,
   }));
   const fleetLiveness = await deps.resolveFleetLiveness(declared);
+
+  // EI-24556293106348130: an UNCOUPLED fleet (live leader + live worker, no edge
+  // to the live holder) is repaired in place — never alarmed, never relaunched.
+  // A repaired fleet reads 'alive' on the next tick, which also clears any open
+  // dead episode through the ledger loop below.
+  for (const [i, goal] of declaredGoals.entries()) {
+    const holderOwnerId = declared[i]?.holderOwnerId;
+    if (!holderOwnerId) continue;
+    if (fleetLiveness.get(fleetKey(goal.workspaceId, goal.drainFleet)) !== 'uncoupled') continue;
+    try {
+      const repaired = await deps.repairDrainCoupling(goal, holderOwnerId);
+      console.warn(
+        `[goal-drain-fleet-watchdog] ${goal.goalId}: drain fleet ${goal.drainFleet} was uncoupled from live holder ` +
+          `${holderOwnerId}; coupling ${repaired ? 'repaired in place' : 'NOT repaired (no distinct live leader)'}`,
+      );
+    } catch (e) {
+      console.warn(
+        `[goal-drain-fleet-watchdog] coupling repair failed for ${goal.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   // D-005: scope is judged only where it can change the verdict — a fleet that
   // is dead/missing/unknown already has its (more urgent, or suppressed) answer.

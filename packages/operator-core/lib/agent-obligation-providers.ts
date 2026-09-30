@@ -737,7 +737,11 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       ? {
           ...baseAction,
           kind: 'delegate',
-          summary: `launch the independently led fleet for ${selected.slug} with the canonical transaction arguments`,
+          // The title already names the plan, and the goal identity suffix costs
+          // ~85 chars, so this row must stay short enough to share the 400-char
+          // turn-start sink with one other due row. Repeating the slug here made
+          // it 296 chars and dropped it behind any higher-ranked row.
+          summary: 'launch its independently led fleet',
         }
       : isAdmitting
         ? { ...baseAction, kind: 'continue', continuesCurrentWork: true }

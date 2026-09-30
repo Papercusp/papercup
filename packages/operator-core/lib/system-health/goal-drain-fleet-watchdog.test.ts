@@ -107,7 +107,13 @@ describe('P-014 drain worker liveness', () => {
     const live = verdicts(makeVerdict('su-holder', 'live'), makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'live'));
     expect(classifyDelegatedDrainFleetLiveness('su-holder', null, false, members, live)).toBe('dead');
     expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-holder', true, members, live)).toBe('dead');
-    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', false, members, live)).toBe('dead');
+    // EI-24556293106348130: live leader + live worker with no holder edge is an
+    // in-place coupling repair ('uncoupled'), never a dead fleet to relaunch —
+    // the normal state right after a goal-holder lease handoff.
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', false, members, live)).toBe('uncoupled');
+    // ...but uncoupled with no live worker is still dead: coupling alone restores nothing.
+    expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', false, members,
+      verdicts(makeVerdict('su-leader', 'live'), makeVerdict('su-worker', 'ended')))).toBe('dead');
     expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', true, members, live)).toBe('alive');
     expect(classifyDelegatedDrainFleetLiveness('su-holder', 'su-leader', true, members,
       verdicts(makeVerdict('su-worker', 'live')))).toBe('unknown');
@@ -734,6 +740,44 @@ describe('runGoalDrainFleetSweepOnce', () => {
     graceMs: GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
     ...relaunchDeps(),
     ...planFleetDeps(),
+  });
+
+  it('repairs an UNCOUPLED fleet in place: no alarm, no dead stamp, no relaunch (EI-24556293106348130)', async () => {
+    // Measured 2026-09-30 on goal 60d3a8: a holder handoff left the live drain
+    // leader without a coupling edge to the new holder, the fleet read 'dead',
+    // and goal:plan-placement fired drain-fleet-dead while the leader was live.
+    const repairDrainCoupling = vi.fn(async () => true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const deps = {
+        ...baseDeps(),
+        resolveFleetLiveness: vi.fn(async () => fleets({ [fleetKey('ws', 'drain-1')]: 'uncoupled' })),
+        repairDrainCoupling,
+      };
+      const res = await runGoalDrainFleetSweepOnce(sql, deps);
+
+      expect(repairDrainCoupling).toHaveBeenCalledTimes(1);
+      expect(repairDrainCoupling).toHaveBeenCalledWith(
+        expect.objectContaining({ goalId: 'g-1', drainFleet: 'drain-1' }),
+        'su-a',
+      );
+      expect(deps.escalate).not.toHaveBeenCalled();
+      expect(deps.emitDrainDead).not.toHaveBeenCalled();
+      expect(deps.markDrainDead).not.toHaveBeenCalled();
+      expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
+      expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+      expect(res).toMatchObject({ escalated: 0, relaunched: 0 });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not repair coupling for a DEAD fleet; that path still alarms and relaunches', async () => {
+    const repairDrainCoupling = vi.fn(async () => true);
+    const deps = { ...baseDeps(), repairDrainCoupling };
+    await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(repairDrainCoupling).not.toHaveBeenCalled();
+    expect(deps.escalate).toHaveBeenCalled();
   });
 
   it('skips entirely when the flag is off', async () => {

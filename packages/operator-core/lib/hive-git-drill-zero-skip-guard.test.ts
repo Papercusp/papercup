@@ -1402,6 +1402,41 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       expect(lost.stdout).not.toContain('PUBLISH_OK');
       expect(lost.calls).toHaveLength(4);
       expect(new Set(lost.calls.slice(1).map(keyOf)).size).toBe(1);
+
+      // WI-10004352 (P-521 0.0.26 drill run 2): a peer's dev:restart bounced the
+      // re-fire host, so ptool could not connect and set -e aborted phase B. The
+      // call now re-sends its OWN key until the host answers, and the recorded
+      // result is the fired one.
+      const recovered = run('unreachable-twice', { HIVE_GIT_TOWER_TRANSPORT_RETRY_SEC: '60' });
+      expect(recovered.status, recovered.stderr).toBe(0);
+      expect(recovered.stdout).toContain('PUBLISH_OK');
+      expect(recovered.calls).toHaveLength(4);
+      expect(recovered.calls.slice(1).every((call) => call.includes('--url=http://127.0.0.1:3271'))).toBe(true);
+      expect(new Set(recovered.calls.slice(1).map(keyOf)).size).toBe(1);
+      expect(keyOf(recovered.calls[0])).not.toBe(keyOf(recovered.calls[1]));
+      expect(recovered.stderr).toContain('tower operator unreachable');
+      expect(recovered.stderr).toContain('transport retry 2');
+      expect(JSON.parse(recovered.output).fired).toBe(true);
+
+      // No window, no retry: an unreachable host aborts the phase at once and is
+      // never mistaken for an answer.
+      const noWindow = run('unreachable-always', { HIVE_GIT_TOWER_TRANSPORT_RETRY_SEC: '0' });
+      expect(noWindow.status).not.toBe(0);
+      expect(noWindow.stdout).not.toContain('PUBLISH_OK');
+      expect(noWindow.calls).toHaveLength(2);
+      expect(noWindow.stderr).not.toContain('transport retry');
+
+      // The window bounds the retry: a host that never comes back fails the
+      // phase once the window closes, rather than retrying forever.
+      const bounded = run('unreachable-always', {
+        HIVE_GIT_TOWER_TRANSPORT_RETRY_SEC: '2',
+        HIVE_GIT_TOWER_TRANSPORT_POLL_SEC: '1',
+      });
+      expect(bounded.status).not.toBe(0);
+      expect(bounded.stdout).not.toContain('PUBLISH_OK');
+      expect(bounded.calls.length).toBeGreaterThanOrEqual(3);
+      expect(bounded.calls.length).toBeLessThanOrEqual(5);
+      expect(bounded.stderr).toContain('window 2s');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

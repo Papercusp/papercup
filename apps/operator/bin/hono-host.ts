@@ -106,6 +106,7 @@ import {
   stopInvalidationListener,
 } from '@papercusp/operator-core/lib/sync-sse';
 import { ensureFlagChangeListener } from '@papercusp/operator-core/lib/flag-change-listener';
+import { startOperatorStateCacheCoherence } from '@papercusp/operator-core/lib/operator-state-pg';
 import {
   startCluster,
   resolveClusterWorkers,
@@ -286,6 +287,13 @@ function startRequestServers(): void {
   // workers on :3070, exactly ONE holding the LISTEN). Fire-and-forget; the
   // helper retries with backoff and is loud on exhaustion.
   void ensureInvalidationListener();
+
+  // WI-10004071: drop this worker's cached harness_registry / account-pool rows
+  // when a SIBLING worker (or any other process) writes them, instead of serving
+  // the stale row for the cache TTL. Rides the same sync_invalidate LISTEN.
+  void startOperatorStateCacheCoherence().catch((err) => {
+    console.warn('[hono-host] operator-state cache coherence did not start (TTL fallback only):', err);
+  });
 
   // WI-6793: subscribe THIS process to cross-process runtime flag flips
   // (pg_notify from flag-override-store.set). Without it, a `flags:set`

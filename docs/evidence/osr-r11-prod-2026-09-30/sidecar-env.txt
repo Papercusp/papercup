@@ -1,0 +1,12 @@
+== 56978 comm=MainThread node --require /usr/lib/Papercusp Server/sidecar/sidecar-preload.js /usr/lib/Papercusp Server/sidecar/serve.mjs --ensure 
+HOME=/tmp/r11home2
+NODE_ENV=production
+PAPERCUSP_DISTRIBUTION_PROFILE=public
+== 62697 comm=MainThread node --require /usr/lib/Papercusp Server/sidecar/sidecar-preload.js /usr/lib/Papercusp Server/sidecar/serve.mjs --ensure 
+HOME=/tmp/r11home3
+NODE_ENV=production
+PAPERCUSP_DISTRIBUTION_PROFILE=public
+== 63063 comm=MainThread /usr/lib/Papercusp Server/sidecar/bin/node /usr/lib/Papercusp Server/sidecar/serve.mjs 
+HOME=/tmp/r11home3
+NODE_ENV=production
+PAPERCUSP_DISTRIBUTION_PROFILE=public

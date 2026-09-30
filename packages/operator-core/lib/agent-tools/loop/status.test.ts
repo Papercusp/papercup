@@ -376,6 +376,13 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
           drivingEventKey: 'plan:stable:recovery-complete',
         },
       },
+      // EI-24709926664545964: the derived cycle rides on the found transition untouched.
+      cycle: {
+        phase: 'settled',
+        turnInFlightSec: null,
+        lastTurn: { turnSec: 330, postSettleDelaySec: 31, scheduledDelaySec: 26 },
+        basis: 'test-basis',
+      },
     });
 
     const out = await run();
@@ -386,6 +393,7 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
         actor: 'await-suppression',
         detail: { drivingEventKey: 'plan:stable:recovery-complete' },
       },
+      cycle: { lastTurn: { turnSec: 330, postSettleDelaySec: 31 } },
     });
     expect(readLatestLoopTransitionMock).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
@@ -396,6 +404,9 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
     const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
     expect(returns).toContain('lastTransition');
     expect(returns).toContain("actor:'await-suppression'");
+    // The instrument fix: the description must say `parked` is a turn in flight, not a delay.
+    expect(returns).toContain('cycle.lastTurn.turnSec');
+    expect(returns).toContain('TURN is in flight');
   });
 
   it('returns null and skips the transition read when no loop exists', async () => {

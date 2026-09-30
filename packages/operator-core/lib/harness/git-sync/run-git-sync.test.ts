@@ -4228,3 +4228,89 @@ describe('censusStrandedSubmodules — the measured/unmeasured contract (EI-2045
     expect(await censusStrandedSubmodules(runGit, dir)).toEqual([]);
   });
 });
+
+// WI-10004413 CLASS GUARD: every index-writing git call in run-git-sync.ts goes through
+// recoverIndexLockContention or carries an allowlisted reason. On 2026-09-30 a single
+// unwrapped writer (the unstage-protected-paths reset) never reclaimed an orphaned
+// index.lock, and the superproject stayed frozen for over an hour until someone removed the lock by hand.
+const INDEX_WRITING_GIT_RE =
+  /\brunGit\(\s*\[\s*'(reset|read-tree|update-index|rm|checkout|merge|restore|mv|apply|add|commit|rebase|cherry-pick|revert)'/g;
+
+/** Unwrapped index writers that are exempt. The key is a distinctive substring of the call line; the value is the reason. */
+const UNWRAPPED_INDEX_WRITER_ALLOWLIST: Record<string, string> = {
+  "runGit(['read-tree', 'HEAD']":
+    'The index-repair routine owns its live-writer preflight and re-stat, and deliberately refuses (never unlinks) when a writer may hold the index.',
+  "runGit(['rebase', '--rebase-merges'":
+    'A multi-step rebase is not safely re-runnable: a blind retry after a partial failure would meet a rebase already in progress. On failure this path aborts and reports error with a recovery ref, so the next tick retries from a clean state.',
+  "runGit(['rebase', '--abort']":
+    'Best-effort cleanup on an already-failing transplant path: the result is ignored and the tick reports error regardless.',
+  "runGit(['merge', '--abort']":
+    'Cleanup after a merge that already ran through recoverIndexLockContention this tick, which reclaimed any orphaned lock.',
+  "runGit(['add', '--', ...g.files]":
+    'commitAttributedGroups has no logger and ignores this result by design. The wrapped catch-all `git add -A` re-stages anything a lock-blocked group add missed (STRANDING GUARD, WI-1316).',
+};
+
+async function findUnwrappedIndexWriters(source: string): Promise<Array<{ line: number; text: string }>> {
+  const { stripCommentsOnly, stripCommentsAndStrings } = await import(
+    '../../../../../scripts/lib/strip-comments-and-strings.mjs'
+  );
+  const code: string = stripCommentsOnly(source, 'run-git-sync.ts');
+  const bare: string = stripCommentsAndStrings(source, 'run-git-sync.ts');
+  const wrapped: Array<[number, number]> = [];
+  for (const m of bare.matchAll(/\brecoverIndexLockContention\(/g)) {
+    const start = m.index ?? 0;
+    let depth = 0;
+    let end = start;
+    for (let i = start + m[0].length - 1; i < bare.length; i++) {
+      if (bare[i] === '(') depth++;
+      else if (bare[i] === ')' && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    wrapped.push([start, end]);
+  }
+  const out: Array<{ line: number; text: string }> = [];
+  for (const m of code.matchAll(INDEX_WRITING_GIT_RE)) {
+    const at = m.index ?? 0;
+    if (wrapped.some(([s, e]) => at > s && at < e)) continue;
+    const lineStart = source.lastIndexOf('\n', at) + 1;
+    const lineEnd = source.indexOf('\n', at);
+    out.push({
+      line: source.slice(0, at).split('\n').length,
+      text: source.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim(),
+    });
+  }
+  return out;
+}
+
+describe('WI-10004413 class guard: index-writing git calls in run-git-sync.ts reclaim orphaned index.lock', () => {
+  it('CONTROL: flags an unwrapped index writer, and ignores wrapped and commented-out ones', async () => {
+    const unwrapped = "async function f() {\n  const r = await runGit(['reset', '-q', 'HEAD', '--', ...p], repoPath);\n}\n";
+    const wrapped =
+      "async function f() {\n  const r = await recoverIndexLockContention(\n    await runGit(['reset', '-q', 'HEAD'], p),\n    () => runGit(['reset', '-q', 'HEAD'], p),\n    runGit, p, 'x', log,\n  );\n}\n";
+    const commented = "// const r = await runGit(['reset', '-q', 'HEAD'], p);\nconst ok = 1;\n";
+    expect(await findUnwrappedIndexWriters(unwrapped)).toEqual([
+      { line: 2, text: "const r = await runGit(['reset', '-q', 'HEAD', '--', ...p], repoPath);" },
+    ]);
+    expect(await findUnwrappedIndexWriters(wrapped)).toEqual([]);
+    expect(await findUnwrappedIndexWriters(commented)).toEqual([]);
+  });
+
+  it('every unwrapped index-writing runGit call in run-git-sync.ts is allowlisted with a reason, and every allowlist entry is still used', async () => {
+    const source = readFileSync(new URL('./run-git-sync.ts', import.meta.url), 'utf8');
+    // Non-vacuity: the file really wraps index writers, and the regex really matches unwrapped calls in it.
+    expect((source.match(/\brecoverIndexLockContention\(/g) ?? []).length).toBeGreaterThanOrEqual(6);
+    const unwrapped = await findUnwrappedIndexWriters(source);
+    expect(unwrapped.length).toBeGreaterThan(0);
+
+    const keys = Object.keys(UNWRAPPED_INDEX_WRITER_ALLOWLIST);
+    const violations = unwrapped.filter((u) => !keys.some((k) => u.text.includes(k)));
+    expect(
+      violations,
+      'wrap these in recoverIndexLockContention (or allowlist them with a reason)',
+    ).toEqual([]);
+    const unused = keys.filter((k) => !unwrapped.some((u) => u.text.includes(k)));
+    expect(unused, 'stale allowlist entries: remove them').toEqual([]);
+  });
+});

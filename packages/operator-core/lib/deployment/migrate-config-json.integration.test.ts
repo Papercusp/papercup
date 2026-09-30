@@ -46,8 +46,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: Object.assign(async () => [], { unsafe: async () => {} }) }),
 }));
-// saveHarnessRegistry fires a fire-and-forget sync invalidate (notifyRegistryChanged
-// → sync-sse) that would otherwise resolve after the test env tears down. Stub the
+// saveHarnessRegistry awaits a sync invalidate (notifyRegistryChanged → sync-sse,
+// WI-10004071) that would otherwise open a real LISTEN/NOTIFY connection. Stub the
 // invalidate seam so the migration write stays self-contained.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 vi.mock('../harness/projects-lite', () => ({ bustProjectsLiteCache: () => {} }));

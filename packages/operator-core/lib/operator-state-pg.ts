@@ -219,10 +219,24 @@ type StateTable =
 // a process that misses that advisory event, never a second source of truth.
 // Disable entirely with PAPERCUSP_OPSTATE_CACHE_MS=0 (the kill-switch).
 // Encrypted tables are NOT allowlisted (no in-process plaintext caching of secrets).
-const CACHEABLE_STATE_TABLES: ReadonlySet<StateTable> = new Set<StateTable>([
-  'harness_registry',
-  'operator_account_pool',
-]);
+//
+// WI-10004071: the cluster (:3070 runs PAPERCUSP_CLUSTER=16 workers) made the
+// "bounded by the TTL" claim above the ONLY coherence mechanism for a sibling
+// worker, so a create-then-use over MCP (harness:create, then a call that lands
+// on another worker) read a stale registry for up to the TTL. Each cacheable
+// table therefore names the `sync_invalidate` events that mean "another process
+// wrote me"; startOperatorStateCacheCoherence() drops the entry on those events
+// in every worker. The allowlist is DERIVED from this map, so making a table
+// cacheable without naming its coherence events is a type error. The TTL stays
+// as the fail-safe for a missed NOTIFY, never the mechanism.
+type CacheableStateTable = 'harness_registry' | 'operator_account_pool';
+export const OPERATOR_STATE_CACHE_COHERENCE_EVENTS: Readonly<Record<CacheableStateTable, readonly string[]>> = {
+  harness_registry: ['harnessProjects.lite'],
+  operator_account_pool: ['accounts.pool'],
+};
+const CACHEABLE_STATE_TABLES: ReadonlySet<StateTable> = new Set<StateTable>(
+  Object.keys(OPERATOR_STATE_CACHE_COHERENCE_EVENTS) as CacheableStateTable[],
+);
 
 function opStateCacheTtlMs(): number {
   const raw = Number(process.env.PAPERCUSP_OPSTATE_CACHE_MS);
@@ -274,6 +288,52 @@ const opStateCacheKey = (table: StateTable, ws: string): string => `${table}\x00
  *  writing process never reads its own stale value. Exported for tests. */
 export function invalidateOperatorStateCache(table: StateTable, ws: string): void {
   opStateCacheMap().delete(opStateCacheKey(table, ws));
+}
+
+/** Drop every workspace's cached entry for `table` (a coherence event carries
+ *  no workspace, so a sibling worker cannot tell which one changed). */
+export function invalidateOperatorStateTable(table: StateTable): void {
+  const prefix = `${table}\x00`;
+  const cache = opStateCacheMap();
+  for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key);
+}
+
+const coherenceState = pinModuleState<{ started: Promise<void> | null }>(
+  '@papercusp/operator-core.opStateCacheCoherence',
+  () => ({ started: null }),
+);
+
+/**
+ * Keep this process's operator-state cache coherent with writes made by OTHER
+ * processes (WI-10004071). Subscribes to the shared `sync_invalidate` bus and
+ * drops a cacheable table's entries when one of its coherence events arrives;
+ * on the initial LISTEN and every reconnect it drops ALL cacheable entries, so
+ * a NOTIFY missed while disconnected cannot leave a stale entry behind.
+ * Idempotent per process; a failed start can be retried.
+ */
+export function startOperatorStateCacheCoherence(): Promise<void> {
+  if (!coherenceState.started) {
+    coherenceState.started = (async () => {
+      const { registerInvalidationListenHook, subscribe } = await import('./sync-sse');
+      registerInvalidationListenHook(() => {
+        for (const table of CACHEABLE_STATE_TABLES) invalidateOperatorStateTable(table);
+      });
+      await subscribe((event) => {
+        for (const [table, names] of Object.entries(OPERATOR_STATE_CACHE_COHERENCE_EVENTS)) {
+          if (names.includes(event.name)) invalidateOperatorStateTable(table as StateTable);
+        }
+      });
+    })().catch((err) => {
+      coherenceState.started = null;
+      throw err;
+    });
+  }
+  return coherenceState.started;
+}
+
+/** Test hook: forget a started coherence subscription (the bus is mocked per suite). */
+export function _resetOperatorStateCacheCoherenceForTests(): void {
+  coherenceState.started = null;
 }
 
 /**

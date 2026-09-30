@@ -16,24 +16,25 @@
  * script itself prescribes (CLAUDE.md § "Proving a guard is falsifiable").
  *
  * FALSIFIABILITY: the subject path is overridable via MUTATION_PROBE_SCRIPT, so
- * this suite can be pointed at a mutated COPY of the script:
+ * this suite can be pointed at a mutated COPY of the script. Probe it by hand:
  *
- *   scripts/mutation-probe.sh \
- *     --file scripts/mutation-probe.sh \
- *     --fake-destructive \
- *     --mutate 's/^if \[ "\$IN_TREE" -eq 1 \] && \[ -z "\$SWEEP_ACK" \]; then/if false; then/' \
- *     --test 'MUTATION_PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/mutation-probe-sweep-gate.test.ts'
+ *   t="$(mktemp -d)" &&
+ *   cp scripts/mutation-probe.sh scripts/mutation-probe-admission.sh "$t/" &&
+ *   perl -pi -e 's/^if \[ "\$IN_TREE" -eq 1 \] && \[ -z "\$SWEEP_ACK" \]; then/if false; then/' "$t/mutation-probe.sh" &&
+ *   ! cmp -s scripts/mutation-probe.sh "$t/mutation-probe.sh" &&
+ *   MUTATION_PROBE_SCRIPT="$t/mutation-probe.sh" npm run test:file -- apps/operator/lib/mutation-probe-sweep-gate.test.ts
  *
- * That run mutates a copy in a scratch dir; the tracked script is never dirty.
+ * The `cmp` step refuses a mutation that changed nothing. The tracked script is
+ * never dirty. Copy mutation-probe-admission.sh too: the script sources it from
+ * its own directory for every --in-tree run.
  *
- * `--fake-destructive` is REQUIRED here and is easy to omit: probing the probe
- * makes the probe its own SUBJECT, and the script's source contains the very
- * destructive primitives it scans for (rm, rmdir, shred, mkfs, `dd of=`,
- * `find -delete` — its own detection list and cleanup). The tier-0 gate
- * therefore refuses the run outright, with a message about executing deletion
- * code that reads as alarming rather than as "you are probing this script".
- * The flag only PATH-shims those executables for the guard runs; this suite
- * deletes via node's fs, so nothing here depends on them.
+ * Do NOT wrap this in `scripts/mutation-probe.sh --fake-destructive` (WI-10004181).
+ * That guard makes rm/unlink log-only for its whole --test tree, so the in-tree
+ * cases' own probes could not remove their admission manifests or scratch dirs.
+ * The probe refuses --in-tree under that guard, so the BASELINE fails and no
+ * verdict is possible. The hand recipe runs the mutant with real deletion,
+ * confined to this suite's throwaway dirs under os.tmpdir(): check that your
+ * mutation does not touch a cleanup (rm/unlink) line before you run it.
  *
  * READ WHICH TESTS FAIL, not just the verdict line. A genuine catch here fails
  * a PROPER SUBSET — mutating the sweep gate fails only the sweep cases,
@@ -43,7 +44,18 @@
  * exists to prevent (EI-21430792829614962).
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -317,6 +329,34 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('run_in_background: true');
     expect(out).not.toContain('mutant applied:');
     expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it("REFUSES --in-tree inside an outer probe's --fake-destructive guard, before any admission state (WI-10004181)", () => {
+    // An outer --fake-destructive probe exports MUTATION_PROBE_DESTRUCTIVE_LOG and log-only
+    // rm/unlink shims to everything its --test runs. An in-tree run under them cannot delete
+    // its own admission manifest or scratch dir, and orphan recovery deletes with rm too, so
+    // nothing inside the guard could clean up. The probe must refuse before it creates any state.
+    const admissionDir = join(
+      '/tmp',
+      `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${createHash('sha256').update(realpathSync(scratch)).digest('hex')}`,
+    );
+    const probeDirs = () => readdirSync(scratch).filter((name) => name.startsWith('mutation-probe.')).length;
+    const before = probeDirs();
+    const { status, out } = runProbe(
+      ['--file', subject, '--mutate', 's/GOOD/BAD/', '--test', 'grep -q GOOD {}', '--in-tree', '--accept-sweep-race'],
+      {
+        MUTATION_PROBE_DESTRUCTIVE_LOG: join(scratch, 'outer-destructive-calls.log'),
+        PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
+      },
+    );
+
+    expect(status).toBe(2);
+    expect(out).toContain("REFUSING --in-tree inside another probe's --fake-destructive guard");
+    expect(out).not.toContain('mutant applied:');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=');
+    expect(existsSync(join(admissionDir, 'original.manifest'))).toBe(false);
+    expect(probeDirs()).toBe(before);
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 

@@ -1,0 +1,5 @@
+5a6e7e196a3e43fcd87e23e814d82b3050bf6bded2b05c8945ecc1c2b731ad03  /home/tester/papercusp-app/papercusp-desktop/src-tauri/target/release/bundle/appimage/Papercusp_GUI_0.0.25_amd64.AppImage
+8427b0d0632e7a0c1c9f69b1311fe657de5df401b6057ab7e3198cd06fe495b5  /home/tester/papercusp-app/papercusp-desktop/src-tauri/target/release/bundle/deb/Papercusp Server_0.0.25_amd64.deb
+3bd2f24e9a26d2f048a858db1f400e4f8f6206f93c711039379ee3c6a5088b4e  /usr/bin/papercusp-server
+Status: install ok installed
+Version: 0.0.25

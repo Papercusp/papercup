@@ -1127,6 +1127,54 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
+    // WI-10004358: a floor-gated lane whose spec rows are pending PEER REVIEW is not drained —
+    // review never self-clears, and the member is who can do it. Measured on goal 60d3a8's drain
+    // spec: 331 matched, 0 claimable, 24 pending review, and members were told windDown:true.
+    it('fleetScopedMiss routes a member to peer review instead of standing down when spec rows await review', () => {
+      const reviewBreakdown = {
+        ...floorGatedBreakdown,
+        queueControl: { ...ZERO_QUEUE_CONTROL, pendingAgentReview: 24, revisionRequestedAgentReview: 1 },
+      };
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: reviewBreakdown, harness: 'papercusp' });
+      expect(miss.windDown).toBe(false);
+      expect(miss.reviewable).toMatchObject({
+        pendingAgentReview: 24,
+        list: {
+          tool: 'work_items:claimable',
+          args: { harness: 'papercusp', spec: issueScope.fleetSlug, breakdownOnly: true },
+          idsAt: 'excludedSample.queueControl.agentReview[].id',
+        },
+        claim: { tool: 'improvements:agent-review', args: { mode: 'claim', harness: 'papercusp' } },
+        grade: { tool: 'blender:grade-idea' },
+      });
+      expect(miss.error).toMatch(/^REVIEWABLE, NOT IDLE \(WI-10004358\): 24 spec-matched row\(s\)/);
+      // The floor-gated classification itself is still reported, after the review lead.
+      expect(miss.error).toMatch(/POOL BLOCKED, NOT SPEC-BROKEN/);
+      expect(miss.advice).toMatch(/^DO NOT STAND DOWN YET: review the 24 pending row\(s\)/);
+      expect(miss.advice).toMatch(/blender:grade-idea/);
+    });
+
+    it('fleetScopedMiss still certifies the floor-gated drain when nothing awaits review (revision-requested alone is not reviewable)', () => {
+      const revisionOnly = {
+        ...floorGatedBreakdown,
+        queueControl: { ...ZERO_QUEUE_CONTROL, revisionRequestedAgentReview: 3 },
+      };
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: revisionOnly });
+      expect(miss.windDown).toBe(true);
+      expect(miss.reviewable).toBeUndefined();
+      expect(miss.error).not.toMatch(/REVIEWABLE/);
+    });
+
+    it('fleetScopedMiss never offers review to a PAUSED fleet member', () => {
+      const reviewBreakdown = {
+        ...floorGatedBreakdown,
+        queueControl: { ...ZERO_QUEUE_CONTROL, pendingAgentReview: 5 },
+      };
+      const miss = fleetScopedMiss(issueScope, [], { issueBreakdown: reviewBreakdown, pausedReason: 'drain' });
+      expect(miss.reviewable).toBeUndefined();
+      expect(miss.error).not.toMatch(/REVIEWABLE/);
+    });
+
     // EI-18741523426513509: `spec_matches_nothing` asserts a CAUSE (the spec's filter is wrong);
     // a floor-gated miss is an EFFECT (real rows matched, but every one is presently excluded by
     // a transient claim floor) with the OPPOSITE remedy — await/re-poll, never rewrite the spec.

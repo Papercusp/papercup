@@ -56,6 +56,7 @@ import {
   GOAL_HOLDER_REKICK_INTERVAL_MS,
   pauseGoalForHolderRespawnRateCap,
   reconcileStrandedGoalHolderRespawnLatch,
+  releaseGoalHolderRespawnRateSlot,
   reserveGoalHolderRespawnRateSlot,
   runGoalHolderRespawnOnce,
   type GoalHolderRespawnDeps,
@@ -343,6 +344,48 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     });
   }, 60_000);
 
+  it('returns exactly the slot a policy-refused launch reserved, so refusals cannot reach the cap (WI-10004329)', async () => {
+    const goalId = 'goal-refused-launch-slot-release';
+    const nowMs = Date.now();
+    const earlier = nowMs - 10_000;
+    await seedGoal({
+      id: goalId,
+      launchSettings: RESPAWN_SETTINGS,
+      metadata: { holderRespawn: { preserved: 'respawn-metadata', attempts: [earlier] } },
+    });
+
+    // Six consecutive refused launches: reserve, then release. Before the fix
+    // the sixth reservation's successor was capped with zero launches.
+    for (let tick = 0; tick < GOAL_HOLDER_RESPAWN_RATE_LIMIT; tick += 1) {
+      const reservedAtMs = nowMs + tick;
+      await expect(
+        reserveGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, reservedAtMs),
+      ).resolves.toEqual({ kind: 'reserved', attemptsInWindow: 2 });
+      await expect(
+        releaseGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, reservedAtMs),
+      ).resolves.toBe(true);
+    }
+
+    const [row] = await rootSql<{ metadata: Record<string, any> }[]>`
+      SELECT metadata FROM harness_shared.goals
+       WHERE workspace_id = ${WS} AND id = ${goalId}`;
+    expect(row?.metadata.holderRespawn).toMatchObject({
+      preserved: 'respawn-metadata',
+      attempts: [earlier],
+      needsHuman: false,
+    });
+
+    // A slot that was never reserved is not found, and nothing else is removed.
+    await expect(
+      releaseGoalHolderRespawnRateSlot(rootSql, { goalId, workspaceId: WS }, nowMs + 999),
+    ).resolves.toBe(false);
+    const [after] = await rootSql<{ attempts: unknown[] }[]>`
+      SELECT metadata #> '{holderRespawn,attempts}' AS attempts
+        FROM harness_shared.goals
+       WHERE workspace_id = ${WS} AND id = ${goalId}`;
+    expect(after?.attempts).toEqual([earlier]);
+  }, 60_000);
+
   it('row-locks concurrent reservations so only one caller receives the sixth slot', async () => {
     const goalId = 'goal-concurrent-respawn-cap';
     const nowMs = Date.now();
@@ -440,6 +483,7 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
       attempted: 1,
       respawned: 1,
       launchFailed: 0,
+      launchRefused: 0,
       attachFailed: 0,
     });
     expect(launches).toEqual([GOAL]);

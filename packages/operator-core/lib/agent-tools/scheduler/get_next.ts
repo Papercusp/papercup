@@ -59,6 +59,7 @@ import { liveLockedPaths } from '../locks/live-lock-paths';
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('open' | 'failing')[] | undefined;
 import { matchRoutingGateHint } from '../../routing-gate-hints';
+import { reviewableMiss } from '../../scheduler/reviewable-miss';
 import {
   fleetScopedMiss,
   reconcileFleetScopeClaims,
@@ -810,12 +811,18 @@ async function buildMissDiagnosis(args: {
       }
     }
 
-    const aggregate = diag.drained
-      ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
-      : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
-        (diag.readyUnclaimed === 0
-          ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty'
-          : '');
+    // WI-10004358: `reviewing` = spec rows are pending PEER REVIEW, a gate that never self-clears
+    // and that this caller can clear — so "idling is correct" must not be said for that lane.
+    const aggregateText = (reviewing: boolean) =>
+      diag.drained
+        ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
+        : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
+          (diag.readyUnclaimed === 0
+            ? reviewing
+              ? ' — every one of them is GATED, and some are gated by pending peer review you can perform (see below), so idling is NOT correct'
+              : ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty'
+            : '');
+    let reviewable: ReturnType<typeof reviewableMiss> = null;
     // EI-14108: a flag-READ failure (fail-closed) reads identically to "the issue-claimable
     // flag is off" otherwise — say so explicitly so this never presents as a drained/out-of-
     // scope pool when it's actually an unreadable flag store.
@@ -853,6 +860,7 @@ async function buildMissDiagnosis(args: {
       );
       if (agg.value) {
         excludedBreakdown = agg.value;
+        reviewable = reviewableMiss(agg.value.queueControl, { harness: args.harness });
         const top = Object.entries(agg.value.excluded)
           .filter(([, n]) => (n as number) > 0)
           .sort((a, b) => (b[1] as number) - (a[1] as number));
@@ -876,6 +884,10 @@ async function buildMissDiagnosis(args: {
     // kinds only (no kind filter at all, or one that includes feature/chunk/research-task/…),
     // this whole diagnosis may be silently irrelevant to why THEIR claim actually missed. Say
     // so plainly instead of letting "matches 0 issue-family row(s)" read as the whole picture.
+    // WI-10004358: the review route rides inside breakdownSummary (it IS a breakdown finding), and
+    // `aggregate` is derived only now, once the breakdown has said whether review is pending.
+    if (reviewable) breakdownSummary += ` ${reviewable.message} ${reviewable.advice}`;
+    const aggregate = aggregateText(reviewable != null);
     const issueFamilyOnly = specIsIssueFamilyOnly(rec?.spec);
     const familyScopeNote = issueFamilyOnly
       ? ''
@@ -887,6 +899,7 @@ async function buildMissDiagnosis(args: {
 
     return {
       error: `${STATIC}. Diagnosis: ${aggregate}.${shadowedFleetNote}${namedSummary}${breakdownSummary}${flagReadErrorNote}${familyScopeNote}`,
+      ...(reviewable ? { reviewable: reviewable.route } : {}),
       diagnosis: {
         drained: diag.drained,
         pendingUnclaimed: diag.pendingUnclaimed,

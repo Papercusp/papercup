@@ -1,0 +1,2 @@
+2026-09-30T18:43:27Z
+operator.json=/tmp/r11home3/.papercusp/operator.json port=23037

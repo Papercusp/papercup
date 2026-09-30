@@ -148,6 +148,72 @@ export const realGit: GitRunner = async (repo, args) => {
   }
 };
 
+/**
+ * EI-24040329952723202 — TOTAL wall-clock budget for the git reads of ONE `gitPipelinePosition`
+ * call. The per-subprocess cap above bounds each read, but one call issues ~40 of them in
+ * sequential waves, so 5s x N has no upper bound: the invocation ledger showed a p95 of 17.8s
+ * and a 67.5s outlier against the 60s MCP abort. Past this budget further reads are NOT
+ * spawned; they resolve null, exactly as a wedged git already does, so each leg degrades to
+ * UNKNOWN through the existing fail-soft paths. Keep it well under the MCP deadline INCLUDING
+ * one in-flight subprocess ({@link GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS}) and the non-git legs.
+ */
+export const GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS = 35_000;
+
+export interface GitReadBudgetOptions {
+  budgetMs?: number;
+  /** Injectable clock (tests). */
+  now?: () => number;
+  /** Fired ONCE, on the first read refused for budget. */
+  onExhausted?: () => void;
+}
+
+export interface GitReadBudgetStats {
+  requested: number;
+  spawned: number;
+  /** Reads answered from an identical in-flight/settled read of THIS call. */
+  deduped: number;
+  /** Reads refused because the total budget was spent. */
+  refused: number;
+}
+
+/**
+ * Per-call wrapper over a {@link GitRunner}: (1) identical reads (same repo + argv) share ONE
+ * subprocess — a measured call ran `log -1 HEAD -- <path>` 5x concurrently, each ~3.3s under
+ * contention, so the duplicates were pure amplification; (2) once the total budget is spent,
+ * later reads resolve null without spawning. Safe ONLY for read-only git, which is all this
+ * module runs. The memo is scoped to the wrapper, so it never outlives one call and a caller
+ * that wants a fresh read simply makes a fresh call.
+ */
+export function withGitReadBudget(
+  base: GitRunner,
+  opts: GitReadBudgetOptions = {},
+): { git: GitRunner; stats: GitReadBudgetStats } {
+  const budgetMs = opts.budgetMs ?? GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS;
+  const now = opts.now ?? Date.now;
+  const startedAt = now();
+  const memo = new Map<string, Promise<string | null>>();
+  const stats: GitReadBudgetStats = { requested: 0, spawned: 0, deduped: 0, refused: 0 };
+  const git: GitRunner = (repo, args) => {
+    stats.requested += 1;
+    const key = `${repo}\u0000${args.join('\u0000')}`;
+    const hit = memo.get(key);
+    if (hit) {
+      stats.deduped += 1;
+      return hit;
+    }
+    if (now() - startedAt >= budgetMs) {
+      if (stats.refused === 0) opts.onExhausted?.();
+      stats.refused += 1;
+      return Promise.resolve(null);
+    }
+    stats.spawned += 1;
+    const pending = base(repo, args);
+    memo.set(key, pending);
+    return pending;
+  };
+  return { git, stats };
+}
+
 /** Is `sha` an ancestor-or-equal of `ref` (i.e. does ref's history contain it)? */
 async function refContains(git: GitRunner, repo: string, ref: string, sha: string): Promise<boolean | null> {
   // `${ref}..${sha}` = commits reachable from sha but NOT from ref. Zero of them
@@ -4433,6 +4499,8 @@ export function resolveEditTreeRoot(integrationRoot: string, env: NodeJS.Process
 
 export interface PipelinePositionDeps {
   git?: GitRunner;
+  /** EI-24040329952723202: override the per-call git read budget / clock. TESTS only — the default is the real budget. */
+  gitReadBudget?: Pick<GitReadBudgetOptions, 'budgetMs' | 'now'>;
   /** EI-24049239243821100: the edit-tree resolution; defaults to {@link resolveEditTreeRoot}. */
   resolveEditTreeRoot?: (integrationRoot: string) => string;
   loadDeploy?: () => Promise<DevDeployState>;
@@ -5375,7 +5443,7 @@ export async function gitPipelinePosition(
   inp: PipelinePositionInput,
   deps: PipelinePositionDeps = {},
 ): Promise<PipelinePosition> {
-  const git = deps.git ?? realGit;
+  const baseGit = deps.git ?? realGit;
   // This is a read-only diagnostic hot path.  Do not lazily boot or queue behind
   // the host spawner sidecar while resolving the release refs: when the checkpoint
   // gate is already stalled, that IPC hop can hold the whole pipeline-position read
@@ -5387,6 +5455,16 @@ export async function gitPipelinePosition(
     deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));
 
   const notes: string[] = [];
+  // EI-24040329952723202: ONE de-duplicating, budgeted git runner for this whole call — identical
+  // reads share a subprocess and, once the total budget is spent, later reads resolve null (UNKNOWN).
+  const gitBudgetMs = deps.gitReadBudget?.budgetMs ?? GIT_PIPELINE_POSITION_TOTAL_BUDGET_MS;
+  const { git } = withGitReadBudget(baseGit, {
+    ...deps.gitReadBudget,
+    onExhausted: () =>
+      notes.push(
+        `Git read budget (${Math.round(gitBudgetMs / 1000)}s) was spent mid-read: later git reads were NOT run, so the legs that needed them read UNKNOWN (never "not contained"). Re-call when the host is less contended.`,
+      ),
+  });
   // EI-21544761852770720: these are independent read-only snapshots, but this hot
   // path historically awaited them in series.  On a busy host each can take
   // several seconds, leaving `state:read` with almost no margin under its 10s

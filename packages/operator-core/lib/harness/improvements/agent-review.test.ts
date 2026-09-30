@@ -575,6 +575,43 @@ describe('agent-review grading lifecycle', () => {
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
   });
+
+  // EI-24720168531118378 / EI-21887295701926471. The standing ledger grade can belong to someone
+  // who never held the row (an owner-sovereign grade on a pre-existing su-ideate filing that
+  // `enterAgentReview` enrolled with `preserveExisting`). The reviewer CLAIM is released against
+  // the CURRENT HOLDER; keying the CAS on `ledger.gradedBy` ('owner') lost it, threw after the
+  // approval payload had committed, and stranded the row held by the reviewer.
+  it('an owner-graded ledger row still releases the reviewer claim (CAS targets the holder, not ledger.gradedBy)', async () => {
+    const h = harness(pending);
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 4, feedback: null, gradedBy: 'owner' };
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'approved',
+      changed: true,
+    });
+    expect(h.state.issue.assignee).toBeNull();
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-reviewer',
+    });
+    // Attribution still names the ledger grader — only the CAS moved.
+    expect(h.state.posts[0]?.body).toContain('approved by owner');
+  });
+
+  it('an owner-graded low grade transfers the claim FROM the holder, not from ledger.gradedBy', async () => {
+    const h = harness(pending);
+    h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: 2, feedback: 'Premise is false.', gradedBy: 'owner' };
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'revision-requested',
+      returnedToSubmitter: true,
+    });
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
+      harness: 'papercusp',
+      fromHolder: 'su-reviewer',
+    });
+    expect(h.state.issue.assignee).toBe('su-filer');
+  });
 });
 
 /**

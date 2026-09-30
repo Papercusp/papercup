@@ -34,6 +34,7 @@ import {
   type GoalWedgeAlert,
 } from './goal-liveness-watchdog';
 import type { GoalReadiness } from '@papercusp/agent-mcp/goal-deps';
+import { GoalHolderLaunchPolicyRefusedError } from '../harness/routines/goal-holder-launch-action';
 
 const NOW = Date.parse('2026-08-16T04:00:00Z');
 const LONG_AGO = NOW - 5 * 24 * 60 * 60_000; // 5 days — the measured sidestage case
@@ -901,6 +902,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       attempted: 1,
       respawned: 1,
       launchFailed: 0,
+      launchRefused: 0,
       attachFailed: 0,
       attachUnresolved: 0,
       neutralizeFailed: 0,
@@ -997,6 +999,71 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       expect(state?.restarts).toEqual([]);
       expect(state?.lastRestartAt).toBeNull();
       expect(state?.lastAttemptAt).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('returns the rate slot when launch policy refuses before minting a process (WI-10004329)', async () => {
+    // Measured 2026-09-30 on goal 60d3a8: six budget-unmeasurable refusals in
+    // five minutes filled the 6-per-hour cap with zero holders launched, and the
+    // cap escalation reported them as recoveries.
+    const attach = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const reserveRateSlot = vi.fn(async () => ({ kind: 'reserved' as const, attemptsInWindow: 1 }));
+    const releaseRateSlot = vi.fn(async () => true);
+    const target = respawnGoal();
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({ goals: [target], holders: [holder()] }),
+          reserveRateSlot,
+          releaseRateSlot,
+          launch: async () => {
+            throw new GoalHolderLaunchPolicyRefusedError(target.goalId, {
+              reason: 'goal_budget_unmeasurable',
+              limit: 50_000,
+              current: null,
+              requested: 0,
+              message: 'spend cannot be measured',
+              currentScope: 'goal budget window',
+            });
+          },
+          attach,
+        }),
+      );
+
+      expect(result).toMatchObject({ attempted: 1, launchRefused: 1, launchFailed: 0, respawned: 0 });
+      expect(attach).not.toHaveBeenCalled();
+      expect(releaseRateSlot).toHaveBeenCalledTimes(1);
+      // The slot returned is exactly the one reserved this tick.
+      const reservedAtMs = (reserveRateSlot.mock.calls[0] as unknown as [unknown, number])[1];
+      expect(releaseRateSlot).toHaveBeenCalledWith(target, reservedAtMs);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('refused by policy'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the rate slot spent when a launch fails for any other reason', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const releaseRateSlot = vi.fn(async () => true);
+    const target = respawnGoal();
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({ goals: [target], holders: [holder()] }),
+          releaseRateSlot,
+          launch: async () => {
+            throw new Error('goal-holder-launch refused for goal-1: kickoff could not be built');
+          },
+        }),
+      );
+
+      expect(result).toMatchObject({ attempted: 1, launchFailed: 1, launchRefused: 0 });
+      expect(releaseRateSlot).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

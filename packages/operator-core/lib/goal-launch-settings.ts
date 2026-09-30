@@ -209,6 +209,71 @@ export const UNLIMITED_CEILING = 'unlimited' as const;
 /** A stored ceiling: a hard number, or the explicit opt-out. */
 export type GoalCeiling = number | typeof UNLIMITED_CEILING;
 
+/**
+ * The smallest ceilings under which an auto-minted drain fleet can hold a WORKER
+ * (EI-24556293106348130).
+ *
+ * A started goal with a drain fleet runs three agents before any work is claimed:
+ * the goal holder, the fleet's delegated leader, and one drain worker. All three
+ * carry the goal's `session_briefs.goal_id`, so `goalHeadcount` counts all three
+ * toward `maxAgents`; the leader's presence carries the fleet slug, so it counts
+ * toward `maxPerFleet` too. The worker is launched LAST, so a ceiling below this
+ * floor refuses exactly the one agent that does the work, and the fleet runs with
+ * a live leader and zero workers. The watchdog then reports `drain-fleet-dead`
+ * while the leader is visibly live, and its own replacement launch is refused by
+ * the same ceiling.
+ *
+ * Measured before this floor existed: every goal-drain fleet started with
+ * `maxAgents: 2, maxPerFleet: 1` (4 of 4, 2026-09-26 and 2026-09-29) ran with
+ * zero workers; every fleet started at or above this floor (16 of 16) got its
+ * worker within 16s.
+ */
+export const DRAIN_FLEET_MIN_CEILINGS = {
+  maxAgents: 3,
+  maxPerFleet: 2,
+} as const;
+
+/**
+ * The start-door refusal for ceilings that cannot hold a drain fleet's worker, or
+ * null when they can. A MESSAGE, not a boolean, for the same reason as
+ * `goalHolderPolicyProblem`: every door surfaces it verbatim, and two doors with
+ * their own copies would drift until the looser one became the way in.
+ *
+ * Call it ONLY where a drain fleet will be minted — a sole-member goal runs the
+ * goal agent alone and is not bound by this floor. A door that offers another way
+ * out (goals:start's sole-member contract) appends it; this text names only the
+ * remedy every door shares. `unlimited` always passes, and an unset ceiling
+ * resolves to `GOAL_LAUNCH_DEFAULTS`, which clears it.
+ */
+export function drainFleetTopologyProblem(
+  // Structural, not `GoalLaunchSettings`: goals:start-from-package carries a
+  // package's settings as an untyped record, and the floor must bind there too.
+  settings: { maxAgents?: unknown; maxPerFleet?: unknown } | null | undefined,
+): string | null {
+  const asCeiling = (v: unknown): GoalCeiling | undefined =>
+    v === UNLIMITED_CEILING || (typeof v === 'number' && Number.isFinite(v)) ? (v as GoalCeiling) : undefined;
+  const maxAgents = resolveCeiling(asCeiling(settings?.maxAgents), GOAL_LAUNCH_DEFAULTS.maxAgents);
+  const maxPerFleet = resolveCeiling(asCeiling(settings?.maxPerFleet), GOAL_LAUNCH_DEFAULTS.maxPerFleet);
+  const short: string[] = [];
+  if (maxAgents != null && maxAgents < DRAIN_FLEET_MIN_CEILINGS.maxAgents) {
+    short.push(
+      `maxAgents=${maxAgents} (needs at least ${DRAIN_FLEET_MIN_CEILINGS.maxAgents}: holder + drain leader + one drain worker)`,
+    );
+  }
+  if (maxPerFleet != null && maxPerFleet < DRAIN_FLEET_MIN_CEILINGS.maxPerFleet) {
+    short.push(
+      `maxPerFleet=${maxPerFleet} (needs at least ${DRAIN_FLEET_MIN_CEILINGS.maxPerFleet}: drain leader + one drain worker)`,
+    );
+  }
+  if (short.length === 0) return null;
+  return (
+    `launch ceilings too low for this goal's drain fleet: ${short.join('; ')}. ` +
+    `The holder and the drain leader launch first, so these ceilings would refuse the only agent that ` +
+    `claims work, leaving a leader-only fleet the watchdog reports dead. Nothing was created or saved. ` +
+    `Raise the ceiling(s), or set them to '${UNLIMITED_CEILING}'.`
+  );
+}
+
 const ceilingSchema = z
   .union([z.number().int().positive().max(1000), z.literal(UNLIMITED_CEILING)])
   .nullable()
@@ -2579,12 +2644,49 @@ export async function writeGoalLaunchSettings(
 ): Promise<{ ok: boolean; error: string | null }> {
   if (!goalId) return { ok: false, error: 'goalId is required' };
   let payload: string | null = null;
+  let topologyProblem: string | null = null;
   if (settings != null) {
     const parsed = goalLaunchSettingsSchema.safeParse(settings);
     if (!parsed.success) return { ok: false, error: parsed.error.message };
     payload = JSON.stringify(parsed.data);
+    topologyProblem = drainFleetTopologyProblem(parsed.data);
   }
   try {
+    /* DRAIN-FLEET FLOOR ON UPDATE (WI-10004407, follow-up to EI-24556293106348130).
+       goals:start and goals:start-from-package refuse ceilings below
+       DRAIN_FLEET_MIN_CEILINGS, but a later goals:update could still lower a
+       running goal's ceilings below them. The drain worker is the agent that
+       launches LAST, so it is the one those ceilings refuse: a leader with zero
+       workers, reported as drain-fleet-dead. The floor therefore binds HERE, at
+       the one writer every post-start door goes through.
+
+       Bound only for a goal that HAS a drain fleet (`metadata.drainFleet`). A
+       sole-member goal runs the goal agent alone and is exempt, as it is at the
+       start doors. The read happens only when the new document already fails
+       the predicate, so a compliant write costs no extra round-trip. It runs on
+       the caller's `sql`, so inside goals:update's transaction it sees a
+       drainFleet stamped earlier in the same call. `null` (clear to defaults)
+       always passes, because GOAL_LAUNCH_DEFAULTS clears the floor.
+
+       Its own query rather than readGoalLaunchSettings().drainFleetSlug: that
+       reader turns a failed read into drainFleetSlug:null, which here would let
+       the write through (fail OPEN). This query throws into the catch below, so
+       an unreadable row refuses the write instead. */
+    if (topologyProblem) {
+      const rows = (await pg(sql)`
+        SELECT metadata->>'drainFleet' AS drain_fleet
+          FROM harness_shared.goals
+         WHERE id = ${goalId}`) as unknown as Array<{ drain_fleet: string | null }>;
+      const drainFleet = rows[0]?.drain_fleet ?? null;
+      if (drainFleet) {
+        return {
+          ok: false,
+          error:
+            `${topologyProblem} Goal ${goalId} runs drain fleet ${drainFleet}, so its ceilings must keep ` +
+            `room for the drain worker after start as well as at start.`,
+        };
+      }
+    }
     await pg(sql)`
       UPDATE harness_shared.goals
          SET launch_settings = ${payload}::jsonb, updated_at = now()

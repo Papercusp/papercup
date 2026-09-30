@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import {
   declaresGeneratedBanner,
   findBulkDirtyExcess,
+  bulkArtifactMinBytes,
   findOversizedDirtyFiles,
   type RunGit,
 } from './run-git-sync';
@@ -243,6 +244,39 @@ describe('findBulkDirtyExcess — a declared generated projection is peeled LAST
     expect(peeled.filter((p) => p.startsWith(DOCS)).length).toBe(2);
     expect(1300 - out.reduce((n, f) => n + f.sizeBytes, 0)).toBeLessThanOrEqual(500);
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('peels a projection BEFORE small hand-written source when the mirror alone fills the cap (WI-10004416)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bulk-small-source-'));
+    // The measured 2026-09-30 shape, scaled: a docs rebuild larger than the cap on
+    // its own, plus ordinary source edits. Cap 250_000 → artifact threshold 1_000B.
+    const cap = 250_000;
+    const docs = [0, 1, 2].map((i) => put(root, `${DOCS}/page-${i}.html`, 100_000));
+    const source = Array.from({ length: 10 }, (_, i) => put(root, `packages/x/src-${i}.ts`, 500));
+    const out = await findBulkDirtyExcess(runGitFor([...docs, ...source]), root, cap);
+    const peeled = out.map((f) => f.path);
+    expect(peeled.filter((p) => p.startsWith('packages/'))).toEqual([]);
+    expect(peeled.filter((p) => p.startsWith(DOCS)).length).toBe(1);
+    expect(305_000 - out.reduce((n, f) => n + f.sizeBytes, 0)).toBeLessThanOrEqual(cap);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('still peels an ARTIFACT-sized non-projection before any projection (the WI-5738 accident class)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bulk-artifact-first-'));
+    const cap = 250_000;
+    const docs = [0, 1].map((i) => put(root, `${DOCS}/page-${i}.html`, 100_000));
+    const artifact = put(root, 'extracted/blob.bin', 80_000);
+    const source = put(root, 'packages/x/src.ts', 500);
+    // 280_500 total: peeling the 80_000B artifact alone brings it under the cap.
+    const out = await findBulkDirtyExcess(runGitFor([...docs, artifact, source]), root, cap);
+    expect(out.map((f) => f.path)).toEqual([artifact]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('pins the artifact threshold to ~1MB at the production 250MB cap', () => {
+    expect(bulkArtifactMinBytes(250 * 1024 * 1024)).toBe(Math.floor((250 * 1024 * 1024) / 250));
+    expect(bulkArtifactMinBytes(250 * 1024 * 1024)).toBeGreaterThan(900 * 1024);
+    expect(bulkArtifactMinBytes(1)).toBe(1);
   });
 
   it('is SELF-ARMING: a file whose own header declares it generated is deprioritised too', async () => {

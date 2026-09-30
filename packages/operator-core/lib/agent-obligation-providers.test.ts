@@ -458,6 +458,49 @@ describe('persisted placement effect clock', () => {
   });
 });
 
+describe('turn-start sink fit for a due placement row', () => {
+  // Measured live 2026-09-30 (goal 60d3a8, holder su-2e6fb313): this slug with a
+  // due author-repair row for the same plan. The placement line was 296 chars,
+  // 481 with the other row against the 400-char sink, so it was never delivered
+  // and no goalPlacementTurn receipt could exist.
+  const SLUG = 'session-transcript-exact-fuzzy-search-2026-09-14';
+  const LIVE_GENERATION = 'e7ec8c510285eac5ca67';
+  function agenda() {
+    const plan = worklistPlan(placement('unplaced', 'launch-plan-fleet'), SLUG);
+    return buildAgentObligationAgenda({
+      planPlacement: { ...base, sourceGeneration: LIVE_GENERATION, goalId: 'goal-1', read: {
+        status: 'known', value: { portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'placement:fixture' },
+      } },
+      independentVerification: [{ ...base, sourceGeneration: LIVE_GENERATION, planSlug: SLUG, read: { status: 'known', value: {
+        gate: { buildProvenance: { sha: null, version: 'test' }, satisfied: false, code: 'acceptance_bar_contract_not_ready' as never,
+          message: 'refused', rubricId: 'acceptance-plan-a', gradedBy: null },
+        evidenceRef: 'gate:acceptance_bar_contract_not_ready', reviewAgeMs: 3_600_000, gradeable: true,
+      } } }],
+    }, NOW);
+  }
+
+  it('delivers the placement row beside a due author-repair row, so a receipt can form', () => {
+    const value = agenda();
+    const due = value.primary.filter((row) => row.status === 'due');
+    expect(due.map((row) => row.family).sort()).toEqual(['independent-verification', 'plan-placement']);
+    const brief = projectAgentTurnStartObligationBrief(value);
+    expect(brief.projection.receipt).toMatchObject({ entriesDelivered: 2, entriesOmitted: 0, bodyTruncated: false });
+    expect(deliveredGoalPlacementRows({ ownerId: base.ownerId, workspaceId: base.workspaceId,
+      brief, block: brief.projection.text })).toMatchObject([{ planSlug: SLUG }]);
+  });
+
+  it('CONTROL: the old slug-repeating summary is starved by the same sink', () => {
+    const value = agenda();
+    const old = { ...value, primary: value.primary.map((row) => row.family !== 'plan-placement' ? row : {
+      ...row, action: { ...row.action!, summary: `launch the independently led fleet for ${SLUG} with the canonical transaction arguments` },
+    }) };
+    const brief = projectAgentTurnStartObligationBrief(old);
+    expect(brief.projection.receipt.entriesOmitted).toBeGreaterThan(0);
+    expect(deliveredGoalPlacementRows({ ownerId: base.ownerId, workspaceId: base.workspaceId,
+      brief, block: brief.projection.text })).toEqual([]);
+  });
+});
+
 describe('frozen provider matrix: plan placement (6 opportunities)', () => {
   const unplaced = worklistPlan(placement('unplaced', 'launch-plan-fleet'));
   const working = worklistPlan(placement('working', 'none'));

@@ -16,6 +16,7 @@ import {
   renderGoalPortfolioBrief,
   resolveGoalBehaviorArm,
   resolveGoalLaunchForGoal,
+  type GoalLaunchRefusal,
   type GoalLaunchResolution,
 } from '../../goal-launch-settings';
 import {
@@ -166,6 +167,49 @@ function required(value: string | null | undefined, name: string): string {
   return trimmed;
 }
 
+const GOAL_HOLDER_LAUNCH_POLICY_REFUSAL_CODE = 'goal_holder_launch_policy_refused' as const;
+
+/**
+ * A launch that the goal's LAUNCH POLICY refused (budget or headcount ceiling)
+ * before any process was minted.
+ *
+ * WI-10004329: the holder respawner reserves a durable per-goal rate slot
+ * BEFORE it calls the launch, so a policy refusal used to spend a slot on a
+ * launch that never happened. On goal 60d3a8, 6 budget-unmeasurable refusals
+ * between 14:51Z and 14:56Z on 2026-09-30 filled the 6-per-hour cap with zero
+ * holder elections, and the cap escalation then reported "6 recoveries". The
+ * respawner uses this type to tell "nothing was launched" apart from a launch
+ * that failed after it may have minted a process.
+ */
+export class GoalHolderLaunchPolicyRefusedError extends Error {
+  readonly code = GOAL_HOLDER_LAUNCH_POLICY_REFUSAL_CODE;
+  readonly goalId: string;
+  readonly refusal: GoalLaunchRefusal;
+
+  constructor(goalId: string, refusal: GoalLaunchRefusal) {
+    super(`goal-holder-launch refused for ${goalId}: ${refusal.message}`);
+    this.name = 'GoalHolderLaunchPolicyRefusedError';
+    this.goalId = goalId;
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * Brand check rather than `instanceof`: the respawner and this module can load
+ * as separate module records (tsx CJS preflight beside ESM), and `instanceof`
+ * silently answers false across that split.
+ */
+export function isGoalHolderLaunchPolicyRefusal(
+  error: unknown,
+): error is GoalHolderLaunchPolicyRefusedError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === GOAL_HOLDER_LAUNCH_POLICY_REFUSAL_CODE &&
+    typeof (error as { refusal?: { reason?: unknown } }).refusal?.reason === 'string'
+  );
+}
+
 /**
  * Resolve one existing goal and launch its replacement holder.
  *
@@ -198,7 +242,7 @@ export async function launchGoalHolderSession(
     );
   }
   if (resolved.refusal) {
-    throw new Error(`goal-holder-launch refused for ${goalId}: ${resolved.refusal.message}`);
+    throw new GoalHolderLaunchPolicyRefusedError(goalId, resolved.refusal);
   }
 
   // EI-21640746714079700: recovery launches AUTO first and attaches GOAL mode

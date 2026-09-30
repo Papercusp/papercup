@@ -573,6 +573,22 @@ if [ "$IN_TREE" -eq 1 ] && [ "${PAPERCUSP_CAPABILITY_BASH_FOREGROUND:-}" = "1" ]
       capability:bash { run_in_background: true } and read progress with capability:bash_output instead."
 fi
 
+# An OUTER probe's --fake-destructive guard exports MUTATION_PROBE_DESTRUCTIVE_LOG
+# and puts log-only rm/unlink shims first on PATH for everything its --test runs,
+# this script included (WI-10004181). Under those shims our own finish() cannot
+# delete the admission manifest, and neither can the next probe's orphan recovery
+# (it deletes with rm too), so an in-tree run here leaves a manifest and scratch
+# dirs that nothing inside the guard can remove. Refuse before any admission state
+# or scratch dir exists. Scrubbing the shims instead is not a fix: under a
+# self-probe this script IS the mutant, and the shims are what keep its rm calls inert.
+if [ "$IN_TREE" -eq 1 ] && [ -n "${MUTATION_PROBE_DESTRUCTIVE_LOG:-}" ]; then
+  die "REFUSING --in-tree inside another probe's --fake-destructive guard (MUTATION_PROBE_DESTRUCTIVE_LOG is set).
+      That guard makes rm/unlink log-only for this process, so this probe could not remove its own admission
+      manifest or scratch state, and would leave a snapshot behind on the checkout.
+      Run in-tree probes outside any --fake-destructive guard. To probe this script itself, use the manual
+      copy-out recipe in apps/operator/lib/mutation-probe-sweep-gate.test.ts's header."
+fi
+
 # --in-tree is the ONLY mode that leaves a deliberately-wrong state in the
 # tracked tree, and the sweep race is the one hazard this script cannot close
 # for you: git-sync commits the WHOLE working tree on a short cadence, so a

@@ -26,7 +26,7 @@
 import type { DecisionClient } from '@papercusp/decision-model';
 
 import { activeWorkspaceId } from '../workspace-registry';
-import { admissionPYes, buildAdmissionRequest, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
+import { judgeAdmission, type AdmissionDecide, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
 import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
 
 /** The ledger consumer label for push-path calls (the bench uses `memory-bench`). */
@@ -116,33 +116,31 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
     return effective === 'shadow' ? { effective, fired: false } : { effective, outcome: 'inconclusive', reason: 'no-candidates' };
   }
 
-  const { request, questionIds, substanceIds } = buildAdmissionRequest(
-    input.message,
-    candidates,
-    JEV_MEMORY_ENCODING,
-    JEV_MEMORY_VARIANT,
-  );
-  const options = { consumer: input.consumer ?? JEV_MEMORY_CONSUMER, subjectIds: candidates.map((c) => c.id) };
+  const consumer = input.consumer ?? JEV_MEMORY_CONSUMER;
+  // Each request is ledgered against the memories it judges (all of them, or one under `pair`).
+  const decide: AdmissionDecide = (request, call) =>
+    deps.client().decide(request, { consumer, subjectIds: call.candidates.map((ci) => candidates[ci].id) });
+  const judge = () => judgeAdmission(input.message, candidates, JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT, decide);
 
   if (effective === 'shadow') {
     // Fire and forget. decide() never throws for expected failures; the catch is
     // for the unexpected, so a shadow fault can never reach the turn.
     void Promise.resolve()
-      .then(() => deps.client().decide(request, options))
+      .then(judge)
       .catch(() => undefined);
     return { effective, fired: true };
   }
 
   try {
-    const outcome = await deps.client().decide(request, options);
-    const p = admissionPYes(outcome, questionIds, substanceIds);
+    const judgement = await judge();
+    const p = judgement.result;
     if ('failure' in p) return { effective, outcome: 'inconclusive', reason: p.failure };
     // `candidates` may be shorter than `input.candidates` (empty texts were never
     // asked about); map back so `keep` stays aligned with the caller's list.
     const byId = new Map(candidates.map((c, i) => [c.id, p.scores[i]]));
     const scores = input.candidates.map((c) => byId.get(c.id) ?? 1);
-    // admissionPYes only yields scores for an answered outcome; the guard is for the type.
-    const model = outcome.kind === 'answered' ? outcome.model : 'unknown';
+    // Scores exist only when every request answered, so a model is always named; the fallback is for the type.
+    const model = judgement.model ?? 'unknown';
     return { effective, outcome: 'answered', scores, keep: scores.map((s) => s >= JEV_MEMORY_ADMIT_THRESHOLD), model };
   } catch (e) {
     return { effective, outcome: 'inconclusive', reason: `error: ${e instanceof Error ? e.message : String(e)}` };

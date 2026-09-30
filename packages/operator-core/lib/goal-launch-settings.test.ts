@@ -78,11 +78,14 @@ import {
   evaluateGoalLadderHealth,
   goalHolderInputRefusal,
   writeGoalLaunchSettings,
+  declareGoalHolderPolicy,
   resolveCeiling,
   resolveGoalLaunch,
   resolveGoalLaunchForGoal,
   goalHolderPolicySchema,
   goalHolderPolicyProblem,
+  drainFleetTopologyProblem,
+  DRAIN_FLEET_MIN_CEILINGS,
   resolveGoalHolderPolicy,
   GOAL_HOLDER_ON_LOSS,
   REFUSAL_SCOPES,
@@ -518,6 +521,37 @@ describe('resolveGoalHolderPolicy — read-time defaults (D-001, D-008)', () => 
    GOAL-mode attach cannot drift into three different answers. Its whole job is
    to keep the population of goals-nobody-chose-a-policy-for from GROWING, while
    D-008's read-time default covers the ones that already exist. ── */
+describe('drainFleetTopologyProblem — ceilings must hold the drain worker (EI-24556293106348130)', () => {
+  it('refuses the measured leader-only shape and names both short ceilings', () => {
+    const problem = drainFleetTopologyProblem({ maxAgents: 2, maxPerFleet: 1 });
+    expect(problem).toContain('maxAgents=2');
+    expect(problem).toContain('maxPerFleet=1');
+    expect(problem).toContain("'unlimited'"); // names the way out, not just the problem
+  });
+
+  it('names only the ceiling that is actually short', () => {
+    const problem = drainFleetTopologyProblem({ maxAgents: 2, maxPerFleet: 5 });
+    expect(problem).toContain('maxAgents=2');
+    expect(problem).not.toContain('maxPerFleet=');
+    expect(drainFleetTopologyProblem({ maxAgents: 12, maxPerFleet: 1 })).toContain('maxPerFleet=1');
+  });
+
+  it('admits ceilings exactly at the floor, unlimited ceilings, and undeclared ones', () => {
+    expect(drainFleetTopologyProblem({ ...DRAIN_FLEET_MIN_CEILINGS })).toBeNull();
+    expect(drainFleetTopologyProblem({ maxAgents: 'unlimited', maxPerFleet: 'unlimited' })).toBeNull();
+    expect(drainFleetTopologyProblem(null)).toBeNull();
+    expect(drainFleetTopologyProblem({})).toBeNull();
+  });
+
+  it('the floor is the real launch topology, and the system defaults clear it', () => {
+    // holder + drain leader + one worker per goal; leader + worker per fleet.
+    expect(DRAIN_FLEET_MIN_CEILINGS).toEqual({ maxAgents: 3, maxPerFleet: 2 });
+    // A default lowered below the floor would strand EVERY goal that pins nothing.
+    expect(GOAL_LAUNCH_DEFAULTS.maxAgents).toBeGreaterThanOrEqual(DRAIN_FLEET_MIN_CEILINGS.maxAgents);
+    expect(GOAL_LAUNCH_DEFAULTS.maxPerFleet).toBeGreaterThanOrEqual(DRAIN_FLEET_MIN_CEILINGS.maxPerFleet);
+  });
+});
+
 describe('goalHolderPolicyProblem — the P-003 write boundary', () => {
   it('REFUSES a goal that declares nothing (the case the item exists for)', () => {
     const problem = goalHolderPolicyProblem(null);
@@ -916,6 +950,100 @@ describe('writeGoalLaunchSettings', () => {
     const r = await writeGoalLaunchSettings('g1', null, mockSql({ seen }));
     expect(r.ok).toBe(true);
     expect(seen.some((s) => s.includes('UPDATE harness_shared.goals'))).toBe(true);
+  });
+});
+
+describe('writeGoalLaunchSettings — drain-fleet floor after start (WI-10004407)', () => {
+  /**
+   * A goal row whose metadata.drainFleet is `drainFleet` (null = sole-member goal)
+   * and whose stored launch_settings is `stored`.
+   */
+  function goalSql(drainFleet: string | null, seen: string[], stored: unknown = null): Sql {
+    const fn = (first: unknown): unknown => {
+      const text = (first as string[]).join('¤').replace(/\s+/g, ' ');
+      seen.push(text);
+      // The full read (readGoalLaunchSettings) also selects drainFleet, so match it first.
+      if (text.includes('SELECT title, body, kill_criterion')) {
+        return Promise.resolve([
+          { title: 'g1', body: null, kill_criterion: null, standing: false, launch_settings: stored, drain_fleet: drainFleet },
+        ]);
+      }
+      if (text.includes("metadata->>'drainFleet'")) return Promise.resolve([{ drain_fleet: drainFleet }]);
+      return Promise.resolve([]);
+    };
+    return fn as unknown as Sql;
+  }
+  const wroteColumn = (seen: string[]) => seen.some((s) => s.includes('SET launch_settings'));
+
+  it('refuses ceilings below the floor on a goal that runs a drain fleet, and writes nothing', async () => {
+    const seen: string[] = [];
+    const r = await writeGoalLaunchSettings('g1', { maxAgents: 2, maxPerFleet: 1 }, goalSql('goal-drain-g1', seen));
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('maxAgents=2');
+    expect(r.error).toContain('maxPerFleet=1');
+    expect(r.error).toContain('goal-drain-g1');
+    expect(wroteColumn(seen)).toBe(false);
+  });
+
+  it('allows the same ceilings on a sole-member goal (no drain fleet)', async () => {
+    const seen: string[] = [];
+    const r = await writeGoalLaunchSettings('g1', { maxAgents: 1, maxPerFleet: 1 }, goalSql(null, seen));
+    expect(r.ok).toBe(true);
+    expect(wroteColumn(seen)).toBe(true);
+  });
+
+  it('does not read the goal row when the new ceilings already clear the floor', async () => {
+    const seen: string[] = [];
+    const r = await writeGoalLaunchSettings(
+      'g1',
+      { ...DRAIN_FLEET_MIN_CEILINGS },
+      goalSql('goal-drain-g1', seen),
+    );
+    expect(r.ok).toBe(true);
+    expect(seen.some((s) => s.includes("metadata->>'drainFleet'"))).toBe(false);
+    expect(wroteColumn(seen)).toBe(true);
+  });
+
+  it('fails CLOSED when the goal row cannot be read', async () => {
+    const r = await writeGoalLaunchSettings(
+      'g1',
+      { maxAgents: 2, maxPerFleet: 1 },
+      mockSql({ failOn: /metadata->>'drainFleet'/ }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('lets a drain-fleet goal clear to defaults or go unlimited', async () => {
+    for (const settings of [null, { maxAgents: 'unlimited', maxPerFleet: 'unlimited' }] as const) {
+      const seen: string[] = [];
+      const r = await writeGoalLaunchSettings('g1', settings as GoalLaunchSettings | null, goalSql('goal-drain-g1', seen));
+      expect(r.ok).toBe(true);
+      expect(wroteColumn(seen)).toBe(true);
+    }
+  });
+
+  it('binds the holder-policy merge door too, since it writes through the same writer', async () => {
+    // declareGoalHolderPolicy reads the stored document, merges `holder`, and
+    // writes through writeGoalLaunchSettings — so it cannot carry a below-floor
+    // document onto a drain-fleet goal either.
+    const refusedSeen: string[] = [];
+    const refused = await declareGoalHolderPolicy(
+      'g1',
+      { onLoss: 'respawn' },
+      goalSql('goal-drain-g1', refusedSeen, { maxAgents: 2, maxPerFleet: 1 }),
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('goal-drain-g1');
+    expect(wroteColumn(refusedSeen)).toBe(false);
+
+    const okSeen: string[] = [];
+    const ok = await declareGoalHolderPolicy(
+      'g1',
+      { onLoss: 'respawn' },
+      goalSql('goal-drain-g1', okSeen, { maxAgents: 6, maxPerFleet: 3 }),
+    );
+    expect(ok.ok).toBe(true);
+    expect(wroteColumn(okSeen)).toBe(true);
   });
 });
 

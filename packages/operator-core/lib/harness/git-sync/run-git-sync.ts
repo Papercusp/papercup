@@ -1813,7 +1813,17 @@ async function transplantInstallerSeedSnapshot(
   }
 
   if (replayedCommits === 0) {
-    const adopt = await runGit(['reset', '--hard', remoteRef], repo);
+    // WI-10004413: `reset --hard` writes the index, so route it through the shared
+    // stale-lock recovery like every other index writer in this file.
+    const adoptArgs = ['reset', '--hard', remoteRef];
+    const adopt = await recoverIndexLockContention(
+      await runGit(adoptArgs, repo),
+      () => runGit(adoptArgs, repo),
+      runGit,
+      repo,
+      'git reset --hard (seed snapshot adopt)',
+      log,
+    );
     if (adopt.code !== 0) {
       return {
         status: 'error',
@@ -3277,6 +3287,18 @@ export async function findOversizedDirtyFiles(
  * guard's real purpose (a stray 90MB blob, a 2,261MB extracted AppImage) is intact
  * while a declared generated output is never starved by it.
  *
+ * SMALL SOURCE LAST (WI-10004416). The repair above over-corrected: "not a projection"
+ * was treated as "unexpected artifact", so every hand-written source file ranked
+ * AHEAD of the mirror. Whenever a docs rebuild alone nearly filled the cap, the
+ * first pass peeled ALL ordinary source down to the smallest file. Measured
+ * 2026-09-30 20:17Z: the sweep commit was 249 MB, 992 of its 999 files were the
+ * docs mirror, and 305 ordinary source files (532 KB down to ~3 KB) were left dirty.
+ * The content guard then quarantined their importers, so the fleet's source edits
+ * never reached a commit while git-sync reported success. A non-projection file now
+ * ranks as an artifact only at or above `bulkArtifactMinBytes`; smaller files are
+ * peeled after every projection. The mirror still commits across several ticks,
+ * and a real bulk accident is still peeled first.
+ *
  * Deliberately NOT a hard failure: a legitimately large commit is possible, and
  * refusing to commit at all would just relocate the wedge upstream.
  */
@@ -3301,12 +3323,16 @@ export async function findBulkDirtyExcess(
     }
   }
   if (total <= maxTotalBytes) return [];
-  // Peel the largest until the remainder fits — but a DECLARED regenerable
-  // projection is only eligible once every unexpected artifact has been peeled and
-  // the set is still over the cap (EI-21906459740652039; see the header).
+  // Peel in three tiers, each largest-first, stopping as soon as the remainder fits
+  // (EI-21906459740652039 + WI-10004416; see the header):
+  //   1. artifact-sized files that are NOT declared projections — the accident class;
+  //   2. declared regenerable projections (the docs mirror);
+  //   3. small hand-written files — only when 1 and 2 together are not enough.
   sized.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const artifactMinBytes = bulkArtifactMinBytes(maxTotalBytes);
   const excluded: OversizedFile[] = [];
   const deferredProjections: OversizedFile[] = [];
+  const deferredSmall: OversizedFile[] = [];
   const probe = { spent: 0 };
   for (const f of sized) {
     if (total <= maxTotalBytes) break;
@@ -3314,15 +3340,35 @@ export async function findBulkDirtyExcess(
       deferredProjections.push(f);
       continue;
     }
+    if (f.sizeBytes < artifactMinBytes) {
+      deferredSmall.push(f);
+      continue;
+    }
     excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
     total -= f.sizeBytes;
   }
-  for (const f of deferredProjections) {
-    if (total <= maxTotalBytes) break;
-    excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
-    total -= f.sizeBytes;
+  for (const tier of [deferredProjections, deferredSmall]) {
+    for (const f of tier) {
+      if (total <= maxTotalBytes) break;
+      excluded.push({ ...f, exclusionReason: 'cumulative-limit' });
+      total -= f.sizeBytes;
+    }
   }
   return excluded;
+}
+
+/**
+ * WI-10004416 — the size at which a non-projection dirty file counts as an
+ * ARTIFACT (tier 1 of the peel) rather than hand-written source (tier 3).
+ *
+ * A fixed fraction of the cap rather than a fixed byte count: 1/250 is ~1 MB at the
+ * production 250 MB cap, which is above every hand-written source file in this repo
+ * (the largest are a few hundred KB) and below the files a bulk accident is made of.
+ * Scaling with the cap keeps the tiering meaningful at any configured limit, and
+ * keeps a byte-scale test cap from classifying every fixture as source.
+ */
+export function bulkArtifactMinBytes(maxTotalBytes: number): number {
+  return Math.max(1, Math.floor(maxTotalBytes / 250));
 }
 
 /**
@@ -3675,9 +3721,16 @@ async function untrackLegacyDependencyGenerationStore(
   const paths = tracked.stdout.split('\0').filter(Boolean);
   if (paths.length === 0) return { ok: true, trackedCount: 0 };
 
-  const removed = await runGit(
-    ['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', DEPENDENCY_GENERATION_STORE],
+  // WI-10004413: `rm --cached` writes the index. It is idempotent (--ignore-unmatch),
+  // so the shared stale-lock recovery may safely re-run it.
+  const rmArgs = ['rm', '-r', '-f', '--cached', '--ignore-unmatch', '--', DEPENDENCY_GENERATION_STORE];
+  const removed = await recoverIndexLockContention(
+    await runGit(rmArgs, repoPath),
+    () => runGit(rmArgs, repoPath),
+    runGit,
     repoPath,
+    'git rm --cached (dependency-generation store)',
+    log,
   );
   if (removed.code !== 0) {
     return {

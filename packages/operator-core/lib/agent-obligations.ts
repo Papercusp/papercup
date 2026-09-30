@@ -629,6 +629,17 @@ export function evaluateAgentObligationRecoveryBoundary(input: {
   boundary: string;
   phase: 'admission' | 'operation';
   operation: AgentObligationOperation;
+  /**
+   * WI-10004401: the requested operation reaches the boundary AFTER the tool has
+   * normalized its arguments (e.g. fleet:launch-on-plan clamps `name` to a 60-char
+   * slug), while the provider authored its recovery args from the RAW source. An
+   * exact compare of one normalized side against one raw side can never be
+   * satisfied for any value the normalization changes. The tool passes the SAME
+   * normalization it applies itself; it is applied to BOTH sides of every
+   * compared key, so the comparison is between equally-normalized values and a
+   * genuinely different value still refuses.
+   */
+  normalizeArg?: (key: string, value: unknown) => unknown;
 }): AgentObligationBoundaryVerdict {
   const base = evaluateAgentObligationBoundary(input);
   const policy = input.obligation.boundary;
@@ -639,13 +650,14 @@ export function evaluateAgentObligationRecoveryBoundary(input: {
 
   const recovery = input.obligation.action;
   const expectedArgs = recovery?.args ?? {};
+  const normalize = input.normalizeArg ?? ((_key: string, value: unknown) => value);
   const exactRecovery =
     (input.obligation.status === 'due' || input.obligation.status === 'in-progress') &&
     recovery?.tool === input.operation.tool &&
     Object.entries(expectedArgs).every(
       ([key, expected]) =>
         Object.prototype.hasOwnProperty.call(input.operation.args, key) &&
-        stableJson(input.operation.args[key]) === stableJson(expected),
+        stableJson(normalize(key, input.operation.args[key])) === stableJson(normalize(key, expected)),
     );
   if (exactRecovery) {
     return {

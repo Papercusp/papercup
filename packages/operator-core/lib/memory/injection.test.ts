@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as recallStats from './recall-stats';
+import * as corpusRecallIo from './corpus-recall-io';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -49,7 +51,6 @@ vi.mock('../blueprint/package-memory-visibility', async (orig) => {
 // P-026: the push-path recall telemetry is fire-and-forget behind a dynamic
 // import; mocking it lets the wiring be asserted (see the P-026 describe below).
 const recordRecallStatsMock = vi.hoisted(() => vi.fn(async (_sql: unknown, _input: unknown) => {}));
-vi.mock('./recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
 
 // P-001: the corpus leg is behind a DYNAMIC import, so it is stubbed here and
 // driven per-test via `corpusIoResult`.
@@ -60,24 +61,13 @@ vi.mock('./recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
 // to a *successful* empty result would instead make every test in this file
 // report a leg that ran BM25-only — which now emits a console.warn, and this
 // package is fail-on-console.
-type CorpusIoStub = {
-  block: string | null;
-  lines: Array<{ line: string; handle: { ref: string } }>;
-  dropped: unknown[];
-  embedderAvailable: boolean;
-  candidateCount: number;
-  outcome?: 'ok' | 'timed-out' | 'disabled' | 'no-query' | 'failed';
-  rerank?: string;
-  /** P-003 inputs to the coverage gate. Defaulted per-stub below. */
-  legs?: unknown;
-  retrievalDepth?: number;
-};
+type CorpusIoStub = Omit<corpusRecallIo.CorpusRecallResult, 'outcome' | 'rerank' | 'legs' | 'retrievalDepth'> &
+  Partial<Pick<corpusRecallIo.CorpusRecallResult, 'outcome' | 'rerank' | 'legs' | 'retrievalDepth'>>;
 let corpusIoResult: CorpusIoStub | null = null;
-const recallCorpusContext = vi.fn(async (_input: Record<string, unknown>) => {
+const recallCorpusContext = vi.fn(async (_input: corpusRecallIo.CorpusRecallInput): Promise<corpusRecallIo.CorpusRecallResult> => {
   if (!corpusIoResult) throw new Error('corpus leg not stubbed for this test');
-  return corpusIoResult;
+  return { outcome: 'ok', rerank: 'nothing-to-reorder', legs: null, retrievalDepth: 0, ...corpusIoResult };
 });
-vi.mock('./corpus-recall-io', () => ({ recallCorpusContext }));
 
 // P-003: the coverage snapshot read is behind a dynamic import of the SEARCH
 // package's gate, so it is stubbed here and driven per-test via `coverageReport`.
@@ -133,7 +123,7 @@ const coverageOf = (
 /** A per-leg execution report shaped like the engine's `SearchLegs`. */
 const legsWith = (lexicalCandidates: number) => {
   const leg = (candidates: number) => ({
-    status: 'ran',
+    status: 'ran' as const,
     candidates,
     floored: 0,
     stage2Added: 0,
@@ -237,6 +227,11 @@ it('cancels upstream search when the existing injection phase deadline expires',
 });
 
 beforeEach(() => {
+  // Vitest's manual-mock callstack is shared across concurrent dynamic imports.
+  // Spy on resolved exports so burst recalls cannot bypass these fixture seams.
+  vi.spyOn(recallStats, 'recordRecallStats').mockImplementation(recordRecallStatsMock);
+  vi.spyOn(corpusRecallIo, 'recallCorpusContext')
+    .mockImplementation(recallCorpusContext);
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
   jev.mode = 'off';
@@ -1418,6 +1413,21 @@ describe('buildMemoryContextBlock', () => {
     }
   });
 
+  it('schedules exactly one telemetry call for each concurrent completed recall', async () => {
+    useBackend(mockBackend([]));
+    const blocks = await Promise.all(
+      Array.from({ length: 8 }, (_, index) => buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: `concurrent recall ${index}`,
+      })),
+    );
+    expect(blocks).toEqual(Array(8).fill(null));
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(8);
+    expect(recordRecallStatsMock.mock.calls.map(([, input]) => (input as { query: string }).query).sort())
+      .toEqual(Array.from({ length: 8 }, (_, index) => `concurrent recall ${index}`));
+  });
+
   it('returns null when no hits', async () => {
     useBackend(mockBackend([]));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
@@ -1751,7 +1761,8 @@ describe('buildMemoryContextBlock', () => {
 describe('corpus leg carries its own retrieval health (P-001)', () => {
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
-    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,
+      handle: { kind: 'work-item', ref: 'work-item:WI-6512', query: ['pointer'], resolve: 'work_items:get { id: "WI-6512" }' } }],
     dropped: [],
     embedderAvailable: true,
     candidateCount: 4,
@@ -1976,7 +1987,8 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
 
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
-    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,
+      handle: { kind: 'work-item', ref: 'work-item:WI-6512', query: ['pointer'], resolve: 'work_items:get { id: "WI-6512" }' } }],
     dropped: [
       { ref: 'work-item:WI-excluded', reason: 'ambient-excluded' },
       { ref: 'work-item:WI-drop-1', reason: 'no-term-overlap' },
@@ -2091,7 +2103,8 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
 describe('coverage-gated degradation reaches the block (P-003)', () => {
   const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
     block: null,
-    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    lines: [{ line: '- [work-item WI-6512] a pointer', score: 1,
+      handle: { kind: 'work-item', ref: 'work-item:WI-6512', query: ['pointer'], resolve: 'work_items:get { id: "WI-6512" }' } }],
     dropped: [],
     embedderAvailable: true,
     candidateCount: 4,
@@ -2295,4 +2308,3 @@ describe('Jev on the push path (plan jev-decision-model-integration-2026-09-29, 
     expect(block.indexOf(ROWS[0]!.text)).toBeLessThan(block.indexOf(ROWS[1]!.text));
   });
 });
-

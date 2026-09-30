@@ -95,3 +95,79 @@ describe('Decision D-004 (plan snapshot) — R-1', () => {
     expect(v.adoptedThreshold).toBe(JEV_MEMORY_ADMIT_THRESHOLD);
   });
 });
+
+// D-006 reopened P-004 and P-006 (dropped in D-004 via D-003); D-008 records their verdict
+// against the production variant D-004 adopted. R-1 is met by the two Decisions together.
+const EVIDENCE_D008 =
+  process.env.JEV_VERDICT_EVIDENCE_D008 ??
+  fileURLToPath(new URL('../../../../../docs/evidence/jev-verdict-d008-2026-09-30.json', import.meta.url));
+const snapshotD008 = JSON.parse(readFileSync(EVIDENCE_D008, 'utf8')) as Snapshot;
+
+const KEEP_BODY = [
+  'Variants built: gamma (P-006), measured against production alpha with same-run v1 baselines.',
+  'Runs: admission: v1 jev-admission-T12-00-00-000Z, alpha T12-01-00-000Z, gamma T12-02-00-000Z. Robustness: v1 jev-robustness-T13-00-00-000Z, alpha T13-01-00-000Z, gamma T13-02-00-000Z.',
+  'gamma at its selected t: more hard negatives admitted than alpha. FAIL.',
+  'Outcome: production keeps alpha at threshold 0.4.',
+].join('\n\n');
+
+const keep: VerdictRecordInput = {
+  body: KEEP_BODY,
+  itemsInScope: ['P-006'],
+  built: [{ variant: 'gamma', item: 'P-006' }],
+  dropped: [],
+  baseline: 'alpha',
+};
+
+describe('checkVerdictRecord — a Decision that keeps its baseline', () => {
+  it('passes and reads the kept variant and threshold', () => {
+    const v = checkVerdictRecord(keep);
+    expect(v.reasons).toEqual([]);
+    expect(v.adoptedVariant).toBe('alpha');
+    expect(v.adoptedThreshold).toBe(0.4);
+  });
+
+  it('fails when it keeps a variant that is not the baseline', () => {
+    const body = KEEP_BODY.replace('keeps alpha', 'keeps gamma');
+    expect(checkVerdictRecord({ ...keep, body }).reasons).toContain('kept variant gamma is not the baseline alpha');
+  });
+
+  it('fails when the baseline reports are not cited', () => {
+    const body = KEEP_BODY.replace('alpha T12-01-00-000Z, ', '');
+    expect(checkVerdictRecord({ ...keep, body }).reasons).toContain('no admission report cited for alpha');
+  });
+
+  it('without a baseline, keeping anything but v1 fails', () => {
+    const { baseline: _omit, ...noBaseline } = keep;
+    expect(checkVerdictRecord(noBaseline).reasons).toContain('kept variant alpha is not the baseline v1');
+  });
+});
+
+describe('Decision D-008 (plan snapshot) — R-1 for the reopened items', () => {
+  it('is the pinned plan Decision', () => {
+    expect(snapshotD008.decisionId).toBe('D-008');
+    expect(snapshotD008.planVersion).toBe(55);
+    expect(snapshotD008.itemsInScope).toEqual(['P-004', 'P-006']);
+    expect(snapshotD008.baseline).toBe('v2-content');
+  });
+
+  it('records a same-run verdict for both reopened variants', () => {
+    const v = checkVerdictRecord(snapshotD008);
+    expect(v.reasons).toEqual([]);
+    expect(v.pass).toBe(true);
+  });
+
+  it('keeps the variant and threshold production runs', () => {
+    const v = checkVerdictRecord(snapshotD008);
+    expect(v.adoptedVariant).toBe(JEV_MEMORY_VARIANT);
+    expect(v.adoptedThreshold).toBe(JEV_MEMORY_ADMIT_THRESHOLD);
+  });
+});
+
+describe('R-1 across D-004 and D-008', () => {
+  it('every variant item P-003 to P-006 is built with a verdict, and every D-004 drop was measured in D-008', () => {
+    const builtBy = new Map<string, string>();
+    for (const r of [snapshot, snapshotD008]) for (const b of r.built) builtBy.set(b.item, r.decisionId);
+    expect([...builtBy.keys()].sort()).toEqual(['P-003', 'P-004', 'P-005', 'P-006']);
+    for (const d of snapshot.dropped) expect(builtBy.get(d.item)).toBe('D-008');
+  });
+});

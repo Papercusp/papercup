@@ -4,8 +4,13 @@ import type { DecisionClient, DecisionOutcome, QuestionMap } from '@papercusp/de
 
 import { judgeContradictions, type JudgeCandidate, type JudgeSection } from './doc-contradiction-judge';
 import {
+  CONTENT_CONTRADICTION_INSTRUCTIONS,
+  CONTENT_CONTRADICTION_OPTIONS,
+  CONTRADICTION_INSTRUCTIONS,
   CONTRADICTION_OPTIONS,
   CONTRADICTION_QUESTION_ID,
+  JEV_CONTRADICTION_WORDING,
+  parseContradictionWording,
   JEV_CONTRADICTION_CONSUMER,
   JEV_CONTRADICTION_LABELS,
   JEV_CONTRADICTION_MIN_P,
@@ -178,5 +183,48 @@ describe('createJevContradictionJudge', () => {
     expect(report.contradictions).toEqual([]);
     expect(report.census.judgeErrors).toBe(1);
     expect(report.inconclusive).not.toBeNull();
+  });
+});
+
+describe('contradiction wording seam (plan jev-performance-improvements-2026-09-30, P-009, bar D-007)', () => {
+  type Structured = { means: string; not_when: string };
+
+  it('the scan asks the shipped v1 wording, byte-identical to an explicit v1 request', () => {
+    expect(JEV_CONTRADICTION_WORDING).toBe('v1');
+    expect(JSON.stringify(buildContradictionRequest(A, B))).toBe(JSON.stringify(buildContradictionRequest(A, B, 'v1')));
+    const q = buildContradictionRequest(A, B).questions[CONTRADICTION_QUESTION_ID] as { instructions: string; options: unknown };
+    expect(q.instructions).toBe(`${CONTRADICTION_INSTRUCTIONS}\n\nPassage B (${B.title}):\n${B.content}`);
+    expect(q.options).toBe(CONTRADICTION_OPTIONS);
+  });
+
+  it('v2-content asks the content-not-self-claims wording with a structured means/not_when criterion per label', () => {
+    const request = buildContradictionRequest(A, B, 'v2-content');
+    expect(request.state).toEqual({ passage_a: { title: A.title, content: A.content } });
+    const q = request.questions[CONTRADICTION_QUESTION_ID] as { type: string; instructions: string; options: Record<string, Structured> };
+    expect(q.type).toBe('choice');
+    expect(q.instructions).toBe(`${CONTENT_CONTRADICTION_INSTRUCTIONS}\n\nPassage B (${B.title}):\n${B.content}`);
+    expect(q.instructions).not.toContain(A.content);
+    expect(CONTENT_CONTRADICTION_INSTRUCTIONS).toMatch(/ignore/i);
+    expect(Object.keys(q.options)).toEqual([...JEV_CONTRADICTION_LABELS]);
+    for (const label of JEV_CONTRADICTION_LABELS) {
+      expect(q.options[label].means.length).toBeGreaterThan(20);
+      expect(q.options[label].not_when.length).toBeGreaterThan(20);
+    }
+    expect(q.options).toBe(CONTENT_CONTRADICTION_OPTIONS);
+  });
+
+  it('judgeContradictionWithJev sends the wording named in deps, and v1 when unset', async () => {
+    const v2 = fakeClient(answerWith({ compatible: 0.9, unrelated: 0.1 }));
+    await judgeContradictionWithJev({ a: A, b: B }, { client: v2.client, wording: 'v2-content' });
+    expect(v2.decideSpy.mock.calls[0][0]).toEqual(buildContradictionRequest(A, B, 'v2-content'));
+    const unset = fakeClient(answerWith({ compatible: 0.9, unrelated: 0.1 }));
+    await judgeContradictionWithJev({ a: A, b: B }, { client: unset.client });
+    expect(unset.decideSpy.mock.calls[0][0]).toEqual(buildContradictionRequest(A, B, 'v1'));
+  });
+
+  it('parseContradictionWording defaults to production and refuses an unknown wording', () => {
+    expect(parseContradictionWording(undefined)).toBe(JEV_CONTRADICTION_WORDING);
+    expect(parseContradictionWording('v2-content')).toBe('v2-content');
+    expect(() => parseContradictionWording('v3')).toThrow(/--wording must be v1\|v2-content/);
   });
 });

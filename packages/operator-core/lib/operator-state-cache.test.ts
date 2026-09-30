@@ -52,8 +52,35 @@ vi.mock('@papercusp/db-org', async (orig) => {
 vi.mock('./hive-store', () => ({ getHiveBySlug: async () => null }));
 vi.mock('./hive-directory-meta', () => ({ getOwnedHiveMeta: async () => null }));
 
-import { readOperatorState, writeOperatorState, invalidateOperatorStateCache } from './operator-state-pg';
-import { loadHarnessRegistry } from './harness-registry';
+// WI-10004071: a fake sync_invalidate bus — captures subscribers, (re)LISTEN hooks
+// and every published notify, so the coherence tests can play "another process".
+const bus = vi.hoisted(() => ({
+  subscribers: [] as Array<(e: { name: string }) => void>,
+  hooks: [] as Array<() => void>,
+  notify: [] as Array<{ name: string; opts?: unknown }>,
+}));
+vi.mock('./sync-sse', () => ({
+  subscribe: vi.fn(async (send: (e: { name: string }) => void) => {
+    bus.subscribers.push(send);
+    return { unsubscribe: () => {} };
+  }),
+  registerInvalidationListenHook: vi.fn((hook: () => void) => {
+    bus.hooks.push(hook);
+    return () => {};
+  }),
+  notifySyncInvalidate: vi.fn(async (name: string, _args?: unknown, _data?: unknown, opts?: unknown) => {
+    bus.notify.push({ name, opts });
+  }),
+}));
+
+import {
+  readOperatorState,
+  writeOperatorState,
+  invalidateOperatorStateCache,
+  startOperatorStateCacheCoherence,
+  _resetOperatorStateCacheCoherenceForTests,
+} from './operator-state-pg';
+import { loadHarnessRegistry, saveHarnessRegistry } from './harness-registry';
 import { joinerPotHomeSlug } from './hive-federation';
 
 beforeEach(() => {
@@ -293,5 +320,77 @@ describe('WI-7032: dual-module-load opStateCache staleness (tsx-direct trap)', (
       'instance A must see instance B\'s committed write immediately, not a stale cached miss',
     ).toBe('written-by-b');
     expect(counters.selects, 'select #1 (warm) + select #2 (post-invalidate re-read)').toBe(2);
+  });
+});
+
+describe('WI-10004071: cache coherence across cluster workers', () => {
+  type Reg = { projects: Array<{ slug: string }> };
+  const deliver = (name: string): void => bus.subscribers.forEach((send) => send({ name }));
+  const slug = async (ws = 'ws'): Promise<string | undefined> =>
+    (await readOperatorState<Reg>('harness_registry', ws))?.projects[0]?.slug;
+
+  beforeEach(() => {
+    bus.subscribers.length = 0;
+    bus.hooks.length = 0;
+    bus.notify.length = 0;
+    _resetOperatorStateCacheCoherenceForTests();
+    invalidateOperatorStateCache('harness_registry' as never, 'ws2');
+  });
+
+  it('CONTROL: without coherence, another process\'s write stays invisible for the TTL', async () => {
+    store.set('harness_registry:ws', { projects: [{ slug: 'old' }] });
+    expect(await slug()).toBe('old');
+    store.set('harness_registry:ws', { projects: [{ slug: 'new' }] }); // written by a sibling worker
+    deliver('harnessProjects.lite'); // nobody subscribed
+    expect(await slug()).toBe('old');
+  });
+
+  it('a coherence event drops that table in every workspace; other events and tables are untouched', async () => {
+    await startOperatorStateCacheCoherence();
+    store.set('harness_registry:ws', { projects: [{ slug: 'old' }] });
+    store.set('harness_registry:ws2', { projects: [{ slug: 'old2' }] });
+    store.set('operator_account_pool:ws', { gen: 1 });
+    await slug();
+    await slug('ws2');
+    await readOperatorState('operator_account_pool');
+    store.set('harness_registry:ws', { projects: [{ slug: 'new' }] });
+    store.set('harness_registry:ws2', { projects: [{ slug: 'new2' }] });
+    store.set('operator_account_pool:ws', { gen: 2 });
+
+    deliver('some.unrelated.query');
+    expect(await slug()).toBe('old');
+
+    deliver('harnessProjects.lite');
+    expect(await slug()).toBe('new');
+    expect(await slug('ws2')).toBe('new2');
+    expect(await readOperatorState('operator_account_pool')).toEqual({ gen: 1 });
+
+    deliver('accounts.pool');
+    expect(await readOperatorState('operator_account_pool')).toEqual({ gen: 2 });
+  });
+
+  it('a (re)LISTEN drops every cacheable table (catch-up for NOTIFYs missed while disconnected)', async () => {
+    await startOperatorStateCacheCoherence();
+    store.set('harness_registry:ws', { projects: [{ slug: 'old' }] });
+    await slug();
+    store.set('harness_registry:ws', { projects: [{ slug: 'new' }] });
+    expect(bus.hooks).toHaveLength(1);
+    bus.hooks[0]!();
+    expect(await slug()).toBe('new');
+  });
+
+  it('starting twice subscribes once', async () => {
+    await startOperatorStateCacheCoherence();
+    await startOperatorStateCacheCoherence();
+    expect(bus.subscribers).toHaveLength(1);
+    expect(bus.hooks).toHaveLength(1);
+  });
+
+  it('every registry write publishes its notify, un-deduped, before the write returns', async () => {
+    await saveHarnessRegistry({ projects: [] } as never);
+    await saveHarnessRegistry({ projects: [] } as never);
+    const published = bus.notify.filter((n) => n.name === 'harnessProjects.lite');
+    expect(published).toHaveLength(2);
+    expect(published.every((n) => JSON.stringify(n.opts) === JSON.stringify({ dedupeWindowMs: 0 }))).toBe(true);
   });
 });

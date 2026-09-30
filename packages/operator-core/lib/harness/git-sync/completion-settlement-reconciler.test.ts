@@ -284,7 +284,18 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
   });
 });
 
-function settlementSql(options: { updateHits: boolean[]; manifest?: unknown; treeStamp?: unknown }) {
+/**
+ * `floorRejects` models the migration 972/1207 `downgrade_unproven_committed_close` trigger:
+ * the UPDATE matches, but RETURNING reflects the row AFTER the trigger reverted 'committed' to
+ * 'proposed'. A real DB does exactly this for an unproven identity, which is why a returned row
+ * alone is not evidence of an upgrade (EI-24710716781971154).
+ */
+function settlementSql(options: {
+  updateHits: boolean[];
+  manifest?: unknown;
+  treeStamp?: unknown;
+  floorRejects?: boolean;
+}) {
   let updateIndex = 0;
   const payload = {
     [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
@@ -298,7 +309,9 @@ function settlementSql(options: { updateHits: boolean[]; manifest?: unknown; tre
       return [{ feature_id: 'WI-42476', harness_slug: 'papercusp', payload }];
     }
     if (query.includes('UPDATE harness_shared.work_items')) {
-      return options.updateHits[updateIndex++] ? [{ feature_id: 'WI-42476' }] : [];
+      return options.updateHits[updateIndex++]
+        ? [{ feature_id: 'WI-42476', authority: options.floorRejects ? 'proposed' : 'committed' }]
+        : [];
     }
     throw new Error(`unexpected SQL: ${query}`);
   }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
@@ -493,15 +506,116 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
       repositoryRoot: manifest.repositoryRoot,
       closeHeadSha: manifest.headSha,
       emittedCommitSha: SHA,
-      paths: [{
-        path: 'a.ts',
-        workingTreeBlobSha: 'd'.repeat(40),
-        fromHeadSha: manifest.headSha,
-        toCommitSha: SHA,
-        proof: 'exact-path-blob-history',
-      }],
+      // EI-24710716781971154: a MIXED row. a.ts was superseded (history proof); nested/b.ts is
+      // still exact in the emitted tree. The close-time treeStamp cannot be refreshed (a.ts's
+      // blob is not in this tree), and the migration-1207 floor demands a proof for EVERY
+      // identity entry whose working blob differs from head — so nested/b.ts must be attested
+      // too. Attesting only a.ts (the previous expectation) left the floor rejecting the row
+      // and the trigger reverting the upgrade on every pass.
+      paths: [
+        {
+          path: 'a.ts',
+          workingTreeBlobSha: 'd'.repeat(40),
+          fromHeadSha: manifest.headSha,
+          toCommitSha: SHA,
+          proof: 'exact-path-blob-history',
+        },
+        {
+          path: 'nested/b.ts',
+          workingTreeBlobSha: 'e'.repeat(40),
+          fromHeadSha: manifest.headSha,
+          toCommitSha: SHA,
+          proof: 'exact-path-blob-history',
+        },
+      ],
     });
     expect(evidence.treeStamp).toEqual(originalTreeStamp);
+  });
+
+  it('attests exactly the identity entries the floor would call unproven — never one it does not read', async () => {
+    // Floor inputs (migration 1207): treeStamp.contentIdentity entries. Three shapes beside the
+    // superseded a.ts: already exact at close (head === working: needs nothing), an intentional
+    // deletion (skipped by the floor), and an out-of-repo artifact (skipped by the floor).
+    const exactAtClose = 'c.ts';
+    const deleted = 'gone.ts';
+    const external = 'elsewhere/x.bin';
+    const richManifest = {
+      ...manifest,
+      normalizedPaths: ['a.ts', 'nested/b.ts', exactAtClose, deleted, external],
+      contentIdentity: [
+        ...manifest.contentIdentity,
+        { path: exactAtClose, workingTreeBlobSha: '1'.repeat(40), headBlobSha: '1'.repeat(40) },
+        { path: deleted, workingTreeBlobSha: null, headBlobSha: null, deletion: true },
+        { path: external, workingTreeBlobSha: '2'.repeat(40), headBlobSha: null },
+      ],
+    };
+    const treeStamp = {
+      repositoryRoot: manifest.repositoryRoot,
+      headSha: manifest.headSha,
+      contentIdentity: [
+        ...manifest.contentIdentity,
+        { path: exactAtClose, workingTreeBlobSha: '1'.repeat(40), headBlobSha: '1'.repeat(40) },
+        { path: deleted, workingTreeBlobSha: null, headBlobSha: null, deletion: true },
+        { path: external, workingTreeBlobSha: '2'.repeat(40), headBlobSha: null, outOfRepoArtifact: true },
+      ],
+    };
+    const sql = settlementSql({ updateHits: [true], manifest: richManifest, treeStamp });
+    await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: () =>
+        new Map([
+          ['a.ts', resolved('f'.repeat(40))],
+          ['nested/b.ts', resolved('e'.repeat(40))],
+          [exactAtClose, resolved('1'.repeat(40))],
+          [deleted, absent()],
+          [external, resolved('2'.repeat(40))],
+        ]),
+      historyLookup: async (_root: string, _from: string, _to: string, path: string) => path === 'a.ts',
+      emit: settlementEmitMock(),
+    });
+
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    const evidence = (updateCall?.[1] as unknown as Record<string, unknown>)[
+      TERMINAL_COMPLETION_EVIDENCE_KEY
+    ] as { historyAttestation: { paths: Array<{ path: string }> } };
+    // a.ts (history) + nested/b.ts (exact in tree, unproven at close). NOT c.ts (already exact
+    // at close), NOT the deletion, NOT the out-of-repo artifact.
+    expect(evidence.historyAttestation.paths.map((p) => p.path)).toEqual(['a.ts', 'nested/b.ts']);
+  });
+
+  it('does not count a row the authority floor kept proposed as settled, and emits no settled event', async () => {
+    const emit = settlementEmitMock();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+        sql: settlementSql({ updateHits: [true], floorRejects: true }),
+        lookup: matchingLookup,
+        emit,
+      });
+      // Zero residual and the UPDATE matched — yet RETURNING shows authority 'proposed', because
+      // the floor trigger reverted it. Before EI-24710716781971154 this was reported as an upgrade.
+      expect(result).toMatchObject({ inspected: 1, upgraded: [], residual: 0, floorRejected: ['WI-42476'] });
+      expect(emit).not.toHaveBeenCalled();
+      expect(warn.mock.calls.flat().join('\n')).toContain('kept proposed by the completion authority floor');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('selects never-attempted rows before attempted ones, NULL-safely', async () => {
+    const sql = settlementSql({ updateHits: [false] });
+    await reconcileProposedCompletionsAtCommit(SHA, scope, { sql, lookup: matchingLookup, emit: settlementEmitMock() });
+    const select = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('SELECT feature_id, harness_slug, payload'));
+    const query = (select?.[0] as unknown as TemplateStringsArray).join('?');
+    // Tier first, oldest-touched second. IS NOT DISTINCT FROM is load-bearing: `= 'array'` is NULL
+    // for a row with no residualPaths key (the fresh-close case), and NULLs sort LAST ascending —
+    // which would put every never-attempted row BEHIND the whole rotation, the original defect.
+    expect(query).toMatch(
+      /ORDER BY \(jsonb_typeof\(payload #> \?::text\[\]\) IS NOT DISTINCT FROM 'array'\) ASC,\s+updated_ts ASC, feature_id ASC/,
+    );
+    expect(select?.slice(1)).toContainEqual([TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']);
   });
 
   it('does not persist a complete history attestation while another declared path remains residual', async () => {
@@ -634,7 +748,7 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
       if (query.includes('UPDATE harness_shared.work_items')) {
         expect(values).toContain('papercusp');
         expect(values).toContain(portalRoot);
-        return [{ feature_id: 'WI-CROSS-HIVE' }];
+        return [{ feature_id: 'WI-CROSS-HIVE', authority: 'committed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
@@ -707,7 +821,7 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
         ) return [];
         payload = values[0] as Record<string, unknown>;
         if (values[1] === 0) authority = 'committed';
-        return [{ feature_id: 'WI-FIXTURE' }];
+        return [{ feature_id: 'WI-FIXTURE', authority: values[1] === 0 ? 'committed' : 'proposed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];

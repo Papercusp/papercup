@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  CYCLE_WINDOW_ROWS,
+  LOOP_CYCLE_BASIS,
+  deriveLoopCycle,
   readLatestLoopTransition,
   recordLoopTransition,
   transitionRetentionDays,
   __resetPruneThrottleForTest,
+  type LoopTransitionSnapshot,
 } from './loop-transition-log';
 
 /**
@@ -71,9 +75,59 @@ describe('readLatestLoopTransition', () => {
           drivingEventKey: 'plan:stable:recovery-complete',
         },
       },
+      // A lone await-suppression re-arm is NOT a turn (no park precedes it): phase is
+      // 'settled' but there is no completed turn to report.
+      cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: LOOP_CYCLE_BASIS },
     });
     const select = sql.statements.find((s) => /SELECT t\.at, t\.event, t\.actor/.test(s.text));
-    expect(select?.values).toEqual(['ws-1', 'papercusp', 'loop-su-70702', 'su-70702']);
+    // The window size is bound at BOTH the lateral and the outer LIMIT.
+    expect(select?.values).toEqual([
+      CYCLE_WINDOW_ROWS,
+      'ws-1',
+      'papercusp',
+      'loop-su-70702',
+      'su-70702',
+      CYCLE_WINDOW_ROWS,
+    ]);
+  });
+
+  it('derives cycle from the newest window: transition is row 0, cycle spans the older rows (EI-24709926664545964)', async () => {
+    // SQL returns newest first. Measured 2026-09-30 (su-6702dbe3): the 330s `parked` span was
+    // the member's own turn, and the post-settle delay was 31s.
+    const sql = fakeSql({
+      rows: [
+        { at: '2026-09-30T17:36:33.000Z', event: 'parked', actor: 'claim-due-routine', new_next_fire_at: null, interval_sec: '60', detail: null },
+        { at: '2026-09-30T17:36:02.000Z', event: 'rearmed', actor: 'reconcile-loop-routines', new_next_fire_at: '2026-09-30T17:36:28.000Z', interval_sec: '60', detail: { via: 'lifecycle', wasParked: true } },
+        { at: '2026-09-30T17:30:32.000Z', event: 'parked', actor: 'claim-due-routine', new_next_fire_at: null, interval_sec: '60', detail: null },
+      ],
+    });
+    const out = await readLatestLoopTransition(
+      { workspaceId: 'ws-1', installSlug: 'papercusp', routineName: 'loop-su-6702', targetOwnerId: 'su-6702' },
+      { sql: sql as any, nowMs: Date.parse('2026-09-30T17:37:03.000Z') },
+    );
+    expect(out.status).toBe('found');
+    if (out.status !== 'found') return;
+    expect(out.transition).toMatchObject({ event: 'parked', at: '2026-09-30T17:36:33.000Z' });
+    expect(out.cycle).toMatchObject({
+      phase: 'turn-in-flight',
+      turnInFlightSec: 30,
+      lastTurn: { turnSec: 330, postSettleDelaySec: 31, scheduledDelaySec: 26, settledVia: 'lifecycle' },
+    });
+  });
+
+  it('an older MALFORMED row narrows the cycle window but never turns a good latest read into unknown', async () => {
+    const sql = fakeSql({
+      rows: [
+        { at: '2026-09-30T17:36:02.000Z', event: 'rearmed', actor: 'reconcile-loop-routines', new_next_fire_at: null, interval_sec: null, detail: null },
+        { at: null, event: 'parked', actor: 'claim-due-routine', new_next_fire_at: null, interval_sec: null, detail: null },
+      ],
+    });
+    const out = await readLatestLoopTransition(
+      { workspaceId: 'ws-1', installSlug: 'papercusp', routineName: 'loop-su-6702', targetOwnerId: 'su-6702' },
+      { sql: sql as any, nowMs: 0 },
+    );
+    expect(out.status).toBe('found');
+    if (out.status === 'found') expect(out.cycle.lastTurn).toBeNull();
   });
 
   it('distinguishes no transition from an unavailable transition read', async () => {
@@ -102,6 +156,116 @@ describe('readLatestLoopTransition', () => {
         { sql: unavailable as any },
       ),
     ).resolves.toEqual({ status: 'unknown' });
+  });
+});
+
+/**
+ * EI-24709926664545964 — `deriveLoopCycle` separates the member's TURN (parked -> rearmed) from
+ * the re-arm DELAY (rearmed -> next parked). Two agents filed "the loop re-fires 7.7x slower
+ * than armed" off a 330s `parked` span that was the member's own turn; these tests pin the
+ * split so the two numbers can never be conflated again.
+ */
+describe('deriveLoopCycle', () => {
+  const T = (hhmmss: string, day = '2026-09-30') => `${day}T${hhmmss}.000Z`;
+  function tr(
+    at: string,
+    event: string,
+    extra: Partial<LoopTransitionSnapshot> = {},
+  ): LoopTransitionSnapshot {
+    return {
+      at,
+      event,
+      actor: event === 'parked' ? 'claim-due-routine' : 'reconcile-loop-routines',
+      newNextFireAt: null,
+      intervalSec: 60,
+      detail: null,
+      ...extra,
+    };
+  }
+  /** Rows are written oldest-first here for readability; the read returns them newest-first. */
+  const newestFirst = (...oldestFirst: LoopTransitionSnapshot[]) => [...oldestFirst].reverse();
+
+  it('MEASURED fixture (su-6702dbe3 17:25-17:36Z): 330s turn, 31s post-settle delay — not a 361s "re-fire gap"', () => {
+    const out = deriveLoopCycle(
+      newestFirst(
+        tr(T('17:25:02'), 'parked'),
+        tr(T('17:29:03'), 'rearmed', { newNextFireAt: T('17:30:03') }),
+        tr(T('17:30:32'), 'parked'),
+        tr(T('17:36:02'), 'rearmed', { newNextFireAt: T('17:36:28'), detail: { via: 'lifecycle', wasParked: true } }),
+        tr(T('17:36:33'), 'parked'),
+      ),
+      Date.parse(T('17:36:43')),
+    );
+    expect(out.phase).toBe('turn-in-flight');
+    expect(out.turnInFlightSec).toBe(10);
+    expect(out.lastTurn).toEqual({
+      parkedAt: T('17:30:32'),
+      settledAt: T('17:36:02'),
+      turnSec: 330,
+      settledBy: 'reconcile-loop-routines',
+      settledVia: 'lifecycle',
+      scheduledDelaySec: 26,
+      postSettleDelaySec: 31,
+    });
+    // The misreading this exists to prevent: park-to-park (361s) is turn + delay, not a delay.
+    expect(out.lastTurn!.turnSec + out.lastTurn!.postSettleDelaySec!).toBe(361);
+    expect(out.basis).toBe(LOOP_CYCLE_BASIS);
+  });
+
+  it('a genuinely LATE re-arm is visible as postSettleDelaySec — the split is not hiding a real fault', () => {
+    // Control for the test above: if the derivation merely echoed intervalSec or reused the
+    // turn span for both fields, it would pass the measured fixture and fail here.
+    const out = deriveLoopCycle(
+      newestFirst(
+        tr(T('10:00:00'), 'parked'),
+        tr(T('10:01:00'), 'rearmed', { newNextFireAt: T('10:02:00') }),
+        tr(T('10:09:00'), 'parked'),
+      ),
+      Date.parse(T('10:09:30')),
+    );
+    expect(out.lastTurn).toMatchObject({ turnSec: 60, scheduledDelaySec: 60, postSettleDelaySec: 480 });
+  });
+
+  it('newest row is a re-arm: phase settled, post-settle delay unknown until the next fire claims', () => {
+    const out = deriveLoopCycle(
+      newestFirst(tr(T('10:00:00'), 'parked'), tr(T('10:04:00'), 'rearmed', { newNextFireAt: T('10:05:00') })),
+      Date.parse(T('10:04:30')),
+    );
+    expect(out.phase).toBe('settled');
+    expect(out.turnInFlightSec).toBeNull();
+    expect(out.lastTurn).toMatchObject({ turnSec: 240, scheduledDelaySec: 60, postSettleDelaySec: null });
+  });
+
+  it('an await-suppression re-arm is NOT a turn: the earlier real turn is reported, the suppressed park ends its delay', () => {
+    const out = deriveLoopCycle(
+      newestFirst(
+        tr(T('10:00:00'), 'parked'),
+        tr(T('10:01:00'), 'rearmed'),
+        tr(T('10:02:00'), 'parked'),
+        tr(T('10:02:01'), 'rearmed', { actor: 'await-suppression', detail: { via: 'await-suppression' } }),
+      ),
+      Date.parse(T('10:03:00')),
+    );
+    expect(out.phase).toBe('settled');
+    expect(out.lastTurn).toMatchObject({ turnSec: 60, postSettleDelaySec: 60 });
+  });
+
+  it('a re-arm that does not follow a park (reachability sweep on an already-settled loop) settled nothing', () => {
+    const out = deriveLoopCycle(
+      newestFirst(tr(T('10:00:00'), 'rearmed'), tr(T('10:05:00'), 'rearmed')),
+      Date.parse(T('10:06:00')),
+    );
+    expect(out.phase).toBe('settled');
+    expect(out.lastTurn).toBeNull();
+  });
+
+  it('empty, disarmed and clock-skewed windows are phase other / no turn — never a fabricated number', () => {
+    expect(deriveLoopCycle([], 0)).toMatchObject({ phase: 'other', turnInFlightSec: null, lastTurn: null });
+    expect(deriveLoopCycle([tr(T('10:00:00'), 'disarmed')], 0)).toMatchObject({ phase: 'other', lastTurn: null });
+    // A settle stamped BEFORE its park (clock skew) yields no negative duration.
+    expect(
+      deriveLoopCycle(newestFirst(tr(T('10:05:00'), 'parked'), tr(T('10:04:00'), 'rearmed')), Date.parse(T('10:06:00'))).lastTurn,
+    ).toBeNull();
   });
 });
 

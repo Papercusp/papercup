@@ -11,7 +11,8 @@
  *     v1 and for every built variant;
  *   - every built variant has its own verdict paragraph (pass or fail);
  *   - every dropped item is named together with the Decision that dropped it;
- *   - the outcome names the adopted variant and its threshold, so a caller can
+ *   - the outcome names the adopted variant and its threshold ("adopts X at threshold N",
+ *     X a built variant) or keeps the baseline ("keeps B at threshold N"), so a caller can
  *     compare them with what production runs.
  */
 
@@ -30,6 +31,13 @@ export interface VerdictRecordInput {
   readonly itemsInScope: readonly string[];
   readonly built: readonly BuiltVariant[];
   readonly dropped: readonly DroppedItem[];
+  /**
+   * The production variant the built variants were measured against, when it is not v1
+   * (a later Decision measures against what an earlier one adopted, e.g. D-008 against
+   * D-004's v2-content). Its reports must be cited like any variant's, and an Outcome may
+   * then KEEP it ("production keeps <baseline> at threshold N") when no built variant wins.
+   */
+  readonly baseline?: string;
 }
 
 export interface VerdictRecordCheck {
@@ -75,7 +83,8 @@ export function checkVerdictRecord(input: VerdictRecordInput): VerdictRecordChec
   const admission = sentences.find((s) => /admission/i.test(s)) ?? '';
   const robustness = sentences.find((s) => /robustness/i.test(s)) ?? '';
   if (!runs) reasons.push('the Decision has no "Runs:" paragraph');
-  for (const variant of ['v1', ...input.built.map((b) => b.variant)]) {
+  const baseline = input.baseline && input.baseline !== 'v1' ? [input.baseline] : [];
+  for (const variant of ['v1', ...baseline, ...input.built.map((b) => b.variant)]) {
     if (!citesStamp(admission, variant)) reasons.push(`no admission report cited for ${variant}`);
     if (!citesStamp(robustness, variant)) reasons.push(`no robustness report cited for ${variant}`);
   }
@@ -92,17 +101,21 @@ export function checkVerdictRecord(input: VerdictRecordInput): VerdictRecordChec
   }
 
   const outcome = paras.find((p) => /^Outcome:/.test(p)) ?? '';
-  const adopted = /adopts\s+(\S+)\s+at threshold\s+(\d+(?:\.\d+)?)/.exec(outcome);
+  const adopted = /\b(adopts|keeps)\s+(\S+)\s+at threshold\s+(\d+(?:\.\d+)?)/.exec(outcome);
   if (!adopted) reasons.push('the Outcome paragraph names no adopted variant and threshold');
-  const adoptedVariant = adopted?.[1] ?? null;
-  if (adoptedVariant !== null && !input.built.some((b) => b.variant === adoptedVariant)) {
+  const verb = adopted?.[1] ?? null;
+  const adoptedVariant = adopted?.[2] ?? null;
+  if (verb === 'adopts' && adoptedVariant !== null && !input.built.some((b) => b.variant === adoptedVariant)) {
     reasons.push(`adopted variant ${adoptedVariant} is not one of the built variants`);
+  }
+  if (verb === 'keeps' && adoptedVariant !== null && adoptedVariant !== (input.baseline ?? 'v1')) {
+    reasons.push(`kept variant ${adoptedVariant} is not the baseline ${input.baseline ?? 'v1'}`);
   }
 
   return {
     pass: reasons.length === 0,
     reasons,
     adoptedVariant,
-    adoptedThreshold: adopted ? Number(adopted[2]) : null,
+    adoptedThreshold: adopted ? Number(adopted[3]) : null,
   };
 }

@@ -840,7 +840,9 @@ async function defaultStagingSyncLockProbe(): Promise<boolean> {
   } catch (error) {
     // flock(1) uses status 1 for a nonblocking lock conflict. Other failures
     // are UNKNOWN, not evidence that the sync lock is clear.
-    if ((error as NodeJS.ErrnoException).code === 1) return true;
+    // execFile reports a child's exit status as a NUMERIC `code`, which
+    // ErrnoException (string code) does not model.
+    if ((error as { code?: unknown }).code === 1) return true;
     throw error;
   }
 }

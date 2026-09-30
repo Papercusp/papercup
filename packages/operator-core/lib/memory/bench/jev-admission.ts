@@ -42,6 +42,7 @@ import {
   RELEVANCE_CRITERIA,
   RELEVANCE_INSTRUCTIONS,
   type AdmissionEncoding,
+  type AdmissionJudgement,
   type AdmissionVariant,
 } from '../jev-admission-request';
 import {
@@ -94,6 +95,8 @@ export {
   admissionQuestionId,
   alternateEncoding,
   buildAdmissionRequest,
+  buildAdmissionRequests,
+  judgeAdmission,
   parseAdmissionEncoding,
   parseAdmissionVariant,
   type AdmissionEncoding,
@@ -134,6 +137,24 @@ export interface QueryScores {
   readonly cached: boolean;
   readonly inputTokens: number | null;
   readonly costUsd: number | null;
+}
+
+/**
+ * Map a whole query's judgement (one request, or a `pair` fan-out) onto candidate-aligned
+ * scores. Latency is the slowest request's; tokens and list cost are summed over requests,
+ * so a fan-out that repeats the message in every request pays for each repeat.
+ */
+export function scoresFromJudgement(j: AdmissionJudgement): QueryScores {
+  if ('failure' in j.result) {
+    return { scores: null, failure: j.result.failure, latencyMs: j.latencyMs, cached: false, inputTokens: null, costUsd: null };
+  }
+  return {
+    scores: j.result.scores,
+    latencyMs: j.latencyMs,
+    cached: false,
+    inputTokens: j.inputTokens,
+    costUsd: j.inputTokens === null ? null : (j.inputTokens * JEV_LIST_USD_PER_MILLION_INPUT) / 1_000_000,
+  };
 }
 
 /** Map a decision outcome onto candidate-aligned P(yes) scores. */

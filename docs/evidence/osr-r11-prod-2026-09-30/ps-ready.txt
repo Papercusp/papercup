@@ -1,0 +1,23 @@
+  61766       2      94  \_ /usr/bin/python3 /usr/share/apport/apport -p56978 -s6 -c0 -d1 -P56978 -u1000 -g1000 -F -- !usr!lib!Papercusp Server!sidecar!bin!node
+  56978       1    1900 node --require /usr/lib/Papercusp Server/sidecar/sidecar-preload.js /usr/lib/Papercusp Server/sidecar/serve.mjs --ensure
+  61833   61680      85  \_ /home/tester/papercusp-app/papercusp-desktop/src-tauri/target/release/bundle/appimage/Papercusp_GUI_0.0.25_amd64.AppImage --appimage-extract-and-run
+  61845   61833      85  |   \_ /tmp/appimage_extracted_ef978409ef2ed66aa694b7eb5ec530f3/usr/bin/papercusp-desktop
+  62405       1      51 /usr/bin/papercusp-server
+  62697   62405      25  \_ node --require /usr/lib/Papercusp Server/sidecar/sidecar-preload.js /usr/lib/Papercusp Server/sidecar/serve.mjs --ensure
+  62753   62697      21      \_ /usr/lib/Papercusp Server/sidecar/node_modules/@papercusp/embedded-postgres-server/node_modules/@embedded-postgres/linux-x64/native/bin/postgres -D /tmp/r11home3/.papercusp-workspaces/.shared/embedded-pg-data
+  63052   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33898) idle
+  63053   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33906) PARSE
+  63054   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33914) idle
+  63055   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33916) PARSE
+  63056   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33920) idle
+  63057   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33936) PARSE
+  63058   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33942) idle
+  63059   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33948) idle
+  63060   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33952) PARSE
+  63061   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33960) idle
+  63069   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33980) idle
+  63071   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(33996) idle
+  63079   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(34020) idle
+  63088   62753       0      |   \_ postgres: harness_admin papercusp 127.0.0.1(34036) idle
+  63121   62753       0      |   \_ /usr/lib/Papercusp Server/sidecar/node_modules/@papercusp/embedded-postgres-server/node_modules/@embedded-postgres/linux-x64/native/bin/postgres -D /tmp/r11home3/.papercusp-workspaces/.shared/embedded-pg-
+  63063   62697       0      \_ /usr/lib/Papercusp Server/sidecar/bin/node /usr/lib/Papercusp Server/sidecar/serve.mjs

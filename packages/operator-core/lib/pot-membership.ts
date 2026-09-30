@@ -156,13 +156,35 @@ export async function resolveWorkItemPot(args: ResolveWorkItemPotArgs): Promise<
  * detector — that failure mode is exactly what this function exists to prevent.
  */
 export async function routineStorageSlug(installSlug: string, workspaceId: string): Promise<string> {
+  return workItemStorageSlug(installSlug, workspaceId, 'routine-storage-slug');
+}
+
+/**
+ * The `harness_slug` a feature-family work item written for `harnessSlug` is actually
+ * STORED under — the general form of {@link routineStorageSlug}, for any read that
+ * addresses a work-item row by the harness it was CREATED for.
+ *
+ * `createWorkItem` runs {@link resolveWorkItemPot} before its INSERT, so an item created
+ * for a pot MEMBER harness lands under the pot's HOME slug. A read that passes the member
+ * slug to `getWorkItem`, or filters `harness_slug = <member>`, finds nothing and reads
+ * as "missing" (WI-10004360: a blueprint operation replay answered "receipt points to a
+ * missing work item" for an item that existed under its pot home).
+ *
+ * Same resolver as the write path, so reads and writes agree by construction; fails open
+ * to the literal slug (an un-potted harness, or a resolver hiccup).
+ */
+export async function workItemStorageSlug(
+  harnessSlug: string,
+  workspaceId: string,
+  logLabel = 'work-item-storage-slug',
+): Promise<string> {
   try {
-    return (await resolveWorkItemPot({ rawSlug: installSlug, workspaceId })) ?? installSlug;
+    return (await resolveWorkItemPot({ rawSlug: harnessSlug, workspaceId })) ?? harnessSlug;
   } catch (e) {
     console.warn(
-      `[routine-storage-slug] pot resolve failed for "${installSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
+      `[${logLabel}] pot resolve failed for "${harnessSlug}" — falling back to literal slug: ${e instanceof Error ? e.message : e}`,
     );
-    return installSlug;
+    return harnessSlug;
   }
 }
 

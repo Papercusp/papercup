@@ -2753,10 +2753,19 @@ export default defineTool({
           obligation: placement,
           boundary: 'fleet:launch-on-plan',
           phase: 'operation',
+          // WI-10004401: `fleetSlug` is fleetSlugFromName(args.name), which clamps to
+          // 60 chars, while the provider authors its recovery `name` from the raw
+          // `<harness>-<plan>-plan-fleet` string (69 chars for a long plan slug).
+          // Comparing the clamped slug to the raw name could never match, so no
+          // caller could satisfy this required boundary. Hand the comparator the
+          // caller's RAW name and normalize BOTH sides with the tool's own slug
+          // derivation — a different fleet still refuses, the same fleet admits.
+          normalizeArg: (key, value) =>
+            key === 'name' && typeof value === 'string' ? fleetSlugFromName(value) : value,
           operation: {
             tool: 'fleet:launch-on-plan',
             args: {
-              name: fleetSlug,
+              name: args.name,
               plan: planSlug,
               harness: planHarnessSlug,
               leader: args.leader,

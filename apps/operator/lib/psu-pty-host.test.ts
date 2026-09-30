@@ -5260,6 +5260,39 @@ describe('host-code staleness (WI-38292 — a respawn replaces the child, never 
     const p = write('unknown.mjs', 'export const x = 3;\n');
     expect(hostCodeStaleness({ loaded: null, path: p }).stale).toBe(false);
   });
+
+  it('detects a launcher-only carry fix while the PTY host itself stays unchanged', () => {
+    const path = write('unchanged-host.mjs', 'export const host = 1;\n');
+    const launcherPath = write('changed-launcher.mjs', 'export const carryModel = "old";\n');
+    const loaded = hashHostScript(path)!;
+    const launcherLoaded = hashHostScript(launcherPath)!;
+    const inputs = { loaded, path, launcherLoaded, launcherPath };
+    expect(hostCodeStaleness(inputs).stale).toBe(false);
+
+    nodeFs.writeFileSync(launcherPath, 'export const carryModel = "current";\n');
+    const verdict = hostCodeStaleness(inputs);
+    expect(verdict).toMatchObject({ stale: true, loaded, onDisk: loaded });
+    expect(verdict.launcher).toMatchObject({ stale: true, loaded: launcherLoaded });
+    expect(verdict.launcher.onDisk).not.toBe(launcherLoaded);
+  });
+
+  it('captures the sibling launcher at module load as well as the PTY host', () => {
+    const verdict = hostCodeStaleness();
+    expect(verdict.launcher.loaded).toMatch(/^[0-9a-f]{64}$/);
+    expect(verdict.launcher.onDisk).toBe(verdict.launcher.loaded);
+    expect(verdict.stale).toBe(false);
+  });
+
+  it('does not infer launcher drift from a missing or unknown component', () => {
+    const path = write('healthy-host.mjs', 'export const host = 1;\n');
+    const loaded = hashHostScript(path)!;
+    const missing = pathJoin(scratch, 'missing-launcher.mjs');
+    expect(hostCodeStaleness({ loaded, path, launcherLoaded: 'a'.repeat(64), launcherPath: missing }))
+      .toMatchObject({ stale: false, launcher: { stale: false, onDisk: null } });
+    const launcherPath = write('unknown-launcher.mjs', 'export const launcher = 1;\n');
+    expect(hostCodeStaleness({ loaded, path, launcherLoaded: null, launcherPath }))
+      .toMatchObject({ stale: false, launcher: { stale: false, loaded: null } });
+  });
 });
 
 describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {

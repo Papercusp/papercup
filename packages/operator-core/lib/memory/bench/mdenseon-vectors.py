@@ -10,23 +10,386 @@ import importlib.metadata
 import json
 from pathlib import Path
 import resource
+import shutil
 import time
 
+import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from sentence_transformers import SentenceTransformer
 
 MODEL = "lightonai/mDenseOn"
 REVISION = "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+VECTOR_COSINE_FLOOR = 0.99999
+VECTOR_MAX_ABS_ERROR = 3e-5
+
+
+def package_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sample_indices(length, count):
+    """Stable coverage across a fixture without baking its current size into the validator."""
+    if length <= count:
+        return list(range(length))
+    return sorted({round(i * (length - 1) / (count - 1)) for i in range(count)})
+
+
+def normalized_cls(hidden_state):
+    vectors = np.asarray(hidden_state[:, 0, :], dtype=np.float32)
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    if np.any(norms == 0) or not np.isfinite(vectors).all():
+        raise ValueError("model produced a non-finite or zero-norm CLS vector")
+    return vectors / norms
+
+
+def compare_vectors(actual, expected, labels):
+    actual = np.asarray(actual, dtype=np.float32)
+    expected = np.asarray(expected, dtype=np.float32)
+    if actual.shape != expected.shape:
+        raise ValueError(f"vector shape mismatch: actual {actual.shape}, expected {expected.shape}")
+    cosines = np.sum(actual * expected, axis=1)
+    errors = np.max(np.abs(actual - expected), axis=1)
+    return {
+        "count": len(labels),
+        "minimumCosine": float(np.min(cosines)),
+        "maximumAbsoluteError": float(np.max(errors)),
+        "worstCosineLabel": labels[int(np.argmin(cosines))],
+        "worstAbsoluteErrorLabel": labels[int(np.argmax(errors))],
+        "cases": [
+            {"label": label, "cosine": float(cosine), "maximumAbsoluteError": float(error)}
+            for label, cosine, error in zip(labels, cosines, errors)
+        ],
+    }
+
+
+def run_onnx_vectors(session, tokenizer, texts, batch_size=8):
+    vectors = []
+    token_records = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start:start + batch_size]
+        encoded = tokenizer(batch, padding=True, truncation=True, max_length=8192,
+                            return_tensors="np")
+        inputs = {name: np.asarray(encoded[name], dtype=np.int64)
+                  for name in ("input_ids", "attention_mask")}
+        hidden = session.run(["last_hidden_state"], inputs)[0]
+        vectors.extend(normalized_cls(hidden))
+        for row, mask in zip(inputs["input_ids"], inputs["attention_mask"]):
+            length = int(mask.sum())
+            token_records.append({"length": length, "inputIds": row[:length].tolist()})
+    return np.asarray(vectors, dtype=np.float32), token_records
+
+
+def run_torch_vectors(model, tokenizer, texts):
+    encoded = tokenizer(texts, padding=True, truncation=True, max_length=8192,
+                        return_tensors="pt")
+    model_inputs = {name: encoded[name] for name in ("input_ids", "attention_mask")}
+    with torch.no_grad():
+        hidden = model(**model_inputs).last_hidden_state.detach().cpu().numpy()
+    return normalized_cls(hidden), [
+        {"length": int(mask.sum()), "inputIds": ids[:int(mask.sum())].tolist()}
+        for ids, mask in zip(encoded["input_ids"], encoded["attention_mask"])
+    ]
+
+
+def load_frozen_cases(repo_root):
+    report_path = repo_root / ".papercusp/bench-reports/candidates-2026-09-30-mdenseon-vectors.json"
+    frozen = json.loads(report_path.read_text())
+    if frozen.get("model") != MODEL or frozen.get("revision") != REVISION:
+        raise ValueError("frozen Python reference is not the pinned mDenseOn revision")
+    fixtures = repo_root / "packages/operator-core/lib/memory/bench/fixtures"
+    cases = []
+    ranking = {}
+    for corpus in ("memory", "prose"):
+        prefix = "prose-" if corpus == "prose" else ""
+        entries = json.loads((fixtures / f"{prefix}corpus.v1.json").read_text())["entries"]
+        queries = json.loads((fixtures / f"{prefix}gold-set.v1.json").read_text())["queries"]
+        suite = frozen["suites"][corpus]
+        if suite["keys"] != [entry["key"] for entry in entries]:
+            raise ValueError(f"{corpus} document order differs from the frozen reference")
+        if suite["queryIds"] != [query["id"] for query in queries]:
+            raise ValueError(f"{corpus} query order differs from the frozen reference")
+        for index in sample_indices(len(entries), 6):
+            cases.append({"label": f"{corpus}/document/{entries[index]['key']}",
+                          "text": f"document: {entries[index]['text']}",
+                          "vector": suite["docVectors"][index]})
+        for index in sample_indices(len(queries), 6):
+            cases.append({"label": f"{corpus}/query/{queries[index]['id']}",
+                          "text": f"query: {queries[index]['query']}",
+                          "vector": suite["queryVectors"][index]})
+        doc_indices = sample_indices(len(entries), 32)
+        query_indices = sample_indices(len(queries), 8)
+        ranking[corpus] = {
+            "docLabels": [entries[index]["key"] for index in doc_indices],
+            "docTexts": [f"document: {entries[index]['text']}" for index in doc_indices],
+            "docVectors": [suite["docVectors"][index] for index in doc_indices],
+            "queryLabels": [queries[index]["id"] for index in query_indices],
+            "queryTexts": [f"query: {queries[index]['query']}" for index in query_indices],
+            "queryVectors": [suite["queryVectors"][index] for index in query_indices],
+        }
+    return report_path, frozen, cases, ranking
+
+
+def validate_rankings(session, tokenizer, ranking):
+    results = {}
+    for corpus, suite in ranking.items():
+        actual_docs, _ = run_onnx_vectors(session, tokenizer, suite["docTexts"])
+        actual_queries, _ = run_onnx_vectors(session, tokenizer, suite["queryTexts"])
+        expected_docs = np.asarray(suite["docVectors"], dtype=np.float32)
+        expected_queries = np.asarray(suite["queryVectors"], dtype=np.float32)
+        cases = []
+        for index, label in enumerate(suite["queryLabels"]):
+            expected_order = np.argsort(-(expected_docs @ expected_queries[index]))[:10]
+            actual_order = np.argsort(-(actual_docs @ actual_queries[index]))[:10]
+            cases.append({
+                "query": label,
+                "expectedTop10": [suite["docLabels"][i] for i in expected_order],
+                "actualTop10": [suite["docLabels"][i] for i in actual_order],
+                "exact": bool(np.array_equal(expected_order, actual_order)),
+            })
+        results[corpus] = {"candidateDocuments": len(expected_docs), "queries": cases}
+    return results
+
+
+def write_json_atomic(path, value):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2))
+    temporary.replace(path)
+
+
+def load_pinned_tokenizer(snapshot):
+    """Load the tokenizer.json without trusting a newer Transformers class alias.
+
+    The pinned snapshot was published with Transformers 5.x and names its generic
+    Rust-backed implementation ``TokenizersBackend``. Transformers 4.57 cannot
+    resolve that alias through AutoTokenizer even though it can consume the exact
+    tokenizer.json. Constructing the stable fast-tokenizer base explicitly keeps
+    the bytes and special-token contract pinned across that version boundary.
+    """
+    from transformers import PreTrainedTokenizerFast
+
+    tokenizer_config = json.loads((snapshot / "tokenizer_config.json").read_text())
+    keys = ["bos_token", "eos_token", "unk_token", "pad_token", "mask_token",
+            "cls_token", "sep_token", "model_max_length"]
+    return PreTrainedTokenizerFast(
+        tokenizer_file=str(snapshot / "tokenizer.json"),
+        **{key: tokenizer_config[key] for key in keys if key in tokenizer_config},
+    )
+
+
+def finalize_existing_onnx(directory):
+    """Validate and finalize an already-exported graph without re-exporting its weights."""
+    import onnx
+    import onnxruntime as ort
+    from transformers import AutoConfig, AutoModel
+
+    root = Path(directory).resolve()
+    graph = root / "onnx/model.onnx"
+    if not graph.is_file():
+        raise ValueError(f"existing ONNX graph not found: {graph}")
+    snapshot = Path(snapshot_download(MODEL, revision=REVISION, local_files_only=True))
+    repo_root = Path(__file__).resolve().parents[5]
+    report_path, frozen, frozen_cases, ranking = load_frozen_cases(repo_root)
+    thresholds = {"minimumCosine": VECTOR_COSINE_FLOOR,
+                  "maximumAbsoluteError": VECTOR_MAX_ABS_ERROR,
+                  "top10Ranking": "exact"}
+    started = time.perf_counter()
+    tokenizer = load_pinned_tokenizer(snapshot)
+    config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
+    config.reference_compile = False
+    model = AutoModel.from_pretrained(snapshot, config=config,
+                                     attn_implementation="eager", local_files_only=True).eval()
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 4
+    options.inter_op_num_threads = 1
+    session = ort.InferenceSession(str(graph), sess_options=options,
+                                   providers=["CPUExecutionProvider"])
+
+    controlled = [
+        ("short-query", "query: parity smoke"),
+        ("short-document", "document: deterministic sidecar validation"),
+        ("unicode-query", "query: résumé 東京 naïve façade عربي"),
+        ("padded-257", "document: " + "token " * 257),
+        ("long-1024", "query: " + "retrieval validation token " * 342),
+    ]
+    controlled_labels = [label for label, _ in controlled]
+    controlled_texts = [text for _, text in controlled]
+    torch_vectors, torch_tokens = run_torch_vectors(model, tokenizer, controlled_texts)
+    onnx_vectors, onnx_tokens = run_onnx_vectors(session, tokenizer, controlled_texts,
+                                                 batch_size=len(controlled_texts))
+    if torch_tokens != onnx_tokens:
+        raise ValueError("token IDs supplied to PyTorch and ONNX differ")
+    controlled_result = compare_vectors(onnx_vectors, torch_vectors, controlled_labels)
+    controlled_result["tokens"] = [
+        {"label": label, **tokens} for label, tokens in zip(controlled_labels, onnx_tokens)
+    ]
+
+    frozen_vectors, frozen_tokens = run_onnx_vectors(
+        session, tokenizer, [case["text"] for case in frozen_cases])
+    frozen_result = compare_vectors(frozen_vectors, [case["vector"] for case in frozen_cases],
+                                    [case["label"] for case in frozen_cases])
+    frozen_result["tokens"] = [
+        {"label": case["label"], **tokens}
+        for case, tokens in zip(frozen_cases, frozen_tokens)
+    ]
+    rankings = validate_rankings(session, tokenizer, ranking)
+    ranking_exact = all(case["exact"] for result in rankings.values() for case in result["queries"])
+    accepted = (
+        controlled_result["minimumCosine"] >= VECTOR_COSINE_FLOOR
+        and controlled_result["maximumAbsoluteError"] <= VECTOR_MAX_ABS_ERROR
+        and frozen_result["minimumCosine"] >= VECTOR_COSINE_FLOOR
+        and frozen_result["maximumAbsoluteError"] <= VECTOR_MAX_ABS_ERROR
+        and ranking_exact
+    )
+    limit_tokens = tokenizer("token " * 9000, truncation=True, max_length=8192)["input_ids"]
+    if len(limit_tokens) != 8192:
+        accepted = False
+    validation = {
+        "formatVersion": 1,
+        "accepted": accepted,
+        "model": MODEL,
+        "revision": REVISION,
+        "graph": {"path": "onnx/model.onnx", "bytes": graph.stat().st_size,
+                  "sha256": file_sha256(graph)},
+        "thresholds": thresholds,
+        "controlledTorchParity": controlled_result,
+        "frozenPythonParity": frozen_result,
+        "rankingParity": rankings,
+        "tokenizerLimit": {"requestedMaxLength": 8192, "observedLength": len(limit_tokens)},
+        "frozenReference": {"path": str(report_path.relative_to(repo_root)),
+                            "sha256": file_sha256(report_path),
+                            "versions": frozen["versions"]},
+        "validationVersions": {name: package_version(name) for name in
+                               ["torch", "transformers", "onnx", "onnxruntime", "numpy"]},
+        "seconds": time.perf_counter() - started,
+    }
+    write_json_atomic(root / ("validation-report.json" if accepted else "validation-report.failed.json"),
+                      validation)
+    if not accepted:
+        raise ValueError("existing ONNX graph failed the predeclared normalized-vector parity contract")
+
+    config_json = json.loads((snapshot / "config.json").read_text())
+    config_json["reference_compile"] = False
+    graph_proto = onnx.load(graph, load_external_data=False)
+    external_files = sorted({entry.value for tensor in graph_proto.graph.initializer
+                             for entry in tensor.external_data if entry.key == "location"})
+    if external_files:
+        config_json["transformers.js_config"] = {
+            "use_external_data_format": {"model.onnx": len(external_files)}}
+    write_json_atomic(root / "config.json", config_json)
+    shutil.copy2(snapshot / "tokenizer.json", root / "tokenizer.json")
+    tokenizer_config = json.loads((snapshot / "tokenizer_config.json").read_text())
+    tokenizer_config["model_max_length"] = 8192
+    tokenizer_config["tokenizer_class"] = "PreTrainedTokenizerFast"
+    write_json_atomic(root / "tokenizer_config.json", tokenizer_config)
+    manifest = {"formatVersion": 1, "model": MODEL, "revision": REVISION,
+                "dimensions": 768, "pooling": "cls", "normalization": "l2",
+                "maxLength": 8192, "output": "last_hidden_state", "weightDtype": "fp32",
+                "prompts": {"query": "query: ", "document": "document: "},
+                "validation": {"report": "validation-report.json", "thresholds": thresholds},
+                "versions": {name: package_version(name) for name in
+                             ["torch", "transformers", "optimum", "optimum-onnx", "onnx"]},
+                "files": {str(path.relative_to(root)): {"bytes": path.stat().st_size,
+                          "sha256": file_sha256(path)}
+                          for path in root.rglob("*") if path.is_file()
+                          and path.name != "export-manifest.json"}}
+    write_json_atomic(root / "export-manifest.json", manifest)
+    print(f"validated and finalized existing ONNX export: {root}", flush=True)
+
+
+def export_onnx(directory):
+    """Use Optimum's supported ModernBERT exporter, keeping the Hub snapshot intact."""
+    from optimum.exporters.onnx import export, validate_model_outputs
+    from optimum.exporters.tasks import TasksManager
+    from transformers import AutoConfig, AutoModel, AutoTokenizer
+
+    root = Path(directory).resolve()
+    if root.exists():
+        raise ValueError(f"refusing to overwrite existing export directory: {root}")
+    snapshot = snapshot_download(MODEL, revision=REVISION, local_files_only=True)
+    config = AutoConfig.from_pretrained(snapshot, local_files_only=True)
+    config.reference_compile = False
+    model = AutoModel.from_pretrained(snapshot, config=config,
+                                     attn_implementation="eager", local_files_only=True).eval()
+    constructor = TasksManager.get_exporter_config_constructor(
+        model=model, exporter="onnx", task="feature-extraction", library_name="transformers")
+    onnx_config = constructor(model.config)
+    graph_dir = root / "onnx"
+    graph_dir.mkdir(parents=True)
+    graph = graph_dir / "model.onnx"
+    print(f"exporting pinned {MODEL}@{REVISION} -> {graph}", flush=True)
+    _, outputs = export(model, onnx_config, graph, opset=17, device="cpu",
+                        input_shapes={"batch_size": 2, "sequence_length": 32})
+    # Padding and a different sequence length must work, not just the trace input.
+    validate_model_outputs(onnx_config, model, graph, outputs, atol=1e-4,
+                           input_shapes={"batch_size": 1, "sequence_length": 64},
+                           device="cpu", use_subprocess=False)
+    tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+    # SentenceTransformers enforces this independently of tokenizer_config.json.
+    tokenizer.model_max_length = 8192
+    tokenizer.save_pretrained(root)
+    model.config.save_pretrained(root)
+    import onnx
+    graph_proto = onnx.load(graph, load_external_data=False)
+    external_files = sorted({entry.value for tensor in graph_proto.graph.initializer
+                             for entry in tensor.external_data if entry.key == "location"})
+    if external_files:
+        graph_locations = ["model.onnx_data" if i == 0 else f"model.onnx_data_{i}"
+                           for i in range(len(external_files))]
+        for tensor in graph_proto.graph.initializer:
+            for entry in tensor.external_data:
+                if entry.key == "location":
+                    entry.value = graph_locations[external_files.index(entry.value)]
+        for original, target in zip(external_files, graph_locations):
+            if original != target:
+                (graph_dir / original).rename(graph_dir / target)
+        onnx.save(graph_proto, graph)
+        exported_config = json.loads((root / "config.json").read_text())
+        exported_config["transformers.js_config"] = {
+            "use_external_data_format": {"model.onnx": len(external_files)}}
+        (root / "config.json").write_text(json.dumps(exported_config, indent=2))
+    manifest = {"formatVersion": 1, "model": MODEL, "revision": REVISION,
+                "dimensions": 768, "pooling": "cls", "normalization": "l2",
+                "maxLength": 8192, "output": "last_hidden_state", "weightDtype": "fp32",
+                "prompts": {"query": "query: ", "document": "document: "},
+                "versions": {p: importlib.metadata.version(p) for p in
+                             ["torch", "transformers", "optimum", "optimum-onnx", "onnx"]},
+                "files": {str(p.relative_to(root)): {"bytes": p.stat().st_size,
+                          "sha256": file_sha256(p)}
+                          for p in root.rglob("*") if p.is_file()}}
+    # A completed manifest is published only after export and Optimum validation.
+    (root / "export-manifest.json").write_text(json.dumps(manifest, indent=2))
+    print(f"validated ONNX export: {root}", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--out")
+    parser.add_argument("--export-onnx", help="New local Transformers.js model directory")
+    parser.add_argument("--validate-onnx", help="Validate and finalize an existing ONNX export")
     parser.add_argument("--corpus", choices=["memory", "prose", "both"], default="both")
     args = parser.parse_args()
     torch.set_num_threads(4)
     torch.set_num_interop_threads(1)
+    if args.export_onnx:
+        export_onnx(args.export_onnx)
+        return
+    if args.validate_onnx:
+        finalize_existing_onnx(args.validate_onnx)
+        return
+    if not args.out:
+        parser.error("--out is required for a vector run")
     started = time.perf_counter()
     model = SentenceTransformer(MODEL, revision=REVISION, device="cpu",
                                 model_kwargs={"attn_implementation": "sdpa"})

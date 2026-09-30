@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -19,10 +19,29 @@ describe('papercup-backup-health-check.sh', () => {
   });
 
   it('passes the shipped self-test, including disk-headroom discrimination', () => {
-    const output = execFileSync('bash', [SCRIPT, '--self-test'], {
+    // spawnSync, not execFileSync: a non-zero self-test used to surface only as
+    // "Command failed: bash … --self-test", and the self-test's own FAIL lines
+    // were dropped. The gate recorded exactly that for repairHead 709766df on
+    // 2026-09-30 and it never reproduced, so the red carried no evidence. The
+    // exit status, signal and FAIL lines now go into the assertion itself.
+    const run = spawnSync('bash', [SCRIPT, '--self-test'], {
       encoding: 'utf8',
       timeout: 120_000,
       maxBuffer: 1024 * 1024,
+    });
+    const output = run.stdout ?? '';
+    expect({
+      status: run.status,
+      signal: run.signal,
+      error: run.error?.message ?? null,
+      failLines: output.split('\n').filter((line) => line.includes('FAIL')),
+      stderrTail: (run.stderr ?? '').slice(-2000),
+    }).toEqual({
+      status: 0,
+      signal: null,
+      error: null,
+      failLines: [],
+      stderrTail: expect.any(String),
     });
     expect(output).toContain('post disk-headroom block');
     expect(output).toContain('stale stats do not create a false TOAST-bloat alarm');

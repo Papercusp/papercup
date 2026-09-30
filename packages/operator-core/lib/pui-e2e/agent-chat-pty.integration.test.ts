@@ -39,6 +39,7 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
+import { puiQuitBounds } from './pui-quit-bounds';
 import { sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
@@ -453,6 +454,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
+const PUI_QUIT_BOUNDS = puiQuitBounds();
 /**
  * The TUI's held-key repeat window (P-015), read from its Rust source so the
  * P-015 harness precondition cannot drift from the product constant.
@@ -995,9 +997,15 @@ class PuiPane {
       } catch {
         /* exited */
       }
+      // pui bounds a signal quit by its own SIGNAL_QUIT_DEADLINE; waiting exactly
+      // that long raced its watchdog (rehearsal run 8b, WI-10004247).
+      const { afterKillWaitMs } = PUI_QUIT_BOUNDS;
       await Promise.race([
         this.exit,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('pui PTY did not exit')), 5_000)),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error(`pui PTY did not exit within ${afterKillWaitMs}ms of being killed`)),
+          afterKillWaitMs,
+        )),
       ]);
     }
     await waitForNoChildren(this.pty.pid);

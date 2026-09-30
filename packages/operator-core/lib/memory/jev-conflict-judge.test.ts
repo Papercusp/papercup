@@ -5,7 +5,12 @@ import type { DecisionClient, DecisionOutcome, QuestionMap } from '@papercusp/de
 import { checkConflicts } from './conflict-check';
 import { SUBSTANCE_CRITERIA, SUBSTANCE_INSTRUCTIONS } from './jev-admission-request';
 import {
+  CONFLICT_INSTRUCTIONS,
   CONFLICT_OPTIONS,
+  CONTENT_CONFLICT_INSTRUCTIONS,
+  CONTENT_CONFLICT_OPTIONS,
+  JEV_CONFLICT_WORDING,
+  parseConflictWording,
   CONTENT_FREE_MAX_P_CONCRETE,
   SUBSTANCE_QUESTION_ID,
   contentFreeSummary,
@@ -272,5 +277,58 @@ describe('judgeSubstanceWithJev — the sweep asks the save-time question alone 
     const blank = fakeClient(async () => answered({}));
     expect(await judgeSubstanceWithJev('   ', { client: blank.client })).toBeNull();
     expect(blank.decideSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('conflict wording seam (plan jev-performance-improvements-2026-09-30, P-009, bar D-007)', () => {
+  type Structured = { means: string; not_when: string };
+
+  it('production asks the shipped v1 wording, byte-identical to an explicit v1 request', () => {
+    expect(JEV_CONFLICT_WORDING).toBe('v1');
+    const implicit = buildConflictRequest(NEW, NEIGHBOURS, { substance: true });
+    const explicit = buildConflictRequest(NEW, NEIGHBOURS, { substance: true, wording: 'v1' });
+    expect(JSON.stringify(implicit.request)).toBe(JSON.stringify(explicit.request));
+    const q = implicit.request.questions.n1 as { instructions: string; options: unknown };
+    expect(q.instructions).toBe(`${CONFLICT_INSTRUCTIONS}\n\nExisting memory:\n${NEIGHBOURS[0].text}`);
+    expect(q.options).toBe(CONFLICT_OPTIONS);
+  });
+
+  it('v2-content asks the content-not-self-claims wording with a structured means/not_when criterion per label', () => {
+    const { request, questionIds } = buildConflictRequest(NEW, NEIGHBOURS, { wording: 'v2-content' });
+    expect(questionIds).toEqual(['n1', 'n2']);
+    expect(request.state).toEqual({ new_memory: NEW });
+    const q2 = request.questions.n2 as { type: string; instructions: string; options: Record<string, Structured> };
+    expect(q2.type).toBe('choice');
+    expect(q2.instructions).toBe(`${CONTENT_CONFLICT_INSTRUCTIONS}\n\nExisting memory:\n${NEIGHBOURS[1].text}`);
+    expect(q2.instructions).not.toContain(NEIGHBOURS[0].text);
+    expect(CONTENT_CONFLICT_INSTRUCTIONS).toMatch(/never|ignore/i);
+    expect(Object.keys(q2.options)).toEqual([...JEV_CONFLICT_LABELS]);
+    for (const label of JEV_CONFLICT_LABELS) {
+      expect(q2.options[label].means.length).toBeGreaterThan(20);
+      expect(q2.options[label].not_when.length).toBeGreaterThan(20);
+    }
+    expect(q2.options).toBe(CONTENT_CONFLICT_OPTIONS);
+  });
+
+  it('v2-content changes only the conflict questions: the substance question is the same P-005 wording', () => {
+    const v1 = buildConflictRequest(NEW, NEIGHBOURS, { substance: true });
+    const v2 = buildConflictRequest(NEW, NEIGHBOURS, { substance: true, wording: 'v2-content' });
+    expect(v2.request.questions[SUBSTANCE_QUESTION_ID]).toEqual(v1.request.questions[SUBSTANCE_QUESTION_ID]);
+    expect(v2.request.questions.n1).not.toEqual(v1.request.questions.n1);
+  });
+
+  it('judgeConflictsWithJev sends the wording named in deps, and v1 when unset', async () => {
+    const v2 = fakeClient(async () => answered({ n1: choice(probs({ unrelated: 0.9, refines: 0.1 })) }));
+    await judgeConflictsWithJev({ newText: NEW, neighbors: [NEIGHBOURS[0]] }, { client: v2.client, wording: 'v2-content' });
+    expect(v2.decideSpy.mock.calls[0][0]).toEqual(buildConflictRequest(NEW, [NEIGHBOURS[0]], { wording: 'v2-content' }).request);
+    const unset = fakeClient(async () => answered({ n1: choice(probs({ unrelated: 0.9, refines: 0.1 })) }));
+    await judgeConflictsWithJev({ newText: NEW, neighbors: [NEIGHBOURS[0]] }, { client: unset.client });
+    expect(unset.decideSpy.mock.calls[0][0]).toEqual(buildConflictRequest(NEW, [NEIGHBOURS[0]], { wording: 'v1' }).request);
+  });
+
+  it('parseConflictWording defaults to production and refuses an unknown wording', () => {
+    expect(parseConflictWording(undefined)).toBe(JEV_CONFLICT_WORDING);
+    expect(parseConflictWording('v2-content')).toBe('v2-content');
+    expect(() => parseConflictWording('v3')).toThrow(/--wording must be v1\|v2-content/);
   });
 });

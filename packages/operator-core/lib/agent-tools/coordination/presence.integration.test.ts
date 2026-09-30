@@ -19,7 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepStalePresence, listPresence } from './presence';
-import { fetchWakeability, LIVE_TURN_WINDOW_MS } from './presence-wakeability';
+import { fetchWakeability, LIVE_TURN_WINDOW_MS, WAKE_PICKUP_GRACE_MS } from './presence-wakeability';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
 let fx: BaselineCoordFixture;
@@ -355,9 +355,13 @@ describe('fetchWakeability (real PG)', () => {
     // The incident shape: a recent activity row predates a terminal wake
     // delivery, so heartbeat/activity freshness alone still says "live" even
     // though no post-wake turn started.
+    // WI-10004329: a delivered wake only confirms a miss once it has outlived the
+    // pickup grace, so the miss fixture sits past it (still inside liveTurn).
+    const matured = Math.round(WAKE_PICKUP_GRACE_MS / 1000) + 60;
+    expect(LIVE_TURN_WINDOW_MS).toBeGreaterThan((matured + 5) * 1000);
     await seedAwait('miss');
-    await seedActivity('miss', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
-    await seedDelivery('miss', { status: 'delivered', channel: 'pty-inject', agoSec: 2 });
+    await seedActivity('miss', { kind: 'tool', summary: 'pre-wake work', agoSec: matured + 3 });
+    await seedDelivery('miss', { status: 'delivered', channel: 'pty-inject', agoSec: matured });
 
     // A later activity watermark proves pickup, even though the delivery is
     // still recent and turn-burning.
@@ -386,9 +390,12 @@ describe('fetchWakeability (real PG)', () => {
 
     // The required attempt is newer than the legacy delivery, so it controls the
     // merged watermark and correctly reports a miss despite the older delivery.
-    await seedActivity('required-newest', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
-    await seedDelivery('required-newest', { status: 'delivered', channel: 'pty-inject', agoSec: 10 });
-    await seedAttempt('required-newest', { outcome: 'queued', agoSec: 2 });
+    // A 'queued' attempt is pickup-pending until it outlives the grace
+    // (WI-10004329), so this fixture sits past it.
+    const matured = Math.round(WAKE_PICKUP_GRACE_MS / 1000) + 60;
+    await seedActivity('required-newest', { kind: 'tool', summary: 'pre-wake work', agoSec: matured + 20 });
+    await seedDelivery('required-newest', { status: 'delivered', channel: 'pty-inject', agoSec: matured + 10 });
+    await seedAttempt('required-newest', { outcome: 'queued', agoSec: matured });
 
     // A newer legacy delivery supersedes an older required attempt and proves
     // that this recipient has activity after the latest wake evidence.
@@ -400,6 +407,38 @@ describe('fetchWakeability (real PG)', () => {
     expect(m.get(own('required-only'))?.wakeAttemptMiss).toBe(true);
     expect(m.get(own('required-newest'))?.wakeAttemptMiss).toBe(true);
     expect(m.get(own('legacy-newest'))?.wakeAttemptMiss).toBeUndefined();
+  });
+
+  it('WI-10004329: a just-handed-off wake is pickup-pending, not a miss; a definitive failure still is', async () => {
+    // The incident shape (goal 60d3a8, 2026-09-30): the holder's loop fire was
+    // injected at 18:28:04.731Z, its first tool call landed at 18:28:08.547Z,
+    // and a liveness read inside that 3.8 s gap called the healthy holder
+    // `ended`, so the respawner replaced it.
+    await seedAwait('fresh-delivered');
+    await seedActivity('fresh-delivered', { kind: 'tool', summary: 'pre-wake work', agoSec: 240 });
+    await seedDelivery('fresh-delivered', { status: 'delivered', channel: 'pty-inject', agoSec: 2 });
+
+    await seedActivity('fresh-queued', { kind: 'tool', summary: 'pre-wake work', agoSec: 240 });
+    await seedAttempt('fresh-queued', { outcome: 'queued', agoSec: 2 });
+
+    // No grace for a definitive failure: nobody was re-invoked.
+    await seedActivity('fresh-dropped', { kind: 'tool', summary: 'pre-wake work', agoSec: 240 });
+    await seedDelivery('fresh-dropped', { status: 'dropped', agoSec: 2 });
+
+    // Re-waking must not reset the grace: an older, matured, unanswered wake
+    // still confirms the miss even though a newer wake is pending.
+    const matured = Math.round(WAKE_PICKUP_GRACE_MS / 1000) + 60;
+    await seedActivity('rewoken', { kind: 'tool', summary: 'pre-wake work', agoSec: matured + 30 });
+    await seedAttempt('rewoken', { outcome: 'queued', agoSec: matured });
+    await seedAttempt('rewoken', { outcome: 'queued', agoSec: 2 });
+
+    const ids = ['fresh-delivered', 'fresh-queued', 'fresh-dropped', 'rewoken'];
+    const m = await fetchWakeability(ids.map(own));
+    expect(m.get(own('fresh-delivered'))?.wakeAttemptMiss).toBeUndefined();
+    expect(m.get(own('fresh-delivered'))).toMatchObject({ wakeable: true });
+    expect(m.get(own('fresh-queued'))?.wakeAttemptMiss).toBeUndefined();
+    expect(m.get(own('fresh-dropped'))?.wakeAttemptMiss).toBe(true);
+    expect(m.get(own('rewoken'))?.wakeAttemptMiss).toBe(true);
   });
 
   it('returns an empty map for an empty ownerIds list (no query fired)', async () => {

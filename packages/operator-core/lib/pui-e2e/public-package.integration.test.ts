@@ -28,6 +28,7 @@ import * as path from 'node:path';
 import { spawn as ptySpawn } from '@lydell/node-pty';
 import { WebSocketServer } from 'ws';
 import { VtScreen } from './vt-screen';
+import { hostedForwardInput } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const PACKAGER = path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh');
@@ -519,7 +520,8 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     ]);
     // The token the sign-in just issued, and nothing else, opened the workspace.
     for (const call of cloud.calls.slice(2)) expect(call.authorization).toBe(`Bearer ${CLOUD_TOKEN}`);
-    expect(cloud.remoteInput.join('')).toBe('exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui\r');
+    // This fake cloud predates D-002's program request, so the bundled psu types its interim shell line.
+    expect(cloud.remoteInput.join('')).toBe(hostedForwardInput('pui', []));
     // The sign-in is kept, privately, for the next `pui --connect`.
     const storePath = path.join(home, '.papercusp', 'psu-connections.json');
     expect(lstatSync(storePath).mode & 0o077).toBe(0);

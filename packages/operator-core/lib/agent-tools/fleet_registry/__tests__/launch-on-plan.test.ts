@@ -49,6 +49,14 @@ const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
 const goalModeSubjectMock = vi.hoisted(() => vi.fn());
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
 const obligationAgendaReadMock = vi.hoisted(() => vi.fn());
+// WI-10004401: fleetSlugFromName is stubbed below WITHOUT the real 60-char clamp, which is
+// fine for every test that only needs a kebab-cased name — but the placement-boundary
+// recurrence test MUST run the real derivation, or it passes with or without the fix.
+// A test swaps `impl` for the real function and restores it in a `finally`.
+const fleetSlugImpl = vi.hoisted(() => ({
+  impl: ((name: string) => name.toLowerCase().replace(/\s+/g, '-')) as (name: string) => string,
+  stub: ((name: string) => name.toLowerCase().replace(/\s+/g, '-')) as (name: string) => string,
+}));
 
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
@@ -131,7 +139,7 @@ vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
   // enum built from a stub would accept a vocabulary the real one refuses.
   FLEET_TYPES: ['single', 'paired'] as const,
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
-  fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  fleetSlugFromName: (name: string) => fleetSlugImpl.impl(name),
   getFleet: (...args: unknown[]) => getFleetMock(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
   setFleetHeadcountTarget: (...args: unknown[]) => setFleetHeadcountTargetMock(...args),
@@ -817,6 +825,93 @@ describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)',
       }),
     );
     expect(createFleetIfAbsentMock).toHaveBeenCalled();
+  });
+
+  // WI-10004401: the provider authors its recovery `name` from the RAW
+  // `<harness>-<plan>-plan-fleet` string, while the tool derives the fleet slug with the
+  // REAL 60-char clamp. Before the fix the boundary compared the clamped slug with the raw
+  // name, so for any plan whose derived name exceeded 60 chars NO caller — not even one
+  // sending the provider's recovery args verbatim — could satisfy the required boundary.
+  it('admits the provider recovery args verbatim when the raw fleet name exceeds the 60-char slug clamp', async () => {
+    const realStore = await vi.importActual<typeof import('../../../agent-fleets-store')>('../../../agent-fleets-store');
+    const planSlug = 'session-transcript-exact-fuzzy-search-2026-09-14';
+    const agendaFor = (recoveryArgs: Record<string, unknown>) => ({
+      goalId: 'goal-1',
+      observedAt: new Date().toISOString(),
+      agenda: {
+        evaluations: [
+          {
+            id: 'obl:long-name',
+            ruleId: 'goal-plan-placement',
+            ruleRevision: 'v2',
+            family: 'plan-placement',
+            title: `Place ${planSlug}`,
+            scope: { workspaceId: 'ws-1', ownerId: 'owner-1', goalId: 'goal-1', planSlug },
+            responsibleOwnerId: 'owner-1',
+            episode: planSlug,
+            status: 'due',
+            authority: { kind: 'policy', sourceRef: 'test', revision: 'v2' },
+            reason: `${planSlug} is the provider-selected eligible placement`,
+            priority: 'high',
+            causalRank: 1,
+            applicableDemand: 1,
+            sourceGeneration: 'current-long-name',
+            evidence: [{ ref: `placement:${planSlug}`, observedAt: new Date().toISOString(), freshness: 'current' }],
+            action: {
+              kind: 'delegate',
+              summary: `launch ${planSlug}`,
+              tool: 'fleet:launch-on-plan',
+              args: recoveryArgs,
+            },
+            clearsWhen: { id: 'placement', summary: 'live', evidenceKind: 'state', sourceRef: 'test' },
+            boundary: {
+              boundary: 'fleet:launch-on-plan',
+              refusalCode: 'goal-plan-placement-prerequisite',
+              enforcement: 'required',
+              unknown: 'allow-with-warning',
+            },
+          },
+        ],
+      },
+    });
+    const recoveryArgs = {
+      name: `papercusp-${planSlug}-plan-fleet`,
+      plan: planSlug,
+      harness: 'papercusp',
+      leader: 'spawn',
+      headless: true,
+    };
+    // Calibration: the fixture really is the failing shape (raw name longer than the clamp).
+    expect(recoveryArgs.name.length).toBeGreaterThan(60);
+    expect(realStore.fleetSlugFromName(recoveryArgs.name).length).toBe(60);
+
+    fleetSlugImpl.impl = realStore.fleetSlugFromName;
+    try {
+      createFleetIfAbsentMock.mockClear();
+      obligationAgendaReadMock.mockResolvedValueOnce(agendaFor(recoveryArgs));
+      const admitted = parseHandlerPayload(
+        await invokeLaunchHandler({ ...recoveryArgs, count: 1 } as never, {} as never, null),
+      );
+      expect(admitted.error).toBeUndefined();
+      expect(admitted.ok).toBe(true);
+      expect(createFleetIfAbsentMock).toHaveBeenCalled();
+
+      // Control: a DIFFERENT fleet (differs inside the first 60 chars) still refuses — the
+      // fix normalizes both sides, it does not loosen the required boundary.
+      createFleetIfAbsentMock.mockClear();
+      obligationAgendaReadMock.mockResolvedValueOnce(agendaFor(recoveryArgs));
+      const refused = parseHandlerPayload(
+        await invokeLaunchHandler(
+          { ...recoveryArgs, name: `other-${planSlug}-plan-fleet`, count: 1 } as never,
+          {} as never,
+          null,
+        ),
+      );
+      expect(refused).toMatchObject({ ok: false, error: 'goal-plan-placement-prerequisite' });
+      expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    } finally {
+      fleetSlugImpl.impl = fleetSlugImpl.stub;
+    }
   });
 
   it('reports a GOAL launch refusal in failed[] and releases the slot for a retry', async () => {

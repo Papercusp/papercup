@@ -55,6 +55,7 @@ import {
   type GoalBehaviorArm,
   goalLaunchSettingsSchema,
   goalHolderPolicyProblem,
+  drainFleetTopologyProblem,
   goalHolderPolicySchema,
   launchProfileSchema,
   renderGoalPortfolioBrief,
@@ -661,6 +662,20 @@ export default defineTool({
     const launchSettings = launchSettingsResult.settings;
     const holderProblem = goalHolderPolicyProblem(launchSettings);
     if (holderProblem) return err(holderProblem);
+    // Decided ONCE, before anything is created: the same decision gates the
+    // ceiling floor below and the mint at step 2.5, so the two cannot disagree.
+    const mintsDrainFleet = !soleMemberGoal && (await drainFleetAutoMintEnabled());
+    if (mintsDrainFleet) {
+      // EI-24556293106348130: the drain worker launches LAST, so a ceiling below
+      // the drain topology refuses exactly the agent that claims work.
+      const topologyProblem = drainFleetTopologyProblem(launchSettings);
+      if (topologyProblem) {
+        return err(
+          `${topologyProblem} To run the goal agent alone with no drain fleet, declare the sole-member ` +
+            `contract instead: an inputSchema that requires allowedMembers with const 1, and inputs.allowedMembers: 1.`,
+        );
+      }
+    }
     // ── P-023: typed property DECLARATIONS — validated-on-declare (datatype
     // refs must resolve in datatype_registry; defaults must satisfy their
     // datatype's payload_schema), same placement as the IO-schema gates above.
@@ -803,7 +818,7 @@ export default defineTool({
     const drainWarnings: string[] = [];
     // The goal agent is already the one actor for an explicitly typed
     // `allowedMembers: 1` contract. Do not mint a second actor's lane for it.
-    if (!soleMemberGoal && (await drainFleetAutoMintEnabled())) {
+    if (mintsDrainFleet) {
       try {
         const minted = await mintDrainFleetForGoal({
           workspaceId,

@@ -98,6 +98,7 @@ import {
 import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 import {
+  isGoalHolderLaunchPolicyRefusal,
   launchGoalHolderSession,
   neutralizeGoalHolderSession,
 } from '../harness/routines/goal-holder-launch-action';
@@ -1461,6 +1462,11 @@ export interface GoalHolderRespawnSummary {
   attempted: number;
   respawned: number;
   launchFailed: number;
+  /**
+   * WI-10004329: launches the goal's launch policy refused before any process
+   * was minted. Their rate-cap slot is returned, so they never count as recoveries.
+   */
+  launchRefused: number;
   attachFailed: number;
   /** Attach threw and durable authority could not be read; no cleanup was attempted. */
   attachUnresolved: number;
@@ -1534,6 +1540,12 @@ export interface GoalHolderRespawnDeps {
   refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
   /** Atomically reserve one durable per-goal launch slot before a process is minted. */
   reserveRateSlot?: (goal: GoalRowLike, nowMs: number) => Promise<GoalHolderRespawnRateDecision>;
+  /**
+   * Return the slot reserved at `reservedAtMs` when launch policy refused the
+   * launch before a process was minted (WI-10004329). Resolves true when a
+   * matching attempt was removed.
+   */
+  releaseRateSlot?: (goal: GoalRowLike, reservedAtMs: number) => Promise<boolean>;
   /** Move a capped goal onto the canonical non-terminal human-attention hold. */
   pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<boolean>;
   /**
@@ -1807,6 +1819,73 @@ export async function reserveGoalHolderRespawnRateSlot(
     );
   });
   return decision;
+}
+
+/**
+ * Return ONE rate-cap slot that `reserveGoalHolderRespawnRateSlot` reserved at
+ * `reservedAtMs`, because the launch it paid for was refused by launch policy
+ * before any process was minted (WI-10004329).
+ *
+ * The cap bounds process minting ("reserve one durable per-goal launch slot
+ * before a process is minted"). A policy refusal mints nothing, so keeping its
+ * slot turned a persistent budget refusal into a false "6/6 recoveries" cap on
+ * goal 60d3a8 with zero holders launched. Removes exactly one attempt equal to
+ * `reservedAtMs`; anything else in the ledger, including the needs-human
+ * latch, is untouched. Returns false when no matching attempt exists.
+ */
+export async function releaseGoalHolderRespawnRateSlot(
+  sql: Sql,
+  goal: Pick<GoalRowLike, 'goalId' | 'workspaceId'>,
+  reservedAtMs: number,
+): Promise<boolean> {
+  const rows = await sql<Array<{ released: boolean }>>`
+    WITH candidate AS (
+      SELECT id, workspace_id, metadata,
+             metadata #> '{holderRespawn,attempts}' AS raw_attempts
+        FROM harness_shared.goals
+       WHERE id = ${goal.goalId}
+         AND workspace_id = ${goal.workspaceId}
+         AND jsonb_typeof(metadata #> '{holderRespawn,attempts}') = 'array'
+       FOR UPDATE
+    ), target AS (
+      SELECT c.*,
+             (SELECT min(e.ord)
+                FROM jsonb_array_elements(c.raw_attempts) WITH ORDINALITY AS e(value, ord)
+               WHERE jsonb_typeof(e.value) = 'number'
+                 AND (e.value #>> '{}')::numeric = ${reservedAtMs}::numeric) AS drop_ord
+        FROM candidate c
+    )
+    UPDATE harness_shared.goals AS g
+       SET metadata = jsonb_set(
+             t.metadata,
+             '{holderRespawn,attempts}',
+             COALESCE(
+               (SELECT jsonb_agg(e.value ORDER BY e.ord)
+                  FROM jsonb_array_elements(t.raw_attempts) WITH ORDINALITY AS e(value, ord)
+                 WHERE e.ord <> t.drop_ord),
+               '[]'::jsonb
+             ),
+             false
+           )
+      FROM target t
+     WHERE g.id = t.id AND g.workspace_id = t.workspace_id AND t.drop_ord IS NOT NULL
+    RETURNING true AS released
+  `;
+  const released = rows.length > 0;
+  await appendGoalWriteAudit(sql as unknown as GoalSqlTag, {
+    workspaceId: goal.workspaceId,
+    goalId: goal.goalId,
+    author: HOLDER_RESPAWNER_IDENTITY.ownerId,
+    writeKind: 'holder-respawn-release',
+    actorClass: 'holder-agent-respawner',
+    detail: `launch refused by policy; slot ${reservedAtMs} ${released ? 'returned' : 'not found'}`,
+    atMs: reservedAtMs,
+  }).catch((error) => {
+    console.warn(
+      `[goal-liveness-watchdog] goal:write release audit failed for ${goal.goalId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+  return released;
 }
 
 /**
@@ -2125,6 +2204,8 @@ function holderRespawnDeps(
       workspaceId: goal.workspaceId, goalId: goal.goalId, holder,
     }),
     reserveRateSlot: async (goal, nowMs) => await reserveGoalHolderRespawnRateSlot(sql, goal, nowMs),
+    releaseRateSlot: async (goal, reservedAtMs) =>
+      await releaseGoalHolderRespawnRateSlot(sql, goal, reservedAtMs),
     reconcileStrandedLatch: async (goal, nowMs) =>
       await reconcileStrandedGoalHolderRespawnLatch(sql, goal, nowMs),
     pauseNeedsHuman: async (goal, attemptsInWindow, nowMs) =>
@@ -2165,6 +2246,7 @@ export async function runGoalHolderRespawnOnce(
     attempted: 0,
     respawned: 0,
     launchFailed: 0,
+    launchRefused: 0,
     attachFailed: 0,
     attachUnresolved: 0,
     neutralizeFailed: 0,
@@ -2513,10 +2595,11 @@ export async function runGoalHolderRespawnOnce(
     if (decision.action.kind !== 'restart') continue;
 
     let rate: GoalHolderRespawnRateDecision;
+    const reservedAtMs = deps.now();
     try {
       rate = await (deps.reserveRateSlot ?? (async () => ({ kind: 'reserved', attemptsInWindow: 0 }) as const))(
         goal,
-        deps.now(),
+        reservedAtMs,
       );
     } catch (error) {
       // Fail closed: when the durable budget cannot be read/updated, launching
@@ -2558,6 +2641,28 @@ export async function runGoalHolderRespawnOnce(
     try {
       launched = await deps.launch(goal);
     } catch (error) {
+      if (isGoalHolderLaunchPolicyRefusal(error)) {
+        // WI-10004329: policy refused BEFORE a process was minted. Give the
+        // slot back so a persistent refusal cannot fill the cap and page the
+        // owner about recoveries that never happened. Budget refusals already
+        // open their own deduped owner escalation in the launch resolver;
+        // headcount refusals clear when a goal agent ends.
+        summary.launchRefused += 1;
+        let released = false;
+        try {
+          released = await (deps.releaseRateSlot ?? (async () => false))(goal, reservedAtMs);
+        } catch (releaseError) {
+          console.warn(
+            `[goal-holder-respawner] rate-slot release failed for ${goal.goalId} (slot stays spent): ` +
+              `${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+          );
+        }
+        console.warn(
+          `[goal-holder-respawner] launch refused by policy for ${goal.goalId} ` +
+            `(${error.refusal.reason}; no process minted; rate slot ${released ? 'returned' : 'NOT returned'}): ${error.message}`,
+        );
+        continue;
+      }
       summary.launchFailed += 1;
       console.warn(
         `[goal-holder-respawner] launch failed for ${goal.goalId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,

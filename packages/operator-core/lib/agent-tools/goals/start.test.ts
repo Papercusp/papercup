@@ -641,6 +641,39 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     expect(dataOf(res).drain_fleet).toBeNull();
     expect(dataOf(res).warning).toBeUndefined();
   });
+
+  // EI-24556293106348130: the measured shape. Every goal started with
+  // maxAgents 2 / maxPerFleet 1 ran a leader-only drain fleet, because the
+  // worker launches LAST and the holder + leader had already filled the ceiling.
+  it('refuses ceilings that cannot hold the drain worker, before anything is created', async () => {
+    const res = await call({ maxAgents: 2, maxPerFleet: 1 });
+
+    expect(isError(res)).toBe(true);
+    const text = String((res as { content: Array<{ text: string }> }).content[0].text);
+    expect(text).toContain('maxAgents=2');
+    expect(text).toContain('maxPerFleet=1');
+    expect(text).toContain('allowedMembers'); // this door names its sole-member way out
+    expect(mintMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(sql.some((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBe(false);
+  });
+
+  it('admits ceilings exactly at the drain floor and still launches the worker', async () => {
+    const res = await call({ maxAgents: 3, maxPerFleet: 2 });
+
+    expect(isError(res)).toBe(false);
+    expect(mintMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2); // leader + worker
+  });
+
+  it('does not apply the drain floor when no drain fleet will be minted', async () => {
+    automintEnabled = false;
+    const res = await call({ maxAgents: 2, maxPerFleet: 1 });
+
+    expect(isError(res)).toBe(false);
+    expect(mintMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('goals:start — rollback', () => {

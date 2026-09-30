@@ -5,6 +5,7 @@ import {
   sampleDiskSnapshots,
   type DiskSnapshot,
 } from '../../storage/disk-space-alarm';
+import { GIT_FETCH_HEADROOM_REFUSAL } from './git-fetch-headroom-refusal';
 
 type GitResult = { code: number; stdout: string; stderr: string };
 
@@ -43,7 +44,7 @@ export async function withGitFetchHeadroom(
       }
       const reserve = criticalWriteHeadroomBytes(snapshot.totalBytes, policy);
       return snapshot.freeBytes <= reserve
-        ? `git fetch stopped for disk headroom at ${path}: ${snapshot.freeBytes} bytes available; critical reserve ${reserve} bytes`
+        ? `${GIT_FETCH_HEADROOM_REFUSAL} at ${path}: ${snapshot.freeBytes} bytes available; critical reserve ${reserve} bytes`
         : null;
     } catch (error) {
       return `git fetch disk headroom unmeasured at ${path}: ${String(error)}`;

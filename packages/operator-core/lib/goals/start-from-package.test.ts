@@ -464,6 +464,32 @@ describe('startGoalFromPackage — post-start stamps are fail-soft', () => {
     );
   });
 
+  // EI-24556293106348130: this door mints the fleet rows and the watchdog then
+  // launches leader + worker under these ceilings; below the floor the worker is
+  // refused every time. Refuse before anything is adopted, minted, or started.
+  it('refuses a package whose ceilings cannot hold the drain worker', async () => {
+    // Mint path (no stub): the PACKAGE's settings are the effective ones.
+    const { deps, startById } = makeDeps({
+      resolvePackage: vi.fn(() => pkg({ launchSettings: { maxAgents: 2, maxPerFleet: 1 } })),
+      drainEnabled: vi.fn(async () => true),
+    });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: false, reason: 'launch-ceilings-too-low' });
+    expect(!res.ok && res.detail).toContain('maxAgents=2');
+    expect(startById).not.toHaveBeenCalled();
+    expect(deps.mintRow).not.toHaveBeenCalled();
+    expect(deps.mintDrain).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the drain floor when no drain fleet will be minted', async () => {
+    const { deps } = makeDeps({
+      resolvePackage: vi.fn(() => pkg({ launchSettings: { maxAgents: 2, maxPerFleet: 1 } })),
+      drainEnabled: vi.fn(async () => false),
+    });
+    const res = await run(deps, { harness: 'papercusp' });
+    expect(res).toMatchObject({ ok: true, drainFleet: null });
+  });
+
   it('a drain-mint failure is a warning on a still-successful start', async () => {
     const { deps } = makeDeps({
       readInstances: vi.fn(async () => [stubRow()]),

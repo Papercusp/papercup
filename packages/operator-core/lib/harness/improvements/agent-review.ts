@@ -649,6 +649,14 @@ export async function reconcileAgentReviewGrade(
   if (ledger.grade == null) throw new Error(`agent review ledger '${input.ideaId}' has no standing grade`);
 
   const grade = ledger.grade;
+  // `gradedBy` is ATTRIBUTION only (comments, the revision notice). The ledger's standing
+  // grade may be authored by someone who never held the work item — an owner-sovereign grade
+  // on a pre-existing su-ideate row that agent review enrolled with `preserveExisting`
+  // (EI-24720168531118378, EI-21887295701926471). Every CAS release/transfer below therefore
+  // targets the CURRENT claim holder (`workItem.assignee`), never `ledger.gradedBy`: releasing
+  // with `expectedAssignee:'owner'` against a row held by the reviewer session always lost the
+  // CAS, threw 'could not release reviewer claim' AFTER the approval payload had committed,
+  // and the row stayed held until a manual `work_items:release`.
   const gradedBy = ledger.gradedBy ?? input.gradedBy;
   if (grade <= AGENT_REVIEW_MAX_REVISION_GRADE) {
     const feedback = ledger.feedback?.trim();
@@ -684,7 +692,7 @@ export async function reconcileAgentReviewGrade(
       if (changed && workItem.assignee) {
         const released = await deps.releaseWorkItem(workItem.id, {
           ...(workItem.harness ? { harness: workItem.harness } : {}),
-          expectedAssignee: gradedBy,
+          expectedAssignee: workItem.assignee,
         });
         if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
       }
@@ -694,7 +702,7 @@ export async function reconcileAgentReviewGrade(
     if (changed) {
       const transferred = await deps.claimWorkItem(workItem.id, current.submittedBy, {
         ...(workItem.harness ? { harness: workItem.harness } : {}),
-        ...(workItem.assignee ? { fromHolder: gradedBy } : {}),
+        ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
       });
       if (!transferred) {
         // WI-41687: the submitter frequently no longer EXISTS by review time — a session
@@ -719,7 +727,7 @@ export async function reconcileAgentReviewGrade(
         if (workItem.assignee) {
           await deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
-            expectedAssignee: gradedBy,
+            expectedAssignee: workItem.assignee,
           });
         }
       }
@@ -763,7 +771,7 @@ export async function reconcileAgentReviewGrade(
   if (workItem.assignee) {
     const released = await deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
-      expectedAssignee: gradedBy,
+      expectedAssignee: workItem.assignee,
     });
     if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
   }
@@ -922,6 +930,26 @@ export async function claimNextAgentReview(
     if (!workItem || !agentReviewEligibility(workItem).eligible) continue;
     const review = readAgentReviewState(workItem.payload);
     if (review?.status !== 'pending' || review.submittedBy === input.reviewer) continue;
+    // A 'pending' round whose ledger row ALREADY carries a standing grade is not reviewable:
+    // `enterAgentReview` enrolls with `preserveExisting`, so a pre-existing su-ideate row that
+    // the owner had already graded keeps that sovereign grade while the payload starts at
+    // 'pending' — and nothing reconciles the two until someone grades. Handing it out made the
+    // reviewer burn a review on a foregone conclusion (their grade cannot displace the owner's
+    // and is refused or ignored). Converge it here from the standing grade instead, then move
+    // on. Best-effort: a row that cannot converge (e.g. a low grade with no feedback) is
+    // skipped, never handed out. (EI-24720168531118378)
+    const standing = await deps.readLedgerGrade(review.ledgerIdeaId);
+    if (standing && standing.grade != null && standing.workItemId === workItem.id) {
+      try {
+        await reconcileAgentReviewGrade(
+          { ideaId: review.ledgerIdeaId, gradedBy: standing.gradedBy ?? input.reviewer },
+          deps,
+        );
+      } catch {
+        // leave it for a direct regrade / the next pickup; never hand out a settled row
+      }
+      continue;
+    }
     const agentReviewAdmission = workItem.harness
       ? mintAgentReviewClaimAdmission({
           itemId: workItem.id,

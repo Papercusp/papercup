@@ -95,6 +95,7 @@ const HOST_SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 /** This script's own path — the file whose LOADED contents this process runs.
  *  Separate from HOST_SCRIPT_DIR because WI-38292 needs the file, not the dir. */
 const HOST_SCRIPT_PATH = fileURLToPath(import.meta.url);
+const LAUNCHER_SCRIPT_PATH = join(HOST_SCRIPT_DIR, 'psu-launcher.mjs');
 
 /** WI-38292: sha256 of a host script ON DISK, or null when unreadable.
  *  `path` is overridable so the staleness guard below can be proven falsifiable
@@ -115,17 +116,33 @@ export function hashHostScript(path = HOST_SCRIPT_PATH) {
  *  makes that detectable at all: it is the only value in the process that still
  *  describes the code actually executing after the file on disk moves on. */
 export const LOADED_HOST_CODE_VERSION = hashHostScript();
+// The launcher supplies the long-lived carry/model callbacks. Replacing only
+// that sibling leaves this process on its old callbacks until it also adopts.
+const LOADED_LAUNCHER_CODE_VERSION = hashHostScript(LAUNCHER_SCRIPT_PATH);
 
-/** WI-38292: is this host executing code older than what is on disk?
- *  `stale` is true ONLY when both hashes are known and differ — an unreadable file
+/** WI-38292: is this host or its launcher executing code older than disk?
+ *  `stale` is true when either component's known hashes differ — an unreadable file
  *  degrades to "not stale" so a transient fs error can never turn a working respawn
  *  path into a warning storm. Pure + exported for tests. */
 export function hostCodeStaleness({
   loaded = LOADED_HOST_CODE_VERSION,
   path = HOST_SCRIPT_PATH,
+  launcherLoaded = LOADED_LAUNCHER_CODE_VERSION,
+  launcherPath = LAUNCHER_SCRIPT_PATH,
 } = {}) {
   const onDisk = hashHostScript(path);
-  return { stale: Boolean(loaded && onDisk && loaded !== onDisk), loaded, onDisk };
+  const launcherOnDisk = hashHostScript(launcherPath);
+  const launcher = {
+    stale: Boolean(launcherLoaded && launcherOnDisk && launcherLoaded !== launcherOnDisk),
+    loaded: launcherLoaded,
+    onDisk: launcherOnDisk,
+  };
+  return {
+    stale: Boolean(loaded && onDisk && loaded !== onDisk) || launcher.stale,
+    loaded,
+    onDisk,
+    launcher,
+  };
 }
 
 /** WI-38292: the exit code that asks the psu shim's re-exec loop to re-run the
@@ -10098,6 +10115,7 @@ export function hostThroughPty(o) {
             mode: respawnMode,
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
+            launcher: hostCode.launcher ?? null,
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
@@ -10340,6 +10358,7 @@ export function hostThroughPty(o) {
             },
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
+            launcher: hostCode.launcher ?? null,
             drillId: drillId || null,
             sessionClass: sessionClass || null,
           });
@@ -10348,6 +10367,7 @@ export function hostThroughPty(o) {
               mode: respawnMode,
               loaded: hostCode.loaded,
               onDisk: hostCode.onDisk,
+              launcher: hostCode.launcher ?? null,
               handoffPath,
               nativeId: nativeId ?? null,
             });

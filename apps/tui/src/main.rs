@@ -725,6 +725,25 @@ async fn terminate_signal_listener(tx: UnboundedSender<Event>) {
 #[cfg(not(unix))]
 async fn terminate_signal_listener(_tx: UnboundedSender<Event>) {}
 
+/// WI-10004322: a checkout install can sit weeks behind its source with nothing
+/// at launch saying so. Off the UI thread (git must never delay the first
+/// frame), compare this build with the checkout its manifest names and raise one
+/// warning notification when pui's own sources have moved on. Silent when the
+/// answer is unknown, for release installs, and for binaries that are not the
+/// installed one.
+fn spawn_checkout_drift_notice(tx: UnboundedSender<Event>) {
+    std::thread::spawn(move || {
+        if let Some(message) = install::launch_drift_notice() {
+            let _ = tx.send(Event::Notify(models::Notif {
+                level: "warn".into(),
+                message,
+                harness: None,
+                ts: None,
+            }));
+        }
+    });
+}
+
 #[cfg(test)]
 mod su_session_exit_tests {
     use super::su_session_exit_note;
@@ -1118,6 +1137,15 @@ async fn run_doctor() -> Result<()> {
                 &check.companion_sha256[..12]
             );
             println!("manifest:       {}", check.manifest_path.display());
+            if let Some(root) = check.manifest.source_root.as_deref() {
+                match install::checkout_drift(root, install::BUILD_SHA) {
+                    Some(drift) => match drift.notice() {
+                        Some(notice) => println!("checkout:       {notice}"),
+                        None => println!("checkout:       current with {root}"),
+                    },
+                    None => println!("checkout:       unknown (could not compare with {root})"),
+                }
+            }
             for warning in &check.warnings {
                 println!("warning:        {warning}");
             }
@@ -1461,6 +1489,7 @@ async fn run<B: Backend>(
     }
     spawn_input_listener(tx.clone());
     tokio::spawn(terminate_signal_listener(tx.clone()));
+    spawn_checkout_drift_notice(tx.clone());
     let sync_pane = PaneFetchScope {
         pinned,
         selected: Arc::new(Mutex::new(app.tab)),
