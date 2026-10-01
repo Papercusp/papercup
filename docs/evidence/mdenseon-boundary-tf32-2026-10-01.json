@@ -4,7 +4,7 @@
   "item": "P-006",
   "workItem": "WI-10004540",
   "defect": "EI-24794784159846761",
-  "status": "paired TF32 cause, Python CPU tensor boundaries, native CPU single-text boundaries, corrected CUDA short cells and padded CUDA diagnostic verified; full and native CUDA acceptance incomplete",
+  "status": "CPU boundaries and corrected Python CUDA padded diagnostic verified; native CUDA has measured numerical and allocation incompatibilities; GPU population acceptance incomplete",
   "model": "lightonai/mDenseOn",
   "revision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
   "runtime": { "torch": "2.14.1+cpu", "transformers": "4.57.6", "onnxruntime": "1.23.2", "tokenizers": "0.22.2" },
@@ -540,6 +540,34 @@
     "notCheckedByThisRoute": ["native worker compute-kernel profile", "native worker input tensor trace", "native padded/mixed ONNX tensors: worker accepts one text per call"],
     "limitation": "Native CPU observations are distinct from the Python actual padded/mixed tensor proof. No claim is made that the shipped worker accepts a batched tensor or exposes actual input tensors/kernel profiles."
   },
-  "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU boundary inference", "native worker input/kernel traces"],
+  "nativeCuda": {
+    "failurePath": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cuda-v1.json.failure.json",
+    "failureSha256": "8cd1ec1de5284fc59e74513093df3632f2930a76ce9b8eee8e3369ac933d8a17",
+    "taskId": "0mupw1yg91kh5mlw651",
+    "exitCode": 1,
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "nativeTransport": "shipped-worker-single-text",
+    "providerProof": "worker-session-construction-report",
+    "shortCells": [
+      { "id": "short-query", "sha256": "6171588929b03016b831fadaae37cb41cd46a3a1e533d6f4810fe996ad3c7dda", "maximumAbsoluteError": 0.00010595843195915222, "passed": false },
+      { "id": "short-document", "sha256": "c14cb75707e56c210171022dc12034d146ab5a88e0290255ffd36cfd781a0aea", "maximumAbsoluteError": 0.00007253140211105347, "passed": false },
+      { "id": "unicode", "sha256": "5a688364a561e1f63bd45751a9cf4285e8525ef257a1bf026b33f553a3e9bd9d", "maximumAbsoluteError": 0.00016099214553833008, "passed": false },
+      { "id": "code", "sha256": "279a63ba5f91ac8e8187e1e156d0f6b7414e3d4690888ced742ce1ddd0daae62", "maximumAbsoluteError": 0.00010994449257850647, "passed": false },
+      { "id": "whitespace", "sha256": "a9255a31f950460c55fd1c255c63ac73b29a9fbad1361b5dde42c8e944aaeab2", "maximumAbsoluteError": 0.00017272308468818665, "passed": false },
+      { "id": "empty", "sha256": "16f0d5d139d7ebe235e69761cbf7f3c5ae6fba5dadd6b4e3d23a19b189866f7e", "maximumAbsoluteError": 0.00005835294723510742, "passed": false }
+    ],
+    "shortTokenIdsEqualToReference": true,
+    "shortMinimumCosine": 0.9999988049594574,
+    "shortMaximumAbsoluteError": 0.00017272308468818665,
+    "passedFixedVectorGates": false,
+    "numericalDefect": "EI-24804423187750315",
+    "numericalRootCauseStatus": "TF32 hypothesis only for native worker; native paired precision probe remains required. Python paired TF32 cause does not prove the native mechanism.",
+    "allocationFailure": { "cell": "single-full-8192", "node": "/layers.0/attn/Add_2", "requestedBufferBytes": 3221225472, "defect": "EI-24795092971119894" },
+    "capacityBeforeLaunch": { "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/native-boundary-cuda-v1-capacity-before.csv", "sha256": "1a6a271732f8fd6c67c260e2bf5df070c0d68e9a68cdfcede700f15a92a16188", "totalMiB": 24576, "freeMiB": 7004, "limitation": "Launch-time observation; failure-time capacity was not sampled." },
+    "retainedIndependentReferenceCells": 8,
+    "notCheckedByThisAttempt": ["successful full-8192 vector", "over-limit inference", "padded request group", "mixed-length request group", "full-population rankings", "compute-kernel profile", "worker input tensor trace"],
+    "limitation": "Current-tree worker source fingerprints are retained in the private receipt. The MCP operator's deployed SHA is not the native workload's code identity."
+  },
+  "notChecked": ["successful GPU single-full-8192 vector parity", "GPU single-over-limit", "GPU mixed-length tensor", "full-population GPU rankings", "native Node GPU batches/over-limit", "native worker input/kernel traces", "native CUDA paired precision cause"],
   "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
 }
