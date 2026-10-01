@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMemoryWorkDeadline, type MemoryWorkDeadline } from '../../../memory/op-deadline';
+import type { MemoryBlockBuildContext } from '../../../memory/injection-block-cache';
 import {
   configureReadCursorStore,
   DELIVERY_TOKEN_KEY,
@@ -164,11 +165,12 @@ beforeEach(() => {
       async (
         _workspaceId: string,
         _scopeKey: string,
-        build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
+        build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<string | null>,
       ) => {
         const deadline = createMemoryWorkDeadline(2000);
         try {
-          return { status: 'ready', block: await build(deadline) };
+          // A cold miss: the caller waits on this build (the real cache's contract).
+          return { status: 'ready', block: await build(deadline, { callerWaiting: () => true }) };
         } finally {
           deadline.close();
         }
@@ -240,6 +242,11 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
       harnessSlugs: ['papercusp'],
       session: { sessionId: 'sess-1', port: 'turn-start' },
     });
+    // WI-10004485: the cache says whether anyone still waits on this build, so a
+    // background rebuild is not bounded by a hook wall nobody is behind.
+    const { callerWaiting } = buildMemoryContextBlockMock.mock.calls[0]![0] as { callerWaiting?: () => boolean };
+    expect(typeof callerWaiting).toBe('function');
+    expect(callerWaiting!()).toBe(true);
   });
 
   it("even a 1-char prompt reaches it — relevance is the floor's job, not the length's", async () => {
