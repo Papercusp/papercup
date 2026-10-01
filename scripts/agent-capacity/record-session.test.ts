@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import path from 'node:path';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+
+describe('corpusFileFromArgv', () => {
+  it('defaults to the shipped corpus and resolves --tasks-file when given', () => {
+    expect(corpusFileFromArgv(['node', 'record-session.ts', '--cli', 'claude'])).toBe(CORPUS_FILE);
+    expect(corpusFileFromArgv(['node', 'x', '--tasks-file', 'p019/tasks.json', '--cli', 'codex'])).toBe(path.resolve('p019/tasks.json'));
+  });
+  it('does not read load-driver --corpus (the recordings dir) as the task file', () => {
+    expect(corpusFileFromArgv(['node', 'load-driver.ts', '--corpus', '/tmp/recordings'])).toBe(CORPUS_FILE);
+  });
+  it('refuses --tasks-file with no path instead of silently using the shipped corpus', () => {
+    expect(() => corpusFileFromArgv(['node', 'x', '--tasks-file'])).toThrow(/needs a path/);
+    expect(() => corpusFileFromArgv(['node', 'x', '--tasks-file', '--cli'])).toThrow(/needs a path/);
+  });
+});
 
 describe('corpus manifest', () => {
   const corpus = loadCorpus();
