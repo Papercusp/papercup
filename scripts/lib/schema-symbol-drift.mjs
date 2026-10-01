@@ -62,9 +62,11 @@ export function exportBlocks(src) {
   let current = null;
   /** @type {string[]} */
   let buf = [];
+  // Trailing whitespace is trimmed: appending a block after the last one moves the blank line
+  // that used to end the file, which is not a change to the previous block.
   const flush = () => {
-    if (current === null) header = buf.join("\n");
-    else blocks.set(current, buf.join("\n"));
+    if (current === null) header = buf.join("\n").trimEnd();
+    else blocks.set(current, buf.join("\n").trimEnd());
   };
   for (const line of src.split("\n")) {
     const m = EXPORT_RE.exec(line);

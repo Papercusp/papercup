@@ -87,6 +87,7 @@ import {
   loadPassDurations,
   loadReuseProofs,
 } from "./lib/executed-source-map.mjs";
+import { gitSchemaDriftJudge } from "./lib/schema-symbol-drift.mjs";
 import {
   TEST_REUSE_SKIP_LIST_ENV,
   estimateReuseSavings,
@@ -106,6 +107,7 @@ import {
   writeReuseSkipList,
 } from "./lib/test-pass-reuse.mjs";
 import { LANE_SCRIPTS as SHARED_LANE_SCRIPTS } from "./lib/targeted-task-reuse.mjs";
+import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
 import {
   decideRetry,
   deriveRetryBudget,
@@ -5050,6 +5052,8 @@ function tsconfigAliasesFor(wsRoot) {
 // safe direction: over-running costs minutes, under-running certifies nothing.
 let checkpointMaterializationSelection = null;
 let checkpointTargetedReVerdictSelection = null;
+/** Why the exact radius was refused, when the admission rule (not a failed selection) refused it. */
+let checkpointTargetedReVerdictRefusal = null;
 
 // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): the executed-source map. The
 // static closure the selector computes is a SUPERSET; a map of what each test file actually
@@ -5271,14 +5275,16 @@ if (relatedOnly) {
         .sort((a, b) =>
           `${a.workspace}\0${a.file}`.localeCompare(`${b.workspace}\0${b.file}`),
         );
-      const everyTaskIsCoveredByTheExactFileRunner = tasks.every((task) =>
-        narrowable(task.script),
-      );
-      if (
-        everyTaskIsCoveredByTheExactFileRunner &&
-        selectedInvariantGuards.length === 0 &&
-        affectedFiles.length > 0
-      ) {
+      // D-129 (1): invariant guards no longer refuse the exact radius — each one is emitted as
+      // its own AFFECTED_GUARD leg, which the repair-head consumer runs beside the exact files.
+      // A changed global runner input still widens fully (see exact-radius-admission.mjs).
+      const admission = exactRadiusAdmission({
+        everyTaskNarrowable: tasks.every((task) => narrowable(task.script)),
+        affectedFileCount: affectedFiles.length,
+        changedPaths: invariantGuardChangedPaths(),
+      });
+      if (!admission.admitted) checkpointTargetedReVerdictRefusal = admission.reason;
+      if (admission.admitted) {
         checkpointTargetedReVerdictSelection = {
           affectedWorkspaces: [...new Set(affected.map((ws) => ws.name))].sort(),
           affectedFiles,
@@ -5419,7 +5425,9 @@ if (printAffected) {
       }
     } else {
       outSync(
-        "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
+        `RELATED_AFFECTED_FILES status=full reason=${
+          checkpointTargetedReVerdictRefusal ?? "no-complete-exact-file-radius"
+        }`,
       );
     }
   }
@@ -5602,6 +5610,10 @@ async function armTestPassReuse(taskList) {
   const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
   // gate-test-reuse-yield-2026-10-01 P-002: a scripts-only root package.json change is not global.
   const inertGlobalChange = gitInertGlobalChange({ repoRoot: ROOT });
+  // P-007 (D-010): a regenerated DB schema reaches only the proofs that name a changed table.
+  // Reads the judged tree from the working tree: sound because a dirty checkout already
+  // returned off("dirty-checkout") above.
+  const schemaDriftJudge = gitSchemaDriftJudge({ repoRoot: ROOT, judgedSha });
   // P-003: the test-config files the vitest main process can load, derived at the judged tree.
   // Unavailable = null, which keeps every test-config source file global (the pre-P-003 rule).
   let testConfigMainProcess = null;
@@ -5704,6 +5716,7 @@ async function armTestPassReuse(taskList) {
         inertGlobalChange,
         testConfigMainProcess,
         toolchainTsconfigs,
+        schemaDriftJudge,
       });
       // P-012: the files reuse WOULD have skipped but that run this time; a red among them is a
       // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.
