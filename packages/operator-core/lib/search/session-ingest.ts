@@ -234,6 +234,18 @@ export interface IngestStats {
   /** Exclusive wall-time buckets, including await/scheduling time, not CPU time.
    * `other` covers sweep bookkeeping outside the measured operations. */
   phaseMs?: Record<'setup' | 'history' | 'discovery' | 'state' | 'metadata' | 'decode' | 'writes' | 'metadataBackfill' | 'chats' | 'other', number>;
+  /** One receipt per nonempty adapter/repair operation, not per file or row.
+   * Wall spans include database and scheduling waits; they do not measure CPU.
+   * Counts/spans identify the operation without retaining session IDs or SQL. */
+  metadataBackfills?: Array<{
+    sourceKind: SourceKind;
+    operation: 'sessionOwners' | 'codexAdvSessions';
+    requested: number;
+    updated?: number;
+    startedAtMs: number;
+    durationMs: number;
+    status: 'completed' | 'failed';
+  }>;
   skipped?: string;
 }
 
@@ -245,7 +257,8 @@ export function sessionIngestLogLine(stats: IngestStats): string | null {
   }
   return `[session-ingest] +${stats.turnsInserted} turn(s) +${parts} part(s) from ${stats.filesIngested} file(s) ` +
     `+ ${stats.chatsIngested} chat turn(s) (${stats.filesScanned} scanned, ${stats.errors} error(s), ${stats.durationMs}ms)` +
-    (stats.phaseMs ? ` phases=${JSON.stringify(stats.phaseMs)}` : '');
+    (stats.phaseMs ? ` phases=${JSON.stringify(stats.phaseMs)}` : '') +
+    (stats.metadataBackfills?.length ? ` metadataBackfills=${JSON.stringify(stats.metadataBackfills)}` : '');
 }
 
 /** Injected boilerplate prefixes that would pollute recall — not real speech. */
@@ -1746,11 +1759,11 @@ async function backfillSessionOwners(
   sql: Sql,
   sourceKind: SourceKind,
   ownersBySession: Map<string, string>,
-): Promise<void> {
-  if (!ownersBySession.size) return;
+): Promise<number> {
+  if (!ownersBySession.size) return 0;
   const sessionIds = [...ownersBySession.keys()];
   const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
-  await sql`
+  const repaired = await sql`
     UPDATE harness_shared.session_turns AS turns
        SET owner = resolved.owner
       FROM UNNEST(${sql.array(sessionIds)}::text[], ${sql.array(owners)}::text[])
@@ -1760,6 +1773,7 @@ async function backfillSessionOwners(
        AND turns.session_id = resolved.session_id
        AND turns.owner IS DISTINCT FROM resolved.owner
   `;
+  return repaired.count ?? 0;
 }
 
 /**
@@ -2742,6 +2756,35 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     try { return await work(); }
     finally { phaseMs[phase] += performance.now() - began; }
   }
+  async function measureMetadataBackfill(
+    sourceKind: SourceKind,
+    operation: NonNullable<IngestStats['metadataBackfills']>[number]['operation'],
+    requested: number,
+    work: () => Promise<number>,
+  ): Promise<void> {
+    if (!requested) return;
+    const startedAtMs = Date.now();
+    const began = performance.now();
+    const receipt: NonNullable<IngestStats['metadataBackfills']>[number] = {
+      sourceKind, operation, requested, startedAtMs, durationMs: 0, status: 'failed',
+    };
+    try {
+      receipt.updated = await measure('metadataBackfill', work);
+      receipt.status = 'completed';
+    } catch (err) {
+      // Metadata repair must not discard successful tail/offset progress or
+      // prevent the other repair. Report it and retry the still-needed repair
+      // on the next ordinary sweep, including unchanged transcripts.
+      stats.errors += 1;
+      if ((stats.errorSample ??= []).length < 3) {
+        const label = operation === 'sessionOwners' ? 'owner backfill' : 'adv metadata';
+        stats.errorSample.push(`${sourceKind} ${label}: ${(err as Error).message.slice(0, 200)}`);
+      }
+    } finally {
+      receipt.durationMs = Math.round((performance.now() - began) * 10) / 10;
+      (stats.metadataBackfills ??= []).push(receipt);
+    }
+  }
   __sweep.running = true;
   try {
     let enabled = true;
@@ -2956,16 +2999,11 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           } catch { /* bookkeeping best-effort */ }
         }
       }
-      await measure('metadataBackfill', () => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill));
+      await measureMetadataBackfill(adapter.sourceKind, 'sessionOwners', ownerBackfill.size,
+        () => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill));
       if (adapter.sourceKind === 'codex') {
-        try {
-          await measure('metadataBackfill', () => backfillCodexAdvSessions(sql, codexMetadataBackfill));
-        } catch (err) {
-          stats.errors += 1;
-          if ((stats.errorSample ??= []).length < 3) {
-            stats.errorSample.push(`codex adv metadata: ${(err as Error).message.slice(0, 200)}`);
-          }
-        }
+        await measureMetadataBackfill(adapter.sourceKind, 'codexAdvSessions', codexMetadataBackfill.size,
+          () => backfillCodexAdvSessions(sql, codexMetadataBackfill));
       }
     }
 
