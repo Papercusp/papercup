@@ -183,6 +183,7 @@ interface DurableRunSnapshotRow {
   task_cwd?: string | null;
   task_harness_slug?: string | null;
   task_workspace_id?: string | null;
+  snapshot_missing?: boolean;
 }
 
 function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
@@ -403,6 +404,40 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
 
 type DetachedReportRecoveryScope = { workspaceId: string; harnessSlug: string; root: string };
 
+/** The short-lived UI snapshot may expire before its saved evidence is recovered. */
+async function readReportRecoveryTask(
+  runId: string, scope: DetachedReportRecoveryScope, sql: SqlLike,
+): Promise<DurableRunSnapshotRow | null> {
+  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(sql`
+    SELECT task_ledger.detail->>'runId' AS run_id, task_ledger.task_id,
+           COALESCE(snapshot.kind, task_ledger.detail->>'kind') AS kind,
+           COALESCE(snapshot.label, task_ledger.title) AS label,
+           snapshot.file_path, COALESCE(snapshot.command, task_ledger.argv) AS command,
+           COALESCE(snapshot.status, 'running') AS status, snapshot.exit_code,
+           COALESCE(snapshot.started_at, task_ledger.started_at) AS started_at,
+           snapshot.finished_at, COALESCE(snapshot.output, '') AS output,
+           COALESCE(snapshot.truncated, false) AS truncated,
+           task_ledger.state AS task_state, task_ledger.deadline_at AS task_deadline_at,
+           task_ledger.exit_code AS task_exit_code, task_ledger.ended_at AS task_ended_at,
+           task_ledger.detail AS task_detail, task_ledger.cwd AS task_cwd,
+           task_ledger.harness_slug AS task_harness_slug,
+           task_ledger.workspace_id AS task_workspace_id,
+           snapshot.run_id IS NULL AS snapshot_missing
+      FROM harness_shared.task_ledger AS task_ledger
+      LEFT JOIN harness_shared.testing_run_snapshots AS snapshot
+        ON snapshot.run_id = task_ledger.detail->>'runId' AND snapshot.task_id = task_ledger.task_id
+     WHERE task_ledger.detail->>'runId' = ${runId}
+       AND task_ledger.workspace_id = ${scope.workspaceId}
+       AND task_ledger.cwd = ${scope.root}
+       AND (task_ledger.harness_slug = ${scope.harnessSlug} OR task_ledger.harness_slug IS NULL)
+       AND task_ledger.class = 'test-run' AND task_ledger.launched_by = 'testing-run-store'
+       AND task_ledger.detail->>'kind' = 'vitest' AND task_ledger.state = 'exited'
+     LIMIT 2
+  `);
+  // Ambiguous launch identity and unavailable task reads cannot authorize ingestion.
+  return rows?.length === 1 ? rows[0]! : null;
+}
+
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
@@ -433,7 +468,8 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, re
   }
   const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(query);
   if (rows === null) throw new TestingRunSnapshotUnavailableError();
-  const row = rows[0];
+  const reportTaskRecovery = rows.length === 0 && recoveryScope !== undefined;
+  const row = rows[0] ?? (recoveryScope ? await readReportRecoveryTask(runId, recoveryScope, sql) : null);
   if (!row) return null;
   // Exact evidence mappings supply the missing harness on older enrolments.
   // Their durable workspace and execution root must still agree.
@@ -441,6 +477,11 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, re
     && row.task_cwd === recoveryScope.root) row.task_harness_slug = recoveryScope.harnessSlug;
   const snapshot = snapshotFromRow(row);
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
+  if (reportTaskRecovery) {
+    const recovered = await reconcilePersistedReportArtifact(snapshot, row, sql);
+    // A task reconstructed for evidence recovery is never a liveness verdict.
+    return recovered === snapshot ? null : recovered;
+  }
   return reconcilePersistedOrphan(snapshot, row, sql);
 }
 
@@ -847,6 +888,9 @@ async function reconcilePersistedReportArtifact(
       // Sibling recovery readers share one transaction lock. Ingestion and the
       // lifecycle CAS commit together; a crash cannot leave half a report.
       await scopedSql`SELECT pg_advisory_xact_lock(hashtextextended(${`testing-run-report:${snapshot.runId}`}, 0))`;
+      if (row.snapshot_missing && !(await persistRunSnapshot(snapshot, scopedSql))) {
+        throw new Error('detached_report_snapshot_restore_failed');
+      }
       const existing = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
       if (existing === null) throw new Error('detached_report_ledger_unavailable');
       for (const { artifact, rows } of reports) {

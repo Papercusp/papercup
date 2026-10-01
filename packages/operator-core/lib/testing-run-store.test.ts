@@ -554,11 +554,14 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'expired legacy snapshot', status: 'error', expected: 'pass', legacy: true, expired: true },
     { name: 'pruned legacy snapshot', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true },
     { name: 'pruned snapshot wrong tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, wrongScope: true },
+    { name: 'pruned snapshot partial report', status: 'running', expected: null, legacy: true, expired: true, missing: true, partial: true },
+    { name: 'pruned snapshot ambiguous task', status: 'running', expected: null, legacy: true, expired: true, missing: true, ambiguous: true },
   ] as const)('saved report recovery after worker disappearance: $name', async (scenario) => {
     const options = scenario as {
       status: string; expected: string | null; failure?: boolean; cancelled?: boolean;
       partial?: boolean; writeFailure?: boolean; casLost?: boolean; legacy?: boolean; wrongScope?: boolean;
       expired?: boolean; missing?: boolean;
+      ambiguous?: boolean;
     };
     const { status } = options;
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-recovery-');
@@ -593,6 +596,7 @@ describe('durable detached snapshot lifecycle', () => {
         const taskRead = statement.includes('FROM harness_shared.task_ledger AS task_ledger');
         if (snapshotRead && options.expired) return [];
         if (taskRead && options.wrongScope) return [];
+        if (taskRead && options.ambiguous) return [{}, {}];
         if (snapshotRead || taskRead) return [{
           run_id: snapshot.runId, task_id: snapshot.taskId, kind: 'vitest', label: 'saved',
           file_path: null, command: options.legacy ? [
@@ -626,7 +630,9 @@ describe('durable detached snapshot lifecycle', () => {
       if (options.expired) {
         const taskQuery = sql.mock.calls.find(([strings]) => strings.join(' ').includes('FROM harness_shared.task_ledger AS task_ledger'));
         expect(taskQuery).toBeDefined();
-        expect(taskQuery!.slice(1)).toEqual(expect.arrayContaining([snapshot.runId, 'papercusp-workspace', '/tmp', 'papercusp']));
+        expect(taskQuery!.slice(1)).toEqual(expect.arrayContaining([
+          snapshot.runId, options.wrongScope ? 'other-workspace' : 'papercusp-workspace', '/tmp', 'papercusp',
+        ]));
       }
       if (options.expected !== 'pass' && options.expected !== 'fail') {
         await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
