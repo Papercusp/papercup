@@ -1727,7 +1727,10 @@ export async function captureToolInvocationFriction(
   const signatureHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([rowKey])
     .catch(() => [] as EngineerIssue[]);
   const signatureRow = signatureHits.find((issue) =>
-    (issue.payload as Record<string, unknown> | null)?.watchdogKey === signatureKey &&
+    // Incomplete class metadata deliberately falls back to the exact message
+    // watchdog key; look up the identity selected above, not the broader
+    // signature key that this report was not allowed to use.
+    (issue.payload as Record<string, unknown> | null)?.watchdogKey === rowKey &&
     isWatchdogNonTerminal(issue) &&
     effectiveOrigin(issue.signalOrigin) === DEFAULT_SIGNAL_ORIGIN &&
     issueScopeMatchesCapture(issue, scope));
@@ -1737,7 +1740,7 @@ export async function captureToolInvocationFriction(
     classKey: normalized.classKey, ownerId, at: invokedAt,
     contractFingerprint: normalized.contractFingerprint, deployedRevision: normalized.deployedRevision,
   };
-  const tally = tallyToolFailureClass(toolFailureSignatureOf(priorPayload), signatureKey, occurrence,
+  const tally = tallyToolFailureClass(toolFailureSignatureOf(priorPayload), rowKey, occurrence,
     rowProbation?.classKey);
   const sameCompleteClass = rowProbation?.classKey === normalized.classKey &&
     hasCompleteToolFailureClassReport(report) && hasCompleteToolFailureClassReport(rowProbation.report);
