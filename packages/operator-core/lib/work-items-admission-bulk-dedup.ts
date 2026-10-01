@@ -1529,7 +1529,12 @@ async function judgeBulkPairs(
     reusedBatches: number;
   }>(shardEntries.length);
   let nextShardIndex = 0;
-  const judgeShard = async (shard: number, shardPairs: PromoterPair[]) => {
+  const judgeShard = async ({
+    shard,
+    pairs: originalPairs,
+    donated,
+    remaining: shardPairs,
+  }: (typeof shardEntries)[number]) => {
     const judgements: PromoterJudgement[] = [];
     let modelCalls = 0;
     let modelRetries = 0;
@@ -1545,35 +1550,43 @@ async function judgeBulkPairs(
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
       .map((id) => input.items.get(id))
       .filter((item): item is BulkDedupItem => Boolean(item));
+    // A checkpoint is the durable accounting record for one unique batch. Fold
+    // its counters in exactly once so the terminal stage still reports the
+    // whole run after a takeover; reusedBatches separately explains how much of
+    // that work this executor recovered rather than re-issued.
+    const foldCheckpoint = (saved: BulkBatchCheckpoint) => {
+      modelCalls += saved.modelCalls;
+      modelRetries += saved.modelRetries;
+      modelProtocolFailures += saved.modelProtocolFailures;
+      modelProtocolExhaustedBatches += saved.modelProtocolExhaustedBatches;
+      if (saved.modelProtocolLastError) modelProtocolLastError = saved.modelProtocolLastError;
+      ignoredUnknownJudgements += saved.ignoredUnknownJudgements;
+      omittedExpectedJudgements += saved.omittedExpectedJudgements;
+      tokensIn += saved.tokensIn;
+      tokensOut += saved.tokensOut;
+      for (const account of saved.servedAccounts) servedAccounts.add(account);
+      reusedBatches += 1;
+    };
+    for (const pair of donated) {
+      const donor = pairDonors.get(pair.pairKey)!;
+      judgements.push(...donor.judgements);
+      if (!foldedDonors.has(donor.checkpoint.key)) {
+        foldedDonors.add(donor.checkpoint.key);
+        foldCheckpoint(donor.checkpoint);
+      }
+    }
     for (let offset = 0; offset < shardPairs.length; offset += opts.pairsPerCall) {
       const batch = shardPairs.slice(offset, offset + opts.pairsPerCall);
       const pairKeys = batch.map((pair) => pair.pairKey);
       const checkpointKey = batchCheckpointKey(opts.stageRunId, shard, offset, pairKeys);
       const saved = opts.checkpoints[checkpointKey];
-      if (checkpointMatchesBatch(saved, batch)) {
-        if (saved.canary) {
-          // Keep the DBOS call sequence stable on a recovery replay: the first
-          // batch is always represented by the same named step, even when its
-          // parsed result is now coming from admission_runs.
-          await opts.step(`bulk:${opts.stageRunId}:canary`, async () => undefined);
-          resolveCanary();
-        }
+      // Whole-batch reuse is sound only against the exact input that wrote the
+      // checkpoint; after drift a batch can match by key while an endpoint
+      // changed underneath it (pair donation above covers the drift case).
+      if (opts.inputFingerprintMatched && checkpointMatchesBatch(saved, batch) && !foldedDonors.has(saved.key)) {
         judgements.push(...saved.judgements);
-        // A checkpoint is the durable accounting record for one unique batch.
-        // Fold its counters in exactly once so the terminal stage still reports
-        // the whole run after a takeover; reusedBatches separately explains how
-        // much of that work this executor recovered rather than re-issued.
-        modelCalls += saved.modelCalls;
-        modelRetries += saved.modelRetries;
-        modelProtocolFailures += saved.modelProtocolFailures;
-        modelProtocolExhaustedBatches += saved.modelProtocolExhaustedBatches;
-        if (saved.modelProtocolLastError) modelProtocolLastError = saved.modelProtocolLastError;
-        ignoredUnknownJudgements += saved.ignoredUnknownJudgements;
-        omittedExpectedJudgements += saved.omittedExpectedJudgements;
-        tokensIn += saved.tokensIn;
-        tokensOut += saved.tokensOut;
-        for (const account of saved.servedAccounts) servedAccounts.add(account);
-        reusedBatches += 1;
+        foldedDonors.add(saved.key);
+        foldCheckpoint(saved);
         continue;
       }
       const prompt = buildBulkDedupPrompt(batch, ghostItems);
@@ -1654,8 +1667,12 @@ async function judgeBulkPairs(
         shard,
         offset,
         pairKeys,
-        canary,
+        // A re-judged batch can land on the key of the durable canary; keep the
+        // marker, or the next recovery would mistake the canary step as unrun.
+        canary: canary || opts.checkpoints[checkpointKey]?.canary === true,
         status: 'complete',
+        qualityGateKey: opts.qualityGateKey,
+        pairFingerprints: pairFingerprintsFor(batch),
         judgements: accepted,
         modelCalls: 1,
         modelRetries: attempted.retries,
@@ -1693,6 +1710,12 @@ async function judgeBulkPairs(
         });
       }
     }
+    if (donated.length > 0) {
+      // Donated judgements were gathered ahead of the judged batches; restore
+      // the shard's pair order (stable sort keeps within-pair order).
+      const order = new Map(originalPairs.map((pair, index) => [pair.pairKey, index]));
+      judgements.sort((x, y) => (order.get(x.pairKey) ?? 0) - (order.get(y.pairKey) ?? 0));
+    }
     return {
       judgements,
       modelCalls,
@@ -1712,8 +1735,7 @@ async function judgeBulkPairs(
     while (nextShardIndex < shardEntries.length) {
       const index = nextShardIndex;
       nextShardIndex += 1;
-      const [shard, shardPairs] = shardEntries[index]!;
-      results[index] = await judgeShard(shard, shardPairs);
+      results[index] = await judgeShard(shardEntries[index]!);
     }
   });
   await Promise.all(workers);

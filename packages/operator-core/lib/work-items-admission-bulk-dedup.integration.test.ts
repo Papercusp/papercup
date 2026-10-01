@@ -1604,6 +1604,133 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(recovered).toEqual([{ state: 'complete', takeover_count: 1, checkpoint_count: 2, reused: 1 }]);
   }, 60_000);
 
+  // WI-10004862: a DBOS recovery re-reads a LIVE corpus, so the stage input
+  // fingerprint drifts between the crash and the resume (measured live: 35
+  // adjudications + 178 item edits on the pinned members in 56 min). The stage
+  // used to wipe its whole checkpoint map on any drift and re-judge every batch.
+  // Judgements are now donated per pair while both endpoints are unchanged.
+  async function crashAfterFirstCheckpointThenDrift(runId: string, driftItemId: string) {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+              'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+    const ready = {
+      status: 'ready' as const,
+      provider: 'claude' as const,
+      model: 'test-model',
+      checkedAt: '2026-09-01T00:00:00.000Z',
+      reason: 'integration capacity is injected',
+    };
+    const seenPairs: string[] = [];
+    const stepNames: string[] = [];
+    const judge = (failOnCall?: number) => {
+      let calls = 0;
+      return async (input: { messages: Array<{ content: string }> }) => {
+        calls += 1;
+        const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+        expect(pairKey).toBeTruthy();
+        seenPairs.push(pairKey!);
+        if (calls === failOnCall) throw new Error('executor died after first checkpoint');
+        return {
+          text: '',
+          json: { judgements: [{ pairKey, verdict: 'distinct', reason: 'separate finding' }] },
+          inputTokens: 13,
+          outputTokens: 5,
+        };
+      };
+    };
+    const base = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      model: 'test-model',
+      stageLeaseMs: 1_000,
+      preflight: async () => ready,
+      pairsPerCall: 1,
+      shardConcurrency: 1,
+      batchRetryBackoffsMs: [],
+      census: { chunkCount: 1, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+    };
+    await expect(
+      runBulk({ ...base, executionId: 'executor-dead', now: () => 10_000, llmCall: judge(2) }),
+    ).rejects.toThrow('executor died after first checkpoint');
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET finished_at = NULL,
+             detail = detail || ${JSON.stringify({
+               status: 'running',
+               lease: { ownerId: 'executor-dead', acquiredAt: 1, heartbeatAt: 1, expiresAt: 1, takeoverCount: 0 },
+             })}::text::jsonb
+       WHERE id = ${`${runId}-stage-1`}`;
+    // The drift a live corpus produces while the executor is down: one edit.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET summary = summary || ' (edited while the stage was down)'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = ${driftItemId}`;
+    seenPairs.length = 0;
+    const resumed = await runBulk({
+      ...base,
+      executionId: 'executor-replacement',
+      now: () => 20_000,
+      step: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        stepNames.push(name);
+        return fn();
+      },
+      llmCall: judge(),
+    });
+    const rows = await db.sql<Array<{ detail: Record<string, unknown> }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+    return { resumed, seenPairs, stepNames, detail: rows[0]!.detail };
+  }
+
+  it('reuses a judged pair across corpus drift on another pair instead of re-judging the whole stage', async () => {
+    const { resumed, seenPairs, stepNames, detail } = await crashAfterFirstCheckpointThenDrift(
+      'bulk-drift-unrelated',
+      'd',
+    );
+    // a::b was judged before the crash and neither endpoint changed: donated.
+    expect(seenPairs).toEqual(['c::d']);
+    expect(resumed).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, reusedBatches: 1 });
+    // The canary DBOS step is replayed exactly once, as a no-op.
+    expect(stepNames.filter((name) => name === 'bulk:bulk-drift-unrelated-stage-1:canary')).toHaveLength(1);
+    const batches = Object.values(
+      (detail.checkpoints as { batches: Record<string, Record<string, unknown>> }).batches,
+    );
+    expect(batches.length).toBeGreaterThan(0);
+    for (const batch of batches) {
+      expect(batch).toMatchObject({ qualityGateKey: expect.any(String), pairFingerprints: expect.any(Object) });
+    }
+  }, 60_000);
+
+  it('re-judges a checkpointed pair whose endpoint changed during the outage', async () => {
+    const { resumed, seenPairs, stepNames, detail } = await crashAfterFirstCheckpointThenDrift(
+      'bulk-drift-endpoint',
+      'a',
+    );
+    // a's merge snapshot changed, so the a::b judgement is no longer evidence.
+    expect(seenPairs).toEqual(['a::b', 'c::d']);
+    expect(resumed).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(resumed.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, reusedBatches: 0 });
+    // The durable canary is not re-spent through the step: one no-op replay.
+    expect(stepNames.filter((name) => name === 'bulk:bulk-drift-endpoint-stage-1:canary')).toHaveLength(1);
+    const canaries = Object.values(
+      (detail.checkpoints as { batches: Record<string, { canary: boolean }> }).batches,
+    ).filter((batch) => batch.canary);
+    expect(canaries).toHaveLength(1);
+  }, 60_000);
+
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {
     await seed();
     await db.sql`
