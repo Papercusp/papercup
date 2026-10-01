@@ -97,6 +97,7 @@ import {
   laneScopedCandidates,
   reuseCandidates,
   reuseSoundnessAlarms,
+  reuseRunnerIdentity,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -5554,13 +5555,16 @@ async function armTestPassReuse(taskList) {
   }
   // The identity of the node the task will spawn (npm -> PATH node), not this process's: the
   // proof was stamped by the vitest process. vitest-config re-checks it against its own process.
+  // reuseRunnerIdentity prefixes the proof format (P-001), so older-format proofs never match.
   let runnerIdentity = null;
   try {
-    runnerIdentity = execFileSync(
-      "node",
-      ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"],
-      { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
-    ).trim();
+    runnerIdentity = reuseRunnerIdentity(
+      execFileSync(
+        "node",
+        ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"],
+        { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
+      ),
+    );
   } catch {
     runnerIdentity = null;
   }
