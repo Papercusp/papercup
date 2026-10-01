@@ -34,7 +34,7 @@ const MEMBER = ident('unans-member');
 const OTHER = ident('unans-other');
 const EFFECT_ITEM = 'EI-unanswered-expect-effect-checkpoint';
 const EFFECT_SCOPE = `workitem:papercusp:${EFFECT_ITEM}`;
-const EXPLICIT_SCOPE_WORKSPACE = 'unanswered-directed-explicit-scope';
+let EXPLICIT_SCOPE_WORKSPACE = 'default';
 const EXPLICIT_SCOPE_ITEM = 'EI-unanswered-explicit-scope-effect';
 const EXPLICIT_SCOPE_ITEM_NOTE = `workitem:papercusp:${EXPLICIT_SCOPE_ITEM}`;
 
@@ -44,6 +44,7 @@ beforeAll(async () => {
   // concrete partition used by fetchDirectiveActuationSummaries rather than
   // assuming the legacy `default` partition used by older fixtures.
   effectWorkspace = coordWorkspaceId();
+  EXPLICIT_SCOPE_WORKSPACE = effectWorkspace === 'default' ? 'papercusp-workspace' : 'default';
 });
 afterAll(async () => {
   await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${effectWorkspace} AND scope = ${EFFECT_SCOPE}`.catch(() => {});
@@ -422,6 +423,15 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
         VALUES ('messages', ${body.msg_id}, ${JSON.stringify(body)}::jsonb, ${new Date(sentAtMs)}, ${EXPLICIT_SCOPE_WORKSPACE}, 'local')
       `;
     }
+    const inserted = await fx.admin`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE body ? 'expectEffect')::int AS effect_count
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE}
+         AND surface = 'messages'
+         AND body->>'from' = ${LEADER.ownerId}
+    `;
+    expect(inserted[0]).toMatchObject({ total: 2, effect_count: 1 });
 
     const actuation = await fetchDirectiveActuationSummaries([MEMBER.ownerId], {
       fromId: LEADER.ownerId,
