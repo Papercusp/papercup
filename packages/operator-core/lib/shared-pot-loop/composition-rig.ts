@@ -66,8 +66,8 @@ import { createServer, type Server } from 'node:http';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
+import { moduleRepoRoot } from '../module-repo-root';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
@@ -120,9 +120,7 @@ import {
 import { runWithCellSql } from './cell-scope';
 import type { BacklogRow, SideEffectRow } from './composition-oracles';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// lib/shared-hive-loop → packages/operator-core → repo root is four levels up.
-const REPO_ROOT = resolve(__dirname, '../../../..');
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
