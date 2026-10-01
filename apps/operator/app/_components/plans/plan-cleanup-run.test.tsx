@@ -362,6 +362,35 @@ describe("PlansCleanupStrip", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  // WI-10004730: a persisted failed run pinned its raw settle reason and the
+  // Dismiss button cleared only the local notice, so it did nothing.
+  it("labels a persisted failed run as a failure and lets Dismiss hide it", async () => {
+    const failed = run({
+      runId: "run-failed",
+      phase: "failed",
+      error: "settle refused: this run recorded no outcomes",
+    });
+    const view = render(<PlansCleanupStrip {...props({ run: failed })} />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "Clean-up run failed: settle refused: this run recorded no outcomes",
+    );
+    fireEvent.click(screen.getByLabelText("Dismiss clean-up notice"));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+
+    // A DIFFERENT failed run is new information and must surface again.
+    view.rerender(
+      <PlansCleanupStrip
+        {...props({
+          run: run({ runId: "run-failed-2", phase: "failed", error: null }),
+        })}
+      />,
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Clean-up run failed: no reason was recorded",
+    );
+  });
+
   it("renders finding progress and lets Stop revoke the current run", async () => {
     const findings = [
       finding({ findingId: "done", outcome: "auto_applied" }),

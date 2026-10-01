@@ -99,6 +99,43 @@ describe('deriveSettleOutcome', () => {
       expect(out.refusedReason).toMatch(/never reported a heartbeat/);
     });
 
+    it('settles COMPLETE when the settling caller just completed the scan itself (WI-10004729)', () => {
+      // The deterministic pass settles a zero-finding run before any resolver
+      // exists, so heartbeat_at is NULL. Its completed scan is the evidence of
+      // life; refusing it is what made every clean single-plan run `failed`.
+      expect(
+        deriveSettleOutcome({
+          runKind: 'plan-cleanup',
+          outcomes: [],
+          everReportedLife: false,
+          scanCompleted: true,
+        }),
+      ).toEqual({ phase: 'complete', refusedReason: null });
+    });
+
+    it('scan evidence never excuses an inbox run with zero rows', () => {
+      // An inbox run's empty set means a lost manifest whoever settles it.
+      const out = deriveSettleOutcome({
+        runKind: 'inbox-resolve',
+        outcomes: [],
+        everReportedLife: false,
+        scanCompleted: true,
+      });
+      expect(out.phase).toBe('failed');
+      expect(out.refusedReason).toMatch(/zero item rows/);
+    });
+
+    it('scan evidence does not hide findings still awaiting the owner', () => {
+      expect(
+        deriveSettleOutcome({
+          runKind: 'plan-cleanup',
+          outcomes: ['pending'],
+          everReportedLife: false,
+          scanCompleted: true,
+        }).phase,
+      ).toBe('review');
+    });
+
     it('uses the plan-cleanup terminal vocabulary, not the inbox one', () => {
       // `auto_applied`/`accepted` are terminal here; `auto_resolved` is not a
       // plan-cleanup outcome at all and must read as still-awaiting.

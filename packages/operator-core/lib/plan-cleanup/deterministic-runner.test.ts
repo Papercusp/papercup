@@ -188,7 +188,59 @@ describe('runDeterministicPlanCleanup', () => {
     expect(result).toMatchObject({ needsResolver: false, phase: 'complete', applied: 2, failed: 0 });
     expect(result.appliedFindingIds).toEqual([flip.findingId, finish.findingId]);
     expect(dispatch.mock.calls.map((call) => call[0].finding.kind)).toEqual(['flip-to-done', 'finish-plan']);
-    expect(settle).toHaveBeenCalledWith({ runId: 'run-1' });
+    expect(settle).toHaveBeenCalledWith({ runId: 'run-1', workspaceId: 'workspace-1', scanCompleted: true });
+  });
+
+  /*
+   * WI-10004729 — the seam the layer-mocked tests missed. Every other test here
+   * stubs `settle` with a canned `complete`, and the settle-rule tests in
+   * bulk-run-settle.test.ts call deriveSettleOutcome with a heartbeat already
+   * set. Neither layer saw what PRODUCTION composed: the deterministic pass
+   * settles a zero-finding run before any resolver exists to beat the heartbeat,
+   * and the real rule then refused it as "no evidence the resolver ran". This
+   * composes the runner with the REAL deriveSettleOutcome over the exact facts
+   * production sees (zero findings, heartbeat_at NULL) and asserts `complete`.
+   */
+  describe('clean scan through the REAL settle rule (WI-10004729)', () => {
+    async function settleClean(passScanCompleted: boolean) {
+      const { deriveSettleOutcome } = await import('../attention/bulk-run-store');
+      const rows: CleanupRunFindingRow[] = [];
+      const store = storeHarness(rows);
+      const cleanRun = run(['plan-clean']);
+      const settle = vi.fn(async (input: { runId: string; scanCompleted?: boolean }) => {
+        const outcome = deriveSettleOutcome({
+          runKind: cleanRun.runKind,
+          outcomes: rows.map((row) => row.outcome),
+          // The production fact: no resolver was launched, so no heartbeat.
+          everReportedLife: cleanRun.heartbeatAt != null,
+          scanCompleted: passScanCompleted ? input.scanCompleted : undefined,
+        });
+        return { ...cleanRun, phase: outcome.phase, error: outcome.refusedReason };
+      });
+      const result = await runDeterministicPlanCleanup({
+        run: cleanRun,
+        call: vi.fn(),
+        deps: {
+          scanRun: vi.fn(async () => []),
+          ...store,
+          dispatch: vi.fn(),
+          settle,
+          notify: vi.fn(async () => undefined),
+        } as never,
+      });
+      return { result, settle };
+    }
+
+    it('settles a zero-finding scan COMPLETE, not failed', async () => {
+      const { result, settle } = await settleClean(true);
+      expect(settle).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ needsResolver: false, phase: 'complete', applied: 0, failed: 0 });
+    });
+
+    it('control: dropping the scan evidence reproduces the measured failed settle', async () => {
+      const { result } = await settleClean(false);
+      expect(result.phase).toBe('failed');
+    });
   });
 
   it('leaves only judgment findings pending and requests the resolver', async () => {

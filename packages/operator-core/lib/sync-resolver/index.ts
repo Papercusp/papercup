@@ -4109,14 +4109,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'plans.cleanupRun': {
     backingTables: ['harness_shared.attention_bulk_runs', 'harness_shared.plan_cleanup_run_findings'],
     resolve: async (args) => {
-      const [{ classifyRunLiveness, getRun, getLatestRun }, { getRunFindings }] = await Promise.all([
-        import('../attention/bulk-run-store'),
-        import('../plan-cleanup/run-store'),
-      ]);
+      const [{ classifyRunLiveness, getRun, getLatestRun, getActiveRun }, { getRunFindings }, { selectPlanCleanupPaneRun }] =
+        await Promise.all([
+          import('../attention/bulk-run-store'),
+          import('../plan-cleanup/run-store'),
+          import('../plan-cleanup/pane-run'),
+        ]);
       const runId =
         typeof (args as { runId?: unknown })?.runId === 'string' ? String((args as { runId: string }).runId) : null;
       try {
-        const run = runId ? await getRun(runId) : await getLatestRun(undefined, 'plan-cleanup');
+        // No deep link: an open run (pending/running/review) outranks a newer
+        // terminal one, so a failed run can't hide owner-waiting review work
+        // (WI-10004730).
+        const run = runId
+          ? await getRun(runId)
+          : await selectPlanCleanupPaneRun({
+              getActive: () => getActiveRun(undefined, 'plan-cleanup'),
+              getLatest: () => getLatestRun(undefined, 'plan-cleanup'),
+            });
         if (!run || run.runKind !== 'plan-cleanup') return [{ run: null, findings: [] }];
         return [
           {
