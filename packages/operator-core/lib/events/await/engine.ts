@@ -959,8 +959,18 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       // an inbox-wake for mail the subscriber's own coord:inbox/coord:orient polling
       // already surfaced. Cheap pre-check (no DB read) gates the actual watermark
       // lookup to just the common always-armed-standing-wake case.
+      // A psu-host acceptance is not turn-start proof. While that accepted payload
+      // waits behind the host's final busy gate, the recipient can read the inbox;
+      // suppressing the parked retry then would leave the host's old pre-rendered
+      // text queued indefinitely. Retry the same delivery so the host can refresh
+      // its pending payload from this delivery-time render and report commitment.
+      const hasUnconfirmedPsuHostAcceptance = group.some(
+        (d) =>
+          d.lastError?.startsWith('psu-host accepted:') ||
+          d.lastError?.startsWith('psu-host pending-delivery-id:'),
+      );
       const allInboxWakeNoUrgent = group.every(
-        (d) => !d.urgent && d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
+        (d) => !hasUnconfirmedPsuHostAcceptance && !d.urgent && d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
       );
       if (allInboxWakeNoUrgent) {
         const lastRead = await lastInboxReadAtBatch([subscriberId]);

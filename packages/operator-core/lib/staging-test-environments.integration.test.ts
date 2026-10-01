@@ -144,6 +144,7 @@ describe('current-build execution route contract', () => {
         dbosDisabled: e.PAPERCUSP_DBOS_ENABLE === '0' && e.PAPERCUSP_DBOS_ORCHESTRATOR === '0',
         homeRegistered: registry.projects.some(p => p.slug === e.PAPERCUSP_POT_HOME_SLUG && p.path.startsWith(e.PAPERCUSP_WORKSPACES_ROOT + '/')),
         privateSidecar: e.PAPERCUSP_EMBED_SIDECAR_URL !== 'http://127.0.0.1:3384' && health.capabilities.includes('POST /embed'),
+        privateIngress: !!e.PAPERCUSP_EXTERNAL_INGRESS_PORT && e.PAPERCUSP_EXTERNAL_INGRESS_PORT !== e.PAPERCUSP_HONO_PORT,
         watchdogUnmodified: !e.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB && !e.PAPERCUSP_MEMORY_WATCHDOG,
         noLiveIdentity: !e.PAPERCUSP_SID,
         home: e.HOME, sidecarPid: health.pid, sidecarUrl: e.PAPERCUSP_EMBED_SIDECAR_URL
@@ -187,6 +188,7 @@ describe('current-build execution route contract', () => {
       const path = require('node:path');
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const base = process.env.PAPERCUSP_OPERATOR_URL;
+      const ingress = 'http://127.0.0.1:' + process.env.PAPERCUSP_EXTERNAL_INGRESS_PORT;
       const host = spawn(process.execPath, [process.env.TEST_BUNDLE_PATH], {
         cwd: path.join(process.cwd(), 'apps/operator'), env: process.env, stdio: ['ignore', 'pipe', 'pipe']
       });
@@ -216,16 +218,28 @@ describe('current-build execution route contract', () => {
           await wait(500);
         }
         if (!ready) throw new Error('request host did not become ready');
+        const blockedMint = await fetch(ingress + '/api/device/desktop/mint-pair-token', {
+          method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost' },
+          body: JSON.stringify({ workspaceId: process.env.PAPERCUSP_WORKSPACE_ID }), signal: AbortSignal.timeout(30000)
+        });
+        if (blockedMint.status !== 403) throw new Error('external ingress admitted desktop mint: ' + blockedMint.status);
+        const blockedRead = await fetch(ingress + '/api/device/attention', { signal: AbortSignal.timeout(30000) });
+        if (![401, 403].includes(blockedRead.status)) throw new Error('external ingress admitted anonymous device read: ' + blockedRead.status);
         const mint = await call('/api/device/desktop/mint-pair-token', 'POST', { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID });
         paired = await call('/api/device/pair', 'POST', { pairToken: mint.qrPayload.pairToken });
         if (!paired.deviceId || !paired.deviceToken || paired.workspaceId !== process.env.PAPERCUSP_WORKSPACE_ID) throw new Error('pair identity mismatch');
         const paths = ['/api/device/runtime-config', '/api/device/attention', '/api/device/plans', '/api/device/monitoring', '/api/device/devices'];
         for (const route of paths) await call(route, 'GET', undefined, paired.deviceToken);
+        for (const route of paths) {
+          const response = await fetch(ingress + route, { headers: { authorization: 'Bearer ' + paired.deviceToken }, signal: AbortSignal.timeout(30000) });
+          if (response.status !== 200) throw new Error('external paired read ' + route + ': ' + response.status);
+        }
         for (const name of ['toastLog.recent', 'auditLog.recent', 'operatorScans.running', 'harnessStatus.list', 'standingCandidates.list']) {
           const json = await call('/api/device/rest-query?name=' + name + '&args=%7B%7D', 'GET', undefined, paired.deviceToken);
           if (!Array.isArray(json.rows)) throw new Error('rest-query ' + name + ' did not return rows');
         }
-        console.log('PAIRED_API_PROBE ' + JSON.stringify({ paired: true, deviceReads: paths.length, restQueries: 5, home: process.env.HOME }));
+        console.log('PAIRED_API_PROBE ' + JSON.stringify({ paired: true, deviceReads: paths.length, externalDeviceReads: paths.length,
+          deniedExternalMint: true, deniedAnonymousRead: true, restQueries: 5, home: process.env.HOME }));
       })().catch(error => {
         console.error('PAIRED_API_FAILURE ' + JSON.stringify({ message: String(error), lastHttp, exitCode: host.exitCode, signalCode: host.signalCode, head, tail }));
         process.exitCode = 1;
@@ -258,6 +272,9 @@ describe('current-build execution route contract', () => {
       const measured = JSON.parse(payload!);
       expect(measured.paired).toBe(true);
       expect(measured.deviceReads).toBe(5);
+      expect(measured.externalDeviceReads).toBe(5);
+      expect(measured.deniedExternalMint).toBe(true);
+      expect(measured.deniedAnonymousRead).toBe(true);
       expect(measured.restQueries).toBe(5);
       expect(existsSync(measured.home)).toBe(false);
     } finally {

@@ -749,7 +749,7 @@ export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, distinguishable from a stall). The acceptance-grading-sweep row carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded; group first).',
+    'List scheduled routines. This workspace view includes name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, distinguishable from a stall). The acceptance-grading-sweep row carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded; group first).',
   capability: 'operator:read',
   guidance: {
     // Arg guidance and the `paused` semantics are deliberately NOT restated here:

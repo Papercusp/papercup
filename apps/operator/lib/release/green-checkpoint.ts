@@ -254,6 +254,16 @@ import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reus
 // EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
 // `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
 import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
+// gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): after the verdict is recorded, capture
+// isolated pass proofs for the pure lane, which records none during the suite (isolate:false).
+import {
+  PURE_PROOF_CAPTURE_BUDGET_ENV,
+  PURE_PROOF_CAPTURE_ENV,
+  PURE_PROOF_CAPTURE_SLICE_ENV,
+  pureProofCaptureBudgetMs,
+  pureProofCaptureEnabled,
+  runPureLaneProofCapture,
+} from "../../../../scripts/lib/pure-lane-proof-capture.mjs";
 // WI-10000288: a repair-signature leg that answers "I verified NOTHING" (EXIT_NOT_CHECKED)
 // is not a failing leg, and judging it as one red-pins the candidate forever — no fix to the
 // SUBJECT can repair a verdict that was never about the subject. These guards infer their
@@ -9121,6 +9131,105 @@ export function buildGreenCheckpointEnv(
   env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS =
     env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS ?? "180000";
   return env;
+}
+
+/** Grace past the capture budget before the run stops waiting for the phase and exits. */
+export const PURE_PROOF_CAPTURE_HARD_GRACE_MS = 5 * 60_000;
+
+/**
+ * gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1): the post-verdict pure-lane proof-capture
+ * phase. Called by the CLI AFTER `emitResult` has recorded the verdict and BEFORE the run lock is
+ * released, so the checkpoint tree stays at the judged sha while capture runs.
+ *
+ * The self-watchdog is cancelled first: its onFire calls emitResult(inconclusive) and raises a
+ * "Release pipeline WEDGED" attention without taking the terminal claim, and the real verdict is
+ * already recorded, so a fire during capture would record a false second result. The phase
+ * bounds itself instead:
+ * its budget (PC_PURE_PROOF_CAPTURE_BUDGET_MS), a per-slice kill, the next-fire yield, and here a
+ * hard deadline past which the run stops waiting and exits (the exit sweep reaps survivors).
+ * Never throws: capture can only cost reuse, never the run.
+ */
+export async function runPostVerdictPureProofCapture(
+  cfg: Pick<ReleaseConfig, "checkpointRoot" | "checkpointLogDir" | "greenCheckpointCapacityMode">,
+  runId: string,
+  cancelWatchdog: () => void,
+  log: (line: string) => void = (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
+  capture: typeof runPureLaneProofCapture = runPureLaneProofCapture,
+  processStartedAtMs: number = Date.now() - process.uptime() * 1000,
+  readNextFireInSec: () => Promise<number | null> = async () => {
+    const { readGreenCheckpointNextFireInSec } = await import(
+      "@papercusp/operator-core/lib/release/gate-collision-guard"
+    );
+    return readGreenCheckpointNextFireInSec();
+  },
+): Promise<void> {
+  if (!pureProofCaptureEnabled(process.env)) {
+    log("PURE_PROOF_CAPTURE state=skipped reason=disabled-by-env");
+    return;
+  }
+  cancelWatchdog();
+  log("GATE_RUN_PHASE phase=pure-proof-capture");
+  const env = buildGreenCheckpointEnv(
+    null,
+    process.env,
+    undefined,
+    cfg.greenCheckpointCapacityMode,
+  ) as Record<string, string | undefined>;
+  // The canonical gate env keeps only an allowlist (canonicalGreenCheckpointSourceEnv), so the
+  // phase's own operator knobs are carried across explicitly or they would silently read defaults.
+  for (const key of [PURE_PROOF_CAPTURE_ENV, PURE_PROOF_CAPTURE_BUDGET_ENV, PURE_PROOF_CAPTURE_SLICE_ENV]) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  // The run's own ceiling (SELF_WATCHDOG_MS from process start) sits inside the build-time ordering
+  // chain (suite < self-watchdog < fire reaper < lock-stale). Capture must end before it, or a long
+  // run plus capture could outlive the reaper and the lock, and another run could take the tree.
+  const runCeilingAtMs = processStartedAtMs + SELF_WATCHDOG_MS;
+  const hardDeadlineMs = Math.max(
+    0,
+    Math.min(
+      pureProofCaptureBudgetMs(env) + PURE_PROOF_CAPTURE_HARD_GRACE_MS,
+      runCeilingAtMs - Date.now(),
+    ),
+  );
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      capture({
+        root: cfg.checkpointRoot,
+        env,
+        runGroupId: `${runId}:pure-proof-capture`,
+        logFile: path.join(cfg.checkpointLogDir, `pure-proof-capture-${runId}.log`),
+        deps: {
+          log,
+          // The earlier of the next scheduled fire and the run ceiling; an unreadable fire still
+          // leaves the ceiling in force.
+          readNextFireAtMs: async () => {
+            try {
+              const sec = await readNextFireInSec();
+              return sec == null ? runCeilingAtMs : Math.min(Date.now() + sec * 1000, runCeilingAtMs);
+            } catch {
+              return runCeilingAtMs;
+            }
+          },
+        },
+      }),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          log(`PURE_PROOF_CAPTURE state=abandoned reason=hard-deadline(${hardDeadlineMs}ms)`);
+          resolve();
+        }, hardDeadlineMs);
+      }),
+    ]);
+  } catch (e) {
+    log(
+      `PURE_PROOF_CAPTURE state=error reason=${String(e instanceof Error ? e.message : e)
+        .replace(/\s+/g, "_")
+        .slice(0, 160)}`,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -21686,6 +21795,9 @@ if (require.main === module) {
           // emitResult records BEFORE marker/event/exit and stamps `recorded` on the marker, so
           // the routine never records the same verdict twice and process.exit cannot cut it off.
           await emitResult(r);
+          // gate-test-reuse-yield P-006 (D-005 §1): post-verdict pure-lane proof capture, while
+          // the lock still holds the tree at the judged sha. Bounded, and never throws.
+          await runPostVerdictPureProofCapture(cfg, runId, watchdog.cancel);
           releaseAndExit(0);
         })
         .catch(async (e) => {

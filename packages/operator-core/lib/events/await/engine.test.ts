@@ -1632,6 +1632,56 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(stats.deferred).toBe(0);
   });
 
+  it('retries a psu-host-accepted wake after the inbox read advances, so the pending host text can refresh', async () => {
+    const createdAt = new Date(5000).toISOString();
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
+    let readAtMs = 1000;
+    h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(readAtMs).toISOString()]]));
+
+    try {
+      h.repliedMsgIdsBatch.mockResolvedValueOnce(new Set());
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 44,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-pending' },
+          createdAt,
+        }),
+      ]);
+      h.executeWake.mockResolvedValueOnce({ kind: 'park', reason: acceptedReason });
+      await pumpWakeDeliveries('ws-test');
+
+      // The first host ACK only says its gated delivery pipeline was queued. A later
+      // inbox read must not make the await engine settle this retry as redundant.
+      readAtMs = 6000;
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 44,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-pending' },
+          createdAt,
+          attempts: 2,
+          lastError: acceptedReason,
+        }),
+      ]);
+      h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'psu-socket-inject' });
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledTimes(2);
+      expect(h.lastInboxReadAtBatch).toHaveBeenCalledTimes(1);
+      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(44, 'psu-socket-inject', 1);
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(44, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(0);
+    } finally {
+      if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
+      else h.lastInboxReadAtBatch.mockReset();
+    }
+  });
+
   it('does NOT suppress when the inbox-wake message postdates the last read (genuinely new mail)', async () => {
     h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(1000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([

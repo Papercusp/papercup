@@ -198,6 +198,12 @@ if (operatorApi) {
   // never inherit the live sidecar, register the shared checkout, or disable
   // the host's memory watchdog. Preflight completes BEFORE the command starts.
   runtimeEnv.PAPERCUSP_POT_HOME_SLUG = runtimeId;
+  // Tunnel connectors must use the host's maintained no-local-trust listener,
+  // never the desktop loopback API (which can mint pairing tokens).
+  let ingressPort;
+  do { ingressPort = await freePort(); }
+  while ([port, Number(runtimeEnv.PAPERCUSP_HONO_PORT), Number(runtimeEnv.OPERATOR_DEV_PTY_PORT)].includes(ingressPort));
+  runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
     import { mkdir } from 'node:fs/promises';
     import { join } from 'node:path';
