@@ -110,7 +110,12 @@ const fields = {
   nextVerb: z.string().max(300).optional(),
   defaultIfUnanswered: z.string().max(500).optional(),
   decideBy: z.string().max(40).optional(),
-  defaultAction: z.enum(OWNER_ASK_DEFAULT_ACTIONS).optional(),
+  defaultAction: z
+    .enum(OWNER_ASK_DEFAULT_ACTIONS)
+    .optional()
+    .describe(
+      "Typed, machine-executable form of defaultIfUnanswered, applied ONCE by the reaper after decideBy passes with no owner answer. stay_parked: ask stays active, item stays parked. release_to_agents: ask cleared, item returns to the claimable pool. Needs decideBy; the free-text default is never parsed.",
+    ),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
   migrateWorkItemRefs: z
@@ -283,7 +288,7 @@ export default defineTool({
       nextVerb: z.string().max(300).optional(),
       defaultIfUnanswered: z.string().max(500).optional(),
       decideBy: z.string().max(40).optional(),
-      defaultAction: z.enum(OWNER_ASK_DEFAULT_ACTIONS).optional(),
+      defaultAction: fields.defaultAction,
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
       migrateWorkItemRefs: fields.migrateWorkItemRefs,
@@ -697,7 +702,13 @@ export default defineTool({
           // find). If the branches above didn't clear it for any reason (a race with a
           // concurrent write, an unhandled family/state combination, …), force the
           // restore now rather than leaving the item silently orphaned.
-          if (active.length === 0 && finalWorkItem.state === 'blocked') {
+          // WI-10005104: the same stranding exists for an ISSUE-family item parked as
+          // `needs-human` on a strict human ask — setWorkItemClaimHold above only strips
+          // payload hold keys and never touches `status`, so clearing the last ask left
+          // `needs-human` with zero blockers (unclaimable AND unexplained). Feature-family
+          // `needs-human` is deliberately excluded: it can be the plan lane's own state.
+          const strandedIssueNeedsHuman = updated.family === 'issue' && finalWorkItem.state === 'needs-human';
+          if (active.length === 0 && (finalWorkItem.state === 'blocked' || strandedIssueNeedsHuman)) {
             const restored = await setWorkItemStateWithAliasInfo(
               input.id,
               // work-item-status-full-unify P-007: both families restore to the unified

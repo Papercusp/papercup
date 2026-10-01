@@ -871,6 +871,81 @@ describe('work_items:set_blocker', () => {
     );
   });
 
+  it('WI-10005104: clearing the last strict human ask on an issue-family needs-human item reopens it', async () => {
+    const blocker = {
+      kind: 'human',
+      capability: 'product-decision',
+      ref: 'epoch-policy',
+      summary: 'Choose the epoch policy.',
+      nextVerb: 'work_items:set_blocker { clear: true }',
+      status: 'active',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'needs-human',
+      harness: 'papercup',
+      payload: { externalBlockers: [blocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+    setWorkItemStateWithAliasInfo.mockResolvedValue({
+      workItem: { ...item, state: 'open' },
+      aliased: false,
+      requestedState: 'open',
+      appliedState: 'open',
+    });
+
+    const out = await one({ id: 'WI-1', kind: 'human', ref: 'epoch-policy', clear: true, evidence: 'decided' });
+
+    expect(out.ok).toBe(true);
+    expect(out.activeBlockers).toEqual([]);
+    // setWorkItemClaimHold(false) never changes status, so without the backstop the item
+    // stayed `needs-human` with zero blockers — unclaimable AND unexplained.
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-1', 'open', expect.objectContaining({ by: 'su-a' }));
+    expect(out.workItem.state).toBe('open');
+  });
+
+  it('WI-10005104: a FEATURE-family needs-human item is NOT reopened by the issue backstop (plan lane owns it)', async () => {
+    const blocker = {
+      kind: 'human',
+      capability: 'product-decision',
+      ref: 'epoch-policy',
+      summary: 'Choose the epoch policy.',
+      nextVerb: 'work_items:set_blocker { clear: true }',
+      status: 'active',
+      createdAt: '2026-09-05T00:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-09-05T00:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'feature',
+      kind: 'feature',
+      state: 'needs-human',
+      harness: 'papercup',
+      payload: { externalBlockers: [blocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+
+    const out = await one({ id: 'WI-1', kind: 'human', ref: 'epoch-policy', clear: true, evidence: 'decided' });
+
+    expect(out.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(out.workItem.state).toBe('needs-human');
+  });
+
   it('keeps an issue in needs-human when a partial clear leaves a strict owner-capability blocker', async () => {
     const decisionBlocker = {
       kind: 'human',
