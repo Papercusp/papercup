@@ -70,6 +70,7 @@ import {
   toolErrorFingerprintSqlCase,
   type ToolErrorClass,
 } from './tool-error-classifier';
+import { dispatchWrapperExclusionPredicate } from '../../agent-tools/sessions/automatic-tool-names';
 import type { ImprovementSeverity } from './policy';
 import type { LearningSloOptions } from './learning-slo';
 // Type-only (erased at runtime, so no import cycle with engagement.ts, which
@@ -2152,6 +2153,7 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
          AND tool_name NOT LIKE 'improvements:%'
          AND tool_name NOT LIKE 'system:improvement-%'
+         AND ${dispatchWrapperExclusionPredicate(sql)}
     ),
     tot AS (
       SELECT tool_name, count(*)::int AS total
@@ -2160,6 +2162,7 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
          AND tool_name NOT LIKE 'improvements:%'
          AND tool_name NOT LIKE 'system:improvement-%'
+         AND ${dispatchWrapperExclusionPredicate(sql)}
        GROUP BY tool_name
     ),
     -- P-003 + P-012 fingerprint: the normalized error-shape skeleton (first 6 alpha
