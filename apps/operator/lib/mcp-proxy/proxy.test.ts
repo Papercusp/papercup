@@ -315,22 +315,27 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.rpcMethods).toEqual(["tools/list"]);
     expect(r.body).toBe(body);
   });
-  it('keeps a bootstrap REST mutation opaque even when it carries an idempotency key', () => {
+  it('keeps bootstrap REST mutations opaque even when they carry an idempotency key', () => {
     const body = Buffer.from(JSON.stringify({ bootstrap_idempotency_key: 'fleet-member-1' }));
-    const r = prepareForward('POST', {}, body, {
-      keyingEnabled: true,
-      genKey: gen,
-      requestPath: '/api/agent-mcp/console/bootstrap-su?client=psu',
-    });
-    expect(r.klass).toBe('opaque');
-    expect(r.body).toBe(body);
-    for (const key of [undefined, '', 'x'.repeat(201)]) {
-      const unkeyed = prepareForward('POST', {}, Buffer.from(JSON.stringify({ bootstrap_idempotency_key: key })), {
+    for (const requestPath of [
+      '/api/agent-mcp/console/bootstrap-su?client=psu',
+      '/api/agent-mcp/console/bootstrap-role?client=psu',
+    ]) {
+      const r = prepareForward('POST', {}, body, {
         keyingEnabled: true,
         genKey: gen,
-        requestPath: '/api/agent-mcp/console/bootstrap-su',
+        requestPath,
       });
-      expect(unkeyed.klass).toBe('opaque');
+      expect(r.klass).toBe('opaque');
+      expect(r.body).toBe(body);
+      for (const key of [undefined, '', 'x'.repeat(201)]) {
+        const unkeyed = prepareForward('POST', {}, Buffer.from(JSON.stringify({ bootstrap_idempotency_key: key })), {
+          keyingEnabled: true,
+          genKey: gen,
+          requestPath,
+        });
+        expect(unkeyed.klass).toBe('opaque');
+      }
     }
   });
   it("a batch [tools/call, tools/list] → keyed, key injected only into the call", () => {

@@ -11,9 +11,9 @@
  * only with a passing acceptance file for that same archive digest. The
  * committed compatibility.json never advertises anything (D-017).
  */
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type SpawnOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -42,8 +42,8 @@ async function startAcceptancePg(work: string): Promise<{ env: Record<string, st
       fsync: 'off',
       synchronous_commit: 'off',
       full_page_writes: 'off',
-      // The legs run under spawnSync, which leaves this child's stderr pipe
-      // undrained; the collector keeps server logs off that pipe.
+      // Keep PostgreSQL logs in the collector so they do not interleave with
+      // the acceptance leg's live stdout/stderr log.
       logging_collector: 'on',
     },
   });
@@ -64,6 +64,51 @@ const ACCEPTANCE_SOURCES = [
 const REPORTER = path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts');
 const VITEST = path.join(REPO_ROOT, 'node_modules/.bin/vitest');
 const OPERATOR_CORE = path.join(REPO_ROOT, 'packages/operator-core');
+
+export interface LoggedChildResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error: Error | null;
+}
+
+/**
+ * Run a child with stdout and stderr sent directly to a live log file. The file
+ * is created before spawn and the child inherits its descriptor, so long test
+ * legs remain observable while they run instead of only after exit.
+ */
+export function runChildWithLiveLog(
+  command: string,
+  args: string[],
+  options: SpawnOptions,
+  logPath: string,
+): Promise<LoggedChildResult> {
+  writeFileSync(logPath, `--- live child output started ${new Date().toISOString()} ---\n`);
+  const logFd = openSync(logPath, 'a');
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(command, args, { ...options, stdio: ['ignore', logFd, logFd] });
+  } catch (caught) {
+    closeSync(logFd);
+    const error = caught instanceof Error ? caught : new Error(String(caught));
+    appendFileSync(logPath, `\n--- child spawn error: ${error.message} ---\n`);
+    return Promise.resolve({ status: null, signal: null, error });
+  }
+  closeSync(logFd);
+
+  return new Promise((resolve, reject) => {
+    let processError: Error | null = null;
+    child.once('error', (error) => { processError = error; });
+    child.once('close', (status, signal) => {
+      try {
+        appendFileSync(logPath,
+          `\n--- child exit: code=${status ?? 'null'} signal=${signal ?? 'none'}${processError ? ` error=${processError.message}` : ''} ---\n`);
+        resolve({ status, signal, error: processError });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
 
 export interface RealLeg {
   /** PUI_REAL_BACKEND: claude | codex | omp. */
@@ -540,13 +585,13 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   for (const leg of legsToRun) {
     const engine = leg ? leg.backend : 'scripted';
     const evidence = path.join(work, `evidence-${engine}.json`);
-    const run = spawnSync(VITEST, [
+    const run = await runChildWithLiveLog(VITEST, [
       'run', '--config', 'vitest.integration.config.ts',
       ...suites.map((file) => path.join(REPO_ROOT, file)),
       ...(options.testFilter ? ['-t', options.testFilter] : []),
       '--reporter=default', `--reporter=${REPORTER}`,
     ], {
-      cwd: OPERATOR_CORE, encoding: 'utf8', timeout: 90 * 60_000, maxBuffer: 512 * 1024 * 1024,
+      cwd: OPERATOR_CORE, timeout: 90 * 60_000,
       env: {
         ...inherited,
         ...acceptancePg.env,
@@ -559,8 +604,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
         ...(leg ? { PUI_REAL_ENGINE: '1', PUI_REAL_BACKEND: leg.backend, ...(leg.model ? { PUI_REAL_MODEL: leg.model } : {}), ...leg.env }
           : { PUI_REAL_ENGINE: '' }),
       },
-    });
-    writeFileSync(path.join(work, `vitest-${engine}.log`), `${run.stdout ?? ''}\n--- stderr\n${run.stderr ?? ''}`);
+    }, path.join(work, `vitest-${engine}.log`));
     const harvested = existsSync(evidence) ? (JSON.parse(readFileSync(evidence, 'utf8')) as EvidenceFile).rows : [];
     rows.push(...harvested);
     legs.push({ engine, status: run.status, evidence, rows: harvested.length });

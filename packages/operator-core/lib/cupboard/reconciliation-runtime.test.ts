@@ -83,6 +83,7 @@ function inputs(overrides: Partial<ReconciliationInputs> = {}): ReconciliationIn
     // The credit purchase above books 5,000c to the reserve; 4,000c of credits remain owed.
     outstandingCreditsMicros: 4_000 * 10_000,
     daoTransfers: [{ transferId: 'tt-1', chainId: 84532, transactionHash: TX_A, amountMicros: 500 * 10_000, createdAtMs: NOW - 86_400_000 }],
+    finalSettlementBatches: [],
     generatedAtMs: NOW,
     ...overrides,
   };
@@ -213,7 +214,7 @@ describe('runReconciliationPass', () => {
     // The charge accrued 1,000c to the DAO (10% of 10,000 net); the imported 500c
     // transfer debited it, so payable 500c = accrued 1,000c - transferred 500c.
     expect(ws.run!.verdicts.find((v) => v.invariant === 'dao-payable-equals-accrued-minus-transferred')!.detail).toBe(
-      'journal dao-payable 500c; accrued 1000c - transferred on chain 500c = 500c',
+      'journal dao-payable 500c; accrued 1000c (off-chain journal 1000c + final settlements 0c) - transferred on chain 500c = 500c',
     );
     expect(filed).toEqual([]);
     // The gate push is signed, verifiable by the Worker, and carries treasuryReconciled.
@@ -238,6 +239,90 @@ describe('runReconciliationPass', () => {
       runId: ws.run!.runId,
       atMs: NOW,
       treasuryReconciled: true,
+    });
+  });
+
+  describe('final settlement claims (D-032, WI-10004709)', () => {
+    const TX_C = `0x${'c'.repeat(64)}`;
+    // A 20.00 claim, final in October, whose batch allocated 2.00 to the DAO.
+    const claim = { batchId: 'batch-1', chainId: 84532, claimTransactionHash: TX_C, claimMicros: 2_000 * 10_000, daoMicros: 200 * 10_000, finalizedAtMs: NOW - 3_600_000 };
+    const pass = (j: ReturnType<typeof journal>, verifier: () => Promise<boolean> = async () => true) =>
+      runReconciliationPass(
+        { mode: 'provisional', workspaces: [WS] },
+        {
+          config: config(),
+          resolveSecret: async () => SECRET,
+          stripeLister: lister([charge, credits, payout]),
+          cupboardInputs: async () => inputs({ finalSettlementBatches: [claim] }),
+          chainVerifier: verifier,
+          store: memoryReconciliationStore(),
+          filer: recordingFiler().filer,
+          post: j.post,
+          readEntries: j.read,
+          now: () => NOW,
+          fetchImpl: capturingFetch().fetchImpl,
+        },
+      );
+    const daoDetail = (ws: Awaited<ReturnType<typeof pass>>['workspaces'][number]) =>
+      ws.run!.verdicts.find((v) => v.invariant === 'dao-payable-equals-accrued-minus-transferred')!;
+
+    it('imports each final claim as a customer payment over the chain and reconciles the Worker accrual against it', async () => {
+      const j = journal();
+      const ws = (await pass(j)).workspaces[0]!;
+      expect(ws.settlementClaimImport).toMatchObject({ scanned: 1, posted: 1, refused: [] });
+      const entry = j.entries.get(`chain-tx:84532:${TX_C}`)!;
+      expect(entry.movement).toBe('customer-payment');
+      expect(entry.occurredAtMs).toBe(claim.finalizedAtMs);
+      expect(entry.lines).toEqual(
+        expect.arrayContaining([
+          { account: 'operating', side: 'debit', cents: 2_000 },
+          { account: 'dao-payable', side: 'credit', cents: 200 },
+          { account: 'revenue', side: 'credit', cents: 1_800 },
+        ]),
+      );
+      const status = Object.fromEntries(ws.run!.verdicts.map((v) => [v.invariant, v.status]));
+      expect(status['dao-payable-equals-accrued-minus-transferred']).toBe('ok');
+      // The claim is cash in on the chain rail, matched like the DAO transfer.
+      expect(status['journal-matches-chain']).toBe('ok');
+      expect(daoDetail(ws).detail).toBe(
+        'journal dao-payable 700c; accrued 1200c (off-chain journal 1000c + final settlements 200c) - transferred on chain 500c = 700c',
+      );
+    });
+
+    it('a journal entry for the claim that mis-splits the DAO share breaks the invariant', async () => {
+      // The books already carry the claim, crediting the DAO 150c of its 200c allocation.
+      const misSplit = journal();
+      const seeded = (await pass(misSplit)).workspaces[0]!;
+      expect(daoDetail(seeded).status).toBe('ok');
+      const good = misSplit.entries.get(`chain-tx:84532:${TX_C}`)!;
+      misSplit.entries.set(good.entryId, {
+        ...good,
+        lines: good.lines.map((l) =>
+          l.account === 'dao-payable' ? { ...l, cents: 150 } : l.account === 'revenue' ? { ...l, cents: 1_850 } : l,
+        ),
+      });
+      const ws = (await pass(misSplit)).workspaces[0]!;
+      expect(ws.settlementClaimImport).toMatchObject({ duplicates: 1, posted: 0 });
+      expect(daoDetail(ws).status).toBe('broken');
+    });
+
+    it('a claim the chain does not confirm is neither journaled nor accrued', async () => {
+      const j = journal();
+      const ws = (await pass(j, async () => false)).workspaces[0]!;
+      expect(ws.settlementClaimImport).toMatchObject({ scanned: 0, posted: 0 });
+      expect(j.entries.has(`chain-tx:84532:${TX_C}`)).toBe(false);
+    });
+
+    it('the parser refuses a Worker that omits the list, or lists a malformed or over-allocated batch', () => {
+      const base = { outstandingCreditsMicros: 0, daoTransfers: [] };
+      expect(() => parseReconciliationInputs(base)).toThrow(/finalSettlementBatches must be a list/);
+      expect(() => parseReconciliationInputs({ ...base, finalSettlementBatches: [{ ...claim, daoMicros: null }] })).toThrow(
+        /finalSettlementBatches\[0\]/,
+      );
+      expect(() => parseReconciliationInputs({ ...base, finalSettlementBatches: [{ ...claim, daoMicros: claim.claimMicros + 1 }] })).toThrow(
+        /finalSettlementBatches\[0\]/,
+      );
+      expect(parseReconciliationInputs({ ...base, finalSettlementBatches: [{ ...claim, claimTransactionHash: TX_C.toUpperCase().replace('0X', '0x') }] }).finalSettlementBatches[0]!.claimTransactionHash).toBe(TX_C);
     });
   });
 

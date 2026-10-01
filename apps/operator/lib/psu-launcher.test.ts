@@ -1074,6 +1074,9 @@ describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", ()
     expect(roleBody).toContain(
       "await writeOmpSessionConfigDirAsync(res.sessionId",
     );
+    expect(roleBody).toContain("const bootstrapIdempotencyKey = randomUUID();");
+    expect(roleBody).toContain("bootstrapIdempotencyKey,");
+    expect(roleBody).toContain("retryBootstrapFailures: true");
     expect(roleBody).toContain(
       'mcpJsonContents: readFileSync(requireOmpRoleMcpJsonPath(res), "utf8")',
     );
@@ -4794,6 +4797,7 @@ describe("psu-launcher arg parsing", () => {
         plan: null,
         account: "codex-main",
         ownerId: "su-auditor-canonical",
+        bootstrapIdempotencyKey: "role-launch-stable-key",
       }),
     ).toEqual({
       role: "worker",
@@ -4804,6 +4808,7 @@ describe("psu-launcher arg parsing", () => {
       plan: null,
       account: "codex-main",
       owner_id: "su-auditor-canonical",
+      bootstrap_idempotency_key: "role-launch-stable-key",
       model: CODEX_SAFE_DEFAULT_MODEL,
       model_source: "configured-default",
     });

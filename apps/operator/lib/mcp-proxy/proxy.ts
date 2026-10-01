@@ -959,7 +959,11 @@ export function prepareForward(
   // abort/replay the upstream after the handshake's 8s no-header limit. Keep
   // proxy replay off even when the body has a bootstrap idempotency key: the
   // route's ledger can fail open, so only psu's typed same-key retry may recover.
-  if (opts.requestPath?.split("?")[0]?.replace(/\/+$/, "") === "/api/agent-mcp/console/bootstrap-su") {
+  const requestPath = opts.requestPath?.split("?")[0]?.replace(/\/+$/, "");
+  if (
+    requestPath === "/api/agent-mcp/console/bootstrap-su" ||
+    requestPath === "/api/agent-mcp/console/bootstrap-role"
+  ) {
     return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] };
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];

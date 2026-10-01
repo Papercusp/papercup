@@ -701,6 +701,11 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     const projectedChecks = (projectedSchema.properties as JsonNode).checks as JsonNode;
     const projectedRow = (projectedChecks.items as JsonNode).properties as Record<string, JsonNode>;
     const projectedProbeDescription = String(projectedRow.probe?.description ?? '');
+    // CheckEntry.sinceMs is server-owned carry metadata: the writer inherits it
+    // for existing claims and stamps new claims. Keep it out of both the authoring
+    // schema and projected registry so discovery cannot promise a rejected input.
+    expect(rawRow).not.toHaveProperty('sinceMs');
+    expect(projectedRow).not.toHaveProperty('sinceMs');
     const description = String((tool as unknown as { description?: unknown }).description ?? '');
     const guidance = String((tool as unknown as { guidance?: { when?: unknown } }).guidance?.when ?? '');
 

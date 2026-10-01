@@ -36,6 +36,11 @@ import {
 } from '../../../adv-sessions';
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
 import {
+  claimAgentLaunch,
+  recordAgentLaunchResult,
+  releaseAgentLaunchClaim,
+} from '../../../agent-launch-core';
+import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
   mapPrePinnedOwnerSessionState,
@@ -182,6 +187,8 @@ const post = defineTool({
       agent?: string;
       /** Coordination identity reserved by the canonical launcher. Does not change role authority. */
       owner_id?: string | null;
+      /** Stable psu request key for safe same-launch retries after an upstream timeout. */
+      bootstrap_idempotency_key?: unknown;
       workspace?: string | null;
       harness_slug?: string | null;
       feature?: string | null;
@@ -343,6 +350,56 @@ const post = defineTool({
         return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
       }
     }
+    const rawBootstrapIdempotencyKey = body.bootstrap_idempotency_key;
+    const bootstrapIdempotencyKey =
+      typeof rawBootstrapIdempotencyKey === 'string'
+        ? rawBootstrapIdempotencyKey.trim()
+        : null;
+    if (
+      rawBootstrapIdempotencyKey != null &&
+      (typeof rawBootstrapIdempotencyKey !== 'string' ||
+        !bootstrapIdempotencyKey ||
+        bootstrapIdempotencyKey.length > 200)
+    ) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: 'bootstrap_idempotency_key must be a non-empty string of at most 200 characters',
+        },
+        400,
+      );
+    }
+    const bootstrapLedgerKey = bootstrapIdempotencyKey
+      ? `bootstrap-role:${bootstrapIdempotencyKey}`
+      : null;
+    let bootstrapClaimWon = false;
+    let bootstrapCompleted = false;
+    let incompleteBootstrapSessionId: number | null = null;
+    if (bootstrapLedgerKey) {
+      const claim = await claimAgentLaunch({
+        workspaceId: workspace,
+        idempotencyKey: bootstrapLedgerKey,
+        launchedBy: typeof body.owner_id === 'string' ? body.owner_id.trim() || null : null,
+      });
+      if (!claim.won) {
+        const prior = claim.priorSummary;
+        if (prior?.status === 'ok') {
+          return jsonRes({ ...(prior as unknown as BootstrapRoleResult), bootstrapDeduped: true });
+        }
+        return jsonRes(
+          {
+            status: 'error',
+            error: 'bootstrap_in_progress',
+            detail: 'the first request still owns this bootstrap idempotency key; retry with the same key',
+            retryAfterSec: 1,
+          },
+          409,
+        );
+      }
+      bootstrapClaimWon = true;
+    }
+
+    try {
     // Honor the same pre-pinned identity contract as bootstrap-su. A role
     // launch must not detach the actual worker from its canonical receipt.
     if (body.owner_id != null && typeof body.owner_id !== 'string') {
@@ -607,6 +664,7 @@ const post = defineTool({
         ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
       });
     }
+    incompleteBootstrapSessionId = sessionId;
 
     // A grant-bearing role identity must reach the same database-owned kernel
     // receipt as an SU identity. Merely compiling its prompt/artifact leaves
@@ -867,7 +925,42 @@ const post = defineTool({
         ...(nativeSessionId ? { PAPERCUSP_NATIVE_SESSION_ID: nativeSessionId } : {}),
       },
     };
+    if (bootstrapLedgerKey) {
+      await recordAgentLaunchResult({
+        workspaceId: workspace,
+        idempotencyKey: bootstrapLedgerKey,
+        summary: result as unknown as Record<string, unknown>,
+      });
+    }
+    bootstrapCompleted = true;
+    incompleteBootstrapSessionId = null;
     return jsonRes(result);
+    } finally {
+      // If any later artifact/identity write fails, close the exact row before
+      // releasing the claim. A same-key retry must not race a PID-less session.
+      if (bootstrapClaimWon && !bootstrapCompleted) {
+        let partialRowTerminal = true;
+        if (incompleteBootstrapSessionId != null) {
+          try {
+            await markAdvSessionEnded(incompleteBootstrapSessionId, null, 'reconciler', {
+              throwOnError: true,
+            });
+          } catch (error) {
+            partialRowTerminal = false;
+            console.warn(
+              `[bootstrap-role] incomplete session ${incompleteBootstrapSessionId} could not be terminalized; ` +
+              `retaining bootstrap idempotency claim: ${(error as Error)?.message ?? error}`,
+            );
+          }
+        }
+        if (partialRowTerminal) {
+          await releaseAgentLaunchClaim({
+            workspaceId: workspace,
+            idempotencyKey: bootstrapLedgerKey,
+          });
+        }
+      }
+    }
   },
 });
 

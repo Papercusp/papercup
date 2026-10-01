@@ -39,6 +39,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
   importStripeBalanceTransactions,
+  journalVerdictForSettlementClaim,
   journalVerdictForStripeBalanceTransaction,
   journalVerdictForTreasuryTransfer,
   stripeBalanceTransactionLister,
@@ -291,14 +292,41 @@ export async function verifyDaoTransfers(
   transfers: ReconciliationInputs['daoTransfers'],
   verifier: ChainReceiptVerifier | null,
 ): Promise<VerifiedDaoTransfers> {
-  if (!verifier) return { confirmed: transfers, unconfirmed: [] };
-  const confirmed: ReconciliationInputs['daoTransfers'][number][] = [];
+  return verifyOnChain(transfers, verifier, (t) => t.transactionHash);
+}
+
+export type SettlementClaims = ReconciliationInputs['finalSettlementBatches'];
+
+export interface VerifiedSettlementClaims {
+  /** Final claims confirmed on chain, or every listed one when no verifier is configured. */
+  readonly confirmed: SettlementClaims;
+  /** Listed as final by the Worker but missing or reverted on chain. */
+  readonly unconfirmed: readonly string[];
+}
+
+/** D-032: a final claim is journaled only once the chain confirms its transaction, like a DAO transfer. */
+export async function verifySettlementClaims(claims: SettlementClaims, verifier: ChainReceiptVerifier | null): Promise<VerifiedSettlementClaims> {
+  return verifyOnChain(claims, verifier, (c) => c.claimTransactionHash);
+}
+
+async function verifyOnChain<T extends { readonly chainId: number }>(
+  rows: readonly T[],
+  verifier: ChainReceiptVerifier | null,
+  hashOf: (row: T) => string,
+): Promise<{ confirmed: readonly T[]; unconfirmed: readonly string[] }> {
+  if (!verifier) return { confirmed: rows, unconfirmed: [] };
+  const confirmed: T[] = [];
   const unconfirmed: string[] = [];
-  for (const t of transfers) {
-    if (await verifier({ chainId: t.chainId, transactionHash: t.transactionHash })) confirmed.push(t);
-    else unconfirmed.push(`chain-tx:${t.chainId}:${t.transactionHash}`);
+  for (const row of rows) {
+    if (await verifier({ chainId: row.chainId, transactionHash: hashOf(row) })) confirmed.push(row);
+    else unconfirmed.push(`chain-tx:${row.chainId}:${hashOf(row)}`);
   }
   return { confirmed, unconfirmed };
+}
+
+/** The DAO's chain-rail accrual: each final claim's allocation in cents, rounded per batch as the import rounds it. */
+export function settlementDaoAccruedCents(claims: SettlementClaims, untilMs: number): number {
+  return claims.filter((c) => c.finalizedAtMs < untilMs).reduce((sum, c) => sum + centsFromMicros(c.daoMicros), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +483,32 @@ export async function importDaoTransfers(
   return { scanned: transfers.length, posted, duplicates, refused };
 }
 
+/** D-032: every final settlement claim becomes one customer-payment entry keyed by its claim transaction. */
+export async function importSettlementClaims(claims: SettlementClaims, post: JournalPoster): Promise<DaoTransferImportReport> {
+  let posted = 0;
+  let duplicates = 0;
+  const refused: Array<{ sourceId: string; code: string; detail: string }> = [];
+  for (const c of claims) {
+    const verdict = journalVerdictForSettlementClaim({
+      chainId: c.chainId,
+      txHash: c.claimTransactionHash,
+      grossCents: centsFromMicros(c.claimMicros),
+      daoCents: centsFromMicros(c.daoMicros),
+      occurredAtMs: c.finalizedAtMs,
+      memo: `settlement claim ${c.batchId}`,
+    });
+    if (verdict.disposition !== 'entry') {
+      refused.push({ sourceId: c.batchId, code: 'unmapped', detail: verdict.reason });
+      continue;
+    }
+    const outcome = await post(verdict.entry);
+    if (!outcome.ok) refused.push({ sourceId: c.batchId, code: outcome.code, detail: outcome.detail });
+    else if (outcome.duplicate) duplicates += 1;
+    else posted += 1;
+  }
+  return { scanned: claims.length, posted, duplicates, refused };
+}
+
 // ---------------------------------------------------------------------------
 // Filing break items, and pushing the gate.
 // ---------------------------------------------------------------------------
@@ -566,6 +620,8 @@ export interface WorkspaceReconciliation {
   readonly workspaceId: string;
   readonly stripeImport: ImportReport | { readonly skipped: string } | { readonly failed: string };
   readonly daoTransferImport: DaoTransferImportReport | { readonly skipped: string } | { readonly failed: string };
+  /** D-032: final settlement claims imported as customer payments over the chain. */
+  readonly settlementClaimImport: DaoTransferImportReport | { readonly skipped: string } | { readonly failed: string };
   /** P-046: a salted receipt commitment for every balance transaction the import listed. */
   readonly paymentReceipts: RecordPaymentReceiptsResult | { readonly skipped: string } | { readonly failed: string };
   readonly run: ReconciliationRunRecord | null;
@@ -676,10 +732,13 @@ export async function runReconciliationPass(
       cupboard = { status: 'failed', detail: errorText(error) };
     }
   }
-  let verified: SourceRead<VerifiedDaoTransfers> = cupboard.status === 'ok' ? { status: 'not-configured' } : cupboard;
+  let verified: SourceRead<VerifiedDaoTransfers & { readonly claims: VerifiedSettlementClaims }> =
+    cupboard.status === 'ok' ? { status: 'not-configured' } : cupboard;
   if (cupboard.status === 'ok') {
     try {
-      verified = { status: 'ok', value: await verifyDaoTransfers(cupboard.value.daoTransfers, chainVerifier) };
+      const transfers = await verifyDaoTransfers(cupboard.value.daoTransfers, chainVerifier);
+      const claims = await verifySettlementClaims(cupboard.value.finalSettlementBatches, chainVerifier);
+      verified = { status: 'ok', value: { ...transfers, claims } };
     } catch (error) {
       verified = { status: 'failed', detail: `chain receipts could not be read: ${errorText(error)}` };
     }
@@ -721,6 +780,7 @@ export async function runReconciliationPass(
     const treasuryReconciled = ownsTreasury && cupboard.status === 'ok' && verified.status === 'ok';
     let stripeImport: WorkspaceReconciliation['stripeImport'] = { skipped: 'this workspace has no Stripe account' };
     let daoTransferImport: WorkspaceReconciliation['daoTransferImport'] = { skipped: 'this workspace does not own the Cupboard treasury' };
+    let settlementClaimImport: WorkspaceReconciliation['settlementClaimImport'] = { skipped: 'this workspace does not own the Cupboard treasury' };
     let paymentReceipts: WorkspaceReconciliation['paymentReceipts'] = { skipped: 'this workspace has no Stripe account' };
     try {
       const post = postFor(workspaceId);
@@ -760,6 +820,11 @@ export async function runReconciliationPass(
         } catch (error) {
           daoTransferImport = { failed: errorText(error) };
         }
+        try {
+          settlementClaimImport = await importSettlementClaims(verified.value.claims.confirmed, post);
+        } catch (error) {
+          settlementClaimImport = { failed: errorText(error) };
+        }
       }
 
       // 2. Read the sources.
@@ -773,9 +838,15 @@ export async function runReconciliationPass(
           ? verified
           : {
               status: 'ok',
-              value: verified.value.confirmed
-                .filter((t) => t.createdAtMs >= period.fromMs && t.createdAtMs < period.untilMs)
-                .map((t) => ({ ref: `chain-tx:${t.chainId}:${t.transactionHash}`, netCents: -centsFromMicros(t.amountMicros) })),
+              value: [
+                ...verified.value.confirmed
+                  .filter((t) => t.createdAtMs >= period.fromMs && t.createdAtMs < period.untilMs)
+                  .map((t) => ({ ref: `chain-tx:${t.chainId}:${t.transactionHash}`, netCents: -centsFromMicros(t.amountMicros) })),
+                // D-032: a final claim is cash in, dated by its finality.
+                ...verified.value.claims.confirmed
+                  .filter((c) => c.finalizedAtMs >= period.fromMs && c.finalizedAtMs < period.untilMs)
+                  .map((c) => ({ ref: `chain-tx:${c.chainId}:${c.claimTransactionHash}`, netCents: centsFromMicros(c.claimMicros) })),
+              ],
             };
       const sources: ReconciliationSources = {
         stripe,
@@ -795,6 +866,7 @@ export async function runReconciliationPass(
                   transferredCents: verified.value.confirmed
                     .filter((t) => t.createdAtMs < period.untilMs)
                     .reduce((sum, t) => sum + centsFromMicros(t.amountMicros), 0),
+                  chainAccruedCents: settlementDaoAccruedCents(verified.value.claims.confirmed, period.untilMs),
                 },
               }
             : verified,
@@ -807,9 +879,9 @@ export async function runReconciliationPass(
         { workspaceId, mode: input.mode, entries, sources, startedAtMs },
         { store, filer, gate: gateFor(treasuryReconciled), now, newRunId: () => `recon-${randomUUID()}` },
       );
-      results.push({ workspaceId, stripeImport, daoTransferImport, paymentReceipts, run, error: null });
+      results.push({ workspaceId, stripeImport, daoTransferImport, settlementClaimImport, paymentReceipts, run, error: null });
     } catch (error) {
-      results.push({ workspaceId, stripeImport, daoTransferImport, paymentReceipts, run: null, error: errorText(error) });
+      results.push({ workspaceId, stripeImport, daoTransferImport, settlementClaimImport, paymentReceipts, run: null, error: errorText(error) });
     }
   }
   return { mode: input.mode, workspaces: results };

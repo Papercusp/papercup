@@ -25,6 +25,14 @@ afterAll(() => {
 });
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
+const claimAgentLaunchMock = vi.fn(async (_opts: unknown) => ({
+  won: true,
+  priorSummary: null as Record<string, unknown> | null,
+  priorLaunchedAt: null as number | null,
+  priorLaunchedBy: null as string | null,
+}));
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const recordSuLaunchSpecMock = vi.fn(async () => true);
 const adoptStartingTerminalLaunchMock = vi.fn(async (_opts: unknown) => true);
 const repairStaleAdvSessionTerminalMarkersMock = vi.fn(async (_owner: string) => 0);
@@ -96,6 +104,11 @@ vi.mock('../../adv-sessions', async (orig) => ({
   adoptStartingTerminalLaunch: adoptStartingTerminalLaunchMock,
   repairStaleAdvSessionTerminalMarkers: repairStaleAdvSessionTerminalMarkersMock,
   markAdvSessionEnded: markAdvSessionEndedMock,
+}));
+vi.mock('../../agent-launch-core', () => ({
+  claimAgentLaunch: (...args: unknown[]) => claimAgentLaunchMock(...args),
+  recordAgentLaunchResult: (...args: unknown[]) => recordAgentLaunchResultMock(...args),
+  releaseAgentLaunchClaim: (...args: unknown[]) => releaseAgentLaunchClaimMock(...args),
 }));
 vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
   resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
@@ -215,6 +228,14 @@ async function callPost(body: unknown): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  claimAgentLaunchMock.mockReset().mockResolvedValue({
+    won: true,
+    priorSummary: null,
+    priorLaunchedAt: null,
+    priorLaunchedBy: null,
+  });
+  recordAgentLaunchResultMock.mockReset().mockResolvedValue(undefined);
+  releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   recordAdvSessionMock.mockResolvedValue(7);
   recordSuLaunchSpecMock.mockResolvedValue(true);
@@ -260,7 +281,7 @@ describe('bootstrap-role', () => {
   const pinnedRequest = { role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', owner_id: pinnedOwner };
 
   it('preserves a pre-pinned owner through account routing, role composition, record and environment', async () => {
-    const response = await callPost(pinnedRequest);
+    const response = await callPost({ ...pinnedRequest, bootstrap_idempotency_key: 'role-stable-key' });
     expect(response.status).toBe(200);
     const result = await response.json();
     expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'claude', pinnedOwner, false, null);
@@ -272,6 +293,38 @@ describe('bootstrap-role', () => {
     expect(result.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
     expect(readFileSync(result.mcpJsonPath, 'utf8')).toContain('role=worker');
     expect(repairStaleAdvSessionTerminalMarkersMock).toHaveBeenCalledWith(pinnedOwner);
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-stable-key',
+      launchedBy: pinnedOwner,
+    });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-stable-key',
+      summary: expect.objectContaining({ status: 'ok', sessionId: 7 }),
+    }));
+  });
+
+  it('replays the completed response before checking whether its pre-pinned owner is live', async () => {
+    const prior = { status: 'ok', sessionId: 19, role: 'worker', agent: 'claude' };
+    claimAgentLaunchMock.mockResolvedValueOnce({
+      won: false,
+      priorSummary: prior,
+      priorLaunchedAt: 1,
+      priorLaunchedBy: pinnedOwner,
+    });
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+
+    const response = await callPost({
+      ...pinnedRequest,
+      bootstrap_idempotency_key: 'role-stable-key',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ...prior, bootstrapDeduped: true });
+    expect(ownerRowsSqlMock).not.toHaveBeenCalled();
+    expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it.each(['live', 'parked', 'recorded', undefined])('refuses a bound pre-pinned owner with %s liveness', async (sessionState) => {
@@ -455,10 +508,21 @@ describe('bootstrap-role', () => {
       specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64),
     }));
     recordSuLaunchSpecMock.mockResolvedValueOnce(false);
-    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    const response = await callPost({
+      role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001',
+      bootstrap_idempotency_key: 'role-failed-attempt',
+    });
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({ error: 'restricted role identity receipt was not persisted' });
     expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler', { throwOnError: true });
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-failed-attempt',
+    });
+    expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseAgentLaunchClaimMock.mock.invocationCallOrder[0],
+    );
   });
 
   it('worker + feature → role-scoped session recorded with role+feature+agent', async () => {

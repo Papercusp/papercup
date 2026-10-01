@@ -398,7 +398,8 @@ export async function runDocSectionsSyncOnce(): Promise<DocSyncStats[] | { skipp
     // seeded vector. Fail-open: a bad seed costs only the saving, never the sync.
     try {
       const { applyShippedDocVectorSeed } = await import('./doc-vector-seed');
-      await applyShippedDocVectorSeed(sql);
+      const { resolveDocVectorSeedDir } = await import('./doc-vector-seed-dir');
+      await applyShippedDocVectorSeed(sql, { seedDir: () => resolveDocVectorSeedDir() });
     } catch (err) {
       console.warn('[doc-embed-sync] doc vector seed failed:', (err as Error).message);
     }

@@ -132,11 +132,29 @@ export interface ReconciliationInputsDaoTransfer {
   readonly createdAtMs: number;
 }
 
+/**
+ * One FINAL settlement batch on the EVM rail (D-032): the claim the chain buried
+ * under its required confirmations, and the DAO's allocation of it. Only `final`
+ * batches are listed, because a `claimed` batch is not money received yet.
+ */
+export interface ReconciliationInputsSettlementClaim {
+  readonly batchId: string;
+  readonly chainId: number;
+  readonly claimTransactionHash: string;
+  /** The gross amount the claim moved, micro-USD. */
+  readonly claimMicros: number;
+  /** The DAO's allocation of this batch (settlement_batches.allocations_micros.dao), micro-USD. */
+  readonly daoMicros: number;
+  readonly finalizedAtMs: number;
+}
+
 export interface ReconciliationInputs {
   /** Prepaid credits still owed to customers (available + reserved), micro-USD. */
   readonly outstandingCreditsMicros: number;
   /** Every routed transfer of the `dao` share, oldest first. */
   readonly daoTransfers: readonly ReconciliationInputsDaoTransfer[];
+  /** Every FINAL settlement batch, oldest finality first (D-032). */
+  readonly finalSettlementBatches: readonly ReconciliationInputsSettlementClaim[];
   readonly generatedAtMs: number;
 }
 
@@ -190,6 +208,28 @@ export function parseReconciliationInputs(raw: unknown): ReconciliationInputs {
       createdAtMs: x.createdAtMs as number,
     };
   });
+  // Required, not defaulted: an older Worker that omits the list would otherwise
+  // read as "no settlement accrued", which is a guess the invariant then trusts.
+  if (!Array.isArray(r.finalSettlementBatches)) throw new Error('reconciliation inputs: finalSettlementBatches must be a list');
+  const finalSettlementBatches = r.finalSettlementBatches.map((b, i) => {
+    const x = (b ?? {}) as Record<string, unknown>;
+    const ok =
+      typeof x.batchId === 'string' && x.batchId.length > 0 &&
+      typeof x.chainId === 'number' && Number.isSafeInteger(x.chainId) && x.chainId > 0 &&
+      typeof x.claimTransactionHash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(x.claimTransactionHash) &&
+      typeof x.claimMicros === 'number' && Number.isSafeInteger(x.claimMicros) && x.claimMicros > 0 &&
+      typeof x.daoMicros === 'number' && Number.isSafeInteger(x.daoMicros) && x.daoMicros >= 0 && x.daoMicros <= x.claimMicros &&
+      typeof x.finalizedAtMs === 'number' && Number.isSafeInteger(x.finalizedAtMs) && x.finalizedAtMs > 0;
+    if (!ok) throw new Error(`reconciliation inputs: finalSettlementBatches[${i}] is malformed`);
+    return {
+      batchId: x.batchId as string,
+      chainId: x.chainId as number,
+      claimTransactionHash: (x.claimTransactionHash as string).toLowerCase(),
+      claimMicros: x.claimMicros as number,
+      daoMicros: x.daoMicros as number,
+      finalizedAtMs: x.finalizedAtMs as number,
+    };
+  });
   const generatedAtMs = typeof r.generatedAtMs === 'number' && Number.isSafeInteger(r.generatedAtMs) ? r.generatedAtMs : 0;
-  return { outstandingCreditsMicros: outstanding, daoTransfers, generatedAtMs };
+  return { outstandingCreditsMicros: outstanding, daoTransfers, finalSettlementBatches, generatedAtMs };
 }

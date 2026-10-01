@@ -13440,6 +13440,7 @@ export function roleBootstrapBody({
   role,
   agent,
   ownerId,
+  bootstrapIdempotencyKey,
   workspace,
   harness,
   feature,
@@ -13469,6 +13470,9 @@ export function roleBootstrapBody({
     feature,
     plan,
     ...(ownerId ? { owner_id: ownerId } : {}),
+    ...(bootstrapIdempotencyKey
+      ? { bootstrap_idempotency_key: bootstrapIdempotencyKey }
+      : {}),
     ...(account ? { account } : {}),
     ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(codexSelection ? { model_source: codexSelection.source } : {}),
@@ -15248,6 +15252,9 @@ async function roleFlow(args, role, rolesMeta) {
   if (!(await preflightCodexAutoPool({ agent, model: args.model, account })))
     process.exit(WALLED_POOL_REFUSAL_EXIT);
 
+  // One logical launch owns one key. fetchWithResilience reuses this exact body
+  // for every bounded bootstrap retry, allowing the route to replay its receipt.
+  const bootstrapIdempotencyKey = randomUUID();
   const res = await api("/api/agent-mcp/console/bootstrap-role", {
     method: "POST",
     body: JSON.stringify(
@@ -15255,6 +15262,7 @@ async function roleFlow(args, role, rolesMeta) {
         role,
         agent,
         ownerId: args.ownerId,
+        bootstrapIdempotencyKey,
         workspace,
         harness,
         feature,
@@ -15270,6 +15278,7 @@ async function roleFlow(args, role, rolesMeta) {
         stack: args.stack,
       }),
     ),
+    retryBootstrapFailures: true,
   });
   // WI-1408 (fleet-join-startup-assertion): a requested fleet must have actually
   // registered — see assertFleetJoined's doc comment.

@@ -333,7 +333,12 @@ describe('implementationReadinessNormalExclusionSql (claim floor)', () => {
     const [row] = await sql<Array<{ passes: boolean | null; held: boolean | null }>>`
       SELECT ${implementationReadinessNormalExclusionSql(sql as unknown as OrgSql, 'payload')} AS passes,
              NOT ${implementationReadinessNormalExclusionSql(sql as unknown as OrgSql, 'payload')} AS held
-        FROM (VALUES (${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb)) AS fixture(payload)`;
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          -- The floor also reads the row's acceptance source (kind/title/summary, matching
+          -- acceptedReadiness()'s BUG_SOURCE) and created_ts (0 = pre-cutover legacy arm).
+          ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
+        )) AS fixture(payload, item_kind, title, summary, created_ts)`;
     expect(row).toEqual({ passes, held: !passes });
   });
 });
