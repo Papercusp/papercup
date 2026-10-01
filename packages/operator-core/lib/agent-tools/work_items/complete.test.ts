@@ -3670,6 +3670,38 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.typeEvidenceWarning).toBeUndefined();
     });
 
+    it('stays silent when testsRun cites plural typechecks', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'integration',
+          testsRun: 'operator-vite and scoped operator-core typechecks',
+          testResult: 'both checks clean',
+          filesChanged: ['lib/a.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+
+    it('stays silent when testResult cites plural typechecks', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'integration',
+          testsRun: 'operator-vite integration tests',
+          testResult: 'both scoped typechecks clean',
+          filesChanged: ['lib/a.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+
     it('stays silent when nothing TypeScript changed', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({

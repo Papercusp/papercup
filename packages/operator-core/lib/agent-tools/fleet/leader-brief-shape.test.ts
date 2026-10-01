@@ -224,6 +224,43 @@ function largeBrief() {
   };
 }
 
+// P-007 / R-17: the silent members `headcount.current` excluded must survive shaping.
+describe('leader-brief shaping keeps silentMembers', () => {
+  it('keeps measured silent members on every tier, capping the id list at 8', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `su-quiet-${i}`);
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeLeaderBrief(
+        {
+          ok: true,
+          summary: {
+            fleet: 'f',
+            silentMembers: { status: 'measured', ownerIds: ids, thresholdMs: 1_200_000, paused: false },
+          },
+        },
+        tier,
+      ) as Record<string, any>;
+      expect(out.summary.silentMembers).toEqual({
+        status: 'measured',
+        ownerIds: ids.slice(0, 8),
+        ownerIdsTruncated: 10,
+        thresholdMs: 1_200_000,
+        paused: false,
+      });
+    }
+  });
+
+  it('keeps an unknown silent-member read with its reason instead of dropping it', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'f', silentMembers: { status: 'unknown', reason: 'execution or await leg unreadable' } },
+      },
+      'trimmed',
+    ) as Record<string, any>;
+    expect(out.summary.silentMembers).toEqual({ status: 'unknown', reason: 'execution or await leg unreadable' });
+  });
+});
+
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
   it('keeps the owner-directive root distinct and strips diagnostic targetRef from its action', () => {
     const out = shapeLeaderBrief({

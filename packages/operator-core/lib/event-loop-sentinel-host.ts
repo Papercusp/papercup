@@ -54,9 +54,11 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { SENTINEL_SAB_INT32_LEN, type LoopSentinelThresholds } from './event-loop-sentinel';
+import { STALL_PROFILE_DEFAULTS, type StallProfileConfig } from './event-loop-stall-profile';
 import type { SentinelWorkerData } from './event-loop-sentinel.worker';
 
 /**
@@ -85,6 +87,14 @@ export interface SentinelConfig {
   thresholds: LoopSentinelThresholds;
   heartbeatIntervalMs: number;
   observeIntervalMs: number;
+  /**
+   * In-stall CPU profile of a SPINNING main thread (WI-10004766), written to
+   * `~/.papercusp/loop-profiles/stalls/` and summarized as hot stacks on a
+   * journal line. A subdirectory on purpose: the lag monitor's own pruner keeps
+   * the newest N `.cpuprofile` files of `loop-profiles/` by NAME, so a sibling
+   * `stall-*` file there would crowd out its `loop-saturation-*` files.
+   */
+  stallProfile: StallProfileConfig;
 }
 
 /**
@@ -125,6 +135,10 @@ export function resolveSentinelConfig(
       wedgeAfterMs,
       observationsToAct: SENTINEL_DEFAULTS.observationsToAct,
       startupGraceMs: SENTINEL_DEFAULTS.startupGraceMs,
+    },
+    stallProfile: {
+      dir: join(homedir(), '.papercusp', 'loop-profiles', 'stalls'),
+      ...STALL_PROFILE_DEFAULTS,
     },
   };
 }
@@ -266,6 +280,7 @@ export function startEventLoopSentinel(
       observeIntervalMs: cfg.observeIntervalMs,
       mode: cfg.mode,
       pid: process.pid,
+      stallProfile: cfg.stallProfile,
     };
     worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data });
   } catch (err) {

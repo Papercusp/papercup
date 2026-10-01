@@ -16,7 +16,7 @@
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-CONF_DIR="$HOME/.config/papercusp-phone"
+CONF_DIR="${PHONE_CONFIG_DIR:-$HOME/.config/papercusp-phone}"
 ENV_FILE="$CONF_DIR/livekit.env"
 UNIT_DIR="$HOME/.config/systemd/user"
 LK_BIN="$HOME/.local/bin/livekit-server"
@@ -98,13 +98,27 @@ report_status() {
 }
 
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi
-if [[ $RENDER_ONLY == 1 || $PREFLIGHT_ONLY == 1 ]]; then
+if [[ $PREFLIGHT_ONLY == 1 ]]; then
+  [[ $ROTATE == 0 && $RENDER_ONLY == 0 ]] || die "preflight cannot render or rotate credentials"
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a; source "$ENV_FILE"; set +a
+  fi
+  PHONE_LIVEKIT_PUBLIC_URL="${REQUESTED_LIVEKIT_PUBLIC_URL:-${PHONE_LIVEKIT_PUBLIC_URL:-}}"
+  for key in "${MEDIA_KEYS[@]}"; do
+    [[ ! -v REQUESTED_MEDIA[$key] ]] || printf -v "$key" '%s' "${REQUESTED_MEDIA[$key]}"
+    export "$key"
+  done
+  export PHONE_LIVEKIT_PUBLIC_URL
+  "$NODE_BIN" "$HERE/media-config.mjs" preflight
+  exit $?
+fi
+if [[ $RENDER_ONLY == 1 ]]; then
   [[ $ROTATE == 0 ]] || die "preparation/preflight cannot rotate credentials"
   [[ -f "$ENV_FILE" ]] || die "preparation/preflight requires an existing external livekit.env"
 fi
 
 # ---------------------------------------------------------------- preflight
-if [[ $RENDER_ONLY == 0 && $PREFLIGHT_ONLY == 0 ]]; then
+if [[ $RENDER_ONLY == 0 ]]; then
 step "Preflight"
 [[ -x "$LK_BIN" ]] || die "livekit-server not found at $LK_BIN"
 say "livekit-server $("$LK_BIN" --version 2>&1 | head -1 | awk '{print $NF}')"
@@ -154,7 +168,7 @@ say "LAN interface: $LAN_IFACE"
 
 # ---------------------------------------------------------------- credentials
 step "Credentials"
-if [[ $PREFLIGHT_ONLY == 0 ]]; then mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"; fi
+mkdir -p "$CONF_DIR"; chmod 700 "$CONF_DIR"
 
 if [[ ! -f "$ENV_FILE" || $ROTATE == 1 ]]; then
   [[ $ROTATE == 1 ]] && say "rotating API secret" || say "minting API key + secret (first run)"
@@ -196,14 +210,14 @@ for key in "${MEDIA_KEYS[@]}"; do
   export "$key"
 done
 export PHONE_LIVEKIT_URL PHONE_LIVEKIT_PUBLIC_URL
-if [[ $PREFLIGHT_ONLY == 1 ]]; then
-  "$NODE_BIN" "$HERE/media-config.mjs" preflight
-  exit $?
-fi
 MEDIA_ARGS=()
 [[ $HOSTED == 0 ]] || MEDIA_ARGS+=(--hosted)
 PHONE_TURN_TLS_CONFIG="$("$NODE_BIN" "$HERE/media-config.mjs" turn-config "${MEDIA_ARGS[@]}")" \
   || die "public media prerequisites failed; configuration was not changed"
+if [[ $HOSTED == 1 && $RENDER_ONLY == 0 ]]; then
+  "$NODE_BIN" "$HERE/media-config.mjs" public-dns \
+    || die "hosted media DNS is not public; refusing runtime convergence"
+fi
 upsert_env_var "PHONE_LIVEKIT_URL" "$PHONE_LIVEKIT_URL"
 if [[ -n "$PHONE_LIVEKIT_PUBLIC_URL" ]]; then
   upsert_env_var "PHONE_LIVEKIT_PUBLIC_URL" "$PHONE_LIVEKIT_PUBLIC_URL"

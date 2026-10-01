@@ -13,6 +13,7 @@ import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { runToolOrchestration } from '@papercusp/tooldef';
 import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 import bashTool, { classifyCapabilityBashEffect } from './bash';
+import { sedIsObservational } from './bash-effect';
 import { normalizeExpectedSigpipeResult, runForeground } from './bash-jobs';
 
 const json = (value: unknown) => ({
@@ -195,6 +196,65 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     expect(result.childFailures).toEqual([
       expect.objectContaining({ tool: 'capability:bash', kind: 'semantic' }),
     ]);
+  });
+});
+
+/**
+ * WI-10005084 — the dispatcher and the always-up MCP proxy use this classifier to decide whether
+ * a capability:bash call may be retried (the proxy replays a `read` after a refused upstream) or
+ * run under dryRun. It used to refuse only the exact tokens `-i` / `--in-place`, so every other
+ * way sed writes a file or runs a command classified as a READ and would have executed again.
+ */
+describe('capability:bash sed replay safety (WI-10005084)', () => {
+  it.each([
+    ['attached in-place suffix', "sed -i.bak 's/a/b/' f"],
+    ['in-place inside a short cluster', "sed -ni 's/a/b/p' f"],
+    ['in-script write command', "sed -n 'w /tmp/x' f"],
+    ['in-script execute flag', "sed 's/a/b/e' f"],
+    ['in-script write flag', "sed 's/a/b/w /tmp/x' f"],
+    ['script file', 'sed -f script.sed f'],
+    ['script file, long form', 'sed --file=script.sed f'],
+    // The script is ATTACHED to -e (getopt takes the rest of the cluster); the next token is a FILE.
+    ['write script attached to -e', 'sed -ew/tmp/x p f'],
+    ['write script attached to -e inside a cluster', 'sed -nes/a/b/w/tmp/x p f'],
+    // GNU getopt_long accepts any unique abbreviation of a long option.
+    ['abbreviated --in-place', "sed --in-p 's/a/b/' f"],
+    ['shortest --in-place abbreviation', "sed --in 's/a/b/' f"],
+    ['abbreviated --file', 'sed --fi=x.sed f'],
+    ['unknown long option', "sed --no-such-option 's/a/b/' f"],
+    ['unknown short option', "sed -x 's/a/b/' f"],
+    ['no script at all', 'sed'],
+    ['dangling -e', 'sed -n -e'],
+    ['select chain with a write part', "sed -n '1p;w /tmp/x' f"],
+    ['select chain with an unrecognised part', "sed -n '1p;N' f"],
+  ])('keeps %s classified as write', (_label, command) => {
+    expect(classifyCapabilityBashEffect({ command })).toBe('write');
+  });
+
+  it.each([
+    ['line range print', "sed -n '200,235p' f"],
+    ['address regex print', "sed -n '/re/p' f"],
+    ['substitution to stdout', "sed 's/a/b/' f"],
+    ['extended regexp substitution', "sed -nE 's/(a)/\\1/p' f"],
+    ['separate files, last line', "sed -s -n '$p' a b"],
+    ['long quiet flag with -e', 'sed --quiet -e p f'],
+    ['repeated -e select scripts', "sed -n -e p -e '5q' f"],
+    ['attached -e select script', "sed -ne5q f"],
+    ['select chain', "sed -n '1,5p;10q' f"],
+    ['select chain with trailing semicolon', "sed -n '1,5p;' f"],
+    ['line-length option', 'sed -l 5 -n p f'],
+    ['stdin through a pipe', 'cat f | sed -n 2p'],
+  ])('keeps %s classified as read', (_label, command) => {
+    expect(classifyCapabilityBashEffect({ command })).toBe('read');
+  });
+
+  it('sedIsObservational walks short clusters the way getopt does', () => {
+    // `-e` takes the REST of its cluster, so what follows in the next token is a file.
+    expect(sedIsObservational(['sed', '-ne5q', 'f'])).toBe(true);
+    expect(sedIsObservational(['sed', '-new/x', 'p'])).toBe(false);
+    // `-l` takes a length, never a script.
+    expect(sedIsObservational(['sed', '-l', '5', '-n', 'p', 'f'])).toBe(true);
+    expect(sedIsObservational(['sed', '-l', 'p', 'f'])).toBe(false);
   });
 });
 

@@ -1434,7 +1434,8 @@
             "scripts/*.test.mjs",
             "scripts/lib/**/*.test.ts",
             "scripts/lib/**/*.test.mjs",
-            "scripts/agent-capacity/**/*.test.ts"
+            "scripts/agent-capacity/**/*.test.ts",
+            "scripts/relay/**/*.test.ts"
           ]
         },
         {

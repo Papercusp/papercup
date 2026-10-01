@@ -42,6 +42,52 @@ const operatorSnapshotSource = src.slice(
 );
 
 describe("EI-21590235587564636 — verifier source is immutable for the run", () => {
+  it.each([true, false])("checks the original-repository SPA helper before allocating resources (present=%s)", (present) => {
+    const fixture = mkdtempSync(resolve(tmpdir(), "verifier-helper-origin-"));
+    try {
+      const repo = resolve(fixture, "repo");
+      const scripts = resolve(repo, "scripts");
+      const temp = resolve(fixture, "temporary-launch-root");
+      mkdirSync(resolve(scripts, "lib"), { recursive: true });
+      mkdirSync(temp);
+      writeFileSync(resolve(scripts, "lib/spa-require-built.sh"),
+        readFileSync(resolve(SCRIPT, "../lib/spa-require-built.sh")));
+      if (!present) rmSync(resolve(scripts, "lib/spa-require-built.sh"));
+      // Execute the production snapshot/re-exec, path resolution and helper
+      // loader without allocating a display or building an operator fixture.
+      const paths = src.slice(src.indexOf('SCRIPT_DIR="'),
+        src.indexOf('DESKTOP_DIR="$REPO_DIR/papercusp-desktop"'));
+      const loaderMatch = src.match(
+        /^ {0,2}if ! \. "[^\n]*\/lib\/spa-require-built\.sh"; then[\s\S]*?^ {0,2}fi/m,
+      );
+      expect(loaderMatch, "production helper loader must remain identifiable").not.toBeNull();
+      expect(src.indexOf(loaderMatch![0])).toBeLessThan(workAllocationIdx);
+      const runner = resolve(scripts, "verify-tauri-headless.sh");
+      writeFileSync(runner, [
+        '#!/usr/bin/env bash', 'set -euo pipefail',
+        src.slice(snapshotGuardIdx, argumentParserIdx), paths,
+        'log() { printf "%s\\n" "$*" >&2; }', 'WORK=""',
+        loaderMatch![0],
+        'declare -F spa_require_built_gate >/dev/null',
+        'printf "HELPER_LOADED_FROM_ORIGINAL_REPO\\n"',
+      ].join('\n'));
+      const env = { ...process.env, TMPDIR: temp };
+      delete env.PAPERCUSP_REPO_DIR;
+      delete env.VERIFY_TAURI_SOURCE_SNAPSHOT_PATH;
+      delete env.VERIFY_TAURI_ORIGINAL_REPO_DIR;
+      const result = spawnSync('bash', [runner], { env, encoding: 'utf8', timeout: 10_000 });
+      expect(result.status, result.stderr).toBe(present ? 0 : 1);
+      if (present) expect(result.stdout.trim()).toBe('HELPER_LOADED_FROM_ORIGINAL_REPO');
+      else {
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain(`FATAL: cannot load ${scripts}/lib/spa-require-built.sh`);
+      }
+      expect(existsSync(resolve(temp, "lib/spa-require-built.sh"))).toBe(false);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it("captures and syntax-checks the source before parsing arguments or allocating resources", () => {
     expect(snapshotGuardIdx).toBeGreaterThan(-1);
     expect(argumentParserIdx).toBeGreaterThan(snapshotGuardIdx);

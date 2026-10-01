@@ -249,6 +249,15 @@ import getNextTool, {
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import {
+  acceptanceReadinessHold,
+  findOrFileAcceptanceRepairTask,
+  incompleteAcceptanceBarsForItems,
+  type AcceptanceReadinessHoldDeps,
+  type AcceptanceRepairTaskInput,
+  type RepairTaskStore,
+  type RepairTaskTx,
+} from '../../scheduler/acceptance-readiness-hold';
 
 function handlerPayload(out: { data?: unknown; content?: Array<{ text?: string }> }): Record<string, unknown> {
   if (out.data !== undefined) return out.data as Record<string, unknown>;
@@ -1576,5 +1585,248 @@ describe('scheduler:get_next claim lease arbitration (WI-39730)', () => {
       ok: true,
       claimReceipt: { committed: true, workItemId: 'WI-lease-lost' },
     });
+  });
+});
+
+/*
+ * Acceptance-readiness hold detectors (plan feature-drain-delivery-readiness-and-outcome-
+ * accounting-2026-10-01, P-002(b), D-008 §5 / D-011). The describe names ARE the BAR keys
+ * this file is the check for. scheduler:get_next pulls through getNextForBee, whose second
+ * post-claim verdict is acceptanceReadinessHold; the getNextForBee wiring (release before
+ * route, audit reason) is pinned in scheduler/get-next-for-bee-plan-lane-guard.test.ts.
+ * These cases drive the hold module itself with injected I/O, so no PG is needed.
+ */
+type HoldBar = {
+  barKey: string;
+  mappings: Array<{ planItemId: string; lifecycleStatus?: string }>;
+  readiness: { codes: string[] };
+};
+const HOLD_PLAN = 'hold-plan-2026-10-01';
+const holdBar = (barKey: string, items: Array<[string, string?]>, codes: string[]): HoldBar => ({
+  barKey,
+  mappings: items.map(([planItemId, lifecycleStatus]) => ({
+    planItemId,
+    ...(lifecycleStatus ? { lifecycleStatus } : {}),
+  })),
+  readiness: { codes },
+});
+const holdSnapshot = (...bars: HoldBar[]) =>
+  ({ bars }) as unknown as Parameters<typeof incompleteAcceptanceBarsForItems>[0];
+const holdItem = (id: string, itemIds: string[] | null) => ({
+  id,
+  harness: 'papercusp',
+  payload: {},
+  family: 'feature' as const,
+  sourcePlanSlug: itemIds ? HOLD_PLAN : null,
+  sourcePlanItemIds: itemIds,
+});
+const holdCtx = { by: 'su-test', workspaceId: 'ws-test' };
+
+function holdDeps(snap: ReturnType<typeof holdSnapshot>) {
+  const filed: AcceptanceRepairTaskInput[] = [];
+  const edges: string[] = [];
+  const deps: Partial<AcceptanceReadinessHoldDeps> = {
+    resolveStamp: async (wi) =>
+      wi.sourcePlanSlug && wi.sourcePlanItemIds
+        ? { plan_slug: wi.sourcePlanSlug, item_ids: wi.sourcePlanItemIds }
+        : null,
+    readSnapshot: async () => snap,
+    findOrFileRepairTask: vi.fn(async (input: AcceptanceRepairTaskInput) => {
+      filed.push(input);
+      return { id: `EI-REPAIR-${filed.length}`, filed: true };
+    }),
+    linkHold: vi.fn(async (input: { repairId: string; heldId: string }) => {
+      edges.push(`${input.repairId}->${input.heldId}`);
+      return null;
+    }),
+  };
+  return { deps, filed, edges };
+}
+
+/**
+ * A repair-task store with Postgres's relevant semantics: `pg_advisory_xact_lock` serializes
+ * transactions on the same key until the holder's transaction settles, and createWorkItem
+ * commits on its own connection (as production's createWorkItem does). Timer yields between
+ * the read and the insert open the race window a missing lock would lose. `honorLock:false`
+ * is the negative control: it shows the fixture can observe a duplicate at all.
+ */
+function advisoryLockRepairStore(opts: { honorLock?: boolean } = {}) {
+  const honorLock = opts.honorLock ?? true;
+  const rows: Array<{ feature_id: string; status: string; plan: string }> = [];
+  const lockTails = new Map<string, Promise<void>>();
+  const yieldTimer = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const lockKeys: string[] = [];
+  const store: RepairTaskStore = {
+    workspaceId: 'ws-test',
+    isTerminal: (status) => status === 'done' || status === 'dropped',
+    createWorkItem: async (wi) => {
+      await yieldTimer();
+      const id = `EI-REPAIR-${rows.length + 1}`;
+      rows.push({ feature_id: id, status: 'open', plan: String(wi.payload.acceptanceContractRepairFor) });
+      return { id };
+    },
+    begin: async <T>(fn: (tx: RepairTaskTx) => Promise<T>): Promise<T> => {
+      const releases: Array<() => void> = [];
+      const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('pg_advisory_xact_lock')) {
+          const key = String(values[0]);
+          lockKeys.push(key);
+          if (!honorLock) return [];
+          const prior = lockTails.get(key) ?? Promise.resolve();
+          let release!: () => void;
+          const mine = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          lockTails.set(
+            key,
+            prior.then(() => mine),
+          );
+          releases.push(release);
+          await prior;
+          return [];
+        }
+        if (text.includes('FROM harness_shared.work_items')) {
+          const plan = String(values[values.length - 1]);
+          await yieldTimer();
+          return rows.filter((row) => row.plan === plan).map(({ feature_id, status }) => ({ feature_id, status }));
+        }
+        throw new Error(`unexpected SQL in repair-task fixture: ${text}`);
+      }) as RepairTaskTx;
+      try {
+        return await fn(tx);
+      } finally {
+        for (const release of releases) release();
+      }
+    },
+  };
+  return { store, rows, lockKeys };
+}
+
+const repairInput = (planSlug = HOLD_PLAN): AcceptanceRepairTaskInput => ({
+  planSlug,
+  harness: 'papercusp',
+  workspaceId: 'ws-test',
+  heldBars: [{ barKey: 'R-1', itemIds: ['P-001'], codes: ['bar_snapshot_clause_not_accepted'] }],
+  by: 'su-test',
+});
+
+describe('AUTO-BAR-R-3-P-002 — an item bound to an incomplete acceptance contract is held and routed', () => {
+  it.each([
+    ['a draft (not accepted) clause', 'draft', 'bar_snapshot_clause_not_accepted'],
+    ['a clause with no METHOD', 'active', 'bar_snapshot_method_missing'],
+    ['a clause with no runnable check', 'active', 'bar_snapshot_check_missing'],
+  ])('holds a work-item bound to %s', async (_label, lifecycle, code) => {
+    const { deps, filed, edges } = holdDeps(holdSnapshot(holdBar('R-1', [['P-001', lifecycle]], [code])));
+    const hold = await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps);
+
+    expect(hold).toMatchObject({
+      planSlug: HOLD_PLAN,
+      itemId: 'P-001',
+      effectiveStatus: 'acceptance-incomplete',
+      staleBlockedHint: null,
+    });
+    expect(hold!.reason).toContain(code);
+    // The verdict is side-effect free; routing runs only after the caller released the claim.
+    expect(filed).toHaveLength(0);
+    expect(await hold!.routeAfterRelease()).toBe('held behind repair task EI-REPAIR-1 (filed now)');
+    expect(filed[0]).toMatchObject({ planSlug: HOLD_PLAN, heldBars: [{ barKey: 'R-1', codes: [code] }] });
+    expect(edges).toEqual(['EI-REPAIR-1->WI-held']);
+  });
+
+  it('only the three contract codes hold; proof and grading gaps do not', () => {
+    const snap = holdSnapshot(
+      holdBar('R-1', [['P-001']], ['bar_snapshot_proof_missing', 'bar_snapshot_grading_missing']),
+      holdBar('R-2', [['P-001']], ['bar_snapshot_method_missing', 'bar_snapshot_proof_inadequate']),
+    );
+    expect(incompleteAcceptanceBarsForItems(snap, ['P-001'])).toEqual([
+      { barKey: 'R-2', itemIds: ['P-001'], codes: ['bar_snapshot_method_missing'] },
+    ]);
+  });
+});
+
+describe('AUTO-BAR-R-16-P-002 — concurrent pulls file exactly one repair task per plan', () => {
+  it('two concurrent find-or-file calls on one plan file ONE task and both receive its id', async () => {
+    const { store, rows, lockKeys } = advisoryLockRepairStore();
+    const [a, b] = await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect([a, b].filter((r) => r.filed)).toHaveLength(1);
+    expect(a.id).toBe(b.id);
+    expect(new Set(lockKeys)).toEqual(new Set([`acceptance-contract-repair:ws-test:${HOLD_PLAN}`]));
+  });
+
+  // Negative control: the same race WITHOUT the lock files twice, so the case above can fail.
+  it('negative control: with the advisory lock ignored, the same race files a duplicate', async () => {
+    const { store, rows } = advisoryLockRepairStore({ honorLock: false });
+    await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('the lock is per plan: concurrent pulls on two plans each file their own task', async () => {
+    const { store, rows } = advisoryLockRepairStore();
+    const [a, b] = await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput('plan-a'), store),
+      findOrFileAcceptanceRepairTask(repairInput('plan-b'), store),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(a.filed && b.filed).toBe(true);
+  });
+
+  it('a closed repair task is never reused: the next pull files a fresh one', async () => {
+    const { store, rows } = advisoryLockRepairStore();
+    const first = await findOrFileAcceptanceRepairTask(repairInput(), store);
+    rows[0]!.status = 'done';
+    const second = await findOrFileAcceptanceRepairTask(repairInput(), store);
+    expect(second).toEqual({ id: 'EI-REPAIR-2', filed: true });
+    expect(second.id).not.toBe(first.id);
+  });
+});
+
+describe('AUTO-BAR-R-18-P-002 — the hold does not over-block', () => {
+  const snap = holdSnapshot(
+    holdBar('R-1', [['P-001', 'draft']], ['bar_snapshot_clause_not_accepted']),
+    holdBar('R-2', [['P-002', 'active']], ['bar_snapshot_proof_missing', 'bar_snapshot_grading_missing']),
+    holdBar('R-3', [['P-004', 'retired']], ['bar_snapshot_method_missing']),
+  );
+
+  it.each([
+    ['a complete-contract item (only proof/grading still owed)', ['P-002']],
+    ['an independent item no BAR maps, while a sibling is held', ['P-003']],
+    ['an item mapped only by a retired clause', ['P-004']],
+    ['unplanned work', null],
+  ])('leaves %s claimable, with no repair task and no edge', async (_label, itemIds) => {
+    const { deps, filed, edges } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-free', itemIds as string[] | null), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+    expect(edges).toHaveLength(0);
+  });
+
+  it('a plan with no acceptance rubric yet holds nothing (rubrics are authored after implementation)', async () => {
+    const { deps, filed } = holdDeps(holdSnapshot());
+    expect(await acceptanceReadinessHold(holdItem('WI-free', ['P-001']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+  });
+
+  it('fails open on a snapshot read failure', async () => {
+    const { deps, filed } = holdDeps(holdSnapshot());
+    deps.readSnapshot = async () => {
+      throw new Error('pg blip');
+    };
+    expect(await acceptanceReadinessHold(holdItem('WI-free', ['P-001']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+  });
+
+  // Discrimination: the same snapshot DOES hold the sibling bound to the draft clause, so the
+  // nulls above are the verdict and not a hold that never fires.
+  it('control: the sibling bound to the draft clause in the same snapshot is held', async () => {
+    const { deps } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps)).not.toBeNull();
   });
 });

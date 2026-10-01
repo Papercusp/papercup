@@ -198,6 +198,88 @@ describe('bundle-host.sh last-known-good fallback', () => {
     260_000,
   );
 
+  // ── WI-10005087: a RUNTIME WORKER failure, after the entry built ───────────
+  // Measured 2026-10-01 21:01-21:10Z: the entry bundled, esbuild then failed on
+  // snapshot-fold.worker.ts, and the worker step's bare `|| exit 1` kept bg-host
+  // down ~9 min although its drop-in opts in and a good worker sat on disk.
+  // The failure is injected through the embed worker's source override (a path
+  // that does not exist), so no file in the shared tree is touched.
+  const WORKER_OUTPUTS = [
+    'local-embedder-worker.script.mjs',
+    'cpu-task-worker.script.mjs',
+    'local-reranker-worker.script.mjs',
+    'event-loop-sentinel.worker.mjs',
+    'snapshot-fold.worker.mjs',
+  ];
+  const GOOD_WORKER = 'export const lastKnownGoodWorker = true;\n';
+
+  function stageWorkerFailure(previousOutputs: string[]): { entry: string; env: Record<string, string> } {
+    execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
+    for (const output of previousOutputs) writeFileSync(join(dir, 'dist-host', output), GOOD_WORKER);
+    const entry = join(dir, 'fine-entry.ts');
+    writeFileSync(entry, 'export const ok = 1;\nconsole.log(ok);\n');
+    return { entry, env: { PAPERCUSP_EMBED_WORKER_SCRIPT: join(dir, 'missing-embed-worker.script.mjs') } };
+  }
+
+  it(
+    'lets a SUPERVISOR boot on last-known-good WORKERS when a worker fails to build',
+    () => {
+      const { entry, env } = stageWorkerFailure(WORKER_OUTPUTS);
+
+      const { code, output } = runBundler(entry, { ...env, PAPERCUSP_BUNDLE_ALLOW_STALE_START: '1' });
+
+      // THE POINT: the unit starts instead of crash-looping on a worker edit.
+      expect(code, output).toBe(0);
+      for (const worker of WORKER_OUTPUTS) {
+        expect(readFileSync(join(dir, 'dist-host', worker), 'utf8')).toBe(GOOD_WORKER);
+      }
+      // ...and the mixed dist-host (fresh entry, older worker) is loud, not silent.
+      expect(output).toMatch(/FALLING BACK/);
+      expect(output).toMatch(/STALE CODE/);
+      expect(existsSync(marker)).toBe(true);
+      const parsed = JSON.parse(readFileSync(marker, 'utf8'));
+      expect(parsed.schema).toBe('bundle-stale-v1');
+      expect(parsed.entry).toBe(env.PAPERCUSP_EMBED_WORKER_SCRIPT);
+      expect(parsed.outfile).toMatch(/local-embedder-worker\.script\.mjs$/);
+      expect(parsed.servingBundleMtime).toBeTruthy();
+      expect(parsed.error).toMatch(/missing runtime worker/);
+    },
+    260_000,
+  );
+
+  it(
+    'FAILS a release caller on a worker failure, still marking dist-host stale',
+    () => {
+      const { entry, env } = stageWorkerFailure(WORKER_OUTPUTS);
+
+      const { code, output } = runBundler(entry, env);
+
+      expect(code).not.toBe(0);
+      expect(output).toMatch(/CALLER FAILS/);
+      // The fresh entry was published before the worker step, so dist-host is a
+      // mix whatever the caller decides — the marker records that fact.
+      expect(existsSync(marker)).toBe(true);
+      expect(readFileSync(join(dir, 'dist-host', WORKER_OUTPUTS[4]), 'utf8')).toBe(GOOD_WORKER);
+    },
+    260_000,
+  );
+
+  it(
+    'REFUSES an opted-in supervisor when a worker has no previous output',
+    () => {
+      // snapshot-fold.worker.mjs is absent: spawning a missing worker would fail
+      // at runtime, so the opt-in must not license it.
+      const { entry, env } = stageWorkerFailure(WORKER_OUTPUTS.slice(0, 4));
+
+      const { code, output } = runBundler(entry, { ...env, PAPERCUSP_BUNDLE_ALLOW_STALE_START: '1' });
+
+      expect(code).not.toBe(0);
+      expect(output).toMatch(/NO previous/);
+      expect(output).toMatch(/snapshot-fold\.worker\.mjs/);
+    },
+    260_000,
+  );
+
   it(
     'CLEARS the marker once the tree builds again',
     () => {

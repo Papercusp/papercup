@@ -2014,6 +2014,15 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // Phone media sources are outside npm workspaces. Include both layers even
+    // when the web unit suite is selected; it excludes the integration suite.
+    workspace: "@papercusp/web",
+    script: "test:phone-media",
+    appliesTo: (f) =>
+      f.startsWith("infra/phone-app/") ||
+      f.startsWith("apps/operator/scripts/__tests__/phone-app-hosted-config."),
+  },
+  {
     // EI-24368307678871025 — the host's real esbuild graph must resolve imports
     // against the committed operator-core tree before a restart uses that graph.
     // The existing check builds into a temporary directory, so it cannot replace

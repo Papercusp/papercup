@@ -480,6 +480,14 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
+# BASH_SOURCE points at the temporary entry after the source re-exec. Resolve
+# adjacent helpers from the preserved repository, and load their definitions
+# before preparing a runtime so a missing helper cannot waste a full build.
+# shellcheck source=lib/spa-require-built.sh
+if ! . "$REPO_DIR/scripts/lib/spa-require-built.sh"; then
+  echo "FATAL: cannot load $REPO_DIR/scripts/lib/spa-require-built.sh" >&2
+  exit 1
+fi
 # shellcheck source=papercusp-desktop/bin/lib/federation-asserts.sh
 source "$DESKTOP_DIR/bin/lib/federation-asserts.sh"   # reuse fed_pick_free_port
 
@@ -2285,15 +2293,8 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # It complements that check: it WAITS before the freeze instead of failing
   # after a full boot, and it needs no source string that survives
   # minification. Every run logs how many sources are newer than the bundle.
-  # shellcheck source=lib/spa-require-built.sh
-  if ! . "$SCRIPT_DIR/lib/spa-require-built.sh"; then
-    log "FATAL: cannot load $SCRIPT_DIR/lib/spa-require-built.sh"
-    rm -rf "$WORK"
-    exit 1
-  fi
   if [ -n "${VERIFY_TAURI_REQUIRE_BUILT:-}" ] \
     && ! spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"; then
-    rm -rf "$WORK"
     exit 3
   fi
   spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"
@@ -2352,7 +2353,6 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
         break
       fi
       log "FATAL: shared SPA dist did NOT produce a non-empty assets/ bundle within ${QUIESCE_MAX_WAIT_SEC}s — refusing to freeze an incomplete snapshot (index.html exists but its referenced application assets are missing). Re-run after the watcher finishes."
-      rm -rf "$WORK"
       exit 1
     fi
     sleep "$QUIESCE_POLL_SEC"
@@ -2393,7 +2393,6 @@ else
     # WI-10004972: the caller asked for proof the SPA contains its edits, and
     # there is no built SPA to prove it against.
     log "SPA_STALE_VS_SOURCE reason=no-dist dist=$SHARED_SPA_DIST — VERIFY_TAURI_REQUIRE_BUILT is set but there is no built SPA here. Refusing."
-    rm -rf "$WORK"
     exit 3
   fi
   log "WARNING: no built SPA at $SHARED_SPA_DIST (operator-vite not built yet) — NOT freezing a"

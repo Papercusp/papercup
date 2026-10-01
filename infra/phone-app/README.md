@@ -11,7 +11,7 @@ under our control.
 
 | Unit | What | Listens |
 |---|---|---|
-| `papercusp-phone-livekit.service` | LiveKit server (WebRTC SFU + embedded TURN) | `7890` http/ws · `7891` rtc-tcp · `7892/udp` rtc-mux · `7893/udp` turn |
+| `papercusp-phone-livekit.service` | LiveKit server (WebRTC SFU + embedded TURN) | `7890` http/ws · `7891` rtc-tcp · `7892/udp` rtc-mux · `7893/udp` turn · hosted `7894` TURN/TLS backend |
 | `papercusp-phone-sip.service` | LiveKit SIP gateway (PSTN ⇄ room bridge) | `5070` sip (udp+tcp) · `40000-40200/udp` rtp |
 
 Redis `127.0.0.1:6379` **db 3** is the coordination bus between the two.
@@ -75,10 +75,58 @@ provide a separately reachable WSS origin for the browser:
 PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com infra/phone-app/deploy.sh --hosted
 ```
 
-`--hosted` fails closed unless the public URL is `wss://`; it persists that URL
-beside the internal `PHONE_LIVEKIT_URL` without rewriting the API credentials.
-It does not provision DNS, a TLS reverse proxy, firewall/NAT, or TURN/TLS: those
-remain deployment prerequisites and must pass the real remote-browser check.
+`--hosted` requires a public WSS origin on TCP/443, separate TURN DNS hostname,
+and a matching certificate/key with at least seven days of validity. Configuration
+uses absolute paths to external injected certificates. It keeps
+`PHONE_LIVEKIT_URL` internal and persists separate public coordinates without
+rewriting the API credentials. The four additional `PHONE_TURN_*` fields extend
+this existing deployer; they do not create another deployment service.
+
+Prepare from the existing credential file without minting keys, installing units,
+restarting services, resolving DNS, or claiming public acceptance:
+
+```bash
+PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com \
+PHONE_TURN_DOMAIN=turn.example.com \
+PHONE_TURN_CERT_FILE=/external/certificates/turn/fullchain.pem \
+PHONE_TURN_KEY_FILE=/external/certificates/turn/privkey.pem \
+  infra/phone-app/deploy.sh --hosted --render-only
+```
+
+The TURN TLS backend defaults to `7894`; `PHONE_TURN_TLS_PORT` can choose a
+different unprivileged non-conflicting backend port. LiveKit advertises TURN/TLS
+on **public TCP/443** regardless of this backend port. The approved frontend must
+route TURN TCP/443 to that backend and terminate WSS on TCP/443 to `7890`.
+Merely opening public `7894` does not satisfy the contract. Do not expose `7890`
+directly to browsers. Public DNS, frontend ownership, certificate renewal, ICE
+UDP `7892`, optional RTC TCP `7891`, SIP `5070` and RTP `40000–40200/udp`
+firewall/NAT rules still require explicit deployment and measurement.
+
+`PHONE_CONFIG_DIR` selects an external config directory for isolated preparation;
+the default remains `~/.config/papercusp-phone`. Preparation writes mode-0600
+config there, so use a separate directory when reviewing a candidate against a
+running deployment. No private key contents are copied into a config or logged.
+
+The public preflight can run on a remote machine with only non-secret coordinates:
+
+```bash
+PHONE_LIVEKIT_PUBLIC_URL=wss://voice.example.com \
+PHONE_TURN_DOMAIN=turn.example.com \
+  node infra/phone-app/media-config.mjs preflight
+```
+
+Alternatively `deploy.sh --preflight` reads those coordinates from the external
+env file if present. It changes no files or services. Both hosts must resolve
+exclusively to global IP addresses, and each measured address must present a
+trusted, hostname-matching certificate with at least seven days remaining on
+TCP/443. A failed trust, DNS, timeout or renewal check fails closed. This checks
+prerequisites only: its report explicitly has `audioVerified: false`.
+
+Before P-002 acceptance, deploy and exercise the maintained certificate renewal
+mechanism for the chosen frontend and TURN termination, then prove authenticated
+**bidirectional audio** from both an external network and a UDP-blocked network.
+The repository's isolated TLS and config tests provide software regression
+evidence; they do not discharge those public network or renewal requirements.
 
 ## Credentials
 
@@ -92,6 +140,10 @@ a file. Nothing here is committed.
 - **Trunk (P-003)** — `livekit-sip` is running and accepts SIP, but no carrier trunk
   is configured, so it cannot reach the PSTN yet. That needs a Telnyx account, which
   is an owner-gated wall (see the plan's `## Now`).
-- **TURN/TLS** — embedded TURN runs UDP-only; TLS needs a cert for a real hostname.
-  Fine for LAN and for a server with a public IP; revisit before shipping clients on
-  restrictive networks.
+- **Public media deployment** — hosted TURN/TLS configuration and remote preflight
+  are prepared here. Approved DNS/frontend routing, renewal and both real remote
+  audio cases remain unverified. LAN mode keeps UDP TURN and disables TLS.
+
+Upstream contracts: [LiveKit deployment](https://docs.livekit.io/transport/self-hosting/deployment/),
+[configuration](https://github.com/livekit/livekit/blob/master/config-sample.yaml),
+and [TURN/TLS advertisement](https://github.com/livekit/livekit/blob/master/pkg/service/roommanager.go).

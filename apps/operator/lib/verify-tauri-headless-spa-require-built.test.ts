@@ -207,13 +207,14 @@ describe('WI-10004972 — verify-tauri-headless.sh wiring', () => {
 
   it('runs the gate and the note inside the freeze branch, BEFORE quiescence and the copy', () => {
     const branch = src.indexOf('if [ -f "$SHARED_SPA_DIST/index.html" ]; then');
-    const source = src.indexOf('. "$SCRIPT_DIR/lib/spa-require-built.sh"');
+    const source = src.indexOf('. "$REPO_DIR/scripts/lib/spa-require-built.sh"');
     const gateCall = src.indexOf('spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"');
     const note = src.indexOf('spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"');
     const quiesce = src.indexOf('QUIESCE_STABLE_SEC="${PAPERCUSP_SPA_QUIESCE_STABLE_SEC');
     const copy = src.indexOf('cp -a "$SHARED_SPA_DIST/."');
     for (const i of [branch, source, gateCall, note, quiesce, copy]) expect(i).toBeGreaterThan(-1);
-    expect(branch).toBeLessThan(source);
+    expect(source).toBeLessThan(src.indexOf('WORK="$(mktemp -d'));
+    expect(source).toBeLessThan(branch);
     expect(source).toBeLessThan(gateCall);
     expect(gateCall).toBeLessThan(note);
     expect(note).toBeLessThan(quiesce);
@@ -222,11 +223,14 @@ describe('WI-10004972 — verify-tauri-headless.sh wiring', () => {
 
   it('is opt-in and refuses with exit 3, the "cannot exercise your change" code', () => {
     expect(src).toMatch(
-      /if \[ -n "\$\{VERIFY_TAURI_REQUIRE_BUILT:-\}" \] \\\n\s+&& ! spa_require_built_gate [^\n]+; then\n\s+rm -rf "\$WORK"\n\s+exit 3\n/,
+      /if \[ -n "\$\{VERIFY_TAURI_REQUIRE_BUILT:-\}" \] \\\n\s+&& ! spa_require_built_gate [^\n]+; then\n\s+exit 3\n/,
     );
   });
 
   it('refuses when the caller requires a build but there is no dist at all', () => {
-    expect(src).toMatch(/reason=no-dist[^\n]*\n\s+rm -rf "\$WORK"\n\s+exit 3\n/);
+    expect(src).toMatch(/reason=no-dist[^\n]*\n\s+exit 3\n/);
+    // Teardown still needs this directory to write its owned stop scripts and
+    // preserve the failure logs. It removes the bulk SPA snapshot itself.
+    expect(src).not.toMatch(/^\s*rm -rf "\$WORK"\s*$/m);
   });
 });

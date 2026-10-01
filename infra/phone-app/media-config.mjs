@@ -17,6 +17,8 @@ const globalV6 = new BlockList();
 globalV6.addSubnet('2000::', 3, 'ipv6');
 blocked.addSubnet('2001:db8::', 32, 'ipv6');
 blocked.addSubnet('2001:2::', 48, 'ipv6');
+blocked.addSubnet('2001::', 23, 'ipv6'); // IETF special assignments, including embedded-address tunnels
+blocked.addSubnet('2002::', 16, 'ipv6'); // 6to4 can embed a non-public IPv4 address
 
 export function isPublicAddress(address) {
   const family = isIP(address);
@@ -35,6 +37,7 @@ export function publicHostname(hostname) {
 }
 
 export function publicMediaUrl(value) {
+  if (typeof value !== 'string' || /[\s\x00-\x1f\x7f]/.test(value)) throw new Error('invalid public media URL');
   let url;
   try { url = new URL(value); } catch { throw new Error('invalid public media URL'); }
   if (url.protocol !== 'wss:' || url.username || url.password || url.search || url.hash ||
@@ -123,9 +126,13 @@ export function checkTlsEndpoint({ hostname, address, port = 443, timeoutMs = 50
 }
 
 export async function remotePreflight(env) {
-  const config = mediaConfig(env, true);
+  // A remote client needs only these two non-secret coordinates. It never
+  // needs the media API credential, TURN private key or server filesystem.
+  const url = publicMediaUrl(env.PHONE_LIVEKIT_PUBLIC_URL);
+  const turnDomain = publicHostname(env.PHONE_TURN_DOMAIN);
+  if (url.hostname === turnDomain) throw new Error('WSS and TURN require separate public DNS hostnames');
   const reports = [];
-  for (const hostname of [new URL(config.publicUrl).hostname, config.turnDomain]) {
+  for (const hostname of [url.hostname, turnDomain]) {
     for (const address of await publicAddresses(hostname)) {
       reports.push(await checkTlsEndpoint({ hostname, address }));
     }
@@ -138,8 +145,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const action = process.argv[2];
     if (action === 'preflight') console.log(JSON.stringify(await remotePreflight(process.env)));
+    else if (action === 'public-dns') {
+      const config = mediaConfig(process.env, true);
+      for (const hostname of [new URL(config.publicUrl).hostname, config.turnDomain]) {
+        await publicAddresses(hostname);
+      }
+      console.log('public media DNS prerequisites passed');
+    }
     else if (action === 'turn-config') console.log(mediaConfig(process.env, process.argv.includes('--hosted')).turnYaml);
-    else throw new Error('expected turn-config or preflight');
+    else throw new Error('expected turn-config, public-dns or preflight');
   } catch (error) {
     // Crypto/file exceptions can include input details. Report their class only.
     const safe = error.code ? 'media prerequisite failed (' + error.code + ')' :

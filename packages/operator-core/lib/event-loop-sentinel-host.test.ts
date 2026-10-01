@@ -1,13 +1,27 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { isMainThread, Worker } from 'node:worker_threads';
 import {
   resolveSentinelConfig,
   startEventLoopSentinel,
   SENTINEL_DEFAULTS,
 } from './event-loop-sentinel-host';
+import { SENTINEL_SAB_INT32_LEN } from './event-loop-sentinel';
+import { summarizeHotStacks, type CpuProfileLike } from './event-loop-stall-profile';
+import type { SentinelWorkerData } from './event-loop-sentinel.worker';
+
+/** Burns the CALLING thread for `ms`. Named so a profile can point at it. */
+function sentinelTestSpinHotPath(ms: number): number {
+  const end = Date.now() + ms;
+  let x = 0;
+  while (Date.now() < end) {
+    for (let i = 0; i < 1_000; i++) x += Math.sqrt(x + i);
+  }
+  return x;
+}
 
 /**
  * esbuild the real worker to a standalone `.mjs` — the SAME artifact
@@ -185,6 +199,84 @@ describe('startEventLoopSentinel', () => {
       await h.stop();
     }
   }, 30_000);
+
+  /**
+   * WI-10004766 / WI-10003454: the in-stall profile, end to end — the REAL
+   * worker, a really blocked main thread, a real `.cpuprofile`.
+   *
+   * Both `connectToMainThread()` and `/proc/<pid>/task/<pid>` describe the
+   * PROCESS main thread, so this only means something when the test itself runs
+   * there (vitest's forks pool). Under a threads pool it would profile an idle
+   * thread and prove nothing, so it skips instead.
+   */
+  async function runStallTrial(block: () => void): Promise<{ dir: string; files: string[] }> {
+    const built = buildWorkerMjs();
+    if (!built) throw new Error('esbuild unavailable');
+    const dir = mkdtempSync(join(tmpdir(), 'sentinel-stall-'));
+    const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
+    const view = new Int32Array(sab);
+    const data: SentinelWorkerData = {
+      sab,
+      // Observe mode, no grace, a wedge threshold the trial never reaches.
+      thresholds: { wedgeAfterMs: 60_000, observationsToAct: 3, startupGraceMs: 0 },
+      observeIntervalMs: 100,
+      mode: 'observe',
+      pid: process.pid,
+      stallProfile: { dir, afterMs: 400, captureMs: 500, cooldownMs: 60_000, maxProfiles: 5 },
+    };
+    const worker = new Worker(built, { workerData: data });
+    try {
+      await new Promise<void>((r) => worker.once('message', () => r()));
+      // A moving heartbeat first, so the worker has a live counter and a CPU baseline.
+      for (let i = 0; i < 6; i++) {
+        Atomics.add(view, 0, 1);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      block();
+      // The worker writes the file on ITS thread during the block; allow a
+      // short tail for a capture that straddled the block's end. The heartbeat
+      // RESUMES here, as on a real host: without it the "stall" would continue
+      // through this polling loop, where a 100 ms observe window turns one
+      // 10 ms clock tick of runner noise into 0.1 cores ('partial') and
+      // captures something that is not the block under test.
+      const deadline = Date.now() + 3_000;
+      let files: string[] = [];
+      while (Date.now() < deadline) {
+        Atomics.add(view, 0, 1);
+        files = readdirSync(dir).filter((f) => f.startsWith('stall-') && f.endsWith('.cpuprofile'));
+        if (files.length) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { dir, files };
+    } finally {
+      await worker.terminate();
+    }
+  }
+
+  it('WI-10004766: profiles a SPINNING main thread mid-stall and points at the spinning code', async () => {
+    if (process.platform !== 'linux' || !isMainThread || !buildWorkerMjs()) return;
+    const { dir, files } = await runStallTrial(() => sentinelTestSpinHotPath(2_500));
+    expect(files).toHaveLength(1);
+    const profile = JSON.parse(readFileSync(join(dir, files[0]), 'utf8')) as CpuProfileLike;
+    const summary = summarizeHotStacks(profile, { depth: 6 });
+    // ~500 samples at V8's 1 ms default; a much lower count means the capture
+    // ran mostly after the block, i.e. it did not see the stall.
+    expect(summary.samples).toBeGreaterThan(200);
+    // The FILE, not the function name: V8 may inline the spin into its caller
+    // (measured in the probe), which removes the name but never the url.
+    expect(summary.hot[0].stack).toContain('event-loop-sentinel-host.test');
+    expect(summary.hot[0].pct).toBeGreaterThan(50);
+  }, 60_000);
+
+  it('CONTROL: a PARKED main thread (blocked in a futex wait) is not profiled', async () => {
+    if (process.platform !== 'linux' || !isMainThread || !buildWorkerMjs()) return;
+    const { files } = await runStallTrial(() => {
+      // ~0 CPU while stale: the inspector would not be serviced, and the
+      // worker's wchan/children already name this kind of wait.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_500);
+    });
+    expect(files).toEqual([]);
+  }, 60_000);
 
   it('CONTROL: re-introducing the unref bug DOES trip the regression test above', async () => {
     // A guard that has never failed is a guard nobody has tested. Rebuild the

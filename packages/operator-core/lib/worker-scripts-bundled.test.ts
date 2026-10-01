@@ -121,6 +121,11 @@ const EXCLUDED_DIR_NAMES = new Set([
   'sidecar',
   'env-sidecars',
   'coverage',
+  // Gitignored agent state: scratch probes and isolation worktrees, never this
+  // tree's sources. Measured 2026-10-01: a peer's
+  // .papercusp/scratch/wi5070-worker-unload.script.mjs turned all three
+  // "stages every source *.script.mjs" cases red in the shared tree only.
+  '.papercusp',
 ]);
 
 function findWorkerScripts(dir: string, found: string[] = []): string[] {

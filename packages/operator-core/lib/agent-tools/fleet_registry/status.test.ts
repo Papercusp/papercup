@@ -19,18 +19,27 @@ const h = vi.hoisted(() => ({
 // P-007 / R-17: the headcount `current` read goes through readFleetMemberSilence,
 // whose await leg queries harness_shared.event_awaits. Answer ONLY that query from
 // the fixture; every other query is delegated to the real getOrgPg untouched, so
-// the pre-existing legs behave exactly as before this double existed.
+// the pre-existing legs behave exactly as before this double existed. The real pool
+// is resolved LAZILY: in this test env `actual.getOrgPg()` itself throws, and calling
+// it eagerly would fail the event_awaits leg too (→ null partition → unknown count).
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  type Pg = ReturnType<typeof actual.getOrgPg>;
   return {
     ...actual,
     getOrgPg: (...args: Parameters<typeof actual.getOrgPg>) => {
-      const real = actual.getOrgPg(...args);
+      let real: Pg | undefined;
+      const realPg = (): Pg => (real ??= actual.getOrgPg(...args));
+      const realSql = () =>
+        realPg().sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>;
       const sql = (strings: TemplateStringsArray, ...values: unknown[]) =>
         strings.join('$').includes('harness_shared.event_awaits')
           ? Promise.resolve(h.awaitRows)
-          : (real.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>)(strings, ...values);
-      return Object.assign(Object.create(real), { sql: Object.assign(sql, real.sql) });
+          : realSql()(strings, ...values);
+      const sqlProxy = new Proxy(sql, { get: (_t, p) => Reflect.get(realSql(), p) });
+      return new Proxy({} as Pg, {
+        get: (_t, p) => (p === 'sql' ? sqlProxy : Reflect.get(realPg() as object, p)),
+      });
     },
   };
 });
@@ -180,6 +189,7 @@ beforeEach(() => {
   // An empty map is a MEASURED "no loop rows for these owners", not a failed read —
   // so the healthy-payload tests above stay byte-identical (no degraded leg).
   h.getLoopStatuses.mockResolvedValue(new Map());
+  h.awaitRows = [];
 });
 
 describe('fleet:status', () => {
@@ -317,6 +327,40 @@ describe('fleet:status', () => {
         transactionWorkerReadyMembers: null,
       },
     });
+  });
+
+  // P-007 / R-17: a heartbeat-only member holding just the inbox-wake keepalive is
+  // silent and does not count; a member parked on a declared await does count.
+  it('excludes a silent member from current and counts a member parked on a declared await', async () => {
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      enabled: true,
+      target: 3,
+      config: {},
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    h.liveFleetMemberIds.mockResolvedValueOnce(['su-busy', 'su-waiting', 'su-quiet']);
+    h.executingOwnersSince.mockResolvedValueOnce(new Set(['su-busy']));
+    h.awaitRows = [
+      { subscriber_id: 'su-waiting', event_key: 'work-item:done:WI-1' },
+      { subscriber_id: 'su-quiet', event_key: 'coord:inbox-wake:su-quiet' },
+    ];
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toMatchObject({
+      enabled: true,
+      target: 3,
+      current: 2,
+      shortfall: 1,
+      underStrength: true,
+      verdict: 'under-strength',
+      basis: { kind: 'agent-origin-execution-attested', liveRosterMembers: 3, executingMembers: 2 },
+    });
+    expect(out.degradedLegs ?? []).not.toContain('headcountExecuting');
   });
 
   // WI-2034624: `su-prior-transaction-live` is deliberately ABSENT from

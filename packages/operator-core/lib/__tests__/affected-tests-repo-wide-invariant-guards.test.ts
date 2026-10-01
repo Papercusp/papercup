@@ -204,6 +204,29 @@ function printAffected(changedPaths: string): string {
   return `${res.stdout ?? ''}${res.stderr ?? ''}`;
 }
 
+describe('affected-tests: Phone media source recurrence', () => {
+  it.each(['infra/phone-app/deploy.sh', 'infra/phone-app/media-config.mjs',
+    'infra/phone-app/livekit-server.yaml.tmpl', 'infra/phone-app/livekit-sip.yaml.tmpl'])
+  ('selects both registered media layers for %s without a workspace edit', path => {
+    expect(printAffected(path)).toContain('test:phone-media');
+  });
+
+  it('keeps media integration coverage when the web unit suite is also selected', () => {
+    expect(printAffected('infra/phone-app/deploy.sh,apps/operator/lib/use-workspace.ts')).toContain('test:phone-media');
+  });
+
+  it('does not select media tests for unrelated infrastructure', () => {
+    expect(printAffected('infra/defguard/Caddyfile')).not.toContain('test:phone-media');
+  });
+
+  it('names real unit and integration commands in its host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'));
+    const command = pkg.scripts['test:phone-media'];
+    expect(command).toContain('phone-app-hosted-config.test.ts --config vitest.config.ts');
+    expect(command).toContain('phone-app-hosted-config.integration.test.ts --config vitest.integration.config.ts');
+  });
+});
+
 /**
  * EI-21943909516081455 — the probe must distinguish "the runner ABORTED" from "the runner
  * ran and routed wrongly".

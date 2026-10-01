@@ -68,8 +68,10 @@ describe('frontier placement opt-in (real PG)', () => {
     });
 
     const admitted = await placeableKinds(db, ws, ['feature', 'chunk', 'bet-analysis', 'note', 'bug']);
-    // built-ins + the opted-in 'bet-analysis'; NOT 'note' (untagged) and NOT 'bug' (issue-family).
-    expect(admitted).toEqual(['bet-analysis', 'chunk', 'feature']);
+    // the active built-in 'feature' + the opted-in 'bet-analysis'; NOT 'note' (untagged), NOT
+    // 'bug' (issue-family), and NOT 'chunk' (removed from the placement frontier 2026-08-31 —
+    // frontierPlacementKindClause admits only item_kind = 'feature' among built-ins).
+    expect(admitted).toEqual(['bet-analysis', 'feature']);
   });
 
   it('is workspace-scoped: an opt-in in ws-A does not place ws-B', async () => {

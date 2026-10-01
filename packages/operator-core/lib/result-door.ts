@@ -1408,24 +1408,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                 : {}),
             },
             next:
-              // `response.data` rather than a bare `data`: naming the field's OWNER
-              // is what stops the misread, and stating the file's encoding outright
-              // beats the old "begins with a text header" hint that left the reader
-              // to infer it. Both are paid for by tightening the trailing sentence
-              // — this pointer is NET SHORTER than the ambiguous version it
-              // replaced, which is the only reason it clears WI-5656 below.
-              `Use capability:read with _projection.cursor.args; file_path is an encoded ` +
-              `scratch-reference, not JSON. For each page, validate response.data as canonical ` +
-              `base64 and decoded.length===byte_length; follow next_cursor; parse JSON only at ` +
-              `eof:true + next_cursor:null. ` +
+              // Some callers (including Codex functions.exec) have no base64 codec.
+              // The cursor points to a manifest-bearing scratch file, not the JSON body;
+              // offer plaintext line windows and retain the validated byte-page path.
+              `Use capability:read at cursor.args.file_path (scratch-reference, not JSON); ` +
+              `raw:true line windows are plaintext. Byte pages put canonical base64 in response.data; ` +
+              `use a runtime codec, verify decoded.length===byte_length, follow next_cursor; ` +
+              `parse JSON only at eof:true + next_cursor:null. ` +
               (partialJsonBody
                 ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
                   `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
                   `paging cannot recover omitted fields. Re-call ${opts.toolName} with a wider per-field limit.`
-                : `recover spill; ` +
-                  (parsedJsonBody
-                    ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
-                    : `the spill opens with a text header.`)) +
+                : parsedJsonBody
+                  ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
+                  : `the spill opens with a text header.`) +
               // Keep the JSON recovery pointer compact. The payload projector budgets
               // the pointer together with the retained JSON preview; page-integrity
               // and EOF gating are load-bearing, so the contract above is deliberately

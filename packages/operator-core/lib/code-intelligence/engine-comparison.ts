@@ -414,15 +414,26 @@ export function decideDisposition(reports: readonly ArmReport[]): DispositionVer
   const reasons: string[] = [];
   const cand = by.get('gitnexus-candidate');
   const cbm = by.get('codebase-memory');
+  // GN-BENCH-PROVENANCE: a winner may only be declared when every executed arm ran on the SAME
+  // source snapshot. A mismatched tree fingerprint cannot attribute a win to the engine, so it
+  // downgrades a would-be upgrade/replace to `inconclusive` (it never creates or hides a `keep`).
+  const parity = sourceParity(reports);
+  const parityBlock = parity.same
+    ? null
+    : `source parity failed — arms ran on different tree fingerprints (${Object.entries(parity.fingerprints)
+        .map(([id, fp]) => `${id}=${fp ?? 'null'}`)
+        .join(', ')}); no winner can be declared`;
   const cbmClear = cbm?.available ? clears(cbm, installed) : null;
   if (cbmClear?.pass && cbmClear.wins.length > 0) {
     reasons.push(`Codebase-Memory clears every bar and wins: ${cbmClear.wins.join('; ')}`);
+    if (parityBlock) return { decision: 'inconclusive', reasons: [...reasons, parityBlock], residue };
     return { decision: 'replace', reasons, residue };
   }
   if (cbmClear) reasons.push(`Codebase-Memory does not replace: ${cbmClear.fails.join('; ') || 'no win over installed'}`);
   const candClear = cand?.available ? clears(cand, installed) : null;
   if (candClear?.pass && candClear.wins.length > 0) {
     reasons.push(`candidate clears every bar and wins: ${candClear.wins.join('; ')}`);
+    if (parityBlock) return { decision: 'inconclusive', reasons: [...reasons, parityBlock], residue };
     return { decision: 'upgrade', reasons, residue };
   }
   if (candClear) reasons.push(`candidate does not upgrade: ${candClear.fails.join('; ') || 'no win over installed'}`);

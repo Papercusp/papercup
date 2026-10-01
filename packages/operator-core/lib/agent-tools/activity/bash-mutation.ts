@@ -32,6 +32,7 @@ import {
   classifiesReadOnlyAwk,
   classifiesSimpleRead,
   commandBase,
+  sedIsObservational,
   splitClassifiableShell,
 } from '../capability/bash-effect';
 
@@ -171,70 +172,6 @@ const DATA_ONLY_COMMANDS = new Set([
   'test',
   'wc',
 ]);
-
-const SED_ADDRESS = String.raw`(?:\d+|\$|\/(?:\\.|[^/\\])*\/)`;
-// `200,235p`, `1p`, `$p`, `/re/p`, `/a/,/b/d`, `5q`, `=` — print/delete/quit only. No
-// `w`/`W`/`e`/`r`/`R`, which are the commands that write a file or run one.
-const SED_SELECT_SCRIPT = new RegExp(String.raw`^\s*(?:${SED_ADDRESS}(?:\s*,\s*${SED_ADDRESS})?)?\s*!?\s*[pPdq=]\s*$`);
-// `s/a/b/` with only the harmless flags. `w` (write file) and `e` (execute) are NOT in the set.
-const SED_SUBSTITUTE_SCRIPT = /^\s*s(.)(?:\\.|(?!\1).)*?\1(?:\\.|(?!\1).)*?\1[gGpiImM0-9]*\s*$/;
-
-function isSafeSedScript(script: string): boolean {
-  return SED_SELECT_SCRIPT.test(script) || SED_SUBSTITUTE_SCRIPT.test(script);
-}
-
-/**
- * `sed` writes only through `-i`/`--in-place`, `-f` (a script file may hold `w`), or an
- * in-script `w`/`e` command. The dispatcher's classifier rejects exactly `-i` and
- * `--in-place`, so a cluster like `-ni` or an attached suffix `-i.bak` slips through it;
- * this layer inspects every short-option cluster instead.
- */
-function sedIsObservational(tokens: readonly string[]): boolean {
-  const scripts: string[] = [];
-  const positional: string[] = [];
-  let scriptFlag = false;
-  let optionsEnded = false;
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i]!;
-    if (optionsEnded || !token.startsWith('-') || token === '-') {
-      positional.push(token);
-      continue;
-    }
-    if (token === '--') {
-      optionsEnded = true;
-      continue;
-    }
-    if (token.startsWith('--')) {
-      if (/^--(?:in-place|file)(?:=|$)/.test(token)) return false;
-      if (token === '--expression') {
-        scriptFlag = true;
-        const next = tokens[i + 1];
-        if (next === undefined) return false;
-        scripts.push(next);
-        i += 1;
-      } else if (token.startsWith('--expression=')) {
-        scriptFlag = true;
-        scripts.push(token.slice('--expression='.length));
-      }
-      continue;
-    }
-    const cluster = token.slice(1);
-    if (/[if]/.test(cluster)) return false;
-    if (cluster.includes('e')) {
-      scriptFlag = true;
-      const next = tokens[i + 1];
-      if (next === undefined) return false;
-      scripts.push(next);
-      i += 1;
-    }
-  }
-  if (!scriptFlag) {
-    const script = positional.shift();
-    if (script === undefined) return false;
-    scripts.push(script);
-  }
-  return scripts.length > 0 && scripts.every(isSafeSedScript);
-}
 
 const XARGS_FLAGS = new Set(['-r', '--no-run-if-empty', '-0', '--null', '-t', '--verbose', '-x', '--exit']);
 const XARGS_FLAGS_WITH_ARGUMENT = new Set(['-n', '-P', '-L', '-s', '-d', '-E', '-I', '-l']);

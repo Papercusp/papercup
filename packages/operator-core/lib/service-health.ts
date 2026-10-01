@@ -2035,6 +2035,26 @@ export interface SupervisionEntry {
    * `service-health-unit-coverage.test.ts` asserts this.
    */
   exitEncodesRunOnly?: boolean;
+  /**
+   * EI-24811958626062774: hold this report-only entry's DOWN broadcast until the unit has been
+   * continuously down for this many ms, and stay silent about a recovery that lands first.
+   *
+   * Report-only entries otherwise announce the first failed tick. That is right for a unit
+   * that fails rarely and wrong for one that fails in short self-clearing streaks. Measured on
+   * `papercup-staging-sync` over 3 days: 30 failure streaks, 14 of them a single failed run. A
+   * first-tick alarm there emits about 20 down/recovered broadcasts a day, almost all noise,
+   * and a channel that cries wolf is the one nobody reads when the 5-hour streak arrives.
+   *
+   * The clock counts the WHOLE episode, including runs in flight that did not recover it
+   * (`decideReconcile` holds state across them), so it measures how long the subject has
+   * actually been stuck. It is in-memory like the rest of the flap state: a bg-host restart
+   * restarts the clock, which delays one alarm and never invents one.
+   *
+   * INVARIANT: `notifyAfterDownMs ⇒ !autoRestart`. A restart-capable entry already pages on
+   * its own ladder (failed restart, give-up), and delaying that would hide a dead service.
+   * `service-health-unit-coverage.test.ts` asserts this.
+   */
+  notifyAfterDownMs?: number;
 }
 
 /**
@@ -2126,6 +2146,21 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // which is `static` and has no `[Install]` section — does NOT persist and WILL be undone).
   // `enable --now` to resume.
   { name: 'live-federation-gate-timer', layer: 'systemd-user', unit: 'papercup-live-federation-gate.timer', criticality: 'important', autoRestart: true },
+  // EI-24811958626062774: the job that moves :3170 forward. `Type=oneshot`, `RemainAfterExit=no`,
+  // fired ~every 5min by papercup-staging-sync.timer, so it is EPISODIC: idle `inactive` is
+  // healthy and only `failed` is down. When it fails, :3170 keeps serving its last build while
+  // staging moves on, and every agent verifying "current staging" there is reading stale code.
+  // Nothing watched it: on 2026-10-01 it exited FATAL on every tick from 20:16Z for 5+ hours
+  // (WorkingDirectory vs the `.current` alias) and was found only because one live verification
+  // needed :3170.
+  //
+  // `autoRestart: false`: re-running a failed sync just repeats the same FATAL; the failure is in
+  // the tree or the layout, which a restart cannot fix. `notifyAfterDownMs: 30min`: measured
+  // over 3 days, 30 failure streaks; at 30 min the alarm fires on the 31-69 min streaks and the
+  // 5-hour one, and stays quiet on the 14 single-run blips. The timer itself is not a separate
+  // entry: a stopped timer is a different failure (it stops running at all) and has not been
+  // observed here.
+  { name: 'staging-sync', layer: 'systemd-user', unit: 'papercup-staging-sync', criticality: 'important', autoRestart: false, episodic: true, notifyAfterDownMs: 30 * 60_000 },
   // WI-6149 (D-010 item 4): the oddsmith sidecar — persistent, probed on :46229
   // (see HEALTH_ENDPOINTS). `autoRestart: false` follows the `bg-host` precedent
   // directly above: the unit is already `Restart=always` at the systemd level, so

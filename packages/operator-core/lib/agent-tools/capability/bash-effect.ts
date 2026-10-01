@@ -360,6 +360,120 @@ export function isReadOnlyPsPpidPipeline(command: string): boolean {
   return segments !== null && isReadOnlyPsPpidPipelineSegments(segments);
 }
 
+const SED_ADDRESS = String.raw`(?:\d+|\$|\/(?:\\.|[^/\\])*\/)`;
+// `200,235p`, `1p`, `$p`, `/re/p`, `/a/,/b/d`, `5q`, `=` — print/delete/quit only. No
+// `w`/`W`/`e`/`r`/`R`, which are the commands that write a file or run one.
+const SED_SELECT_SCRIPT = new RegExp(String.raw`^\s*(?:${SED_ADDRESS}(?:\s*,\s*${SED_ADDRESS})?)?\s*!?\s*[pPdq=]\s*$`);
+// `s/a/b/` with only the harmless flags. `w` (write file) and `e` (execute) are NOT in the set.
+const SED_SUBSTITUTE_SCRIPT = /^\s*s(.)(?:\\.|(?!\1).)*?\1(?:\\.|(?!\1).)*?\1[gGpiImM0-9]*\s*$/;
+
+function isSafeSedScript(script: string): boolean {
+  if (SED_SELECT_SCRIPT.test(script) || SED_SUBSTITUTE_SCRIPT.test(script)) return true;
+  // `1,5p;10q` — a chain of select commands. A `;` inside an address regex never reaches this
+  // branch (the whole-script test above already accepted it), and a part that is not itself a
+  // select command (`w x`, `s/a/b/`, `N`) rejects the whole chain.
+  return script
+    .replace(/;\s*$/, '')
+    .split(';')
+    .every((part) => SED_SELECT_SCRIPT.test(part));
+}
+
+// Exact long options that cannot write. GNU getopt_long also accepts any UNIQUE ABBREVIATION
+// (`--in-p`, `--in`, `--fi`), so an unlisted `--…` token is unknown and must read as a write, never
+// as "an option I do not recognise, so ignore it".
+const SED_SAFE_LONG_FLAGS: ReadonlySet<string> = new Set([
+  '--binary',
+  '--debug',
+  '--null-data',
+  '--posix',
+  '--quiet',
+  '--regexp-extended',
+  '--sandbox',
+  '--separate',
+  '--silent',
+  '--text',
+  '--unbuffered',
+  '--zero-terminated',
+]);
+const SED_SAFE_SHORT_FLAGS: ReadonlySet<string> = new Set(['E', 'b', 'n', 'r', 's', 'u', 'z']);
+
+/**
+ * True only when `sed` provably cannot write a file or run a command: every script is a
+ * print/delete/quit select or a flag-restricted substitution, and every option is a known
+ * non-writing one. `-i`/`--in-place` (and its clusters and abbreviations), `-f`/`--file` (a
+ * script file may hold `w`), and an in-script `w`/`e` all fail. ALLOWLIST posture — an option or
+ * script this parser does not recognise is a write, because the callers are replay and dry-run
+ * safety ("a false positive could replay a mutation").
+ *
+ * Short options are walked character by character the way getopt does: `e` and `l` take the REST
+ * of the cluster as their argument when anything follows (`-ew/tmp/x` carries the script
+ * `w/tmp/x`; the next token is then a FILE, not the script) and only otherwise the next token.
+ *
+ * Dependency-free on purpose: this module is shared with the always-up MCP proxy.
+ */
+export function sedIsObservational(tokens: readonly string[]): boolean {
+  const scripts: string[] = [];
+  const positional: string[] = [];
+  let scriptFlag = false;
+  let optionsEnded = false;
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i]!;
+    if (optionsEnded || !token.startsWith('-') || token === '-') {
+      positional.push(token);
+      continue;
+    }
+    if (token === '--') {
+      optionsEnded = true;
+      continue;
+    }
+    if (token.startsWith('--')) {
+      if (token === '--expression') {
+        scriptFlag = true;
+        const next = tokens[i + 1];
+        if (next === undefined) return false;
+        scripts.push(next);
+        i += 1;
+      } else if (token.startsWith('--expression=')) {
+        scriptFlag = true;
+        scripts.push(token.slice('--expression='.length));
+      } else if (!SED_SAFE_LONG_FLAGS.has(token) && !/^--line-length=\d+$/.test(token)) {
+        return false;
+      }
+      continue;
+    }
+    const cluster = token.slice(1);
+    for (let c = 0; c < cluster.length; c += 1) {
+      const flag = cluster[c]!;
+      const attached = cluster.slice(c + 1);
+      if (flag === 'e') {
+        scriptFlag = true;
+        if (attached) {
+          scripts.push(attached);
+        } else {
+          const next = tokens[i + 1];
+          if (next === undefined) return false;
+          scripts.push(next);
+          i += 1;
+        }
+        break;
+      }
+      if (flag === 'l') {
+        const length = attached || tokens[i + 1] || '';
+        if (!/^\d+$/.test(length)) return false;
+        if (!attached) i += 1;
+        break;
+      }
+      if (!SED_SAFE_SHORT_FLAGS.has(flag)) return false;
+    }
+  }
+  if (!scriptFlag) {
+    const script = positional.shift();
+    if (script === undefined) return false;
+    scripts.push(script);
+  }
+  return scripts.length > 0 && scripts.every(isSafeSedScript);
+}
+
 export function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (depth > 2 || tokens.length === 0) return false;
   const base = commandBase(tokens[0]!);
@@ -393,7 +507,7 @@ export function classifiesSimpleRead(tokens: readonly string[], depth = 0): bool
     return false;
   }
   if (base === 'rg' && hasOption(tokens, ['--pre'])) return false;
-  if (base === 'sed' && hasOption(tokens, ['-i', '--in-place'])) return false;
+  if (base === 'sed' && !sedIsObservational(tokens)) return false;
   if (base === 'ss' && hasOption(tokens, ['-K', '--kill'])) return false;
   if (base === 'sort' && hasOption(tokens, ['-o', '--output'])) return false;
   return true;

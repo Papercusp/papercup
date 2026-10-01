@@ -196,8 +196,8 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // EI-21349944846228401: the path is a self-describing scratch reference,
     // not the raw JSON payload. Say that at the recovery decision point so a
     // caller does not feed the manifest-bearing file to jq/JSON.parse directly.
-    expect(next).toContain('file_path is an encoded scratch-reference, not JSON.');
-    expect(next).toContain('Use capability:read with _projection.cursor.args');
+    expect(next).toContain('cursor.args.file_path (scratch-reference, not JSON)');
+    expect(next).toContain('Use capability:read at cursor.args.file_path');
   });
 
   it('still LOCATES a tool-internally clipped body, and marks it incomplete (P-005; supersedes the EI-21185758364267344 withholding)', () => {
@@ -259,8 +259,11 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     );
   });
 
-  it('names the field to decode by its OWNER, not as a bare `data`', () => {
+  it('offers plaintext recovery for runtimes without atob and names the byte field', () => {
     const { next } = doorOversizedResult();
+
+    expect(next).toContain('raw:true line windows are plaintext');
+    expect(next).toContain('runtime codec');
 
     // A bare "base64-decode data" is what left the reporter decoding the file.
     expect(next).toContain('response.data');

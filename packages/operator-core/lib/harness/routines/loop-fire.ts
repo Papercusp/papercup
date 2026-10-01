@@ -165,10 +165,10 @@ export interface LoopFireDeps {
    *  defaults to ensureInboxWakeArmedForActiveSession (a live adv_sessions row but no
    *  active standing inbox-wake await ⇒ re-arm it and report true). Injected for tests. */
   ensureWakeArmed?: typeof defaultEnsureWakeArmed;
-  /** EI-21417550055038906 (cold-carry delivery): arm the standing inbox-wake
-   *  DIRECTLY (no live-session gate) so the wake-executor's resume channel can
-   *  cold-respawn a between-fires owner. Injectable for tests. */
-  armWakeForColdRespawn?: typeof defaultArmInboxWake;
+  /** Arm the standing inbox-wake DIRECTLY (no live-session gate) after a
+   *  no-watcher miss. An active loop is standing consent to resume for either
+   *  carry mode; the wake executor's liveness ladder handles exited sessions. */
+  armWakeForResume?: typeof defaultArmInboxWake;
 }
 
 export interface LoopFireResult {
@@ -1427,25 +1427,18 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     let healed = await ensureWakeArmed({ ownerId: input.targetOwnerId, workspaceId: input.workspaceId }).catch(
       () => false,
     );
-    // EI-21417550055038906 (comment 77440, fix part 4): a COLD-carry loop's owner
-    // is EXPECTED to have no live session between fires — each one-turn cold
-    // session dies, its SessionEnd cancels the standing inbox-wake await, and the
-    // live-session-gated self-heal above then refuses to re-arm (no live
-    // adv_sessions row). Every subsequent fire therefore emitted a warm wake into
-    // the void and black-holed as no-session-now (measured: 0/17 fires delivered,
-    // consecutiveErrors climbing, member idle over a claimable lane) — the only
-    // working lever was an external coord:send wake:'required'. For a cold loop,
-    // arm the standing await DIRECTLY (armInboxWake has no live-session gate; it
-    // captures the freshest resume handle, and the wake-executor's liveness
-    // ladder already handles "exited → resume/respawn"), then retry the emit so
-    // THIS fire takes the resume channel instead of counting an error. A cold
-    // loop being armed IS the owner's standing consent to be re-woken; loop:end
-    // is the opt-out, so bypassing the explicit-cancel check here is correct.
-    if (!healed && carry === 'cold') {
-      const armColdWake = deps.armWakeForColdRespawn ?? defaultArmInboxWake;
-      healed = await armColdWake({
+    // A SessionEnd can cancel the standing inbox-wake while the loop itself is
+    // still active. The live-session-gated self-heal above cannot repair every
+    // recovery state (for example, the latest adv_sessions incarnation may be
+    // absent or already ended), so the old cold-only fallback left warm loops
+    // parked after a no-watcher miss. An armed loop in either carry mode is
+    // standing consent to resume; loop:end is the opt-out. Arm directly, capture
+    // the freshest resume handle, and retry this fire through the liveness ladder.
+    if (!healed) {
+      const armWake = deps.armWakeForResume ?? defaultArmInboxWake;
+      healed = await armWake({
         ownerId: input.targetOwnerId,
-        note: `cold-loop resume channel (loop:${input.routineId}) — re-armed by loop-fire after a no-watcher miss`,
+        note: `${carry}-loop resume channel (loop:${input.routineId}) — re-armed by loop-fire after a no-watcher miss`,
       })
         .then(() => true)
         .catch(() => false);

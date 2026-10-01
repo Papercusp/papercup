@@ -115,6 +115,14 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
         by: BLOCKER_DEFAULT_REAPER_ACTOR,
         reason: 'owner-ask decideBy passed; typed default release_to_agents applied',
       });
+      // setWorkItemClaimHold only strips the payload hold keys — it never touches `status`.
+      // An issue parked on a strict human ask is stored as `needs-human` (set_blocker
+      // enters it via setWorkItemStateWithAliasInfo), so without this the item would be
+      // left `needs-human` with ZERO active blockers: unclaimable AND unexplained. Found
+      // by the real-PG integration test (WI-10005093); the fake-deps unit test could not.
+      if (state === 'blocked' || state === 'needs-human') {
+        await setWorkItemStateWithAliasInfo(id, 'open', { harness, by: BLOCKER_DEFAULT_REAPER_ACTOR });
+      }
     }
   },
 };

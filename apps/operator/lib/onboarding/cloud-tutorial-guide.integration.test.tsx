@@ -7,22 +7,44 @@ import { createTutorialState, tutorialReducer, type ProductObservation } from "@
 import { CloudTutorialGuide } from "./cloud-tutorial-guide";
 
 const scope = { tenantId: "tenant", userId: "user", workspaceId: "customer" };
+let systemReducedMotion = false;
+vi.mock("motion/react", async importOriginal => ({
+  ...(await importOriginal<typeof import("motion/react")>()),
+  useReducedMotion: () => systemReducedMotion,
+}));
 beforeEach(() => {
+  systemReducedMotion = false;
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 20, y: 20, top: 20, left: 20, width: 200, height: 40, right: 220, bottom: 60, toJSON: () => ({}) });
   Object.defineProperty(HTMLElement.prototype, "offsetParent", { configurable: true, get: () => document.body });
   Element.prototype.scrollIntoView = vi.fn();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
-function Fixture({ observation = { scope, revision: 1, access: "allowed" } as ProductObservation, target = true, check = vi.fn() }) {
+function Fixture({ observation = { scope, revision: 1, access: "allowed" } as ProductObservation, target = true, check = vi.fn(), reducedMotion = true }) {
   const [state, dispatch] = useReducer(tutorialReducer, tutorialReducer(createTutorialState(scope), { type: "observe", observation }));
   return <>
     <Button>App launcher</Button>
     {target && <label>Real connection label<input data-tutorial-target="cloud-connection" /></label>}
-    <CloudTutorialGuide state={state} dispatch={dispatch} reducedMotion onCheckAgain={check} />
+    <CloudTutorialGuide state={state} dispatch={dispatch} reducedMotion={reducedMotion} onCheckAgain={check} />
   </>;
 }
 describe("Persistent nonmodal Cloud Guide", () => {
+  it("honors the system reduced-motion preference even when a caller does not request reduced motion", async () => {
+    systemReducedMotion = true;
+    render(<Fixture reducedMotion={false} />);
+    await waitFor(() => expect(document.querySelector(".react-joyride__overlay")).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Show me" }));
+    expect(Element.prototype.scrollIntoView).toHaveBeenLastCalledWith({ behavior: "instant", block: "center" });
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Real connection label" }));
+  });
+  it("keeps focus on the replacement controls when pause and resume remove the clicked button", async () => {
+    render(<Fixture />);
+    const pause = screen.getByRole("button", { name: "Pause" }); pause.focus(); fireEvent.click(pause);
+    const resume = screen.getByRole("button", { name: "Resume guide" });
+    await waitFor(() => expect(document.activeElement).toBe(resume));
+    fireEvent.click(resume);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Show me" })));
+  });
   it("explains and highlights the current action while preserving keyboard and product input", async () => {
     render(<StrictMode><Fixture /></StrictMode>);
     expect(screen.getByRole("heading", { name: "Connect Google Cloud" })).toBeTruthy();
