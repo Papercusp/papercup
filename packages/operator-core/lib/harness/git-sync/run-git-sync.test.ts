@@ -54,6 +54,7 @@ import {
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
   expandAtomicLiveLockExclusions,
+  expandCargoPackageLiveLockExclusions,
   expandNpmManifestClosure,
   summarizeFetchFailure,
   isNpmManifestPath,
@@ -118,6 +119,47 @@ afterAll(() => {
 const REPO_ROOT = resolve(__dirname, '../../../../..');
 
 describe('expandAtomicLiveLockExclusions — staggered edit-lock protection', () => {
+  it('expands a lock without goal attribution to every dirty path in its nearest Cargo package', async () => {
+    const dirty = [
+      'apps/tui/Cargo.toml',
+      'apps/tui/src/main.rs',
+      'apps/tui/src/fresh_exec.rs',
+      'apps/tui/src/self_install.rs',
+      'apps/tui/src/voice_proxy.rs',
+      'apps/other/src/lib.rs',
+    ];
+    const manifests = new Map([
+      ['apps/tui/Cargo.toml', '[package]\nname = "pui"\n'],
+      ['Cargo.toml', '[workspace]\nmembers = ["apps/tui"]\n'],
+    ]);
+
+    const result = await expandCargoPackageLiveLockExclusions(
+      dirty,
+      ['apps/tui/src/main.rs'],
+      async (path) => manifests.get(path) ?? null,
+    );
+
+    expect(result).toEqual({
+      paths: [
+        'apps/tui/Cargo.toml',
+        'apps/tui/src/fresh_exec.rs',
+        'apps/tui/src/main.rs',
+        'apps/tui/src/self_install.rs',
+        'apps/tui/src/voice_proxy.rs',
+      ],
+      packages: [{
+        root: 'apps/tui',
+        paths: [
+          'apps/tui/Cargo.toml',
+          'apps/tui/src/fresh_exec.rs',
+          'apps/tui/src/main.rs',
+          'apps/tui/src/self_install.rs',
+          'apps/tui/src/voice_proxy.rs',
+        ],
+      }],
+    });
+  });
+
   it('expands one live-held file to every dirty file in its attributed work-item cohort', () => {
     const attribution = new Map<string, FileAttribution>([
       ['source.ts', { agent: 'su-peer', workItems: ['WI-1834529'] }],
@@ -1287,6 +1329,99 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).toMatch(/file\.txt/);
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt', 'normal.txt')).not.toMatch(/normal\.txt/);
+  });
+
+  it('EI-24492316853292543: a lock without goal attribution keeps its dirty Cargo package whole', async () => {
+    mkdirSync(join(repo, 'apps/tui/src'), { recursive: true });
+    writeFileSync(join(repo, 'apps/tui/Cargo.toml'), '[package]\nname = "pui"\nversion = "0.1.0"\n');
+    writeFileSync(join(repo, 'apps/tui/src/main.rs'), 'fn main() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/self_install.rs'), 'pub fn install() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/voice_proxy.rs'), 'pub fn proxy() {}\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed a Rust package');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, 'apps/tui/src/main.rs'), 'mod fresh_exec;\nfn main() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/fresh_exec.rs'), 'pub fn spawn() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/self_install.rs'), 'pub fn install() { crate::fresh_exec::spawn(); }\n');
+    writeFileSync(join(repo, 'apps/tui/src/voice_proxy.rs'), 'pub fn proxy() { crate::fresh_exec::spawn(); }\n');
+    writeFileSync(join(repo, 'normal.txt'), 'unrelated work\n');
+
+    const lockedMain = {
+      path: 'apps/tui/src/main.rs',
+      owner: 'su-peer',
+      intent: 'editing the PUI crate root',
+    };
+    const logs: string[] = [];
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      liveLockHoldings: [lockedMain],
+      log: (message) => logs.push(message),
+    });
+
+    expect(first.status).toBe('synced');
+    expect(first.skippedPaths).toContainEqual({ scope: 'superproject', ...lockedMain });
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('unrelated work');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('apps/tui/src/fresh_exec.rs');
+    expect(git(originDir, 'show', 'main:apps/tui/src/self_install.rs')).toBe('pub fn install() {}');
+    expect(git(originDir, 'show', 'main:apps/tui/src/voice_proxy.rs')).toBe('pub fn proxy() {}');
+    expect(git(repo, 'status', '--porcelain', '--', 'apps/tui')).toMatch(/apps\/tui/);
+    expect(logs.join('\n')).toContain('keeping dirty Rust package(s) atomic');
+
+    const second = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(second.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:apps/tui/src/main.rs')).toContain('mod fresh_exec;');
+    expect(git(originDir, 'show', 'main:apps/tui/src/self_install.rs')).toContain('crate::fresh_exec::spawn()');
+    expect(git(originDir, 'show', 'main:apps/tui/src/voice_proxy.rs')).toContain('crate::fresh_exec::spawn()');
+    expect(git(originDir, 'show', 'main:apps/tui/src/fresh_exec.rs')).toBe('pub fn spawn() {}');
+  });
+
+  it('EI-24492316853292543: a lock arriving after staging unstages the rest of its Cargo package', async () => {
+    mkdirSync(join(repo, 'apps/tui/src'), { recursive: true });
+    writeFileSync(join(repo, 'apps/tui/Cargo.toml'), '[package]\nname = "pui"\nversion = "0.1.0"\n');
+    writeFileSync(join(repo, 'apps/tui/src/main.rs'), 'fn main() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/self_install.rs'), 'pub fn install() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/voice_proxy.rs'), 'pub fn proxy() {}\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed a Rust package for a late lock');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, 'apps/tui/src/main.rs'), 'mod fresh_exec;\nfn main() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/fresh_exec.rs'), 'pub fn spawn() {}\n');
+    writeFileSync(join(repo, 'apps/tui/src/self_install.rs'), 'pub fn install() { crate::fresh_exec::spawn(); }\n');
+    writeFileSync(join(repo, 'apps/tui/src/voice_proxy.rs'), 'pub fn proxy() { crate::fresh_exec::spawn(); }\n');
+    writeFileSync(join(repo, 'normal.txt'), 'unrelated work\n');
+
+    const lockedMain = {
+      path: 'apps/tui/src/main.rs',
+      owner: 'su-probe',
+      intent: 'lock acquired after the pre-stage census',
+    };
+    let refreshes = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      refreshes += 1;
+      return refreshes === 1 ? [] : [lockedMain];
+    });
+    const logs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      refreshLiveLockHoldings,
+      log: (message) => logs.push(message),
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({ scope: 'superproject', ...lockedMain });
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('unrelated work');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('apps/tui/src/fresh_exec.rs');
+    expect(git(originDir, 'show', 'main:apps/tui/src/self_install.rs')).toBe('pub fn install() {}');
+    expect(git(originDir, 'show', 'main:apps/tui/src/voice_proxy.rs')).toBe('pub fn proxy() {}');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('');
+    expect(git(repo, 'status', '--porcelain', '--', 'apps/tui')).toMatch(/apps\/tui/);
+    expect(logs.join('\n')).toContain('same Cargo package');
   });
 
   it('WI-1834529: a staggered lock defers the whole attributed source/test cohort', async () => {

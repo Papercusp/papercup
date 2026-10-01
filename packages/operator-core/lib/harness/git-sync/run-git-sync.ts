@@ -1275,6 +1275,60 @@ export function expandAtomicLiveLockExclusions(
   return { paths: [...paths].sort(), groups: outputGroups };
 }
 
+/**
+ * A lock on one Rust source file must withhold the rest of that dirty Cargo package.
+ *
+ * Goal attribution is useful when it exists, but it is optional metadata and cannot
+ * establish Rust module completeness. In particular, publishing callers and a new
+ * sibling module while the locked crate root is withheld leaves a tree that does not
+ * compile even though the directional importer guard sees no import from the old root.
+ * Find the nearest Cargo package for each directly-excluded dirty file, then keep all
+ * dirty paths in that package together for this repository pass. Workspace-only
+ * Cargo.toml files ([workspace] without [package]) are not package boundaries.
+ */
+export async function expandCargoPackageLiveLockExclusions(
+  dirtyFiles: readonly string[],
+  excludedPaths: readonly string[],
+  readText: (path: string) => Promise<string | null>,
+): Promise<{ paths: string[]; packages: Array<{ root: string; paths: string[] }> }> {
+  const dirty = [...new Set(dirtyFiles.map((path) => path.trim()).filter(Boolean))];
+  const excluded = [...new Set(excludedPaths.map((path) => path.trim()).filter(Boolean))];
+  const packageRoots = new Set<string>();
+  const manifestCache = new Map<string, Promise<string | null>>();
+  const readManifest = (path: string): Promise<string | null> => {
+    let result = manifestCache.get(path);
+    if (!result) {
+      result = readText(path);
+      manifestCache.set(path, result);
+    }
+    return result;
+  };
+
+  for (const file of dirty) {
+    if (!excluded.some((path) => gitSyncPathsOverlap(file, path))) continue;
+    let dir = file === 'Cargo.toml' ? '.' : file.slice(0, Math.max(0, file.lastIndexOf('/')));
+    if (!dir) dir = '.';
+    while (true) {
+      const manifestPath = dir === '.' ? 'Cargo.toml' : `${dir}/Cargo.toml`;
+      const manifest = await readManifest(manifestPath);
+      if (manifest != null && /^\s*\[package\]\s*$/m.test(manifest)) {
+        packageRoots.add(dir);
+        break;
+      }
+      const parent = dir === '.' ? '.' : dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) || '.' : '.';
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+
+  const packages = [...packageRoots].sort().map((root) => ({
+    root,
+    paths: dirty.filter((file) => (root === '.' ? true : file.startsWith(`${root}/`))).sort(),
+  }));
+  const paths = [...new Set(packages.flatMap((pkg) => pkg.paths))].sort();
+  return { paths, packages };
+}
+
 const FETCH_FAILURE_REASON_MAX_CHARS = 300;
 
 /**
@@ -3669,21 +3723,26 @@ export async function guardStagedIndexBeforeCommit(opts: {
 
   const held = [...new Set([...lateLocked, ...drifted])];
   if (held.length === 0) return { ok: true, lateLockedHoldings: [], drifted: [], unstaged: [] };
+  const packageClosure = await expandCargoPackageLiveLockExclusions(staged, held, opts.readText);
+  const atomicHeld = [...new Set([...held, ...packageClosure.paths])];
   // Same conservative importer rule as the pre-stage live-lock exclusion: the HEAD copy of a
   // held module may lack the symbols a staged importer now uses, so hold every dirty importer.
   const importerOffenders = await detectQuarantineImporters({
     readText: opts.readText,
     dirtyFiles: staged,
-    alreadyQuarantined: held,
+    alreadyQuarantined: atomicHeld,
     exclusionLabel: 'post-stage late-lock/drift hold',
     log,
   });
   const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
-  const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...held, ...importers], log);
+  const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...atomicHeld, ...importers], log);
   if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
   log(
     `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
       `late-locked [${[...lateLocked].join(', ')}], drifted after staging [${[...drifted].join(', ')}]` +
+      (packageClosure.paths.length > 0
+        ? `, same Cargo package [${packageClosure.paths.join(', ')}]`
+        : '') +
       (importers.length > 0 ? `, dirty importers [${[...new Set(importers)].join(', ')}]` : '') +
       ' — they stay dirty for the next tick',
   );
@@ -4193,16 +4252,30 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         ...contentErrors.map((c) => c.file),
       ]),
     ];
+    const cargoPackageClosure = await expandCargoPackageLiveLockExclusions(
+      dirty,
+      baseExcludePaths,
+      (rel) => o.readText(repoPath, rel),
+    );
+    if (cargoPackageClosure.paths.length > 0) {
+      o.log(
+        `[git-sync] ${o.scope}: keeping dirty Rust package(s) atomic — ` +
+          cargoPackageClosure.packages
+            .map((pkg) => `${pkg.root} [${pkg.paths.join(', ')}]`)
+            .join('; '),
+      );
+    }
+    const packageSafeBaseExcludePaths = [...new Set([...baseExcludePaths, ...cargoPackageClosure.paths])];
     // EI-24649116564770033: a withheld dirty manifest holds back every other dirty manifest
     // in this repo, so a dependency change never lands without its root entry or lockfile.
-    const manifestClosure = expandNpmManifestClosure(dirty, baseExcludePaths);
+    const manifestClosure = expandNpmManifestClosure(dirty, packageSafeBaseExcludePaths);
     if (manifestClosure.paths.length > 0) {
       o.log(
         `[git-sync] ${o.scope}: keeping npm manifests atomic — ${manifestClosure.triggers.join(', ')} ` +
           `withheld this pass, so also deferring ${manifestClosure.paths.join(', ')}`,
       );
     }
-    const excludePaths = [...new Set([...baseExcludePaths, ...manifestClosure.paths])];
+    const excludePaths = [...new Set([...packageSafeBaseExcludePaths, ...manifestClosure.paths])];
     const preStagedProtected = await unstagePreStagedProtectedPaths(runGit, repoPath, excludePaths, o.log);
     noteSlowPhase('protected path unstage');
     if (!preStagedProtected.ok) {
