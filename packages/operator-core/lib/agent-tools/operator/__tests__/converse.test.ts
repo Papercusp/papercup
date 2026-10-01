@@ -76,6 +76,15 @@ vi.mock('node:fs', async (orig) => {
           (actual.readFileSync as any)(p, ...rest)) as typeof actual.readFileSync,
   };
 });
+// WI-10004897: the papercup failover judges the alternate's login from local credential
+// files. Pin that verdict so these tests never depend on the host's real ~/.claude/~/.codex.
+const agentBackendCredentialVerdictMock = vi.hoisted(() =>
+  vi.fn((_backend: string): unknown => ({ usable: true, basis: 'refreshable' })),
+);
+vi.mock('../../../agent-auth-detect', async (orig) => ({
+  ...(await orig<typeof import('../../../agent-auth-detect')>()),
+  agentBackendCredentialVerdict: (backend: string) => agentBackendCredentialVerdictMock(backend),
+}));
 vi.mock('../../../operator-budget', () => ({
   recordSpend: vi.fn(),
   checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
@@ -150,6 +159,7 @@ import { dispatchSentinelHandoff } from '../../../operator-sentinel-handoff';
 import { delegateDeep } from '../../../papercup/papercup-deep-delegate';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
+import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import tool from '../converse';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -575,7 +585,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     errSpy.mockRestore();
   });
 
-  it('papercup: when the alternate also fails, the turn error names the backend that ran LAST', async () => {
+  it('papercup: when the alternate also fails, the turn error names BOTH backends in order (WI-10004897)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     let n = 0;
     vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
@@ -589,9 +599,63 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       };
     });
     const { run } = papercupTurn();
-    await expect(run()).rejects.toThrow(/claude-code, model sonnet:low: .*401/);
+    // The first backend's cause (the cap) used to be dropped; only the 401 reached the user.
+    await expect(run()).rejects.toThrow(
+      /codex, model gpt-5\.6-luna:low: .*usage limit.*; then claude-code, model sonnet:low: .*401/,
+    );
     expect(runAgentChat).toHaveBeenCalledTimes(2);
+    expect(agentBackendCredentialVerdictMock).toHaveBeenCalledWith('claude-code');
     errSpy.mockRestore();
+  });
+
+  it('papercup: a failover whose alternate login has expired with no refresh token is skipped and named (WI-10004897)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    agentBackendCredentialVerdictMock.mockReturnValueOnce({ usable: false, reason: 'expired-no-refresh' });
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'error', message: CODEX_CAP };
+    });
+    const { ctx, run } = papercupTurn();
+    await expect(run()).rejects.toThrow(
+      /codex, model gpt-5\.6-luna:low: .*usage limit.*; failover to claude-code \(model sonnet:low\) skipped: .*expired and has no refresh token/,
+    );
+    // Neither a doomed spawn on the dead alternate nor a same-backend re-run of the cap.
+    expect(runAgentChat).toHaveBeenCalledTimes(1);
+    const provenance = ctx.emit.mock.calls.filter(([name]) => name === 'provenance');
+    expect(provenance).toHaveLength(1);
+    errSpy.mockRestore();
+  });
+
+  it('papercup: under the D-421 customer-identity spawn transform the local probe is NOT consulted and the failover runs', async () => {
+    // The brain runs as the customer account there; this process cannot read its login, so a
+    // local verdict would say `absent` for every alternate and wrongly skip every failover.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    agentBackendCredentialVerdictMock.mockReturnValue({ usable: false, reason: 'absent' });
+    configureAgentSpawnTransform((request) => ({
+      command: request.command,
+      args: [...request.args],
+      cwd: request.cwd,
+      env: request.env,
+    }));
+    try {
+      let n = 0;
+      vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+        n += 1;
+        if (n === 1) {
+          yield { type: 'error', message: CODEX_CAP };
+          return;
+        }
+        yield { type: 'delta', text: 'answered on claude' };
+      });
+      const { run } = papercupTurn();
+      const res = await run();
+      expect(agentBackendCredentialVerdictMock).not.toHaveBeenCalled();
+      expect(callOf(1)).toMatchObject({ model: 'sonnet:low', backend: 'claude-code' });
+      expect(res.data.assembled).toBe('answered on claude');
+    } finally {
+      configureAgentSpawnTransform(undefined);
+      agentBackendCredentialVerdictMock.mockReturnValue({ usable: true, basis: 'refreshable' });
+      errSpy.mockRestore();
+    }
   });
 
   it('the operator role never fails over — only the papercup chat pin pairs backends', async () => {

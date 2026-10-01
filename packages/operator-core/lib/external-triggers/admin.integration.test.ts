@@ -781,6 +781,31 @@ describe('P-023 — a social binding defaults to coalesce-with-cap, never to unb
     expect(binding.stormPolicy).toMatchObject({ maxRuns: 2, windowSeconds: 60 });
     expect(binding.stormPolicy.mode).toBeUndefined();
   });
+
+  // WI-10004920: the dispatch validity window says nothing about RATE, so stating
+  // only it must not cost a social binding its per-platform rate default — which
+  // is what happened while ANY stated policy displaced that default wholesale.
+  it('a policy stating only maxAgeSeconds keeps the social rate default and adds the window', async () => {
+    const binding = await bindOn('bluesky', { maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy).toMatchObject({
+      mode: 'coalesce-with-cap',
+      maxRuns: 12,
+      windowSeconds: 300,
+      maxAgeSeconds: 3600,
+    });
+  });
+
+  it('CONTROL: a non-social source stating only maxAgeSeconds gets the generic rate default', async () => {
+    const binding = await bindOn('gmail', { maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy).toMatchObject({ maxRuns: 12, windowSeconds: 60, maxAgeSeconds: 3600 });
+    expect(binding.stormPolicy.mode).toBeUndefined();
+  });
+
+  it('refuses a validity window past the 31-day ceiling on the social overlay path too', async () => {
+    await expect(bindOn('bluesky', { maxAgeSeconds: 32 * 24 * 60 * 60 })).rejects.toThrow(
+      /external_trigger_invalid_storm_max_age_seconds/,
+    );
+  });
 });
 
 describe('P-020 — goal-targeted bindings through the create door', () => {

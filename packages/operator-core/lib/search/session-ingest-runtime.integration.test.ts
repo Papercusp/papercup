@@ -313,6 +313,17 @@ describe('current-build ingestion on a private background runtime', () => {
       assert.equal(new Set(metadataControls.map(row => row.outputHash)).size, 1);
       console.log('INGEST_METADATA_CONTROLS ' + JSON.stringify({ metadataControls, diagnosticsBytes, configBytes }));
       const { sql } = getOrgPg();
+      // Capture the query actually emitted by the production repair. Replaying
+      // its bound SQL avoids substituting a SELECT mirror for an UPDATE plan.
+      // Only synthetic private fixture values enter this process-local map.
+      const ownerQueries = new Map();
+      const originalDebug = sql.options.debug;
+      sql.options.debug = (connection, query, parameters, types, queryId) => {
+        if (typeof originalDebug === 'function') originalDebug(connection, query, parameters, types, queryId);
+        if (/^\s*UPDATE harness_shared\.session_turns AS turns/.test(query)) {
+          ownerQueries.set(parameters[2], { query, parameters: [...parameters] });
+        }
+      };
       try {
         const migrated = await sql.unsafe('SELECT count(*)::int AS n FROM harness_shared.schema_migrations');
         assert.ok(migrated[0].n > 0);
@@ -504,18 +515,95 @@ describe('current-build ingestion on a private background runtime', () => {
         const configSelection = { selectedRows: selected.length,
           selectedNativeIdsHash: createHash('sha256').update(JSON.stringify(selected)).digest('hex'),
           missingConfig, freshConfig, explicitLaunch };
+
+        // The naturally slow statement was the Claude owner repair. Exercise
+        // that adapter's real managed-home layout, including an EOF-only repair,
+        // rather than inferring its behavior from Codex launch metadata.
+        const claudeCount = 179;
+        const claudeDay = join(e.PAPERCUSP_HOME, 'session-claude', 'private-claude-owner', 'projects', 'private-cwd');
+        await mkdir(claudeDay, { recursive: true });
+        for (let i = 0; i < claudeCount; i++) {
+          const id = 'private-claude-owner-' + i;
+          await writeFile(join(claudeDay, id + '.jsonl'), JSON.stringify({
+            type: 'user', uuid: id, timestamp: '2026-10-01T00:00:00Z',
+            message: { role: 'user', content: 'Synthetic private Claude owner repair turn ' + i },
+          }) + '\n');
+        }
+        const claudeUseful = await runSessionIngestOnce();
+        assert.equal(claudeUseful.errors, 0, JSON.stringify(claudeUseful));
+        assert.equal(claudeUseful.turnsInserted, claudeCount);
+        assert.equal(claudeUseful.metadataBackfills.find(r => r.sourceKind === 'claude').requested, claudeCount);
+        const damagedClaude = await sql.unsafe(
+          "UPDATE harness_shared.session_turns SET owner = 'stale-private-owner' WHERE source_kind = 'claude'");
+        assert.equal(damagedClaude.count, claudeCount);
+        const claudeNoTail = await runSessionIngestOnce();
+        assert.equal(claudeNoTail.errors, 0, JSON.stringify(claudeNoTail));
+        assert.equal(claudeNoTail.filesIngested, 0);
+        assert.equal(claudeNoTail.turnsInserted, 0);
+        assert.equal(claudeNoTail.partsInserted ?? 0, 0);
+        const claudeRepair = claudeNoTail.metadataBackfills.find(r => r.sourceKind === 'claude');
+        assert.equal(claudeRepair.operation, 'sessionOwners');
+        assert.equal(claudeRepair.updated, claudeCount);
+        assert.equal(claudeRepair.status, 'completed');
+        const captured = ownerQueries.get('claude');
+        assert.ok(captured, 'capture the real source UPDATE and bound Claude parameters');
+        assert.ok(captured.query.includes('UNNEST('));
+        const beforeReplay = await sql.unsafe(
+          "SELECT session_id, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id");
+        assert.equal(beforeReplay.length, claudeCount);
+        assert.ok(beforeReplay.every(row => row.owner === 'private-claude-owner'));
+        const ownerUpdatePlans = await sql.begin(async tx => {
+          await tx.unsafe("SET LOCAL statement_timeout = '10s'");
+          const cardinality = await tx.unsafe('SELECT cardinality($1::text[]) AS sessions, cardinality($2::text[]) AS owners',
+            captured.parameters.slice(0, 2));
+          assert.equal(cardinality[0].sessions, claudeCount);
+          assert.equal(cardinality[0].owners, claudeCount);
+          await tx.unsafe("UPDATE harness_shared.session_turns SET owner = 'stale-private-owner' WHERE source_kind = 'claude'");
+          const plans = [];
+          for (const expectedUpdates of [claudeCount, 0]) {
+            const result = await tx.unsafe('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + captured.query, captured.parameters);
+            const explained = result[0]['QUERY PLAN'][0];
+            const plan = explained.Plan;
+            assert.equal(plan['Node Type'], 'ModifyTable');
+            assert.equal(plan.Operation, 'Update');
+            assert.equal(plan['Relation Name'], 'session_turns');
+            // PostgreSQL UPDATE without RETURNING emits no root rows; count
+            // changed owners in private state instead of misreading that field.
+            const changed = await tx.unsafe(
+              "SELECT count(*)::int AS n FROM harness_shared.session_turns WHERE source_kind = 'claude' AND owner = 'private-claude-owner'");
+            assert.equal(changed[0].n, claudeCount);
+            const flatten = node => [{
+              nodeType: node['Node Type'], relation: node['Relation Name'], index: node['Index Name'],
+              rows: node['Actual Rows'], loops: node['Actual Loops'], removedByFilter: node['Rows Removed by Filter'] ?? 0,
+              sharedHitBlocks: node['Shared Hit Blocks'] ?? 0, sharedReadBlocks: node['Shared Read Blocks'] ?? 0,
+              sharedDirtiedBlocks: node['Shared Dirtied Blocks'] ?? 0, sharedWrittenBlocks: node['Shared Written Blocks'] ?? 0,
+            }, ...(node.Plans ?? []).flatMap(flatten)];
+            plans.push({ expectedUpdates, executionMs: explained['Execution Time'],
+              planningMs: explained['Planning Time'], nodes: flatten(plan) });
+            assert.equal(plan.Plans[0]['Actual Rows'] * plan.Plans[0]['Actual Loops'], expectedUpdates);
+          }
+          await tx.unsafe('ROLLBACK');
+          return plans;
+        });
+        const afterReplay = await sql.unsafe(
+          "SELECT session_id, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id");
+        assert.deepEqual(afterReplay, beforeReplay, 'EXPLAIN ANALYZE repair and no-op leave no committed mutation');
+        const ownerRepairControl = { sourceKind: 'claude', requested: claudeCount,
+          sqlHash: createHash('sha256').update(captured.query).digest('hex'),
+          parameterHash: createHash('sha256').update(JSON.stringify(captured.parameters)).digest('hex'),
+          useful: claudeUseful, noTail: claudeNoTail, plans: ownerUpdatePlans, rollbackPreserved: true };
         if (corpusHash) assert.equal(corpusHash,
           createHash('sha256').update(readFileSync(e.TEST_INGEST_CORPUS_PATH)).digest('hex'));
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
         console.log('INGEST_RUNTIME_PROBE ' + JSON.stringify({
           sourceHash, head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-          workload, workloadHash, observerOrder, profilerOrder, metadataControls, configSelection,
+          workload, workloadHash, observerOrder, profilerOrder, metadataControls, configSelection, ownerRepairControl,
           metadataFixtureHash: createHash('sha256').update(configText + diagnosticsText(0)).digest('hex'),
           baseline, passes, matchedUnchanged, unchanged, singleFileRepairs,
           child: { pid: process.pid, node: process.version, backgroundWorkers: e.PAPERCUSP_BACKGROUND_WORKERS },
           privateRows: rows[0].n, privateParts: parts[0].n, home: e.HOME, dbPort: dbUrl.port,
         }));
-      } finally { profiler?.disconnect(); await sql.end(); }
+      } finally { sql.options.debug = originalDebug; profiler?.disconnect(); await sql.end(); }
     `;
     // Reject malformed probe JavaScript before the costly migrated runtime boot.
     const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], {

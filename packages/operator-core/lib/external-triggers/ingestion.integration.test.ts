@@ -35,16 +35,18 @@ afterAll(async () => {
 });
 
 describe('external trigger ingestion core', () => {
-  it('seeds the five curated external datatypes with compilable schemas', async () => {
+  it('seeds the curated external datatypes with compilable schemas', async () => {
     const rows = await sql<{ id: string; payload_schema: Record<string, unknown> }[]>`
       SELECT id, payload_schema FROM harness_shared.datatype_registry
        WHERE workspace_id = 'papercusp-workspace' ORDER BY id`;
+    // 877 seeds the first five; 1269 adds `webhook-payload` to the same platform catalog.
     expect(rows.map((row) => row.id)).toEqual([
       'calendar-event',
       'chat-message',
       'contact',
       'email-message',
       'social-post',
+      'webhook-payload',
     ]);
     expect(rows.every((row) => isCompilableSchema(row.payload_schema))).toBe(true);
   });

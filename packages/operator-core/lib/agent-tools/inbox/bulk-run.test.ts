@@ -1138,6 +1138,151 @@ describe('P-004 intake: unresolved rows stay visible and resumable (R-19)', () =
   });
 });
 
+// P-008 (R-7, D-020): an intake-triage run's rows are observation-lane improvements,
+// which the attention feed only admits when flagged for a human. Feed membership
+// therefore cannot be their liveness check: the intake executor re-reads the source
+// row under its lock instead. Every other run kind keeps the feed gate.
+describe('P-008 intake-triage runs: source liveness instead of feed membership (R-7)', () => {
+  const decision = {
+    disposition: 'retain',
+    reason: 'Known flake, tracked elsewhere.',
+    decidedBy: 'su-resolver',
+    owner: 'system',
+    targetRef: null,
+    missingInformation: null,
+    decidedAt: '2026-10-01T16:00:00.000Z',
+    workKind: null,
+    acceptance: null,
+    sourceRevision: 'src-v1:abc',
+  };
+  const triageRow = {
+    ...intakeItem,
+    itemId: 'improvement:EI-7',
+    ref: { kind: 'improvement', issueId: 'EI-7', harnessSlug: 'papercusp' },
+    outcome: 'recommended',
+    intakeDecision: decision,
+  };
+
+  function arrange(runKind: string) {
+    const kindRun = { ...run, runKind };
+    h.getRun.mockResolvedValue(kindRun);
+    h.recordRunHeartbeat.mockResolvedValue(kindRun);
+    h.getRunItems.mockResolvedValue([triageRow]);
+    // The feed does not carry the observation at all.
+    h.callPlansRead.mockResolvedValue({ groups: [] });
+    h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L2', minConfidence: 'low' });
+    h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => ({
+      actionResult: await input.execute(),
+      item: { ...triageRow, outcome: 'auto_resolved', actionId: input.actionId, rationale: input.rationale },
+      run: { ...kindRun, autoResolved: 1 },
+      refused: null,
+    }));
+  }
+
+  async function applyIntake() {
+    return body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: triageRow.itemId,
+          actionId: 'apply-intake',
+          rationale: 'Apply the recorded retain decision.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+  }
+
+  it('applies a recorded decision on an intake-triage run without reading the feed', async () => {
+    arrange('intake-triage');
+    await applyIntake();
+    expect(h.callPlansRead).not.toHaveBeenCalled();
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionId: 'apply-intake',
+        intake: { decision, runId: run.runId },
+        item: expect.objectContaining({ id: triageRow.itemId, ref: expect.objectContaining({ issueId: 'EI-7' }) }),
+      }),
+    );
+  });
+
+  it('keeps the feed-membership gate for an Inbox run: a non-member is not applied', async () => {
+    arrange('inbox-resolve');
+    await applyIntake();
+    expect(h.callPlansRead).toHaveBeenCalled();
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+  });
+
+  it('the manifest of an intake-triage run skips the feed read; an Inbox run still reads it', async () => {
+    arrange('intake-triage');
+    h.getRunItems.mockResolvedValue([{ ...triageRow, outcome: 'pending', intakeDecision: null }]);
+    const manifest = body(await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never));
+    expect((manifest.items as Array<{ itemId: string }>).map((row) => row.itemId)).toEqual([triageRow.itemId]);
+    expect(h.callPlansRead).not.toHaveBeenCalled();
+
+    arrange('inbox-resolve');
+    h.getRunItems.mockResolvedValue([{ ...triageRow, outcome: 'pending', intakeDecision: null }]);
+    await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never);
+    expect(h.callPlansRead).toHaveBeenCalled();
+  });
+});
+
+// P-008 (R-26, D-020 §4): an uncertain report cannot become accepted fix work. A
+// low/insufficient-confidence promote is refused when REPORTED and writes nothing;
+// the same uncertainty may still be recorded as an investigation or a retry.
+describe('P-008 intake: uncertain promotes are refused at report time (R-26)', () => {
+  beforeEach(() => {
+    h.getRunItems.mockResolvedValue([intakeItem]);
+  });
+
+  it.each(['low', 'insufficient'])('refuses a %s-confidence promote and writes nothing', async (level) => {
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: level,
+        intakeDecision: { disposition: 'promote', reason: 'Looks like a real defect.' },
+      },
+    ]);
+    expect(JSON.stringify(result)).toContain('cannot become accepted work');
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+  });
+
+  it('refuses the legacy low confidence field the same way', async () => {
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidence: 'low',
+        intakeDecision: { disposition: 'promote', reason: 'Looks like a real defect.' },
+      },
+    ]);
+    expect(JSON.stringify(result)).toContain('cannot become accepted work');
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+  });
+
+  it('records the same uncertainty as an investigation, and a medium-confidence promote', async () => {
+    await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'low',
+        intakeDecision: { disposition: 'investigate', reason: 'Cause unclear; needs a scoped probe.' },
+      },
+    ]);
+    await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'medium',
+        intakeDecision: { disposition: 'promote', reason: 'Reproduced on staging.' },
+      },
+    ]);
+    expect(written().map((row) => row.intakeDecision?.disposition)).toEqual(['investigate', 'promote']);
+  });
+});
+
 // P-009 (R-31, D-019): the bulk tool's kill-switch read happens at entry, before the
 // run-row lock. recheckIntakeApply re-reads the switch and the run's stop state at
 // APPLICATION time, and fails closed when the flag cannot be read.

@@ -421,6 +421,69 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     expect(listFleetAssignments).not.toHaveBeenCalled();
   });
 
+  it('scoped coverage keeps cross-workspace edges, terminal items and claim holds equivalent to the full read', async () => {
+    await insertIssue({ id: 'WI-foreign', state: 'open', plan: 'p1', item: 'P-201' });
+    await rootSql`UPDATE harness_shared.work_items SET workspace_id = 'foreign-workspace'
+      WHERE feature_id = 'WI-foreign'`;
+    await rootSql`INSERT INTO harness_shared.coord_links
+      (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
+      VALUES ('foreign-workspace', 'issue', 'WI-foreign', ${PLAN_ITEM_KIND}, 'p1#P-201', 'fixes')`;
+    await insertIssue({ id: 'WI-terminal', state: 'done', plan: 'p1', item: 'P-202' });
+    await insertIssue({ id: 'WI-held', state: 'open', plan: 'p1', item: 'P-203' });
+    await rootSql`UPDATE harness_shared.work_items SET payload = payload || '{"_claimHold":true}'::jsonb
+      WHERE feature_id = 'WI-held'`;
+    await insertIssue({ id: 'WI-other', state: 'open', plan: 'p11', item: 'P-201' });
+
+    const full = await getAllPlanItemCoverage();
+    const [byPlan, byItems] = await Promise.all([
+      getAllPlanItemCoverage({ planSlug: 'p1' }),
+      getAllPlanItemCoverage({ planItemRefs: ['p1#P-201', 'p1#P-202', 'p1#P-203'] }),
+    ]);
+    const expected = [...full].filter(([ref]) => ref.startsWith('p1#'));
+    expect([...byPlan]).toEqual(expected);
+    expect([...byItems]).toEqual(expected);
+    expect(byPlan.get('p1#P-201')?.links).toEqual([
+      { workItemId: 'WI-foreign', rel: 'fixes', terminal: false, activity: 'free', holder: null },
+    ]);
+    expect(byPlan.get('p1#P-202')?.level).toBe('complete');
+    expect(byPlan.get('p1#P-203')?.links[0]).toMatchObject({ blocked: true, terminal: false });
+    expect(byPlan.has('p11#P-201')).toBe(false);
+  });
+
+  it('concurrent scoped readers observe claims, releases, holds and terminal transitions on their next read', async () => {
+    await insertIssue({ id: 'WI-transition', state: 'open', plan: 'p1', item: 'P-301' });
+    const readBoth = () => Promise.all([
+      getAllPlanItemCoverage({ planSlug: 'p1' }),
+      getAllPlanItemCoverage({ planItemRefs: ['p1#P-301'] }),
+    ]);
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('unclaimed');
+    }
+    h2.rows = [{ source: 'work_item_claim', workItemId: 'WI-transition', agentId: 'su-worker',
+      orphaned: false, stalled: false, holderAlive: true, lastProgressAt: new Date().toISOString() }];
+    h3.states.set('su-worker', 'live');
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('full');
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ activity: 'progressing', holder: 'su-worker' });
+    }
+    h2.rows = [];
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('unclaimed');
+      expect(coverage.get('p1#P-301')?.workers).toEqual([]);
+    }
+    await rootSql`UPDATE harness_shared.work_items SET payload = payload || '{"_claimHold":true}'::jsonb
+      WHERE feature_id = 'WI-transition'`;
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ blocked: true, terminal: false });
+    }
+    await rootSql`UPDATE harness_shared.work_items SET status = 'done', payload = payload - '_claimHold'
+      WHERE feature_id = 'WI-transition'`;
+    for (const coverage of await readBoth()) {
+      expect(coverage.get('p1#P-301')?.level).toBe('complete');
+      expect(coverage.get('p1#P-301')?.links[0]).toMatchObject({ terminal: true, holder: null });
+    }
+  });
+
   it('keeps a live holder with stale progress out of held-not-live (EI-20125544311539993)', async () => {
     await insertIssue({ id: 'WI-live-stalled', state: 'open', plan: 'p1', item: 'P-009' });
     h2.rows = [

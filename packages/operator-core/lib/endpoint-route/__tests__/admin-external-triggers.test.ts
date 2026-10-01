@@ -329,6 +329,50 @@ describe('external-trigger admin route pair', () => {
     expect(setStorm).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID, { maxRuns: 3, windowSeconds: 120 });
   });
 
+  // WI-10004920: the dispatch validity window is settable from the admin surface,
+  // on both doors, and bounded at the boundary by the engine's 31-day ceiling.
+  it('forwards a stated dispatch validity window on set-storm-policy', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'set-storm-policy',
+      id: BINDING_ID,
+      maxRuns: 3,
+      windowSeconds: 120,
+      maxAgeSeconds: 3600,
+    });
+    expect(response.status).toBe(200);
+    expect(setStorm).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID, {
+      maxRuns: 3,
+      windowSeconds: 120,
+      maxAgeSeconds: 3600,
+    });
+  });
+
+  it('forwards a window-only policy on attach-external without inventing rate fields', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'attach-external',
+      sourceId: '20000000-0000-4000-8000-000000000001',
+      planHarnessSlug: 'papercusp',
+      planSlug: 'triage-mail',
+      eventPattern: 'ext:gmail:message.received',
+      maxAgeSeconds: 7200,
+    });
+    expect(response.status).toBe(200);
+    const input = createBinding.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(input.stormPolicy).toEqual({ maxAgeSeconds: 7200 });
+  });
+
+  it('refuses a validity window past the 31-day ceiling at the HTTP boundary', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'set-storm-policy',
+      id: BINDING_ID,
+      maxRuns: 3,
+      windowSeconds: 120,
+      maxAgeSeconds: 32 * 24 * 60 * 60,
+    });
+    expect(response.status).toBe(400);
+    expect(setStorm).not.toHaveBeenCalled();
+  });
+
   it('serves the reusable Socket Mode manifest without exposing a secret', async () => {
     const response = await request(slackManifest, 'GET');
     expect(await response.json()).toEqual({ ok: true, manifest: { settings: { socket_mode_enabled: true } } });

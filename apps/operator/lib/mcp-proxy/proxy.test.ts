@@ -421,6 +421,26 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each(["scorecards:get", "scorecards:list", "scorecards:evaluate"])(
+    "%s stays replay-safe through deferred tools:invoke",
+    (toolName) => {
+      const body = Buffer.from(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: toolName, args: { issueId: "EI-scorecard", rubricRef: "test-rubric" } },
+        },
+      }));
+      const prepared = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: () => "00000000-0000-4000-8000-000000000000",
+      });
+      expect(prepared.klass).toBe("readonly");
+      expect(prepared.body).toBe(body);
+    },
+  );
   it.each([
     ["canonical", "conversations:list"],
     ["mcp__-mangled", "mcp__papercusp-su__conversations_list"],

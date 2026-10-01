@@ -2,6 +2,7 @@
 // Run from the papercusp repo root:
 //   npx tsx docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts > docs/evidence/goal-brief-r3-live-probe-2026-09-29.json
 //   R3_COUNTEREXAMPLE=count-not-applicable npx tsx <this file> > <this file stem>.counterexample.json   (must exit 1)
+//   R3_COUNTEREXAMPLE=forged-owner npx tsx <this file> > <this file stem>.forged-owner.json   (must exit 1; D-037)
 // Emits one operational-test-evidence JSON document on stdout; exit 0 iff every assertion passed.
 //
 // Clause (rev 4): goal and fleet leader consume the same obligation engine with role-appropriate actions. A
@@ -17,6 +18,9 @@
 // calls the receipt module under test. A carry-respawn/cold restart/compaction starts a NEW native session under the
 // same owner, so "survives the boundary" = confirmed chains for one owner+goal in >= 2 distinct native sessions.
 import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const startedAt = new Date().toISOString();
 const assertions: Array<{ id: string; passed: boolean; evidence: string }> = [];
@@ -33,8 +37,8 @@ const lit = (s: string) => `'${s.replaceAll("'", "''")}'`;
 
 const WS = 'papercusp-workspace';
 const COUNTEREXAMPLE = process.env.R3_COUNTEREXAMPLE ?? null;
-if (COUNTEREXAMPLE !== null && COUNTEREXAMPLE !== 'count-not-applicable') {
-  throw new Error(`unknown R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}; the only counterexample is count-not-applicable`);
+if (COUNTEREXAMPLE !== null && COUNTEREXAMPLE !== 'count-not-applicable' && COUNTEREXAMPLE !== 'forged-owner') {
+  throw new Error(`unknown R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}; the counterexamples are count-not-applicable and forged-owner`);
 }
 const TURN_END_MAX_LAG_MS = 60_000;
 const EFFECT_WINDOW_MS = 30 * 60_000;
@@ -59,14 +63,39 @@ type Delivered = { source: string; owner: string; session: string; goalId: strin
 // writer, from the identity-activation span recorded when the CLI launched. An unresolvable session stays null,
 // which the falsifier below counts as foreign rather than trusting it.
 const sessionOfTurnRef = (ref: string | null | undefined): string | null => ref?.split(':')[1] || null;
+// D-037: two witnesses, neither written by the receipt module: (i) the activation span; (ii) the per-owner CLI
+// config directory the transcript is written under (~/.papercusp/session-claude/<owner>/projects/*/<session>.jsonl).
+// The receipt row's own owner is never a witness. A session resolves iff the witnesses that answer name exactly one
+// owner; a conflict or no answer stays null, which the falsifier counts as foreign.
+const CLAUDE_SESSIONS_ROOT = join(homedir(), '.papercusp', 'session-claude');
+const transcriptOwners = (session: string): string[] => {
+  if (!/^[0-9a-f-]{36}$/.test(session) || !existsSync(CLAUDE_SESSIONS_ROOT)) return [];
+  const owners = new Set<string>();
+  for (const owner of readdirSync(CLAUDE_SESSIONS_ROOT)) {
+    const projects = join(CLAUDE_SESSIONS_ROOT, owner, 'projects');
+    if (!existsSync(projects)) continue;
+    for (const project of readdirSync(projects)) if (existsSync(join(projects, project, `${session}.jsonl`))) owners.add(owner);
+  }
+  return [...owners];
+};
 const identities = new Map<string, { owner: string | null; workspace: string | null }>();
+const identityWitnesses: Record<string, { spans: string[]; transcript: string[]; owner: string | null; workspace: string | null }> = {};
+observations.identityWitnesses = identityWitnesses;
 function identityOf(session: string | null): { owner: string | null; workspace: string | null } {
   if (!session) return { owner: null, workspace: null };
   if (!identities.has(session)) {
-    const found = rows(`SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
+    const spans = rows(`SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
       WHERE native_session_id = ${lit(session)}`);
-    identities.set(session, found.length === 1
-      ? { owner: found[0].owner_id, workspace: found[0].workspace_id } : { owner: null, workspace: null });
+    const transcript = transcriptOwners(session);
+    const owners = [...new Set([...spans.map((s) => s.owner_id as string), ...transcript])];
+    const owner = owners.length === 1 ? owners[0] : null;
+    // Workspace: the span's when one exists, else the single workspace across the resolved owner's activation events.
+    const workspaces = spans.length > 0 ? [...new Set(spans.map((s) => s.workspace_id as string))]
+      : owner ? rows(`SELECT DISTINCT workspace_id FROM harness_shared.session_identity_activation_events
+          WHERE owner_id = ${lit(owner)}`).map((r) => r.workspace_id as string) : [];
+    const workspace = owner && workspaces.length === 1 ? workspaces[0] : null;
+    identityWitnesses[session] = { spans: spans.map((s) => `${s.owner_id}@${s.workspace_id}`), transcript, owner, workspace };
+    identities.set(session, { owner, workspace });
   }
   return identities.get(session)!;
 }
@@ -85,6 +114,15 @@ if (COUNTEREXAMPLE === 'count-not-applicable') {
     applicableDemand: r.applicableDemand, offeredAt: e.e?.completedAt ?? null, completedAt: e.e?.completedAt ?? null,
     confirmedAt: e.e?.observedAt ?? null, completedTurnRef: e.e?.completedTurnRef ?? null,
     nativeSessionId: e.session_id, receiptOwner: e.owner_id, receiptWorkspace: WS });
+}
+// D-037 falsifier for the identity witnesses: hand every confirmed delivery to a DIFFERENT owner. The witnesses read
+// the session, not the row, so they still name the true owner and every delivered row must read foreign — including
+// the transcript-only ones. If the witnesses echoed the row's owner, this counterexample would pass.
+if (COUNTEREXAMPLE === 'forged-owner') {
+  const owners = [...new Set(delivered.map((d) => d.owner))];
+  for (const d of delivered) {
+    d.owner = owners.length > 1 ? owners[(owners.indexOf(d.owner) + 1) % owners.length] : 'su-forged-counterexample';
+  }
 }
 
 // 1. Nothing counted as delivered may be not-applicable, zero-demand, foreign-owner/workspace/session, or unordered.

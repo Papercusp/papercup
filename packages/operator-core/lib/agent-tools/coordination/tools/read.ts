@@ -31,7 +31,7 @@ import { resolveMessageRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_READ_ROLES } from '../roles';
 import { disclosureSubject } from '../../_disclosure-subject';
-import type { PapercuspUnifiedToolContext } from '../../_unified-tool-context';
+import type { PapercuspUnifiedToolContext } from '../../_tool-context';
 import { COORD_SEAL_STORE, mergeUnsealed, sealMarkerOf } from '../../../personal-vault/coord-seal';
 import { openSealedContent } from '../../../personal-vault/sealed-contents';
 

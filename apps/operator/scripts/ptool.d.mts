@@ -557,6 +557,28 @@ export function dispatchScriptedToolWithoutCatalog(client: any, toolName: any, c
     result: any;
 }>;
 /**
+ * Dispatch a catalog-bypass call and advance through only the remaining
+ * implicit token files when the operator returns its exact pre-dispatch
+ * invalid-bearer CallToolResult. Rebuild every attempt with the same key so
+ * the logical invocation identity remains stable. Explicit token overrides
+ * resolve to one path and therefore cannot fall through.
+ * @param {any} client
+ * @param {string} toolName
+ * @param {any} callArgs
+ * @param {{idempotencyKey?: string, tokenPaths?: string[], initialTokenPath?: string|null,
+ * reconnectWithTokenPath?: (tokenFile: string) => Promise<any>, timeoutMs?: number}} [options]
+ */
+export function dispatchScriptedToolWithoutCatalogWithTokenFallback(client: any, toolName: string, callArgs: any, { idempotencyKey, tokenPaths, initialTokenPath, reconnectWithTokenPath, timeoutMs, }?: {
+    idempotencyKey?: string;
+    tokenPaths?: string[];
+    initialTokenPath?: string | null;
+    reconnectWithTokenPath?: (tokenFile: string) => Promise<any>;
+    timeoutMs?: number;
+}): Promise<{
+    client: any;
+    result: any;
+}>;
+/**
  * A local operator restart can make the initial MCP handshake race the brief
  * socket-down window. Retrying the connection is safe because no tool has been
  * dispatched yet; never extend this to a tools/call transport failure, whose

@@ -28,6 +28,7 @@ const {
   intakePromotionKey,
   isPromotionKeyConflict,
   readIntakeDispositionState,
+  readIntakeInvestigation,
   readIntakePromotionReceipt,
 } = await import('./intake-promotion');
 const { parseIntakeDecision } = await import('./bulk-dispositions');
@@ -209,6 +210,73 @@ describe('promote / investigate', () => {
     expect((await getIssue(result.workItemId!))?.kind).toBe('task');
     expect(await isReadyAndQualifying(result.workItemId!)).toBe(true);
     expect((await getIssue(cand.id))?.state).toBe(cand.state);
+  });
+});
+
+// P-008 / D-020 §4 (R-26): an investigation is accountable work, so it carries the
+// unresolved question, the evidence to collect, the exit check and its owner — and
+// an investigation nobody owns never becomes claimable work.
+describe('investigations record question, evidence, exit check and owner (R-26)', () => {
+  const RECORDED = {
+    schemaVersion: 'intake-execution-v1',
+    question: FULL_ACCEPTANCE.problem,
+    evidenceToCollect: FULL_ACCEPTANCE.evidence,
+    exitCheck: FULL_ACCEPTANCE.completionCheck,
+    owner: 'agent',
+    decidedBy: REVIEWER,
+  };
+
+  it('refuses an unowned investigation and writes nothing', async () => {
+    const cand = await file({ kind: 'bug' });
+    const before = await payloadOf(cand.id);
+    const decision = await decide(cand.id, {
+      disposition: 'investigate',
+      reason: 'cause unknown',
+      owner: 'unknown',
+      acceptance: FULL_ACCEPTANCE,
+    });
+    expect(decision.owner).toBe('unknown');
+    const result = await exec(cand.id, decision);
+    expect(result).toMatchObject({ ok: false, refusal: 'investigation-unowned' });
+    expect(await promotedFrom(cand.id)).toEqual([]);
+    expect(await payloadOf(cand.id)).toEqual(before);
+  });
+
+  it('a distinct investigation task carries the investigation record from the sealed contract', async () => {
+    const cand = await file({ kind: 'bug' });
+    const decision = await decide(cand.id, {
+      disposition: 'investigate',
+      reason: 'cause unknown',
+      owner: 'agent',
+      acceptance: FULL_ACCEPTANCE,
+    });
+    const result = await exec(cand.id, decision);
+    expect(result).toMatchObject({ ok: true, mode: 'distinct', created: true });
+    if (!result.ok) return;
+    const task = await getIssue(result.workItemId!);
+    expect(task?.kind).toBe('task');
+    expect(readIntakeInvestigation(task?.payload)).toEqual(RECORDED);
+    expect(readIntakeInvestigation(await payloadOf(cand.id))).toBeNull();
+  });
+
+  it('an in-place investigation (a task candidate) records it on the candidate itself', async () => {
+    const cand = await file({ kind: 'task' });
+    const decision = await decide(cand.id, {
+      disposition: 'investigate',
+      reason: 'needs a scoped probe',
+      owner: 'agent',
+      acceptance: FULL_ACCEPTANCE,
+    });
+    expect(await exec(cand.id, decision)).toMatchObject({ ok: true, mode: 'in-place', workItemId: cand.id });
+    expect(readIntakeInvestigation(await payloadOf(cand.id))).toEqual(RECORDED);
+    expect(await isReadyAndQualifying(cand.id)).toBe(true);
+  });
+
+  it('a promote records no investigation', async () => {
+    const cand = await file({ kind: 'bug' });
+    const decision = await decide(cand.id, { disposition: 'promote', reason: 'real', acceptance: FULL_ACCEPTANCE });
+    expect(await exec(cand.id, decision)).toMatchObject({ ok: true, mode: 'in-place' });
+    expect(readIntakeInvestigation(await payloadOf(cand.id))).toBeNull();
   });
 });
 

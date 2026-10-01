@@ -71,8 +71,9 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   // EI-24372921924901236: one canonical BAR is projected onto several items.
-  // Those projections are supplemental only when each item has its own contract.
+  // Those projections are not item contracts; each item needs its own contract.
   describe('shared BAR projection coverage', () => {
+    const planItemIds = ['P-001', 'P-002', 'P-003'];
     const sourceBar = {
       barKey: 'R-1',
       barHash: 'a'.repeat(64),
@@ -82,48 +83,54 @@ describe('evaluatePlanSpecQuality', () => {
       evidencePlane: 'tree' as const,
     };
     const projections = () =>
-      ['P-001', 'P-002'].map((planItemId) =>
+      planItemIds.map((planItemId) =>
         clause({
           specId: `AUTO-BAR-R-1-${planItemId}`,
           sourceValId: null,
           planItemId,
           sourceBar: { ...sourceBar },
-          behavior: 'Accepted event requests preserve their declared identity.',
+          behavior: 'Accepted event requests preserve their declared identity. Rejected requests leave no side effect.',
         }),
       );
     const contracts = () => [
-      clause({ specId: 'ACCEPT', sourceValId: null, behavior: 'A valid event request returns 202.' }),
-      clause({
-        specId: 'REJECT',
-        sourceValId: null,
-        planItemId: 'P-002',
-        behavior: 'An invalid event request returns 400.',
-      }),
+      clause({ specId: 'CONTRACT-P-001', sourceValId: null, behavior: 'A valid event request returns 202.' }),
+      clause({ specId: 'CONTRACT-P-002', sourceValId: null, planItemId: 'P-002', behavior: 'An invalid event request returns 400.' }),
+      clause({ specId: 'CONTRACT-P-003', sourceValId: null, planItemId: 'P-003', behavior: 'A replayed event request returns 409.' }),
     ];
-    const coverage = (clauses: SpecClauseRevision[]) =>
+    const evaluate = (clauses: SpecClauseRevision[]) =>
       evaluatePlanSpecQuality({
         planSlug: 'quality-plan',
         harnessSlug: 'papercusp',
-        planItemIds: ['P-001', 'P-002'],
+        planItemIds,
         clauses,
         classRef: 'plan-class-feature-ship',
-      }).ratings['item-contract-coverage'].rating;
+      });
 
-    it('accepts a shared pinned BAR when both items also have distinct active contracts', () => {
-      expect(coverage([...projections(), ...contracts()])).toBe('pass');
+    it('accepts one multi-sentence BAR projection across three items with independent item contracts', () => {
+      const result = evaluate([...projections(), ...contracts()]);
+      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings['implementation-independence'].rating).toBe('pass');
+      expect(result.verdict).toBe('pass');
     });
 
-    it('keeps projection-only coverage and a missing independent item contract unknown', () => {
-      expect(coverage(projections())).toBe('unknown');
-      expect(coverage([...projections(), contracts()[0]])).toBe('unknown');
+    it('does not count pinned BAR projections as item coverage', () => {
+      const projectionOnly = evaluate(projections());
+      expect(projectionOnly.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(projectionOnly.details.uncoveredPlanItemIds).toEqual(planItemIds);
+      const oneContract = evaluate([...projections(), contracts()[0]]);
+      expect(oneContract.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(oneContract.details.uncoveredPlanItemIds).toEqual(['P-002', 'P-003']);
       expect(
-        coverage([...projections(), ...contracts().map((c) => ({ ...c, lifecycleStatus: 'draft' as const }))]),
-      ).toBe('unknown');
+        evaluate([...projections(), ...contracts().map((c) => ({ ...c, lifecycleStatus: 'draft' as const }))])
+          .ratings['item-contract-coverage'].rating,
+      ).toBe('fail');
     });
 
     it('does not treat copied item contracts as independent coverage', () => {
-      const copied = contracts().map((c) => ({ ...c, behavior: 'An invalid event request returns 400.' }));
-      expect(coverage([...projections(), ...copied])).toBe('unknown');
+      const copied = contracts().map((c) => ({ ...c, behavior: 'A request with a repeated identifier returns 409.' }));
+      expect(evaluate([...projections(), ...copied]).ratings['item-contract-coverage'].rating).toBe('unknown');
     });
 
     it.each(['rubricSlug', 'rubricRevision', 'barKey', 'barHash', 'barSetHash', 'evidencePlane'] as const)(
@@ -137,18 +144,18 @@ describe('evaluatePlanSpecQuality', () => {
             [field]: field === 'rubricRevision' ? 5 : field === 'evidencePlane' ? 'live' : 'different',
           },
         };
-        expect(coverage([...shared, ...contracts()])).toBe('unknown');
+        expect(evaluate([...shared, ...contracts()]).ratings['item-contract-coverage'].rating).toBe('unknown');
       },
     );
 
     it('does not waive ordinary duplicate behavior or a projection missing its source pin', () => {
       const shared = projections().map((c) => ({ ...c, sourceBar: undefined }));
-      expect(coverage([...shared, ...contracts()])).toBe('unknown');
-      expect(coverage(shared.map((c, index) => ({ ...c, specId: `COPY-${index}` })))).toBe('unknown');
+      expect(evaluate([...shared, ...contracts()]).ratings['item-contract-coverage'].rating).toBe('unknown');
+      expect(evaluate(shared.map((c, index) => ({ ...c, specId: `COPY-${index}` }))).ratings['item-contract-coverage'].rating).toBe('unknown');
     });
   });
 
-  it('routes failing AUTO-BAR repairs to the canonical rubric criterion', () => {
+  it('does not lint immutable AUTO-BAR text as an independent item clause', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
       harnessSlug: 'papercusp',
@@ -171,11 +178,11 @@ describe('evaluatePlanSpecQuality', () => {
     });
 
     const atomicity = result.ratings['atomic-observable-behavior'];
-    expect(atomicity.rating).toBe('fail');
-    expect(atomicity.evidence).toContain('rubric quality-plan-acceptance, BAR R-1, criterion.model');
-    expect(atomicity.suggestion).toContain('rubrics:amend');
-    expect(atomicity.suggestion).toContain('criterion.model');
-    expect(atomicity.suggestion).toContain('plans:set-specs');
+    expect(atomicity.rating).toBe('not-applicable');
+    expect(atomicity.evidence).toContain('Only AUTO-BAR projections are present');
+    expect(atomicity.evidence).toContain('not independent item contracts');
+    expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+    expect(result.details.uncoveredPlanItemIds).toEqual(['P-001']);
   });
 
   it('flags a multi-subject source-presence clause instead of returning a false all-pass', () => {

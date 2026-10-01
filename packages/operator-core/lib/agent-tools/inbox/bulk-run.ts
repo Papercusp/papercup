@@ -70,8 +70,10 @@ import {
   INTAKE_APPLY_ACTION_ID,
   INTAKE_ATTENTION_KINDS,
   INTAKE_WORK_KINDS,
+  intakeConfidenceRefusal,
   intakeRecommendationFor,
   isIntakeAttentionKind,
+  isSourceLivenessRunKind,
   parseIntakeDecision,
   type BulkConfidence,
   type BulkDispositionKind,
@@ -451,7 +453,8 @@ export const bulkRunManifest = defineTool({
     const rows = await getRunItems(runId);
     const wanted = args.includeReported ? rows : rows.filter((r) => r.outcome === 'pending');
 
-    const liveActions = wanted.length > 0 ? await liveActionsById() : null;
+    // An intake-triage run's rows are never feed members (P-008): skip the ~1MB read.
+    const liveActions = wanted.length > 0 && !isSourceLivenessRunKind(storedRun.runKind) ? await liveActionsById() : null;
     const items: ManifestItem[] = [];
     for (const r of wanted) {
       const actions = liveActions?.get(r.itemId) ?? [];
@@ -990,6 +993,11 @@ export function applyIntakeDecision(
       `${report.itemId}: an intake decision needs confidenceLevel (${BULK_CONFIDENCE_LEVELS.join(' | ')}) so the run's authority/confidence settings apply`,
     );
   }
+  const uncertain = intakeConfidenceRefusal(
+    decision.disposition,
+    report.confidenceLevel ?? (report.confidence === 'low' ? 'low' : null),
+  );
+  if (uncertain) throw new Error(`${report.itemId}: ${uncertain}`);
   return {
     ...report,
     disposition: projected.disposition,

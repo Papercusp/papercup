@@ -9,12 +9,11 @@
  * Cost shape (papercusp-log-performance-remediation P-013). `payload` is the
  * TOASTed polymorphic JSONB (~3 GB across ~250k rows), so every `payload->…`
  * evaluated per in-scope row detoasts and decompresses the whole value. The
- * per-row `scoped` projection therefore carries only heap-inline columns, plus
- * severity / spine only when a filter or facet actually reads them. The page
- * selects its keys first, ordered by the raw `updated_ts` so `hfc_updated_idx`
- * serves it, and hydrates payload fields and the spine join for those keys only.
- * Measured on the live corpus: page key scan 83 ms → 3.3 ms; summary drops the
- * unused per-row `assigned_by` detoast.
+ * per-row `scoped` projection carries only heap columns, plus payload severity
+ * and the spine join only when a filter or facet reads them. The page selects its keys first, ordered by
+ * the raw `updated_ts` so `hfc_updated_idx` serves it, and hydrates payload
+ * fields and the spine for those keys only. Measured on the live corpus
+ * (2026-10-01): page statement 277 ms mean → 27.7 ms.
  */
 import type {
   CompanionSummaryAggregateRow,
@@ -278,7 +277,13 @@ function predicateSql(
 const issueKindSql = (sql: OrgSql) =>
   sql`wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`;
 
-/** Detoasts `wi.payload`: evaluate per PAGE row (or once per in-scope row only where a facet needs it). */
+type SqlFragment = ReturnType<typeof issueKindSql>;
+
+/**
+ * Detoasts `wi.payload`: evaluate per PAGE row, or per in-scope row only where
+ * the severity filter/facet needs it. Follow-up (P-013, WI-10004929): switch to
+ * the STORED `severity_projection` once migration 1308 (still a .DRAFT) is armed.
+ */
 const severitySql = (sql: OrgSql) =>
   sql`CASE WHEN ${issueKindSql(sql)} THEN COALESCE(wi.payload->'_ei'->>'severity', 'minor') ELSE NULL END`;
 
@@ -362,8 +367,28 @@ function scopedCte(
 }
 
 /**
- * Hydrate the bounded key set in CTE `page` (cheap scoped columns) with the
- * payload-derived and spine columns. Only page rows are detoasted.
+ * Attach the latest spine to the bounded key set `keys` (≤ page size). Joined
+ * here, against two small inputs, rather than in the final hydration: there
+ * the row estimate after the primary-key join collapses to ~1, and the planner
+ * chose a nested loop that rescanned the whole `latest_spine` CTE per page row
+ * (measured: 501 loops × 492 rows ≈ 85 ms of a 100 ms statement).
+ */
+function pageWithSpineSql(sql: OrgSql, keys: SqlFragment) {
+  return sql`
+    page AS MATERIALIZED (
+      SELECT k.*,
+             spine.child_role AS spine_role,
+             spine.status AS spine_status
+        FROM (${keys}) k
+        LEFT JOIN latest_spine spine
+          ON spine.harness_slug = k.harness_slug
+         AND spine.feature_id = k.id
+    )`;
+}
+
+/**
+ * Hydrate the bounded key set in CTE `page` (cheap scoped columns + spine) with
+ * the payload-derived columns. Only page rows are detoasted.
  */
 function hydratePageSql(sql: OrgSql, workspaceId: string) {
   return sql`
@@ -379,8 +404,8 @@ function hydratePageSql(sql: OrgSql, workspaceId: string) {
            p.priority,
            p.rank,
            p.plan_slug AS "planSlug",
-           spine.child_role AS "spineRole",
-           spine.status AS "spineStatus",
+           p.spine_role AS "spineRole",
+           p.spine_status AS "spineStatus",
            p.updated_ts AS "updatedTs",
            wi.origin,
            wi.audit_verdict AS "auditVerdict",
@@ -390,10 +415,6 @@ function hydratePageSql(sql: OrgSql, workspaceId: string) {
         ON wi.workspace_id = ${workspaceId}
        AND wi.harness_slug = p.harness_slug
        AND wi.feature_id = p.id
-      LEFT JOIN latest_spine spine
-        ON spine.workspace_id = wi.workspace_id
-       AND spine.harness_slug = wi.harness_slug
-       AND spine.feature_id = wi.feature_id
      ORDER BY p.updated_ts DESC, p.id DESC`;
 }
 
@@ -424,33 +445,33 @@ export function workItemsPageSql(
   const nullKeyset = cursor
     ? sql`(0::bigint, s.id) < (${cursor.updatedTs}::bigint, ${cursor.id}::text)`
     : sql`TRUE`;
+  const keys = sql`
+    SELECT u.*
+      FROM (
+        (SELECT s.id, s.harness_slug, s.kind, s.family, s.title, s.state, s.assignee,
+                s.priority, s.rank, s.plan_slug, s.updated_ts
+           FROM scoped s
+          WHERE ${predicateSql(sql, args)}
+            AND s.raw_updated_ts IS NOT NULL
+            AND ${nonNullKeyset}
+          ORDER BY s.raw_updated_ts DESC, s.id DESC
+          LIMIT ${take})
+        UNION ALL
+        (SELECT s.id, s.harness_slug, s.kind, s.family, s.title, s.state, s.assignee,
+                s.priority, s.rank, s.plan_slug, s.updated_ts
+           FROM scoped s
+          WHERE ${predicateSql(sql, args)}
+            AND s.raw_updated_ts IS NULL
+            AND ${nullKeyset}
+          ORDER BY s.id DESC
+          LIMIT ${take})
+      ) u
+     ORDER BY u.updated_ts DESC, u.id DESC
+     LIMIT ${take}`;
   return sql`
     WITH ${latestSpineCte(sql, workspaceId, args)},
     ${scopedCte(sql, workspaceId, args, pageNeeds(args))},
-    page AS MATERIALIZED (
-      SELECT u.*
-        FROM (
-          (SELECT s.id, s.harness_slug, s.kind, s.family, s.title, s.state, s.assignee,
-                  s.priority, s.rank, s.plan_slug, s.updated_ts
-             FROM scoped s
-            WHERE ${predicateSql(sql, args)}
-              AND s.raw_updated_ts IS NOT NULL
-              AND ${nonNullKeyset}
-            ORDER BY s.raw_updated_ts DESC, s.id DESC
-            LIMIT ${take})
-          UNION ALL
-          (SELECT s.id, s.harness_slug, s.kind, s.family, s.title, s.state, s.assignee,
-                  s.priority, s.rank, s.plan_slug, s.updated_ts
-             FROM scoped s
-            WHERE ${predicateSql(sql, args)}
-              AND s.raw_updated_ts IS NULL
-              AND ${nullKeyset}
-            ORDER BY s.id DESC
-            LIMIT ${take})
-        ) u
-       ORDER BY u.updated_ts DESC, u.id DESC
-       LIMIT ${take}
-    )
+    ${pageWithSpineSql(sql, keys)}
     ${hydratePageSql(sql, workspaceId)}`;
 }
 
@@ -460,24 +481,24 @@ function workItemsFairStatesSql(
   workspaceId: string,
   args: NormalizedWorkItemsListArgs,
 ) {
+  const keys = sql`
+    SELECT r.id, r.harness_slug, r.kind, r.family, r.title, r.state, r.assignee,
+           r.priority, r.rank, r.plan_slug, r.updated_ts
+      FROM (
+        SELECT s.*,
+               row_number() OVER (
+                 PARTITION BY s.state
+                 ORDER BY s.updated_ts DESC, s.id DESC
+               ) AS state_rank
+          FROM scoped s
+         WHERE ${predicateSql(sql, args)}
+           AND s.state = ANY(${args.fairStates}::text[])
+      ) r
+     WHERE r.state_rank <= ${args.perState}`;
   return sql`
     WITH ${latestSpineCte(sql, workspaceId, args)},
     ${scopedCte(sql, workspaceId, args, pageNeeds(args))},
-    page AS MATERIALIZED (
-      SELECT r.id, r.harness_slug, r.kind, r.family, r.title, r.state, r.assignee,
-             r.priority, r.rank, r.plan_slug, r.updated_ts
-        FROM (
-          SELECT s.*,
-                 row_number() OVER (
-                   PARTITION BY s.state
-                   ORDER BY s.updated_ts DESC, s.id DESC
-                 ) AS state_rank
-            FROM scoped s
-           WHERE ${predicateSql(sql, args)}
-             AND s.state = ANY(${args.fairStates}::text[])
-        ) r
-       WHERE r.state_rank <= ${args.perState}
-    )
+    ${pageWithSpineSql(sql, keys)}
     ${hydratePageSql(sql, workspaceId)}`;
 }
 

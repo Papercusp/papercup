@@ -42,6 +42,9 @@ const attachExternalCommon = {
   // stated policy.
   maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
   windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
+  // Dispatch validity window (WI-10004920): a run never dispatched within it is
+  // closed as stale instead of firing late. Omitted = the engine's bounded default.
+  maxAgeSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
 } as const;
 
 const attachPlanSchema = z.object({
@@ -90,6 +93,8 @@ const mutationSchema = z.union([
         .int()
         .positive()
         .max(31 * 24 * 60 * 60),
+      // Omitted = keep the binding's stored window (admin.ts merges, never resets).
+      maxAgeSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
     })
     .strict(),
 ]);
@@ -185,13 +190,18 @@ const mutate = defineTool({
           // default (social per-platform, else the bounded generic one) still
           // applies. A stated policy still wins.
           stormPolicy:
-            parsed.data.maxRuns == null && parsed.data.windowSeconds === undefined
+            parsed.data.maxRuns == null &&
+            parsed.data.windowSeconds === undefined &&
+            parsed.data.maxAgeSeconds === undefined
               ? undefined
               : {
                   ...(parsed.data.maxRuns == null ? {} : { maxRuns: parsed.data.maxRuns }),
                   ...(parsed.data.windowSeconds === undefined
                     ? {}
                     : { windowSeconds: parsed.data.windowSeconds }),
+                  ...(parsed.data.maxAgeSeconds === undefined
+                    ? {}
+                    : { maxAgeSeconds: parsed.data.maxAgeSeconds }),
                 },
           createdBy: `owner:${user.id}`,
         });
@@ -243,6 +253,7 @@ const mutate = defineTool({
     const binding = await updateExternalTriggerBindingStormPolicy(sql, workspaceId, parsed.data.id, {
       maxRuns: parsed.data.maxRuns,
       windowSeconds: parsed.data.windowSeconds,
+      ...(parsed.data.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: parsed.data.maxAgeSeconds }),
     });
     if (!binding) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
     void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});

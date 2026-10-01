@@ -17,9 +17,11 @@ import {
 import { LIST_READ_BUDGET_MS } from './bounded-list-read';
 import {
   buildWorkItemsPredicate,
+  encodeWorkItemsCursor,
   normalizeWorkItemsListArgs,
   readWorkItemsPageFromStore,
   readWorkItemsSummaryFromStore,
+  workItemsPageSql,
   workItemsSummarySelection,
   type WorkItemsListRow,
   type WorkItemsListWireArgs,
@@ -83,6 +85,22 @@ const rowFor = (g: number): FixtureRow => {
 };
 
 const corpus = Array.from({ length: ROWS }, (_, index) => rowFor(index + 1));
+
+interface PlanNode {
+  'Node Type'?: string;
+  'Subplan Name'?: string;
+  Plans?: PlanNode[];
+  [key: string]: unknown;
+}
+
+const findPlanNode = (node: PlanNode, match: (node: PlanNode) => boolean): PlanNode | undefined => {
+  if (match(node)) return node;
+  for (const child of node.Plans ?? []) {
+    const found = findPlanNode(child, match);
+    if (found) return found;
+  }
+  return undefined;
+};
 
 const selection = (args: WorkItemsListWireArgs): FacetSelection =>
   workItemsSummarySelection(normalizeWorkItemsListArgs(args));
@@ -266,17 +284,60 @@ describe('workItems.byHarness + workItems.summary real-PG contract', () => {
     expect(elapsedMs).toBeLessThan(LIST_READ_BUDGET_MS);
   }, 30_000);
 
-  it('uses an index-backed newest-first plan on the above-live-size corpus', async () => {
-    const explained = await sql<{ 'QUERY PLAN': unknown }[]>`
-      EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
-      SELECT wi.feature_id
-        FROM harness_shared.work_items wi
-       WHERE wi.workspace_id = ${workspaceId}
-         AND wi.harness_slug = ${harnessSlug}
-         AND wi.lane IS DISTINCT FROM 'observation'
-       ORDER BY wi.updated_ts DESC, wi.feature_id DESC
-       LIMIT 501`;
-    const plan = JSON.stringify(explained[0]?.['QUERY PLAN'] ?? explained);
-    expect(plan).toMatch(/Index|Bitmap/);
+  it('serves the PRODUCTION page statement newest-first from hfc_updated_idx, never a work_items seq scan', async () => {
+    // P-013: EXPLAIN the statement readWorkItemsPageFromStore actually runs. A
+    // hand-written query here once passed while the real one ordered by
+    // COALESCE(updated_ts, 0), which no index serves, and seq-scanned the corpus.
+    await sql`ANALYZE harness_shared.work_items`;
+    for (const cursor of [null, encodeWorkItemsCursor({ updatedTs: BASE_TS - 600, id: rowFor(600).id })]) {
+      const args = normalizeWorkItemsListArgs({ harnessSlug, limit: 500, cursor });
+      const explained = await sql<{ 'QUERY PLAN': Array<{ Plan: PlanNode }> }[]>`
+        EXPLAIN (FORMAT JSON) ${workItemsPageSql(sql, workspaceId, args)}`;
+      const root = explained[0]?.['QUERY PLAN']?.[0]?.Plan;
+      expect(root).toBeDefined();
+      // Key selection lives in CTE `page`. Hydration joins ≤ page-size rows back
+      // to work_items afterwards, and on this small fixture the planner may
+      // legitimately hash-join that step, so the guard is scoped to the CTE.
+      const pageCte = findPlanNode(root!, (node) => node['Subplan Name'] === 'CTE page');
+      expect(pageCte, 'EXPLAIN must expose the page CTE subplan').toBeDefined();
+      const keySelection = JSON.stringify(pageCte);
+      expect(keySelection).toContain('"Index Name":"hfc_updated_idx"');
+      // A leaf node's object closes before the next node, so `[^}]*` stays inside it.
+      expect(keySelection).not.toMatch(/"Seq Scan"[^}]*"Relation Name":"work_items"/);
+    }
+  }, 30_000);
+
+  it('keeps NULL updated_ts rows reachable, ordered as 0, across keyset pages', async () => {
+    // updated_ts is nullable with no default; the page splits non-NULL and NULL
+    // key branches for index use, so prove the merged order is still exactly
+    // COALESCE(updated_ts, 0) DESC, id DESC and that paging reaches every row.
+    const plan = `p013-null-ts-${token}`;
+    const ids = { newest: `P4NULL-${token}-4`, zeroHigh: `P4NULL-${token}-3`, nullMid: `P4NULL-${token}-2`, nullLow: `P4NULL-${token}-1` };
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+         taken_by, payload, source_plan_slug, created_ts, updated_ts, origin)
+      VALUES
+        (${workspaceId}, ${harnessSlug}, ${ids.newest},   'null-ts newest', '', 'open', 'bug', 'su-0', '{}'::jsonb, ${plan}, 1, 5, 'local'),
+        (${workspaceId}, ${harnessSlug}, ${ids.zeroHigh}, 'null-ts zero',   '', 'open', 'bug', 'su-0', '{}'::jsonb, ${plan}, 1, 0, 'local'),
+        (${workspaceId}, ${harnessSlug}, ${ids.nullMid},  'null-ts null',   '', 'open', 'bug', 'su-0', '{}'::jsonb, ${plan}, 1, NULL, 'local'),
+        (${workspaceId}, ${harnessSlug}, ${ids.nullLow},  'null-ts null',   '', 'open', 'bug', 'su-0', '{}'::jsonb, ${plan}, 1, NULL, 'local')`;
+    try {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      for (let guard = 0; guard < 10; guard += 1) {
+        const page = await readWorkItemsPageFromStore(sql, workspaceId, buildWorkItemsPredicate(
+          normalizeWorkItemsListArgs({ harnessSlug, filters: { plans: [plan] }, limit: 1, cursor })));
+        seen.push(...page.rows.map((row) => row.id));
+        if (!page.hasMore) break;
+        cursor = page.nextCursor;
+      }
+      // String ids order '-4' > '-3' > '-2' > '-1'; NULL and 0 tie on the sort key.
+      expect(seen).toEqual([ids.newest, ids.zeroHigh, ids.nullMid, ids.nullLow]);
+      const summary = await summaryFor({ harnessSlug, filters: { plans: [plan] } });
+      expect(summary).toMatchObject({ matched: 4 });
+    } finally {
+      await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${plan}`;
+    }
   }, 30_000);
 });

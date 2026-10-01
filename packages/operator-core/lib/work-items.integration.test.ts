@@ -1704,11 +1704,12 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect((await wi.claimWorkItem(bug.id, 'agA', { harness: 'papercup' }))?.assignee).toBe('agA');
 
     // The empty test database has no production role-default lock_timeout. Pin one on
-    // the caller's dedicated connection so the raw-read regression fails promptly;
-    // boundedOrgTxn overrides this with its own transaction-local timeout.
+    // the reserved handle so the raw-read regression fails promptly. boundedOrgTxn
+    // still needs the pool's begin method to start its own transaction and apply its
+    // transaction-local timeout; graft that method onto the reserved query handle.
     const priorSql = h.sql;
     const releaseSql = await db.sql.reserve();
-    h.sql = releaseSql as unknown as postgres.Sql;
+    h.sql = Object.assign(releaseSql, { begin: db.sql.begin.bind(db.sql) }) as unknown as postgres.Sql;
     await releaseSql`SET lock_timeout = '1s'`;
 
     let releaseBlocker!: () => void;

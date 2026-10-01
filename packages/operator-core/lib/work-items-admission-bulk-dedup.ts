@@ -1321,6 +1321,63 @@ export function isRetryableModelCallError(error: unknown): boolean {
   return isTransientNetworkError(error);
 }
 
+/**
+ * WI-10004932: thrown by a shard worker that stops because a SIBLING shard
+ * already failed the stage. It never escapes the shard runner; the runner
+ * rethrows the sibling's original error.
+ */
+class BulkStageSiblingFailedError extends Error {
+  constructor() {
+    super('bulk stage stopped: a sibling shard already failed the stage');
+    this.name = 'BulkStageSiblingFailedError';
+  }
+}
+
+/**
+ * WI-10004932: run `judge` over `entries` with at most `concurrency` in flight.
+ * The first failure stops every sibling at its next `stopIfSiblingFailed()`
+ * check, and no further entry is claimed. Settles only after EVERY worker has
+ * settled, so a caller that records the failure cannot race a sibling's late
+ * write. Rejects with the first failure, never with the stop signal.
+ *
+ * It replaces a `Promise.all` pool that rejected on the first failure but left
+ * siblings running: they kept claiming shards and writing checkpoints into a
+ * stage already marked failed (measured 2026-10-01: 8 batches over 18 min after
+ * the routineFire ERRORed).
+ */
+export async function runShardPool<E, R>(
+  entries: readonly E[],
+  concurrency: number,
+  judge: (entry: E, stopIfSiblingFailed: () => void) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(entries.length);
+  // A holder object, not a `let`: TS does not track assignments made inside
+  // the worker closures, so a narrowed `let` would read as always-unset.
+  const failure: { failed: boolean; error: unknown } = { failed: false, error: undefined };
+  const stopIfSiblingFailed = () => {
+    if (failure.failed) throw new BulkStageSiblingFailedError();
+  };
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, entries.length) }, async () => {
+    while (!failure.failed && next < entries.length) {
+      const index = next;
+      next += 1;
+      try {
+        results[index] = await judge(entries[index]!, stopIfSiblingFailed);
+      } catch (error) {
+        if (!failure.failed && !(error instanceof BulkStageSiblingFailedError)) {
+          failure.failed = true;
+          failure.error = error;
+        }
+        return;
+      }
+    }
+  });
+  await Promise.allSettled(workers);
+  if (failure.failed) throw failure.error;
+  return results;
+}
+
 async function callBulkModelBatchWithRetry<T>(
   call: () => Promise<BulkModelResponse>,
   validate: (response: BulkModelResponse) => T,
@@ -1602,28 +1659,12 @@ async function judgeBulkPairs(
   // A one-batch stage has no waiter, but a failed canary still rejects the gate.
   void canaryGate.catch(() => undefined);
   if (!firstBatchKey) resolveCanary();
-  const results = new Array<{
-    judgements: PromoterJudgement[];
-    modelCalls: number;
-    modelRetries: number;
-    modelProtocolFailures: number;
-    modelProtocolExhaustedBatches: number;
-    modelProtocolLastError: string | null;
-    ignoredUnknownJudgements: number;
-    omittedExpectedJudgements: number;
-    tokensIn: number;
-    tokensOut: number;
-    servedAccounts: string[];
-    reusedBatches: number;
-    priorRunDonatedPairs: number;
-  }>(shardEntries.length);
-  let nextShardIndex = 0;
-  const judgeShard = async ({
-    shard,
-    pairs: originalPairs,
-    donated,
-    remaining: shardPairs,
-  }: (typeof shardEntries)[number]) => {
+  // WI-10004932: runShardPool hands each shard `stopIfSiblingFailed`, checked
+  // before every batch's model call, so the first shard failure stops the rest.
+  const judgeShard = async (
+    { shard, pairs: originalPairs, donated, remaining: shardPairs }: (typeof shardEntries)[number],
+    stopIfSiblingFailed: () => void,
+  ) => {
     const judgements: PromoterJudgement[] = [];
     let modelCalls = 0;
     let modelRetries = 0;
@@ -1671,6 +1712,7 @@ async function judgeBulkPairs(
       }
     }
     for (let offset = 0; offset < shardPairs.length; offset += opts.pairsPerCall) {
+      stopIfSiblingFailed();
       const batch = shardPairs.slice(offset, offset + opts.pairsPerCall);
       const pairKeys = batch.map((pair) => pair.pairKey);
       const checkpointKey = batchCheckpointKey(opts.stageRunId, shard, offset, pairKeys);
@@ -1690,6 +1732,8 @@ async function judgeBulkPairs(
       // remaining shards spend capacity. Once it returns a schema-valid result,
       // independent shards fan out under the ordinary concurrency bound.
       if (!canary) await canaryGate;
+      // A sibling can fail while this worker is parked on the canary gate.
+      stopIfSiblingFailed();
       await heartbeatBulkStage(opts.sql, {
         id: opts.stageRunId,
         ownerId: opts.executionId,
@@ -1827,14 +1871,9 @@ async function judgeBulkPairs(
       priorRunDonatedPairs,
     };
   };
-  const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
-    while (nextShardIndex < shardEntries.length) {
-      const index = nextShardIndex;
-      nextShardIndex += 1;
-      results[index] = await judgeShard(shardEntries[index]!);
-    }
-  });
-  await Promise.all(workers);
+  // Settles only after every shard worker has stopped, so the caller's
+  // failBulkStage cannot race a sibling's late checkpoint write.
+  const results = await runShardPool(shardEntries, opts.shardConcurrency, judgeShard);
   return {
     judgements: results.flatMap((result) => result.judgements),
     modelCalls: results.reduce((sum, result) => sum + result.modelCalls, 0),

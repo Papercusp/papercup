@@ -55,6 +55,7 @@ import { boundedPgReadTxn } from './pg-read-query';
 import {
   classifyRubricEvidenceCurrentness,
   getRubric,
+  getRubricWithoutSeeding,
   rubricInstrumentContract,
   type Rubric,
   type RubricStatus,
@@ -1038,7 +1039,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   });
   if (!observation?.rubricRef || !observation.ratings) return { kind: 'not_scorecard' };
 
-  const rubric = await getRubric(observation.rubricRef);
+  const rubric = await getRubricWithoutSeeding(observation.rubricRef);
   const criteriaKeys = rubric
     ? rubric.criteria.map((criterion) => criterion.key)
     : builtInCriterionKeysForRubric(observation.rubricRef);
@@ -1071,7 +1072,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     const subjectRef = observation.subject.ref;
     const liveSubjectRubric = subjectRef === observation.rubricRef
       ? rubric
-      : await getRubric(subjectRef).catch(() => null);
+      : await getRubricWithoutSeeding(subjectRef).catch(() => null);
     subjectRubricCurrentness = classifySubjectRubricCurrentness(
       subjectRef,
       observation.subjectRubricIdentity,
@@ -2376,7 +2377,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     // payload yields no structured view) so a bad row degrades, never throws.
     if (!observation?.rubricRef || !observation.ratings) continue;
     if (!rubricMeta.has(observation.rubricRef)) {
-      const rubric = await getRubric(observation.rubricRef);
+      const rubric = await getRubricWithoutSeeding(observation.rubricRef);
       rubricMeta.set(observation.rubricRef, {
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
@@ -2403,13 +2404,13 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       : undefined;
     if (gradingAudit && !gradingAuditRubricRead) {
       gradingAuditRubricRead = true;
-      gradingAuditRubric = await getRubric(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
+      gradingAuditRubric = await getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
     }
     let subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | undefined;
     if (observation.subject?.kind === 'rubric') {
       const subjectRef = observation.subject.ref;
       if (!subjectRubrics.has(subjectRef)) {
-        subjectRubrics.set(subjectRef, await getRubric(subjectRef).catch(() => null));
+        subjectRubrics.set(subjectRef, await getRubricWithoutSeeding(subjectRef).catch(() => null));
       }
       subjectRubricCurrentness = classifySubjectRubricCurrentness(
         subjectRef,

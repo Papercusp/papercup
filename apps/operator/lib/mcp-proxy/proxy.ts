@@ -780,7 +780,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:get",
   "work_items:search",
   "work_items:claimable",
-  // Exact rubric+subject audit reads are side-effect-free and safe to replay.
+  // Scorecard reads use seed-free rubric resolution; a missing/malformed rubric stays
+  // unknown instead of entering the first-party lazy-seed writer.
+  "scorecards:get",
   "scorecards:list",
   // The bounded grading preflight is also side-effect-free and safe to replay.
   "scorecards:evaluate",

@@ -4167,6 +4167,49 @@ wait mechanism, historical attribution and app impact remain open.
 No shared mutation, host restart, unchanged test rerun, source fix,
 acceptance binding or final-shipment claim was made.
 
+### Private executed owner-UPDATE control — October 1, 16:30Z
+
+Extended the existing `session-ingest-runtime.integration.test.ts` route;
+no production query, index or repair cadence was changed. The private
+postgres.js debug callback captures the actual production owner UPDATE
+and its bound parameters in memory. The fixture adds 179 synthetic
+Claude transcripts in the adapter's managed-home layout, ingests them,
+damages all 179 stored owners, then repairs them with no new file bytes.
+That sweep reports zero ingested files/turns/parts and 179 owner updates.
+
+The captured statement is replayed with `EXPLAIN (ANALYZE, BUFFERS,
+FORMAT JSON)` inside a private rollback transaction, first repairing
+179 owners and then updating zero already-correct owners. Both plans
+are real ModifyTable/Update plans with a Hash Join, Function Scan and
+`session_turns_pkey` Index Scan. Root Actual Rows is zero for UPDATE
+without RETURNING; the fixture checks private state and the join output
+instead. The two final child runs measured repair/no-op execution of
+7.154/0.552 ms and 11.434/0.669 ms. Root shared-read blocks were zero
+in all four replays. The no-op still visited 179 indexed rows. Rollback
+preserved the exact before/after owner and xmin rows.
+
+Canonical command: `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file
+-- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+Final result: **2 passed, 0 skipped, exit 0**, log
+`/tmp/p008-owner-update-private-full-20261001.log`, SHA-256
+`0077a938ee88216231b712a9365a82f0a9f4f3634b75fa344fa5ea112b23e7af`.
+Both children verify home/datadir removal and refused database ports.
+Source SHA-256:
+`81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789`;
+fixture SHA-256:
+`abf3109f41160a6b560a7666a023da2dddefec9c8c9364c3e2849f685b5232d7`.
+Captured SQL SHA-256:
+`c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42`.
+Recorded child HEAD was `1219248f0a67a79795d4bd7572034f650986c022`;
+the fixture change was local during verification.
+
+This proves current-build no-new-tail owner repair and private executed
+UPDATE behavior. The small private relation and its cache state do not
+reproduce the live 460,720 ms statement, establish its access plan or
+sustained wait mechanism, or prove historical app impact. R-8 and P-008
+remain open. Avi's system-wide pause arrived during final verification;
+the worker finished that atomic test and saved state before pausing.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

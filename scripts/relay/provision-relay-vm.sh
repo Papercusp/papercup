@@ -98,7 +98,7 @@ install_remote() {
   vm_scp "$BUILD_DIR/blind-relay-daemon.mjs" "$BUILD_DIR/package.json" "$seed" "$NAME:$stage/"
   vm_ssh "sudo bash -s" <<REMOTE
 set -euo pipefail
-if ! command -v node >/dev/null || [[ "\$(node -p 'process.versions.node.split(\".\")[0]')" != "$NODE_MAJOR" ]]; then
+if ! command -v node >/dev/null || [[ "\$(node -p process.versions.node | cut -d. -f1)" != "$NODE_MAJOR" ]]; then
   apt-get update -qq && apt-get install -y -qq curl xz-utils ca-certificates >/dev/null
   base="https://nodejs.org/dist/latest-v$NODE_MAJOR.x"
   file="\$(curl -fsSL "\$base/SHASUMS256.txt" | awk '/linux-x64\.tar\.xz\$/ {print \$2}')"

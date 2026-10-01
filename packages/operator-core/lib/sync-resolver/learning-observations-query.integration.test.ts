@@ -277,7 +277,7 @@ describe('learning.observations + summary real-PG contract', () => {
   // guard and each bounded batch their own deadline. One 200-query task used
   // to time out and keep executing into subsequent tests.
   const warmTimings: Record<'legacy' | 'current', number[]> = { legacy: [], current: [] };
-  it.for([0, 1, 2, 3, 4])('measures warm summary parity and latency in bounded batch %i', async (batch, { signal }) => {
+  it.for([0, 1, 2, 3, 4])('measures warm summary parity and latency in bounded batch %i', { timeout: 120_000 }, async (batch, { signal }) => {
     let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;
     const recordingSql = postgres(db.url, {
       max: 1,
@@ -321,7 +321,7 @@ describe('learning.observations + summary real-PG contract', () => {
     } finally {
       await recordingSql.end();
     }
-  }, 120_000);
+  });
 
   it('measures fresh-client and eight-reader summary latency with complete result parity', async () => {
     let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;

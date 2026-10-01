@@ -162,7 +162,7 @@ export async function deliverUnattendedRunOwnerDigest(
   msgId: string;
   digest: UnattendedRunOwnerDigest;
 } | null> {
-  if (!UNATTENDED_REQUESTERS.has(run.requestedBy)) return null;
+  if (!run.requestedBy || !UNATTENDED_REQUESTERS.has(run.requestedBy)) return null;
   const digest = buildUnattendedRunOwnerDigest(run, items);
   const deliveryKey = `inbox-bulk-resolve:${run.runId}:owner-digest`;
   const msgId = digestMessageId(run.workspaceId, run.runId);

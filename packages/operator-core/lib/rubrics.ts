@@ -1360,6 +1360,19 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
 /** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
  *  opt-in, so the shared grading path resolves acceptance rubrics through the same seam
  *  standards use (plan D-010). Returns null when no rubric carries that id. */
+/**
+ * Resolve only the existing rubric plan row. Unlike getRubric, this deliberately never
+ * falls through to loadAllRubrics, whose first-party lazy seed may write plan rows.
+ * Use it from scorecard reads and preflights that must remain replay-safe. The direct
+ * lookup and delegated-class hydration below are SELECT-only; missing, malformed, or
+ * inaccessible rows return null without attempting a seed/reclaim.
+ */
+export async function getRubricWithoutSeeding(rubricId: string): Promise<Rubric | null> {
+  const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind !== 'found') return null;
+  return (await mapRubricPlanRows([direct.row]))[0] ?? null;
+}
+
 export async function getRubric(rubricId: string, revision?: number): Promise<Rubric | null> {
   if (revision !== undefined) return getRubricAtRevision(rubricId, revision);
   // Explicit id-addressed reads are the hot path for scorecard/audit callers.

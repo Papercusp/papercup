@@ -1,121 +1,88 @@
 ---
 title: Using the app
-description: Install Papercusp, start your first harness, run a mission, and save your work.
+description: Sign in, choose a workspace, give an agent a first task and review its result.
 ---
 
-> **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
+## 1. Open Papercusp
 
+Open the [Papercusp portal](https://app.papercusp.com/). Choose **Create account**
+if you are new, or **Sign in** if you already have an account. Complete the
+sign-in flow and return to the portal.
 
-This walkthrough takes you from a blank machine to a finished mission.
+Connecting Gmail or Calendar is optional app setup, not a substitute for your
+Papercusp sign-in. You do not need a Google connection to read this manual.
 
-## 1. Install
+If you already have the desktop app, open it from your computer's applications.
+Use its setup flow for your local installation. Do not use development-server
+addresses as an installation procedure. For a new desktop installation, use
+the download destination offered by the portal; this guide does not assume a
+Homebrew package or a particular installer command.
 
-Papercusp ships as a single CLI plus a desktop bundle. On macOS / Linux:
+## 2. Choose where the work runs
 
-```bash
-brew install papercupai/tap/papercusp
-```
+Open **Workspaces** and select the workspace you intend to use. Check that the
+workspace is connected before asking an agent to act on it.
 
-Or via the standalone tarball — download the latest from the
-[Papercusp homepage](https://papercuspai.com/download) and run the
-installer for your platform.
+- A **hosted or cloud workspace** runs on a remote machine. Its provider and
+  provisioning options depend on your account and configuration.
+- A **local workspace** runs on a computer with Papercusp installed. That
+  computer must be on and connected for remote work.
 
-After install, run the doctor to verify your environment is wired up:
+The browser is your control surface; selecting a workspace does not move a
+project from one machine to another. Check the workspace and project name
+before authorizing changes. See [Workspaces and agents](/docs/workspaces-and-agents).
 
-```bash
-papercusp doctor
-```
+## 3. Start with a small task
 
-You should see green checks for **Postgres**, **Node ≥ 20**, **git**,
-and the `papercusp` binary itself on `PATH`.
+Open the portal's agent chat/session surface for the intended workspace. Give
+the agent a concrete task, enough context to find the project, and an
+observable result. For example:
 
-> *(Screenshot: `papercusp doctor` terminal output with all green checks.)*
+> In the selected project, inspect the sign-in screen and propose a clearer
+> error message. Show me the plan before editing. Keep the existing
+> authentication behavior, add a regression test if behavior changes, and tell
+> me what you verified.
 
-## 2. Pick a template and create your first harness
+For a new app, ask the agent to list the available **app templates** and explain
+the choices before building. See [Harness templates](/docs/harness-templates).
 
-Open the operator UI:
+Do not paste credentials into an agent message. Use the installation's
+credential or connection setup when a task needs access to another service.
 
-```bash
-open http://localhost:3055
-```
+## 4. Review the plan and execution mode
 
-Click **Templates** in the top nav. Each template is a pre-configured
-harness — for example, `coding` (build a feature in a repo), `briefings`
-(produce a daily news digest), or `org` (run a multi-department
-business). Pick the one that matches what you want to build.
+A plan should say what will change, what will not change, which work depends on
+which, and what evidence will demonstrate success.
 
-Click **Install** → **Fresh project**, give your harness a name, and
-press **Install**. The operator scaffolds the project directory, copies
-in the template's `.papercusp/` files, and registers the harness.
+An agent may ask for your approval and execution route before substantive work.
+Approve only the intended scope. If you explicitly enable **AUTO**, the agent
+may proceed within that scope without asking at each step. AUTO is not a
+promise that every tool is available, and it does not remove permissions,
+security boundaries or verification requirements.
 
-> *(Screenshot: the Templates marketplace with the install dialog open.)*
+Ask for a pause or stop when you need to reconsider. Do not assume closing a
+browser tab cancels an agent running on another machine.
 
-## 3. Set the goal
+## 5. Follow work and verify the result
 
-Every harness needs a goal — the thing the agents are working toward.
-Edit `<your-project>/SPEC.md`:
+Use **Plans**, **Work**, **Inbox**, or the session conversation to follow the
+task. Available destinations depend on the workspace and your permissions.
+Read the agent's evidence, not just a “done” label:
 
-```markdown
-# Goal
+- What changed, and in which project?
+- Which tests ran, and what did they prove?
+- Is the result in the current working build, or actually deployed?
+- Is anything deferred, blocked, or still awaiting your decision?
 
-A working sheets-clone web app that lets a user create, edit, save,
-and reload spreadsheets. Cells support text, numbers, and basic
-formulas (SUM, AVG, A1+B2). One-page deploy on a free hosting tier.
-```
+For a deployed change, ask for verification on the actual destination. A
+passing local test is not proof that the public portal has been updated.
 
-Be specific about acceptance — the orchestrator role uses this file to
-decide when the mission is "done."
+## 6. Protect your work
 
-## 4. Start the mission
+Use your normal source-control and backup process. Before a risky data change,
+ask for an appropriate snapshot or backup and a restore procedure. A saved
+conversation alone is not a project backup. See
+[Snapshots and backups](/docs/harness-snapshots).
 
-Back in the operator UI, click into your harness, then press **start**
-in the top toolbar. The mission loop begins: an orchestrator role
-decides what to do next, dispatches workers, and a validator checks
-each result.
-
-> *(Screenshot: harness dashboard with the "start" button highlighted.)*
-
-You'll see status update in real time — features moving through
-`todo → in_progress → validating → passed`, plus each role's output
-streaming into the **consoles** tab.
-
-## 5. Steer the mission
-
-Most missions don't need intervention. When they do, the operator UI
-gives you several places to push:
-
-- **Brainstorm tab** — drop in ideas mid-mission; the orchestrator
-  picks them up on its next tick.
-- **Proposals tab** — when the agent suggests an SPEC update, accept or
-  reject it. Accepted proposals are appended to `SPEC.md`.
-- **Issues tab** — when the validator finds a problem, you can mark
-  issues `closed`, reassign, or annotate them.
-
-> *(Screenshot: the brainstorm and proposals tabs side by side.)*
-
-## 6. Save your work
-
-When the mission is done — or just at a milestone you want to keep —
-click **save snapshot** in the toolbar. This captures every state file
-plus a manifest into a single `.tar.gz` you can reinstantiate later or
-share with a colleague.
-
-See the [Harness snapshots](/docs/harness-snapshots) page for the full
-snapshot lifecycle.
-
-## 7. Publish, share, retire
-
-Three buttons sit next to **Publish**:
-
-- **Publish** — pushes a snapshot or template to the public marketplace.
-- **Retract** — pulls a published version back (deprecate / withdraw / yank).
-- **Delete** — removes the local copy. Published copies on the marketplace
-  are unaffected.
-
-> *(Screenshot: the snapshots page with Publish / Retract / Delete buttons.)*
-
-## Where to go next
-
-- Make your harness reusable: [Harness templates](/docs/harness-templates).
-- Save and share state: [Harness snapshots](/docs/harness-snapshots).
-- Add new actions: [Plugins](/docs/plugins).
+If you cannot sign in, connect a workspace, or see the expected result, use
+[Troubleshooting](/docs/troubleshooting).

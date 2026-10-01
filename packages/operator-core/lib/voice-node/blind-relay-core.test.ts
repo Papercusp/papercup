@@ -93,7 +93,7 @@ describe('a peer resetting a relayed stream (WI-10004904: this crashed the VM da
     publicKey: Buffer;
     rawStream: { remotePort: number; remoteHost: string; socket: unknown };
   };
-  type PeerDht = ProberDht & { connect(pk: Buffer): RelaySock; createRawStream(): Raw };
+  type PeerDht = ProberDht & { connect(pk: Buffer): RelaySock; createRawStream(o: { framed: boolean }): Raw };
   const PeerCtor = DhtCtor as unknown as { new (o: { bootstrap: unknown }): PeerDht };
   type RelayClientModule = {
     Client: {

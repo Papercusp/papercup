@@ -29,6 +29,7 @@ import {
   resolveTokenPath,
   resolveTokenPaths,
   dispatchScriptedToolWithoutCatalog,
+  dispatchScriptedToolWithoutCatalogWithTokenFallback,
   formatToolCallFailure,
   formatToolCatalogBypass,
   formatToolCatalogFailure,
@@ -1083,6 +1084,136 @@ describe('ptool catalog-independent scripted dispatch', () => {
       undefined,
       { timeout: 1, maxTotalTimeout: 1 },
     );
+  });
+
+  it('retries the exact pre-dispatch bearer refusal with the next implicit token and same key', async () => {
+    const rejected = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const firstClient = { callTool: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
+    const secondClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const reconnectWithTokenPath = vi.fn().mockResolvedValue(secondClient);
+    const tokenPaths = ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'];
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      firstClient,
+      'rubrics:get',
+      { rubricRef: 'pot-coordination-health' },
+      {
+        idempotencyKey: 'catalog-bypass-auth-retry-1',
+        tokenPaths,
+        initialTokenPath: tokenPaths[0],
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: secondClient, result: success });
+
+    expect(reconnectWithTokenPath).toHaveBeenCalledOnce();
+    expect(reconnectWithTokenPath).toHaveBeenCalledWith(tokenPaths[1]);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(firstClient.callTool.mock.calls).toEqual(secondClient.callTool.mock.calls);
+    expect(secondClient.callTool.mock.calls[0][0]._meta.idempotencyKey)
+      .toBe('catalog-bypass-auth-retry-1');
+  });
+
+  it('keeps pinned-token and non-matching tool results terminal during catalog bypass', async () => {
+    const authRefusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const reconnectWithTokenPath = vi.fn();
+    const pinnedClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      pinnedClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-pinned-1',
+        tokenPaths: ['/explicit/superuser-token'],
+        initialTokenPath: '/explicit/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: pinnedClient, result: authRefusal });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+
+    const genericResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: tool_not_available' }],
+    };
+    const genericClient = { callTool: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      genericClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-other-error-1',
+        tokenPaths: ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'],
+        initialTokenPath: '/workspace/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: genericClient, result: genericResult });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+
+    const listStyleBearerFailure = {
+      isError: true,
+      content: [{ type: 'text', text: 'mcp_auth_failed: superuser_invalid_bearer' }],
+    };
+    const listStyleClient = { callTool: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      listStyleClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-list-style-auth-1',
+        tokenPaths: ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'],
+        initialTokenPath: '/workspace/superuser-token',
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: listStyleClient, result: listStyleBearerFailure });
+    expect(reconnectWithTokenPath).not.toHaveBeenCalled();
+  });
+
+  it('skips an unavailable implicit token file and tries the next candidate', async () => {
+    const authRefusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    };
+    const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const firstClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const finalClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const tokenPaths = [
+      '/workspace/superuser-token',
+      '/home/tester/.papercusp/superuser-token',
+      '/home/tester/.papercusp-fallback/superuser-token',
+    ];
+    const reconnectWithTokenPath = vi.fn()
+      .mockRejectedValueOnce(new Error(
+        `no superuser token at ${tokenPaths[1]} — is the operator installed?`,
+      ))
+      .mockResolvedValueOnce(finalClient);
+
+    await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
+      firstClient,
+      'rubrics:get',
+      {},
+      {
+        idempotencyKey: 'catalog-bypass-missing-token-1',
+        tokenPaths,
+        initialTokenPath: tokenPaths[0],
+        reconnectWithTokenPath,
+        timeoutMs: 7,
+      },
+    )).resolves.toEqual({ client: finalClient, result: success });
+
+    expect(reconnectWithTokenPath.mock.calls).toEqual([[tokenPaths[1]], [tokenPaths[2]]]);
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(firstClient.callTool.mock.calls).toEqual(finalClient.callTool.mock.calls);
   });
 
   it('labels the fallback as pre-dispatch while keeping scripted output on stdout', () => {

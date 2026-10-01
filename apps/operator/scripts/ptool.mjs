@@ -1882,6 +1882,23 @@ export function isInvalidSuperuserBearerFailure(error) {
   return false;
 }
 
+/**
+ * The superuser gate rejects a bad bearer as an error CallToolResult only
+ * after the MCP session has initialized. This exact body proves tools/call
+ * was refused before the target handler ran; other tool-shaped errors are not
+ * safe credentials to retry.
+ */
+function isInvalidSuperuserBearerResult(result) {
+  return result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_invalid_bearer');
+}
+
+function isMissingSuperuserTokenFileFailure(error) {
+  return /^no superuser token at .+ — is the operator installed\?/.test(errorDetail(error));
+}
+
 /** Retry connection setup with the next bearer only after a typed invalid-bearer rejection. */
 export async function connectWithTokenFallback(connectOnce, tokenCandidates) {
   const candidates = Array.isArray(tokenCandidates)
@@ -2414,6 +2431,74 @@ export async function dispatchScriptedToolWithoutCatalog(
       reconnect,
     },
   );
+}
+
+/**
+ * Dispatch a catalog-bypass call and advance through only the remaining
+ * implicit token files when the operator returns its exact pre-dispatch
+ * invalid-bearer CallToolResult. Rebuild every attempt with the same key so
+ * the logical invocation identity remains stable. Explicit token overrides
+ * resolve to one path and therefore cannot fall through.
+ * @param {any} client
+ * @param {string} toolName
+ * @param {any} callArgs
+ * @param {{idempotencyKey?: string, tokenPaths?: string[], initialTokenPath?: string|null,
+ * reconnectWithTokenPath?: (tokenFile: string) => Promise<any>, timeoutMs?: number}} [options]
+ */
+export async function dispatchScriptedToolWithoutCatalogWithTokenFallback(
+  client,
+  toolName,
+  callArgs,
+  {
+    idempotencyKey,
+    tokenPaths = [],
+    initialTokenPath = ptoolTokenPathByClient.get(client) ?? null,
+    reconnectWithTokenPath,
+    timeoutMs,
+  } = {},
+) {
+  let attempt = await dispatchScriptedToolWithoutCatalog(client, toolName, callArgs, {
+    idempotencyKey,
+    timeoutMs,
+  });
+  if (!isInvalidSuperuserBearerResult(attempt.result)) return attempt;
+
+  const paths = Array.isArray(tokenPaths)
+    ? tokenPaths.filter((tokenPath) => typeof tokenPath === 'string' && tokenPath.length > 0)
+    : [];
+  let tokenIndex = paths.indexOf(initialTokenPath);
+  if (tokenIndex < 0 || typeof reconnectWithTokenPath !== 'function') return attempt;
+
+  let activeClient = attempt.client;
+  while (tokenIndex + 1 < paths.length) {
+    tokenIndex += 1;
+    let nextClient;
+    try {
+      nextClient = await reconnectWithTokenPath(paths[tokenIndex]);
+    } catch (error) {
+      // An alternate file can be present but stale too. Only its own typed
+      // bearer refusal permits advancing again; transport/config errors stay
+      // terminal and must remain visible to the caller.
+      if (isInvalidSuperuserBearerFailure(error) || isMissingSuperuserTokenFileFailure(error)) continue;
+      throw error;
+    }
+
+    await closeClientQuietly(activeClient);
+    activeClient = nextClient;
+    try {
+      attempt = await dispatchScriptedToolWithoutCatalog(activeClient, toolName, callArgs, {
+        idempotencyKey,
+        timeoutMs,
+      });
+      activeClient = attempt.client;
+    } catch (error) {
+      await closeClientQuietly(activeClient);
+      throw error;
+    }
+    if (!isInvalidSuperuserBearerResult(attempt.result)) return attempt;
+  }
+
+  return attempt;
 }
 
 /**
@@ -3323,11 +3408,16 @@ async function main() {
         const idempotencyKey = args.idempotencyKey || randomUUID();
         console.error(formatToolCatalogBypass(args.tool, error));
         try {
-          const recovered = await dispatchScriptedToolWithoutCatalog(
+          const recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
             client,
             args.tool,
             callArgs,
-            { idempotencyKey, reconnect: connectOperator },
+            {
+              idempotencyKey,
+              tokenPaths,
+              initialTokenPath: ptoolTokenPathByClient.get(client),
+              reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
+            },
           );
           client = recovered.client;
           const code = await printResult(recovered.result, {

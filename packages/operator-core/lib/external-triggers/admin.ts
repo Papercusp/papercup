@@ -1031,8 +1031,24 @@ export async function createExternalTriggerBinding(
   // comments. So a social source falls back to its per-platform coalesce-with-cap
   // default (P-023) instead of to unbounded. An explicit caller-supplied policy
   // still wins, and non-social sources are untouched.
-  const socialDefault = input.stormPolicy ? null : defaultSocialStormPolicyForSourceKind(sources[0].kind);
-  const stormPolicy = socialDefault ?? normalizedStormPolicy(input.stormPolicy);
+  //
+  // A policy that states ONLY the dispatch validity window (maxAgeSeconds,
+  // WI-10004920) says nothing about rate, so it must not displace that rate
+  // default either: the window is overlaid on the social default instead.
+  const stated = input.stormPolicy;
+  const statedMaxAge = stated?.maxAgeSeconds ?? stated?.max_age_seconds;
+  const statesRate =
+    stated !== undefined &&
+    Object.keys(stated).some((key) => key !== 'maxAgeSeconds' && key !== 'max_age_seconds');
+  const socialDefault = statesRate ? null : defaultSocialStormPolicyForSourceKind(sources[0].kind);
+  const stormPolicy = socialDefault
+    ? {
+        ...socialDefault,
+        ...(statedMaxAge === undefined || statedMaxAge === null
+          ? {}
+          : { maxAgeSeconds: parseStormPolicy({ maxAgeSeconds: statedMaxAge }).maxAgeSeconds }),
+      }
+    : normalizedStormPolicy(stated);
   const stormPolicyJson = JSON.stringify(stormPolicy);
   const rows = await sql<
     Array<

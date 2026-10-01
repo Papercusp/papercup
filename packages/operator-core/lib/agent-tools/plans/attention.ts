@@ -464,8 +464,25 @@ export default defineTool({
                   readAckedMsgIds(ADMIN_COORD_UI_OWNER),
                 ]),
               );
-              for (const m of msgs.slice(-WINDOW)) {
-                if (acked.has(m.msg_id)) continue;
+              const page = msgs.slice(-WINDOW).filter((m) => !acked.has(m.msg_id));
+              // personal-data-reader-set-labels P-006 / D-006: a restricted sender's
+              // message is persisted as a sealed stub. The owner is always a
+              // permitted reader, so the Inbox shows what was written; if the
+              // sealed store cannot be read, the stub is shown instead.
+              const { COORD_SEAL_STORE, mergeUnsealed, sealMarkerOf } = await import('../../personal-vault/coord-seal');
+              const sealedRefs = page.filter((m) => sealMarkerOf(m)).map((m) => m.msg_id);
+              const opened = sealedRefs.length
+                ? await import('../../personal-vault/sealed-contents')
+                    .then(async ({ openSealedForOwner }) =>
+                      (await import('@papercusp/db-org')).withWorkspace(conversationsWorkspace, (tx) =>
+                        openSealedForOwner(tx, { workspaceId: conversationsWorkspace, store: COORD_SEAL_STORE, refs: sealedRefs }),
+                      ),
+                    )
+                    .catch(() => new Map<string, Record<string, unknown>>())
+                : new Map<string, Record<string, unknown>>();
+              for (const raw of page) {
+                const content = opened.get(raw.msg_id);
+                const m = content ? mergeUnsealed(raw, content) : raw;
                 const mm = m as typeof m & {
                   auto?: unknown;
                   lifecycle?: unknown;

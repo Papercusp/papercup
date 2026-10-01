@@ -56,8 +56,16 @@ describe('readAgentConfig default backend (no stored row)', () => {
 });
 
 describe('bulk resolver launch profiles', () => {
-  it('covers every generalized bulk-run kind', () => {
-    expect([...BULK_RESOLVER_PROFILE_KINDS]).toEqual([...BULK_RUN_KINDS]);
+  it('covers every generalized bulk-run kind, except the ones that deliberately inherit a pane profile', () => {
+    // observation-candidate plan D-021: the intake-triage drain has no settings pane,
+    // so it launches with the saved inbox-resolve profile (intake-triage-drain-action.ts).
+    // A NEW run kind must either get a profile here or be named in this map, never
+    // silently become unconfigurable.
+    const INHERITS_PROFILE: Record<string, (typeof BULK_RESOLVER_PROFILE_KINDS)[number]> = {
+      'intake-triage': 'inbox-resolve',
+    };
+    expect([...BULK_RESOLVER_PROFILE_KINDS]).toEqual(BULK_RUN_KINDS.filter((kind) => !(kind in INHERITS_PROFILE)));
+    for (const parent of Object.values(INHERITS_PROFILE)) expect(BULK_RESOLVER_PROFILE_KINDS).toContain(parent);
   });
 
   it('normalizes separate Inbox and Plans defaults with canonical launch values', () => {

@@ -100,6 +100,8 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { harnessArg, resolveConcreteHarnessSlug } from '../_harness-scope';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
+import { currentRequestWorkspaceId } from '../../workspace-als';
+import { workspaceDir } from '../../workspace-registry';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import {
   FOREGROUND_TERMINATION_GRACE_MS,
@@ -721,6 +723,29 @@ export function normalizeTestFilePaths(
     if (isAbsolute(file)) {
       normalized.push(file);
       continue;
+    }
+
+    // Managed app citations already use workspace-relative .papercusp/apps paths.
+    // Resolve only the request's concrete workspace, never the process-global one.
+    const portable = file.replace(/\\/g, '/').replace(/^\.\//, '');
+    const appPath = /^\.papercusp\/apps\/([^/]+)\/(.+)$/.exec(portable);
+    const workspace = currentRequestWorkspaceId();
+    if (appPath && workspace && /^[A-Za-z0-9._-]+$/.test(workspace) &&
+      workspace !== '.' && workspace !== '..' &&
+      !portable.split('/').some((part) => part === '..')) {
+      try {
+        const appsRoot = realpathSync(join(workspaceDir(workspace), '.papercusp', 'apps'));
+        const appRoot = realpathSync(join(appsRoot, appPath[1]!));
+        const candidate = realpathSync(join(appRoot, appPath[2]!));
+        if (isInsideRoot(appsRoot, appRoot) && appRoot !== appsRoot &&
+          isInsideRoot(appRoot, candidate) && statSync(candidate).isFile() &&
+          statSync(join(appRoot, '.git')).isDirectory() && isWorkspaceCheckoutRoot(appRoot)) {
+          normalized.push(candidate);
+          continue;
+        }
+      } catch {
+        // Missing files, invalid checkouts and escaping symlinks remain unresolved.
+      }
     }
 
     const rootCandidate = resolve(root, file);

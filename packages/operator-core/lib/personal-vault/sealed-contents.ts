@@ -104,6 +104,23 @@ export async function sealCoordEnvelope<E extends { msg_id: string; from: string
   }
 }
 
+/**
+ * The owner's view of many sealed rows at once (the Inbox lists a page of
+ * messages). The owner is always a permitted reader, so nothing is labelled.
+ */
+export async function openSealedForOwner(
+  sql: Db,
+  params: { workspaceId: string; store: string; refs: readonly string[] },
+): Promise<Map<string, Record<string, unknown>>> {
+  if (!params.refs.length) return new Map();
+  const rows = await sql<Array<{ ref: string; content: Record<string, unknown> }>>`
+    SELECT ref, content
+      FROM harness_shared.personal_sealed_contents
+     WHERE workspace_id = ${params.workspaceId} AND store = ${params.store}
+       AND ref = ANY(${[...params.refs]}::text[])`;
+  return new Map(rows.map((row) => [row.ref, row.content]));
+}
+
 export type SealedOpenResult =
   | { found: false }
   | { found: true; withheld: true; labels: number }
