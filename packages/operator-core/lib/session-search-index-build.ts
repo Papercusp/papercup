@@ -102,11 +102,20 @@ export function createIndexConcurrentlySql(spec: SessionSearchIndexSpec): string
 
 export type IndexReadiness = 'ready' | 'absent' | 'invalid';
 export type VocabStatus = 'absent' | 'building' | 'ready' | 'failed';
+/**
+ * What the read path sees for one workspace: the persisted status, or `empty` — a DERIVED verdict
+ * (never written to the state table) meaning the workspace has NO state row AND NO transcript rows.
+ * The build only iterates workspaces that have rows, so such a workspace can never acquire a state
+ * row; reading it as `absent` would leave the fuzzy tier skipped forever for it (and the fuzzy tier
+ * always asks for the host-global 'default' workspace too, which a fresh install may not populate).
+ * "Nothing to build" is not "not ready": an empty vocabulary expands to nothing, which is correct.
+ */
+export type VocabReadiness = VocabStatus | 'empty';
 
 export interface SessionSearchReadiness {
   indexes: Record<SessionSearchIndexName, IndexReadiness>;
-  /** workspace_id → vocabulary status (a workspace with no state row is `absent`). */
-  vocab: Record<string, VocabStatus>;
+  /** workspace_id → vocabulary readiness (a workspace with no state row but transcript rows is `absent`). */
+  vocab: Record<string, VocabReadiness>;
 }
 
 export interface TierAvailability {
@@ -144,8 +153,8 @@ export async function readSessionSearchReadiness(
     indexes[r.name as SessionSearchIndexName] = r.valid && r.ready ? 'ready' : 'invalid';
   }
 
-  const vocab: Record<string, VocabStatus> = Object.fromEntries(
-    workspaceIds.map((w) => [w, 'absent' as VocabStatus]),
+  const vocab: Record<string, VocabReadiness> = Object.fromEntries(
+    workspaceIds.map((w) => [w, 'absent' as VocabReadiness]),
   );
   if (workspaceIds.length > 0) {
     const states = await sql<Array<{ workspace_id: string; status: VocabStatus }>>`
@@ -154,6 +163,21 @@ export async function readSessionSearchReadiness(
        WHERE workspace_id = ANY(${workspaceIds as unknown as string[]})
     `;
     for (const s of states) vocab[s.workspace_id] = s.status;
+
+    // A workspace with no state row is `absent` only if it has transcript rows the build still owes a
+    // vocabulary for; with none, there is nothing to build and the build will never create a row.
+    // The primary key leads with workspace_id, so each EXISTS is a single index probe.
+    const stateless = workspaceIds.filter((w) => vocab[w] === 'absent');
+    if (stateless.length > 0) {
+      const empty = await sql<Array<{ workspace_id: string }>>`
+        SELECT w AS workspace_id
+          FROM unnest(${stateless as unknown as string[]}::text[]) AS w
+         WHERE NOT EXISTS (
+           SELECT 1 FROM harness_shared.session_turns t WHERE t.workspace_id = w
+         )
+      `;
+      for (const e of empty) vocab[e.workspace_id] = 'empty';
+    }
   }
   return { indexes, vocab };
 }
@@ -182,7 +206,10 @@ export function sessionSearchTierAvailability(
       skipReason: `vocab-index-${readiness.indexes.session_turn_vocab_word_trgm_idx}`,
     };
   } else {
-    const notReady = workspaceIds.filter((w) => (readiness.vocab[w] ?? 'absent') !== 'ready');
+    const notReady = workspaceIds.filter((w) => {
+      const v = readiness.vocab[w] ?? 'absent';
+      return v !== 'ready' && v !== 'empty';
+    });
     fuzzy =
       notReady.length === 0
         ? { available: true }

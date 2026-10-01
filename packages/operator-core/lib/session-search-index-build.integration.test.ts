@@ -213,6 +213,9 @@ describe('migration 1273 — replay safety + the index/EXPLAIN probe (SPEC-P002-
 
 describe('readSessionSearchReadiness / sessionSearchTierAvailability (the read path degrade contract)', () => {
   it('reports absent → invalid → ready from catalog truth, and vocab status from the state row', async () => {
+    // w1 HAS transcript rows the build owes a vocabulary for, so no state row reads `absent`
+    // (an `empty` verdict is reserved for a workspace with no rows at all — see the next test).
+    await seed('w1', ['plan the furnished finder listing']);
     let r = await readSessionSearchReadiness(sql, ['w1']);
     expect(r.indexes[TRGM]).toBe('absent');
     expect(r.vocab.w1).toBe('absent');
@@ -256,6 +259,34 @@ describe('readSessionSearchReadiness / sessionSearchTierAvailability (the read p
     expect(mid.exact.available).toBe(true);
     expect(mid.fuzzy).toEqual({ available: false, skipReason: 'vocab-default:building' });
     expect(ready({}, { w1: 'ready' }).fuzzy.skipReason).toBe('vocab-default:absent');
+    // `empty` (no rows, so nothing to build) satisfies the tier exactly like `ready`; `absent` and `failed` do not.
+    expect(ready({}, { w1: 'ready', default: 'empty' }).fuzzy).toEqual({ available: true });
+    expect(ready({}, { w1: 'empty', default: 'empty' }).fuzzy).toEqual({ available: true });
+    expect(ready({}, { w1: 'ready', default: 'failed' }).fuzzy.skipReason).toBe('vocab-default:failed');
+  });
+
+  it('a workspace with NO transcript rows reads `empty`, never `absent`: the host-global `default` workspace must not wedge the fuzzy tier forever', async () => {
+    // Regression: the fuzzy tier always asks for [workspace, 'default']. The build only creates a vocab
+    // state row for a workspace that has rows, so on an install whose 'default' workspace holds no
+    // transcripts the state row never appears and `absent` skipped the tier permanently.
+    await seed('w1', ['plan the furnished finder listing']);
+    await sql.unsafe(createIndexConcurrentlySql(SESSION_SEARCH_INDEXES[0]));
+    await runSessionSearchIndexBuildOnce(sql, OPTS);
+
+    const r = await readSessionSearchReadiness(sql, ['w1', 'default']);
+    expect(r.vocab.w1).toBe('ready');
+    expect(r.vocab.default).toBe('empty');
+    expect(sessionSearchTierAvailability(r, ['w1', 'default']).fuzzy).toEqual({ available: true });
+
+    // Control: the same workspace the moment it gains a row (before the build catches up) is `absent`
+    // again, so a real vocabulary gap still skips the tier instead of being read as "nothing to build".
+    await seed('default', ['a turn the vocabulary has not seen yet']);
+    const afterRow = await readSessionSearchReadiness(sql, ['w1', 'default']);
+    expect(afterRow.vocab.default).toBe('absent');
+    expect(sessionSearchTierAvailability(afterRow, ['w1', 'default']).fuzzy).toEqual({
+      available: false,
+      skipReason: 'vocab-default:absent',
+    });
   });
 });
 
