@@ -114,8 +114,22 @@ export function configureRunnerLivenessProber(prober: RunnerLivenessProber | nul
   runnerLivenessProber = prober ?? systemdRunnerLiveness;
 }
 
+/**
+ * A reservation that never bound a process (no pid, no unit) and has gone untouched for longer than
+ * any runner may legally live cannot have a living owner. Without this, the prober can only answer
+ * 'unknown' for it, and an 'unknown' incumbent keeps its claim FOREVER — measured 2026-10-01
+ * (WI-10004694): a 'launching' reservation from 2026-09-24 with pid/unit null wedged
+ * hello-world-3-pot's gate for 7 days, every fire returning `conflict`.
+ */
+function unboundReservationOutlivedCeiling(runner: QualificationPhysicalRunner, nowMs: number): boolean {
+  if (runner.pid != null || runner.unit?.trim()) return false;
+  const lastSign = Math.max(runner.reservedAtMs, runner.heartbeatAtMs ?? 0, runner.leaseExpiresAtMs ?? 0);
+  return nowMs - lastSign > QUALIFICATION_OWNER_ABANDONED_MS;
+}
+
 export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined, nowMs = Date.now()): RunnerLiveness {
   if (!runner) return 'unknown';
+  if (unboundReservationOutlivedCeiling(runner, nowMs)) return 'dead';
   const observed = runnerLivenessProber(runner);
   // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
   // cannot authorize a second physical run during that launch interval.

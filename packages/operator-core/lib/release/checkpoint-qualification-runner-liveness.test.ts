@@ -93,6 +93,31 @@ it('proves a scheduled CLI runner by PID boot/start identity, including recycled
   expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).toBe('unknown');
 });
 
+it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it outlived the runner ceiling (WI-10004694)', () => {
+  // The prober would answer 'unknown' for this row; it must never be consulted past the ceiling.
+  configureRunnerLivenessProber(() => 'unknown');
+  try {
+    const reserved = runningWithRunner(null);
+    const runner = { ...reserved.currentPhysicalRunner!, phase: 'launching' as const, pid: null, unit: null };
+    const lastSign = Math.max(runner.reservedAtMs, runner.leaseExpiresAtMs ?? 0);
+    // Fails closed inside the ceiling: an unbound reservation is not yet proof of death.
+    expect(probeRunnerLiveness(runner, lastSign + QUALIFICATION_OWNER_ABANDONED_MS)).toBe('unknown');
+    const past = lastSign + QUALIFICATION_OWNER_ABANDONED_MS + 1;
+    expect(probeRunnerLiveness(runner, past)).toBe('dead');
+    // A recent heartbeat extends the evidence of life.
+    expect(probeRunnerLiveness({ ...runner, heartbeatAtMs: past - 1 }, past)).toBe('unknown');
+    // A bound runner (unit or pid) is NEVER judged by age — only its probe can falsify it.
+    expect(probeRunnerLiveness({ ...runner, unit: 'papercusp-checkpoint-x.scope' }, past)).toBe('unknown');
+    expect(probeRunnerLiveness({ ...runner, pid: 4242 }, past)).toBe('unknown');
+    // And the wedge clears: a successor attempt can take over with the probed verdict.
+    expect(beginQualificationTransaction(reserved, {
+      attemptId: 'successor-attempt', incumbentLiveness: probeRunnerLiveness(runner, past), nowMs: past,
+    }).status).not.toBe('conflict');
+  } finally {
+    configureRunnerLivenessProber(null);
+  }
+});
+
 describe('reserveQualificationRunner — a lease is not proof of life', () => {
   it('RECLAIMS a lease whose runner was proved dead, even though the lease has hours left', () => {
     const current = runningWithRunner('papercup-green-checkpoint-manual-1fxzuva.service');
