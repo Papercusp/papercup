@@ -9,8 +9,9 @@
  * Cost shape (papercusp-log-performance-remediation P-013). `payload` is the
  * TOASTed polymorphic JSONB (~3 GB across ~250k rows), so every `payload->…`
  * evaluated per in-scope row detoasts and decompresses the whole value. The
- * per-row `scoped` projection carries only heap columns, plus payload severity
- * and the spine join only when a filter or facet reads them. The page selects its keys first, ordered by
+ * per-row `scoped` projection carries only heap columns (severity is the STORED
+ * `severity_projection`, migration 1308), plus the spine join only when a filter
+ * or facet reads it. The page selects its keys first, ordered by
  * the raw `updated_ts` so `hfc_updated_idx` serves it, and hydrates payload
  * fields and the spine for those keys only. Measured on the live corpus
  * (2026-10-01): page statement 277 ms mean → 27.7 ms.
@@ -280,12 +281,11 @@ const issueKindSql = (sql: OrgSql) =>
 type SqlFragment = ReturnType<typeof issueKindSql>;
 
 /**
- * Detoasts `wi.payload`: evaluate per PAGE row, or per in-scope row only where
- * the severity filter/facet needs it. Follow-up (P-013, WI-10004929): switch to
- * the STORED `severity_projection` once migration 1308 (still a .DRAFT) is armed.
+ * Heap column, no detoast: migration 1308 (P-013, WI-10004929) stores
+ * `CASE WHEN <issue kind> THEN COALESCE(payload->'_ei'->>'severity', 'minor') END`
+ * as the generated `severity_projection`, so every in-scope row can carry it.
  */
-const severitySql = (sql: OrgSql) =>
-  sql`CASE WHEN ${issueKindSql(sql)} THEN COALESCE(wi.payload->'_ei'->>'severity', 'minor') ELSE NULL END`;
+const severitySql = (sql: OrgSql) => sql`wi.severity_projection`;
 
 /** Detoasts `wi.payload`: evaluate per PAGE row only. */
 const assignedBySql = (sql: OrgSql) =>
@@ -313,8 +313,6 @@ function latestSpineCte(
 }
 
 interface ScopedNeeds {
-  /** Evaluate the payload-derived severity per in-scope row (severity filter or facet). */
-  severity: boolean;
   /** Join the latest spine per in-scope row (stage filter or facet). */
   spine: boolean;
   /**
@@ -327,8 +325,8 @@ interface ScopedNeeds {
 
 /**
  * One row per in-scope work item carrying ONLY what the predicate, the sort and
- * the facets read. `severity` / `spine_role` are NULL placeholders unless
- * `need` asks for them; `predicateSql` reads them only when their filter is set.
+ * the facets read. `spine_role` is a NULL placeholder unless `need.spine`;
+ * `predicateSql` reads it only when the stage filter is set.
  * Requires `latest_spine` in the same WITH when `need.spine`.
  */
 function scopedCte(
@@ -346,7 +344,7 @@ function scopedCte(
              COALESCE(wi.title, '') AS title,
              COALESCE(wi.status, 'open') AS state,
              NULLIF(wi.taken_by, 'unassigned') AS assignee,
-             ${need.severity ? severitySql(sql) : sql`NULL::text`} AS severity,
+             ${severitySql(sql)} AS severity,
              wi.feature_order AS priority,
              wi.assignee_rank AS rank,
              wi.source_plan_slug AS plan_slug,
@@ -419,7 +417,6 @@ function hydratePageSql(sql: OrgSql, workspaceId: string) {
 }
 
 const pageNeeds = (args: NormalizedWorkItemsListArgs): ScopedNeeds => ({
-  severity: args.filters.severities.length > 0,
   spine: args.filters.stages.length > 0,
   materialization: 'NOT MATERIALIZED',
 });
@@ -648,11 +645,12 @@ export async function readWorkItemsSummaryFromStore(
   predicate: WorkItemsCompiledPredicate,
 ): Promise<readonly CompanionSummaryAggregateRow[]> {
   const args = predicate.args;
-  // Every facet reads `scoped`, so it is computed once; severity and spine are
-  // facets, so both are needed per row. No other payload field is read here.
+  // Every facet reads `scoped`, so it is computed once; stage is a facet, so the
+  // spine is joined per row. Severity is the stored heap column (migration 1308);
+  // no payload field is read here.
   const rows = await sql<WorkItemsAggregateDbRow[]>`
     WITH ${latestSpineCte(sql, workspaceId, args)},
-    ${scopedCte(sql, workspaceId, args, { severity: true, spine: true, materialization: 'MATERIALIZED' })},
+    ${scopedCte(sql, workspaceId, args, { spine: true, materialization: 'MATERIALIZED' })},
     totals AS (
       SELECT count(*)::int AS n FROM scoped
     ),
