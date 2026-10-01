@@ -156,4 +156,93 @@ export function createRgBaselineArm(treeRoot: string, deps: ArmDeps, rgBin = pro
   };
 }
 
+// ── GitNexus (installed + pinned candidate): one-shot CLI → the REAL facade ──
+
+export interface GitnexusArmConfig {
+  readonly id: string;
+  readonly version: string;
+  /** Absolute path of the `gitnexus` bin for THIS arm's version. */
+  readonly bin: string;
+  readonly treeRoot: string;
+  /** Scratch HOME so the serving `~/.gitnexus` registry is never touched. */
+  readonly home: string;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * `GitnexusDispatch` over the one-shot CLI. The facade parses the envelope, so
+ * the CLI arms reuse the PRODUCTION parser instead of growing a second one.
+ * `list_repos` is deliberately unsupported (the CLI `list` is human text): the
+ * facade then reports index health as UNKNOWN, which the answer records.
+ */
+export function createGitnexusCliDispatch(cfg: GitnexusArmConfig): (tool: string, args: Record<string, unknown>) => Promise<unknown> {
+  return async (tool, args) => {
+    const argv: string[] = [];
+    if (tool === 'context') {
+      if (typeof args.uid === 'string') argv.push('context', '-u', args.uid);
+      else argv.push('context', String(args.name ?? ''));
+      if (typeof args.file_path === 'string') argv.push('-f', args.file_path);
+    } else if (tool === 'impact') {
+      argv.push('impact', String(args.target ?? args.name ?? ''));
+      if (typeof args.direction === 'string') argv.push('-d', args.direction);
+    } else {
+      throw new Error(`bench gitnexus CLI dispatch does not support tool '${tool}'`);
+    }
+    const r = await execTimed(cfg.bin, argv, { cwd: cfg.treeRoot, env: { HOME: cfg.home }, timeoutMs: cfg.timeoutMs ?? 120_000 });
+    if (r.code !== 0) throw new Error(`gitnexus ${argv[0]} exit ${r.code}: ${r.stderr.trim().slice(-200)}`);
+    return r.stdout;
+  };
+}
+
+export function createGitnexusArm(
+  cfg: GitnexusArmConfig,
+  deps: ArmDeps,
+  facade: (op: string, args: Record<string, unknown>, dispatch: (t: string, a: Record<string, unknown>) => Promise<unknown>) => Promise<{ sites: readonly SymbolSite[]; error?: string | null }>,
+  opForIntent: (intent: string) => string | null,
+): EngineArm {
+  const dispatch = createGitnexusCliDispatch(cfg);
+  const run = (args: readonly string[]) =>
+    execTimed(cfg.bin, args, { cwd: cfg.treeRoot, env: { HOME: cfg.home }, timeoutMs: cfg.timeoutMs ?? 1_800_000 });
+  return {
+    id: cfg.id,
+    version: cfg.version,
+    treeRoot: cfg.treeRoot,
+    unavailable: null,
+    // `--skip-agents-md`: never let the analyzer write AGENTS.md/CLAUDE.md/hooks.
+    index: async () => phaseOf(await run(['analyze', '--skip-agents-md', '--force', '.']), deps),
+    // The tool's own update path: a plain re-analyze (no --force) of the working tree.
+    refresh: async () => phaseOf(await run(['analyze', '--skip-agents-md', '.']), deps),
+    async query(kase: CorpusCase): Promise<EngineQueryResult> {
+      // Disclosed bench mapping: exact-name `symbol-search` is the engine's native `context`
+      // lookup, so route it as the facade's `symbol` op (the production facade only routes
+      // `definition`). `text-search` has no GitNexus equivalent (`query` is concept search) → declined.
+      const op = kase.intent === 'symbol-search' ? 'symbol' : opForIntent(kase.intent);
+      if (op === null) {
+        return { sites: [], responseBytes: 0, error: `declined: gitnexus facade does not route intent '${kase.intent}'` };
+      }
+      let bytes = 0;
+      const counting = async (t: string, a: Record<string, unknown>): Promise<unknown> => {
+        let out = await dispatch(t, a);
+        bytes += Buffer.byteLength(typeof out === 'string' ? out : JSON.stringify(out));
+        // An agent reads the candidate list and picks one: retry ONCE with the first non-test
+        // candidate's uid. Identical rule for every GitNexus arm; both calls' bytes are counted.
+        if (t === 'context' && typeof out === 'string' && typeof a.uid !== 'string') {
+          try {
+            const j = JSON.parse(out) as { status?: string; candidates?: Array<{ uid: string; filePath: string }> };
+            if (j.status === 'ambiguous' && j.candidates?.length) {
+              const pick = j.candidates.find((c) => !/\.(test|spec)\.|\/__tests__\//.test(c.filePath)) ?? j.candidates[0]!;
+              out = await dispatch(t, { ...a, uid: pick.uid });
+              bytes += Buffer.byteLength(typeof out === 'string' ? out : JSON.stringify(out));
+            }
+          } catch { /* not JSON: leave the raw answer for the facade to classify */ }
+        }
+        return out;
+      };
+      const ans = await facade(op, { name: kase.query }, counting);
+      return { sites: ans.sites, responseBytes: bytes, error: ans.error ?? null };
+    },
+    indexBytes: async () => dirBytes(join(cfg.treeRoot, '.gitnexus'), cfg.treeRoot),
+  };
+}
+
 export { dirBytes, phaseOf, stat };
