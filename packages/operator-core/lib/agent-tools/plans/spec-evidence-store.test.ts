@@ -316,6 +316,15 @@ describe('listSpecEvidence timestamp normalization', () => {
         unknownReasons: ['current-fingerprints-attested-not-independently-measured'],
       },
     });
+    expect(row).not.toHaveProperty('withdrawal');
+    h.rows[0] = { ...h.rows[0], retracted_at: '2026-08-20 17:12:00-04',
+      retracted_by: 'su-reviewer', retraction_reason: 'Withdrawn pending attempt without a result.' };
+    const [withdrawn] = await listSpecEvidence({ harnessSlug: 'papercusp',
+      planSlugs: ['plan-one'], includeRetracted: true });
+    expect(withdrawn).toMatchObject({ withdrawal: {
+      at: '2026-08-20T21:12:00.000Z', by: 'su-reviewer',
+      reason: 'Withdrawn pending attempt without a result.',
+    } });
   });
 
   it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {

@@ -371,6 +371,57 @@ describe('test-time evidence continuity', () => {
     expect(d.retract.mock.calls[0]![0].reason).toContain('exit 143');
   });
 
+  it('recovers runner-retired pending mappings when the saved reporter result arrives later', async () => {
+    const d = deps();
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    const retired = { ...pendingEvidenceRow(2, {
+      ...initial.details, testExecution: { ...initial.details.testExecution, runId: detached },
+    }), withdrawal: {
+      at: '2026-09-24T00:00:01.000Z', by: scope.actorId,
+      reason: `Detached test run ${detached} terminated (error, exit unknown) without an attributed result for ${binding.testPath}; this attempt cannot settle and must be rerun.`,
+    } };
+    d.list.mockImplementation(async options => options.includeRetracted ? [retired] : []);
+    d.runStatus.mockResolvedValue(detachedRunSnapshot(detached, 'pass', 0));
+    d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+      finished_at: '2026-09-24T00:00:02Z', execution_details: measured }]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached, waitMs: 0 }, scope, d);
+
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(d.bind.mock.calls.at(-1)![0]).toMatchObject({
+      sourceFingerprint: 'source-before', testFingerprint: 'test-before',
+      details: { testExecution: { runId: detached, originRunId: runId } },
+    });
+    expect(retired.withdrawal.reason).toContain('without an attributed result');
+  });
+
+  it.each<{ reason?: string; phase?: string; testRunId?: number; reasonRunId?: string; reasonPath?: string }>([
+    { reason: 'Reviewer withdrew invalid evidence deliberately.' },
+    { phase: 'settled' },
+    { testRunId: 99 },
+    { reasonRunId: 'faf310d9-ea4e-498c-be6b-6773fe46a276' },
+    { reasonPath: 'test/another.test.ts' },
+  ])('does not revive an unrelated or deliberately withdrawn mapping: %j', async change => {
+    const d = deps();
+    const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    const initial = d.bind.mock.calls[0]![0];
+    const retired = { ...pendingEvidenceRow(2, {
+      ...initial.details, testExecution: { ...initial.details.testExecution, runId: detached,
+        ...(change.phase === undefined ? {} : { phase: change.phase }) },
+    }), ...(change.testRunId === undefined ? {} : { testRunId: change.testRunId }), withdrawal: {
+      at: '2026-09-24T00:00:01.000Z', by: scope.actorId,
+      reason: change.reason ?? `Detached test run ${change.reasonRunId ?? detached} terminated (error, exit unknown) without an attributed result for ${change.reasonPath ?? binding.testPath}; this attempt cannot settle and must be rerun.`,
+    } };
+    d.list.mockImplementation(async options => options.includeRetracted ? [retired] : []);
+
+    await expect(recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId: detached, waitMs: 0 }, scope, d)).rejects.toThrow('evidence_recovery_not_found');
+    expect(d.runStatus).not.toHaveBeenCalled();
+    expect(d.bind).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps evidence pending while the detached run is still progressing', async () => {
     const d = deps();
     d.ledger.mockResolvedValue([]);
