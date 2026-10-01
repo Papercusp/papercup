@@ -19,7 +19,7 @@
  * is healthy. Only a HANG (deadline) or an unexpected throw counts as `down` —
  * which is exactly how the outage manifested (available() never resolved).
  */
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
 import { BWRAP_BIN, BWRAP_USERNS_PROBE_ARGS } from '@papercusp/deployment-driver';
@@ -360,17 +360,24 @@ export async function readMcpPlane(): Promise<McpPlaneReading> {
 // or restart a host for an OS setting no restart can fix. `status: 'down'` IS the alert.
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * ok = the namespaces were created; disabled = not Linux (no bwrap sandbox); down = it cannot
+ * sandbox (bwrap missing or exited non-zero); unknown = no answer yet (the probe overran its
+ * deadline or is still running). A timeout is never `down`: on this tower the same probe took
+ * 80 ms to over 5 s under load (measured 2026-10-01), so a deadline says nothing about the sandbox.
+ */
+export type AgentSandboxStatus = 'ok' | 'disabled' | 'down' | 'unknown';
+
 export interface AgentSandboxReading {
-  /** ok = the namespaces were created; disabled = not Linux (no bwrap sandbox); down = it cannot sandbox. */
-  status: ProbeStatus;
-  /** Why it is down (bwrap's own first stderr line, a missing binary, or a timeout); null when ok. */
+  status: AgentSandboxStatus;
+  /** Why it is down or unknown (bwrap's own first stderr line, a missing binary, a timeout); null when ok. */
   detail: string | null;
   checkedAt: string;
 }
 
 /** The probe spawns a process, so its answer is reused for this long. */
 export const AGENT_SANDBOX_PROBE_TTL_MS = 10 * 60_000;
-export const AGENT_SANDBOX_PROBE_TIMEOUT_MS = 5_000;
+export const AGENT_SANDBOX_PROBE_TIMEOUT_MS = 30_000;
 
 export interface AgentSandboxProbeDeps {
   platform: () => NodeJS.Platform;
@@ -379,17 +386,47 @@ export interface AgentSandboxProbeDeps {
   now: () => number;
 }
 
+/**
+ * Run a probe command with a deadline that a stalled event loop cannot turn into a false
+ * timeout. `execFile`'s own `timeout` kills from the timers phase, which runs BEFORE the poll
+ * phase that delivers the child's exit: a loop blocked past the deadline (measured 2026-10-01:
+ * 5.3 s of module start-up right before the first probe) killed an already-exited 85 ms bwrap
+ * and reported the sandbox down. Here the deadline only schedules the kill for the check phase,
+ * after any pending exit has been processed.
+ */
+export function runProbeCommand(bin: string, args: readonly string[], timeoutMs: number): Promise<{ code: number | null; stderr: string; error?: string }> {
+  return new Promise((resolve) => {
+    let stderr = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = (r: { code: number | null; stderr: string; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(r);
+    };
+    const child = spawn(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr?.setEncoding('utf8').on('data', (d: string) => {
+      if (stderr.length < 4096) stderr += d;
+    });
+    child.on('error', (e) => done({ code: null, stderr, error: e.message }));
+    child.on('close', (code) => done({ code, stderr }));
+    timer = setTimeout(
+      () =>
+        setImmediate(() => {
+          if (settled || child.exitCode !== null || child.signalCode !== null) return;
+          child.kill('SIGKILL');
+          done({ code: null, stderr, error: `timeout after ${timeoutMs}ms` });
+        }),
+      timeoutMs,
+    );
+  });
+}
+
 const defaultAgentSandboxDeps: AgentSandboxProbeDeps = {
   platform: () => process.platform,
   exists: (file) => existsSync(file),
-  run: (bin, args, timeoutMs) =>
-    new Promise((resolve) => {
-      execFile(bin, [...args], { timeout: timeoutMs, encoding: 'utf8' }, (err, _stdout, stderr) => {
-        if (!err) return resolve({ code: 0, stderr });
-        const code = typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : null;
-        resolve({ code, stderr, error: err.killed ? `timeout after ${timeoutMs}ms` : err.message });
-      });
-    }),
+  run: runProbeCommand,
   now: Date.now,
 };
 
@@ -401,6 +438,7 @@ export async function probeAgentSandbox(deps: AgentSandboxProbeDeps = defaultAge
   try {
     const r = await deps.run(BWRAP_BIN, BWRAP_USERNS_PROBE_ARGS, AGENT_SANDBOX_PROBE_TIMEOUT_MS);
     if (r.code === 0) return { status: 'ok', detail: null, checkedAt };
+    if (r.code === null && r.error?.startsWith('timeout')) return { status: 'unknown', detail: r.error, checkedAt };
     const first = r.stderr.split('\n').map((l) => l.trim()).find(Boolean);
     return { status: 'down', detail: (first ?? r.error ?? `bwrap exited ${r.code}`).slice(0, 300), checkedAt };
   } catch (err) {
@@ -411,18 +449,38 @@ export async function probeAgentSandbox(deps: AgentSandboxProbeDeps = defaultAge
 let agentSandboxCache: { at: number; reading: AgentSandboxReading } | null = null;
 let agentSandboxInflight: Promise<AgentSandboxReading> | null = null;
 
-/** The cached probe answer, re-probed after `AGENT_SANDBOX_PROBE_TTL_MS`; concurrent readers share one run. */
-export async function readAgentSandbox(deps: AgentSandboxProbeDeps = defaultAgentSandboxDeps): Promise<AgentSandboxReading> {
-  if (agentSandboxCache && deps.now() - agentSandboxCache.at < AGENT_SANDBOX_PROBE_TTL_MS) return agentSandboxCache.reading;
+/**
+ * The probe answer without ever holding a health response for the probe's own deadline:
+ * a fresh cached answer is returned as is; a stale one is returned while one background
+ * re-probe runs (concurrent readers share it); with no answer yet the read waits at most
+ * `waitMs` and then reports `unknown`. Only a definitive answer is cached, so an `unknown`
+ * is re-probed on the next read.
+ */
+export async function readAgentSandbox(
+  deps: AgentSandboxProbeDeps = defaultAgentSandboxDeps,
+  waitMs: number = DEEP_PROBE_TIMEOUT_MS,
+): Promise<AgentSandboxReading> {
+  const cached = agentSandboxCache;
+  if (cached && deps.now() - cached.at < AGENT_SANDBOX_PROBE_TTL_MS) return cached.reading;
   agentSandboxInflight ??= probeAgentSandbox(deps)
     .then((reading) => {
-      agentSandboxCache = { at: deps.now(), reading };
+      if (reading.status !== 'unknown') agentSandboxCache = { at: deps.now(), reading };
       return reading;
     })
     .finally(() => {
       agentSandboxInflight = null;
     });
-  return agentSandboxInflight;
+  if (cached) return cached.reading;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const waited = new Promise<AgentSandboxReading>((resolve) => {
+    timer = setTimeout(() => resolve({ status: 'unknown', detail: 'probe still running', checkedAt: new Date(deps.now()).toISOString() }), waitMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([agentSandboxInflight, waited]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Test-only. */

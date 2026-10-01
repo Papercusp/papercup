@@ -16,6 +16,7 @@ import {
   __resetAgentSandboxCache,
   probeAgentSandbox,
   readAgentSandbox,
+  runProbeCommand,
   type AgentSandboxProbeDeps,
   classifyMcpPressure,
   computeDeepReadiness,
@@ -284,8 +285,32 @@ describe('agent sandbox leg', () => {
   it('reports down with bwrap’s own error when it cannot create the namespaces (a fake bwrap exiting 1)', async () => {
     const { deps } = fake({ run: async () => ({ code: 1, stderr: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n' }) });
     expect(await probeAgentSandbox(deps)).toMatchObject({ status: 'down', detail: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' });
-    const silent = fake({ run: async () => ({ code: null, stderr: '', error: 'timeout after 5000ms' }) });
-    expect((await probeAgentSandbox(silent.deps)).detail).toBe('timeout after 5000ms');
+  });
+
+  it('reports a probe that overran its deadline as unknown, never down, and does not cache it', async () => {
+    const slow = fake({ run: async () => ({ code: null, stderr: '', error: 'timeout after 30000ms' }) });
+    expect(await probeAgentSandbox(slow.deps)).toMatchObject({ status: 'unknown', detail: 'timeout after 30000ms' });
+    await readAgentSandbox(slow.deps);
+    await readAgentSandbox(slow.deps);
+    expect(slow.calls).toHaveLength(0); // the fake run above records nothing; count probes instead:
+    let probes = 0;
+    const counted = fake({ run: async () => (probes++, { code: null, stderr: '', error: 'timeout after 30000ms' }) });
+    __resetAgentSandboxCache();
+    await readAgentSandbox(counted.deps);
+    await readAgentSandbox(counted.deps);
+    expect(probes).toBe(2);
+  });
+
+  it('never holds a health read for the probe: the first read waits at most waitMs, a stale answer is served while it re-probes', async () => {
+    let release: (v: { code: number; stderr: string }) => void = () => {};
+    let t = 1_000;
+    const hung = fake({ now: () => t, run: () => new Promise((r) => (release = r)) });
+    expect(await readAgentSandbox(hung.deps, 20)).toMatchObject({ status: 'unknown', detail: 'probe still running' });
+    release({ code: 0, stderr: '' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await readAgentSandbox(hung.deps, 20)).toMatchObject({ status: 'ok' }); // the background probe landed
+    t += AGENT_SANDBOX_PROBE_TTL_MS;
+    expect(await readAgentSandbox(hung.deps, 20)).toMatchObject({ status: 'ok' }); // stale, served at once while re-probing
   });
 
   it('reports down when bwrap is missing on Linux, and disabled off Linux (never a fake ok)', async () => {
@@ -302,14 +327,30 @@ describe('agent sandbox leg', () => {
     await readAgentSandbox(deps);
     expect(calls).toHaveLength(1);
     t += AGENT_SANDBOX_PROBE_TTL_MS;
-    await readAgentSandbox(deps);
+    await readAgentSandbox(deps); // stale: served from cache, re-probe started in the background
     expect(calls).toHaveLength(2);
+  });
+
+  it('runProbeCommand: an event loop stalled past the deadline does not turn an exited child into a timeout', async () => {
+    const p = runProbeCommand('/bin/sh', ['-c', 'exit 0'], 50);
+    const until = Date.now() + 400; // the stall: the child exits inside it, the deadline passes inside it
+    while (Date.now() < until) {
+      /* block the loop */
+    }
+    expect(await p).toEqual({ code: 0, stderr: '' });
+  });
+
+  it('runProbeCommand: reports the exit code and stderr, and kills a child that really overruns', async () => {
+    expect(await runProbeCommand('/bin/sh', ['-c', 'echo boom >&2; exit 3'], 5_000)).toEqual({ code: 3, stderr: 'boom\n' });
+    const t0 = Date.now();
+    expect(await runProbeCommand('/bin/sh', ['-c', 'sleep 5'], 100)).toMatchObject({ code: null, error: 'timeout after 100ms' });
+    expect(Date.now() - t0).toBeLessThan(3_000);
   });
 
   it('is served in the /health/deep payload without gating readiness', async () => {
     const res = await (route as unknown as { handler: (...a: unknown[]) => Promise<Response> }).handler({}, {});
     const body = (await res.json()) as { agentSandbox?: Record<string, unknown> };
-    expect(body.agentSandbox).toMatchObject({ status: expect.stringMatching(/^(ok|disabled|down)$/), checkedAt: expect.any(String) });
+    expect(body.agentSandbox).toMatchObject({ status: expect.stringMatching(/^(ok|disabled|down|unknown)$/), checkedAt: expect.any(String) });
   }, 30000);
 });
 
