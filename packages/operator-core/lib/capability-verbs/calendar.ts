@@ -18,6 +18,7 @@ import {
   type GoogleCalendarWriteResult,
 } from '../external-triggers/google-calendar';
 import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
+import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressees, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import { resolveCanonicalDocument, resolveOutboundContext, string } from './resolve';
 
@@ -68,6 +69,8 @@ export async function proposeCalendarEvent(
     location?: string | null;
     timeZone?: string | null;
     calendarId?: string;
+    /** Reader-set labels: see `sendNewMail` in ./mail. Every invitee receives the event. */
+    agentOwnerId: string | null;
   },
   deps: CalendarDeps = {},
 ): Promise<CalendarProposeResult> {
@@ -83,6 +86,15 @@ export async function proposeCalendarEvent(
         provenance: params.provenance,
       })
     : [];
+  if (invited.length) {
+    await assertDisclosurePermits(sql, {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      agentOwnerId: params.agentOwnerId,
+      recipients: invited.map((decision) => decision.address),
+      sink: 'calendar:propose',
+    });
+  }
 
   const token = await calendarToken(sql, params, deps);
   const created = await (deps.createEvent ?? createGoogleCalendarEvent)(
@@ -124,6 +136,8 @@ export async function updateCalendarEvent(
     location?: string | null;
     timeZone?: string | null;
     calendarId?: string;
+    /** See `proposeCalendarEvent`. */
+    agentOwnerId: string | null;
   },
   deps: CalendarDeps = {},
 ): Promise<CalendarProposeResult> {
@@ -142,6 +156,18 @@ export async function updateCalendarEvent(
       userId: params.userId,
       addresses: params.attendees,
       provenance: params.provenance,
+    });
+  }
+  // An update notifies everyone on the event, not only newly added attendees,
+  // so the audience is the stored participants plus any additions.
+  const audience = [...new Set([...doc.participants, ...invited.map((decision) => decision.address)])];
+  if (audience.length) {
+    await assertDisclosurePermits(sql, {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      agentOwnerId: params.agentOwnerId,
+      recipients: audience,
+      sink: 'calendar:update',
     });
   }
 

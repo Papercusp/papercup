@@ -4,6 +4,8 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { replyToCanonicalMail } from '../../capability-verbs/mail';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
+import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export function mailPersonalAccessRefusal(reason: unknown) {
@@ -51,14 +53,20 @@ export default defineTool({
     if (!auth.allowed) {
       return { data: mailPersonalAccessRefusal(auth.reason) };
     }
-    const result = await replyToCanonicalMail(ctx.tx as unknown as postgres.Sql, {
-      workspaceId,
-      userId: user.id,
-      messageId: args.messageId,
-      sourceId: args.sourceId,
-      text: args.text,
-      mode: args.mode ?? 'draft',
-    });
-    return { data: { ok: true, ...result } };
+    try {
+      const result = await replyToCanonicalMail(ctx.tx as unknown as postgres.Sql, {
+        workspaceId,
+        userId: user.id,
+        messageId: args.messageId,
+        sourceId: args.sourceId,
+        text: args.text,
+        mode: args.mode ?? 'draft',
+        agentOwnerId: disclosureSubject(ctx),
+      });
+      return { data: { ok: true, ...result } };
+    } catch (error) {
+      if (error instanceof DisclosureRefused) return { data: disclosureRefusalData(error) };
+      throw error;
+    }
   },
 });

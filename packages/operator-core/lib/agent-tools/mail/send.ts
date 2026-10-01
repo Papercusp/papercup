@@ -6,7 +6,9 @@ import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { sendNewMail } from '../../capability-verbs/mail';
 import { AddresseeRefused } from '../../capability-verbs/addressing';
 import { UndeliverableAddressee } from '../../capability-verbs/deliverability';
+import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { addresseeArg, toProvenance } from '../_addressee-arg';
+import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
@@ -74,9 +76,11 @@ export default defineTool({
         from: args.from,
         allowUndeliverable: args.allowUndeliverable,
         provenance: toProvenance(args.addressee),
+        agentOwnerId: disclosureSubject(ctx),
       });
       return { data: { ok: true, ...result } };
     } catch (error) {
+      if (error instanceof DisclosureRefused) return { data: disclosureRefusalData(error) };
       // Same structured shape as the trust rail beside it: a provable bounce is
       // a refusal the caller can act on, not an exception to surface raw.
       if (error instanceof UndeliverableAddressee) {

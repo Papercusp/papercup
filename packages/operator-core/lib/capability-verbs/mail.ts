@@ -25,6 +25,7 @@ import {
   type GoogleGmailOutboundInput,
 } from '../external-triggers/google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
+import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressees, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
   assertDeliverableAddressees,
@@ -202,6 +203,8 @@ export async function replyToCanonicalMail(
     sourceId?: string | null;
     text: string;
     mode?: 'draft' | 'send';
+    /** See `sendNewMail`. Checked only for `mode:'send'`: a draft is not a sink. */
+    agentOwnerId: string | null;
   },
   deps: MailDeps = {},
 ): Promise<MailReplyResult> {
@@ -217,6 +220,15 @@ export async function replyToCanonicalMail(
     sourceId: params.sourceId,
   });
   const coordinates = resolveMailReplyCoordinates(doc);
+  if (mode === 'send') {
+    await assertDisclosurePermits(sql, {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      agentOwnerId: params.agentOwnerId,
+      recipients: [coordinates.to],
+      sink: 'mail:reply',
+    });
+  }
   const ctx = await resolveOutboundContext(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -323,6 +335,13 @@ export async function sendNewMail(
      * cannot report that bounce on this call.
      */
     allowUndeliverable?: boolean;
+    /**
+     * The calling agent's identity, whose Personal Vault disclosures bound who it
+     * may send to (reader-set labels). Required so no caller can forget it; null
+     * only for a caller with no attributable identity, from which restricted
+     * content is withheld at delivery.
+     */
+    agentOwnerId: string | null;
   },
   deps: MailDeps = {},
 ): Promise<MailSendResult> {
@@ -341,6 +360,16 @@ export async function sendNewMail(
     userId: params.userId,
     addresses: [...params.to, ...(params.cc ?? [])],
     provenance: params.provenance,
+  });
+
+  // After the trust rail, so an injected addressee is named as THAT; before the
+  // deliverability probe, which would otherwise contact a recipient we refuse.
+  await assertDisclosurePermits(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    agentOwnerId: params.agentOwnerId,
+    recipients: recipients.map((decision) => decision.address),
+    sink: 'mail:send',
   });
 
   // AFTER the trust rail, deliberately. The probe opens an outbound connection
@@ -449,6 +478,8 @@ export async function sendMailDraft(
      * does not exist. Off by default. See `sendNewMail`.
      */
     allowUndeliverable?: boolean;
+    /** See `sendNewMail`. Checked against the LIVE recipients, like the rail. */
+    agentOwnerId: string | null;
   },
   deps: MailDeps = {},
 ): Promise<MailSendDraftResult> {
@@ -478,6 +509,15 @@ export async function sendMailDraft(
     userId: params.userId,
     addresses: [...live.to, ...live.cc],
     provenance: params.provenance,
+  });
+
+  // The draft itself was not a sink; sending it is.
+  await assertDisclosurePermits(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.userId,
+    agentOwnerId: params.agentOwnerId,
+    recipients: recipients.map((decision) => decision.address),
+    sink: 'mail:send-draft',
   });
 
   if (
