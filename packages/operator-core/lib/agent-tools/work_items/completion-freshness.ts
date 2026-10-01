@@ -295,17 +295,31 @@ type CompletionHistoryLocation = {
 };
 
 /**
+ * EI-24821039535031884: the answer of {@link completionBlobHistoryContains}.
+ * - `true` / `false`: git MEASURED the range (found / definitively not found).
+ * - `undefined`: the proof is impossible for a reason that will not change on
+ *   retry (malformed input, a path that does not normalize, from/to resolving to
+ *   different repositories, git refusing the read). Callers persist it as residue.
+ * - `'unmeasured'`: a git read hit its deadline, or the pass was aborted. Nothing
+ *   was learned about the path, so callers must retry instead of persisting a
+ *   verdict. Recording a timeout as `identity-unavailable` is the defect class
+ *   EI-24807349327024992 removed for the exact-tree lookup.
+ */
+export type CompletionBlobHistoryVerdict = boolean | 'unmeasured' | undefined;
+
+/**
  * Resolve a declared path to the repository and commit that own it at one
  * superproject commit. Gitlinks are read from that commit's tree, not from the
- * checkout's possibly stale .gitmodules or working tree.
+ * checkout's possibly stale .gitmodules or working tree. `'unmeasured'` means an
+ * ls-tree read timed out (or the pass aborted); undefined is a deterministic refusal.
  */
 async function completionHistoryLocation(
   repoRoot: string,
   commitSha: string,
   path: string,
   opts: GitSpawnOptions,
-): Promise<CompletionHistoryLocation | undefined> {
-  if (opts.signal?.aborted) return undefined;
+): Promise<CompletionHistoryLocation | 'unmeasured' | undefined> {
+  if (opts.signal?.aborted) return 'unmeasured';
   const root = nodePath.resolve(repoRoot);
   const prefixes = path
     .split('/')
@@ -324,7 +338,8 @@ async function completionHistoryLocation(
     // (~8/s traced 2026-10-01, ~54 ms of frozen loop per local fork).
     { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
   );
-  if (outcome !== 'complete' || opts.signal?.aborted) return undefined;
+  if (opts.signal?.aborted || outcome === 'timeout') return 'unmeasured';
+  if (outcome !== 'complete') return undefined;
 
   let bestPrefix: string | undefined;
   let bestSha: string | undefined;
@@ -353,9 +368,11 @@ async function completionHistoryLocation(
  * observed HEAD and the emitted commit. The location is resolved at both ends
  * so a superproject file can never prove a submodule blob (or vice versa).
  *
- * Returns undefined when Git cannot answer; callers must preserve residue in
- * that case. Successful empty history is a definitive false, which keeps ODB
- * only and same-blob-at-another-path content from becoming settlement proof.
+ * Returns undefined when the proof is impossible (callers preserve residue) and
+ * `'unmeasured'` when a git read timed out (callers retry; see
+ * {@link CompletionBlobHistoryVerdict}). Successful empty history is a
+ * definitive false, which keeps ODB only and same-blob-at-another-path content
+ * from becoming settlement proof.
  */
 export async function completionBlobHistoryContains(
   repoRoot: string,
@@ -364,21 +381,19 @@ export async function completionBlobHistoryContains(
   rawPath: string,
   blobSha: string,
   opts: GitSpawnOptions = {},
-): Promise<boolean | undefined> {
-  if (
-    opts.signal?.aborted
-    || !SHA_RE.test(fromHeadSha)
-    || !SHA_RE.test(toCommitSha)
-    || !OBJECT_SHA_RE.test(blobSha)
-  ) {
+): Promise<CompletionBlobHistoryVerdict> {
+  if (opts.signal?.aborted) return 'unmeasured';
+  if (!SHA_RE.test(fromHeadSha) || !SHA_RE.test(toCommitSha) || !OBJECT_SHA_RE.test(blobSha)) {
     return undefined;
   }
   const path = normalizedRepoPath(repoRoot, rawPath);
   if (!path || path !== rawPath) return undefined;
 
   const from = await completionHistoryLocation(repoRoot, fromHeadSha, path, opts);
+  if (from === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
   const to = await completionHistoryLocation(repoRoot, toCommitSha, path, opts);
-  if (opts.signal?.aborted || !from || !to) return undefined;
+  if (to === 'unmeasured' || opts.signal?.aborted) return 'unmeasured';
+  if (!from || !to) return undefined;
   if (from.repositoryRoot !== to.repositoryRoot || from.path !== to.path) return undefined;
   if (from.commitSha === to.commitSha) return false;
 
@@ -404,7 +419,8 @@ export async function completionBlobHistoryContains(
     // not load-bearing and the sidecar can run it (see the ls-tree read above).
     { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
   );
-  if (opts.signal?.aborted || outcome !== 'complete') return undefined;
+  if (opts.signal?.aborted || outcome === 'timeout') return 'unmeasured';
+  if (outcome !== 'complete') return undefined;
   return found;
 }
 
