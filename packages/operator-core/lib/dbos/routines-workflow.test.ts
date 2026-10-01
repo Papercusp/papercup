@@ -592,6 +592,52 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       workflowId: 'test-routine-fire',
     }));
   });
+
+  // WI-10004472 recurrence guard. A multi-step (ownSteps) action whose DBOS recovery
+  // replay could not reproduce its recorded step sequence reports `replayAbandoned`.
+  // Any further DBOS operation in that fire lands on a function id recorded under a
+  // different name and fails the workflow with DBOSUnexpectedStepError, so the engine
+  // must end the fire with NO settle and NO clear-reaper-last-error step.
+  it('ends an ownSteps fire with no further DBOS step when the action abandons its replay (WI-10004472)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const action = vi.fn(async () => ({ replayAbandoned: { reason: 'exclusive_pending' } }));
+    registerSystemAction('test-replay-abandoned', action, { ownSteps: true, scheduling: 'on-demand' });
+
+    await routineFireWorkflow(
+      'rt_papercusp_test_replay_abandoned',
+      'papercusp-workspace',
+      'papercusp',
+      'system:test-replay-abandoned',
+      {},
+      null,
+    );
+
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(state.stepOutputs.map((s) => s.name)).toEqual(['routine-fire-start', 'routine-fire-active-fence']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('recovery replay ABANDONED (exclusive_pending)'));
+    warn.mockRestore();
+  });
+
+  it('control: an ownSteps fire that completes normally still records its settle and reaper-clear steps', async () => {
+    const action = vi.fn(async () => undefined);
+    registerSystemAction('test-replay-completes', action, { ownSteps: true, scheduling: 'on-demand' });
+
+    await routineFireWorkflow(
+      'rt_papercusp_test_replay_completes',
+      'papercusp-workspace',
+      'papercusp',
+      'system:test-replay-completes',
+      {},
+      null,
+    );
+
+    expect(state.stepOutputs.map((s) => s.name)).toEqual([
+      'routine-fire-start',
+      'routine-fire-active-fence',
+      'system:test-replay-completes:settle',
+      'clear-reaper-last-error',
+    ]);
+  });
 });
 
 describe('enqueueRoutineFire — on-demand durable dispatch', () => {
