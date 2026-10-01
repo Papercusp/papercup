@@ -25,6 +25,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { clusterPairs, type OverlapPair } from '@papercusp/overlap-clusters';
 import { getOrgPg } from '@papercusp/db-org';
+import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import { admissionIdentity } from './harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
@@ -516,6 +517,16 @@ export interface AdmissionCensusRunOptions extends AdmissionShardConfig {
   now?: () => number;
   /** Caller already owns a transaction (bulk-stage ratchet); avoid opening a nested one. */
   withinTransaction?: boolean;
+  /**
+   * WI-10004951: waits (ms) before retrying a census statement that PG refused with
+   * 55P03 lock_not_available. Default ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS; `[]`
+   * restores the old fail-on-first-refusal behaviour. Ignored when `withinTransaction`:
+   * a refused statement has already aborted the caller's transaction, so only the
+   * caller can retry.
+   */
+  lockRetryBackoffsMs?: readonly number[];
+  /** Injectable sleep for the lock-retry ladder (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface AdmissionCensusRunResult extends AdmissionShardPlan {
@@ -677,6 +688,27 @@ export async function readAdjudicatedPairKeys(
  * runaway scan would pin half the admin pool indefinitely.
  */
 export const ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS = 900_000;
+
+/**
+ * WI-10004951: waits (ms) before retrying a census statement refused with PG 55P03
+ * lock_not_available. About 110s in total.
+ *
+ * Measured 2026-10-01: migration 1308 took ACCESS EXCLUSIVE on work_items and
+ * rewrote it. The role's lock_timeout is 15s, so census-0 of a bulk-dedup fire was
+ * cancelled at 16:59:40Z, and one ~30s window ended a pass meant to run 24h. A
+ * lock refusal is transient by construction: the holder commits and the statement
+ * can run. Only 55P03 is retried. 57014 (statement_timeout) is NOT retried,
+ * because the census sets a deliberately long statement_timeout above and
+ * retrying it would multiply an already-slow statement.
+ */
+export const ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS = [5_000, 15_000, 30_000, 60_000] as const;
+
+/** True only for PG 55P03 lock_not_available, raw (`code`) or wrapped (`pgCode`). */
+export function isLockNotAvailable(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as { code?: unknown; pgCode?: unknown };
+  return o.code === '55P03' || o.pgCode === '55P03';
+}
 
 /**
  * Run one census scan under {@link ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}.
@@ -1008,8 +1040,22 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     ghostFraction: opts.ghostFraction ?? DEFAULT_GHOST_FRACTION,
     chunkCount,
   };
+  // WI-10004951: every statement below is retried on its own when PG refuses it with
+  // 55P03. That is safe because each one is an autocommit statement or its own
+  // `sql.begin`, so a refused attempt has committed nothing. The retry wraps each
+  // unit, not the whole census: one late lock refusal must not throw away the
+  // completed edge-scan chunks. Inside a caller's transaction a refusal has already
+  // aborted that transaction, so it is surfaced unchanged for the caller to retry.
+  const lockRetry = <T>(run: () => Promise<T>): Promise<T> =>
+    opts.withinTransaction
+      ? run()
+      : acquireWithContentionRetry(run, {
+          backoffsMs: opts.lockRetryBackoffsMs ?? ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS,
+          isRetryable: isLockNotAvailable,
+          ...(opts.sleep ? { sleep: opts.sleep } : {}),
+        });
 
-  await sql`
+  await lockRetry(() => sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
     VALUES (${runId}, ${opts.workspaceId}, ${opts.harnessSlug}, 'census', ${startedAt}::timestamptz,
@@ -1034,10 +1080,10 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       run_kind = EXCLUDED.run_kind,
       started_at = EXCLUDED.started_at,
       finished_at = NULL,
-      detail = EXCLUDED.detail`;
+      detail = EXCLUDED.detail`);
 
   try {
-    const corpus = await readCorpus(sql, opts);
+    const corpus = await lockRetry(() => readCorpus(sql, opts));
     const embedded = corpus.filter((item) => item.hasEmbedding);
     const corpusIds = corpus.map((item) => item.id);
     const embeddedIds = embedded.map((item) => item.id);
@@ -1062,7 +1108,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingProfile : 'text-only'}`).join('\u0001'),
       )
       .digest('hex');
-    await sql`
+    await lockRetry(() => sql`
       UPDATE harness_shared.admission_runs
          SET batch_size = ${corpus.length},
              detail = detail || ${JSON.stringify({
@@ -1073,15 +1119,17 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
                  missingEmbeddingItems: missingEmbeddingIds.length,
                },
              })}::text::jsonb
-       WHERE id = ${runId}`;
-    const censusBefore = await readUnadjudicatedCensus(sql, opts, corpusIds);
+       WHERE id = ${runId}`);
+    const censusBefore = await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
 
     const chunkCoverage: number[] = [];
     let scannedEdgeWrites = 0;
     let scannedHardEdges = 0;
     if (mode && selection) {
       for (let i = 0; i < chunkCount; i += 1) {
-        const result = await scanEdgeChunk(sql, opts, runId, mode, selection, embeddedIds, i, chunkCount);
+        const result = await lockRetry(() =>
+          scanEdgeChunk(sql, opts, runId, mode, selection, embeddedIds, i, chunkCount),
+        );
         chunkCoverage.push(result.anchors);
         scannedEdgeWrites += result.edges;
         scannedHardEdges += result.hard;
@@ -1090,14 +1138,16 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       if (covered !== embedded.length) {
         throw new Error(`edge-scan coverage mismatch: chunks=${covered}, embedded=${embedded.length}`);
       }
-      await removeStaleEdges(sql, opts, runId, startedAt, embeddedIds);
+      await lockRetry(() => removeStaleEdges(sql, opts, runId, startedAt, embeddedIds));
     }
 
     const lexical = lexicalHardEdges(corpus);
     const [cosine, textContext, adjudicatedPairs] = await Promise.all([
-      readCosineEdges(sql, opts, embeddedIds),
-      readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds),
-      lexical.length > 0 ? readAdjudicatedPairKeys(sql, opts, corpusIds) : Promise.resolve(new Set<string>()),
+      lockRetry(() => readCosineEdges(sql, opts, embeddedIds)),
+      lockRetry(() => readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds)),
+      lexical.length > 0
+        ? lockRetry(() => readAdjudicatedPairKeys(sql, opts, corpusIds))
+        : Promise.resolve(new Set<string>()),
     ]);
     // stableEdges canonicalizes a < b, so the pair key matches the adjudication keys.
     const lexicalUnadjudicated = lexical.filter((edge) => !adjudicatedPairs.has(`${edge.a}\0${edge.b}`));
@@ -1107,8 +1157,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       [...cosine.unadjudicated, ...lexicalUnadjudicated],
       opts,
     );
-    await persistShardMap(sql, opts, runId, plan);
-    const censusAfter = await readUnadjudicatedCensus(sql, opts, corpusIds);
+    await lockRetry(() => persistShardMap(sql, opts, runId, plan));
+    const censusAfter = await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
     const latencyMs = Math.max(0, now() - startedMs);
     const detail = {
       schemaVersion: 'work-item-admission-census-v1',
@@ -1170,7 +1220,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         blockedReason: null,
       } satisfies AdmissionRunOutcome,
     };
-    await sql`
+    await lockRetry(() => sql`
       UPDATE harness_shared.admission_runs
          SET finished_at = clock_timestamp(),
              batch_size = ${corpus.length},
@@ -1185,7 +1235,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
              tokens_out = 0,
              latency_ms = ${latencyMs},
              detail = ${JSON.stringify(detail)}::text::jsonb
-       WHERE id = ${runId}`;
+       WHERE id = ${runId}`);
 
     return {
       ...plan,

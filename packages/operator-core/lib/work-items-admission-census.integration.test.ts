@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -456,3 +456,125 @@ describe('runWorkItemAdmissionCensus (real Postgres)', () => {
       }),
     ).rejects.toThrow(/mixed embedding profiles/);
   });
+
+/**
+ * WI-10004951. Reproduces the 2026-10-01 16:59Z failure: migration 1308 held ACCESS
+ * EXCLUSIVE on work_items while it rewrote the table, the role's lock_timeout cancelled
+ * the census read with 55P03, and that one refusal failed a scheduled bulk-dedup fire.
+ * Here a reserved connection holds the same lock, and the census runs on a client whose
+ * lock_timeout is short so each refusal is quick. The injected `sleep` is the only place
+ * the lock can be released, so a census that completes must have retried.
+ */
+describe('runWorkItemAdmissionCensus lock_not_available retry (WI-10004951, real Postgres)', () => {
+  let shortLockSql: postgres.Sql;
+
+  beforeAll(() => {
+    shortLockSql = postgres(db.url, {
+      max: 2,
+      onnotice: () => {},
+      connection: { lock_timeout: 200 },
+    });
+  });
+
+  afterAll(async () => {
+    await shortLockSql?.end({ timeout: 5 });
+  });
+
+  async function withWorkItemsLocked<T>(body: (release: () => Promise<void>) => Promise<T>): Promise<T> {
+    const holder = await db.sql.reserve();
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      await holder`COMMIT`;
+    };
+    try {
+      await holder`BEGIN`;
+      await holder`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
+      return await body(release);
+    } finally {
+      await release();
+      holder.release();
+    }
+  }
+
+  const base = () => ({
+    workspaceId: WS,
+    harnessSlug: HARNESS,
+    chunkCount: 2,
+    targetTokens: 100,
+    ghostFraction: 0.5,
+    sql: shortLockSql,
+  });
+
+  async function runStatus(runId: string): Promise<string | undefined> {
+    const rows = await db.sql<Array<{ status: string }>>`
+      SELECT detail->>'status' AS status FROM harness_shared.admission_runs WHERE id = ${runId}`;
+    return rows[0]?.status;
+  }
+
+  it('rides out a lock refusal on work_items and completes the census', async () => {
+    await seed();
+    const waits: number[] = [];
+    const result = await withWorkItemsLocked((release) =>
+      runWorkItemAdmissionCensus({
+        ...base(),
+        runId: 'census-lock-retry',
+        lockRetryBackoffsMs: [10, 10, 10],
+        sleep: async (ms) => {
+          waits.push(ms);
+          await release();
+        },
+      }),
+    );
+
+    expect(waits).toEqual([10]);
+    expect(result.corpusSize).toBe(4);
+    expect(result.memberRows).toBe(4);
+    expect(await runStatus('census-lock-retry')).toBe('complete');
+  }, 60_000);
+
+  it('CONTROL: with the ladder disabled ([]) the same refusal fails the census, as it did before the fix', async () => {
+    await seed();
+    const waits: number[] = [];
+    const error = await withWorkItemsLocked(() =>
+      runWorkItemAdmissionCensus({
+        ...base(),
+        runId: 'census-lock-control',
+        lockRetryBackoffsMs: [],
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      }).then(
+        () => null,
+        (e: unknown) => e,
+      ),
+    );
+
+    expect((error as { code?: string } | null)?.code).toBe('55P03');
+    expect(waits).toEqual([]);
+    expect(await runStatus('census-lock-control')).toBe('failed');
+  }, 60_000);
+
+  it('is bounded: a lock held past the whole ladder fails once, after every wait', async () => {
+    await seed();
+    const waits: number[] = [];
+    const error = await withWorkItemsLocked(() =>
+      runWorkItemAdmissionCensus({
+        ...base(),
+        runId: 'census-lock-exhausted',
+        lockRetryBackoffsMs: [5, 7],
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      }).then(
+        () => null,
+        (e: unknown) => e,
+      ),
+    );
+
+    expect((error as { code?: string } | null)?.code).toBe('55P03');
+    expect(waits).toEqual([5, 7]);
+    expect(await runStatus('census-lock-exhausted')).toBe('failed');
+  }, 60_000);
+});
