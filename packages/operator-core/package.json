@@ -238,6 +238,7 @@
     "lost-pixel": "^3.22.0",
     "playwright-core": "^1.59.1",
     "pngjs": "^7.0.0",
+    "tokenizers": "0.23.2",
     "vitest": "^4.1.4"
   }
 }
