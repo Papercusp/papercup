@@ -41,7 +41,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
-import { interruptViaPty, findLiveHost, listLiveHosts } from './events/await/psu-pty-discovery';
+import { interruptViaPty, findLiveHost, listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
@@ -256,9 +256,10 @@ export function resumableOpenSessionOwners(
  * it stays protected regardless; only the stale-heartbeat-but-live-host COLD cohort
  * relies on this leg). Local — the sweep functions call it once each.
  */
-function safeLiveHostOwners(): Set<string> {
+async function safeLiveHostOwners(): Promise<Set<string>> {
   try {
-    return liveHostOwnerSet(listLiveHosts());
+    // Async (WI-10004587): a sync psu-pty directory scan here froze the operator main thread.
+    return liveHostOwnerSet(await listLiveHostsAsync());
   } catch {
     return new Set<string>();
   }
@@ -477,7 +478,7 @@ export async function runIdleSessionReap(
     // failure), so this can only ever PROTECT MORE, never reap more.
     // WI-2858: live psu-host owners protect (a host can inject/relaunch the wake),
     // and REPLACE the removed bare-await leg that deadlocked slice-1 against slice-4.
-    const liveHostOwners = safeLiveHostOwners();
+    const liveHostOwners = await safeLiveHostOwners();
     const [protectedOwners, onDesktop, viewerOwners] = await Promise.all([
       gatherProtectedSessionOwners(sql, { graceMs: opts.graceMs, liveHostOwners, confirmDeadPids: true }),
       gatherOnDesktopSessions().catch(() => null),
@@ -1032,7 +1033,7 @@ export async function runWorkItemLeaseReap(
 
   try {
     const { sql } = getOrgPg();
-    const liveHostOwners = safeLiveHostOwners();
+    const liveHostOwners = await safeLiveHostOwners();
     const [liveOwners, onDesktop, viewerOwners] = await Promise.all([
       // includeClaimHolders:false — see the module comment above: a claim can
       // never be the reason its own holder is judged alive.
@@ -2074,7 +2075,7 @@ export async function reclaimDanglingInboxWakeAwaits(
     // WI-2858: gate the "open adv_session ⇒ resumable" leg on a LIVE psu-host, so a
     // SIGKILLed session (open adv_session but no host + stale heartbeat) is no longer
     // counted resumable and its dangling inbox-wake await is reclaimed.
-    const liveHostOwners = safeLiveHostOwners();
+    const liveHostOwners = await safeLiveHostOwners();
     const [awaitRows, liveOrResumable] = await Promise.all([
       sql<Array<{ subscriber_id: string }>>`
         SELECT DISTINCT subscriber_id

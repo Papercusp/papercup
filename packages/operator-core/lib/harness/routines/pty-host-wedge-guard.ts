@@ -68,7 +68,7 @@
  * allowed to drive anything.
  */
 import {
-  listLiveHosts,
+  listLiveHostsAsync,
   readHostEventTail,
   hostStartedAt,
   PSU_PTY_DIR,
@@ -668,7 +668,7 @@ export interface PtyHostWedgeSweepResult {
 
 export interface PtyHostWedgeSweepDeps {
   /** Injectable for tests; defaults to the real live-host census. */
-  listHosts?: (dir?: string) => PsuPtyHost[];
+  listHosts?: (dir?: string) => PsuPtyHost[] | Promise<PsuPtyHost[]>;
   /** Injectable for tests; defaults to the real bounded-tail ledger read. */
   readEvents?: (ownerId: string, dir?: string, maxBytes?: number) => PtyHostEvent[];
   /** Injectable for tests; defaults to the real discovery-file start-time read. */
@@ -742,12 +742,13 @@ export async function sweepWedgedPtyHosts(
     busyGateMaxQuietFraction = DEFAULT_BUSY_GATE_MAX_QUIET_FRACTION,
   } = opts;
   const now = deps.now ?? Date.now();
-  const listHosts = deps.listHosts ?? ((d?: string) => listLiveHosts(d ?? dir));
+  // Async default (WI-10004587): a sync psu-pty directory scan blocks the main thread.
+  const listHosts = deps.listHosts ?? ((d?: string) => listLiveHostsAsync(d ?? dir));
   const readEvents =
     deps.readEvents ?? ((o: string, d?: string, m?: number) => readHostEventTail(o, d ?? dir, m));
   const readStartedAt = deps.readStartedAt ?? ((o: string, d?: string) => hostStartedAt(o, d ?? dir));
 
-  const hosts = listHosts(dir);
+  const hosts = await listHosts(dir);
   const wedged: WedgedHostReport[] = [];
   const unreadable: string[] = [];
 

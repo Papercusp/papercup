@@ -62,7 +62,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
-import { listLiveHosts } from './events/await/psu-pty-discovery';
+import { listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import {
   listWindowsByTitle,
   parseSessionIdFromWindowTitle,
@@ -364,8 +364,8 @@ let onDesktopCache: { at: number; sets: OnDesktopSets } | null = null;
 export interface GatherOnDesktopDeps {
   /** Open-window enumerator. Default: listOpenWindows() (wmctrl). */
   listWindows?: () => Promise<OpenWindow[]>;
-  /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHosts(). */
-  listHosts?: () => Array<{ ownerId: string; pid: number }>;
+  /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHostsAsync() (WI-10004587). */
+  listHosts?: () => Array<{ ownerId: string; pid: number }> | Promise<Array<{ ownerId: string; pid: number }>>;
   /** /proc stat reader for the ancestry walk. Default: real /proc. */
   readStat?: (pid: number) => Promise<string | null>;
   /** Is this the Windows desktop host? Default: isWindowsDesktopHost(). Injected
@@ -444,7 +444,7 @@ export async function gatherOnDesktopSessions(
       if (winPids.size > 0) {
         let hosts: Array<{ ownerId: string; pid: number }> = [];
         try {
-          hosts = (opts.deps?.listHosts ?? listLiveHosts)();
+          hosts = await (opts.deps?.listHosts ?? listLiveHostsAsync)();
         } catch {
           hosts = [];
         }

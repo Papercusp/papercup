@@ -30,7 +30,7 @@ import {
   recolorViaPty,
   pidIsPsuHost,
   selfCompactionAvailability,
-  pruneDeadDiscoveryFiles,
+  pruneDeadDiscoveryFilesAsync,
   sanitizeKey,
   sockOwnerIdFromPath,
   auditInjectOwnerBinding,
@@ -174,11 +174,11 @@ describe('pidIsPsuHost (WI-2339 defect #2 — process-identity gate)', () => {
 });
 
 describe('pruneDeadDiscoveryFiles (WI-2510 — standing janitor hygiene sweep)', () => {
-  it('returns 0 and does not throw when the discovery dir does not exist yet', () => {
-    expect(pruneDeadDiscoveryFiles(join(tmpdir(), `psu-pty-disc-absent-${process.pid}-${Math.floor(performance.now())}`))).toBe(0);
+  it('returns 0 and does not throw when the discovery dir does not exist yet', async () => {
+    expect(await pruneDeadDiscoveryFilesAsync(join(tmpdir(), `psu-pty-disc-absent-${process.pid}-${Math.floor(performance.now())}`))).toBe(0);
   });
 
-  it('removes a dead host (pid gone) file + its (now-orphaned) socket path, leaves a live one alone', () => {
+  it('removes a dead host (pid gone) file + its (now-orphaned) socket path, leaves a live one alone', async () => {
     const dir = tmpDir();
     const { sock: liveSock } = startSocket(dir, 'su-live-keep');
     writeMeta(dir, 'su-live-keep', { pid: process.pid, ptyPid: process.pid, sock: liveSock, command: 'x', startedAt: 1 });
@@ -186,7 +186,7 @@ describe('pruneDeadDiscoveryFiles (WI-2510 — standing janitor hygiene sweep)',
     writeFileSync(deadSock, ''); // a leftover socket FILE (not listening) — pruned alongside its meta
     writeMeta(dir, 'su-dead-gc', { pid: 2147483646, ptyPid: 2147483645, sock: deadSock, command: 'x', startedAt: 1 });
 
-    const pruned = pruneDeadDiscoveryFiles(dir, ID_OK);
+    const pruned = await pruneDeadDiscoveryFilesAsync(dir, ID_OK);
 
     expect(pruned).toBe(1);
     expect(existsSync(join(dir, `${sanitizeKey('su-dead-gc')}.json`))).toBe(false);
@@ -194,26 +194,26 @@ describe('pruneDeadDiscoveryFiles (WI-2510 — standing janitor hygiene sweep)',
     expect(existsSync(join(dir, `${sanitizeKey('su-live-keep')}.json`))).toBe(true);
   });
 
-  it('removes a corrupt/unreadable discovery file (can never resolve to a live host)', () => {
+  it('removes a corrupt/unreadable discovery file (can never resolve to a live host)', async () => {
     const dir = tmpDir();
     writeFileSync(join(dir, `${sanitizeKey('su-corrupt')}.json`), '{ not: valid json');
-    expect(pruneDeadDiscoveryFiles(dir)).toBe(1);
+    expect(await pruneDeadDiscoveryFilesAsync(dir)).toBe(1);
     expect(existsSync(join(dir, `${sanitizeKey('su-corrupt')}.json`))).toBe(false);
   });
 
-  it('WI-2339 parity: a pid-alive + socket-live file still gets pruned when identity verification fails (recycled pid)', () => {
+  it('WI-2339 parity: a pid-alive + socket-live file still gets pruned when identity verification fails (recycled pid)', async () => {
     const dir = tmpDir();
     const { sock } = startSocket(dir, 'su-recycled');
     writeMeta(dir, 'su-recycled', { pid: process.pid, ptyPid: process.pid, sock, command: 'x', startedAt: 1 });
-    expect(pruneDeadDiscoveryFiles(dir, { verifyIdentity: () => false })).toBe(1);
+    expect(await pruneDeadDiscoveryFilesAsync(dir, { verifyIdentity: () => false })).toBe(1);
     expect(existsSync(join(dir, `${sanitizeKey('su-recycled')}.json`))).toBe(false);
   });
 
-  it('never removes anything a live findLiveHost lookup would still return (consistency)', () => {
+  it('never removes anything a live findLiveHost lookup would still return (consistency)', async () => {
     const dir = tmpDir();
     const { sock } = startSocket(dir, 'su-consistent');
     writeMeta(dir, 'su-consistent', { pid: process.pid, ptyPid: process.pid, sock, command: 'x', startedAt: 1 });
-    expect(pruneDeadDiscoveryFiles(dir, ID_OK)).toBe(0);
+    expect(await pruneDeadDiscoveryFilesAsync(dir, ID_OK)).toBe(0);
     expect(findLiveHost('su-consistent', dir, ID_OK)).not.toBeNull();
   });
 });

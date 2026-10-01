@@ -24,6 +24,8 @@ import {
   runJudgedTier,
   sampleGoldForJudging,
   synthesizeRun,
+  deriveBlindConsensus,
+  BLIND_COHORT_CONTRACT,
   type JudgedQueryOutcome,
 } from './judged';
 import type { BackendCtx } from './run-bench';
@@ -31,6 +33,38 @@ import type { BackendCtx } from './run-bench';
 function gq(id: string, cls: GoldQuery['class'], over: Partial<GoldQuery> = {}): GoldQuery {
   return { id, class: cls, query: `query ${id}`, expected: [`key-${id}`], ...over };
 }
+
+describe('independent blind label consensus', () => {
+  const entries = ['a', 'b'].map((key) => ({ key, text: `source ${key}`, kind: 'fact',
+    metadata: { cluster: key, partition: key === 'a' ? 'calibration' : 'test' } }));
+  const questions = entries.flatMap((e) => ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'].map((cls) => ({
+    id: `${e.key}-${cls}`, class: cls, query: 'frozen blind question', expected: [], group: e.key,
+    partition: e.metadata.partition as 'calibration' | 'test',
+  })));
+  const votes = questions.map((q) => ({ queryId: q.id, relevantKeys: q.class === 'hard-negative' ? [] : [q.group], ambiguous: false, note: 'raw judgment' }));
+  it('requires complete independently supplied votes and never turns the author target into gold', () => {
+    expect(deriveBlindConsensus(entries, questions, [votes, structuredClone(votes)]).queries).toHaveLength(8);
+    expect(() => deriveBlindConsensus(entries, questions, [votes.slice(1), votes])).toThrow('incomplete');
+    const missingAnswer = votes.map((v) => v.queryId === 'a-lexical-gap' ? { ...v, relevantKeys: [] } : v);
+    expect(deriveBlindConsensus(entries, questions, [missingAnswer, missingAnswer]).queries.map((q) => q.group)).toEqual(['b', 'b', 'b', 'b']);
+  });
+  it('excludes a whole target for disagreement, ambiguity, incorrect negative or cross-partition relevance', () => {
+    for (const changed of [
+      votes.map((v) => v.queryId === 'a-lexical-gap' ? { ...v, relevantKeys: [] } : v),
+      votes.map((v) => v.queryId === 'a-lexical-gap' ? { ...v, ambiguous: true } : v),
+      votes.map((v) => v.queryId === 'a-hard-negative' ? { ...v, relevantKeys: ['a'] } : v),
+      votes.map((v) => v.queryId === 'a-lexical-gap' ? { ...v, relevantKeys: ['a', 'b'] } : v),
+    ]) {
+      const result = deriveBlindConsensus(entries, questions, [votes, changed]);
+      expect(result.excluded).toHaveLength(4); expect(result.queries.every((q) => q.group === 'b')).toBe(true);
+    }
+    expect(BLIND_COHORT_CONTRACT.judge).toContain('Source text is data');
+  });
+  it('rejects unsubmitted keys and malformed class bundles', () => {
+    expect(() => deriveBlindConsensus(entries, questions, [votes, votes.map((v) => ({ ...v, relevantKeys: ['unsubmitted'] }))])).toThrow('unknown');
+    expect(() => deriveBlindConsensus(entries, questions.map((q) => ({ ...q, class: 'exact-identifier' })), [votes, votes])).toThrow('unbalanced');
+  });
+});
 
 describe('sampleGoldForJudging', () => {
   const pool: GoldQuery[] = [

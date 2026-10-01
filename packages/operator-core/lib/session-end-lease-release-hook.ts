@@ -233,13 +233,13 @@ export function partitionSuccessorTasks(
 async function loadProtectedOwners(endingOwnerId: string): Promise<ReadonlySet<string>> {
   // Dynamic imports avoid turning adv-sessions -> this hook -> idle-session-reaper
   // -> adv-sessions into an eager module cycle. This path runs only after an end.
-  const [{ gatherProtectedSessionOwners, liveHostOwnerSet }, { listLiveHosts }] = await Promise.all([
+  const [{ gatherProtectedSessionOwners, liveHostOwnerSet }, { listLiveHostsAsync }] = await Promise.all([
     import('./idle-session-reaper'),
     import('./events/await/psu-pty-discovery'),
   ]);
   let liveHostOwners = new Set<string>();
   try {
-    liveHostOwners = liveHostOwnerSet(listLiveHosts());
+    liveHostOwners = liveHostOwnerSet(await listLiveHostsAsync());
   } catch {
     // A missing host signal protects nobody, but the heartbeat/wake/PID legs
     // below still fail closed for any owner they can establish as live.

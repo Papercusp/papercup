@@ -320,6 +320,7 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
 
   let body = '';
   let expandedNestedPath = false;
+  let nestedPathRequired = false;
   if (includeNestedPath) {
     for (const [name, raw] of fields) {
       const child = raw as JsonSchemaNode;
@@ -328,6 +329,7 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
       if (rendered.length <= NESTED_OBJECT_HINT_MAX_CHARS) {
         body = rendered;
         expandedNestedPath = true;
+        nestedPathRequired = nested.required.has(name);
         break;
       }
     }
@@ -336,6 +338,7 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
       if (name && raw && typeof raw === 'object' && !Array.isArray(raw)) {
         const shape = schemaType(raw as JsonSchemaNode);
         body = `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+        nestedPathRequired = nested.required.has(name);
       }
     }
   }
@@ -348,18 +351,50 @@ function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNeste
   // when the wide child itself had to degrade to a shallow type.
   if (!expandedNestedPath || !includeNestedPath) {
     const directCandidates = directFields
-      .map(([name, raw], index) => {
+      .map(([name, raw]) => {
         const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
         const shape = schemaShape(child, depth, false, false);
         return {
-          index,
+          name,
+          child,
           required: nested.required.has(name),
           rendered: `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
         };
       })
-      .sort((a, b) => Number(b.required) - Number(a.required) || a.index - b.index);
-    for (const candidate of directCandidates) {
-      const next = body ? `${body},${candidate.rendered}` : candidate.rendered;
+      .sort((a, b) => Number(b.required) - Number(a.required));
+    const requiredCandidates = directCandidates.filter((candidate) => candidate.required);
+    const optionalCandidates = directCandidates.filter((candidate) => !candidate.required);
+    const join = (base: string, entries: string[]) => [base, ...entries].filter(Boolean).join(',');
+    const renderRequired = (candidate: (typeof requiredCandidates)[number], mode: 'full' | 'type' | 'name') => {
+      if (mode === 'full') return candidate.rendered;
+      const type = mode === 'type' ? schemaType(candidate.child) : '';
+      return `${candidate.name}${type ? `:${type}` : ''}`;
+    };
+
+    // Preserve every required key before spending the small nested-hint
+    // budget on optional metadata or long patterns. Required fields first use
+    // their full shape; under pressure, reduce them to type-only and then
+    // name-only forms so a long UUID pattern cannot evict a sibling required
+    // field such as testing:run.recoverEvidence.originRunId.
+    let requiredMode: 'full' | 'type' | 'name' = 'full';
+    let requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
+      requiredMode = 'type';
+      requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+    }
+    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS) {
+      requiredMode = 'name';
+      requiredEntries = requiredCandidates.map((candidate) => renderRequired(candidate, requiredMode));
+    }
+    if (join(body, requiredEntries).length > NESTED_OBJECT_HINT_MAX_CHARS && body && !nestedPathRequired) {
+      body = '';
+    }
+    body = join(body, requiredEntries);
+
+    // Optional details remain useful when they fit after the required
+    // contract. They are the first fields omitted from a bounded hint.
+    for (const candidate of optionalCandidates) {
+      const next = join(body, [candidate.rendered]);
       if (next.length <= NESTED_OBJECT_HINT_MAX_CHARS) body = next;
     }
   }

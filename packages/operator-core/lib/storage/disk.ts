@@ -18,7 +18,7 @@ import {
   type SessionDirCandidate,
   type ProtectedSessionIdentity,
 } from '../session-dir-gc';
-import { listLiveHosts } from '../events/await/psu-pty-discovery';
+import { listLiveHostsAsync } from '../events/await/psu-pty-discovery';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import { scratchRoot } from '../scratch-uri';
 import type { DiskStorageCategory } from './categories';
@@ -544,6 +544,6 @@ export async function gatherProtectedSessionIdentity(
   } catch {
     return { ok: false, identity: { ownerIds, sessionKeys } };
   }
-  const identity = protectLivePtyHostHomes({ ownerIds, sessionKeys }, listLiveHosts());
+  const identity = protectLivePtyHostHomes({ ownerIds, sessionKeys }, await listLiveHostsAsync());
   return { ok: true, identity };
 }
