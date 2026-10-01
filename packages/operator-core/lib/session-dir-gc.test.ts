@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_RETENTION_MS,
+  defaultSessionDirRoots,
   discoverSessionDirCandidates,
   findUnarchivedSessionDirs,
   isProtected,
@@ -319,6 +320,24 @@ describe('discoverSessionDirCandidates', () => {
     const cands = discoverSessionDirCandidates(roots);
     expect(cands.map((c) => c.key).sort()).toEqual(['su-aaa', 'su-bbb']);
     expect(cands.every((c) => c.keyKind === 'owner' && typeof c.mtimeMs === 'number')).toBe(true);
+  });
+});
+
+describe('defaultSessionDirRoots', () => {
+  it('sweeps the fast Codex SQLite companion with the same session-key protection as CODEX_HOME', () => {
+    const prior = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
+    const root = join(tmpRoot(), 'codex-sqlite-homes');
+    process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = root;
+    try {
+      expect(defaultSessionDirRoots()).toContainEqual({
+        root,
+        keyKind: 'session',
+        label: 'codex-sqlite-homes',
+      });
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
+      else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = prior;
+    }
   });
 });
 
