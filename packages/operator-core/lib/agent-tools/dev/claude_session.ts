@@ -21,6 +21,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import {
   listClaudeSessions,
   searchClaudeSessions,
@@ -42,14 +43,14 @@ type IndexedClaudeTurn = {
  * session-id lookup disagree with `sessions:read`.
  */
 async function readIndexedClaudeSession(
-  ctx: { workspaceId?: string; tx?: <T>(...args: unknown[]) => Promise<T> },
+  workspaceIdValue: string | undefined,
   sessionId: string,
   limit: number | undefined,
 ): Promise<ReturnType<typeof readClaudeSession> extends Promise<infer T> ? T : never> {
-  if (!ctx.tx) return null as never;
   const maxTurns = Math.min(Math.max(limit ?? 200, 1), 2000);
-  const workspaceId = ctx.workspaceId ?? 'default';
-  const rows = await ctx.tx<IndexedClaudeTurn[]>`
+  const workspaceId = workspaceIdValue ?? 'default';
+  const { sql } = getOrgPg();
+  const rows = await sql<IndexedClaudeTurn[]>`
     SELECT turn_idx, speaker, ts::text AS ts, left(text, 2000) AS text
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
@@ -115,7 +116,11 @@ function archivedClaudeSession(
 
 export default defineTool({
   name: 'dev:claude_session',
-  needsWorkspaceTx: true,
+  // Transcript enumeration/search is filesystem work and may scan many roots.
+  // Do not retain an ambient workspace transaction across it: idle transactions
+  // are killed after 60s and surface to the caller as CONNECTION_CLOSED. The one
+  // indexed fallback below uses its own short-lived OrgPg query handle.
+  skipWorkspaceTx: true,
   profile: 'engineer',
   description:
     'Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (RAW substring grep — lossy; for ranked cross-client content search prefer sessions:search), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',
@@ -175,7 +180,7 @@ export default defineTool({
       const all = await allClaudeSessionMetas({});
       const found = all.find((m) => m.sessionId === args.sessionId);
       if (!found) {
-        const indexed = await readIndexedClaudeSession(ctx, args.sessionId, args.limit);
+        const indexed = await readIndexedClaudeSession(ctx.workspaceId, args.sessionId, args.limit);
         if (indexed) return { content: [{ type: 'text' as const, text: JSON.stringify(indexed) }] };
 
         // The index is bounded; old sessions may only exist in the permanent

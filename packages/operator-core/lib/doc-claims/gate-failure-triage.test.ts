@@ -20,12 +20,13 @@ import {
 } from '../../../../scripts/test-files.mjs';
 
 const HEADING = '## Gate failure triage — re-run named files individually';
+const STORAGE_HEADING = '## Storage policy: Postgres by default';
 const ROUTER = join(ROOT, 'scripts/test-files.mjs');
 
-function section(text: string): string {
-  const start = text.indexOf(`${HEADING}\n`);
+function section(text: string, heading = HEADING): string {
+  const start = text.indexOf(`${heading}\n`);
   if (start < 0) return '';
-  const rest = text.slice(start + HEADING.length + 1);
+  const rest = text.slice(start + heading.length + 1);
   const end = rest.search(/\n## /);
   return (end < 0 ? rest : rest.slice(0, end)).trim();
 }
@@ -48,6 +49,31 @@ function claimViolations(body: string): string[] {
     ['submodule gitlink blindness', /gitlink/],
   ];
   return required.filter(([, pattern]) => !pattern.test(body)).map(([label]) => label);
+}
+
+function candidateFallbackViolations(body: string): string[] {
+  const normalized = body.replace(/\s+/g, ' ');
+  const required: Array<[string, RegExp]> = [
+    [
+      'clean CI candidate verdict filter',
+      /WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>' AND status IN \('fail','error'\)/,
+    ],
+    [
+      'exact checkpoint-root dirty-row locator',
+      /WHERE workspace_id='<workspace id from testing:runs>' AND harness_slug='<harness slug from testing:runs>' AND execution_details->>'root'='<exact checkpoint root from testing:runs>' AND commit_sha='<the frozen candidate sha>' AND source='local' AND worktree_dirty=true AND status IN \('fail','error'\)/,
+    ],
+    ['diagnostic-only label', /separate \*\*diagnostic locator only\*\*/],
+    ['null root stays unknown', /If `root` is null, do not guess the checkout path or treat zero rows as absence/],
+    [
+      'dirty local rows cannot prove candidate failures',
+      /dirty `source='local'` rows do \*\*NOT\*\* prove those failures occurred on the frozen candidate/,
+    ],
+    [
+      'candidate verdict source',
+      /Use only `candidateFailures` or the clean `source='ci' AND worktree_dirty=false` population above for that verdict/,
+    ],
+  ];
+  return required.filter(([, pattern]) => !pattern.test(normalized)).map(([label]) => label);
 }
 
 describe('doc corpus gate-failure triage claim', () => {
@@ -87,10 +113,56 @@ describe('doc corpus gate-failure triage claim', () => {
       ].join('\n');
       expect(claimViolations(complete)).toEqual([]);
     });
+
+    it('requires a clean CI population for candidate verdicts', () => {
+      const dirtyRowsOnly = [
+        "WHERE workspace_id='<workspace id from testing:runs>'",
+        "AND harness_slug='<harness slug from testing:runs>'",
+        "AND execution_details->>'root'='<exact checkpoint root from testing:runs>'",
+        "AND commit_sha='<the frozen candidate sha>' AND source='local' AND worktree_dirty=true",
+        "AND status IN ('fail','error')",
+        'This is a separate **diagnostic locator only**.',
+      ].join(' ');
+      expect(candidateFallbackViolations(dirtyRowsOnly)).toContain('clean CI candidate verdict filter');
+    });
+
+    it('keeps dirty checkpoint rows diagnostic-only and fails closed on a null root', () => {
+      const conflated = [
+        "WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>'",
+        "AND status IN ('fail','error')",
+        "WHERE workspace_id='<workspace id from testing:runs>' AND harness_slug='<harness slug from testing:runs>'",
+        "AND execution_details->>'root'='<exact checkpoint root from testing:runs>'",
+        "AND commit_sha='<the frozen candidate sha>' AND source='local' AND worktree_dirty=true",
+        "AND status IN ('fail','error')",
+      ].join(' ');
+      expect(candidateFallbackViolations(conflated)).toEqual([
+        'diagnostic-only label',
+        'null root stays unknown',
+        'dirty local rows cannot prove candidate failures',
+        'candidate verdict source',
+      ]);
+    });
+
+    it('stays clean on the complete candidate-query contract', () => {
+      const complete = [
+        "WHERE source='ci' AND worktree_dirty=false AND commit_sha='<the frozen candidate sha>'",
+        "AND status IN ('fail','error')",
+        "WHERE workspace_id='<workspace id from testing:runs>' AND harness_slug='<harness slug from testing:runs>'",
+        "AND execution_details->>'root'='<exact checkpoint root from testing:runs>'",
+        "AND commit_sha='<the frozen candidate sha>' AND source='local' AND worktree_dirty=true",
+        "AND status IN ('fail','error')",
+        'This is a separate **diagnostic locator only**.',
+        'If `root` is null, do not guess the checkout path or treat zero rows as absence.',
+        "dirty `source='local'` rows do **NOT** prove those failures occurred on the frozen candidate.",
+        'Use only `candidateFailures` or the clean `source=\'ci\' AND worktree_dirty=false` population above for that verdict.',
+      ].join(' ');
+      expect(candidateFallbackViolations(complete)).toEqual([]);
+    });
   });
 
   describe('live prose and writer', () => {
     const body = section(readCorpus());
+    const candidateFallback = section(readCorpus(), STORAGE_HEADING);
     const source = readFileSync(ROUTER, 'utf8');
 
     it('positive controls: reads the full corpus section and the real router', () => {
@@ -101,6 +173,11 @@ describe('doc corpus gate-failure triage claim', () => {
 
     it('keeps every load-bearing clause in the projected rule', () => {
       expect(claimViolations(body)).toEqual([]);
+    });
+
+    it('keeps dirty checkpoint-root rows out of the candidate verdict population', () => {
+      expect(candidateFallback.length).toBeGreaterThan(1_000);
+      expect(candidateFallbackViolations(candidateFallback)).toEqual([]);
     });
 
     it('the router refuses zero matches as unmeasured', () => {

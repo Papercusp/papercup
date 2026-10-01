@@ -50,6 +50,55 @@ export function readPlanPopupCandidates({ maxRows, requestedSlug }: {
     }));
 }
 
+/** Runs inside the webview; the generated `t` export is not a stable module
+ * identity. In component chunks it can be a component requiring props. */
+export function installPopupReactProbe(url: string, done: (value: {
+  installed: boolean; hooks?: string[]; error?: string;
+}) => void) {
+  if (!/(?:^|\/)react-[\w-]+\.js(?:\?.*)?$/.test(url)) {
+    done({ installed: false, error: `React probe requires the packaged react-*.js asset, received ${url}` });
+    return;
+  }
+  const restore: Array<() => void> = [];
+  Promise.resolve().then(async () => {
+    const load = new Function('url', 'return import(url)') as (url: string) => Promise<Record<string, unknown>>;
+    const module = await load(url);
+    const hooks = ['useEffect', 'useLayoutEffect', 'useInsertionEffect'];
+    const hasHooks = (value: unknown): value is Record<string, Function> =>
+      value !== null && typeof value === 'object' &&
+      hooks.every((hook) => typeof (value as Record<string, unknown>)[hook] === 'function');
+    // Named/default exports also work if the bundle stops wrapping CommonJS.
+    const react = hasHooks(module) ? module : hasHooks(module.default) ? module.default :
+      typeof module.t === 'function' ? module.t() : null;
+    if (!hasHooks(react)) throw new Error(`React probe asset does not expose all three effect hooks: ${url}`);
+    const previous = (window as unknown as { __perfReactProbe?: { restore(): void } }).__perfReactProbe;
+    previous?.restore();
+    const records: Array<{ hook: string; ms: number; at: number; stack?: string }> = [];
+    for (const hook of hooks) {
+      const original = react[hook];
+      react[hook] = function (effect: () => unknown, deps: unknown) {
+        const stack = new Error().stack?.slice(0, 1800);
+        return original.call(react, () => {
+          const at = performance.now();
+          try { return effect(); }
+          finally {
+            const ms = performance.now() - at;
+            if (ms >= 5) records.push({ hook, ms, at, stack });
+          }
+        }, deps);
+      };
+      restore.push(() => { react[hook] = original; });
+    }
+    (window as unknown as { __perfReactProbe: { records: typeof records; restore(): void } }).__perfReactProbe = {
+      records, restore: () => restore.splice(0).forEach((fn) => fn()),
+    };
+    done({ installed: true, hooks });
+  }).catch((error) => {
+    restore.splice(0).forEach((fn) => fn());
+    done({ installed: false, error: String(error) });
+  });
+}
+
 /** Runs inside the webview. Computed styles are live: a later property read
  * can force style calculation even when getComputedStyle itself was fast. */
 export function installPopupLayoutProbe() {

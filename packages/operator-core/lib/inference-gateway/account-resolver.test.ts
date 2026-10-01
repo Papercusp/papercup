@@ -244,6 +244,18 @@ describe('resolveAccountPool (EI-535 failover)', () => {
     expect((await resolveAccountPool('ws')).map((p) => p.accountId)).toEqual(['a', 'b']);
   });
 
+  it('R-37: resolves ONLY the asked workspace’s pool — an account registered in another workspace never appears (D-001)', async () => {
+    const pools: Record<string, ClaudeAccount[]> = {
+      'ws-a': [acct('a-sub', 'token:/a-sub'), acct('a-key', 'apikey:env:WS_A_KEY')],
+      'ws-b': [acct('b-key', 'apikey:env:WS_B_KEY')],
+    };
+    mockedLoad.mockImplementation(async (ws?: string) => ({ accounts: ws ? (pools[ws] ?? []) : [] }));
+    expect((await resolveAccountPool('ws-a')).map((p) => p.accountId)).toEqual(['a-sub', 'a-key']);
+    expect((await resolveAccountPool('ws-b')).map((p) => p.accountId)).toEqual(['b-key']);
+    // Each resolution read its own workspace's pool row and no other.
+    expect(mockedLoad.mock.calls.map((c) => c[0])).toEqual(['ws-a', 'ws-b']);
+  });
+
   it('filters provider-specific pools and does not mix Codex accounts into the Claude pool', async () => {
     mockedLoad.mockResolvedValue({
       accounts: [

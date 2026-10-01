@@ -607,7 +607,9 @@ describe('service pattern boundaries', () => {
      *  rigged envelope that covered nothing would fail here. */
     it('covers exactly the units something probes', () => {
       for (const [unit, probe] of [
+        ['papercusp-dev-api.service', 'operator'],
         ['papercup-dev-api.service', 'operator'],
+        ['papercusp-bg-host.service', 'bg-host-ticker'],
         ['papercup-bg-host.service', 'bg-host-ticker'],
         ['papercup-embed-sidecar.service', 'embed-sidecar'],
       ] as const) {
@@ -675,9 +677,11 @@ describe('service pattern boundaries', () => {
      * pairs/service-model-drift.test.ts guards the same fact from the model side.
      */
     it('DOES cover staging-api now that :3170 is probed (was the headline gap)', () => {
-      const result = systemctlIsActive.cover('systemctl --user is-active papercup-staging-api.service');
-      expect(result.covered).toBe(true);
-      expect(result.expression).toContain('staging-api');
+      for (const unit of ['papercusp-staging-api.service', 'papercup-staging-api.service']) {
+        const result = systemctlIsActive.cover(`systemctl --user is-active ${unit}`);
+        expect(result.covered).toBe(true);
+        expect(result.expression).toContain('staging-api');
+      }
     });
 
     /**

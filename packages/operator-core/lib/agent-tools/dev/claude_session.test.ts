@@ -12,27 +12,42 @@ vi.mock('../../claude-sessions', () => ({
   readClaudeSession: vi.fn(),
   allClaudeSessionMetas: vi.fn(),
 }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: vi.fn(),
+}));
 
 import { allClaudeSessionMetas } from '../../claude-sessions';
+import { getOrgPg } from '@papercusp/db-org';
 
 const allMetasMock = vi.mocked(allClaudeSessionMetas);
+const getOrgPgMock = vi.mocked(getOrgPg);
 const tool = (await import('./claude_session')).default;
 
 type Out = { content: Array<{ text: string }>; isError?: boolean };
 const body = (out: Out) => JSON.parse(out.content[0]!.text) as Record<string, any>;
 
 describe('dev:claude_session — indexed fallback', () => {
+  it('opts out of the ambient workspace transaction used to dispatch filesystem scans', () => {
+    expect((tool as { needsWorkspaceTx?: boolean }).needsWorkspaceTx).not.toBe(true);
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('reads an indexed Claude session when no raw JSONL metadata exists', async () => {
     const sessionId = 'indexed-claude-session-123';
     allMetasMock.mockResolvedValue([]);
-    const tx = vi.fn(async () => [
+    const sql = vi.fn(async () => [
       { turn_idx: 1, speaker: 'assistant', ts: '2026-08-24T10:01:00.000Z', text: 'second turn' },
       { turn_idx: 0, speaker: 'user', ts: '2026-08-24T10:00:00.000Z', text: 'first turn' },
     ]);
+    getOrgPgMock.mockReturnValue({ sql } as never);
 
     const out = (await tool.handler(
       { op: 'read', sessionId },
-      { workspaceId: 'workspace-1', tx } as never,
+      {
+        workspaceId: 'workspace-1',
+        get tx(): never { throw new Error('the filesystem read must not retain or use an ambient tx'); },
+      } as never,
     )) as Out;
     const result = body(out);
 
@@ -50,7 +65,7 @@ describe('dev:claude_session — indexed fallback', () => {
         { i: 1, type: 'assistant', role: 'assistant', text: 'second turn' },
       ],
     });
-    expect(tx).toHaveBeenCalledTimes(1);
-    expect(tx.mock.calls[0]!.slice(1)).toEqual(['workspace-1', sessionId, 201]);
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(sql.mock.calls[0]!.slice(1)).toEqual(['workspace-1', sessionId, 201]);
   });
 });

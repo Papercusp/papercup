@@ -9,11 +9,72 @@ import type { Browser } from "webdriverio";
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
   installPopupLayoutProbe,
+  installPopupReactProbe,
   isTerminalWebDriverSessionError,
   readPlanPopupCandidates,
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+
+test("React probe rejects a component chunk before importing or invoking its minified export", async () => {
+  const result = await new Promise<{ installed: boolean; error?: string }>((done) =>
+    installPopupReactProbe('/assets/dist-82810595.js', done));
+  assert.equal(result.installed, false);
+  assert.match(result.error ?? '', /requires the packaged react-\*\.js asset/);
+});
+
+test("React probe validates hooks, preserves effect semantics and restores instrumentation", async () => {
+  const names = ['Function', 'window', 'performance'] as const;
+  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let now = 0;
+  let loadedUrl = '';
+  let module: Record<string, unknown>;
+  const calls: Array<{ effect: () => unknown; deps: unknown; receiver: unknown }> = [];
+  const hook = function (this: unknown, effect: () => unknown, deps: unknown) {
+    calls.push({ effect, deps, receiver: this });
+    return 'hook-result';
+  };
+  const react = { useEffect: hook, useLayoutEffect: hook, useInsertionEffect: hook };
+  module = { t: () => react };
+  const fakeWindow: { __perfReactProbe?: { records: Array<{ hook: string; ms: number }>; restore(): void } } = {};
+  Object.defineProperty(globalThis, 'Function', { configurable: true, value: function () {
+    return async (url: string) => { loadedUrl = url; return module; };
+  } });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeWindow });
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } });
+  try {
+    const install = () => new Promise<{ installed: boolean; hooks?: string[]; error?: string }>((done) =>
+      installPopupReactProbe('/assets/react-test.js', done));
+    assert.deepEqual(await install(), { installed: true, hooks: ['useEffect', 'useLayoutEffect', 'useInsertionEffect'] });
+    assert.equal(loadedUrl, '/assets/react-test.js');
+    const deps = ['unchanged'];
+    const cleanup = () => 'cleanup';
+    assert.equal(react.useEffect(() => { now += 7; return cleanup; }, deps), 'hook-result');
+    assert.equal(calls[0].deps, deps);
+    assert.equal(calls[0].receiver, react);
+    assert.equal(calls[0].effect(), cleanup);
+    const error = new Error('effect failure');
+    react.useLayoutEffect(() => { now += 9; throw error; }, deps);
+    assert.throws(calls[1].effect, (actual) => actual === error);
+    assert.deepEqual(fakeWindow.__perfReactProbe!.records.map(({ hook, ms }) => ({ hook, ms })), [
+      { hook: 'useEffect', ms: 7 }, { hook: 'useLayoutEffect', ms: 9 },
+    ]);
+    fakeWindow.__perfReactProbe!.restore();
+    fakeWindow.__perfReactProbe!.restore();
+    assert.equal(react.useEffect, hook);
+    assert.equal(react.useLayoutEffect, hook);
+    assert.equal(react.useInsertionEffect, hook);
+    module = { t: () => ({ useEffect: hook }) };
+    const invalid = await install();
+    assert.equal(invalid.installed, false);
+    assert.match(invalid.error ?? '', /does not expose all three/);
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
 
 test("layout probe measures a later computed-style getter and preserves target, errors and cleanup", () => {
   const names = ['window', 'Element', 'HTMLElement', 'CSSStyleDeclaration', 'performance'] as const;

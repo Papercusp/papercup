@@ -55,7 +55,9 @@ const {
   scorecardTrend,
 } = await import('./scorecards');
 const { createIssue, getIssue, issueRef, issuesScopeWorkspace, linkIssue } = await import('./issues-engineer');
-const { proposeRubric, setRubricHistoryReset } = await import('./rubrics');
+const { getRubric, proposeRubric, setRubricHistoryReset } = await import('./rubrics');
+const { actOnHumanMarketItem, reviewHumanMarketItem } = await import('./work-items-human-market-store');
+const { readHumanMarketJob } = await import('./work-items-human-market');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -1017,3 +1019,72 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
   });
 });
 
+describe('human market canonical review readers — real PG', () => {
+  let db: OrgTestDb;
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+  afterAll(async () => db?.cleanup());
+
+  it('grades the exact human submission with the real rubric and scorecard readers and rechecks payment evidence', async () => {
+    const rubricId = 'test-human-market-review';
+    await proposeRubric({
+      rubricId, characteristic: 'human-work-quality', title: 'Human work review fixture',
+      criteria: [{ key: 'result', title: 'Result', model: 'A complete result.',
+        method: 'Read the submitted result.', driftMarkers: 'Missing result.' }],
+      status: 'active', by: 'su-test',
+    });
+    const rubric = await getRubric(rubricId);
+    expect(rubric).toMatchObject({ status: 'active' });
+    expect(rubric!.criteriaHash).toMatch(/^[a-f0-9]{64}$/);
+    const owner = '00000000-0000-4000-8000-000000000001';
+    const human = '00000000-0000-4000-8000-000000000002';
+    const scope = { workspaceId: issuesScopeWorkspace(), harness: 'human-market-reader', id: 'WI-human-reader' };
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, payload)
+      VALUES (${scope.workspaceId}, ${scope.harness}, ${scope.id}, 'task', 'needs-human', 'admitted',
+        'Human review fixture', '', ${JSON.stringify({ humanWork: {
+          route: 'market', version: 0, ownerUserId: owner, brief: 'Submit a complete result.',
+          rubricRef: rubricId, rubricRevision: rubric!.revision, rubricCriteriaHash: rubric!.criteriaHash,
+          amountCents: 500, currency: 'USD',
+        } })}::text::jsonb)`;
+    await actOnHumanMarketItem({ ...scope, userId: human, version: 0, action: 'claim' });
+    const submitted = await actOnHumanMarketItem({ ...scope, userId: human, version: 1,
+      action: 'submit', result: 'A complete result.' });
+    const submission = readHumanMarketJob(submitted)!.submission!;
+    const cardId = await fileScorecard(db, {
+      id: 'human-result', rubricRef: rubricId, rubricRevision: rubric!.revision,
+      criteriaHash: rubric!.criteriaHash!, subject: { kind: 'work-item', ref: scope.id },
+      ratings: { result: { rating: 'healthy', evidence: `Read the result; submission-sha256:${submission.sha256}` } },
+      createdAt: new Date().toISOString(), createdBy: 'su-unrelated-review-fixture',
+    });
+    const evidence = await readScorecardEvidence(cardId);
+    expect(evidence.kind).toBe('found');
+    if (evidence.kind !== 'found') throw new Error('canonical scorecard fixture missing');
+    expect(evidence.scorecard).toMatchObject({ rubricResolved: true, missingKeys: [], extraKeys: [],
+      auditTarget: { current: true }, rubricRevision: rubric!.revision, criteriaHash: rubric!.criteriaHash });
+    const graded = await reviewHumanMarketItem({ ...scope, userId: owner, version: 2, action: 'grade', scorecardRef: cardId });
+    expect(readHumanMarketJob(graded)!.grade).toMatchObject({ passed: true, scorecardRef: cardId,
+      submissionSha256: submission.sha256, graderId: 'su-unrelated-review-fixture' });
+
+    // The real reader must invalidate a grade retracted after acceptance.
+    await db.adminSql`UPDATE harness_shared.engineer_issues
+      SET payload = jsonb_set(payload, '{observation,retracted}', ${JSON.stringify({
+        at: new Date().toISOString(), by: 'su-audit-fixture', reason: 'wrong submission',
+      })}::text::jsonb)
+      WHERE workspace_id = ${scope.workspaceId} AND issue_id = ${cardId}`;
+    const retracted = await readScorecardEvidence(cardId);
+    expect(retracted.kind === 'found' && retracted.scorecard.auditTarget.retracted).toBe(true);
+    await expect(reviewHumanMarketItem({ ...scope, userId: owner, version: 3, action: 'payment',
+      receiptRef: 'test-only-manual-receipt' })).rejects.toThrow('market_scorecard_mismatch');
+    await db.adminSql`UPDATE harness_shared.engineer_issues
+      SET payload = payload #- '{observation,retracted}'
+      WHERE workspace_id = ${scope.workspaceId} AND issue_id = ${cardId}`;
+    const paid = await reviewHumanMarketItem({ ...scope, userId: owner, version: 3, action: 'payment',
+      receiptRef: 'test-only-manual-receipt' });
+    expect(readHumanMarketJob(paid)!.payment).toMatchObject({ paidBy: owner, amountCents: 500, currency: 'USD' });
+    // This fixture attests persistence only; it never transfers money or accepts E3.
+  });
+});

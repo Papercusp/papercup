@@ -24,6 +24,7 @@ import {
   activationAuditRepairSummary,
   ensureActivationAuditRepairFiling,
   reconcileActivationAuditRepairFiling,
+  reconcileActivationAuditRepairFilingForTerminalPlan,
   type ActivationAuditRepairFilingInput,
 } from './activation-audit-repair';
 
@@ -196,5 +197,59 @@ describe('activation-audit repair reconciliation', () => {
     expect(mockFindConditionKeyHolder.mock.calls[0]?.[0]).toBe(
       mockUpsertConditionWorkItem.mock.calls[0]?.[0],
     );
+  });
+});
+
+describe('reconcileActivationAuditRepairFilingForTerminalPlan (EI-24746042684666503)', () => {
+  const terminalInput = {
+    workspaceId: 'workspace-a',
+    harnessSlug: 'papercusp',
+    planSlug: 'plan-a',
+    terminalStatus: 'shipped' as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('closes the filing of a plan that went terminal without a clean audit, citing the terminal status', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue('WI-REPAIR');
+    mockSetWorkItemState.mockResolvedValue({ id: 'WI-REPAIR' });
+
+    const result = await reconcileActivationAuditRepairFilingForTerminalPlan(terminalInput);
+
+    expect(mockFindConditionKeyHolder).toHaveBeenCalledWith('activation-audit:papercusp/plan-a', {
+      workspaceId: 'workspace-a',
+    });
+    const [id, state, opts] = mockSetWorkItemState.mock.calls[0] ?? [];
+    expect(id).toBe('WI-REPAIR');
+    expect(state).toBe('dropped');
+    expect(opts).toMatchObject({ harness: 'papercusp', by: ACTIVATION_AUDIT_REPAIR_ACTOR });
+    expect(opts?.skipCompletionGate).toBeUndefined();
+    expect(opts?.completionRef).toContain("plan 'plan-a' is shipped");
+    expect(opts?.completionRef).not.toContain('recorded clean');
+    expect(result).toEqual({ conditionKey: 'activation-audit:papercusp/plan-a', closed: 'WI-REPAIR' });
+  });
+
+  it('targets the same key the filing seam and the clean-audit reconcile use', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue(null);
+
+    await reconcileActivationAuditRepairFilingForTerminalPlan({ ...terminalInput, terminalStatus: 'superseded' });
+    await reconcileActivationAuditRepairFiling({ ...terminalInput, auditSeq: 1 });
+
+    expect(mockFindConditionKeyHolder.mock.calls[0]?.[0]).toBe(activationAuditRepairConditionKey(terminalInput));
+    expect(mockFindConditionKeyHolder.mock.calls[1]?.[0]).toBe(mockFindConditionKeyHolder.mock.calls[0]?.[0]);
+    expect(mockSetWorkItemState).not.toHaveBeenCalled();
+  });
+
+  it('fails soft: a lifecycle write that throws is reported, never thrown', async () => {
+    mockFindConditionKeyHolder.mockResolvedValue('WI-REPAIR');
+    mockSetWorkItemState.mockRejectedValue(new Error('lifecycle writer unavailable'));
+
+    await expect(reconcileActivationAuditRepairFilingForTerminalPlan(terminalInput)).resolves.toEqual({
+      conditionKey: 'activation-audit:papercusp/plan-a',
+      closed: null,
+      error: 'lifecycle writer unavailable',
+    });
   });
 });

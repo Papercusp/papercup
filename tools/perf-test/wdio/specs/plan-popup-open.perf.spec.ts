@@ -17,7 +17,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
-import { APP_MOUNT_TIMEOUT_MS, installPopupLayoutProbe, readPlanPopupCandidates, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
+import { APP_MOUNT_TIMEOUT_MS, installPopupLayoutProbe, installPopupReactProbe, readPlanPopupCandidates, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
 // not resolve here. The module is a pure function with no dependencies.
@@ -342,35 +342,9 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       }
 
       if (process.env.PAPERCUSP_PERF_REACT_MODULE) {
-        const installed = await browser.executeAsync((url: string, done: (value: unknown) => void) => {
-          const load = new Function('url', 'return import(url)') as (url: string) => Promise<{ t(): Record<string, Function> }>;
-          load(url).then((module) => {
-            const react = module.t();
-            const records: Array<{ hook: string; ms: number; at: number; stack?: string }> = [];
-            const restore: Array<() => void> = [];
-            for (const hook of ['useEffect', 'useLayoutEffect', 'useInsertionEffect']) {
-              const original = react[hook];
-              if (typeof original !== 'function') continue;
-              react[hook] = function (effect: () => unknown, deps: unknown) {
-                const stack = new Error().stack?.slice(0, 1800);
-                return original.call(react, () => {
-                  const at = performance.now();
-                  try { return effect(); }
-                  finally {
-                    const ms = performance.now() - at;
-                    if (ms >= 5) records.push({ hook, ms, at, stack });
-                  }
-                }, deps);
-              };
-              restore.push(() => { react[hook] = original; });
-            }
-            (window as unknown as { __perfReactProbe: { records: typeof records; restore(): void } }).__perfReactProbe = {
-              records, restore: () => restore.forEach((fn) => fn()),
-            };
-            done({ installed: true });
-          }).catch((error) => done({ error: String(error) }));
-        }, process.env.PAPERCUSP_PERF_REACT_MODULE);
+        const installed = await browser.executeAsync(installPopupReactProbe, process.env.PAPERCUSP_PERF_REACT_MODULE);
         console.log('[perf] React effect probe', JSON.stringify(installed));
+        if (!installed?.installed) throw new Error(`React effect probe installation failed: ${installed?.error ?? 'no result'}`);
       }
 
       // Clear the previous attempt's measure + any dangling start immediately

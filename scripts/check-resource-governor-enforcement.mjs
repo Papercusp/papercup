@@ -463,6 +463,34 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/bench-release-task-reuse.ts: this is a hand-invoked benchmark harness that shells out to read-only git plumbing to pin the source sha, gitlinks and source fingerprints for one controlled release-preparation measurement. The starts are bounded, awaited and non-mutating, they run only when a human runs the bench script rather than on any scheduled or serving path, and they create no resident queue.",
   },
   {
+    path: "scripts/agent-capacity/gcp-rails.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/agent-capacity/gcp-rails.ts: the GCP test-project safety rails CLI (budget admission, labels, teardown sweep) for plan agent-capacity-and-cost-gcp-2026-09-30, run by hand. Its only start is the `gcloud` helper: one awaited execFile per Compute API call under a 300 s timeout, resolving to a captured stdout string with nothing retained between calls. The VMs it creates run in the cloud project, not on this host, so the start adds no local residency and no resident queue (WI-10004522).",
+  },
+  {
+    path: "scripts/agent-capacity/load-driver.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/agent-capacity/load-driver.ts: the capacity benchmark's replay driver, whose detached agent sessions ARE the measured load (a heavy replay peaked at 18 GB). Admission is enforced before any session starts by assertHostAdmission (scripts/agent-capacity/host-admission.ts, tested in host-admission.test.ts): inside the Papercusp tree the run is refused unless it holds a scripts/pc-heavy.sh slot (PC_HEAVY_BYPASS=1), the admission every heavy job on this host goes through; elsewhere it runs only on a disposable ramp VM where the scripts are copied without the operator, so no governor exists and the VM is the measured machine. Concurrency is the caller's --agents N, each session is a transient user service in capdrv.slice, and the ramp reads that slice's OOM and slowdown as its saturation verdict (WI-10004522).",
+  },
+  {
+    path: "scripts/agent-capacity/record-session.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/agent-capacity/record-session.ts: the capacity corpus recorder, which runs one real Claude or Codex session at a time through a recording proxy and starts it as a detached transient user service so its memory.peak and cpu.stat can be read. The same assertHostAdmission check as load-driver runs first: inside the Papercusp tree it refuses to start without a scripts/pc-heavy.sh slot (PC_HEAVY_BYPASS=1); on a ramp VM, which has no operator, it runs as the measured machine. Its other starts are an awaited `--version` probe under a 20 s timeout, awaited git reads, and a `systemctl kill` of its own session unit on timeout (WI-10004522).",
+  },
+  {
+    path: "scripts/agent-capacity/session-process.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/agent-capacity/session-process.ts: `runAsync` spawns native `cp -a --reflink=auto` and `rm -rf` to copy a prepared checkout into a session work dir and remove it afterwards. Each child is awaited to its exit code, is not detached, and holds nothing after exit, so it adds no residency or queue of its own. It is called only by load-driver.ts and record-session.ts after their assertHostAdmission check, once per session they were already admitted to run (WI-10004522).",
+  },
+  {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
