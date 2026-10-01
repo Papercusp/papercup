@@ -153,6 +153,17 @@ const recallOf = (kase: CorpusCase, sites: readonly SymbolSite[]): number => {
   return found / kase.expectedSites.length;
 };
 
+/**
+ * Did the engine ANSWER? `error` is a caveat channel, not a failure flag: the GitNexus facade puts
+ * non-failure notices there (index health unmeasured — the bench CLI dispatch has no `list_repos` —,
+ * FILE-level edge counts, truncation) beside real sites. Only "error AND nothing returned" is a
+ * failed/declined query. Grading every non-null `error` as a failure scored both GitNexus arms 0 by
+ * construction while baseline/CBM (which never set `error` on success) were graded on content (WI-10001405).
+ */
+export const answered = (res: Pick<EngineQueryResult, 'error' | 'sites'>): boolean => !(res.error !== null && res.sites.length === 0);
+
+const withNote = (reason: string, res: Pick<EngineQueryResult, 'error'>): string => (res.error === null ? reason : `${reason} [engine note: ${res.error}]`);
+
 async function measureCase(
   arm: EngineArm,
   kase: CorpusCase,
@@ -178,8 +189,8 @@ async function measureCase(
     warmSamplesMs: samples,
     responseBytes: first.responseBytes,
     estTokens: Math.ceil(first.responseBytes / 4),
-    correct: first.error === null && grade.correct,
-    recall: first.error === null ? recallOf(kase, first.sites) : 0,
+    correct: answered(first) && grade.correct,
+    recall: answered(first) ? recallOf(kase, first.sites) : 0,
     grade,
     returnedSites: sitesKey(first.sites).slice(0, 25),
     error: first.error ?? last.error,
@@ -208,7 +219,7 @@ async function runEditFixture(arm: EngineArm, deps: EngineComparisonDeps): Promi
     refreshCost = await arm.refresh();
     const res = await arm.query(kase);
     const grade = gradeSites(kase, res.sites);
-    return { name: 'edit', pass: res.error === null && refreshCost.ok && grade.correct, detail: res.error ?? grade.reason, refreshCost, recoveryCost: null, faultSurfaced: null };
+    return { name: 'edit', pass: answered(res) && refreshCost.ok && grade.correct, detail: withNote(grade.reason, res), refreshCost, recoveryCost: null, faultSurfaced: null };
   } catch (e) {
     return { name: 'edit', pass: false, detail: e instanceof Error ? e.message : String(e), refreshCost, recoveryCost, faultSurfaced: null };
   } finally {
@@ -226,8 +237,11 @@ async function runDeleteFixture(arm: EngineArm, kase: CorpusCase, deps: EngineCo
     const res = await arm.query(kase);
     const stale = sitesKey(res.sites).filter((k) => k.startsWith(`${DELETE_FIXTURE.file}:`));
     return {
-      name: 'delete', pass: res.error === null && refreshCost.ok && stale.length === 0,
-      detail: res.error ?? (stale.length ? `STALE sites still returned for deleted file: ${stale.join(', ')}` : 'no site from the deleted file is returned'),
+      name: 'delete', pass: answered(res) && refreshCost.ok && stale.length === 0,
+      detail: withNote(
+        !answered(res) ? 'query FAILED (error and no sites)' : stale.length ? `STALE sites still returned for deleted file: ${stale.join(', ')}` : 'no site from the deleted file is returned',
+        res,
+      ),
       refreshCost, recoveryCost: null, faultSurfaced: null,
     };
   } catch (e) {
@@ -253,7 +267,7 @@ async function runRefreshFailureFixture(
     refreshCost = await arm.refresh().catch((e) => failedPhase(e, deps));
     for (const kase of cases) {
       const res = await arm.query(kase).catch((e): EngineQueryResult => ({ sites: [], responseBytes: 0, error: String(e) }));
-      if (res.error === null && gradeSites(kase, res.sites).correct) correctWhileBroken += 1;
+      if (answered(res) && gradeSites(kase, res.sites).correct) correctWhileBroken += 1;
     }
   } finally {
     await deps.chmod(dir, 0o755);
@@ -262,14 +276,18 @@ async function runRefreshFailureFixture(
   let correctAfter = 0;
   for (const kase of cases) {
     const res = await arm.query(kase).catch((e): EngineQueryResult => ({ sites: [], responseBytes: 0, error: String(e) }));
-    if (res.error === null && gradeSites(kase, res.sites).correct) correctAfter += 1;
+    if (answered(res) && gradeSites(kase, res.sites).correct) correctAfter += 1;
   }
   const faultSurfaced = refreshCost !== null && !refreshCost.ok;
   const recovered = recoveryCost.ok && correctAfter >= coldCorrect;
+  // The fixture asks "does the engine keep answering as well as it did cold while a refresh is broken, and recover?".
+  // With nothing correct cold, `>= 0` holds for ANY engine — a vacuous pass that would credit an engine that never
+  // answered a case. Not measurable ⇒ not a pass (WI-10001405).
+  const vacuous = coldCorrect === 0;
   return {
     name: 'refresh-failure',
-    pass: recovered && correctWhileBroken >= coldCorrect,
-    detail: `fault ${faultSurfaced ? 'SURFACED' : 'SILENT'}; correct cold=${coldCorrect} while-broken=${correctWhileBroken} after-restore=${correctAfter}; recovery refresh ok=${recoveryCost.ok}`,
+    pass: !vacuous && recovered && correctWhileBroken >= coldCorrect,
+    detail: `fault ${faultSurfaced ? 'SURFACED' : 'SILENT'}; correct cold=${coldCorrect} while-broken=${correctWhileBroken} after-restore=${correctAfter}; recovery refresh ok=${recoveryCost.ok}${vacuous ? '; NOT MEASURABLE: no case was correct cold, so a pass would be vacuous' : ''}`,
     refreshCost, recoveryCost, faultSurfaced,
   };
 }
