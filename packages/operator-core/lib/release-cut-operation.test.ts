@@ -122,19 +122,19 @@ describe('beginCutOperation', () => {
       { registerTask, newTaskId: () => 'task1', newOperationId: () => 'op-1' },
     );
 
-    expect(result).toMatchObject({ taskId: 'task1', operationId: 'op-1', unit: 'papercup-release-cut-linux' });
+    expect(result).toMatchObject({ taskId: 'task1', operationId: 'op-1', unit: 'pc-task1.service' });
     expect(calls).toHaveLength(1);
     const detail = calls[0].spec.detail as Record<string, unknown>;
     expect(calls[0].spec.launchedBy).toBe(CUT_OPERATION_LAUNCHED_BY);
     expect(calls[0].spec.class).toBe('deploy');
     expect(calls[0].spec.cwd).toBe('/tmp/desktop');
-    expect(calls[0].opts.taskId).toBe('task1');
+    expect(calls[0].opts).toMatchObject({ taskId: 'task1', reserveScope: true, unitKind: 'service' });
     expect(detail).toMatchObject({
       channel: 'alpha',
       version: '0.0.22-alpha',
       platform: 'linux',
       sourceSha: SHA,
-      cutUnit: 'papercup-release-cut-linux',
+      cutUnit: 'pc-task1.service',
     });
     expect((detail.release as { operationId: string }).operationId).toBe('op-1');
   });
@@ -145,7 +145,7 @@ describe('beginCutOperation', () => {
       { identity: identity({ platform: null }) },
       { registerTask, newTaskId: () => 'task1', newOperationId: () => 'op-1' },
     );
-    expect(result.unit).toBe('papercup-release-cut');
+    expect(result.unit).toBe('pc-task1.service');
     expect((calls[0].spec.detail as Record<string, unknown>).platform).toBeNull();
   });
 
@@ -259,8 +259,8 @@ describe('discoverCutOperations', () => {
     linuxSeed.currentStage = 'release.build.linux' as never;
 
     const listTasks = (async () => [
-      { taskId: 'task-linux', state: 'running', detail: { release: linuxSeed } },
-      { taskId: 'task-mac', state: 'running', detail: { release: macSeed } },
+      { taskId: 'tasklinux1234', state: 'running', detail: { release: linuxSeed } },
+      { taskId: 'taskmac1234', state: 'running', detail: { release: macSeed } },
       // A non-cut row sharing the launcher must not be adopted.
       { taskId: 'task-other', state: 'running', detail: {} },
     ]) as unknown as DiscoverCutOperationsDeps['listTasks'];
@@ -269,8 +269,8 @@ describe('discoverCutOperations', () => {
     const readStatus = (platform: Platform | undefined) => {
       seen.push(platform);
       return platform === 'linux'
-        ? status({ state: 'interrupted', operation: marker('op-linux', 'task-linux') })
-        : status({ state: 'running', running: true, operation: marker('op-mac', 'task-mac') });
+        ? status({ state: 'interrupted', operation: marker('op-linux', 'tasklinux1234') })
+        : status({ state: 'running', running: true, operation: marker('op-mac', 'taskmac1234') });
     };
 
     const found = await discoverCutOperations({ listTasks, readStatus });
@@ -278,12 +278,13 @@ describe('discoverCutOperations', () => {
     expect(seen).toEqual(['linux', 'mac']);
     expect(found).toHaveLength(2);
     expect(found[0]).toMatchObject({
-      taskId: 'task-linux',
+      taskId: 'tasklinux1234',
       operationId: 'op-linux',
-      unit: 'papercup-release-cut-linux',
+      unit: 'pc-tasklinux1234.service',
       currentStage: 'release.build.linux',
       receiptCount: 0,
     });
+    expect(found[1]).toMatchObject({ taskId: 'taskmac1234', unit: 'pc-taskmac1234.service' });
     expect(found[0].reconciliation).toMatchObject({ disposition: 'interrupted', resumable: true });
     expect(found[1].reconciliation.disposition).toBe('running');
   });
