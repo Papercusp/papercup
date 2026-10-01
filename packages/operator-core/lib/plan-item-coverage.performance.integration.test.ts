@@ -22,7 +22,8 @@ import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 const live = process.env.PAPERCUSP_P010_LIVE_PROBE === '1';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
-  liveness: new Map<string, any>(), frozenLiveness: false }));
+  liveness: new Map<string, any>(), frozenLiveness: false, missingLiveness: new Set<string>(),
+  privateFleet: [] as any[], privateSessionState: 'live' }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
@@ -30,18 +31,20 @@ vi.mock('@papercusp/db-org', async (original) => ({
 vi.mock('./fleet/assignments', async (original) => {
   const actual = await original<typeof import('./fleet/assignments')>();
   return { ...actual, listFleetAssignments: process.env.PAPERCUSP_P010_LIVE_PROBE === '1'
-    ? actual.listFleetAssignments : async () => [] };
+    ? actual.listFleetAssignments : async () => h.privateFleet };
 });
 vi.mock('./agent-tools/coordination/liveness-oracle', async (original) => {
   const actual = await original<typeof import('./agent-tools/coordination/liveness-oracle')>();
   return { ...actual, resolveSessionStates: async (...args: Parameters<typeof actual.resolveSessionStates>) => {
     if (h.frozenLiveness) {
       return new Map(args[0].map(subject => {
-        if (!h.liveness.has(subject.ownerId)) throw new Error('diagnostic liveness population changed');
-        return [subject.ownerId, h.liveness.get(subject.ownerId)];
+        if (!h.liveness.has(subject.ownerId)) h.missingLiveness.add(subject.ownerId);
+        return [subject.ownerId, h.liveness.get(subject.ownerId)] as const;
       }));
     }
-    const result = await actual.resolveSessionStates(...args);
+    const result = process.env.PAPERCUSP_P010_LIVE_PROBE === '1' ? await actual.resolveSessionStates(...args)
+      : new Map(args[0].map(subject => [subject.ownerId,
+        { ownerId: subject.ownerId, sessionState: h.privateSessionState }] as const));
     for (const [owner, verdict] of result) h.liveness.set(owner, verdict);
     return result;
   } };
@@ -51,6 +54,7 @@ const { getAllPlanItemCoverage } = await import('./plan-item-coverage');
 type Phase = { sql: string; parameters?: unknown[]; wallMs: number; rows: number; ok: boolean; error?: string };
 let phases: Phase[] = [];
 let root: postgres.Sql | undefined;
+let privateDb: { uri: string; name: string } | undefined;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const confidenceMethod = { metric: 'per-window p95 reader wallMs, candidate minus control',
   method: 'percentile bootstrap of the mean paired difference', confidence: 0.95,
@@ -146,7 +150,14 @@ function changedFields(expected: unknown, actual: unknown) {
   return { count, fields, truncated: count > fields.length };
 }
 
-afterAll(async () => { await root?.end({ timeout: 5 }); });
+afterAll(async () => {
+  await root?.end({ timeout: 5 });
+  if (privateDb) {
+    const admin = postgres(privateDb.uri, { max: 1, onnotice: () => {} });
+    try { await admin.unsafe(`DROP DATABASE "${privateDb.name}"`); }
+    finally { await admin.end({ timeout: 5 }); }
+  }
+});
 
 describe('matched plan coverage phase benchmark', () => {
   it('reports changed fields without exposing their values', () => {
@@ -171,7 +182,10 @@ describe('matched plan coverage phase benchmark', () => {
       const uri = await getTestPg();
       const name = `plic_perf_${randomBytes(5).toString('hex')}`;
       const admin = postgres(uri, { max: 1, onnotice: () => {} });
-      try { await admin.unsafe(`CREATE DATABASE "${name}"`); } finally { await admin.end(); }
+      try {
+        await admin.unsafe(`CREATE DATABASE "${name}"`);
+        privateDb = { uri, name };
+      } finally { await admin.end(); }
       const url = new URL(uri); url.pathname = '/' + name;
       root = postgres(url.toString(), { max: 1, onnotice: () => {} });
       await root`CREATE SCHEMA harness_shared`;
@@ -205,6 +219,7 @@ describe('matched plan coverage phase benchmark', () => {
     let identity: any;
     let serving: any;
     let preflightError: string | undefined;
+    let frozenClock: { mockRestore(): void; mockReturnValue(value: number): unknown } | undefined;
     let expected: ReturnType<typeof normalized> = [];
     const explain: Record<string, unknown> = {};
     const diagnostics: any[] = [];
@@ -217,12 +232,15 @@ describe('matched plan coverage phase benchmark', () => {
       control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
       profiles: { concurrency: [1,8], windows, requestsPerSideWindow: requests,
         cache: 'no coverage result cache; PostgreSQL cache uncontrolled and shared',
-        connection: 'one read-only repeatable-read connection on both sides' },
+        connection: 'one read-only repeatable-read connection on both sides',
+        inputs: diagnostic ? 'diagnostic interventions recorded individually'
+          : 'JS clock pinned to transaction time; initial measured liveness replayed for both arms' },
       populationHash: digest(expected), samples, explain,
       comparisons: [1,8].map(concurrency => ({ concurrency, ...comparison(samples, concurrency) })),
       limitations: ['SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.',
         'Shared PostgreSQL cache is not a cold-cache benchmark.',
-        'This is the production reader on frozen live data, not HTTP end-to-end timing.'],
+        'This is the production reader on frozen data, not HTTP end-to-end timing.',
+        'Replay fixes exogenous liveness inputs; matrix timings exclude repeated oracle IO.'],
     });
     const persist = (complete = false) => {
       if (process.env.PAPERCUSP_P010_REPORT) writeFileSync(process.env.PAPERCUSP_P010_REPORT,
@@ -251,8 +269,34 @@ describe('matched plan coverage phase benchmark', () => {
           FROM harness_shared.schema_migrations ORDER BY applied_at DESC LIMIT 5`;
       }
       h.sql = observed(tx as unknown as postgres.Sql);
+      h.liveness.clear();
+      h.missingLiveness.clear();
+      if (!live) h.privateFleet = [{ source: 'plan_item_claim', agentId: 'su-benchmark', planSlug: plan,
+        itemId: 'P-1', holderAlive: true, orphaned: false, stalled: false, claimActive: true,
+        lastProgressAt: identity.transaction_time, claimAcquiredTs: identity.transaction_time,
+        lastActivityTs: identity.transaction_time, detail: 'benchmark fixture' }];
+      if (!diagnostic) frozenClock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(identity.transaction_time));
       expected = normalized(await getAllPlanItemCoverage(), plan);
       expect(expected.length).toBeGreaterThan(0);
+      if (!live) {
+        // Real PG rows stay unchanged while these exogenous inputs move.
+        // The normal suite must detect this trap and prove replay prevents it.
+        const initial = new Map(h.liveness);
+        frozenClock!.mockReturnValue(Date.parse(identity.transaction_time) + 31 * 60_000);
+        h.privateSessionState = 'ended';
+        const moved = normalized(await getAllPlanItemCoverage({ planSlug: plan }), plan);
+        expect(digest(moved)).not.toBe(digest(expected));
+        const movedItem = moved.find(([ref]) => ref === plan + '#P-1')?.[1] as any;
+        expect(movedItem.holder.stale).toBe(true);
+        expect(movedItem.directlyClaimed).toBe(false);
+        h.liveness = initial;
+        frozenClock!.mockReturnValue(Date.parse(identity.transaction_time));
+      }
+      if (!diagnostic) {
+        h.frozenLiveness = true;
+        expect(normalized(await getAllPlanItemCoverage({ planSlug: plan }), plan)).toEqual(expected);
+        expect([...h.missingLiveness]).toEqual([]);
+      }
       persist();
       if (diagnostic) {
         // Deliberately move ONLY the JS clock, then freeze clock + the oracle's
@@ -279,6 +323,7 @@ describe('matched plan coverage phase benchmark', () => {
           for (const arm of ['control', 'candidate', 'control', 'candidate']) {
             const result = await record('frozen-clock-and-measured-liveness', frozen, arm);
             expect(result).toEqual(frozen);
+            expect([...h.missingLiveness]).toEqual([]);
           }
         } finally {
           h.frozenLiveness = false;
@@ -298,6 +343,7 @@ describe('matched plan coverage phase benchmark', () => {
                 try {
                   const coverage = await getAllPlanItemCoverage(arm === 'candidate' ? { planSlug: plan } : {});
                   const result = normalized(coverage, plan);
+                  if (h.missingLiveness.size) throw new Error('unmeasured owner in frozen liveness population');
                   const equal = digest(result) === digest(expected);
                   return { index: offset + index, ok: equal, wallMs: performance.now() - t0,
                     resultHash: digest(result), totalCoverageRefs: coverage.size, selectedRefs: result.length,
@@ -342,13 +388,20 @@ describe('matched plan coverage phase benchmark', () => {
       // Incomplete/failed measurements remain visible in the report. Never
       // replace a failed window or manufacture a completed comparison.
       preflightError = error instanceof Error ? error.message : String(error);
+    } finally {
+      h.frozenLiveness = false;
+      frozenClock?.mockRestore();
     }
     persist();
     expect(preflightError).toBeUndefined();
     if (diagnostic) {
       expect(diagnostics).toHaveLength(7);
       persist(true);
-      console.log(JSON.stringify({ mode: report().mode, diagnostics }));
+      console.log(JSON.stringify({ mode: report().mode, diagnostics: diagnostics.map(d => ({
+        scenario: d.scenario, arm: d.arm, equal: d.equal, changedFieldCount: d.changedFields.count,
+        changedPaths: d.changedFields.fields.map((field: { path: string }) => field.path),
+        resultHash: d.resultHash, livenessHash: d.livenessHash,
+      })) }));
       return;
     }
     const outcomes = samples.flatMap(s => s.batch);
