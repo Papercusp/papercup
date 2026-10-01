@@ -1,11 +1,12 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // listSpecEvidence fences a whole batch of bindings with one lock-queue read per
-// repository before the reads and one after, instead of two per binding (a ~217-binding
-// plan issued 434 reads per call and pushed the GOAL portfolio read past its 900ms
+// repository before the reads and one after, instead of two per binding (a ~233-binding
+// plan issued 466 reads per call and pushed the GOAL portfolio read past its 900ms
 // budget). These pin both halves: the read count, and that a probe still fails exactly
 // the bindings it overlaps.
 
@@ -16,6 +17,7 @@ const h = vi.hoisted(() => ({
   // Locks that appear only from the Nth readQueue call on: a probe starting mid-batch.
   lateLocks: null as null | { fromCall: number; locks: Array<{ coordinationDomain: string; path: string; intent: string }> },
   calls: [] as Array<{ coordinationDomain: string; paths: string[] }>,
+  failNextRead: false,
 }));
 
 vi.mock('../locks/su-lock-store', () => ({
@@ -23,10 +25,17 @@ vi.mock('../locks/su-lock-store', () => ({
   getTxPool: vi.fn(() => ({})),
   readQueue: vi.fn(async (_pool: unknown, args: { coordinationDomain: string; paths: string[] }) => {
     h.calls.push({ coordinationDomain: args.coordinationDomain, paths: [...args.paths].sort() });
+    if (h.failNextRead) {
+      h.failNextRead = false;
+      throw new Error('lock queue unavailable');
+    }
     const late = h.lateLocks && h.calls.length >= h.lateLocks.fromCall ? h.lateLocks.locks : [];
+    // The store's SQL lock_path_overlaps, written out independently of the code under test.
+    const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
     return {
       active_locks: [...h.activeLocks, ...late]
-        .filter((lock) => lock.coordinationDomain === args.coordinationDomain && args.paths.includes(lock.path))
+        .filter((lock) => lock.coordinationDomain === args.coordinationDomain
+          && args.paths.some((path) => overlaps(lock.path, path)))
         .map((lock) => ({ coordination_domain: lock.coordinationDomain, path: lock.path, intent: lock.intent })),
       waiting: [],
       completed: [],
@@ -56,7 +65,7 @@ vi.mock('../../harness-registry', async (importOriginal) => {
   return { ...actual, loadHarnessRegistry: async () => ({}) as never, resolveHarnessContentPath: () => h.measurementRoot };
 });
 
-const { listSpecEvidence } = await import('./spec-evidence-store');
+const { listSpecEvidence, lockPathOverlaps } = await import('./spec-evidence-store');
 
 let root: string;
 let nestedRoot: string;
@@ -107,10 +116,38 @@ beforeEach(() => {
   h.activeLocks = [];
   h.lateLocks = null;
   h.calls = [];
+  h.failNextRead = false;
 });
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
+});
+
+describe('lockPathOverlaps mirrors the lock store SQL', () => {
+  it('matches the newest lock_path_overlaps definition', () => {
+    const dir = fileURLToPath(new URL('../../../../../libs/papercusp/packages/locks/src/sql/', import.meta.url));
+    const definitions = readdirSync(dir)
+      .filter((name) => name.endsWith('.sql'))
+      .sort()
+      .map((name) => readFileSync(join(dir, name), 'utf8'))
+      .filter((text) => /FUNCTION\s+lock_path_overlaps\s*\(/.test(text));
+    // Positive control: an empty scan would make the comparison below vacuous.
+    expect(definitions.length).toBeGreaterThan(0);
+    const latest = definitions.at(-1) ?? '';
+    const body = latest.slice(latest.search(/FUNCTION\s+lock_path_overlaps\s*\(/)).split('$func$')[1] ?? '';
+    // If this fails the SQL semantics moved: update lockPathOverlaps to match, then this.
+    expect(body.replace(/\s+/g, ' ').trim()).toBe(
+      "SELECT p_left = p_right OR left(p_left, length(p_right) + 1) = p_right || '/' OR left(p_right, length(p_left) + 1) = p_left || '/'",
+    );
+  });
+
+  it('is equality or a directory prefix in either direction', () => {
+    expect(lockPathOverlaps('a/b.ts', 'a/b.ts')).toBe(true);
+    expect(lockPathOverlaps('a', 'a/b.ts')).toBe(true);
+    expect(lockPathOverlaps('a/b.ts', 'a')).toBe(true);
+    expect(lockPathOverlaps('a/b', 'a/bc.ts')).toBe(false);
+    expect(lockPathOverlaps('a/b.ts', 'a/b.tsx')).toBe(false);
+  });
 });
 
 describe('listSpecEvidence batch mutation-probe fence', () => {
@@ -143,7 +180,9 @@ describe('listSpecEvidence batch mutation-probe fence', () => {
     expect(status[2]?.status).toBe('measured');
   });
 
-  it('a probe already live before the reads falls back to the exact per-binding fence', async () => {
+  it('a probe live before the reads fails only the bindings it overlaps, with no per-binding reads', async () => {
+    // Live mutation probes are routine on this fleet; one must not cost every binding its
+    // own lock-queue round trips.
     h.activeLocks = [{ coordinationDomain: nestedRoot, path: 'c.ts', intent: 'mutation probe' }];
 
     const rows = await list();
@@ -155,9 +194,39 @@ describe('listSpecEvidence batch mutation-probe fence', () => {
       status: 'unavailable',
       reason: expect.stringContaining(`repo_measurement_mutation_probe_active:${nestedRoot}:c.ts`),
     });
-    // The unclear union sent every binding down the per-binding fence: 2 union reads,
-    // then a pre- and post-read for each binding (binding 3 refused at its pre-read).
-    expect(h.calls.length).toBeGreaterThan(4);
+    expect(h.calls).toHaveLength(4);
+  });
+
+  it('a directory-level probe lock refuses every binding beneath it, and only those', async () => {
+    h.activeLocks = [{ coordinationDomain: root, path: 'libs', intent: 'mutation probe' }];
+    mkdirSync(join(root, 'libs', 'other'), { recursive: true });
+    writeFileSync(join(root, 'libs', 'other', 'd.ts'), 'export const d = 1;\n');
+    h.rows = [...h.rows, binding(4, ['libs/other/d.ts'])];
+
+    const rows = await list();
+    const status = rows.map((row) => (row as { serverMeasurement?: { status: string; reason?: string } }).serverMeasurement);
+
+    // c.ts lives in the nested repository, a different lock domain from the root's 'libs'.
+    expect(status.slice(0, 3).map((s) => s?.status)).toEqual(['measured', 'measured', 'measured']);
+    expect(status[3]).toMatchObject({
+      status: 'unavailable',
+      reason: expect.stringContaining(`repo_measurement_mutation_probe_active:${root}:libs`),
+    });
+  });
+
+  it('an unreadable lock queue falls back to the per-binding fence instead of skipping it', async () => {
+    h.failNextRead = true;
+    h.activeLocks = [{ coordinationDomain: root, path: 'b.ts', intent: 'mutation probe' }];
+
+    const rows = await list();
+    const status = rows.map((row) => (row as { serverMeasurement?: { status: string; reason?: string } }).serverMeasurement);
+
+    expect(status[0]?.status).toBe('measured');
+    expect(status[1]).toMatchObject({
+      status: 'unavailable',
+      reason: expect.stringContaining(`repo_measurement_mutation_probe_active:${root}:b.ts`),
+    });
+    expect(status[2]?.status).toBe('measured');
   });
 
   it('an unresolvable path fails only its own binding and keeps the batch fence', async () => {

@@ -57,6 +57,17 @@ const CONCURRENCY = Math.max(1, Number(argValue('--concurrency') ?? 4));
 const WORKSPACE = argValue('--workspace') ?? 'papercusp-workspace';
 const RESCORE_V2 = process.argv.includes('--rescore-v2');
 /**
+ * Per-call bound on one relevance-judge request. Without it a single stalled
+ * request hung the whole run: a 106-call turn-start bench sat at 90/106 for
+ * 15 min at 0 CPU until its task deadline killed it, writing no report. A call
+ * that times out is counted in `judgeFailures` like any other judge error.
+ */
+const JUDGE_CALL_TIMEOUT_MS = Math.max(1_000, Number(argValue('--judge-timeout-ms') ?? 120_000));
+const boundedLlmCall: typeof llmCall = (opts) => {
+  const timeout = AbortSignal.timeout(JUDGE_CALL_TIMEOUT_MS);
+  return llmCall({ ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout });
+};
+/**
  * Which injection port's Jev calls to grade (memory_recall_stats.surface).
  * mid-turn and turn-start rebuild queries from Claude transcripts; initialize's
  * query is one fixed string per harness (mcp-prelude initializeQueryForHarness).
@@ -243,7 +254,7 @@ async function main(): Promise<void> {
     judgeModel: JUDGE_AGREEMENT_MODEL,
     rubricVersion: JUDGE_AGREEMENT_RUBRIC_VERSION,
     runId,
-    inner: (input) => judgeRelevance(input, llmCall, JUDGE_AGREEMENT_MODEL),
+    inner: (input) => judgeRelevance(input, boundedLlmCall, JUDGE_AGREEMENT_MODEL),
     onWarn: (m) => log(m),
   });
   const client = RESCORE_V2 ? ensureJevDecisionClient() : null;

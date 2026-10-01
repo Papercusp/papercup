@@ -77,6 +77,8 @@ export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
 
 /** Caller-side arg/scope error in the MESSAGE: an `invalid_args:` prefix
  *  (regardless of the row's error_code — this is the bit the old TS fn missed),
+ *  including the `invalid_input: invalid_args:` wrapper from a nested
+ *  `tools:invoke` refusal,
  *  a missing / unregistered harness, a registered standalone harness passed
  *  to the Hive-scoped plan store, or a desktop-only capability called before
  *  its sandbox lease was provisioned. A missing WORKSPACE-scope
@@ -84,7 +86,7 @@ export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^invalid_args:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased';
+  '^invalid_input: *invalid_args:|^invalid_args:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a

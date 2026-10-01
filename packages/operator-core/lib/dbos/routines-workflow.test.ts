@@ -19,6 +19,10 @@ const state = vi.hoisted(() => ({
   startWorkflow: vi.fn((_workflow: unknown, _options: unknown) => async (..._args: unknown[]) => undefined),
   createDbosClient: vi.fn(),
   clientEnqueue: vi.fn(),
+  scheduledTick: undefined as (() => Promise<void>) | undefined,
+  poolShedFixture: false,
+  probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
+  recordPoolShedEvent: vi.fn(),
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -34,12 +38,20 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
     DBOS: {
       workflowID: 'test-routine-fire',
       runStep: async (fn: () => unknown, config?: { name?: string }) => {
+        // Execute the real registered scheduler up to its critical-probe return,
+        // keeping database occupancy and loop-rebase effects private to this fixture.
+        if (state.poolShedFixture && config?.name === 'routine-dispatch-feedback-epoch') {
+          return { queues: [] };
+        }
+        if (state.poolShedFixture && config?.name === 'loop-rebase-sweep') return;
         const output = await fn();
         state.stepOutputs.push({ name: config?.name ?? '', output });
         return output;
       },
       registerWorkflow: (impl: unknown) => impl,
-      registerScheduled: vi.fn(),
+      registerScheduled: (impl: () => Promise<void>) => {
+        state.scheduledTick = impl;
+      },
       startWorkflow: state.startWorkflow,
     },
     DBOSClient: { create: state.createDbosClient },
@@ -73,6 +85,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 
 vi.mock('../workspace-als', () => ({
   runWithWorkspace: (_workspaceId: string, fn: () => unknown) => fn(),
+  currentRequestWorkspaceId: () => 'routine-probe-fixture',
 }));
 
 vi.mock('../harness/routines/claim', () => ({
@@ -87,6 +100,18 @@ vi.mock('../harness/routines/loop-fire', () => ({
 vi.mock('./dbos-executor-reaper', () => ({
   clearStaleReaperLastError: vi.fn(async () => {}),
 }));
+
+vi.mock('./pool-pressure', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./pool-pressure')>();
+  return {
+    ...actual,
+    poolPressure: vi.fn(async () => 'critical'),
+    lastPoolProbeMs: () => state.probe.admissionMs,
+    lastPoolProbeRawMs: () => state.probe.rawMs,
+    lastPoolProbeLoopDelayMs: () => state.probe.discountMs,
+    recordPoolShedEvent: state.recordPoolShedEvent,
+  };
+});
 
 vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
@@ -122,6 +147,7 @@ import { CaplessAdaptiveController } from '../resource-governor/controller';
 beforeEach(() => {
   state.stepOutputs.length = 0;
   vi.clearAllMocks();
+  state.poolShedFixture = false;
   state.dbosStarted = true;
   state.createDbosClient.mockResolvedValue({ enqueue: state.clientEnqueue });
   state.clientEnqueue.mockResolvedValue({ workflowID: 'routine:rt_home_git_sync' });
@@ -431,6 +457,37 @@ describe('routinesTickImpl — loop rebase survives critical pool shed (EI-21859
     const branch = shedSection.match(/if \(poolCritical\) \{[\s\S]*?return;\n  \}/)?.[0] ?? '';
     expect(branch).toContain('await runLoopRebaseSweep(sql);');
     expect(source).toContain('async function runLoopRebaseSweep');
+  });
+});
+
+describe('routinesTickImpl — probe evidence', () => {
+  it.each([
+    { name: 'slow completed probe', rawMs: 3000, admissionMs: 2500, discountMs: 500, netMs: 2500 },
+    { name: 'timeout-floor admission', rawMs: 1000, admissionMs: 2000, discountMs: 500, netMs: 500 },
+  ])('reports $name without asserting connection starvation', async (probe) => {
+    state.poolShedFixture = true;
+    state.probe = probe;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(state.scheduledTick).toBeTypeOf('function');
+      await state.scheduledTick!();
+      const warning = warn.mock.calls.find(([line]) => String(line).startsWith('[routines-tick]'));
+      expect(warning).toBeDefined();
+      const [line, detail] = warning!;
+      expect(line).toContain('slow pool probe');
+      expect(line).not.toMatch(/starvation|CPU-bound/);
+      expect(detail).toMatchObject({
+        probeRawMs: probe.rawMs,
+        probeNetMs: probe.netMs,
+        probeAdmissionMs: probe.admissionMs,
+        loopP99DiscountMs: probe.discountMs,
+        criticalProbeMs: 2000,
+      });
+      expect(detail.shedCount).toBeGreaterThan(0);
+      expect(state.recordPoolShedEvent).toHaveBeenCalledWith(expect.any(String), detail.shedCount);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

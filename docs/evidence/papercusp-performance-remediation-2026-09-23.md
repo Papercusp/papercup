@@ -2854,3 +2854,75 @@ This verifies the intended disabled-path warning contract. It does not run
 an embedding model, prove historical process configuration, quantify memory
 or CPU cost, or settle the historical app-latency lead. No embedding source
 change or shared-host operation was made; the historical impact remains open.
+
+### Loop-lag and routine-shed evidence — 04:38Z
+
+The frozen F11 audit's 148 loop-lag and 61 routine-shed entries are retained
+warning-line categories from a capped tail. They do not count independent
+incidents, CPU saturation, exhausted connections, or delayed user actions.
+
+Current writers distinguish these measurements:
+
+- `event-loop-lag-monitor.ts` uses the native delay histogram at 20ms
+  resolution, with a default 10,000ms read/reset interval. Warnings start at
+  p95 >=100ms and include elapsed window, observation count and maturity.
+  Pressure defaults to 120/600ms; maturity requires 20 observations or an
+  entire elapsed window. A timer on the observed loop cannot report during
+  a synchronous block, and its delayed callback can lengthen the window.
+- `routines-workflow.ts` schedules every 30 seconds by default. Its root
+  scheduler currently never sheds on loop pressure; heavy ticks use the
+  separate `tick-load-shed.ts` policy. The root also has an overlap skip.
+- `pool-pressure.ts` times acquire plus SELECT1 across an await, subtracts
+  a live-window p99 heuristic, then applies the timeout admission floor.
+  Default classification thresholds are 250/2000ms. Neither the raw nor
+  adjusted value isolates acquisition, query execution or scheduling.
+  `pool-shed #N` counts critical-probe ticks during this process's lifetime,
+  rather than a rate or distinct outages. Critical fires and loop-rebase
+  survive that shed; non-critical fires and heavy sweeps are withheld.
+
+The scheduler warning previously asserted `PG pool starvation` while printing
+only the final adjusted/admission value as `acquire+SELECT1 probe`. A maintained
+test invokes the real registered scheduler with private probe and DBOS effects.
+Its pre-fix run failed on the actual warning: expected `slow pool probe`, received
+`PG pool starvation ... probe 2500ms ... pool-shed #1` (exit 1). The first fixture
+attempt stopped on an incomplete workspace mock; it supplied no product proof.
+
+The existing warning now emits `slow pool probe`, raw wall milliseconds,
+raw-minus-p99 milliseconds, the classified admission value, p99 discount,
+critical threshold and process-local shed count. This extends existing probe
+getters and the warning; it adds no table, timer, config key or admission policy.
+The regression covers both a slow completed probe and timeout-floor admission
+(raw 1000ms, discount 500ms, net 500ms, admission 2000ms). The wider run exposed
+an old lag-test expectation that contradicted the full-window maturity rule;
+the assertion now accepts maturity for its elapsed 475ms/100ms window.
+
+Canonical verification:
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file --
+packages/operator-core/lib/dbos/routines-workflow.test.ts
+packages/operator-core/lib/dbos/pool-pressure.test.ts
+packages/operator-core/lib/dbos/tick-load-shed.test.ts
+packages/operator-core/lib/event-loop-lag-monitor.test.ts`.
+Final result: 134/134 passed across four files, no skips, exit 0; checkout
+`0f943d68e5` plus local source/test edits. Logs:
+`/tmp/p008-routine-probe-red-20261001-r2.log` and
+`/tmp/p008-loop-shed-matrix-20261001-r2.log`.
+
+SHA-256 at verification:
+
+| File | SHA-256 |
+|---|---|
+| `event-loop-lag-monitor.ts` | `dd31ac5495ed4b4fc0d0dbd3555130e2e84ffcac9eb26cdd4a1fb725016b6bd1` |
+| `event-loop-lag-monitor.test.ts` | `d046b59141827a2c2e029037b81daef9cb6ac4d70c0ff44fda61f466578a0162` |
+| `dbos/pool-pressure.ts` | `182d4c755b657f6cf578aa0fb7062c9da9be4c47f8750959d372789b13fdfe1b` |
+| `dbos/pool-pressure.test.ts` | `6622ed044ec5fcbbfacdbe4931ade802ebdba594be804ef77393b3308bb9b5f1` |
+| `dbos/tick-load-shed.ts` | `28b9c9cbd162cf19666c97710bc4f09e4feee842cac7b6d411bc9762315d94b8` |
+| `dbos/tick-load-shed.test.ts` | `da172e2f00b01c83c496981e6afc19165636d0871777a1d05d3c1fbea6480d5a` |
+| `dbos/routines-workflow.ts` | `f8de17f0032b18b9be163227e56977f2e395584e5151d8f9e6a0e781b5015a49` |
+| `dbos/routines-workflow.test.ts` | `54057bcfc00a6fc9eb5f7bb31b11b89cb6078ab5dd90f21de0103c5c035d8adc` |
+| Final matrix log | `2b21259ac5ebad205623e7d0dceb26f322afa5b2f9877ab5e5c033339d43ae96` |
+| Pre-fix warning log | `f047b1c7fda8a88bf21f8ef7aef3f606d27cf67d47b97043762354ae625de61a` |
+
+These checks fix causal overstatement at the diagnostic writer and preserve
+the existing scheduling policy. They do not establish live adoption or the
+cause, frequency, or app-latency effect of historical shedding. No shared
+service, live-gate, Portal or federation operation occurred. P-008 remains open.

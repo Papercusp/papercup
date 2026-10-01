@@ -1004,6 +1004,44 @@ describe('migration reservation reconciliation (WI-38354)', () => {
     ]);
   });
 
+  it('counts only inserted rows when a peer reserves a number after the reconciliation read', async () => {
+    await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
+    await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');
+    await rootSql.unsafe('INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ($1, $2)', [
+      '999999-reconcile-race.sql',
+      '0'.repeat(64),
+    ]);
+
+    // Inject a real committed peer reservation immediately before the INSERT.
+    // The existing ON CONFLICT must preserve it, and neither the result nor
+    // the diagnostic may count that skipped row as one this call inserted.
+    const racingClient = new Proxy(rootSql, {
+      apply: (target, thisArg, args) => {
+        const strings = args[0];
+        if (Array.isArray(strings) && strings.join('').includes('INSERT INTO harness_shared.migration_reservations')) {
+          return (async () => {
+            await rootSql.unsafe(
+              'INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent) VALUES ($1, $2, $3, $4)',
+              [999999, '999999-peer-reservation.sql', 'peer', 'reserved concurrently'],
+            );
+            return Reflect.apply(target, thisArg, args);
+          })();
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+    const logs: string[] = [];
+    const count = await reconcileMigrationReservations(racingClient, (message) => logs.push(message));
+
+    expect(count).toBe(0);
+    expect(logs).toEqual([]);
+    const rows = await rootSql<{ filename: string; reserved_by: string; intent: string }[]>`
+      SELECT filename, reserved_by, intent FROM harness_shared.migration_reservations WHERE num = 999999`;
+    expect(rows).toEqual([
+      { filename: '999999-peer-reservation.sql', reserved_by: 'peer', intent: 'reserved concurrently' },
+    ]);
+  });
+
   it('does not re-emit conflicts for applied filenames removed after a collision was repaired', async () => {
     await rootSql.unsafe('TRUNCATE harness_shared.migration_reservations');
     await rootSql.unsafe('TRUNCATE harness_shared.schema_migrations');

@@ -59,11 +59,13 @@ import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { useSyncQuery } from '@papercusp/sync';
+import { preparePlanDocument } from '@papercusp/ui-primitives';
 import { useFlag } from '@/lib/flag-hooks';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Button } from '@/app/harness/Button';
 import { preloadVditor } from '@/app/_components/MarkdownEditor';
 import { bucketOf, usePlan } from '@/app/admin/plans/plans-api';
+import { stripFrontmatter } from '@/app/admin/plans/plan-renderers';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import SessionChatModal from '../chat/SessionChatModal';
 import {
@@ -123,6 +125,7 @@ interface PlanWorkActivityRow {
  * mark (not a budgeted interaction): it proves the async Vditor/Lute warm-up
  * finished before a warm-route sample starts. */
 const VDITOR_READY_MARK = 'plan-dashboard-vditor-ready-success-v1';
+const DOCUMENT_READY_MARK = 'plan-dashboard-document-ready-success-v1';
 
 /** "2m" → "2m ago", "now" → "just now" — hover-title phrasing. */
 function agoPhrase(label: string): string {
@@ -293,6 +296,22 @@ export default function PlanDashboard({
       }
     });
   }, []);
+
+  const documentSource = plan?.raw ?? plan?.prose;
+  const legacyDocument = plan?.legacy;
+  useEffect(() => {
+    let cancelled = false;
+    try { performance.clearMarks?.(DOCUMENT_READY_MARK); } catch { /* diagnostics only */ }
+    if (documentSource === undefined) return;
+    // Match PlanDetail's read body exactly; the live plan query already owns
+    // freshness, so a changed body naturally replaces the previous preparation.
+    const body = legacyDocument ? documentSource : stripFrontmatter(documentSource);
+    void preparePlanDocument(body).then((prepared) => {
+      if (!prepared || cancelled) return;
+      try { performance.mark(DOCUMENT_READY_MARK); } catch { /* diagnostics only */ }
+    });
+    return () => { cancelled = true; };
+  }, [documentSource, legacyDocument]);
 
   const openFullPlan = useCallback(() => {
     // Time the current "open a plan" path (WI-5547): the sidebar row now

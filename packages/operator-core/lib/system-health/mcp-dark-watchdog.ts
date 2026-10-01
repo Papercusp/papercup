@@ -388,31 +388,12 @@ export function evaluateInteractiveMcpDark(
 
   // Host too young (or unknown age): the session may simply not have tool-called yet.
   if (s.hostStartedMs == null || nowMs - s.hostStartedMs < graceMs) return { dark: false, reason: null };
-  // NEVER-REGISTERED guard (mcp-dark false-positive fix, 2026-07-20): a session
-  // with NO coord_presence beat has never made a single papercusp MCP call, so
-  // there is ZERO positive evidence it is a papercusp agent whose transport DIED
-  // — it is equally (and in practice usually) a session that legitimately does
-  // not use papercusp tools: a manual/debug session run THROUGH the psu-pty
-  // wrapper (live case su-3fa86771 — a `--chrome`/strace claude-debug session
-  // whose /mcp dialog never lists papercusp-su at all). The old branch measured
-  // staleness from host-start ("it SHOULD have called by now"), so such a session
-  // is PERMANENTLY dark and the heal ladder re-injects `/mcp` every heal-window
-  // FOREVER — the owner-visible "agents keep getting /mcp" spam. And the heal can
-  // never succeed: the `/mcp` macro only RECONNECTS a server the running session
-  // already declares, so it fails every pass ("cursor never reached
-  // 'papercusp-su' in 40 downs"). That remains true when null presence is the
-  // ONLY signal. EI-21552041967359872 adds the narrow exception below: the
-  // independently-measured call-origin split proves a Papercusp launch is
-  // taking hook-backed turns while completing zero agent calls, and the heal
-  // path repairs its config before invoking /mcp. An ARMED-loop session always
-  // has ≥1 beat (the loop:arm call itself is an MCP call), so the original
-  // transport-death target — a session that WAS calling and then froze — is
-  // unchanged.
-  // A hook/agent activity gap cannot distinguish a missing client tool list
-  // from a parked session. It is not enough evidence for a dark verdict or an
-  // automatic /mcp heal; the live cadence checks below remain actionable.
-  // Null presence remains non-actionable BY ITSELF: there is no positive evidence
-  // that this session is a Papercusp agent whose transport died.
+  // A missing coord_presence beat is non-actionable by itself: the session may
+  // never have used Papercusp tools, or its row may have expired. Hook activity
+  // with zero agent-origin calls does not resolve that ambiguity; the same gap
+  // fits an idle or parked client, so it cannot upgrade the session to dark or
+  // trigger an automatic /mcp heal. Only the live cadence evidence below is
+  // actionable.
   if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
   const staleMs = nowMs - s.presenceHeartbeatMs;
 
@@ -687,7 +668,9 @@ export async function checkInteractiveMcpDark(
   };
   try {
     const discovery = await import('../events/await/psu-pty-discovery');
-    const hosts = discovery.listLiveHosts();
+    // Async (WI-10004559): a sync scan of the shared psu-pty directory can block this
+    // thread in D-state for 20s+ during a journal stall, and the sentinel then kills us.
+    const hosts = await discovery.listLiveHostsAsync();
     // NOTE: unlike an earlier version of this function, we do NOT early-return
     // here when hosts.length === 0 — the recovery sweep below (which clears
     // stale escalations for owners no longer in the dark set) must still run
@@ -751,8 +734,10 @@ export async function checkInteractiveMcpDark(
         // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
         // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
         // (idle session, reaped/absent presence row) proves nothing.
-        // A hook-origin dispatch can produce that beat while the agent MCP
-        // surface is empty, so the call-origin proof explicitly excludes it.
+        // A hook-origin dispatch can produce that beat without an agent-origin
+        // call. The activity-gap row is used only to avoid treating that beat as
+        // positive recovery evidence; it does not prove the client tool list is
+        // empty or trigger a heal.
         const recovered = toolSurface === null && presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
         verdictByOwner.set(h.ownerId, {
           dark: verdict.dark,

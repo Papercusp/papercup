@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Dream native isolated controls: acknowledged suppressed transition and normal journey",
+  "framework": "operational",
+  "command": [
+    "env",
+    "VERIFY_TAURI_ISOLATED_DB=1",
+    "VERIFY_TAURI_ISOLATED_SEED=ready",
+    "VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=These earn no new-discovery credit",
+    "DREAM_NATIVE_OUT=/tmp/dream-native-counterexample-pk-20261001T0317Z",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "scripts/verify-dream-native.sh"
+  ],
+  "startedAt": "2026-10-01T03:17:16.526Z",
+  "finishedAt": "2026-10-01T03:24:13.318Z",
+  "exitCode": 0,
+  "summary": "Sole retained native run completed exit 0; prepare, boot and assertions passed in isolated Tauri with disposable PostgreSQL. A counted database trigger suppressed the real acknowledged Start and the same transition oracle rejected it. Removing the fault restored normal controls. Seeded current-build operational evidence only; human calibration, scientific benefit and deployed-main acceptance remain unfulfilled.",
+  "assertions": [
+    {
+      "id": "counterexample-real-acknowledgement",
+      "passed": true,
+      "evidence": "Enabled native Start was clicked. Real dream:control/manual/enabled:true request returned HTTP 200, envelopeOk:true, refused:false. No fetch response was substituted."
+    },
+    {
+      "id": "counterexample-runtime-writer",
+      "passed": true,
+      "evidence": "Disposable database trigger recorded suppressed:1; manual and automatic routines remained inactive. PRIMARY KEY(workspace_id,pot_slug) allowed the counter update under UPDATE publication."
+    },
+    {
+      "id": "counterexample-detected",
+      "passed": true,
+      "evidence": "Unchanged UI plus persisted-runtime transition oracle failed within 5s: Manual dreaming: scheduled was absent. Separate PostgreSQL observation confirmed manual active:false. Script retained runtime-transition counterexample rejected."
+    },
+    {
+      "id": "start-pause-resume",
+      "passed": true,
+      "evidence": "After removing the trigger, UI scheduled/paused/scheduled/paused and independent PostgreSQL active true/false/true/false matched Start/Pause/resume/final Pause. Automatic routine stayed inactive."
+    },
+    {
+      "id": "history-and-source-links",
+      "passed": true,
+      "evidence": "Analyze rendered seeded history, opened Dream native-fixture-run, showed Catalogue coverage: partial and Falsifiable experiment, and source anchor resolved to its captured rendered target. Native no-errors checks passed."
+    },
+    {
+      "id": "instrument-negative-control",
+      "passed": true,
+      "evidence": "Impossible selector .dream-native-impossible-sentinel failed as expected. Instrument-only control; causal runtime evidence is the separate suppressed-write counterexample."
+    },
+    {
+      "id": "target-source-freshness-at-run-end",
+      "passed": true,
+      "evidence": "Shared SPA rebuilt after freeze; exact 20-file Dream source manifest remained byte-identical at run end. Source hashes below pin that passing snapshot. Later evidence preparation refused temporary dream-config.ts hash mismatches during a peer mutation probe; this artifact does not certify later mutant bytes."
+    },
+    {
+      "id": "screenshot",
+      "passed": true,
+      "evidence": "Three window-import attempts failed; root fallback produced readable 1920x1080 PNG. Visually inspected desktop with dream-native selected and history/controls entry visible. Expanded detail is outside the viewport."
+    },
+    {
+      "id": "native-harness-verdict",
+      "passed": true,
+      "evidence": "Run 20261001T031714Z-2909363: prepare/boot/assert passed, verdict pass, firstFailure null. Durable task 0muoyqyw61hlzeii1iq completed exit 0 at 2026-10-01T03:25:37.216Z."
+    }
+  ],
+  "provenance": {
+    "taskId": "0muoyqyw61hlzeii1iq",
+    "runId": "20261001T031714Z-2909363",
+    "evidencePlane": "isolated-current-build",
+    "terminalObservedAt": "2026-10-01T03:25:37.216Z",
+    "artifacts": {
+      "commandLog": {
+        "path": ".papercusp/scratch/dream-native-counterexample-pk-20261001T0317Z.log",
+        "sha256": "87e394c9c81043b485e317d0c71168502487e301ca6f52446dfdf82b59bfab1b"
+      },
+      "taskLog": {
+        "path": ".papercusp/scratch/bash-b2eeba48-e41.log",
+        "sha256": "a5dcd669dcbd496d7c3d9b7a58acd3c4f7d900cc81174cbb92ae18ab5b56e81a"
+      },
+      "harnessResult": {
+        "path": "~/.local/state/verification-harness/verify-tauri-headless/20261001T031714Z-2909363/result.json",
+        "sha256": "f103d5d1676cca5e8a3d46018c85a4d213b0370e37493f67ce62560dbf618e8e"
+      },
+      "screenshot": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/dream-native.png",
+        "sha256": "ec6d4d1cd10bd55c805b501bdb6bd36e72216f1a0454ae79f72fb7c226ba789c"
+      },
+      "sourceManifest": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/target-sources.sha256",
+        "sha256": "3ea4a68f308779bec86d279414f5a8ed2ae4cdd2503905a62d1b04e7f537b841"
+      },
+      "counterexampleInteraction": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/counterexample-interaction.json",
+        "sha256": "cab557a3827bb9d251fc260313e7849c98496d2ec98c9a4cf0c6a4a69b72a50d"
+      },
+      "counterexampleWriter": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/counterexample-writer.json",
+        "sha256": "0ab89757da80f2be8c7b97f23c8fcd2096ec9c5e9be9ec4e05feafb7f60cbc48"
+      },
+      "counterexampleRejection": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/counterexample-rejected.log",
+        "sha256": "9c795cf2289a5e518621bec29c914818c139e61523d9dbde2d9bf3e184f4f02e"
+      },
+      "counterexampleRuntime": {
+        "path": "/tmp/dream-native-counterexample-pk-20261001T0317Z/counterexample-runtime.json",
+        "sha256": "4bcbe2e666af5bd7ab65b7413a0f6f11bb858233b6798add739dbc0761043d7e"
+      }
+    },
+    "targetSourceSnapshot": {
+      "apps/operator-vite/src/components/adv/DreamControl.tsx": "be38700755f714095472e223b98460d925f7dee4bed47c78bc76e112f7354478",
+      "apps/operator-vite/src/components/adv/DreamPanel.tsx": "d94ee13f77397374214bac5706fc5a7ff5fc0cff2a2827d689045ea5828ebf9c",
+      "apps/operator-vite/src/components/adv/dream-view.fixture.json": "f988e31c5d66d1ee2d0622d17599144c97ed8b55b2be7bfb1de9393e56bf3e4b",
+      "packages/operator-core/lib/dream/capability-catalog.ts": "b6b08c1d8251c9631b6c4bb9722512c9255db93be4d25f74e378ae1062d0c5d8",
+      "packages/operator-core/lib/dream/capability-contracts.ts": "ed3c757e2c8a53663e430e58fca96c93901b921432027cb724a4ef029154fa22",
+      "packages/operator-core/lib/dream/capability-packets.ts": "52bccbd3689438dfe8fbaaf7ed17fa3fd6c6a40c66b7a92add9fc0515918b28c",
+      "packages/operator-core/lib/dream/capability-pass.ts": "aca148b8d11635e7f634acde15010e8f7cfce985ee63c50aad60fce05032d3fd",
+      "packages/operator-core/lib/dream/capability-review.ts": "5656854b8ccc14c3e80ae1fea868966591ad8b3c60dd61a925f36fea5d11ad8e",
+      "packages/operator-core/lib/dream/dream-config.ts": "24939d2075aa4e8f8b02bfd2d948c6f17522bf18ba40c8dc4a0d65cd566bab98",
+      "packages/operator-core/lib/dream/dream-control.ts": "a3f29001278a21a4086548d242d39ea8c0598eaaf0b8482abc5ed67a12304705",
+      "packages/operator-core/lib/dream/dream-cycle-action.ts": "12f64442f1c38e3ce24361caba5fc7bc5ce1d1e82079bae5b578d96cce2b49f7",
+      "packages/operator-core/lib/dream/dream-cycle.ts": "3d26984a6e33f3c3664f812802a888f1ef7bf2a54e2c8eb3c0dc036462e18896",
+      "packages/operator-core/lib/dream/dream-evaluation.ts": "b6ca5afb0583b5abedcbcb7848f9046b9b37f55a9e36798bf341c4e5782bf138",
+      "packages/operator-core/lib/dream/dream-metrics.ts": "0c99e3f24ebc3beface820645a5b88f06bc3cd57bdcdc43dfae3199abbfcc373",
+      "packages/operator-core/lib/dream/dream-read.ts": "7f827bcf339bdd5392b76fb4d0822cab24e6c388781bb3a84379748f29ca32c9",
+      "packages/operator-core/lib/dream/dream-run-provenance.ts": "7ae8a71a3094d490eb4ffc7b0ac3cf5f9b7b34183d3aa71ddc4406060a601afd",
+      "packages/operator-core/lib/dream/dream-sources.ts": "fc892e17b36863a9bccb7dcba122dbb37f42d18c4096512d14a123f829ccc06b",
+      "packages/operator-core/lib/agent-tools/learning/dream-control.ts": "472b6e06c5c65997f22df918e266845db6f09f8ed5f07215ddd476922918f753",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts": "13831022a9c52eec6c99fe6efc0c2bdecbe5a23f96f00c7eabf4af5de9cadc6c",
+      "scripts/verify-dream-native.sh": "1d0ed8eb10e9daee078d4f6ced899cb6eba6bd64d5c280e128aea72d2b296f9e"
+    },
+    "counterexample": {
+      "ack": {
+        "httpOk": true,
+        "status": 200,
+        "envelopeOk": true,
+        "refused": false
+      },
+      "probe": {
+        "clicks": [
+          {
+            "disabled": false
+          }
+        ],
+        "requests": [
+          {
+            "name": "dream:control",
+            "pot": "dream-native",
+            "mode": "manual",
+            "enabled": true
+          }
+        ]
+      },
+      "writer": {
+        "pot": "dream-native",
+        "suppressed": 1
+      },
+      "runtime": {
+        "pot": "dream-native",
+        "expectedActive": false,
+        "manual": {
+          "name": "dream-cycle-manual",
+          "active": false
+        },
+        "automatic": {
+          "name": "dream-cycle-auto",
+          "active": false
+        }
+      },
+      "rejection": "FATAL: DOM assertion did not pass within 5s (pid=3080681)\n[PASS] selector: [data-testid=\"dream-control\"]\n[FAIL] text: Manual dreaming: scheduled\n[PASS] no-errors\n"
+    },
+    "normalRuntimeObservations": {
+      "start": {
+        "pot": "dream-native",
+        "expectedActive": true,
+        "manual": {
+          "name": "dream-cycle-manual",
+          "active": true
+        },
+        "automatic": {
+          "name": "dream-cycle-auto",
+          "active": false
+        }
+      },
+      "pause": {
+        "pot": "dream-native",
+        "expectedActive": false,
+        "manual": {
+          "name": "dream-cycle-manual",
+          "active": false
+        },
+        "automatic": {
+          "name": "dream-cycle-auto",
+          "active": false
+        }
+      },
+      "resume": {
+        "pot": "dream-native",
+        "expectedActive": true,
+        "manual": {
+          "name": "dream-cycle-manual",
+          "active": true
+        },
+        "automatic": {
+          "name": "dream-cycle-auto",
+          "active": false
+        }
+      },
+      "final-pause": {
+        "pot": "dream-native",
+        "expectedActive": false,
+        "manual": {
+          "name": "dream-cycle-manual",
+          "active": false
+        },
+        "automatic": {
+          "name": "dream-cycle-auto",
+          "active": false
+        }
+      }
+    },
+    "limitations": [
+      "Seeded immutable history; no provider generation or automatic cycle execution",
+      "No independent human calibration or judgment",
+      "No beneficial scientific experiment; original study remains inconclusive",
+      "No deployed-main or shipment verification",
+      "Raw paths are local retained files pinned by SHA-256; decisive runtime observations and source hashes are embedded",
+      "Source freshness for any binding requires a separate match against this captured snapshot after concurrent mutation probes restore their baseline"
+    ]
+  }
+}

@@ -22,6 +22,7 @@ const {
   beginInteractionSpy,
   markInteractionPhaseSpy,
   preloadVditorSpy,
+  preparePlanDocumentSpy,
   toastSpies,
   cleanupFlag,
 } = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ const {
   beginInteractionSpy: vi.fn(),
   markInteractionPhaseSpy: vi.fn(),
   preloadVditorSpy: vi.fn(() => Promise.resolve(true)),
+  preparePlanDocumentSpy: vi.fn(() => Promise.resolve(true)),
   toastSpies: { success: vi.fn(), error: vi.fn() },
   cleanupFlag: { value: true },
 }));
@@ -116,6 +118,10 @@ vi.mock('../perf/perf-marks', () => ({
 }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({
   preloadVditor: preloadVditorSpy,
+}));
+vi.mock('@papercusp/ui-primitives', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/ui-primitives')>(),
+  preparePlanDocument: preparePlanDocumentSpy,
 }));
 vi.mock('sonner', () => ({ toast: toastSpies }));
 // The session chat is a heavy modal stack — assert the prop seam only.
@@ -306,6 +312,7 @@ afterEach(() => {
   beginInteractionSpy.mockClear();
   markInteractionPhaseSpy.mockClear();
   preloadVditorSpy.mockClear();
+  preparePlanDocumentSpy.mockReset().mockResolvedValue(true);
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
   cleanupFlag.value = true;
@@ -313,6 +320,35 @@ afterEach(() => {
 });
 
 describe('PlanDashboard header', () => {
+  it('prepares the exact read body from its existing live plan query and refreshes changed content', async () => {
+    const mark = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
+    seed();
+    planData.value!.raw = '---\ntitle: First\n---\n# First';
+    const mounted = renderDash();
+    await waitFor(() => expect(preparePlanDocumentSpy).toHaveBeenCalledWith('# First'));
+    await waitFor(() => expect(mark).toHaveBeenCalledWith('plan-dashboard-document-ready-success-v1'));
+    planData.value!.raw = '---\ntitle: Next\n---\n# Next';
+    mounted.rerender(<PlanDashboard planSlug="p1" harnessSlug="papercusp" onBack={mounted.onBack} />);
+    await waitFor(() => expect(preparePlanDocumentSpy).toHaveBeenLastCalledWith('# Next'));
+  });
+
+  it('does not mark document readiness after a failed or superseded preparation', async () => {
+    const mark = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
+    let finish!: (value: boolean) => void;
+    preparePlanDocumentSpy.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+    preparePlanDocumentSpy.mockResolvedValueOnce(false);
+    seed();
+    planData.value!.raw = '# Old';
+    const mounted = renderDash();
+    planData.value!.raw = '# Failed';
+    mounted.rerender(<PlanDashboard planSlug="p1" harnessSlug="papercusp" onBack={mounted.onBack} />);
+    finish(true);
+    await Promise.resolve();
+    expect(mark.mock.calls.some(([name]) => name === 'plan-dashboard-document-ready-success-v1')).toBe(false);
+  });
+
   it('marks Vditor ready only after the independently deep-linkable dashboard warms it', async () => {
     const mark = vi.fn();
     const clearMarks = vi.fn();

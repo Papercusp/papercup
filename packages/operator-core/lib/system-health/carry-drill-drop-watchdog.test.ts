@@ -126,7 +126,7 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
     });
   });
 
-  it('reads recent per-owner bounded tails and excludes the shared drill ledger', () => {
+  it('reads recent per-owner bounded tails and excludes the shared drill ledger', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'production-carry-watchdog-'));
     try {
       writeFileSync(
@@ -142,7 +142,7 @@ describe('production carry delivery rate (EI-18168050721107453)', () => {
       const stale = new Date(NOW - 2 * 60 * 60_000);
       utimesSync(stalePath, stale, stale);
 
-      expect(readRecentProductionCarryEvents(dir, NOW)).toEqual([
+      expect(await readRecentProductionCarryEvents(dir, NOW)).toEqual([
         expect.objectContaining({ kind: 'respawn-carry-delivered' }),
       ]);
     } finally {
@@ -269,7 +269,7 @@ describe('orphanedRespawnAlert (WI-10001537)', () => {
 });
 
 describe('listOrphanCandidateOwners (WI-10001537)', () => {
-  it('bounds the scan by ledger mtime and ignores the shared drill ledger', () => {
+  it('bounds the scan by ledger mtime and ignores the shared drill ledger', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orphan-candidates-'));
     try {
       const write = (name: string, ageMs: number) => {
@@ -283,14 +283,14 @@ describe('listOrphanCandidateOwners (WI-10001537)', () => {
       write('carry-drills.events.jsonl', 60_000); // shared ledger, not an owner
       write('su-notaledger.json', 60_000); // discovery file, wrong suffix
 
-      expect(listOrphanCandidateOwners(dir, ORPHAN_NOW)).toEqual(['su-recent']);
+      expect(await listOrphanCandidateOwners(dir, ORPHAN_NOW)).toEqual(['su-recent']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('returns empty rather than throwing when the directory is absent', () => {
-    expect(listOrphanCandidateOwners(join(tmpdir(), 'no-such-psu-pty-dir-xyz'), ORPHAN_NOW)).toEqual([]);
+  it('returns empty rather than throwing when the directory is absent', async () => {
+    expect(await listOrphanCandidateOwners(join(tmpdir(), 'no-such-psu-pty-dir-xyz'), ORPHAN_NOW)).toEqual([]);
   });
 });
 
@@ -305,7 +305,7 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
     const escalate = vi.fn(async (_alert: OrphanedRespawnAlert) => {});
     const result = await runOrphanedRespawnSweepOnce({
       ...baseDeps,
-      listCandidates: () => ['su-a', 'su-b'],
+      listCandidates: async () => ['su-a', 'su-b'],
       readPrior: async (ownerId) => (ownerId === 'su-a' ? pending() : pending({ outcome: 'delivered' })),
       hostLive: () => false,
       escalate,
@@ -329,7 +329,7 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
     const escalate = vi.fn(async () => {});
     const result = await runOrphanedRespawnSweepOnce({
       ...baseDeps,
-      listCandidates: () => ['su-unknown'],
+      listCandidates: async () => ['su-unknown'],
       readPrior: async () => pending(),
       hostLive: () => {
         throw new Error('procfs unreadable');
@@ -344,7 +344,7 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
     const escalate = vi.fn(async (_alert: OrphanedRespawnAlert) => {});
     const result = await runOrphanedRespawnSweepOnce({
       ...baseDeps,
-      listCandidates: () => ['su-broken', 'su-orphan'],
+      listCandidates: async () => ['su-broken', 'su-orphan'],
       readPrior: async (ownerId) => {
         if (ownerId === 'su-broken') throw new Error('corrupt ledger');
         return pending();
@@ -362,7 +362,7 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
     });
     const result = await runOrphanedRespawnSweepOnce({
       ...baseDeps,
-      listCandidates: () => ['su-a'],
+      listCandidates: async () => ['su-a'],
       readPrior: async () => pending(),
       hostLive: () => false,
       escalate,

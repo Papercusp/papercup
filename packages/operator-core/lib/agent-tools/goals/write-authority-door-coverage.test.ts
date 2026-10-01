@@ -60,6 +60,57 @@ const makeCtx = () => ({
   role: 'su',
 });
 
+const authorityScenarios = ['elected-write', 'superseded-set-schedule', 'superseded-arm-schedule'] as const;
+const authorityControl = process.env.PAPERCUSP_GOAL_AUTHORITY_CONTROL;
+if (authorityControl && !authorityScenarios.includes(authorityControl as typeof authorityScenarios[number])) {
+  throw new Error(`Unknown permanent goal authority control: ${authorityControl}`);
+}
+
+async function observeScheduleDoor(scenario: typeof authorityScenarios[number], wrong = false) {
+  const elected = scenario === 'elected-write';
+  if (elected !== wrong) mocks.guard.mockResolvedValue({ status: 'elected' });
+  else mocks.guard.mockRejectedValue(superseded);
+  const ctx = makeCtx();
+  let refused = false;
+  try {
+    if (scenario === 'superseded-arm-schedule') {
+      await armScheduleTool.handler({ harness: 'pot-1', goalId: 'goal-1' } as never, ctx as never);
+    } else {
+      await setScheduleTool.handler({
+        harness: 'pot-1', goalId: 'goal-1', schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' },
+      } as never, ctx as never);
+      if (elected) {
+        await armScheduleTool.handler({ harness: 'pot-1', goalId: 'goal-1' } as never, ctx as never);
+      }
+    }
+  } catch (error) {
+    expect(error).toBe(superseded);
+    refused = true;
+  }
+  return {
+    refused,
+    materialized: mocks.materializeGoalSchedule.mock.calls.length,
+    armed: mocks.armGoalSchedule.mock.calls.length,
+  };
+}
+
+describe('goal authority causal controls (WI-1074216)', () => {
+  it('authority calibration: an elected caller can author and arm', async () => {
+    expect(await observeScheduleDoor('elected-write')).toEqual({ refused: false, materialized: 1, armed: 1 });
+  });
+
+  it.each(authorityScenarios)('repaired authority contract: %s', async (scenario) => {
+    // The permanent falsifier reverses only the authority verdict at its DI seam.
+    // The real handlers and side-effect spies run in both arms of the causal pair.
+    const actual = await observeScheduleDoor(scenario, authorityControl === scenario);
+    expect(actual, `authority-contract:${scenario}`).toEqual(
+      scenario === 'elected-write'
+        ? { refused: false, materialized: 1, armed: 1 }
+        : { refused: true, materialized: 0, armed: 0 },
+    );
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.activeWorkspaceId.mockReturnValue('ws-1');

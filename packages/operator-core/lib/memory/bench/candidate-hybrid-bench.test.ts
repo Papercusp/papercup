@@ -72,6 +72,8 @@ describe('frozen seven-bar measurement contracts (P-001)', () => {
     expect(() => validateMeasurementManifest({ ...manifest, contracts: { ...manifest.contracts, freshProcessBlocks: 3 } })).toThrow();
     expect(() => validateMeasurementManifest({ ...manifest, cells: [...manifest.cells.slice(1), { ...manifest.cells[1], id: 'extra', output: 'extra' }] })).toThrow('missing promised bar');
     expect(() => validateMeasurementManifest({ ...manifest, cells: manifest.cells.map((c) => ({ ...c, output: 'same' })) })).toThrow('duplicate output');
+    expect(() => validateMeasurementManifest({ ...manifest, arms: manifest.arms.map((a) => ({ ...a,
+      artifacts: { ...a.artifacts, weightLayout: 'external', weights: [] } })) })).toThrow('weight identity');
   });
   it('rejects source leakage even when the query author forges different group strings', () => {
     const { entries, queries, proof } = independentCohortFixture();

@@ -1071,6 +1071,15 @@ describe('handler — graceful degrade + result shape', () => {
     expect(hit?.returnsSource).toBeNull();
   });
 
+  it('preserves nested object-union branch requirements in compact arg schemas', async () => {
+    const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+    const schema = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.argSchema ?? '';
+
+    expect(schema).toContain(
+      'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
+    );
+  });
+
   it('honors an explicit full payload tier for the complete argument schema', async () => {
     expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
     const compact = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });

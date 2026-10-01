@@ -64,6 +64,8 @@ import {
   poolPressure,
   recordPoolShed,
   lastPoolProbeMs,
+  lastPoolProbeRawMs,
+  lastPoolProbeLoopDelayMs,
   recordPoolShedEvent,
   type PoolPressure,
 } from './pool-pressure';
@@ -876,14 +878,11 @@ async function routinesTickImpl(): Promise<void> {
     console.warn(`[routines-tick] SKIPPED — event loop pressure, shedding scheduler tick`);
     return;
   }
-  // P-006/W4 (D-002/D-003): symmetric PG-CONNECTION-POOL shed. The loopPressure() gate
-  // above covers the event-loop freeze mode; POOL STARVATION is the OTHER (the real
-  // ~8× Jul 1-2 root cause) and had no guard. If a trivial acquire+`SELECT 1` against
-  // the org pool is critically slow, every PG sweep below would block the same way and
-  // pile MORE work onto an already-exhausted pool — freezing git-sync (enqueued at the
-  // tick top) with it, then a silent bghost-watchdog restart. Shed + COUNT instead, so
-  // the starvation becomes a loud counted signal (the bghost-watchdog stays the backstop;
-  // the dead-routine detector still catches a sustained freeze — this adds attribution).
+  // P-006/W4 (D-002/D-003): shed heavy sweeps when the shared org pool's probe
+  // classifies critical. Its acquire+SELECT1 wall time also includes query execution,
+  // transport and JS scheduling. The live p99 discount is a heuristic; neither the
+  // raw nor adjusted duration isolates connection acquisition or proves starvation.
+  // Retain both values in the warning so later attribution can inspect the evidence.
   // Fail-soft: poolPressure() returns 'ok' on any probe error (never shed on no signal).
   //
   // EI-11171 CRITICAL-ROUTINE FLOOR: a critical shed no longer goes fully dark. The original
@@ -892,16 +891,26 @@ async function routinesTickImpl(): Promise<void> {
   // starvation froze every commit + deploy for 7h on 2026-06-23). Shedding it too silently
   // re-armed that exact incident class. Instead we set `poolCritical` and fall through to a
   // MINIMAL pass: fire ONLY critical-queue routines (shouldFireUnderPoolShed), then return
-  // before the heavy sweeps. Strictly additive — every non-critical fire + loop-rebase + the
-  // heavy sweeps stay shed exactly as before, so the shed's protective behaviour is unchanged;
-  // this only guarantees the must-never-starve lane survives (bounded to ~a few quick queries).
+  // before the heavy sweeps. Non-critical fires and heavy sweeps remain shed;
+  // the liveness-critical loop-rebase pass below also survives the shed.
   const pool = await poolPressure();
   const poolProbeMs = lastPoolProbeMs();
   const poolCritical = pool === 'critical';
   if (poolCritical) {
     const shedCount = recordPoolShed();
+    const probeRawMs = lastPoolProbeRawMs();
+    const loopP99DiscountMs = lastPoolProbeLoopDelayMs();
     console.warn(
-      `[routines-tick] PG pool starvation (acquire+SELECT1 probe ${poolProbeMs}ms ≥ critical) — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
+      `[routines-tick] slow pool probe — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
+      {
+        probeRawMs,
+        probeNetMs: Math.max(0, probeRawMs - loopP99DiscountMs),
+        // The timeout floor can make the classified value exceed the net duration.
+        probeAdmissionMs: poolProbeMs,
+        loopP99DiscountMs,
+        criticalProbeMs: CRITICAL_PROBE_MS,
+        shedCount,
+      },
     );
     // EI-13108 ask (2): durably record the shed (fire-and-forget — never await on an
     // already-starved pool) so instrument-staleness consumers can distinguish
@@ -916,9 +925,8 @@ async function routinesTickImpl(): Promise<void> {
   // ticks ran CONCURRENTLY, each independently walking this same serial
   // PG-touching sweep chain and compounding the contention that slowed the
   // first one. That pile-up starved due routines (armed su loop wakes) past
-  // the infra-liveness dead-routines >10m threshold. The loopPressure()/
-  // poolPressure() sheds above gate a tick's OWN start against pressure at
-  // that instant; they don't stop a SECOND tick starting once a first is
+  // the infra-liveness dead-routines >10m threshold. The pool-pressure policy
+  // above gates heavy work at that instant; it doesn't stop a SECOND tick once a first is
   // already past that gate and simply running long — this closes that gap
   // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
   if (

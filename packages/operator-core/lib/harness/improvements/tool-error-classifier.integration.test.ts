@@ -117,6 +117,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     const seed: { tool: string; status: string; code: string | null; msg: string; n: number }[] = [
       { tool: 'plans:new', status: 'error', code: null, msg: 'invalid_args: note: Too big: expected string to have <=400 characters', n: 11 },
       { tool: 'plans:new', status: 'error', code: 'handler_error', msg: 'invalid_args: status: Invalid option: expected one of "draft"|"ready"', n: 11 },
+      { tool: 'tools:invoke', status: 'error', code: 'handler_error', msg: 'invalid_input: invalid_args: Unrecognized key: "workspace"', n: 11 },
       { tool: 'plans:list', status: 'timeout', code: null, msg: 'tool "plans:list" exceeded timeout of 60s (handler returned but signal had aborted)', n: 16 },
     ];
     for (const s of seed) {
@@ -134,6 +135,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     // the two caller modes split into distinct fingerprinted keys (P-012)…
     expect(keys).toContain('plans:new:caller:invalid-args-note-too-big-expected');
     expect(keys).toContain('plans:new:caller:invalid-args-status-invalid-option-expected');
+    expect(keys).toContain('tools:invoke:caller:invalid-input-invalid-args-unrecognized-key');
     // …and the timeout is a fingerprinted transient key.
     expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
   });

@@ -15,6 +15,8 @@ Type=simple
 WorkingDirectory=%h/papercupai-workspace/papercusp/apps/operator
 Environment=PAPERCUSP_MCP_PROXY_PORT=9171
 Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3170
+# Staging activation exceeded the shared 90s retry default once (EI-24735123650974198).
+Environment=PAPERCUSP_MCP_PROXY_RETRY_MS=300000
 Environment=PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE=64
 Environment=PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT=32
 Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:%h/.cargo/bin:%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

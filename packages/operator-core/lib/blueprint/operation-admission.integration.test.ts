@@ -23,7 +23,21 @@ const {
   /* @vite-ignore */ process.env.PAPERCUSP_PROGRAM_WORKFLOW_PROBE_PATH ?? '../dbos/coord-program-workflow'
 ) as typeof import('../dbos/coord-program-workflow');
 
-const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+const connection = vi.hoisted(() => ({
+  sql: undefined as unknown as Sql,
+  // WI-10004562: member harness -> pot home slug, read by the potHomeSlugForHarness mock.
+  potHomes: {} as Record<string, string>,
+}));
+// potHomeSlugForHarness is a harness-REGISTRY read. Overriding only it makes a harness a
+// pot MEMBER while the real resolveWorkItemPot / potExists / createWorkItem path runs.
+vi.mock('../hive-federation', async () => {
+  const actual = await vi.importActual<typeof import('../hive-federation')>('../hive-federation');
+  return {
+    ...actual,
+    potHomeSlugForHarness: async (...args: Parameters<typeof actual.potHomeSlugForHarness>) =>
+      connection.potHomes[args[1]] ?? actual.potHomeSlugForHarness(...args),
+  };
+});
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
@@ -270,6 +284,66 @@ describe('program child admission pins the root specification', () => {
        WHERE workspace_id = ${workspaceId} AND request_key = ${`program:${child.receiptId}:op-nested`}
     `;
     expect(receipts).toHaveLength(0);
+  }, 90_000);
+
+  // WI-10004562 / D-045: createWorkItem re-homes a pot MEMBER harness's item to the pot
+  // home slug, while the receipt stays keyed by the operation harness. The launch scan,
+  // the root guard and the child-invocation root recheck joined work_items on the
+  // receipt's harness, so a pot member's program stayed `accepted` forever.
+  it('launches, guards and invokes a pot-member program root stored under the pot home slug', async () => {
+    const member = 'program-pot-member';
+    const potHome = 'program-pot-home';
+    await sql`
+      INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+      VALUES (${workspaceId}, ${potHome}, ${Buffer.from([1])}, 'kc-program-pot-home', 0)
+      ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
+    `;
+    connection.potHomes[member] = potHome;
+    try {
+      const specification = definition('pot-member');
+      await projectBlueprintToPg(sql, { workspaceId, harnessSlug: member,
+        blueprint: specification.configuration as Blueprint, specification });
+      const root = await submitBlueprintOperation(sql, {
+        workspaceId, harnessSlug: member, callerId: 'pot-member-caller', operationId: 'root',
+        requestKey: 'pot-member-root', input: {}, title: 'Pot member root',
+      });
+      if (root.target.kind !== 'work-item') throw new Error('program root must be a work item');
+      expect(root.harnessSlug).toBe(member);
+      // Positive control: the root really was re-homed, so this case exercises the bug.
+      const stored = await sql<Array<{ harness_slug: string }>>`
+        SELECT harness_slug FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId} AND feature_id = ${root.target.id}`;
+      expect(stored.map((row) => row.harness_slug)).toEqual([potHome]);
+      // The receipt records where its item is stored.
+      const [receipt] = await sql<Array<{ harness_slug: string; target_harness_slug: string | null }>>`
+        SELECT harness_slug, target_harness_slug FROM harness_shared.blueprint_operation_invocations
+         WHERE id = ${root.receiptId}`;
+      expect(receipt).toEqual({ harness_slug: member, target_harness_slug: potHome });
+
+      // The set-based launch scan finds the re-homed root.
+      const parent = (await findUnstartedAcceptedCoordPrograms(sql))
+        .find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+      expect(parent).toMatchObject({ harnessSlug: member, workItemId: root.target.id });
+      // The one-round-trip root guard reads it.
+      expect(await readAcceptedProgramRootGuard(sql, root, 'pot-member-caller'))
+        .toMatchObject({ terminal: false, cancellationRequested: false });
+      // A child invocation passes the current-root recheck and lands under the pot home too.
+      const child = await submitAcceptedCoordProgramChild(sql, parent!, {
+        stepId: 'op-member-leaf', operationId: 'leaf', input: { value: 'member' }, title: 'Member leaf',
+      });
+      if (child.target.kind !== 'work-item') throw new Error('leaf child must be a work item');
+      expect(await getBlueprintOperationStatus(sql, child, 'pot-member-caller')).toMatchObject({ phase: 'accepted' });
+      expect(await loadAcceptedCoordProgramChild(sql, parent!, 'member-leaf', 'leaf')).toEqual(child);
+
+      // Cancellation stays a request (D-045); the guard sees it on the re-homed root.
+      await cancelBlueprintOperation(sql, root, 'pot-member-caller', {
+        requestKey: 'pot-member-cancel', reason: 'pot member cancellation',
+      });
+      expect(await readAcceptedProgramRootGuard(sql, root, 'pot-member-caller'))
+        .toMatchObject({ terminal: false, cancellationRequested: true });
+    } finally {
+      delete connection.potHomes[member];
+    }
   }, 90_000);
 
   it('does not relaunch a legacy terminal issue-family program root', async () => {

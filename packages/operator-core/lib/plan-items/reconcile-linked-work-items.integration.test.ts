@@ -16,7 +16,8 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
-import { IMPLEMENTS_REL } from './convert';
+// NOTE (WI-10004585): do NOT statically import './convert' (or anything else that
+// reaches '../agent-tools/plans/source') here — see the SUT import below.
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -160,6 +161,16 @@ const {
   planLaneBlockerRef,
   PLAN_AUTHORED_BLOCKERS_KEY,
 } = await import('./reconcile-linked-work-items');
+// WI-10004585: the SUT MUST be the first module to import '../agent-tools/plans/source'.
+// source.ts statically reaches the SUT (source → fleet-drained-events → events/await →
+// … → events/builtin-actions → reconcile-linked-work-items). If anything ELSE imports
+// source first (this file used to `import { IMPLEMENTS_REL } from './convert'` at the
+// top; convert.ts imports source), the h3 mock factory's vi.importActual evaluates
+// the SUT for the FIRST time from inside the factory — and Vitest resolves a mocked
+// id that is already on the factory callstack to the REAL module, so the SUT binds
+// the real getPlanRow forever. 20 getPlanRow-driven tests then fail confusingly
+// (2026-09-04 → 2026-10-01). The 'mock wiring' test below pins the order.
+const { IMPLEMENTS_REL } = await import('./convert');
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
 const { updateExternalBlockerHistory } = await import('../external-blockers');
@@ -204,7 +215,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.work_item_deps`;
+  await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.plan_items`;
   h2.items.clear();
   setWorkItemState.mockClear();
   setWorkItemStateWithAliasInfo.mockClear();
@@ -276,6 +287,21 @@ async function insertDependencyRows(ids: readonly string[], harness = 'sheets') 
       VALUES (${WS}, ${harness}, ${id}, 'feature', 'open', '{}'::jsonb, 0, 0)`;
   }
 }
+
+describe('mock wiring (WI-10004585)', () => {
+  it('the SUT reads plan status through the h3.getPlanRow mock, not the real source module', async () => {
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-wire', status: 'wip' }] });
+
+    await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p-wiring', itemId: 'P-wire' });
+
+    expect(
+      h3.getPlanRow.mock.calls.map((c) => c[0]),
+      'reconcile-linked-work-items bound the REAL getPlanRow: something imported ' +
+        "'../agent-tools/plans/source' before the SUT (see the WI-10004585 note at the SUT import). " +
+        'Every getPlanRow-driven assertion in this file is meaningless until the import order is fixed.',
+    ).toContain('p-wiring');
+  });
+});
 
 describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
   it('resolves a non-terminal, no-progress linked work-item via the implements edge', async () => {
@@ -1124,6 +1150,48 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     expect(result.candidatePlanItems).toBe(1);
     expect(result.reconciled).toEqual(['F-real-orphan']);
     expect(setWorkItemState).toHaveBeenCalledWith('F-real-orphan', 'passed', expect.anything());
+  });
+
+  it('WI-10004586: a terminal orphan is prioritised into a saturated window ahead of perpetually-skipped lane-sync candidates', async () => {
+    // Live shape (2026-10-01): 536 candidates vs a 500 cap, 16 of 68 terminal
+    // orphans outside the unordered window. Here: 6 NON-terminal candidates (their
+    // plan items are `wip`, so every pass only lane-syncs them) + 1 terminal
+    // orphan whose slug sorts LAST, under a cap of 3. An unordered or slug-ordered
+    // window never reaches it; the derived plan_items index must pull it in.
+    for (let i = 0; i < 6; i++) {
+      await insertWorkItemRow({ id: `F-lane-${i}`, kind: 'feature', status: 'todo', planSlug: 'pa-lane', itemId: `P-lane-${i}` });
+      stub({ id: `F-lane-${i}`, harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+      await rootSql`INSERT INTO harness_shared.plan_items (plan_slug, item_id, seq, status)
+                    VALUES ('pa-lane', ${`P-lane-${i}`}, ${i}, 'wip')`;
+    }
+    await insertWorkItemRow({ id: 'F-term-orphan', kind: 'feature', status: 'todo', planSlug: 'pz-term', itemId: 'P-term' });
+    await edge({ plan: 'pz-term', item: 'P-term', srcRef: 'sheets#F-term-orphan', srcKind: 'feature' });
+    stub({ id: 'F-term-orphan', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    await rootSql`INSERT INTO harness_shared.plan_items (plan_slug, item_id, seq, status)
+                  VALUES ('pz-term', 'P-term', 0, 'done')`;
+    h3.getPlanRow.mockImplementation(async (slug: string) =>
+      slug === 'pz-term'
+        ? { items: [{ id: 'P-term', status: 'done' }] }
+        : { items: Array.from({ length: 6 }, (_, i) => ({ id: `P-lane-${i}`, status: 'wip' })) },
+    );
+
+    const result = await reconcileOrphanedPlanItemWorkItems({ candidateCap: 3 });
+
+    expect(result.candidateWindowSaturated).toBe(true);
+    expect(result.candidatePlanItems).toBe(3);
+    expect(result.terminalPlanItems).toBe(1);
+    expect(result.reconciled).toEqual(['F-term-orphan']);
+  });
+
+  it('WI-10004586: an unsaturated window reports candidateWindowSaturated=false', async () => {
+    await insertWorkItemRow({ id: 'F-one', kind: 'feature', status: 'todo', planSlug: 'pone', itemId: 'P-1' });
+    stub({ id: 'F-one', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'wip' }] });
+
+    const result = await reconcileOrphanedPlanItemWorkItems({ candidateCap: 3 });
+
+    expect(result.candidatePlanItems).toBe(1);
+    expect(result.candidateWindowSaturated).toBe(false);
   });
 
   it('skips a candidate carrying independent in-flight progress (lastProgressAt)', async () => {

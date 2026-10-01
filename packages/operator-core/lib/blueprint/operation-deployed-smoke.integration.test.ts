@@ -17,10 +17,13 @@
  *     because plans are Hive-scoped and the plan-target template must live in
  *     the harness's Hive; then:
  *       – agent op: submit → replay → conflict → status → pending result →
- *         signal (+ replay) → events → cancel → terminal `cancelled`;
+ *         signal (+ replay) → events → cancel (a request: effected false) →
+ *         the executor drops its item → cancel replay effected → terminal
+ *         `cancelled`;
  *       – program op: submit → terminal `ready` whose output validates against
  *         the declared resultSchema (the real program settlement shape);
- *       – plan-target op: submit → a plan run instance → cancel.
+ *       – plan-target op: submit → a plan run instance → cancel request
+ *         reflected (D-045: a plan run has no cancellation fence).
  *
  * The plan-target template is PROVISIONED, not created here (D-044 on the plan
  * above). A template is an ordinary post-epoch plan, so an operation can fire it
@@ -291,15 +294,28 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     const page = BlueprintOperationEventsPageSchema.parse(await mcp(T.events, { handle }));
     expect(page.events.length).toBeGreaterThan(0);
 
-    const cancel = BlueprintOperationCancelReceiptSchema.parse(
-      await mcp(T.cancel, { handle, requestKey: `${key}-cancel`, reason: 'P-015 deployed smoke: lifecycle proven' }));
-    expect(cancel.effected).toBe(true);
-    const deadline = Date.now() + 60_000;
-    let settled = await result(handle);
-    while (settled.state === 'pending' && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1_000));
-      settled = await result(handle);
-    }
+    // Cancellation is a durable REQUEST (D-045): it never drops or fences work, so on an
+    // item no executor has settled it is accepted, reflected, and not yet effected.
+    const cancelArgs = { handle, requestKey: `${key}-cancel`, reason: 'P-015 deployed smoke: lifecycle proven' };
+    const cancel = BlueprintOperationCancelReceiptSchema.parse(await mcp(T.cancel, cancelArgs));
+    expect(cancel).toMatchObject({ accepted: true, replayed: false, effected: false });
+    expect(await status(handle)).toMatchObject({ cancellationRequested: true });
+    expect((await result(handle)).state).toBe('pending');
+
+    // The executor acknowledges the cancellation by dropping its item through the
+    // ordinary public door. The harness is a pot MEMBER, so the item is stored under
+    // the pot's home slug (WI-10004360), and that is the slug the door must address.
+    const items = (await status(handle)).items;
+    expect(items).toHaveLength(1);
+    await mcp('work_items:set_state', {
+      id: items[0].id, harness: SMOKE_POT, state: 'dropped', assumptions: 'none',
+      completionRef: `P-015 deployed smoke: executor acknowledged cancellation ${cancel.eventId}`,
+    });
+
+    // Now canonical state reads cancelled: the replayed request reports it effected.
+    const cancelReplay = BlueprintOperationCancelReceiptSchema.parse(await mcp(T.cancel, cancelArgs));
+    expect(cancelReplay).toMatchObject({ replayed: true, eventId: cancel.eventId, effected: true });
+    const settled = await result(handle);
     expect(settled.state).toBe('cancelled');
     expect(settled.status).toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
   }, 180_000);
@@ -330,8 +346,11 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     expect(target.instanceSlug).toBeTruthy();
     const current = await status(handle);
     expect(current.planRun).not.toBeNull();
+    // A plan run has no cancellation fence (D-045): the request is recorded and
+    // reflected, and effected stays false until canonical state reads cancelled.
     const cancel = BlueprintOperationCancelReceiptSchema.parse(
       await mcp(T.cancel, { handle, requestKey: `${key}-cancel`, reason: 'P-015 deployed smoke: plan admission proven' }));
-    expect(cancel.effected).toBe(true);
+    expect(cancel).toMatchObject({ accepted: true, replayed: false, effected: false });
+    expect(await status(handle)).toMatchObject({ cancellationRequested: true });
   }, 120_000);
 });

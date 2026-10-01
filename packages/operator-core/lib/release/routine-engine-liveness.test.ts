@@ -53,6 +53,30 @@ describe('readRoutineEngineLiveness', () => {
     expect(queryText).not.toContain('MAX(created_at)');
   });
 
+  it('parses the PostgreSQL timestamp string returned by the pooled getOrgPg client', async () => {
+    const mockSql = () => Promise.resolve([{ last_tick_ms: '2026-09-23 01:32:58.000-04' }]);
+
+    const result = await readRoutineEngineLiveness(mockSql as unknown as Sql, { nowMs: NOW_MS });
+
+    expect(result).toMatchObject({
+      lastTickMs: NOW_MS - 2_000,
+      stale: false,
+      unknown: false,
+      staleMs: 2_000,
+    });
+  });
+
+  it('keeps an unparseable timestamp unknown', async () => {
+    const mockSql = () => Promise.resolve([{ last_tick_ms: 'not-a-timestamp' }]);
+
+    await expect(readRoutineEngineLiveness(mockSql as unknown as Sql, { nowMs: NOW_MS })).resolves.toMatchObject({
+      stale: false,
+      unknown: true,
+      lastTickMs: null,
+      staleMs: null,
+    });
+  });
+
   it('keeps an early-return SUCCESS with no due-routine step unknown', async () => {
     let queryText = '';
     const mockSql = (strings: TemplateStringsArray) => {

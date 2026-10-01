@@ -6891,15 +6891,10 @@ impl App {
     /// The launch directory, with the home prefix shortened to `~` as in a
     /// shell prompt.
     fn chat_directory_label(&self) -> String {
-        let dir = self.project_root.display().to_string();
-        match std::env::var("HOME") {
-            Ok(home) if !home.is_empty() && home != "/" => match dir.strip_prefix(&home) {
-                Some("") => "~".to_string(),
-                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
-                _ => dir,
-            },
-            _ => dir,
-        }
+        home_relative_dir(
+            &self.project_root.display().to_string(),
+            std::env::var("HOME").ok().as_deref(),
+        )
     }
 
     /// The raw failure the chat is currently showing, if any: the unsent
@@ -15365,6 +15360,46 @@ fn next_wake_mode(current: Option<&str>) -> &'static str {
         "auto"
     } else {
         "manual"
+    }
+}
+
+/// pui-chat-first-ux P-021: the launch directory as the composer footer shows
+/// it — under the home directory it starts with `~`, anywhere else it stays
+/// absolute. A home of "" or "/" is ignored (it would turn every path into `~…`),
+/// and a sibling that merely shares the home prefix (`<home>2/…`) is not
+/// shortened.
+fn home_relative_dir(dir: &str, home: Option<&str>) -> String {
+    match home {
+        Some(home) if !home.is_empty() && home != "/" => {
+            let home = home.trim_end_matches('/');
+            match dir.strip_prefix(home) {
+                Some("") => "~".to_string(),
+                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+                _ => dir.to_string(),
+            }
+        }
+        _ => dir.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod home_relative_dir_tests {
+    use super::home_relative_dir;
+
+    #[test]
+    fn the_footer_directory_is_home_relative_and_never_over_shortened() {
+        let home = Some("/srv/me");
+        assert_eq!(home_relative_dir("/srv/me", home), "~");
+        assert_eq!(home_relative_dir("/srv/me/code/app", home), "~/code/app");
+        assert_eq!(
+            home_relative_dir("/srv/me/code/app", Some("/srv/me/")),
+            "~/code/app"
+        );
+        assert_eq!(home_relative_dir("/srv/me2/app", home), "/srv/me2/app");
+        assert_eq!(home_relative_dir("/work/demo", home), "/work/demo");
+        assert_eq!(home_relative_dir("/work/demo", Some("/")), "/work/demo");
+        assert_eq!(home_relative_dir("/work/demo", Some("")), "/work/demo");
+        assert_eq!(home_relative_dir("/work/demo", None), "/work/demo");
     }
 }
 

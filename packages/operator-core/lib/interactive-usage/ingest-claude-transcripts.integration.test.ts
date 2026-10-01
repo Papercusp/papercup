@@ -462,7 +462,14 @@ describe('persistent transcript accounting', () => {
     expect(row.usage_provenance).toMatchObject({ parserVersion: 2, adapter: backend, sourceId: 'message:same-request', grain: 'request', accountSource: 'unavailable' });
     expect(row.account_id).toBeNull();
     expect(row.turn_trigger).toBeNull();
-    if (backend === 'omp') expect(row.cost_usd).toBeNull();
+    // omp reports a cache write with no TTL split: priced at the 5-minute floor and marked as a
+    // lower bound (D-019), not nulled. 10x5 + 30x25 + 200x0.5 + 100x6.25 per million = 0.001525.
+    if (backend === 'omp') {
+      expect(Number(row.cost_usd)).toBeCloseTo(0.001525, 12);
+      expect(row.usage_provenance.costBound).toBe('lower');
+    } else {
+      expect(row.usage_provenance.costBound).toBeNull();
+    }
     await fs.appendFile(file, message(30));
     expect((await ingestInteractiveUsage({ adapters })).samples).toBe(0);
     await fs.appendFile(file, message(30, 'another-request'));

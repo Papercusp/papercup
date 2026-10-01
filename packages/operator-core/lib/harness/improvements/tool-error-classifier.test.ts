@@ -147,6 +147,16 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
+    // tools:invoke re-throws target refusals; the wrapper adds `invalid_input:`
+    // while outer telemetry can record `handler_error`, so match this exact shape.
+    expect(
+      classifyToolError('handler_error', 'error', 'invalid_input: invalid_args: Unrecognized key: "workspace"'),
+    ).toBe('caller');
+    // Keep the prefix rule narrow: unrelated invalid_input messages remain structural.
+    expect(classifyToolError('handler_error', 'error', 'invalid_input: database constraint failed')).toBe('structural');
+  });
+
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
     expect(
       classifyToolError(

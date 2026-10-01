@@ -27,7 +27,8 @@ const armSchema = z.strictObject({
   id, model: z.enum(['mdenseon', 'gemma', 'harrier', 'gemma-corrected']), profile,
   // modelRev is the HTTP wire identity; artifactRevision pins vendor/local bytes.
   modelRev: z.string().min(1), artifactRevision: z.string().min(1),
-  artifacts: z.strictObject({ graph: fingerprint, tokenizer: fingerprint, config: fingerprint }),
+  artifacts: z.strictObject({ graph: fingerprint, tokenizer: fingerprint, config: fingerprint,
+    weightLayout: z.enum(['inline', 'external']), weights: z.array(fingerprint) }),
   prompts: z.strictObject({ query: z.string(), document: z.string() }),
   tokenizer: z.strictObject({ backend: z.string().min(1), version: z.string().min(1) }),
   runtime: z.strictObject({ name: z.string().min(1), version: z.string().min(1), wire: z.string().min(1), source: fingerprint }),
@@ -87,6 +88,7 @@ export function measurementPackageVersion(name: string): string {
     const next = path.dirname(dir); if (next === dir) throw new Error(`cannot identify runtime package ${name}`); dir = next;
   }
 }
+export function measurementOwner(): string { return process.env.PAPERCUSP_SID ?? `local-process-${process.pid}`; }
 export function candidateProfile(model: 'mdenseon' | 'gemma' | 'harrier'): EmbedderProfileSpec {
   if (model !== 'mdenseon') return EMBEDDER_DIM_SPECS[model];
   return { ...CANDIDATE_DIM_SPECS.mdenseon, profileId: 'mdenseon-a5fdb000-768@v1', modelRevision: MDENSEON_REVISION,
@@ -122,6 +124,8 @@ export function validateMeasurementManifest(value: unknown): MeasurementManifest
   }
   for (const bar of MEASUREMENT_BARS) if (!m.cells.some((c) => c.bar === bar)) throw new Error(`missing promised bar ${bar}`);
   for (const arm of m.arms) {
+    if ((arm.artifacts.weightLayout === 'external') !== (arm.artifacts.weights.length > 0)) throw new Error('external/inline weight identity mismatch');
+    unique(arm.artifacts.weights.map((f) => f.path), 'weight file');
     if (arm.profile.targetDims !== arm.profile.nativeDims) throw new Error('adoption measurements require native dimensions');
     if (arm.model === 'gemma-corrected' && m.arms.some((a) => a.model === 'gemma' && a.profile.profileId === arm.profile.profileId)) {
       throw new Error('corrected Gemma must have a separate recipe/profile identity');
@@ -217,15 +221,16 @@ export async function prepareMeasurementCell(file: string, expectedSha256: strin
   const actual = await fingerprintFile(file);
   if (!sha.safeParse(expectedSha256).success || actual.sha256 !== expectedSha256) throw new Error('frozen manifest fingerprint mismatch');
   const m = validateMeasurementManifest(JSON.parse(fs.readFileSync(file, 'utf8')));
+  if (m.ownerId !== measurementOwner()) throw new Error('manifest output owner differs from executing session');
   if (m.frozenAt > new Date().toISOString()) throw new Error('manifest frozen in the future');
   const cell = m.cells.find((c) => c.id === cellId); if (!cell) throw new Error(`undeclared cell ${cellId}`);
   const arm = m.arms.find((a) => a.id === cell.armId)!;
   const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
   if (currentCommit !== m.sourceCommit) throw new Error('measurement source commit differs from frozen manifest');
-  const dataset = m.datasets.find((d) => d.corpus === cell.corpus);
+  const dataset = ['relevance', 'hybrid', 'answers'].includes(cell.bar) ? m.datasets.find((d) => d.corpus === cell.corpus) : undefined;
   const inputIds = new Set([...cell.inputIds, ...(dataset ? [dataset.snapshot, dataset.labels, dataset.judgments, dataset.census] : [])]);
   const files = [...inputIds].map((ref) => m.inputs[ref]);
-  files.push(...Object.values(arm.artifacts), arm.runtime.source);
+  files.push(arm.artifacts.graph, arm.artifacts.tokenizer, arm.artifacts.config, ...arm.artifacts.weights, arm.runtime.source);
   for (const declared of files) {
     const actual = await fingerprintFile(path.resolve(repoRoot, declared.path));
     if (actual.sha256 !== declared.sha256 || actual.bytes !== declared.bytes) throw new Error(`declared file fingerprint mismatch: ${declared.path}`);
@@ -290,8 +295,25 @@ export function validateMeasurementCoverage(m: MeasurementManifest, manifestSha2
   if (promised.size) throw new Error(`unfinished promised cells: ${[...promised].join(', ')}`);
 }
 
+export async function verifyMeasurementCoverage(m: MeasurementManifest, manifestSha256: string, outcomes: CellOutcome[]): Promise<void> {
+  validateMeasurementCoverage(m, manifestSha256, outcomes);
+  for (const outcome of outcomes) {
+    const cell = m.cells.find((c) => c.id === outcome.cellId)!;
+    for (const artifact of outcome.artifacts) {
+      const actual = await fingerprintFile(artifact.path);
+      if (actual.sha256 !== artifact.sha256 || actual.bytes !== artifact.bytes) throw new Error('cell evidence file fingerprint mismatch');
+    }
+    const receipt = JSON.parse(fs.readFileSync(outcome.artifacts[0].path, 'utf8'));
+    if (receipt.manifestSha256 !== manifestSha256 || receipt.cellId !== cell.id || receipt.armId !== cell.armId
+      || receipt.ownerId !== m.ownerId || !receipt.measuredAt || !receipt.report) throw new Error('stored cell receipt identity mismatch');
+  }
+}
+
 export function writeMeasurementCell(prepared: PreparedMeasurement, report: unknown): CellOutcome {
   const { rawOutput, manifestSha256, cell, arm } = prepared;
+  const owner = JSON.parse(fs.readFileSync(prepared.claimPath, 'utf8'));
+  if (owner.ownerId !== prepared.manifest.ownerId || owner.pid !== process.pid || owner.manifestSha256 !== manifestSha256
+    || owner.cellId !== cell.id) throw new Error('cell output claim identity mismatch');
   fs.mkdirSync(path.dirname(rawOutput), { recursive: true });
   fs.writeFileSync(rawOutput, JSON.stringify({ formatVersion: 1, manifestSha256, cellId: cell.id,
     armId: arm.id, ownerId: prepared.manifest.ownerId, measuredAt: new Date().toISOString(), report }, null, 2), { flag: 'wx', mode: 0o600 });

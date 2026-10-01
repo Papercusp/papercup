@@ -336,6 +336,10 @@ describe('runEngineDeathSentinelPass (the live out-of-band leg)', () => {
     expect(res.captured).toBe(true);
     expect(capture).toHaveBeenCalledTimes(1);
     expect(logs.some((message) => message.includes('UNKNOWN does not suppress'))).toBe(true);
+    const input = capture.mock.calls[0][0] as Record<string, unknown>;
+    expect(input.body).toContain('routinesTick=UNKNOWN');
+    expect(input.body).toContain(`sentinelPid=${process.pid}`);
+    expect(logs.some((message) => message.includes('routinesTick=UNKNOWN'))).toBe(true);
   });
 
   it('never throws — a read failure is a logged skip', async () => {

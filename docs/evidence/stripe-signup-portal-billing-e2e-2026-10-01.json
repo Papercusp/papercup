@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Portal hosted billing page drives signup and management (stripe-subscription-signup-2026-10-01 R-8, e2e layer)",
+  "framework": "playwright",
+  "command": [
+    "npx",
+    "playwright",
+    "test",
+    "e2e/portal-billing.spec.ts",
+    "--reporter=line"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T04:17:04Z",
+  "finishedAt": "2026-10-01T04:17:14Z",
+  "summary": "Run in the sibling portal checkout (~/papercupai-workspace/portal); canonical copy portal/docs/evidence/portal-billing-e2e-2026-10-01.json (portal commit 8e2cdeedb4f41fee11b763dfa7dfa88a6f0c64c2, sha256 5a5d73c8b1bb6196d84be11ef557bac37a9613f4221c5cd7fbade6affe9baa03). Six headless Chromium journeys passed in 8.1s on committed portal staging SHA 1b099f3bf3a0c41e5c99bb855a562e7abb36fe2b (spec and packages/ui/src/billing.tsx last changed in 1e95ea07036c0de78203ec0fdc9c36763c7354cb). The real BillingPortalPage is mounted under the URL-backed nuqs adapter; the hosted session and /api/hosted/billing/* are stubbed at the network edge.",
+  "assertions": [
+    {
+      "id": "manager-picks-plan-and-is-sent-to-checkout",
+      "passed": true,
+      "evidence": "A billing manager with no subscription sees the configured plans, picks one, and the page POSTs /api/hosted/billing/checkout and navigates to the returned Stripe Checkout URL."
+    },
+    {
+      "id": "success-return-shows-pending-then-active",
+      "passed": true,
+      "evidence": "Stripe's ?checkout=success return shows the pending notice, then the active plan once the subscription read reports the webhook-applied subscription."
+    },
+    {
+      "id": "active-subscription-opens-stripe-portal",
+      "passed": true,
+      "evidence": "An active subscription offers Manage billing, which POSTs /api/hosted/billing/portal and navigates to the returned Stripe customer-portal URL."
+    },
+    {
+      "id": "canceled-return-says-nothing-charged",
+      "passed": true,
+      "evidence": "Stripe's ?checkout=canceled return renders the nothing-was-charged notice."
+    },
+    {
+      "id": "member-without-billing-manage-sees-status-only",
+      "passed": true,
+      "evidence": "A member without billing:manage sees subscription status but no subscribe or manage controls."
+    },
+    {
+      "id": "refused-checkout-shows-safe-message",
+      "passed": true,
+      "evidence": "A refused checkout shows the server's safe message and stays on the billing page."
+    }
+  ]
+}

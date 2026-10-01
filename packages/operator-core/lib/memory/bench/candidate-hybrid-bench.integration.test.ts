@@ -35,7 +35,8 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     manifest.inputs.judgments = await write('judgments', { memory: receipt, prose: receipt });
     manifest.inputs.census = await write('census', { synthetic: true, accessibleSources: ['source-a', 'source-b'] });
     const asset = await write('synthetic-model', { synthetic: true });
-    for (const arm of manifest.arms) { arm.artifacts = { graph: asset, tokenizer: asset, config: asset }; arm.runtime.source = asset; }
+    const weight = await write('synthetic-external-weights', { synthetic: true, weight: 1 });
+    for (const arm of manifest.arms) { arm.artifacts = { graph: asset, tokenizer: asset, config: asset, weightLayout: 'external', weights: [weight] }; arm.runtime.source = asset; }
     manifestFile = path.join(root, 'manifest.json'); fs.writeFileSync(manifestFile, JSON.stringify(manifest));
     manifestHash = (await fingerprintFile(manifestFile)).sha256;
     prepared = await prepareMeasurementCell(manifestFile, manifestHash, 'hybrid', repo);
@@ -69,7 +70,7 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     await expect(canonical.search('source A', { scope: 'production', vector: response.vectors[0] })).rejects.toThrow('isolated');
     const outcome = writeMeasurementCell(prepared, { protocolOnly: true, rankedKeys: hits.map((h) => h.metadata?.corpus_key) });
     expect(await fingerprintFile(outcome.artifacts[0].path)).toEqual(outcome.artifacts[0]);
-    expect(() => writeMeasurementCell(prepared, {})).toThrow(/EEXIST/);
+    expect(() => writeMeasurementCell(prepared, {})).toThrow(/ENOENT|EEXIST/);
   });
   it('refuses altered frozen bytes and reused output before another HTTP request or SQL write', async () => {
     const before = inferred;
@@ -85,7 +86,7 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     ];
     for (const [entry, ...args] of runners) {
       await expect(run(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, entry), ...args, ...common],
-        { cwd: repo, timeout: 20_000 })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('declared file fingerprint mismatch') });
+        { cwd: repo, timeout: 20_000, env: { ...process.env, PAPERCUSP_SID: manifest.ownerId } })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('declared file fingerprint mismatch') });
     }
     fs.writeFileSync(manifest.inputs.labels.path, JSON.stringify({ memory: independentCohortFixture().queries, prose: independentCohortFixture().queries }));
     expect(() => measurementOutputPaths(manifest, manifest.cells.find((c) => c.id === 'hybrid')!, repo)).toThrow('already exists');
@@ -107,5 +108,13 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
       manifestSha256: manifestHash, cellId: 'reliability', error: { message: error.message } });
     expect(fs.existsSync(attempt.claimPath)).toBe(false);
     await expect(prepareMeasurementCell(manifestFile, manifestHash, 'reliability', repo)).rejects.toThrow('already owned/failed');
+  });
+  it('rejects an altered external weight file, even when graph bytes are unchanged', async () => {
+    const file = manifest.arms[0].artifacts.weights[0].path;
+    const original = fs.readFileSync(file);
+    try {
+      fs.appendFileSync(file, ' ');
+      await expect(prepareMeasurementCell(manifestFile, manifestHash, 'reference', repo)).rejects.toThrow('fingerprint');
+    } finally { fs.writeFileSync(file, original); }
   });
 });

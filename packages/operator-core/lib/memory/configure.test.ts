@@ -34,7 +34,19 @@ import {
 import { EmbedBudgetExhaustedError } from './embed-admission';
 // The per-mode declared widths — the emitting side of the dims contract. The
 // mock above spreads `...actual`, so this is the real spec table.
-import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
+import { EMBEDDER_DIM_SPECS, memoryHost } from '@papercusp/memory';
+
+describe('mem0 history store — WI-10003284', () => {
+  it('the operator keeps mem0 history IN MEMORY, never in a SQLite file its processes share', () => {
+    // better-sqlite3 writes that history synchronously on the event loop. A
+    // file shared by the request workers, the background host and staging made
+    // every memory add wait on the others' locks and fsyncs: one INSERT blocked
+    // a live :3070 worker for 32.8 s and timed out the requests behind it.
+    const configured = memoryHost().localStoreDir;
+    const dir = typeof configured === 'function' ? configured() : configured;
+    expect(dir ?? null).toBeNull();
+  });
+});
 
 // EI-7596: the 'memory' lane's admission acquire() is what THROWS the daily-spend-cap error —
 // stub it directly (rather than driving the real governor through 5M real tokens) so the test

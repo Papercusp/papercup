@@ -178,30 +178,134 @@ async function nearestRepositoryRoot(root: string, file: string): Promise<string
   return root;
 }
 
-async function refuseMutationProbePaths(root: string, declaredPaths: readonly string[]): Promise<void> {
-  const groups = new Map<string, Set<string>>();
-  for (const path of new Set(declaredPaths)) {
-    const candidate = resolve(root, path);
-    if (!containedBy(root, candidate)) throw new Error(`repo_measurement_path_outside_root:${path}`);
-    const canonical = await realpath(candidate);
-    if (!containedBy(root, canonical)) throw new Error(`repo_measurement_symlink_outside_root:${path}`);
-    const domain = await nearestRepositoryRoot(root, canonical);
-    const repoPath = relative(domain, canonical).split(sep).join('/');
-    const paths = groups.get(domain) ?? new Set<string>();
-    paths.add(repoPath);
-    groups.set(domain, paths);
-  }
+/** A declared path's repository (the lock coordination domain) and its path inside it. */
+interface ProbePath {
+  domain: string;
+  repoPath: string;
+}
 
+async function resolveProbePaths(
+  root: string,
+  declaredPaths: Iterable<string>,
+  onUnresolvable: 'throw' | 'skip',
+): Promise<Map<string, ProbePath>> {
+  const resolved = new Map<string, ProbePath>();
+  for (const path of new Set(declaredPaths)) {
+    let canonical: string;
+    try {
+      const candidate = resolve(root, path);
+      if (!containedBy(root, candidate)) throw new Error(`repo_measurement_path_outside_root:${path}`);
+      canonical = await realpath(candidate);
+      if (!containedBy(root, canonical)) throw new Error(`repo_measurement_symlink_outside_root:${path}`);
+    } catch (error) {
+      if (onUnresolvable === 'throw') throw error;
+      continue;
+    }
+    const domain = await nearestRepositoryRoot(root, canonical);
+    resolved.set(path, { domain, repoPath: relative(domain, canonical).split(sep).join('/') });
+  }
+  return resolved;
+}
+
+/**
+ * JS mirror of the lock store's SQL `lock_path_overlaps`: equal paths, or one a
+ * directory prefix of the other. Pinned to the newest SQL definition by
+ * spec-evidence-store-batch-fence.test.ts so the two cannot drift.
+ */
+export function lockPathOverlaps(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+/** Live mutation-probe locks overlapping any resolved path: one lock-queue read per repository. */
+async function readMutationProbeLocks(resolved: ReadonlyMap<string, ProbePath>): Promise<ProbePath[]> {
+  const groups = new Map<string, Set<string>>();
+  for (const { domain, repoPath } of resolved.values()) {
+    groups.set(domain, (groups.get(domain) ?? new Set<string>()).add(repoPath));
+  }
   await ensureBootstrap();
+  const probes: ProbePath[] = [];
   for (const [coordinationDomain, paths] of groups) {
     const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths] });
-    const activeProbe = queue.active_locks.find(
-      (lock) => String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe',
-    );
-    if (activeProbe) {
-      throw new Error(`repo_measurement_mutation_probe_active:${coordinationDomain}:${activeProbe.path}`);
+    for (const lock of queue.active_locks) {
+      if (String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe') {
+        probes.push({ domain: coordinationDomain, repoPath: lock.path });
+      }
     }
   }
+  return probes;
+}
+
+/** The refusal a probe snapshot implies for one binding's paths, or null when none overlaps. */
+function mutationProbeRefusal(
+  resolved: ReadonlyMap<string, ProbePath>,
+  probes: readonly ProbePath[],
+  declaredPaths: readonly string[],
+): string | null {
+  for (const path of declaredPaths) {
+    const own = resolved.get(path);
+    if (!own) continue;
+    const probe = probes.find((lock) => lock.domain === own.domain && lockPathOverlaps(lock.repoPath, own.repoPath));
+    if (probe) return `repo_measurement_mutation_probe_active:${probe.domain}:${probe.repoPath}`;
+  }
+  return null;
+}
+
+async function refuseMutationProbePaths(root: string, declaredPaths: readonly string[]): Promise<void> {
+  const resolved = await resolveProbePaths(root, declaredPaths, 'throw');
+  const refusal = mutationProbeRefusal(resolved, await readMutationProbeLocks(resolved), declaredPaths);
+  if (refusal) throw new Error(refusal);
+}
+
+/**
+ * One mutation-probe snapshot for every binding a listSpecEvidence batch measures
+ * under `root`. Fencing per binding re-read the lock queue twice per binding: a
+ * ~233-binding plan issued 466 reads per call, which alone pushed the GOAL portfolio
+ * read past the obligation reader's 900ms budget. A batch reads it once per
+ * repository before the reads and once after, and decides each binding locally.
+ * Unresolvable paths are left out: their own fingerprint read refuses them with the
+ * same error the strict fence would raise. null = the queue could not be read; the
+ * caller falls back to the per-binding fence.
+ */
+interface MutationProbeSnapshot {
+  resolved: Map<string, ProbePath>;
+  probes: ProbePath[];
+}
+
+async function readMutationProbeSnapshot(
+  root: string,
+  declaredPaths: Iterable<string>,
+  resolved?: Map<string, ProbePath>,
+): Promise<MutationProbeSnapshot | null> {
+  try {
+    const paths = resolved ?? (await resolveProbePaths(root, declaredPaths, 'skip'));
+    return { resolved: paths, probes: await readMutationProbeLocks(paths) };
+  } catch {
+    return null;
+  }
+}
+
+/** Pre-read snapshots, one per measurement root, over the union of its bindings' paths. */
+async function readRepoFilesProbeSnapshots(
+  recipes: ReadonlyArray<EvidenceMeasurement | null>,
+  rootFor: (recipe: RepoFilesEvidenceMeasurement) => Promise<string>,
+): Promise<Map<string, MutationProbeSnapshot>> {
+  const unions = new Map<string, Set<string>>();
+  await Promise.all(
+    recipes.map(async (recipe) => {
+      if (!recipe || recipe.kind === 'work-items') return;
+      const root = await rootFor(recipe).catch(() => null);
+      if (!root) return;
+      const union = unions.get(root) ?? new Set<string>();
+      for (const path of repoFilesMeasuredPaths(recipe)) union.add(path);
+      unions.set(root, union);
+    }),
+  );
+  const snapshots = new Map<string, MutationProbeSnapshot>();
+  for (const [root, union] of unions) {
+    const snapshot = await readMutationProbeSnapshot(root, union);
+    if (snapshot) snapshots.set(root, snapshot);
+  }
+  return snapshots;
 }
 
 /** Measure a repo-files recipe and keep the per-file hashes, in ONE read of each file. */
@@ -211,13 +315,26 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
   const root = await realpath(repoRoot);
-  const measuredPaths = [...parsed.sourcePaths, ...(parsed.testPaths ?? [])];
+  const measuredPaths = repoFilesMeasuredPaths(parsed);
   await refuseMutationProbePaths(root, measuredPaths);
+  const detailed = await fingerprintRepoFilesMeasurement(root, parsed);
+  await refuseMutationProbePaths(root, measuredPaths);
+  return detailed;
+}
+
+function repoFilesMeasuredPaths(parsed: RepoFilesEvidenceMeasurement): string[] {
+  return [...parsed.sourcePaths, ...(parsed.testPaths ?? [])];
+}
+
+/** The UNFENCED read. Callers own the mutation-probe fence on both sides of it. */
+async function fingerprintRepoFilesMeasurement(
+  root: string,
+  parsed: RepoFilesEvidenceMeasurement,
+): Promise<DetailedRepoEvidenceMeasurement> {
   const [source, test] = await Promise.all([
     fingerprintRepoFileSet(root, parsed.sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
   ]);
-  await refuseMutationProbePaths(root, measuredPaths);
   return {
     sourceFingerprint: source.fingerprint,
     testFingerprint: test?.fingerprint ?? null,
@@ -1474,9 +1591,24 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   );
 
   const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
+  // The server-measured replay opt-out is explained at its use in the loop below.
+  const recipes = rows.map((row) =>
+    options.replaySnapshot && options.currentProvenance === 'server-measured'
+      ? null
+      : measurementFromDetails(row.details),
+  );
   const measurementRoots = new Map<string, Promise<string>>();
+  const measurementRootFor = (recipe: RepoFilesEvidenceMeasurement): Promise<string> => {
+    const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
+    const root =
+      measurementRoots.get(rootHarnessSlug) ??
+      resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe).then((path) => realpath(path));
+    measurementRoots.set(rootHarnessSlug, root);
+    return root;
+  };
+  const probeSnapshots = await readRepoFilesProbeSnapshots(recipes, measurementRootFor);
   const serverMeasurements = await Promise.all(
-    rows.map(async (row) => {
+    rows.map(async (row, index) => {
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
       // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
       // already server-measured; replay it as-is, do not read the live repository" —
@@ -1501,8 +1633,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       // 'replayed-snapshot' and still capped. It is also the semantically correct
       // behaviour for a FRESHNESS criterion: a card must stop replaying 'pass' once the
       // code it was bound against moves.
-      if (options.replaySnapshot && options.currentProvenance === 'server-measured') return null;
-      const recipe = measurementFromDetails(row.details);
+      const recipe = recipes[index];
       if (!recipe) return null;
       try {
         let measured: MeasuredRepoEvidenceFingerprints;
@@ -1511,14 +1642,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
         } else {
-          const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
-          const measurementRoot =
-            measurementRoots.get(rootHarnessSlug) ??
-            resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe);
-          measurementRoots.set(rootHarnessSlug, measurementRoot);
+          const measurementRoot = await measurementRootFor(recipe);
           // Same single read as before; the per-file hashes it now also returns are what
-          // name the moved paths below at zero extra IO.
-          const detailed = await measureRepoFilesEvidenceDetailedAtRoot(await measurementRoot, recipe);
+          // name the moved paths below at zero extra IO. Under a batch probe snapshot the
+          // pre-read fence is decided locally; its post-read half runs after this loop.
+          const snapshot = probeSnapshots.get(measurementRoot);
+          const refusal = snapshot
+            ? mutationProbeRefusal(snapshot.resolved, snapshot.probes, repoFilesMeasuredPaths(recipe))
+            : null;
+          if (refusal) throw new Error(refusal);
+          const detailed = snapshot
+            ? await fingerprintRepoFilesMeasurement(measurementRoot, recipe)
+            : await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
           measured = { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint };
           files = detailed.files;
         }
@@ -1543,6 +1678,31 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }
     }),
   );
+  // Post-read half of the batch fence: a probe that locked a binding's paths while the
+  // batch was reading fails that binding, exactly as its own post-read fence would. An
+  // unreadable queue falls back to that per-binding fence.
+  for (const [root, before] of probeSnapshots) {
+    const after = await readMutationProbeSnapshot(root, [], before.resolved);
+    if (after && after.probes.length === 0) continue;
+    await Promise.all(
+      rows.map(async (_row, index) => {
+        const recipe = recipes[index];
+        if (!recipe || recipe.kind === 'work-items' || serverMeasurements[index]?.status !== 'measured') return;
+        if ((await measurementRootFor(recipe)) !== root) return;
+        const paths = repoFilesMeasuredPaths(recipe);
+        try {
+          if (!after) await refuseMutationProbePaths(root, paths);
+          const refusal = after ? mutationProbeRefusal(after.resolved, after.probes, paths) : null;
+          if (refusal) throw new Error(refusal);
+        } catch (error: unknown) {
+          serverMeasurements[index] = {
+            status: 'unavailable' as const,
+            reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
+          };
+        }
+      }),
+    );
+  }
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
     const scopedCurrentKey = evidenceCurrentInputKey({

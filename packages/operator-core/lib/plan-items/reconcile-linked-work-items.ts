@@ -1403,6 +1403,10 @@ export interface OrphanReconcileSweepResult {
   /** Distinct (plan_slug, item_id) pairs enumerated from non-terminal, stamped
    *  work-items — the candidate frontier before the terminal-status check. */
   candidatePlanItems: number;
+  /** WI-10004586: true when the candidate query hit its `candidateCap`, so
+   *  `candidatePlanItems` (and every count derived from the window) is a FLOOR
+   *  over a bounded fetch, not the population total. */
+  candidateWindowSaturated: boolean;
   /** Of those candidates, how many were CONFIRMED terminal (done/dropped) and
    *  therefore actually swept. */
   terminalPlanItems: number;
@@ -1485,6 +1489,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
   const cap = opts.candidateCap && opts.candidateCap > 0 ? opts.candidateCap : DEFAULT_ORPHAN_SWEEP_CAP;
   const out: OrphanReconcileSweepResult = {
     candidatePlanItems: 0,
+    candidateWindowSaturated: false,
     terminalPlanItems: 0,
     reconciled: [],
     gated: [],
@@ -1541,22 +1546,44 @@ export async function reconcileOrphanedPlanItemWorkItems(
   const cands = new Map<string, OrphanCandidate>();
   const key = (planSlug: string, itemId: string) => `${planSlug}\0${itemId}`;
 
+  //    WI-10004586: the window is ORDERED, not an arbitrary planner slice. Without
+  //    an ORDER BY the same ~cap rows came back every tick, and rows that are
+  //    skipped on every pass (gated, unproven-link, a non-terminal lane sync)
+  //    held the window while terminal orphans past it were never visited —
+  //    measured 2026-10-01: 536 candidates, 68 with a terminal plan item, only
+  //    52 of those inside the LIMIT 500 window. Candidates whose plan item the
+  //    derived `plan_items` index already shows TERMINAL go first (they are the
+  //    ones this sweep exists to heal); the rest rotate via random() so every
+  //    lane-sync candidate is eventually visited. The index only PRIORITISES —
+  //    each candidate is still confirmed against a fresh getPlanRow below, so a
+  //    stale index row can reorder the window but never terminalize anything.
   const rows = await sql<{ plan_slug: string; item_id: string; harness_slug: string | null }[]>`
-    SELECT DISTINCT linkage.plan_slug, linkage.item_id, w.harness_slug
-      FROM harness_shared.work_items w
-      CROSS JOIN LATERAL (
-        SELECT w.payload->'plan_item'->>'plan_slug' AS plan_slug,
-               w.payload->'plan_item'->>'item_id'  AS item_id
-         WHERE w.payload->'plan_item' IS NOT NULL
-        UNION
-        SELECT w.source_plan_slug AS plan_slug, source_item_id AS item_id
-          FROM unnest(COALESCE(w.source_plan_item_ids, ARRAY[]::text[])) AS source_item_id
-         WHERE w.source_plan_slug IS NOT NULL
-      ) AS linkage
-     WHERE NOT (w.status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
-       AND linkage.plan_slug IS NOT NULL
-       AND linkage.item_id IS NOT NULL
+    SELECT c.plan_slug, c.item_id, c.harness_slug
+      FROM (
+        SELECT DISTINCT linkage.plan_slug, linkage.item_id, w.harness_slug
+          FROM harness_shared.work_items w
+          CROSS JOIN LATERAL (
+            SELECT w.payload->'plan_item'->>'plan_slug' AS plan_slug,
+                   w.payload->'plan_item'->>'item_id'  AS item_id
+             WHERE w.payload->'plan_item' IS NOT NULL
+            UNION
+            SELECT w.source_plan_slug AS plan_slug, source_item_id AS item_id
+              FROM unnest(COALESCE(w.source_plan_item_ids, ARRAY[]::text[])) AS source_item_id
+             WHERE w.source_plan_slug IS NOT NULL
+          ) AS linkage
+         WHERE NOT (w.status = ANY(${SETTLED_WORK_ITEM_STATES}::text[]))
+           AND linkage.plan_slug IS NOT NULL
+           AND linkage.item_id IS NOT NULL
+      ) AS c
+     ORDER BY EXISTS (
+                SELECT 1 FROM harness_shared.plan_items pi
+                 WHERE pi.plan_slug = c.plan_slug
+                   AND pi.item_id = c.item_id
+                   AND pi.status = ANY(${Object.keys(TERMINAL_PLAN_ITEM_TARGET)}::text[])
+              ) DESC,
+              random()
      LIMIT ${cap}`;
+  out.candidateWindowSaturated = rows.length >= cap;
   for (const r of rows) {
     const k = key(r.plan_slug, r.item_id);
     if (!cands.has(k)) cands.set(k, { planSlug: r.plan_slug, itemId: r.item_id, harnessSlug: r.harness_slug ?? null });

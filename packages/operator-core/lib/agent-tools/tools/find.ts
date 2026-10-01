@@ -646,6 +646,31 @@ function compactTopLevelDescription(node: JsonSchemaNode): { text: string; prior
   };
 }
 
+/**
+ * Nested object unions are compacted to a merged field vocabulary so callers
+ * can see every callable field. Preserve the branch boundary too: without it,
+ * `binding` can appear to accept test-run fields and manual-measurement fields
+ * together even though the validator accepts either shape, not both.
+ */
+const NESTED_UNION_HINT_MAX_CHARS = 320;
+
+function nestedObjectUnionHint(node: JsonSchemaNode, depth: number): string {
+  // This hint repairs a union that is itself a top-level argument object
+  // (binding?: ...). Recursive hints multiply across broad contracts and can
+  // evict required nested paths from the bounded discovery result.
+  if (depth !== 0) return '';
+  const branches = schemaNodes(node);
+  const objectBranches = branches.filter(
+    (branch) => branch.properties && typeof branch.properties === 'object' && !Array.isArray(branch.properties),
+  );
+  if (objectBranches.length < 2 || objectBranches.length !== branches.length) return '';
+
+  const requiredKeys = unionRequiredKeyHint(objectBranches);
+  if (!requiredKeys.includes('|')) return '';
+  const hint = `(one-of:${requiredKeys})`;
+  return hint.length <= NESTED_UNION_HINT_MAX_CHARS ? hint : '';
+}
+
 function schemaShape(
   node: JsonSchemaNode,
   depth: number,
@@ -663,8 +688,9 @@ function schemaShape(
     [node, ...schemaNodes(node)]
       .map((candidate) => arrayItemConstraintText(candidate))
       .find((text): text is string => text.length > 0) ?? '';
+  const unionHint = nestedObjectUnionHint(node, depth);
   const nested = includeNestedFields ? nestedFieldNames(node, depth + 1, includeNestedDescriptions) : '';
-  return `${type}${bound}${pattern}${itemConstraint}${nested}`;
+  return `${type}${bound}${pattern}${itemConstraint}${unionHint}${nested}`;
 }
 
 type TopLevelSchemaProjection = {

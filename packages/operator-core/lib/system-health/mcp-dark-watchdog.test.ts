@@ -30,6 +30,7 @@ const listLiveHostsMock = vi.fn<() => Array<{ ownerId: string; startedAt: number
 const mcpReconnectViaPtyMock = vi.fn(async () => 'sent' as const);
 vi.mock('../events/await/psu-pty-discovery', () => ({
   listLiveHosts: (...args: unknown[]) => listLiveHostsMock(...(args as [])),
+  listLiveHostsAsync: async (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   mcpReconnectViaPty: (...args: unknown[]) => mcpReconnectViaPtyMock(...(args as [])),
   findLiveHost: () => null,
   injectIntoHost: async () => true,
@@ -360,6 +361,10 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     toolSurfaceByOwner?: Record<string, { hookCalls: number; windowMinutes: number }>;
   }) {
     const updatedPhases: string[] = [];
+    type FakeSqlTag = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
+      unsafe: (identifier: string) => string;
+      array: (values: readonly unknown[]) => unknown[];
+    };
     const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const q = strings.join(' ');
       if (q.includes('SELECT phase FROM harness_shared.harness_escalations')) {
@@ -391,9 +396,16 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       if (q.includes('harness_shared.routines')) {
         return Promise.resolve([]); // no armed loops in these tests
       }
+      if (/\b(?:SELECT|UPDATE|INSERT|DELETE)\b/i.test(q)) {
+        throw new Error(`fakeSql received an unhandled query: ${q.trim().slice(0, 160)}`);
+      }
       return Promise.resolve([]);
-    }) as never;
-    return { tag, updatedPhases };
+    }) as FakeSqlTag;
+    // readOrientationToolSurfaces builds its shared agent-call predicate with
+    // these postgres.js fragment helpers before issuing the cadence query.
+    tag.unsafe = (identifier) => identifier;
+    tag.array = (values) => [...values];
+    return { tag: tag as never, updatedPhases };
   }
 
   beforeEach(() => {
@@ -544,8 +556,11 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       openPhases: [],
       presenceByOwner: Object.fromEntries(owners.map((owner) => [owner, INOW - 45 * M])),
     });
-    listLiveHostsMock.mockReturnValue(
-      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),
+    // Keep this session actively used on every pass, including the one after
+    // the shared window drains; a fixed timestamp would age past the 10m PTY
+    // freshness gate while virtual time advances.
+    listLiveHostsMock.mockImplementation(() =>
+      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: Date.now() - 1 * M })),
     );
     vi.useFakeTimers({ toFake: ['Date'] });
     try {

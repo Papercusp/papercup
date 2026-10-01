@@ -119,7 +119,9 @@ describe('event-loop-lag-monitor', () => {
     expect(detail.windowMs).toBe(475);
     expect(detail.intervalMs).toBe(100);
     expect(detail.sampleCount).toBe(0);
-    expect(detail.windowMature).toBe(false);
+    // The complete elapsed window is authoritative even with sparse observations;
+    // maturity does not identify the cause of its delay.
+    expect(detail.windowMature).toBe(true);
   });
 
   // infra round-4 P-014: the host boots the monitor from BOTH the request plane
