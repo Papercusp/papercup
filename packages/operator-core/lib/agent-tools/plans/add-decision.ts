@@ -56,6 +56,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -363,6 +364,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   const frozenCarryVerdict = evaluateFrozenLineageCarryText({
     surface: 'plan-decision',
     text: `${it.title}\n${it.body}`,
+    target: resolveHomeGateVerdictTarget(),
   });
   if (!frozenCarryVerdict.allowed) {
     const refusal = frozenLineageCarryViolationPayload(frozenCarryVerdict);
