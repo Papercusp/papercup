@@ -24,6 +24,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   hasStrictOwnerAction,
   readAgentReviewState,
+  implementationReadinessFloorSql,
   implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
@@ -2522,14 +2523,10 @@ export async function readWorkItemReadinessProjection(opts: {
                  OR (
                    p.agent_review ->> 'status' IS DISTINCT FROM 'pending'
                    AND p.agent_review ->> 'status' IS DISTINCT FROM 'revision-requested'
-                   AND (
-                     NOT p.readiness_enrolled
-                     OR (
-                       p.implementation_readiness ->> 'schemaVersion'
-                         = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
-                       AND p.implementation_readiness ->> 'status' = 'ready'
-                     )
-                   )
+                   AND ${implementationReadinessFloorSql(sql, {
+                     readiness: sql`p.implementation_readiness`,
+                     enrolled: sql`p.readiness_enrolled`,
+                   })}
                  )
                ) AS review_ready,
                EXISTS (

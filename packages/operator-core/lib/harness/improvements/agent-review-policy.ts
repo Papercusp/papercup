@@ -9,6 +9,7 @@
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
 import { createHash } from 'node:crypto';
+import type postgres from 'postgres';
 
 import type { OrgSql } from '../../work-items';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
@@ -331,7 +332,9 @@ export function evaluateImplementationAcceptance(
     if (!proposalFieldPresent(acceptance, field)) missing.push(field);
   }
   if (acceptance.contractVersion !== IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION) missing.push('contractVersion');
-  if (!acceptance.authority || typeof acceptance.authority !== 'object') missing.push('authority');
+  if (!acceptance.authority || typeof acceptance.authority !== 'object' || Array.isArray(acceptance.authority)) {
+    missing.push('authority');
+  }
   if (!nonEmptyString(acceptance.reason)) missing.push('reason');
   if (!nonEmptyString(acceptance.sourceRevision)) missing.push('sourceRevision');
   if (
@@ -567,9 +570,16 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
   const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
   const authority = sql`(${acc} -> 'authority')`;
   const policies = [...IMPLEMENTATION_ACCEPTANCE_POLICIES];
-  const nonEmpty = (path: string) => sql`NULLIF(btrim(${acc} ->> ${path}), '') IS NOT NULL`;
+  // Twin of `nonEmptyString`: a JSON string with at least one non-space character.
+  // Type-strict (a number is not a reason) and whitespace-class based, because
+  // btrim() strips only spaces while String.prototype.trim strips all whitespace.
+  const nonEmptyText = (value: postgres.Fragment) =>
+    sql`COALESCE(jsonb_typeof(${value}) = 'string' AND (${value} #>> '{}') ~ '[^[:space:]]', FALSE)`;
+  const nonEmpty = (path: string) => nonEmptyText(sql`(${acc} -> ${path})`);
   const readinessValid = implementationReadinessValidSql(sql, columns.payload ?? 'payload');
-  const proposalComplete = sql`(
+  // Every branch below is COALESCEd: a missing key yields SQL NULL, and a NULL
+  // CASE condition silently falls through to the next branch (toward 'qualifying').
+  const proposalComplete = sql`COALESCE((
     ${nonEmpty('problem')}
     AND ${nonEmpty('outcome')}
     AND ${nonEmpty('scope')}
@@ -578,29 +588,31 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
     AND jsonb_array_length(${acc} -> 'evidence') > 0
     AND NOT EXISTS (
       SELECT 1 FROM jsonb_array_elements(${acc} -> 'evidence') AS entry(value)
-       WHERE jsonb_typeof(entry.value) <> 'string' OR btrim(entry.value #>> '{}') = ''
+       WHERE NOT ${nonEmptyText(sql`entry.value`)}
     )
-  )`;
-  const sealComplete = sql`(
+  ), FALSE)`;
+  const sealComplete = sql`COALESCE((
     ${acc} ->> 'contractVersion' = ${IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION}
     AND jsonb_typeof(${authority}) = 'object'
     AND ${nonEmpty('reason')}
     AND ${nonEmpty('sourceRevision')}
-    AND COALESCE(${acc} ->> 'acceptedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
-  )`;
+    AND jsonb_typeof(${acc} -> 'acceptedAt') = 'string'
+    AND (${acc} ->> 'acceptedAt') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
+  ), FALSE)`;
   const authorityValid = sql`(
     CASE ${authority} ->> 'kind'
       WHEN 'agent-review' THEN COALESCE(
-        NULLIF(btrim(${authority} ->> 'reviewer'), '') IS NOT NULL
-        AND NULLIF(btrim(${authority} ->> 'submittedBy'), '') IS NOT NULL
+        ${nonEmptyText(sql`(${authority} -> 'reviewer')`)}
+        AND ${nonEmptyText(sql`(${authority} -> 'submittedBy')`)}
         AND ${authority} ->> 'reviewer' <> ${authority} ->> 'submittedBy'
         AND jsonb_typeof(${authority} -> 'round') = 'number'
         AND (${authority} ->> 'round') ~ '^[1-9][0-9]*$',
         FALSE
       )
       WHEN 'policy' THEN COALESCE(
-        ${authority} ->> 'policy' = ANY(${policies}::text[])
-        AND NULLIF(btrim(${authority} ->> 'actor'), '') IS NOT NULL,
+        jsonb_typeof(${authority} -> 'policy') = 'string'
+        AND ${authority} ->> 'policy' = ANY(${policies}::text[])
+        AND ${nonEmptyText(sql`(${authority} -> 'actor')`)},
         FALSE
       )
       ELSE FALSE
@@ -621,14 +633,18 @@ function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
   const readinessJson = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness'`;
   const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
   const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
-  return sql`(
+  // COALESCE: a missing key is SQL NULL, and `NOT (NULL)` would let a malformed
+  // row skip the 'unknown' branch of the stage CASE (TS reads it as malformed).
+  return sql`COALESCE((
     jsonb_typeof(${readinessJson}) = 'object'
     AND ${readinessJson} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
     AND ${readinessJson} ->> 'status' = ANY(${readinessStatuses}::text[])
     AND ${readinessJson} ->> 'source' = ANY(${readinessSources}::text[])
-    AND NULLIF(btrim(${readinessJson} ->> 'reason'), '') IS NOT NULL
-    AND COALESCE(${readinessJson} ->> 'updatedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
-  )`;
+    AND jsonb_typeof(${readinessJson} -> 'reason') = 'string'
+    AND (${readinessJson} ->> 'reason') ~ '[^[:space:]]'
+    AND jsonb_typeof(${readinessJson} -> 'updatedAt') = 'string'
+    AND (${readinessJson} ->> 'updatedAt') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
+  ), FALSE)`;
 }
 
 /** SQL twin of deriveWorkItemIntakeStage for set-based queue projections. */
@@ -919,18 +935,37 @@ export function implementationReadinessNormalExclusionSql(
   payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
 ) {
   const payload = sql.unsafe(payloadCol);
-  return sql`(
-    NOT (COALESCE(${payload}, '{}'::jsonb) ? 'implementationReadiness')
+  return implementationReadinessFloorSql(sql, {
+    readiness: sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
+    enrolled: sql`(COALESCE(${payload}, '{}'::jsonb) ? 'implementationReadiness')`,
+  });
+}
+
+/**
+ * The readiness floor over an already-extracted readiness document, so a census
+ * that projects `implementationReadiness` into its own column (the admission
+ * promoter's writer-ready census) judges rows with the SAME predicate the claim
+ * floor uses instead of a hand-copied one. NULL-safe: a malformed enrolled row is
+ * FALSE, never NULL, so `NOT (floor)` keeps meaning "held".
+ */
+export function implementationReadinessFloorSql(
+  sql: OrgSql,
+  expressions: { readiness: postgres.Fragment; enrolled: postgres.Fragment },
+) {
+  const { readiness, enrolled } = expressions;
+  return sql`COALESCE((
+    NOT (${enrolled})
     OR (
-      COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
-      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'ready'
+      ${readiness} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+      AND (
+        ${readiness} ->> 'status' = 'ready'
+        OR (
+          ${readiness} ->> 'status' = 'unknown'
+          AND ${readiness} ->> 'source' = 'creation-enrollment'
+        )
+      )
     )
-    OR (
-      COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
-      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'unknown'
-      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,source}' = 'creation-enrollment'
-    )
-  )`;
+  ), FALSE)`;
 }
 
 /** Normal implementation lane: review/readiness work is invisible until approved. */

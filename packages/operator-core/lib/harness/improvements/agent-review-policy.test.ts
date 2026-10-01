@@ -1,16 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  acceptanceSourceRevision,
   agentReviewEligibility,
   createImplementationReadiness,
   deriveWorkItemIntakeStage,
+  evaluateImplementationAcceptance,
   hasStrictOwnerAction,
+  IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
+  IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS,
   IMPLEMENTATION_READINESS_SCHEMA_VERSION,
+  implementationReadinessIsLegacyEquivalent,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   isStrictOwnerActionCapability,
   readAgentReviewState,
   readImplementationReadiness,
   readStructuredOwnerAsk,
+  sealImplementationAcceptance,
+  type ImplementationAcceptanceAuthority,
+  type ImplementationAcceptanceContract,
+  type ImplementationAcceptanceSource,
+  type ImplementationReadinessState,
   WORK_ITEM_INTAKE_PRIMARY_STAGES,
 } from './agent-review-policy';
 
@@ -22,19 +32,55 @@ vi.mock('./agent-review-policy', async (importOriginal) => {
   return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
 });
 
-const acceptedReadiness = () =>
-  createImplementationReadiness({
-    status: 'ready',
-    source: 'agent-review',
-    reason: 'agent-review-approved',
-    updatedAt: '2026-09-05T00:00:00.000Z',
-    evidence: {
-      acceptance: {
-        scope: 'Fix the bounded parser defect.',
-        completionCheck: 'The regression fixture passes.',
-      },
-    },
+const BUG_SOURCE: ImplementationAcceptanceSource = {
+  kind: 'bug',
+  title: 'Bounded parser drops the trailing token',
+  summary: 'The bounded parser drops the last token of every line.',
+};
+
+const PROPOSAL = {
+  problem: 'The bounded parser drops the trailing token of a line.',
+  evidence: ['parser.test.ts trailing-token fixture fails on HEAD'],
+  outcome: 'Every token of a line survives parsing.',
+  scope: 'Fix the bounded parser defect only.',
+  completionCheck: 'The trailing-token regression fixture passes.',
+};
+
+const REVIEW_AUTHORITY: ImplementationAcceptanceAuthority = {
+  kind: 'agent-review',
+  reviewer: 'su-reviewer',
+  submittedBy: 'su-author',
+  round: 1,
+};
+
+function sealedContract(
+  source: ImplementationAcceptanceSource = BUG_SOURCE,
+  authority: ImplementationAcceptanceAuthority = REVIEW_AUTHORITY,
+): ImplementationAcceptanceContract {
+  const sealed = sealImplementationAcceptance({
+    proposal: PROPOSAL,
+    authority,
+    reason: 'agent-review-approved (grade 5/5)',
+    source,
+    acceptedAt: '2026-09-05T00:00:00.000Z',
   });
+  if (!sealed.ok) throw new Error(`fixture contract must seal: ${JSON.stringify(sealed)}`);
+  return sealed.contract;
+}
+
+const readinessWith = (
+  acceptance: Record<string, unknown> | undefined,
+  status: ImplementationReadinessState['status'] = 'ready',
+) =>
+  createImplementationReadiness({
+    status,
+    source: 'agent-review',
+    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-review',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+    ...(acceptance ? { evidence: { acceptance } } : {}),
+  });
+
+const acceptedReadiness = (source: ImplementationAcceptanceSource = BUG_SOURCE) => readinessWith(sealedContract(source));
 
 describe('implementation readiness payload', () => {
   it('round-trips a current three-valued verdict with a stable schema version', () => {

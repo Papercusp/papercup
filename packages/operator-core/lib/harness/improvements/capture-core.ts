@@ -76,7 +76,11 @@ import {
   type AlreadyDecidedRecall,
 } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
-import { createImplementationReadiness, type ImplementationReadinessState } from './agent-review-policy';
+import {
+  createImplementationReadiness,
+  implementationReadinessIsLegacyEquivalent,
+  type ImplementationReadinessState,
+} from './agent-review-policy';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -1128,9 +1132,11 @@ async function reconcileToolFailurePromotionCollision(
       promotionReconciledFrom: prior.id,
       promotionReconciledAt: reconciledAt,
     },
-    ...(canonicalPayload.implementationReadiness
-      ? {}
-      : { implementationReadiness: promotedProbationReadiness(input, incomingProbation) }),
+    // A creation-enrollment `unknown` stamp is the absent-key legacy case under a
+    // recorded producer (P-005 D-011), so the promotion verdict replaces it too.
+    ...(!canonicalPayload.implementationReadiness || implementationReadinessIsLegacyEquivalent(canonicalPayload)
+      ? { implementationReadiness: promotedProbationReadiness(input, incomingProbation) }
+      : {}),
     promotionReconciledFrom: prior.id,
     promotionReconciledAt: reconciledAt,
   }).catch(() => null);

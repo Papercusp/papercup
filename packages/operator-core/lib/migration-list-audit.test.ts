@@ -5,6 +5,9 @@
  * libs/papercusp/libs/db/sql, because the two narrowings this auditor makes were
  * each forced by a specific migration that broke the naive rule.
  */
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   auditMigrationList,
@@ -328,6 +331,96 @@ describe('EVENT_SUBSTRATE_MIGRATIONS', () => {
 
   it('is already in apply order', () => {
     expect(mergeMigrationLists(EVENT_SUBSTRATE_MIGRATIONS)).toEqual([...EVENT_SUBSTRATE_MIGRATIONS]);
+  });
+});
+
+// WI-10004700 step 4 — the list above is only one list if fixtures USE it. A fixture
+// that names an event-substrate migration itself is hand-rolling a prefix of the
+// list, which is exactly how nine fixtures fell behind on 953 and 1216 with every
+// emit failing silently. New fixtures must call applyEventSubstrateMigrationsForTest.
+const OPERATOR_CORE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const EVENT_MIGRATION_STEMS = EVENT_SUBSTRATE_MIGRATIONS.map((f) => f.replace(/\.sql$/, ''));
+
+/**
+ * Pre-existing holdouts, SHRINK-ONLY: an entry must still match (the last case
+ * fails otherwise), so converting a file forces its removal here. Never add one
+ * for a new fixture; call applyEventSubstrateMigrationsForTest instead.
+ */
+const HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS: Readonly<Record<string, string>> = {
+  'lib/agent-tools/coordination/presence-reaper.integration.test.ts':
+    'applies 871 by file path (with a .DRAFT fallback) on top of the baseline coord fixture',
+  'lib/events/await/predicate-watch.integration.test.ts':
+    'applies 871 by file path (with a .DRAFT fallback) on top of createOrgTestDb',
+  'lib/pot/soak-report.integration.test.ts': 'applies 163 + 387 only; reads event_wake_deliveries alone',
+  'lib/scheduler/claim-ssot-agreement.integration.test.ts': 'applies 632 only, for event_key_fires',
+  'lib/task-manager/store.integration.test.ts': 'applies 632 only, for event_key_fires',
+  'lib/verification-attempts/attempt-ledger.integration.test.ts': 'applies 632 only, for event_key_fires',
+};
+
+/** Files that are fixtures (paths relative to operator-core): tests, test/ helpers, *-rig.ts. */
+function isFixtureSource(rel: string): boolean {
+  return /\.test\.m?ts$/.test(rel) || rel.startsWith('test/') || /-rig\.ts$/.test(rel);
+}
+
+/** Remove block comments and `//` line comments that start a line or follow whitespace
+ *  (so a `http://` inside a string survives). A migration named only in prose is not an apply. */
+function stripTsComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|\s)\/\/[^\n]*/g, '$1');
+}
+
+/** PURE — the event-substrate migration stems a fixture source names in code. */
+function handAppliedEventMigrations(src: string): string[] {
+  const code = stripTsComments(src);
+  return EVENT_MIGRATION_STEMS.filter((stem) => code.includes(stem));
+}
+
+function scanFixtureSources(): Map<string, string[]> {
+  const hits = new Map<string, string[]>();
+  for (const root of ['lib', 'test']) {
+    for (const entry of readdirSync(join(OPERATOR_CORE, root), { recursive: true }) as string[]) {
+      const rel = `${root}/${entry.split('\\').join('/')}`;
+      if (rel.includes('/node_modules/') || !isFixtureSource(rel)) continue;
+      // The canonical list and this file (its auditor cases are fixtures) are the two legitimate homes.
+      if (rel === 'test/_pg-helpers.ts' || rel === 'lib/migration-list-audit.test.ts') continue;
+      const stems = handAppliedEventMigrations(readFileSync(join(OPERATOR_CORE, rel), 'utf8'));
+      if (stems.length) hits.set(rel, stems);
+    }
+  }
+  return hits;
+}
+
+describe('no fixture hand-applies an event-substrate migration (WI-10004700)', () => {
+  it('detects a hand-applied stem in code but not in a comment', () => {
+    const stem = '1216-event-await-fired-delivery-intent-marker';
+    expect(handAppliedEventMigrations(`await sql.unsafe(readMigration('${stem}.sql'));`)).toEqual([stem]);
+    expect(handAppliedEventMigrations(`for (const m of ['${stem}.sql']) await apply(m);`)).toEqual([stem]);
+    expect(handAppliedEventMigrations(`// fell behind on ${stem}.sql\nawait applyEventSubstrateMigrationsForTest(sql);`)).toEqual([]);
+    expect(handAppliedEventMigrations(`/* ${stem}.sql */ const url = 'http://x';`)).toEqual([]);
+  });
+
+  it('classifies tests, test helpers and rigs as fixtures, and production code as not', () => {
+    expect(isFixtureSource('lib/scheduler/get-next.integration.test.ts')).toBe(true);
+    expect(isFixtureSource('test/_work-items-schema.ts')).toBe(true);
+    expect(isFixtureSource('lib/shared-pot-loop/composition-rig.ts')).toBe(true);
+    expect(isFixtureSource('lib/pg-read-query.ts')).toBe(false);
+  });
+
+  const hits = scanFixtureSources();
+
+  it('every other fixture applies the substrate through applyEventSubstrateMigrationsForTest', () => {
+    const offenders = [...hits]
+      .filter(([rel]) => !(rel in HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS))
+      .map(([rel, stems]) => `${rel}: ${stems.join(', ')}`);
+    expect(
+      offenders,
+      'These fixtures name event-substrate migrations directly. Replace the hand-rolled list with ' +
+        'applyEventSubstrateMigrationsForTest(sql, { extra: [...] }) from test/_pg-helpers.ts.',
+    ).toEqual([]);
+  });
+
+  it('the holdout list is shrink-only: every entry still hand-applies', () => {
+    const stale = Object.keys(HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS).filter((rel) => !hits.has(rel));
+    expect(stale, 'Converted or deleted: remove these from HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS').toEqual([]);
   });
 });
 
