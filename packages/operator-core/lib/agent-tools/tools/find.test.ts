@@ -1411,6 +1411,22 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('preserves every required testing:run recovery key in compact discovery', () => {
+    const { corpus, schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('testing:run')) ?? '';
+    const recoveryStart = compact.indexOf('recoverEvidence?:object{');
+    const recovery = recoveryStart < 0 ? '' : compact.slice(recoveryStart, recoveryStart + 320);
+
+    // originRunId is required by the recovery validator. Hiding it behind a
+    // tail marker makes a schema-following caller fail only after dispatch.
+    expect(recovery).toContain('originRunId:string');
+    expect(recovery).toContain('runId:string');
+    expect(recovery).toContain('workItemId:string');
+
+    const hit = corpus.find((candidate) => candidate.tool === 'testing:run');
+    expect(hit?.argSchema).toContain('originRunId:string');
+  });
+
   it('preserves record entry fields in the live scorecards:evaluate discovery schema', async () => {
     expect(scorecardEvaluate.name).toBe('scorecards:evaluate');
     const { schemaByTool } = buildCorpus();
