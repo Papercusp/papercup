@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  STORED_UNENROLLED_ORIGIN,
   TURN_ORIGIN_HEAD_CHARS,
   TURN_ORIGIN_TAIL_CHARS,
   classifyHitTurnOrigin,
@@ -318,5 +319,64 @@ describe('WI-10004057 — a paste-wrapped injection longer than the head', () =>
     const short = pasted(`${envelope('wake-pump')}\nwake`);
     expect(classifyHitTurnOrigin('user', head(short)).verdict).toBe('agent-injected');
     expect(classifyHitTurnOrigin('user', head(short), tail(short)).verdict).toBe('agent-injected');
+  });
+});
+
+describe('WI-10004510: the stored ingest verdict downgrades a text owner-typed residual, never grants owner', () => {
+  const CLEAN = 'please stop the fleet and fix the gate first';
+
+  it('calibration: a clean user turn with no stored verdict is the owner-typed residual', () => {
+    expect(classifyHitTurnOrigin('user', CLEAN).verdict).toBe('owner-typed');
+    // NULL = never classified (pre-794): the text verdict stands, never `unknown`.
+    expect(classifyHitTurnOrigin('user', CLEAN, null, { verdict: null }).verdict).toBe('owner-typed');
+  });
+
+  it('a stored unenrolled-origin turn reads as unknown, never as owner speech', () => {
+    const got = classifyHitTurnOrigin('user', CLEAN, null, { verdict: 'unenrolled-origin' });
+    expect(got.verdict).toBe('unknown');
+    expect(got.note).toMatch(/unenrolled-origin/);
+    expect(got.note).toMatch(/never as agent-authored/);
+  });
+
+  it('a stored machine verdict downgrades the residual and keeps its origin', () => {
+    const injected = classifyHitTurnOrigin('user', CLEAN, null, { verdict: 'agent-injected', origin: 'loop-fire' });
+    expect(injected).toMatchObject({ verdict: 'agent-injected', origin: 'loop-fire' });
+    expect(classifyHitTurnOrigin('user', CLEAN, null, { verdict: 'machine-surface' }).verdict).toBe('machine-surface');
+    expect(classifyHitTurnOrigin('user', CLEAN, null, { verdict: 'synthetic' }).verdict).toBe('synthetic');
+  });
+
+  it('a stored owner verdict keeps the owner reading', () => {
+    for (const verdict of ['owner-typed', 'owner-turn', 'owner-dialog']) {
+      expect(classifyHitTurnOrigin('user', CLEAN, null, { verdict }).verdict).toBe('owner-typed');
+    }
+  });
+
+  it('a stored owner verdict cannot upgrade a turn the text proves machine-injected', () => {
+    const got = classifyHitTurnOrigin('user', head(LOOP_FIRE_TURN), null, { verdict: 'owner-typed' });
+    expect(got.verdict).toBe('agent-injected');
+    expect(classifyHitTurnOrigin('assistant', 'I will fix it', null, { verdict: 'owner-typed' }).verdict).toBe('not-user-turn');
+  });
+
+  it('an unrecognised stored verdict is unknown — never owner, never agent', () => {
+    expect(classifyHitTurnOrigin('user', CLEAN, null, { verdict: 'some-future-verdict' }).verdict).toBe('unknown');
+  });
+
+  it('the literal is pinned to the ingest constant it mirrors', async () => {
+    const { UNENROLLED_ORIGIN_VERDICT } = await import('../../search/session-ingest');
+    expect(STORED_UNENROLLED_ORIGIN).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('resolveHitTurnOrigins selects and applies the stored verdict', async () => {
+    const captured: TemplateStringsArray[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      captured.push(strings);
+      return Promise.resolve([
+        { source_kind: 'claude', session_id: 'sess-1', turn_idx: 7, speaker: 'user', head: CLEAN, tail: CLEAN, turn_origin: null, turn_origin_verdict: 'unenrolled-origin' },
+      ]);
+    }) as unknown as Sql;
+    const key = { sourceKind: 'claude', sessionId: 'sess-1', turnIdx: 7 };
+    const got = await resolveHitTurnOrigins(sql, 'ws', [key]);
+    expect(got.get(turnOriginKey(key))?.verdict).toBe('unknown');
+    expect(captured[0].join('?')).toMatch(/turn_origin_verdict/);
   });
 });

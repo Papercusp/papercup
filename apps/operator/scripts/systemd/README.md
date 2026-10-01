@@ -1440,3 +1440,46 @@ tail -n 5 ~/.papercusp/mac-vm-watchdog/actions.jsonl
 ```bash
 systemctl --user disable --now papercusp-mac-vm-watchdog.timer
 ```
+
+# Rig macOS VM inference route — installation (WI-10004503)
+
+`papercusp-mac-vm-gateway-tunnel.service` holds an ssh reverse tunnel that puts
+the tower's account-pool gateway (`127.0.0.1:8788`) on the VM's
+`127.0.0.1:18788`. The VM operator's own gateway keeps `:8788` and forwards
+upstream to the tunnel: `boot-headless-current.sh` exports
+`ANTHROPIC_BASE_URL_UPSTREAM`, and the VM pool's one account is `tower-pool`
+(`token:~/.papercusp/tower-gateway.token`, holding the non-secret placeholder
+`papercusp-gateway`; the tower gateway strips caller auth). VM fleet seats
+therefore run on the tower's OAuth'd accounts and no credential lives on the
+VM. Never copy a tower OAuth bundle to the VM instead: a refresh on either side
+revokes the other.
+
+## Install or update
+
+```bash
+cp apps/operator/scripts/systemd/papercusp-mac-vm-gateway-tunnel.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-mac-vm-gateway-tunnel.service
+```
+
+VM side, once per VM DB (the pool lives in the VM's PG and survives restarts):
+
+```bash
+ssh aviweiss@172.31.44.2 'umask 077; printf "%s\n" papercusp-gateway > ~/.papercusp/tower-gateway.token;
+  printf "%s" "{\"id\":\"tower-pool\",\"credentialRef\":\"token:~/.papercusp/tower-gateway.token\"}" |
+  /tmp/vmcall.sh accounts:register --json -'
+```
+
+## Verify
+
+```bash
+ssh aviweiss@172.31.44.2 'curl -s 127.0.0.1:18788/healthz | head -c 80; echo;
+  curl -s 127.0.0.1:8788/healthz | head -c 120'   # tower accountId; VM tower-pool → :18788
+```
+
+## Roll back
+
+```bash
+systemctl --user disable --now papercusp-mac-vm-gateway-tunnel.service
+# and boot the VM operator with PAPERCUSP_RIG_GATEWAY_UPSTREAM= (empty) to use its own sign-in
+```

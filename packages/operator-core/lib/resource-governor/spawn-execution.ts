@@ -20,6 +20,22 @@ export type GovernedSpawnResult = SpawnConsoleResult & {
   admissionContext?: AdmissionContext;
 };
 
+/**
+ * Whether the resource governor can hold or refuse an agent launch at this door.
+ *
+ * 'observe-only': `beginGovernedExecution` enqueues the durable receipt and the caller
+ * immediately takes a TARGETED lease on it; no controller decision is consulted, so the
+ * governor records agent launches but never restricts them (spawn-door-governor-migration
+ * P-003; its binding migration is P-005..P-012). Readers that judge "was an agent launch
+ * admissible" (goal-placement-turn-receipts.ts, plan goal-brief D-031) treat an
+ * unpublished agent-class admission state as open ONLY while this reads 'observe-only'.
+ *
+ * Flip to 'binding' in the same change that makes this door wait on a controller.
+ * execution.test.ts pins the targeted-lease behavior against this value, so that change
+ * fails there until the declaration moves with it.
+ */
+export const AGENT_ADMISSION_GOVERNOR_BINDING: 'observe-only' | 'binding' = 'observe-only';
+
 function observeVisibleChild(child: ChildProcess): Promise<SpawnChildExit> {
   return new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));

@@ -27431,7 +27431,7 @@
           "POST"
         ]
       },
-      "description": "CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (fire ONE platform leg on its own unit, for a fleet-split cut; same gate). A non-Linux run-leg requires a completed same-version Linux leg with artifacts in the selected Cargo target slot; it fails before the expensive gates when Linux artifacts are absent. For a one-command single-platform cut, use op:run with the requested platform enabled. op:abort-leg (stop one leg). op:status (poll; `platform` = one leg). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic). op:reclaim (list/remove stale cut worktrees; dry-run unless confirm+targets).",
+      "description": "Cut a LOCAL Papercusp desktop release for owner upload; never publish a GitHub Release. Run/run-leg need the exact 40-char superproject sourceSha and refuse drift before writes. For new versions, prepare-tag creates only the missing remote tag (dry-run unless confirm:true; never overwrites a mismatch). preflight checks go/no-go; operator-gated run launches the full cut detached; run-leg launches one platform leg on its own unit. Both are dry-run unless confirm:true. Non-Linux legs require completed same-version Linux artifacts in the selected Cargo target slot; missing artifacts fail before gates. abort-leg stops a leg; status polls; gate-status reads/establishes the shared version/channel BUILD_SHA; handoff collects signed artifacts and hashes; reclaim lists/removes stale cut worktrees (dry-run unless confirm:true with targets).",
       "capabilities": [
         "operator:write"
       ],
@@ -27452,7 +27452,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Cutting a desktop release. Brand-new version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): prepare the tag once, build and verify the Linux leg first, then each non-Linux agent gate-status (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs). For a single-platform release, use op:run with the requested platform enabled so Linux is built in the same cut.",
+        "when": "Cutting a desktop release. New version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → status → verify → handoff. Fleet-split: prepare the tag once, build and verify Linux first, then each non-Linux agent gate-status to agree on one buildSha before run-leg{platform,sourceSha,confirm:true}; poll each leg and hand off after all finish. Single-platform cuts use run with the requested platform enabled.",
         "notWhen": "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub."
       }
     },

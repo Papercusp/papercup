@@ -38,7 +38,7 @@ export const USER_MEMORY_SYNC_KEYS = [
  * did. Mirrors the `.catch(() => {})` every call site already applied.
  */
 export async function invalidateUserMemoryViews(): Promise<void> {
-  await Promise.all(
+  await Promise.all([
     (async () => {
       try {
         // Turn-start memory blocks share this canonical corpus. Publish one
@@ -70,5 +70,5 @@ export async function invalidateUserMemoryViews(): Promise<void> {
         /* best-effort — see the contract above: a fan-out must never fail the write */
       }
     }),
-  );
+  ]);
 }

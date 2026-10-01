@@ -1,0 +1,21 @@
+[Unit]
+Description=Papercusp rig macOS VM inference route: ssh reverse tunnel putting the tower account-pool gateway (127.0.0.1:8788) on the VM's 127.0.0.1:18788 (WI-10004503)
+Documentation=file://%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/README.md
+After=papercusp-vm-mac.service
+
+# The VM operator's gateway forwards upstream to 127.0.0.1:18788 (ANTHROPIC_BASE_URL_UPSTREAM,
+# exported by papercusp-desktop/bin/vm-rig/boot-headless-current.sh) with the VM pool's tower-pool
+# account, so VM fleet seats run on the tower's OAuth'd accounts and no credential lives on the
+# VM. Same pattern as scripts/agent-capacity/vm/bootstrap-agent-vm.sh's GCP agent VMs.
+# Loopback-only on both ends: the forward binds the VM's 127.0.0.1, never 0.0.0.0.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o ConnectTimeout=10 -R 127.0.0.1:18788:127.0.0.1:8788 aviweiss@172.31.44.2
+# The VM reboots and goes away during drills; keep re-dialing rather than giving up.
+Restart=always
+RestartSec=15
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

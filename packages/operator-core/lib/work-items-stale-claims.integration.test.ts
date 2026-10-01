@@ -655,6 +655,35 @@ describe('reclaimStaleWorkItemClaims', () => {
 // live grace produced the claim→release→reclaim ping-pong that dominated the dedup/churn
 // ratio (WI-2118 reclaimed 3x+). The parked grace holds such a holder back until its beat
 // ages past the window — protecting the resumable, still promptly reaping the truly dead.
+describe('E3 authenticated human claims', () => {
+  const human = 'human:00000000-0000-4000-8000-000000000002';
+
+  it.each(['unknown', 'dead', 'spawn-exit', 'stalled'] as const)(
+    'keeps a human claim through the %s agent-reaper leg', async (leg) => {
+      await seedItem('F-HUMAN', human, 43_200, 'wip', 0, 43_200);
+      if (leg === 'dead') await markKnown(human);
+      if (leg === 'spawn-exit') await seedSpawn('human-spawn-alias', { sessionOwner: human });
+      if (leg === 'stalled') await sql`INSERT INTO harness_shared.coord_presence VALUES (${human}, now())`;
+      await seedItem('F-DEAD-CONTROL', 'su-dead-control', 30, 'wip');
+      await markKnown('su-dead-control');
+      const result = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
+      expect(result.released.map(row => row.feature_id)).toEqual(['F-DEAD-CONTROL']);
+      const [row] = await sql`SELECT taken_by, status, requeue_count FROM harness_shared.work_items
+        WHERE feature_id = 'F-HUMAN'`;
+      expect(row).toMatchObject({ taken_by: human, status: 'wip', requeue_count: 0 });
+    },
+  );
+
+  it('also preserves human issue-family claims past the unknown-holder horizon', async () => {
+    await seedIssue('EI-HUMAN', 'bug', human, 43_200);
+    await seedIssue('EI-DEAD-CONTROL', 'bug', 'su-dead-control', 30);
+    await markKnown('su-dead-control');
+    const result = await reclaimStaleIssueClaims(sql);
+    expect(result.released.map(row => row.issue_id)).toEqual(['EI-DEAD-CONTROL']);
+    expect(await assigneeOf('EI-HUMAN')).toBe(human);
+  });
+});
+
 describe('WI-2689 parked-grace (reclaim-churn fix)', () => {
   it('feature reaper: a holder that BEAT within the parked grace is NOT reaped, even past the live window', async () => {
     await seedItem('F-PK1', 'su-parked-1', 30); // claim 30 min old — past the 10-min live grace

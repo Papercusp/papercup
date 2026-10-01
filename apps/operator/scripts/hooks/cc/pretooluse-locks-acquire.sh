@@ -1712,7 +1712,7 @@ def _is_transient(res):
     condition as ok:false with NO reason and an EMPTY busy list — treat that
     shape as transient too, never as a foreign hold."""
     return res.get('reason') == 'workspace_contended' or (
-        not res.get('reason') and not (res.get('busy') or []))
+        res.get('ok') is False and not res.get('reason') and not (res.get('busy') or []))
 
 
 # EI-19324697909459657: "transient" and "one-off" are NOT the same claim, and

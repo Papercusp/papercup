@@ -485,6 +485,32 @@ describe('readJournal', () => {
     expect(out.entries[0].repeat).toBe(4);
   });
 
+  it('keeps a reverse-scanned grep run chronological before collapsing its timestamp bounds', async () => {
+    const baseMicros = 1785110000000000;
+    // journalctl --grep can return a narrow capped scan newest-first. Keep this
+    // order in the fixture so the read path must normalize it before collapsing.
+    const lines = [2, 1, 0].map((index) => jsonLine({
+      MESSAGE: 'socket reset',
+      _SYSTEMD_UNIT: 'a.service',
+      __REALTIME_TIMESTAMP: String(baseMicros + index * 1_000_000),
+    }));
+    const sinceMs = Date.now() - 50_000;
+    const out = await readJournal(
+      { units: ['a.service'], grep: 'socket reset', since: '50s', limit: 10 },
+      execReturning(lines.join('\n')),
+      noUnknownUnits,
+      async () => sinceMs,
+    );
+
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0]).toMatchObject({
+      ts: new Date(baseMicros / 1000).toISOString(),
+      lastTs: new Date((baseMicros + 2_000_000) / 1000).toISOString(),
+      repeat: 3,
+    });
+    expect(out.collapsed).toBe(2);
+  });
+
   it('echoes the exact argv so any result is reproducible by hand', async () => {
     const out = await readJournal({ units: ['a.service'], grep: 'boom' }, execReturning(''), noUnknownUnits);
     expect(out.command).toContain('journalctl');

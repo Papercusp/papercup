@@ -132,9 +132,9 @@ export const DEFAULT_MAX_CONCURRENT_CLAIMS = 1;
 /**
  * EI-23227815561098131: the scheduler-only pool setup must finish well inside the
  * public get_next watchdog. These reads used to run directly on the max:2 pool, so
- * a queued connection acquisition survived the outer timeout and could consume a
- * slot indefinitely. Two such abandoned setup reads then made every later pull time
- * out before the candidate query even started.
+ * a queued connection acquisition could survive the outer timeout. This is a
+ * confirmed source gap; whether it caused the reported live timeouts still requires
+ * phase evidence from a failing request.
  */
 export const SCHEDULER_CLAIM_SETUP_BUDGET_MS = 5_000;
 
@@ -604,7 +604,16 @@ export async function getNextForBee(args: {
    * path, so it is called defensively.
    */
   onPlanLaneBlocked?: (block: PlanItemLaneBlock & { workItemId: string }) => void;
+  /** Exact last entered claim phase, for timeout attribution. Observability only. */
+  onClaimStep?: (step: string) => void;
 }): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
+  const claimStep = (step: string): void => {
+    try {
+      args.onClaimStep?.(step);
+    } catch {
+      // A diagnostic observer must not affect admission or an already committed claim.
+    }
+  };
   const claimSql = args.useDedicatedClaimPool
     ? (getLongLivedAdminPool('scheduler-claim', { max: 2, prepare: false }) as unknown as OrgSql)
     : undefined;
@@ -615,12 +624,14 @@ export async function getNextForBee(args: {
     // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
     // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
     // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
+    claimStep('claim-spec-read');
     const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
     const transitionBlocked = resolvedRecord.source === 'default' && Boolean(resolvedRecord.fleetSlug);
     const resolvedPullRecord: ClaimSpecRecord = args.ignoreStoredSpec
       ? { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null }
       : resolvedRecord;
     const record = effectiveClaimSpecRecord(resolvedPullRecord);
+    if (!transitionBlocked) claimStep('claim-concurrency-read');
     const concurrency = transitionBlocked
       ? null
       : await readClaimConcurrency(
@@ -638,11 +649,13 @@ export async function getNextForBee(args: {
   // acquisition + setup reads are bounded and cancellation-aware too. Previously the
   // claim UPDATE was bounded, but getClaimSpecRecord/readClaimConcurrency ran directly on
   // the pool before it. A timed-out Promise.race therefore returned to the caller while the
-  // setup read kept its slot; after two abandoned reads the pool was permanently wedged and
-  // every later pull timed out without issuing a candidate query or claim-audit row.
+  // setup read could continue after the response. Bound this exposed path without assuming
+  // it caused the live outage: onClaimStep makes a future timeout distinguish setup from
+  // candidate resolution and post-claim checks.
   let setup: Awaited<ReturnType<typeof readClaimSetup>>;
   if (claimSql) {
     try {
+      claimStep('claim-setup-acquisition');
       setup = await boundedOrgTxn((tx) => readClaimSetup(tx), {
         client: claimSql,
         signal: args.signal,
@@ -731,6 +744,7 @@ export async function getNextForBee(args: {
   // authoritative backstop for surfacing why nothing was eligible.
   const MAX_PLAN_LANE_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
+    claimStep('candidate-resolution');
     const result = await getNextWorkItem(
       record.spec,
       {
@@ -782,6 +796,7 @@ export async function getNextForBee(args: {
       // claimed and quarantine-released here every ~3-4min by different fleet members
       // whose spec excludes p2p work, broadcasting to all 7 live awaiters each time.
       // `claim:released:<id>` (the targeted, id-scoped key) still always fires.
+      claimStep('claim-release');
       await releaseWorkItem(result.workItem.id, {
         harness: args.harness,
         expectedAssignee: args.cupId,
@@ -789,8 +804,10 @@ export async function getNextForBee(args: {
       });
       continue;
     }
+    claimStep('plan-lane-check');
     const blocked = await planItemLaneBlockReason(result.workItem);
     if (!blocked) {
+      claimStep('claim-audit');
       await auditClaimAttempt({
         workspaceId: args.workspaceId,
         harnessSlug: args.harness,
@@ -848,6 +865,7 @@ export async function getNextForBee(args: {
     // (the audit + release below MUST still run), so a throw here is swallowed exactly like
     // every other observability call in this function.
     notifyPlanLaneBlocked(args.onPlanLaneBlocked, blocked, result.workItem.id);
+    claimStep('claim-audit');
     await auditClaimAttempt({
       workspaceId: args.workspaceId,
       harnessSlug: args.harness,
@@ -868,6 +886,7 @@ export async function getNextForBee(args: {
         family: result.workItem.family,
       },
     });
+    claimStep('claim-release');
     await releaseWorkItem(result.workItem.id, {
       harness: args.harness,
       expectedAssignee: args.cupId,

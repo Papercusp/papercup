@@ -33,7 +33,8 @@ import { z } from 'zod';
 import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { humanAssignee, publicHumanMarketOffer, readHumanMarketJob } from '../../../work-items-human-market';
-import { actOnHumanMarketItem, getHumanMarketItem, type HumanMarketItem } from '../../../work-items-human-market-store';
+import { actOnHumanMarketItem, getHumanMarketItem, reviewHumanMarketItem, type HumanMarketItem } from '../../../work-items-human-market-store';
+import { requireAllowedOriginOr403 } from '../../cors';
 
 export interface WorkItemDimensions {
   /** Source plan this feature was imported from (hfc.source_plan_slug); null for issues / unplanned. */
@@ -273,6 +274,8 @@ const postWorkItem = defineTool({
 const humanWorkAction = z.discriminatedUnion('action', [
   z.object({ action: z.literal('claim'), version: z.number().int().nonnegative() }).strict(),
   z.object({ action: z.literal('submit'), version: z.number().int().nonnegative(), result: z.string().trim().min(1).max(32000) }).strict(),
+  z.object({ action: z.literal('grade'), version: z.number().int().nonnegative(), scorecardRef: z.string().trim().min(1).max(200) }).strict(),
+  z.object({ action: z.literal('payment'), version: z.number().int().nonnegative(), receiptRef: z.string().trim().min(1).max(2000) }).strict(),
 ]);
 
 function humanWorkResponse(item: HumanMarketItem, userId: string): Response {
@@ -295,7 +298,7 @@ async function humanWorkSession(req: Request) {
 }
 
 const getHumanWork = defineTool({
-  method: 'GET', path: '/harness/:slug/work-items/:id/human-work', auth: 'public',
+  method: 'GET', path: '/harness/:slug/work-items/:id/human-work', auth: 'public', cors: true,
   async handler(req, ctx) {
     const session = await humanWorkSession(req);
     if (session.error) return session.error;
@@ -307,28 +310,35 @@ const getHumanWork = defineTool({
 });
 
 const postHumanWork = defineTool({
-  method: 'POST', path: '/harness/:slug/work-items/:id/human-work', auth: 'public',
+  method: 'POST', path: '/harness/:slug/work-items/:id/human-work', auth: 'public', cors: true,
   async handler(req, ctx) {
     const session = await humanWorkSession(req);
     if (session.error) return session.error;
-    // JSON + SameSite session cookie, with an exact-origin check when sent by
-    // a browser. The Tauri API transport may omit Origin; it still needs the cookie.
+    // Reuse the route layer's desktop/dev allowlist: a Tauri WebView origin
+    // differs from its operator API origin. Cookie identity is still mandatory.
     const origin = req.headers.get('origin');
-    if ((origin && origin !== new URL(req.url).origin) || !req.headers.get('content-type')?.startsWith('application/json')) {
+    if ((origin && origin !== new URL(req.url).origin && requireAllowedOriginOr403(req)) ||
+        !req.headers.get('content-type')?.startsWith('application/json')) {
       return Response.json({ error: 'human_request_origin_required' }, { status: 403 });
     }
     const parsed = humanWorkAction.safeParse(await req.json().catch(() => null));
     if (!parsed.success) return Response.json({ error: 'invalid_human_work_action' }, { status: 400 });
     try {
-      const item = await actOnHumanMarketItem({ workspaceId: session.user.workspace_id,
-        harness: String(ctx.params.slug), id: String(ctx.params.id), userId: session.user.id, ...parsed.data });
+      const scope = { workspaceId: session.user.workspace_id, harness: String(ctx.params.slug),
+        id: String(ctx.params.id), userId: session.user.id };
+      const item = parsed.data.action === 'claim' || parsed.data.action === 'submit'
+        ? await actOnHumanMarketItem({ ...scope, ...parsed.data })
+        : await reviewHumanMarketItem({ ...scope, ...parsed.data });
       return humanWorkResponse(item, session.user.id);
     } catch (error) {
       const code = error instanceof Error ? error.message : '';
-      if (['market_offer_changed', 'claim_conflict', 'submission_already_recorded'].includes(code)) {
+      if (['market_offer_changed', 'claim_conflict', 'submission_already_recorded', 'grade_already_recorded',
+        'payment_already_recorded', 'market_rubric_identity_required', 'market_scorecard_required',
+        'market_scorecard_mismatch', 'market_grade_unsettled', 'submission_required', 'passing_grade_required'].includes(code)) {
         return Response.json({ error: code }, { status: 409 });
       }
-      if (['external_human_required', 'human_claim_required', 'needs_human_required', 'market_job_not_active'].includes(code)) {
+      if (['external_human_required', 'human_claim_required', 'needs_human_required', 'market_job_not_active',
+        'market_owner_required', 'market_grader_not_independent', 'market_scope_required'].includes(code)) {
         return Response.json({ error: code }, { status: 403 });
       }
       if (code === 'market_offer_required') return Response.json({ error: code }, { status: 404 });

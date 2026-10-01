@@ -36,7 +36,8 @@ describe('typed placement admission observations', () => {
     const snapshot = { observedAtMs: at(1).getTime(), validUntilMs: at(3).getTime(), evidenceRef: 'governor:1',
       admission: { state: 'open', constrainedClasses: [] } } as unknown as GovernorStateSnapshot;
     const deps: GoalPlacementAdmissionDeps = { preflight: vi.fn(async () => ({ ready: true, reason: 'ready' as const, plan: 'plan' })),
-      governor: vi.fn(async () => snapshot), attempts: vi.fn(async () => []), now: () => at(2).getTime() };
+      governor: vi.fn(async () => snapshot), agentGovernorBinding: vi.fn(async () => 'binding' as const),
+      attempts: vi.fn(async () => []), now: () => at(2).getTime() };
     const input = { ownerId: 'holder', workspaceId: 'workspace', row: { goalId: 'goal', planSlug: 'plan',
       planRef: 'plan:harness/plan', obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
       launch: { fleetSlug: 'plan-fleet', requestedSeats: 1 } } };
@@ -67,6 +68,24 @@ describe('typed placement admission observations', () => {
     f.deps.attempts = async () => ['RG-exact'];
     expect(await observeGoalPlacementAdmission(f.input, f.deps)).toMatchObject({ governor: 'restricted', attempts: 'present',
       evidenceRefs: expect.arrayContaining(['RG-exact']) });
+  });
+  it('reads an unpublished agent decision as open only while the agent door is observe-only (D-031)', async () => {
+    const f = fixture();
+    const unpublished = { ...f.snapshot, evidenceRef: null, admission: { ...f.snapshot.admission, state: null } };
+    f.deps.governor = async () => unpublished as unknown as GovernorStateSnapshot;
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('unknown');
+    f.deps.agentGovernorBinding = async () => 'observe-only';
+    expect(await observeGoalPlacementAdmission(f.input, f.deps)).toMatchObject({ governor: 'open',
+      evidenceRefs: expect.arrayContaining(['governor:agent:observe-only']) });
+    f.deps.governor = async () => null;
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('open');
+    // A published decision still wins: observe-only never upgrades a restriction to open.
+    f.deps.governor = async () => ({ ...f.snapshot, admission: { ...f.snapshot.admission, state: 'paused', constrainedClasses: [] } });
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('restricted');
+    // An unreadable declaration stays unmeasured rather than open.
+    f.deps.governor = async () => null;
+    f.deps.agentGovernorBinding = async () => { throw new Error('module load failed'); };
+    expect((await observeGoalPlacementAdmission(f.input, f.deps)).governor).toBe('unknown');
   });
 });
 

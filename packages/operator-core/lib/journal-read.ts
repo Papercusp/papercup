@@ -651,7 +651,13 @@ export function parseJournalJson(stdout: string): RawJournalRecord[] {
       clipped,
     });
   }
-  return out;
+  // A narrow journalctl --grep query can satisfy its -n cap with a newest-first
+  // reverse scan. Normalize before collapseConsecutive, whose ts/lastTs fields
+  // represent the first and final row in chronological order.
+  return out.sort((a, b) => {
+    if (!a.ts || !b.ts) return 0;
+    return a.ts.localeCompare(b.ts);
+  });
 }
 
 /** Decode one timestamp emitted by `log show --style json`. */

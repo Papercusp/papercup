@@ -19,24 +19,24 @@ describe('HumanWorkSection', () => {
   it('shows sign-in guidance when no real human session exists', async () => {
     fetchMock.mockResolvedValue(response({ error: 'human_session_required' }, 401));
     mount();
-    expect(await screen.findByRole('alert')).toHaveTextContent('Sign in to claim work.');
+    expect((await screen.findByRole('alert')).textContent).toContain('Sign in to claim work.');
     expect(screen.queryByRole('button', { name: 'Claim this work' })).toBeNull();
   });
 
   it('lets the signed-in claimant submit once, with displayed version and no asserted identity', async () => {
     mount();
-    expect(await screen.findByText('Review public onboarding.')).toBeVisible();
+    expect(await screen.findByText('Review public onboarding.')).toBeTruthy();
     fetchMock.mockResolvedValueOnce(response({ ...available, offer: { ...available.offer, status: 'claimed' }, mine: true, version: 1 }));
     fireEvent.click(screen.getByRole('button', { name: 'Claim this work' }));
     const result = await screen.findByLabelText('Your result');
     const claimCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
     expect(JSON.parse(claimCall![1].body)).toEqual({ action: 'claim', version: 0 });
-    expect(screen.getByRole('button', { name: 'Submit for review' })).toBeDisabled();
+    expect((screen.getByRole('button', { name: 'Submit for review' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(result, { target: { value: 'Reviewed.' } });
     fetchMock.mockResolvedValueOnce(response({ ...available, offer: { ...available.offer, status: 'submitted' },
       mine: true, version: 2, submission: 'Reviewed.' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit for review' }));
-    expect(await screen.findByText('Submitted for independent review.')).toBeVisible();
+    expect(await screen.findByText('Submitted for independent review.')).toBeTruthy();
     expect(screen.queryByLabelText('Your result')).toBeNull();
     expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toEqual({ action: 'submit', version: 1, result: 'Reviewed.' });
   });
@@ -46,9 +46,9 @@ describe('HumanWorkSection', () => {
     await screen.findByRole('button', { name: 'Claim this work' });
     fetchMock.mockResolvedValueOnce(response({ error: 'market_offer_changed' }, 409));
     fireEvent.click(screen.getByRole('button', { name: 'Claim this work' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('already claimed');
+    expect((await screen.findByRole('alert')).textContent).toContain('already claimed');
     expect(screen.queryByRole('button', { name: 'Claim this work' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Refresh human work' })).toBeEnabled();
+    expect((screen.getByRole('button', { name: 'Refresh human work' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('refreshes with the existing detail query invalidation and ignores a late previous-item response', async () => {

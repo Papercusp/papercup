@@ -296,5 +296,8 @@ describe('resource governor enforcement lint', () => {
       timeout: 120_000,
     });
     expect(output).toContain('[resource-governor-enforcement] OK');
-  }, 30_000);
+    // The test budget must outlast the child's own 120s timeout. At 30s it fired
+    // first: the scan of ~9,800 files took ~40-47s under gate load (2026-10-01,
+    // repairHead bc19465b), so the gate saw a test timeout, not the CLI's verdict.
+  }, 150_000);
 });

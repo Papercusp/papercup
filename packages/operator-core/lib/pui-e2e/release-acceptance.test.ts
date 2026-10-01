@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
@@ -7,8 +8,8 @@ import * as path from 'node:path';
 import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
-  legsBlocked, measureCloudDeviceStart, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
-  runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
+  legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
+  runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
 
@@ -382,6 +383,61 @@ describe('release acceptance account preflight', () => {
       } }] })).rejects.toThrow(/ENOENT/);
     } finally {
       rmSync(work, { recursive: true, force: true });
+    }
+  });
+});
+
+// EI-24692155752067316: rehearsal 37bc2d4c32 ran its legs from the shared working
+// tree and two peers' half-written edits (scripts/, operator-core) broke both real
+// legs. The verdict must refuse evidence from any checkout that is not the
+// candidate's commit, clean.
+describe('release acceptance runner checkout', () => {
+  const sha = 'f'.repeat(40);
+  const gitIn = (dir: string, ...args: string[]) => execFileSync('git', ['-C', dir,
+    '-c', 'user.email=acceptance@test', '-c', 'user.name=acceptance', ...args], { encoding: 'utf8' }).trim();
+
+  it('accepts only a clean checkout at the candidate commit; untracked files do not count', () => {
+    const repo = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-runner-'));
+    try {
+      gitIn(repo, 'init', '-q');
+      writeFileSync(path.join(repo, 'gateway.ts'), 'export const ok = 1;\n');
+      gitIn(repo, 'add', '.');
+      gitIn(repo, 'commit', '-qm', 'candidate');
+      const candidate = gitIn(repo, 'rev-parse', 'HEAD');
+
+      const clean = measureRunnerTree(repo);
+      expect(clean).toEqual({ root: repo, head: candidate, changed: [], problem: null });
+      expect(runnerTreeRefusals(clean, candidate, 'before the legs')).toEqual([]);
+
+      const elsewhere = runnerTreeRefusals(clean, sha, 'before the legs');
+      expect(elsewhere).toHaveLength(1);
+      expect(elsewhere[0]).toContain(`was at ${candidate} before the legs, not the candidate source ${sha}`);
+
+      writeFileSync(path.join(repo, 'next-migration.js'), 'await 1;\n');
+      expect(runnerTreeRefusals(measureRunnerTree(repo), candidate, 'after the legs')).toEqual([]);
+
+      writeFileSync(path.join(repo, 'gateway.ts'), 'export const ok = ;\n');
+      const edited = measureRunnerTree(repo);
+      expect(edited.changed).toEqual([' M gateway.ts']);
+      const refusals = runnerTreeRefusals(edited, candidate, 'after the legs');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toMatch(/had 1 uncommitted tracked change\(s\) after the legs \(M gateway\.ts\)/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a checkout git cannot read as unmeasured, never as clean', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-runner-'));
+    try {
+      const tree = measureRunnerTree(path.join(dir, 'missing'));
+      expect(tree.head).toBeNull();
+      expect(tree.problem).toMatch(/git exited/);
+      const refusals = runnerTreeRefusals(tree, sha, 'before the legs');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0]).toContain('could not be measured before the legs');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

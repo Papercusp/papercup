@@ -12,7 +12,7 @@ import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { lockHasLiveHolder, lsofLockHolder } from './run-git-sync';
+import { lockHasLiveHolder, lsofLockHolder, runLsof } from './run-git-sync';
 
 type RunResult = { code: number | null; stdout: string; stderr: string; missing?: boolean };
 
@@ -111,6 +111,12 @@ try {
   hasLsof = (e as NodeJS.ErrnoException).code !== 'ENOENT';
 }
 
+// This case checks lsof's VERDICTS, not its speed. On the dev box one call scans
+// ~8,000 processes and took 9.6-11.6s on 2026-10-01, past the 10s production
+// timeout, so the timeout's `null` read as a wrong verdict (EI-24743587456535351).
+const REAL_LSOF_TIMEOUT_MS = 60_000;
+const realLsof = (bin: string, args: string[]) => runLsof(bin, args, REAL_LSOF_TIMEOUT_MS);
+
 describe.skipIf(!hasLsof)('lsofLockHolder against the real lsof (WI-10003529)', () => {
   let dir: string | null = null;
   afterEach(async () => {
@@ -124,10 +130,10 @@ describe.skipIf(!hasLsof)('lsofLockHolder against the real lsof (WI-10003529)', 
     await writeFile(lock, '');
     const fh = await open(lock, 'r');
     try {
-      expect(await lsofLockHolder(lock)).toBe(true);
+      expect(await lsofLockHolder(lock, realLsof)).toBe(true);
     } finally {
       await fh.close();
     }
-    expect(await lsofLockHolder(lock)).toBe(false);
-  });
+    expect(await lsofLockHolder(lock, realLsof)).toBe(false);
+  }, 2 * REAL_LSOF_TIMEOUT_MS + 10_000);
 });

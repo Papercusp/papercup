@@ -107,13 +107,13 @@ beforeAll(async () => {
   const sample = (id: number, ws: string, session: string | null, at: string, cost: number | null, source: string | null) => db.sql`
     INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts, cost_usd, cost_source)
     VALUES (${id},${ws},${session},${ms(at)},${cost},${source})`;
-  await sample(101, WS, 'native-shadow-1', '2026-08-15T00:00:00Z', 1.0, 'billed');
+  await sample(101, WS, 'native-shadow-1', '2026-08-15T00:00:00Z', 1.0, 'provider');
   await sample(102, WS, 'native-shadow-1', '2026-08-15T01:00:00Z', 0.5, 'estimated');
   await sample(103, WS, 'native-shadow-2', '2026-08-16T00:00:00Z', 2.0, 'estimated');
   await sample(104, WS, 'unknown-session', '2026-08-17T00:00:00Z', 0.25, 'estimated');
-  await sample(105, WS, 'native-shadow-1', '2026-09-01T00:00:00Z', 7.0, 'billed');       // next month (end exclusive)
-  await sample(106, WS, 'native-shadow-1', '2026-07-31T23:59:59.999Z', 11.0, 'billed');  // previous month
-  await sample(107, OTHER_WS, 'native-shadow-1', '2026-08-15T00:00:00Z', 3.0, 'billed'); // other workspace
+  await sample(105, WS, 'native-shadow-1', '2026-09-01T00:00:00Z', 7.0, 'provider');       // next month (end exclusive)
+  await sample(106, WS, 'native-shadow-1', '2026-07-31T23:59:59.999Z', 11.0, 'provider');  // previous month
+  await sample(107, OTHER_WS, 'native-shadow-1', '2026-08-15T00:00:00Z', 3.0, 'provider'); // other workspace
   await sample(108, WS, null, '2026-08-18T00:00:00Z', null, null);                        // keyless, costless
   await sample(109, WS, 'native-shadow-1', '2026-08-01T00:00:00Z', 0.125, 'estimated');  // month start, before the span
 

@@ -45,6 +45,7 @@ describe('the process-liveness insight explains PID-namespace readings', () => {
     expect(text).toContain('readlink /proc/self/ns/pid');
     expect(text).toContain('visible numeric /proc PID count');
     expect(text).toMatch(/[\x60]?\$\$[\x60]? in the same call/);
+    expect(text).toContain('If `$$` is tiny or only a few PIDs are visible');
     expect(text).toMatch(/Read the control twice and confirm [\x60]?tasks\[\]\.ageSec[\x60]? advances by elapsed wall time/);
     expect(text).toMatch(/[\x60]?confined:false[\x60]? does not prove abandonment/);
   });

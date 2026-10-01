@@ -1262,9 +1262,18 @@ export function projectAcceptanceBarContractSnapshot(
       const keys = new Set<string>();
       for (const row of rows) {
         const executed = row.testRunId !== null || row.coverageEvidenceRef !== null;
-        keys.add(
-          `${row.specId}\x00${row.evidenceKind}\x00${row.evidenceRef}\x00${executed ? 'executed' : 'unexecuted'}`,
-        );
+        // A path locates the evidence but does not identify its content. Operational
+        // artifact hashes and repo-files source/test measurements are bound on this row.
+        // Keep execution normalized to a boolean: rerunning unchanged content must not
+        // repeatedly stale a non-pass grade just because testRunId changed.
+        keys.add(JSON.stringify([
+          row.specId,
+          row.evidenceKind,
+          row.evidenceRef,
+          executed ? 'executed' : 'unexecuted',
+          row.fingerprints.sourceFingerprint,
+          row.fingerprints.testFingerprint ?? null,
+        ]));
       }
       return [...keys].sort().join('\x01');
     };

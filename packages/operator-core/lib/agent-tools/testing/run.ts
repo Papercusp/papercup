@@ -1162,6 +1162,8 @@ export type TestFilesCoreResult =
       skipped?: number;
       files?: number;
       routerOutput?: string;
+      /** On `no_report`: what the refusal had to go on (EI-24734340317452188). */
+      diagnostics?: ReturnType<typeof noReportDiagnostics>;
       detachedRunId?: string;
       /** Whether the detached run's durable snapshot landed before we advertised its id. */
       detachedDurable?: boolean;
@@ -2345,7 +2347,112 @@ export function parseRouterTestResult(
     return null;
   }
 
-  return distillNodeTestSummary(output, files, executed, status === 'failed', opts);
+  return (
+    distillNodeTestSummary(output, files, executed, status === 'failed', opts) ??
+    distillVitestSummary(output, files, executed, status === 'failed', opts)
+  );
+}
+
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Distill Vitest's own end-of-run summary (`Test Files  1 passed (1)` /
+ * `Tests  2 failed | 23 passed (25)`) when its JSON report is missing
+ * (EI-24734340317452188). Before this, the router fallback understood only
+ * Node's summary, so every Vitest run whose report went missing answered
+ * `no_report`, even with `TEST_FILE_RESULT ... status=passed` in hand.
+ *
+ * As strict as the Node path: every `Tests` line needs a matching `Test Files`
+ * line, each line's counts must add up to its total, the `Test Files` totals
+ * must equal the router's executed count, and at least one test must have run.
+ * Anything else returns null and the caller keeps its refusal.
+ */
+function distillVitestSummary(
+  output: string,
+  files: readonly string[],
+  executed: number,
+  routerReportedFailure: boolean,
+  opts: { maxFailures?: number } = {},
+): DistilledTestRun | null {
+  const text = output.replace(ANSI_SGR, '');
+  const counts = (label: string) => [...text.matchAll(new RegExp(`^\\s*${label}\\s+(.+?)\\s+\\((\\d+)\\)\\s*$`, 'gm'))]
+    .map((match) => {
+      const total = Number(match[2]);
+      const byKind: Record<string, number> = {};
+      for (const part of match[1]!.split('|')) {
+        const piece = /^\s*(\d+)\s+(passed|failed|skipped|todo)\s*$/.exec(part);
+        if (!piece) return null;
+        byKind[piece[2]!] = (byKind[piece[2]!] ?? 0) + Number(piece[1]);
+      }
+      const sum = Object.values(byKind).reduce((a, b) => a + b, 0);
+      return Number.isSafeInteger(total) && sum === total ? { total, byKind } : null;
+    });
+  const fileLines = counts('Test Files');
+  const testLines = counts('Tests');
+  if (!testLines.length || testLines.length !== fileLines.length) return null;
+  if ([...fileLines, ...testLines].some((line) => line === null)) return null;
+  const sum = (lines: typeof testLines, kind?: string) =>
+    lines.reduce((acc, line) => acc + (kind ? (line!.byKind[kind] ?? 0) : line!.total), 0);
+  if (sum(fileLines) !== executed) return null;
+  const total = sum(testLines);
+  if (total < 1) return null;
+
+  const passed = sum(testLines, 'passed');
+  const failed = Math.max(sum(testLines, 'failed'), routerReportedFailure ? 1 : 0);
+  const skipped = sum(testLines, 'skipped') + sum(testLines, 'todo');
+  let durationMs: number | null = null;
+  for (const match of text.matchAll(/^\s*Duration\s+([0-9]+(?:\.[0-9]+)?)(ms|s)\b/gm)) {
+    durationMs = Math.round(Number(match[1]) * (match[2] === 's' ? 1000 : 1));
+  }
+
+  const maxFailures = Math.max(1, Math.floor(opts.maxFailures ?? 20));
+  const failureFile = files.length === 1 ? files[0]! : '(vitest failure)';
+  const failureNames = [...new Set([...text.matchAll(/^\s*FAIL\s+(\S[^\r\n]*?)\s*$/gm)].map((m) => m[1]!))];
+  const missing = 'its JSON report was missing, so structured failure details are unavailable.';
+  const failures = failureNames
+    .slice(0, maxFailures)
+    .map((test) => ({ file: failureFile, test, message: `Vitest reported a failure; ${missing}` }));
+  if (failed > 0 && failures.length === 0) {
+    failures.push({
+      file: failureFile,
+      test: '(vitest failure details unavailable)',
+      message: `Vitest reported ${failed} failed test(s); ${missing}`,
+    });
+  }
+  const byFile =
+    files.length === 1 && executed === 1 ? { [files[0]!]: { passed, failed, skipped, collectionFailed: false } } : {};
+  return {
+    passed,
+    failed,
+    skipped,
+    files: executed,
+    failures,
+    failuresTruncated: failureNames.length > maxFailures,
+    durationMs,
+    byFile,
+  };
+}
+
+/**
+ * What a `no_report` refusal had to go on, so the next one can be diagnosed from
+ * the result instead of re-run (EI-24734340317452188).
+ */
+export function noReportDiagnostics(
+  output: string,
+  routerExit: number | null,
+  reportDirEntries: readonly string[],
+): { routerExit: number | null; reportDirEntries: string[]; markerSeen: boolean; summarySeen: 'node' | 'vitest' | 'none' } {
+  const text = output.replace(ANSI_SGR, '');
+  return {
+    routerExit,
+    reportDirEntries: [...reportDirEntries].slice(0, 20),
+    markerSeen: /^TEST_FILE_RESULT\b/m.test(text),
+    summarySeen: /^\s*(?:ℹ|#)?\s*tests\s+\d+\s*$/m.test(text)
+      ? 'node'
+      : /^\s*Tests\s+.+\(\d+\)\s*$/m.test(text)
+        ? 'vitest'
+        : 'none',
+  };
 }
 
 /**
@@ -3048,10 +3155,10 @@ export async function runTestFilesCore(opts: {
     }
 
     let reportTexts: string[];
+    let reportDirEntries: string[] = [];
     try {
-      const names = (await readdir(dir))
-        .filter((n) => n.endsWith('.json') && n !== TEST_FAILURE_DETAILS_FILENAME)
-        .sort();
+      reportDirEntries = (await readdir(dir)).sort();
+      const names = reportDirEntries.filter((n) => n.endsWith('.json') && n !== TEST_FAILURE_DETAILS_FILENAME);
       reportTexts = (await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))).filter(
         (t): t is string => t !== null,
       );
@@ -3077,7 +3184,14 @@ export async function runTestFilesCore(opts: {
       // Exit 1 with no report is the REFUSED false-green (the router bailed
       // before running anything) — the one case where "no results" is the
       // answer, and must never read as a pass.
-      return { ok: false, runId, root, error: 'no_report', routerOutput: outcome.output.slice(-2000) };
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'no_report',
+        routerOutput: outcome.output.slice(-2000),
+        diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries),
+      };
     }
 
     let failureDetails = [] as ReturnType<typeof parseFailureDetailsSidecar>;

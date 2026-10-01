@@ -123,12 +123,16 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     getNextWorkItemMock.mockResolvedValue(null);
 
     const signal = new AbortController().signal;
+    const steps: string[] = [];
     await getNextForBee({
       cupId: 'me',
       harness: 'papercusp',
       ignoreStoredSpec: true,
       useDedicatedClaimPool: true,
       signal,
+      onClaimStep: (step) => {
+        steps.push(step);
+      },
     });
 
     expect(getLongLivedAdminPoolMock).toHaveBeenCalledWith('scheduler-claim', {
@@ -149,6 +153,26 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
     });
     branches.assertAllMatched();
+    expect(steps).toEqual([
+      'claim-setup-acquisition',
+      'claim-spec-read',
+      'claim-concurrency-read',
+      'candidate-resolution',
+    ]);
+  });
+
+  it('a throwing phase observer cannot break the claim path', async () => {
+    getNextWorkItemMock.mockResolvedValue(claimResult('F-observer'));
+    planItemLaneBlockReasonMock.mockResolvedValue(null);
+    const result = await getNextForBee({
+      cupId: 'me',
+      harness: 'papercusp',
+      ignoreStoredSpec: true,
+      onClaimStep: () => {
+        throw new Error('diagnostic observer failed');
+      },
+    });
+    expect(result?.workItem.id).toBe('F-observer');
   });
 
   it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {

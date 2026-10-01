@@ -26,11 +26,14 @@ const paymentSchema = z.object({
 export const humanMarketJobSchema = z.object({
   route: z.literal('market'), version: z.number().int().nonnegative(),
   brief: text.max(8000), rubricRef: text, ownerUserId: humanId,
+  rubricRevision: z.number().int().positive().optional(),
+  rubricCriteriaHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   amountCents: z.number().int().positive(), currency: z.string().regex(/^[A-Z]{3}$/),
   claim: claimSchema.optional(), submission: submissionSchema.optional(),
   grade: gradeSchema.optional(), payment: paymentSchema.optional(),
 }).strict().superRefine((job, ctx) => {
   const invalid = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+  if ((job.rubricRevision == null) !== (job.rubricCriteriaHash == null)) invalid('rubric identity must include revision and criteria hash');
   if (job.claim?.userId === job.ownerUserId) invalid('owner cannot be the external participant');
   if (job.submission && !job.claim) invalid('submission requires a human claim');
   if (job.submission && digest(job.submission.result) !== job.submission.sha256) invalid('submission hash mismatch');

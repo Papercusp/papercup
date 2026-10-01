@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS build guard, imported for its scanner predicate.
-import { findBundledCliEntryGuards } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
+import { findBundledCliEntryGuards, findBundledTopLevelAwaits } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
 
 const TEST_FILE = fileURLToPath(import.meta.url);
 
@@ -169,5 +169,63 @@ describe('check-bundled-cli-entry-guards', () => {
     // The fallback banner must not assert a cause it cannot know: the bundle step is
     // esbuild + this scanner + ascii-escape + the atomic swap, and any of them can fail.
     expect(script).not.toMatch(/FAILED — the esbuild error is above/);
+  });
+
+  // WI-10004497: a top-level await in a bundled repo input made esbuild compile it and
+  // its importers into async inits that deadlocked across an import cycle, so the host
+  // never listened (:3170 and every verify-tauri-headless rig, 2026-10-01).
+  it('reports a repo-owned bundled input that uses top-level await, and only those', async () => {
+    const repoRoot = repositoryRoot();
+    const root = mkdtempSync(join(repoRoot, 'apps', '.bundled-tla-guard-'));
+    try {
+      const apps = join(root, 'operator');
+      const src = join(root, 'src');
+      mkdirSync(src, { recursive: true });
+      const guardedMain = join(src, 'guarded-main.mjs'); // the exact pre-fix spelling
+      const nested = join(src, 'nested-block.ts'); // top-level await inside a top-level block
+      const asyncFn = join(src, 'async-fn.ts'); // await only inside a function: fine
+      const noAwait = join(src, 'no-await.mjs');
+      writeFileSync(guardedMain, 'async function main() {}\nif (isCliEntry(import.meta.url)) await main();\n');
+      writeFileSync(nested, 'export const x: number = 1;\nfor (const a of [] as Promise<void>[]) {\n  await a;\n}\n');
+      writeFileSync(asyncFn, 'export async function f(): Promise<number> {\n  return await Promise.resolve(1);\n}\n');
+      writeFileSync(noAwait, 'export const y = 2;\n');
+      const outsideRoot = mkdtempSync(join(tmpdir(), 'bundled-tla-guard-outside-'));
+      const outside = join(outsideRoot, 'foreign.mjs');
+      writeFileSync(outside, 'await Promise.resolve();\n');
+      const metafile = join(root, 'bundle.meta.json');
+      writeFileSync(
+        metafile,
+        JSON.stringify({
+          inputs: Object.fromEntries(
+            [guardedMain, nested, asyncFn, noAwait].map((f) => [relative(apps, f), {}]).concat([[outside, {}]]),
+          ),
+        }),
+      );
+
+      const findings = await findBundledTopLevelAwaits({ metafilePath: metafile, baseDir: apps });
+      expect(findings).toEqual([
+        { file: relative(repoRoot, guardedMain).replaceAll('\\', '/'), line: 2, kind: 'top-level-await' },
+        { file: relative(repoRoot, nested).replaceAll('\\', '/'), line: 3, kind: 'top-level-await' },
+      ]);
+      rmSync(outsideRoot, { recursive: true, force: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the real scripts/next-migration.mjs is not reported', async () => {
+    const repoRoot = repositoryRoot();
+    const root = mkdtempSync(join(tmpdir(), 'bundled-tla-guard-real-'));
+    try {
+      const apps = join(repoRoot, 'apps', 'operator');
+      const metafile = join(root, 'bundle.meta.json');
+      writeFileSync(
+        metafile,
+        JSON.stringify({ inputs: { [relative(apps, join(repoRoot, 'scripts/next-migration.mjs'))]: {} } }),
+      );
+      expect(await findBundledTopLevelAwaits({ metafilePath: metafile, baseDir: apps })).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

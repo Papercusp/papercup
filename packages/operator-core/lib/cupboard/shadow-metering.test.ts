@@ -2,6 +2,7 @@
  * agent-economy-flywheel P-003 (E1, WI-10004287): the shadow statement pricing rules.
  * Rules under test come from plan decisions D-005, D-007 and D-009 (see shadow-metering.ts).
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   SHADOW_MARKUP_SHEET,
@@ -25,7 +26,7 @@ function usage(over: Partial<ShadowUsageAggregate> = {}): ShadowUsageAggregate {
     profile: null,
     specificationLayerRefs: [],
     axisLayerRefs: [],
-    costSource: 'billed',
+    costSource: 'provider',
     costMicros: 1_000_000,
     samples: 10,
     ...over,
@@ -203,6 +204,24 @@ describe('SHADOW_MARKUP_SHEET', () => {
     expect(Object.isFrozen(SHADOW_MARKUP_SHEET)).toBe(true);
     for (const slot of ['autonomy:', 'fleet-posture:', 'objective:', 'ideation:', 'kernel']) {
       expect(slot.startsWith(SHADOW_MARKUP_SHEET.pricedSpecificationLayerPrefix)).toBe(false);
+    }
+  });
+
+  // WI-10004493: the sheet once named `billed`, a cost_source no writer emits, so no statement
+  // could ever be bill-grade. Pin every bill-grade source to a value the usage writer assigns.
+  it('names only bill-grade cost sources that a usage writer actually assigns', () => {
+    const writer = readFileSync(
+      new URL('../../../../libs/papercusp/packages/orchestrator/src/usage-sample-pg.ts', import.meta.url),
+      'utf8',
+    );
+    const assigned = (source: string) =>
+      writer.split('\n').some((line) => /\bcostSource\b/.test(line) && line.includes(`'${source}'`));
+    // Controls: the matcher finds a source the writer does assign, and rejects the old dead value.
+    expect(assigned('estimated')).toBe(true);
+    expect(assigned('billed')).toBe(false);
+    expect(SHADOW_MARKUP_SHEET.billGradeCostSources.length).toBeGreaterThan(0);
+    for (const source of SHADOW_MARKUP_SHEET.billGradeCostSources) {
+      expect(assigned(source), `bill-grade cost source '${source}' is never assigned by usage-sample-pg.ts`).toBe(true);
     }
   });
 });

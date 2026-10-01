@@ -89,11 +89,17 @@ An ordinary API `429` **with** `retry-after` stays a transient rate window. Pars
 
 Each tally holds `requests`, `inputTokens`, `cacheReadTokens`, `cacheCreationTokens`, `outputTokens`, `usageKnown` and `outputKnown`. The last two count the requests whose usage was actually observed; a stream that closed early contributes a request without tokens. Counters are **in-memory since gateway boot**: a restart zeroes them.
 
-`accounts:list` shows each account's registered `credentialRef` (an `apikey:` scheme marks an API-key account) and `meteredPolicy`. Live billing state and metered totals come from the gateway, not the pool store, so read `/stats` for them.
+`accounts:status` carries the same view per account (WI-10004486). Each claude row has a `billing` field holding that account's `billing.byAccount` entry, and the response carries a top-level `billing: { source, reachable, supported, metered }`. The tool takes ONE `/stats` snapshot and shares it with the edge-throttle fields, so both describe the same instant.
+
+- `billing: 'unavailable'` — the gateway did not answer. This is **unknown**, not "unmetered".
+- `billing: 'not-observed'` — the gateway answered but has not served that account since boot, or it predates this plan (`supported: false`).
+- Codex rows carry no `billing` field; the Anthropic billing model does not apply to them.
+
+`accounts:list` shows each account's registered `credentialRef` (an `apikey:` scheme marks an API-key account) and `meteredPolicy` from the pool store. It carries no live billing state.
 
 ## Tests
 
-`anthropic-billing.test.ts` (header and body parsing, walls), `metered-selection.test.ts` (included-first, overflow, `never`, pins), `metered-spend.test.ts` (billing class, per-account totals, billing state), `credential-store-apikey.test.ts` and `claude-auth-mode.test.ts` (API-key credentials, auth mode).
+`anthropic-billing.test.ts` (header and body parsing, walls), `metered-selection.test.ts` (included-first, overflow, `never`, pins), `metered-spend.test.ts` (billing class, per-account totals, billing state), `credential-store-apikey.test.ts` and `claude-auth-mode.test.ts` (API-key credentials, auth mode), and `accounts.test.ts` (the `accounts:status` billing join).
 
 
 ## Live verification and credential prerequisite (2026-10-01)

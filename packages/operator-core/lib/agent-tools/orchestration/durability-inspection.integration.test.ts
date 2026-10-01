@@ -23,9 +23,12 @@ describe('orchestrate:inspect durability policy over current registry', () => {
     expect(result).toMatchObject({
       ok: true,
       normalized: {
+        // P-019 made the DBOS-backed durable path AVAILABLE; inspection must
+        // still default the lifecycle to foreground (durable is opt-in).
+        execution: { lifecycle: 'foreground' },
         durability: {
           replayCandidate: true,
-          durableExecutionAvailable: false,
+          durableExecutionAvailable: true,
           steps: [{ tool: 'plans:set-status', effect: 'write', replay: 'idempotent', argsStatic: true }],
         },
       },

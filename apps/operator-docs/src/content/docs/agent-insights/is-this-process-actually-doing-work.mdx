@@ -86,7 +86,7 @@ A `cgroup.procs` file containing only `0` means at least one process exists in t
 
 `capability:bash` loopback traffic is proxied. A request to an unused port can return HTTP 502 rather than `ECONNREFUSED` (`curl` exit 7); the 502 comes from the proxy path and proves neither that the target answered nor that it is absent. Do not turn any of these shell readings into a death verdict.
 
-When diagnosing a bash-side probe, report `readlink /proc/self/ns/pid`, the visible numeric /proc PID count, and `$` in the same call. If `$` is tiny or only a few PIDs are visible, treat every `/proc/<host-pid>` absence from that call as namespace-blind and discard it; these local readings calibrate the shell but do not prove host absence.
+When diagnosing a bash-side probe, report `readlink /proc/self/ns/pid`, the visible numeric /proc PID count, and `$$` in the same call. If `$$` is tiny or only a few PIDs are visible, treat every `/proc/<host-pid>` absence from that call as namespace-blind and discard it; these local readings calibrate the shell but do not prove host absence.
 
 For current host-side liveness, use `processes:list` with an exact `scopeUnit` and `live:true`, and inspect only `live.exactScopeUnitMatches` entries with kind "unaccounted". An empty exact-scope read is not proof. Require a known-present same-kind unaccounted control from an unfiltered live census. Read the control twice and confirm `tasks[].ageSec` advances by elapsed wall time so one transient scan cannot pose as the control.
 

@@ -168,12 +168,37 @@ function defaultNotifyChanged(): void {
 
 // ── portal client (fetch) ──────────────────────────────────────────────────────────────────────
 
+/**
+ * The message of a failed fetch, with its cause chain. undici rejects with a bare
+ * `TypeError('fetch failed')` and puts the real reason (EAI_AGAIN, ECONNRESET,
+ * UND_ERR_CONNECT_TIMEOUT, a certificate error) on `err.cause`; reporting only `err.message`
+ * made a failed relay connect undiagnosable (WI-10004520).
+ */
+export function describeFetchFailure(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; cur != null && depth < 4; depth++) {
+    if (cur instanceof Error || (typeof cur === 'object' && cur !== null)) {
+      const e = cur as { message?: unknown; code?: unknown; cause?: unknown };
+      const message = typeof e.message === 'string' ? e.message : '';
+      const code = typeof e.code === 'string' ? e.code : '';
+      const part = message && code && !message.includes(code) ? `${message} (${code})` : message || code;
+      if (part && !parts.includes(part)) parts.push(part);
+      cur = e.cause;
+    } else {
+      parts.push(String(cur));
+      break;
+    }
+  }
+  return parts.join(': ') || String(err);
+}
+
 async function portalJson(url: string, init: RequestInit): Promise<{ status: number; body: Record<string, unknown> }> {
   let res: Response;
   try {
     res = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
   } catch (err) {
-    throw new PortalRelayError('portal_unavailable', `The Papercusp portal did not answer: ${err instanceof Error ? err.message : String(err)}`);
+    throw new PortalRelayError('portal_unavailable', `The Papercusp portal did not answer: ${describeFetchFailure(err)}`);
   }
   let body: Record<string, unknown> = {};
   try {

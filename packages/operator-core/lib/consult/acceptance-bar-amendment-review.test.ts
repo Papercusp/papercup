@@ -129,6 +129,7 @@ describe('routeAcceptanceBarAmendmentReview', () => {
       requesterId: 'su-implementer',
       question: 'review this diff',
       originTaskRef: 'acceptance-x',
+      subjectRef: 'acceptance-x',
       excludeOwners: ['su-implementer'],
       archiveFloor: 2,
       policy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY,

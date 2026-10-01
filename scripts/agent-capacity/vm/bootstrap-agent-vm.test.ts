@@ -51,6 +51,18 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     ]);
   });
 
+  it('bounds every apt fetch with a timeout and retries, so one stalled mirror connection cannot hang the bring-up', () => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
+    expect(r.status).toBe(0);
+    const apt = r.stdout.split('\n').filter((l) => l.startsWith('RUN ') && l.includes('apt-get'));
+    expect(apt.length).toBe(2);
+    for (const l of apt) {
+      expect(l).toMatch(/ -o Acquire::http::Timeout=30 /);
+      expect(l).toMatch(/ -o Acquire::https::Timeout=30 /);
+      expect(l).toMatch(/ -o Acquire::Retries=5 /);
+    }
+  });
+
   it('without CACHE_XFS_GB, leaves the cache on the boot disk (no xfsprogs, no mount)', () => {
     const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
     expect(r.status).toBe(0);

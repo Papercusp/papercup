@@ -236,14 +236,24 @@ describe('routeConsult — routing + blend', () => {
     };
     await insertReviewTurn(
       'fork-reviewing-different-rubric',
-      `Outside-lineage review of a started acceptance-BAR amendment to ${differentRef}. ` +
-        'The relevance router picked you and screened you with rubrics:check-approver.',
+      'subjectanchor Outside-lineage review of a started acceptance-BAR amendment to ' +
+        differentRef +
+        '. The relevance router picked you and screened you with rubrics:check-approver.',
       0,
     );
     await insertReviewTurn(
       'reviewer-on-target-rubric',
-      `Detailed review notes for rubric ${targetRef}: the amendment changes the acceptance bar and its falsifier.`,
+      'subjectanchor Detailed review notes for rubric ' +
+        targetRef +
+        ': the amendment changes the acceptance bar and its falsifier.',
       0.15,
+    );
+    await insertReviewTurn(
+      'reviewer-on-near-target-rubric',
+      'subjectanchor Detailed review notes for rubric ' +
+        targetRef +
+        '-followup: the amendment changes the acceptance bar and its falsifier.',
+      0.2,
     );
 
     const routeDeps = { ...deps(0), embed: async () => vectorAt(0) };
@@ -258,6 +268,19 @@ describe('routeConsult — routing + blend', () => {
       routeDeps,
     );
     expect(scoped.qualified.map((candidate) => candidate.ownerId)).toEqual(['reviewer-on-target-rubric']);
+
+    const lexicalScoped = await routeConsult(
+      {
+        workspaceId: WS,
+        requesterId: 'review-requester',
+        question: 'subjectanchor review amendment',
+        subjectRef: targetRef,
+      },
+      deps(null),
+    );
+    expect(lexicalScoped.snapshot.candidates.map((candidate) => candidate.ownerId)).toEqual([
+      'reviewer-on-target-rubric',
+    ]);
   });
 
   it('R-13/D-001: 40 days of idleness does NOT disqualify — beta still clears the floor, it just ranks last', async () => {

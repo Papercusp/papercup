@@ -5,7 +5,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedExchange } from './record-proxy';
 import {
+  execSessionRewriter,
   newReplayState,
+  reportedExecSessionIds,
   parseExchanges,
   parseReplayUrl,
   replaceAcross,
@@ -179,6 +181,50 @@ describe('rewriteExchange', () => {
   });
 });
 
+// A Codex code-mode poll of a still-running process, as the model streams it.
+const POLL = 'text(await tools.write_stdin({session_id:64250,chars:"",yield_time_ms:1000}));\n';
+const pollChunks = (cut: number) => {
+  const item = { id: 'ctc_2', type: 'custom_tool_call', name: 'exec', call_id: 'c2', input: POLL };
+  return [
+    encodeChunk(0, Buffer.from(sse({ type: 'response.custom_tool_call_input.delta', item_id: 'ctc_2', output_index: 0, delta: POLL.slice(0, cut) }))),
+    encodeChunk(10, Buffer.from(sse({ type: 'response.custom_tool_call_input.delta', item_id: 'ctc_2', output_index: 0, delta: POLL.slice(cut) }))),
+    encodeChunk(20, Buffer.from(sse({ type: 'response.output_item.done', output_index: 0, item }) + 'data: [DONE]\n\n')),
+  ];
+};
+const doneInput = (e: RecordedExchange) => (sseEvents(e.chunks).find((x) => (x.data as any)?.type === 'response.output_item.done')?.data as any).item.input;
+
+describe('exec-session ids', () => {
+  it('rewrites a recorded id split across deltas and in the done event, and never a longer id sharing its prefix', () => {
+    const cut = POLL.indexOf('64250') + 2; // the id itself is split across the two deltas
+    const out = rewriteExchange(ex(0, { chunks: pollChunks(cut) }), execSessionRewriter(new Map([['64250', '52575']])));
+    const want = POLL.replace('64250', '52575');
+    expect(reassemble(out)['response.custom_tool_call_input.delta']).toBe(want);
+    expect(doneInput(out)).toBe(want);
+    const prefix = ex(0, { chunks: pollChunks(cut) });
+    expect(rewriteExchange(prefix, execSessionRewriter(new Map([['6425', '1']])))).toBe(prefix);
+  });
+
+  it('rewrites the JSON-argument spelling a function_call uses', () => {
+    const args = JSON.stringify({ session_id: 64250, chars: '' });
+    const body = JSON.stringify({ output: [{ type: 'function_call', name: 'write_stdin', arguments: args }] });
+    const out = rewriteExchange(ex(0, { contentType: 'application/json', chunks: [encodeChunk(0, Buffer.from(body))] }), execSessionRewriter(new Map([['64250', '7']])));
+    expect(JSON.parse(JSON.parse(bodyOf(out)).output[0].arguments)).toEqual({ session_id: 7, chars: '' });
+  });
+
+  it('reads ids only from the CLI tool outputs, never from model-written items or quoted command output', () => {
+    const body = {
+      input: [
+        { type: 'custom_tool_call', call_id: 'c0', input: POLL }, // model-written: names a recorded id
+        { type: 'custom_tool_call_output', call_id: 'c1', output: JSON.stringify({ output: 'grep says "session_id": 999', session_id: 52575 }) },
+        { type: 'function_call_output', call_id: 'c3', output: [{ type: 'input_text', text: 'Process running with session ID 4111' }] },
+        { type: 'custom_tool_call_output', call_id: 'c4', output: JSON.stringify({ session_id: 52575 }) },
+      ],
+    };
+    expect(reportedExecSessionIds(Buffer.from(JSON.stringify(body)))).toEqual(['52575', '4111']);
+    expect(reportedExecSessionIds(Buffer.from('not json'))).toEqual([]);
+  });
+});
+
 describe('startReplayServer', () => {
   let corpus: string;
   let srv: ReplayServer;
@@ -258,6 +304,27 @@ describe('startReplayServer', () => {
     await srv.close();
     const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
     expect(Object.fromEntries(served.map((s) => [s.instance, s.rewritten]))).toEqual({ a: true, b: false });
+  });
+
+  it('serves a Codex poll with the exec-session id THIS instance reported, and logs an id it never reported', async () => {
+    const RESP = '/v1/responses';
+    writeSession('s1', [ex(0, { path: RESP, chunks: pollChunks(30), messages: 2, tools: 0 })]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    const call = { type: 'custom_tool_call', call_id: 'c1', input: 'text(await tools.exec_command({cmd:"yarn test"}))' };
+    const running = { model: 'm', tools: [], input: [call, { type: 'custom_tool_call_output', call_id: 'c1', output: JSON.stringify({ output: '', session_id: 52575 }) }] };
+    const exited = { model: 'm', tools: [], input: [call, { type: 'custom_tool_call_output', call_id: 'c1', output: JSON.stringify({ output: 'ok', exit_code: 0 }) }] };
+    const [a, b] = await Promise.all([post(`${srv.baseUrl('s1', 'a')}${RESP}`, running), post(`${srv.baseUrl('s1', 'b')}${RESP}`, exited)]);
+    const servedInput = (buf: Buffer) => doneInput(ex(0, { chunks: [encodeChunk(0, buf)] }));
+    expect(servedInput(a.body)).toBe(POLL.replace('64250', '52575'));
+    expect(servedInput(b.body)).toBe(POLL);
+    await srv.close();
+    const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    const by = Object.fromEntries(served.map((s) => [s.instance, s]));
+    expect(by.a.tier).toBe('exact');
+    expect(by.a.execSessionIds).toEqual({ 64250: '52575' });
+    expect(by.a.execSessionUnmapped).toBeUndefined();
+    expect(by.b.execSessionIds).toBeUndefined();
+    expect(by.b.execSessionUnmapped).toEqual(['64250']);
   });
 
   it('honours recorded delays scaled by speed', async () => {

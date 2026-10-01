@@ -16,7 +16,7 @@ const db = vi.hoisted(() => ({
   /** decision_model_calls inserts, keyed by column name (parsed from the INSERT's column list). */
   ledger: [] as Array<Record<string, unknown>>,
 }));
-const creds = vi.hoisted(() => ({ store: {} as Record<string, string> }));
+const creds = vi.hoisted(() => ({ store: {} as Record<string, string>, reads: 0, failReads: false }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -51,7 +51,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 vi.mock('../integration-credentials', () => ({
-  readIntegrationKey: async (name: string) => creds.store[name],
+  readIntegrationKey: async (name: string) => {
+    creds.reads += 1;
+    if (creds.failReads) throw new Error('pg down');
+    return creds.store[name];
+  },
   writeIntegrationCredentials: async (partial: Record<string, string | null>) => {
     for (const [k, v] of Object.entries(partial)) {
       if (v === null) delete creds.store[k];
@@ -73,6 +77,7 @@ import {
   JEV_API_KEY_NAME,
   JEV_PRICING,
   jevModeKey,
+  readJevApiKey,
   resolveJevMemoryInjection,
   setJevApiKey,
   setJevMode,
@@ -88,6 +93,8 @@ beforeEach(() => {
   db.writes = [];
   db.ledger = [];
   creds.store = {};
+  creds.reads = 0;
+  creds.failReads = false;
   __resetJevSettingsCacheForTest();
   configureDecisionModel(null);
 });
@@ -168,6 +175,34 @@ describe('key store', () => {
   it.each([['short'], ['has a space in it'], ['x'.repeat(5000)]])('rejects an implausible key %#', async (bad) => {
     await expect(setJevApiKey(bad)).rejects.toThrow();
     expect(creds.store).not.toHaveProperty(JEV_API_KEY_NAME);
+  });
+
+  // WI-10004485: every recall resolved the key twice (gate + client), each a
+  // Postgres read made before the client's 400 ms deadline is armed.
+  it('reuses one key read across recalls, so a recall does not hit Postgres for it', async () => {
+    creds.store[JEV_API_KEY_NAME] = KEY;
+    await setJevMode('shadow');
+    for (let i = 0; i < 5; i += 1) expect((await resolveJevMemoryInjection()).effective).toBe('shadow');
+    expect(await readJevApiKey()).toBe(KEY);
+    expect(creds.reads).toBe(1);
+  });
+
+  it('a save or a clear is seen at once, without waiting for the cache to expire', async () => {
+    await setJevApiKey(KEY);
+    expect(await readJevApiKey()).toBe(KEY);
+    await setJevApiKey(null);
+    expect(await readJevApiKey()).toBeNull();
+    expect((await resolveJevMemoryInjection()).keyPresent).toBe(false);
+    expect(creds.reads).toBe(0);
+  });
+
+  it('a failed key read is not cached: it reads as no key, and the next call reads again', async () => {
+    creds.store[JEV_API_KEY_NAME] = KEY;
+    creds.failReads = true;
+    expect(await readJevApiKey()).toBeNull();
+    creds.failReads = false;
+    expect(await readJevApiKey()).toBe(KEY);
+    expect(creds.reads).toBe(2);
   });
 
   it('the view masks the key and never carries it raw', async () => {

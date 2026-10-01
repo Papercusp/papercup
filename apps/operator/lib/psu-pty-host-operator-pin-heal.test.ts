@@ -148,3 +148,76 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * WI-10004511: the staging route. A direct :3170 pin rides the same-build staging
+ * proxy. The proxy forwards `/api/health` to :3170, so during a staging restart that
+ * path fails while the proxy itself is up. Measured 2026-10-01: :9171/__mcp_proxy_health
+ * 200, :9171/api/health 000, and a respawned session launched straight into a refused
+ * :3170. The heal must judge the PROXY's liveness, as the launcher's probe does.
+ */
+describe('healDeadOperatorPin staging route (WI-10004511)', () => {
+  const STAGING_PIN = 'http://127.0.0.1:3170';
+
+  /** A staging proxy whose upstream (:3170) is down: own liveness 200, forwarded routes 502. */
+  const proxyWithUpstreamDown = () =>
+    serve((req, res) => {
+      res.writeHead(req.url === '/__mcp_proxy_health' ? 200 : 502);
+      res.end();
+    });
+
+  it('reroutes a direct :3170 pin while the proxy is up and its upstream is restarting', async () => {
+    const stagingProxyPort = await proxyWithUpstreamDown();
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: STAGING_PIN,
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: String(stagingProxyPort),
+    };
+
+    const healed = await healDeadOperatorPin(env);
+
+    expect(healed).toEqual({
+      from: STAGING_PIN,
+      to: `http://127.0.0.1:${stagingProxyPort}`,
+      route: 'staging-proxy',
+    });
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe(`http://127.0.0.1:${stagingProxyPort}`);
+    expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBeUndefined();
+  });
+
+  it('still reroutes through a proxy that only answers /api/health (no liveness route)', async () => {
+    const stagingProxyPort = await healthyProxy();
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: STAGING_PIN,
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: String(stagingProxyPort),
+    };
+
+    expect((await healDeadOperatorPin(env))?.to).toBe(`http://127.0.0.1:${stagingProxyPort}`);
+  });
+
+  it('keeps the direct pin when the staging proxy is dead or answers neither route', async () => {
+    const deadProxy = await deadPort();
+    const refusingProxy = await serve((_req, res) => {
+      res.writeHead(502);
+      res.end();
+    });
+    for (const port of [deadProxy, refusingProxy]) {
+      const env: Record<string, string> = {
+        PAPERCUSP_OPERATOR_URL: STAGING_PIN,
+        PAPERCUSP_MCP_STAGING_PROXY_PORT: String(port),
+      };
+      expect(await healDeadOperatorPin(env, { timeoutMs: 500 })).toBeNull();
+      expect(env.PAPERCUSP_OPERATOR_URL).toBe(STAGING_PIN);
+    }
+  });
+
+  it('honours PAPERCUSP_MCP_STAGING_PROXY=0', async () => {
+    const stagingProxyPort = await proxyWithUpstreamDown();
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: STAGING_PIN,
+      PAPERCUSP_MCP_STAGING_PROXY_PORT: String(stagingProxyPort),
+      PAPERCUSP_MCP_STAGING_PROXY: '0',
+    };
+    expect(await healDeadOperatorPin(env)).toBeNull();
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe(STAGING_PIN);
+  });
+});

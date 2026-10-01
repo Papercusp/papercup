@@ -41,6 +41,7 @@ import runTool, {
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
   launchManagedTestProcess,
+  noReportDiagnostics,
   normalizeTestFilePaths,
   parseRouterTerminalCompletion,
   parseRouterNotMeasuredMarker,
@@ -923,6 +924,69 @@ describe('testing:run (integration)', () => {
     expect(
       parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET]),
     ).toBeNull();
+  });
+
+  // EI-24734340317452188: a Vitest file whose JSON report went missing answered
+  // no_report even though the router said status=passed, because the fallback
+  // could read only Node's summary.
+  it('reads Vitest\'s own summary when its JSON report is missing, as strictly as the node:test one', () => {
+    const target = 'packages/operator-core/lib/pui-e2e/release-acceptance.test.ts';
+    const marker = (status: string, files = 1) =>
+      `TEST_FILE_RESULT requested=${files} executed=${files} matched=${files} status=${status} head=abc`;
+    const passed = [
+      ' ✓ lib/pui-e2e/release-acceptance.test.ts (25 tests) 2210ms',
+      '',
+      '\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m1 passed\u001b[39m\u001b[22m\u001b[90m (1)\u001b[39m',
+      '\u001b[2m      Tests \u001b[22m \u001b[1m\u001b[32m24 passed\u001b[39m\u001b[22m | \u001b[33m1 skipped\u001b[39m\u001b[90m (25)\u001b[39m',
+      '   Start at  02:48:01',
+      '   Duration  3.21s (transform 1.10s, setup 0ms, import 2.00s, tests 2.21s)',
+      marker('passed'),
+    ].join('\n');
+    expect(parseRouterTestResult(passed, [target])).toEqual({
+      passed: 24,
+      failed: 0,
+      skipped: 1,
+      files: 1,
+      failures: [],
+      failuresTruncated: false,
+      durationMs: 3210,
+      byFile: { [target]: { passed: 24, failed: 0, skipped: 1, collectionFailed: false } },
+    });
+
+    const failed = [
+      ' FAIL  lib/pui-e2e/release-acceptance.test.ts > release acceptance runner checkout > refuses an edit',
+      ' Test Files  1 failed (1)',
+      '      Tests  1 failed | 24 passed (25)',
+      marker('failed'),
+    ].join('\n');
+    expect(parseRouterTestResult(failed, [target])).toMatchObject({
+      passed: 24,
+      failed: 1,
+      failures: [
+        { file: target, test: 'lib/pui-e2e/release-acceptance.test.ts > release acceptance runner checkout > refuses an edit' },
+      ],
+    });
+
+    // Every count has to add up; otherwise the caller keeps its no_report refusal.
+    const vitestOnly = (files: string, tests: string, status = 'passed', executed = 1) =>
+      parseRouterTestResult([` Test Files  ${files}`, `      Tests  ${tests}`, marker(status, executed)].join('\n'), [target]);
+    expect(vitestOnly('1 passed (1)', '0 passed (0)')).toBeNull();
+    expect(vitestOnly('1 passed (1)', '24 passed (25)')).toBeNull();
+    expect(vitestOnly('1 passed (2)', '25 passed (25)')).toBeNull();
+    expect(vitestOnly('1 passed (1)', '25 passed (25)', 'passed', 2)).toBeNull();
+    expect(vitestOnly('1 passed (1)', '25 flaked (25)')).toBeNull();
+    expect(parseRouterTestResult(['      Tests  25 passed (25)', marker('passed')].join('\n'), [target])).toBeNull();
+    // A router failure with an all-green summary still counts as a failure.
+    expect(vitestOnly('1 passed (1)', '25 passed (25)', 'failed')).toMatchObject({ failed: 1 });
+  });
+
+  it('says what a no_report refusal had to go on', () => {
+    expect(noReportDiagnostics('router bailed\n', 1, [])).toEqual({
+      routerExit: 1, reportDirEntries: [], markerSeen: false, summarySeen: 'none',
+    });
+    expect(noReportDiagnostics(['      Tests  2 passed (2)', 'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed'].join('\n'), 0, ['x.log']))
+      .toEqual({ routerExit: 0, reportDirEntries: ['x.log'], markerSeen: true, summarySeen: 'vitest' });
+    expect(noReportDiagnostics('ℹ tests 2\n', 0, []).summarySeen).toBe('node');
   });
 
   it('requires a finished zero-exit progress line before treating a terminal marker as complete', () => {

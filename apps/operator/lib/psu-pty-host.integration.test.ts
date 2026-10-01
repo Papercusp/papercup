@@ -64,6 +64,19 @@ function fakeIo() {
   };
 }
 
+const FLATTENED_CODEX_READY_FOOTER =
+  '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
+const FLATTENED_CODEX_STARTING_FOOTER =
+  '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left';
+
+/** A deliberately wrong pre-fix control: it checks an exact Ready token. */
+function exactStatusOnlyCodexReady(output: string): boolean {
+  const status = [...String(output ?? '').matchAll(/([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g)]
+    .at(-1)?.[1]?.toLowerCase() ?? null;
+  if (status !== null) return status === 'ready';
+  return /\d{1,3}%\s*context left/i.test(output);
+}
+
 describe('managed-pty integration evidence isolation', () => {
   it('redirects host lifecycle evidence away from the live operator corpus', () => {
     const liveDir = join(homedir(), '.papercusp', 'psu-pty');
@@ -749,11 +762,11 @@ describe('session-port managed seed + native persistence helpers', () => {
     // into `anythingReady` / `anythingStarting`. Normalize only these known suffixes.
     expect(startupOutputReady(
       'codex',
-      '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left',
+      FLATTENED_CODEX_READY_FOOTER,
     )).toBe(true);
     expect(startupOutputReady(
       'codex',
-      '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left',
+      FLATTENED_CODEX_STARTING_FOOTER,
     )).toBe(false);
     // A later Ready repaint in the same accumulated buffer does prove readiness.
     expect(startupOutputReady('codex', startingFooter + '\x1b[22;3H' + readyFooter)).toBe(true);
@@ -761,6 +774,23 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupOutputReady('codex', readyFooter + '\x1b[22;3H' + startingFooter)).toBe(false);
     // The footer text inside ordinary prose (no status/model segments) is not chrome.
     expect(startupOutputReady('codex', 'the Context 100% left readout')).toBe(false);
+  });
+
+  it('control: exact status equality misses the flattened Ready suffix', () => {
+    // The preceding imported-subject test is the calibration: Ready must pass
+    // and Starting must remain blocked. Keep this plausible old matcher wrong
+    // so the paired expectations prove they detect loss of suffix normalization.
+    const wrong = [
+      exactStatusOnlyCodexReady(FLATTENED_CODEX_READY_FOOTER),
+      exactStatusOnlyCodexReady(FLATTENED_CODEX_STARTING_FOOTER),
+    ];
+    const actual = [
+      startupOutputReady('codex', FLATTENED_CODEX_READY_FOOTER),
+      startupOutputReady('codex', FLATTENED_CODEX_STARTING_FOOTER),
+    ];
+    expect(wrong).toEqual([false, false]);
+    expect(actual).toEqual([true, false]);
+    expect(wrong).not.toEqual(actual);
   });
 
   // WI-10002752: a Codex carry-respawn types the carry document as its first

@@ -6539,11 +6539,26 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
       env.PAPERCUSP_MCP_STAGING_PROXY !== '0'
     ) {
       const stagingProxy = `http://127.0.0.1:${stagingProxyPort}`;
+      // WI-10004511: probe the PROXY's own liveness, not `/api/health`. The proxy
+      // forwards `/api/health` to :3170, so that probe fails during the staging
+      // restart this reroute exists for. The launcher's resolveOperatorTarget probes
+      // `/__mcp_proxy_health` too (defaultMcpProxyProbe), so both paths now agree.
+      // `/api/health` is kept as a fallback for a proxy without the liveness route.
+      const proxyAnswers = async (path) => {
+        try {
+          const h = await fetchImpl(`${stagingProxy}${path}`, {
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          return Boolean(h?.ok);
+        } catch {
+          return false;
+        }
+      };
       try {
-        const h = await fetchImpl(`${stagingProxy}/api/health`, {
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (h?.ok) {
+        if (
+          (await proxyAnswers('/__mcp_proxy_health')) ||
+          (await proxyAnswers('/api/health'))
+        ) {
           env.PAPERCUSP_OPERATOR_URL = stagingProxy;
           // Keep the same-build staging route authoritative across later respawns;
           // the stable :9071 proxy may serve a different build.

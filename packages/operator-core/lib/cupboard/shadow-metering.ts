@@ -22,7 +22,7 @@
  * beside it; keep it free of I/O so the pricing rules stay unit-testable.
  */
 
-export const SHADOW_MARKUP_SHEET_VERSION = 'e1-2026-09-30';
+export const SHADOW_MARKUP_SHEET_VERSION = 'e1-2026-10-01';
 
 /** How a priced line's identity was established. Only `specification-layer` is bill-grade. */
 export type ShadowIdentityBasis = 'specification-layer' | 'inferred-profile';
@@ -44,7 +44,11 @@ export interface ShadowMarkupSheet {
    * the statement from being bill-grade.
    */
   profileClasses: Readonly<Record<string, { identityClass: string; markupBps: number }>>;
-  /** Cost sources that are bill-grade. `estimated` is not: D-005 prices on billed cost. */
+  /**
+   * Cost sources that are bill-grade. `estimated` is not: D-005 prices on billed cost, and an
+   * estimate is a local list-price computation (for subscription seats it measures rate-limit
+   * headroom, not dollars). Every entry must be a value some usage writer actually emits.
+   */
   billGradeCostSources: readonly string[];
   /** Minimum share (bps of inference cost) that must be attributed / bill-grade. */
   billGradeMinShareBps: number;
@@ -68,7 +72,10 @@ export const SHADOW_MARKUP_SHEET: ShadowMarkupSheet = Object.freeze({
   profileClasses: Object.freeze({
     engineer: Object.freeze({ identityClass: 'papercusp-engineer', markupBps: 2000 }),
   }),
-  billGradeCostSources: Object.freeze(['billed']),
+  // `provider` is the only cost_source a writer emits for provider-reported cost
+  // (orchestrator usage-sample-pg.ts). Until 2026-10-01 this named `billed`, which no writer
+  // emits, so a bill-grade verdict was unreachable (WI-10004493). The sheet test pins it.
+  billGradeCostSources: Object.freeze(['provider']),
   billGradeMinShareBps: 9900,
 });
 

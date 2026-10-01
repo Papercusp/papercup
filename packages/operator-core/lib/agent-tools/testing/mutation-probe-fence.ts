@@ -1,11 +1,13 @@
 /** Read the active file-lock lease that marks an in-tree mutation window. */
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
-import { getuid } from 'node:process';
+import { env as processEnv, getuid } from 'node:process';
+import { promisify } from 'node:util';
 import { build, type Metafile, type Plugin } from 'esbuild';
 import ts from 'typescript';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
@@ -229,6 +231,8 @@ async function verifiedRestored(admissionDir: string, realRoot: string, subject:
  *  - its current bytes still hash to the record the probe wrote after verifying its restore:
  *    the file IS its pre-probe original, and a protocol probe cannot mutate it again while an
  *    admitted test holds the overlay's shared admission lock.
+ *  - its working-tree bytes still hash to its committed HEAD blob (WI-10004508; see
+ *    `committedUnchanged`): no uncommitted change, and so no in-tree mutant, exists in it.
  * A hand mutation or later edit changes the bytes, so that path stays uncovered and fenced.
  */
 async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Promise<string[]> {
@@ -239,14 +243,76 @@ async function uncoveredProbePaths(realRoot: string, probePaths: string[]): Prom
     const fields = manifest.toString('utf8').split('\0');
     if (fields.length === 5 && fields[4] === '' && fields[0] === realRoot) overlaid = fields[1]!;
   }
-  const uncovered: string[] = [];
+  const remaining: string[] = [];
   for (const path of probePaths) {
     const subject = resolve(realRoot, path);
     if (subject === overlaid) continue;
     if (await verifiedRestored(admissionDir, realRoot, subject)) continue;
-    uncovered.push(path);
+    remaining.push(path);
   }
-  return uncovered;
+  // The per-call git timeout cannot bound an execFile that never calls back; this deadline does,
+  // and a stalled proof only keeps the closure fence in force.
+  const unchanged = await Promise.race([
+    committedUnchanged(realRoot, remaining),
+    new Promise<Set<string>>((done) => setTimeout(() => done(new Set()), 2 * GIT_TIMEOUT_MS).unref()),
+  ]);
+  return remaining.filter((path) => !unchanged.has(path));
+}
+
+const GIT_TIMEOUT_MS = 5_000;
+
+/**
+ * WI-10004508: the locked paths whose working-tree bytes equal their committed HEAD blob.
+ *
+ * A 'mutation probe' lock is taken BEFORE its probe publishes the original-byte manifest, and
+ * mutation-probe.sh admits ONE in-tree probe per checkout (a second one dies on "another
+ * mutation probe has an active snapshot" without touching its subject). So a holder that runs
+ * probes back to back keeps the next subject locked, unpublished and UNMUTATED while the
+ * current probe runs. Copy-out and historical probes taken under the lock never publish a
+ * manifest at all. Measured 2026-09-30: remember.ts was locked 22:09:05Z while the manifest
+ * named jev-substance.ts (restored 22:12:43Z); remember.ts published and was restored at
+ * 22:14:16Z. A testing:run at 22:12Z was refused on remember.ts although nothing had mutated it.
+ *
+ * Equality with HEAD proves what the fence needs to know: there is no UNCOMMITTED mutant in this
+ * path. git-sync excludes actively locked paths from its sweep, so a mutant made under the lock
+ * cannot reach HEAD, and any hand mutation or uncommitted edit makes the bytes differ, so the path
+ * stays fenced. A protocol probe that starts after this check must first take the admission lock
+ * exclusively, which an admitted testing:run child holds shared, and its subject is then overlaid
+ * by its published manifest. Two accepted edges, both of which show only COMMITTED code: a hand
+ * mutation that exactly reverts an uncommitted edit back to HEAD, and a mutant that a sweep
+ * committed before the lock existed (already in history, so every checkout sees it).
+ *
+ * `git hash-object` applies the same clean filters a commit would. Any git failure (no repository,
+ * untracked path, timeout) leaves the path uncovered: the closure fence remains the fallback.
+ */
+async function committedUnchanged(realRoot: string, paths: string[]): Promise<Set<string>> {
+  const unchanged = new Set<string>();
+  if (paths.length === 0) return unchanged;
+  // An inherited GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE would point `-C realRoot` elsewhere.
+  const env = { ...processEnv };
+  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR']) delete env[key];
+  const committed = new Map<string, string>();
+  let git: (args: string[]) => Promise<string>;
+  try {
+    // Bound at call time, not module scope: a test that replaces node:child_process must not
+    // break this module's import. Without a usable execFile the path simply stays fenced.
+    const run = promisify(execFile);
+    git = (args) => run('git', ['-C', realRoot, ...args], { env, timeout: GIT_TIMEOUT_MS, maxBuffer: 1 << 20 })
+      .then((result) => String(result.stdout));
+    for (const entry of (await git(['ls-tree', '-z', 'HEAD', '--', ...paths])).split('\0')) {
+      const match = /^\d+ blob ([0-9a-f]{40,64})\t(.+)$/.exec(entry);
+      if (match) committed.set(match[2]!, match[1]!);
+    }
+  } catch {
+    return unchanged;
+  }
+  await Promise.all(paths.map(async (path) => {
+    const blob = committed.get(path);
+    if (!blob) return;
+    const current = await git(['hash-object', '--', path]).catch(() => null);
+    if (current?.trim() === blob) unchanged.add(path);
+  }));
+  return unchanged;
 }
 
 /** A literal contains a path segment only at a path boundary, not as part of an identifier or prose. */
@@ -339,8 +405,10 @@ export async function mutationProbeRefusal(
   // The in-tree probe publishes its immutable original before changing the
   // subject, and records a verified restore after. Every testing:run child
   // enters the admission wrapper, which holds a shared flock through the whole
-  // test and binds the published copy over the mutant. Only a path neither
-  // proves safe (a legacy or hand mutation) still needs the closure fence below.
+  // test and binds the published copy over the mutant. A locked path whose bytes
+  // still equal its HEAD blob carries no uncommitted mutant at all (WI-10004508).
+  // Only a path none of these proves safe (an uncommitted hand mutation or edit)
+  // still needs the closure fence below.
   const uncovered = await uncoveredProbePaths(realRoot, probePaths);
   if (uncovered.length === 0) return null;
   const refuse = (why: string): MutationProbeRefusal => ({

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync,mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -182,6 +183,71 @@ describe('mutationProbeRefusal narrowing', () => {
       expect(refusal!.hint).not.toContain('src/subject.ts,');
       recordRestore(dir, 'src/other.ts', base['src/other.ts']);
       await expect(mutationProbeRefusal(dir, ['tests/both.test.ts'], locks)).resolves.toBeNull();
+    });
+  });
+
+  // WI-10004508: a lock is taken before its probe publishes a manifest, and only one in-tree
+  // probe runs per checkout, so a queued subject sits locked but UNMUTATED. Observed 2026-09-30
+  // 22:12Z: an unrelated fs-walking test was refused on remember.ts while the live manifest
+  // named a different file. A path whose bytes equal its committed HEAD blob is covered.
+  describe('a locked path that is still its committed HEAD bytes (WI-10004508)', () => {
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_COMMON_DIR']) delete gitEnv[key];
+    function commitAll(dir: string): void {
+      const git = (...args: string[]) => execFileSync('git', [
+        '-C', dir, '-c', 'init.templateDir=', '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false',
+        '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', ...args,
+      ], { stdio: 'pipe', env: gitEnv });
+      git('init', '-q');
+      git('add', '-A');
+      git('commit', '-qm', 'fixture');
+    }
+    // The refused test from the incident: it walks the filesystem, so the closure fence refuses it.
+    const walks = { ...base,
+      'tests/walk.test.ts': "import { readdirSync } from 'node:fs';\nexport default readdirSync('.');\n",
+      'tests/subject.test.ts': "import { subject } from '../src/mid';\nexport default subject;\n" };
+
+    it('refuses the fs-walking test when the checkout has no repository to prove the subject unmutated (control)', async () => {
+      const dir = checkout(walks);
+      const refusal = await mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('reads the filesystem or spawns a process');
+    });
+
+    it('admits the fs-walking test, and even one importing the subject, while the locked subject is unmutated', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      await expect(mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+      await expect(mutationProbeRefusal(dir, ['tests/subject.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+    });
+
+    it('fences again on an uncommitted change to the locked subject (a hand mutation)', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      writeFileSync(join(dir, 'src/subject.ts'), 'export const subject = 0;\n');
+      for (const test of ['tests/walk.test.ts', 'tests/subject.test.ts']) {
+        const refusal = await mutationProbeRefusal(dir, [test], probe('src/subject.ts'));
+        expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+        expect(refusal!.hint).toContain('mutation probe on src/subject.ts and');
+      }
+    });
+
+    it('keeps fencing a locked path that HEAD does not track', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      writeFileSync(join(dir, 'src/fresh.ts'), 'export const fresh = 1;\n');
+      const refusal = await mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/fresh.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('src/fresh.ts');
+    });
+
+    it('covers each locked path on its own bytes: only the changed one stays fenced', async () => {
+      const dir = checkout(walks);
+      commitAll(dir);
+      writeFileSync(join(dir, 'src/other.ts'), 'export const other = 0;\n');
+      const refusal = await mutationProbeRefusal(dir, ['tests/walk.test.ts'], probe('src/subject.ts', 'src/other.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('mutation probe on src/other.ts and');
     });
   });
 

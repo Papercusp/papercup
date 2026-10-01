@@ -108,6 +108,8 @@ export interface GetFeedbackRequest {
   /** Explicit origin task ref; undefined ⇒ default to the requester's most
    * recently progressed wip work-item (fail-soft: none ⇒ null). */
   originTaskRef?: string | null;
+  /** Optional exact durable subject whose transcript mentions must justify routing. */
+  subjectRef?: string | null;
   /** Exclude owners from candidacy — e.g. exhausted-menu decliners on a FRESH
    * re-route (the cascade itself is server-driven now, D-005/P-013: declines
    * and expiries advance the selected menu without a re-call). */
@@ -889,6 +891,7 @@ export async function getFeedbackCore(
     workspaceId: req.workspaceId,
     requesterId: req.requesterId,
     question: req.question,
+    subjectRef: req.subjectRef ?? null,
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
   // The production router applies these exclusions in SQL, but the core also

@@ -81,6 +81,20 @@ describe('affected-tests: non-workspace path routes (EI-19346163916263067)', () 
     expect(affectedFor(['libs/flags/src/types.ts'])).toContain('@papercusp/flags');
   });
 
+  it('routes the hosted PUI psu release wrapper to the workspace that owns its integration test', () => {
+    const affected = affectedFor(['apps/tui/release/psu']);
+    expect(
+      affected,
+      'A change to apps/tui/release/psu no longer selects @papercusp/web, so the ' +
+        'integration test guarding the hosted wrapper re-exec loop would not run. ' +
+        'Check NON_WORKSPACE_PATH_ROUTES in scripts/affected-tests.mjs.',
+    ).toContain('@papercusp/web');
+    expect(
+      existsSync(resolve(REPO_ROOT, 'apps/operator/lib/psu-release-wrapper.integration.test.ts')),
+      'The apps/tui/release/psu route points at @papercusp/web because the wrapper integration test lives there; move the route with the test if it moves.',
+    ).toBe(true);
+  });
+
   it('defers to a real workspace that owns the path — routing is a fallback, not an override', () => {
     // `apps/operator/scripts/**` is inside the @papercusp/web workspace. It must resolve
     // there and NOT be dragged into the root-scripts route by a naive substring match.

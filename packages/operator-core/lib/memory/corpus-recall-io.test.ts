@@ -17,10 +17,15 @@ const getFlag = vi.fn(async () => true);
  *  caller owns nothing, i.e. no exclusions. */
 const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
-// configureSearchDefaults is inert here, but REQUIRED: an inline factory
-// replaces the module wholesale, and lib/search/configure-search-defaults.ts
-// calls it at module load (P-017), so omitting it fails COLLECTION.
-vi.mock('@papercusp/search', () => ({ runHybridSearch, configureSearchDefaults: vi.fn() }));
+// Partial mock over `importOriginal`, never a hand-listed factory: a factory
+// replaces the module wholesale, so ANY export a transitively-imported module
+// touches at load time (configureSearchDefaults via P-017, createEmbeddingSpace
+// via lib/search/prose-vector-dims.ts) fails COLLECTION. WI-10004518.
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  runHybridSearch,
+  configureSearchDefaults: vi.fn(),
+}));
 vi.mock('../agent-tools/search/sources', () => ({
   SEARCH_SOURCES: [
     { name: 'escalations' },

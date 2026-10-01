@@ -458,6 +458,9 @@ export async function reclaimStaleWorkItemClaims(
              END AS reason
         FROM harness_shared.work_items f
        WHERE f.taken_by IS NOT NULL AND f.taken_by <> ''
+         -- Authenticated human market claims have no agent heartbeat or spawn
+         -- lifecycle. Their release must be explicit, never an agent-death guess.
+         AND f.taken_by NOT LIKE 'human:%'
          AND (
            -- (a) DEAD: holder not alive, past the grace window. A NULL taken_at
            -- (a claim with NO claim-time anchor) is treated as PAST grace: the
@@ -723,6 +726,7 @@ export async function reclaimStaleIssueClaims(
              e.assignee AS former_assignee, e.assigned_by
         FROM harness_shared.engineer_issues e
        WHERE e.assignee IS NOT NULL AND e.assignee <> ''
+         AND e.assignee NOT LIKE 'human:%'
          AND e.assigned_at IS NOT NULL
          AND (now() - e.assigned_at) > make_interval(secs => ${graceSec})
          AND e.state = 'open'

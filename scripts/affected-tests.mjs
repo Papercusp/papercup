@@ -1692,6 +1692,11 @@ const STANDALONE_PACKAGE_DIRS = [
 // divergence from the first nobody would notice.
 const NON_WORKSPACE_PATH_ROUTES = [
   { prefix: "scripts/", workspace: "@papercusp/operator-core" },
+  // WI-10004418. The hosted workspace launches the released `bin/psu` wrapper
+  // packaged from apps/tui/release/psu. Its re-exec contract is covered by the
+  // operator integration suite, but apps/tui has no npm workspace, so without
+  // this route a release-wrapper-only change selected zero workspaces.
+  { prefix: "apps/tui/release/psu", workspace: "@papercusp/web" },
   // CLAUDE.md is a PRESCRIPTIVE artifact spliced into every agent's prompt, and
   // its executable claims are asserted by operator-core's doc-claims suite
   // (false-premise-in-prescriptive-artifacts-2026-08-02 P-004). MEASURED before

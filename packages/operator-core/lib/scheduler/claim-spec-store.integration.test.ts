@@ -10,18 +10,24 @@
  *   lib/scheduler/claim-spec-store.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 
 // Keep the import chain (claim-spec-store → get-next → work-items) safe at module load.
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  claimSql: undefined as postgres.Sql | undefined,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+vi.mock('../long-lived-admin-pool', () => ({
+  getLongLivedAdminPool: () => h.claimSql ?? h.sql,
+}));
 
 const {
   setClaimSpec,
@@ -34,6 +40,8 @@ const {
   readClaimConcurrencyBatch,
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
+  getNextForBee,
+  SCHEDULER_CLAIM_SETUP_BUDGET_MS,
 } = await import('./claim-spec-store');
 const { DEFAULT_CLAIM_SPEC } = await import('./claim-spec');
 const { buildBeeClaimSpecProjection } = await import('../sync/hyperbee/projections/bee-claim-spec');
@@ -157,6 +165,68 @@ describe('migration 389 restored after the migration 555 table rename', () => {
 });
 
 describe('cup_claim_specs store (mig 372)', () => {
+  it('bounds dedicated setup acquisition and recovers without running an expired setup', async () => {
+    const cupId = 'su-scheduler-setup-starved';
+    await setClaimSpec({ cupId, spec: DEFAULT_CLAIM_SPEC }, db.sql);
+    // An already-held item prevents candidate writes on the successful control call.
+    await db.sql`
+      INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)
+      VALUES ('default', 'EI-scheduler-setup-held', ${cupId}, 'open')
+    `;
+    const dedicated = postgres(db.url, { max: 1, prepare: false });
+    h.claimSql = dedicated;
+    const reserved = await dedicated.reserve();
+    let released = false;
+    const steps: string[] = [];
+    try {
+      const startedAt = Date.now();
+      const attempt = getNextForBee({
+        cupId,
+        harness: 'papercusp',
+        useDedicatedClaimPool: true,
+        onClaimStep: (step) => {
+          steps.push(step);
+        },
+      });
+      await expect(attempt).rejects.toMatchObject({
+        name: 'OrgTxnTimeoutError',
+        timeoutSource: 'caller-budget',
+        message: expect.stringContaining('no claim was attempted'),
+      });
+      expect(Date.now() - startedAt).toBeLessThan(SCHEDULER_CLAIM_SETUP_BUDGET_MS + 3_000);
+      expect(steps).toEqual(['claim-setup-acquisition']);
+
+      // Release the exact connection we deliberately held. The late BEGIN must roll
+      // back before it invokes setup, then the same pool must serve a fresh request.
+      reserved.release();
+      released = true;
+      expect(await dedicated`SELECT 1 AS n`).toEqual([{ n: 1 }]);
+      expect(steps).toEqual(['claim-setup-acquisition']);
+      expect(
+        await getNextForBee({
+          cupId,
+          harness: 'papercusp',
+          useDedicatedClaimPool: true,
+          onClaimStep: (step) => {
+            steps.push(step);
+          },
+        }),
+      ).toBeNull();
+      expect(steps).toEqual([
+        'claim-setup-acquisition',
+        'claim-setup-acquisition',
+        'claim-spec-read',
+        'claim-concurrency-read',
+      ]);
+      expect(await countActiveClaimsForBee({ cupId }, db.sql)).toBe(1);
+    } finally {
+      if (!released) reserved.release();
+      h.claimSql = undefined;
+      await dedicated.end({ timeout: 2 });
+      await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'EI-scheduler-setup-held'`;
+    }
+  }, 20_000);
+
   it('counts an active/parked claim but ignores terminal claims (EI-11796)', async () => {
     await db.sql`
       INSERT INTO harness_shared.work_items (workspace_id, feature_id, taken_by, status)

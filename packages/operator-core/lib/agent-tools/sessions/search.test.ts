@@ -47,10 +47,19 @@ const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedder
 // `configureSearchDefaults` is NOT used by these tests — it is here because
 // `search.ts` -> `../search/sources` side-effect-imports
 // `lib/search/configure-search-defaults`, which CALLS it at module load (P-017).
-// An inline factory replaces the module wholesale, so omitting it turns this
-// partial mock into a collection-time crash ("No export is defined on the
-// mock") that fails the file before a single test runs. Keep it inert.
-vi.mock('@papercusp/search', () => ({
+// Keep it inert.
+//
+// This MUST stay a partial mock over `importOriginal`, never a hand-listed
+// factory. A hand-listed factory replaces the module wholesale, so any export
+// a transitively-imported module touches at load time becomes a
+// collection-time crash ("No export is defined on the mock") that fails the
+// file before a single test runs. It broke twice that way: first on
+// `configureSearchDefaults`, then (WI-10004518) on `createEmbeddingSpace`,
+// which `lib/search/prose-vector-dims.ts` calls at module scope. Spreading the
+// real module means a new library export can never break collection again;
+// only the two overrides below are faked.
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   runHybridSearch: (...a: unknown[]) => runHybridSearch(...(a as [])),
   configureSearchDefaults: vi.fn(),
 }));

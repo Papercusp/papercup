@@ -13,7 +13,19 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createBackfillSweepState, createBackfillSweeper } from '@papercusp/search';
+import * as realLibrary from '@papercusp/search';
+
+// Copy-out mutation probes point this at a mirror of the library's backfill
+// directory (libs/generic/search/src/backfill/index.ts) holding one mutated file,
+// so falsifiability is proven without dirtying the shared tree.
+const librarySubjectPath = process.env.PAPERCUSP_SEARCH_BACKFILL_SUBJECT;
+const {
+  createBackfillSweepState,
+  createBackfillSweeper,
+}: Pick<typeof realLibrary, 'createBackfillSweepState' | 'createBackfillSweeper'> =
+  librarySubjectPath
+    ? ((await import(librarySubjectPath)) as typeof realLibrary)
+    : realLibrary;
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({

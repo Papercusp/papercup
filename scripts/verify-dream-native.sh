@@ -92,7 +92,9 @@ const { sql } = getOrgPg();
 try {
   if (action === 'install') {
     await sql.begin(async (tx) => {
-      await tx.unsafe('CREATE TABLE harness_shared.dream_native_fault (workspace_id text, pot_slug text, suppressed integer NOT NULL DEFAULT 0)');
+      // The isolated schema publishes updates too: give this fault counter a
+      // stable replica identity so its update does not roll back the real Start.
+      await tx.unsafe('CREATE TABLE harness_shared.dream_native_fault (workspace_id text, pot_slug text, suppressed integer NOT NULL DEFAULT 0, PRIMARY KEY (workspace_id, pot_slug))');
       await tx`INSERT INTO harness_shared.dream_native_fault (workspace_id, pot_slug) VALUES (${workspace}, ${pot})`;
       await tx.unsafe(`CREATE FUNCTION harness_shared.dream_native_suppress_start() RETURNS trigger AS $$
         BEGIN
@@ -170,21 +172,66 @@ runtime_state false || fail "initial runtime was not paused"
 
 echo "=== [3/9] acknowledged Start without a runtime transition must fail acceptance ==="
 runtime_fault install || { fail "runtime counterexample installation failed"; exit 1; }
+# A selector click receipt only proves that the tool found a button. Wait for
+# the actual control to be enabled, and retain dispatch/response evidence.
+COUNTEREXAMPLE_READY='(() => { const control=document.querySelector("[data-testid=dream-control]"); const b=control && [...control.querySelectorAll("button")].find(x=>x.textContent?.trim()==="Start manual dreaming"); return !!b && !b.disabled && !control.querySelector("[role=alert]"); })()'
+poll --require '[data-testid="dream-control"]' --eval "$COUNTEREXAMPLE_READY" --no-errors \
+  || { fail "counterexample Start control was not ready"; exit 1; }
 # Observe the REAL fetch and response; never substitute a mocked success.
-check --eval '(() => { const original=window.fetch; window.__dreamNativeFetch=original; window.__dreamNativeAck=null; window.fetch=async function(input,init){ const res=await original.call(this,input,init); if(String(input)==="/api/agent-mcp/run-tool" && init?.method==="POST"){ const request=JSON.parse(init.body); if(request.name==="dream:control" && request.args.pot==="dream-native" && request.args.mode==="manual" && request.args.enabled===true){ const body=await res.clone().json(); const text=body.result?.content?.[0]?.text; let refused=false; try { refused=!!text && JSON.parse(text).ok===false; } catch { refused=true; } window.__dreamNativeAck={httpOk:res.ok,envelopeOk:body.ok===true,refused}; } } return res; }; const b=[...document.querySelectorAll("button")].find(x=>x.textContent?.trim()==="Start manual dreaming"); if(!b)return false;b.id="dream-native-suppressed-start";return true; })()' \
+COUNTEREXAMPLE_OBSERVER='(() => {
+  const control=document.querySelector("[data-testid=dream-control]");
+  const b=control && [...control.querySelectorAll("button")].find(x=>x.textContent?.trim()==="Start manual dreaming");
+  if(!b || b.disabled)return false;
+  const original=window.fetch;
+  window.__dreamNativeFetch=original;
+  window.__dreamNativeAck=null;
+  const probe=window.__dreamNativeProbe={clicks:[],requests:[]};
+  b.addEventListener("click",()=>probe.clicks.push({disabled:b.disabled}),{once:true,capture:true});
+  window.fetch=async function(input,init){
+    const requestUrl=typeof input==="string" ? input : input.url;
+    let request;
+    if(new URL(requestUrl,window.location.href).pathname==="/api/agent-mcp/run-tool" && init?.method==="POST"){
+      try { request=JSON.parse(init.body); } catch {}
+      probe.requests.push({name:request?.name,pot:request?.args?.pot,mode:request?.args?.mode,enabled:request?.args?.enabled});
+    }
+    const res=await original.call(this,input,init);
+    if(request?.name==="dream:control" && request.args?.pot==="dream-native" && request.args.mode==="manual" && request.args.enabled===true){
+      const ack={httpOk:res.ok,status:res.status,envelopeOk:false,refused:true};
+      try {
+        const body=await res.clone().json();
+        ack.envelopeOk=body.ok===true;
+        ack.error=body.message ?? body.error;
+        const text=body.result?.content?.[0]?.text;
+        ack.refused=body.result?.isError===true || (!!text && JSON.parse(text).ok===false);
+      } catch(e){ ack.error=String(e); }
+      window.__dreamNativeAck=ack;
+    }
+    return res;
+  };
+  b.id="dream-native-suppressed-start";
+  return true;
+})()'
+check --eval "$COUNTEREXAMPLE_OBSERVER" \
   && "$TOOL" click --pid "$VERIFY_TAURI_PID" '#dream-native-suppressed-start' --wait 1500 --json \
   || fail "counterexample Start interaction failed"
+COUNTEREXAMPLE_CAUSE_OK=1
 VERIFY_TAURI_DOM_TIMEOUT=30 "$VERIFY_TAURI_POLL" --require '[data-testid="dream-control"]' \
   --eval '(() => { const ack=window.__dreamNativeAck; const control=document.querySelector("[data-testid=dream-control]"); const b=[...control.querySelectorAll("button")].find(x=>x.textContent?.trim()==="Start manual dreaming"); return ack?.httpOk===true && ack.envelopeOk===true && ack.refused===false && !!b && !b.disabled && !control.querySelector("[role=alert]"); })()' \
-  --no-errors >"$OUT/counterexample-ack.json" || fail "counterexample did not receive a successful real API acknowledgement"
-runtime_fault verify >"$OUT/counterexample-writer.json" || fail "counterexample did not suppress the real runtime writer"
-if assert_manual_runtime true 5 >"$OUT/counterexample-rejected.log" 2>&1; then
+  --no-errors >"$OUT/counterexample-ack.json" \
+  || { fail "counterexample did not receive a successful real API acknowledgement"; COUNTEREXAMPLE_CAUSE_OK=0; }
+"$TOOL" eval --pid "$VERIFY_TAURI_PID" 'JSON.stringify({probe:window.__dreamNativeProbe,ack:window.__dreamNativeAck,control:document.querySelector("[data-testid=dream-control]")?.textContent})' \
+  >"$OUT/counterexample-interaction.json" || fail "counterexample interaction evidence could not be retained"
+runtime_fault verify >"$OUT/counterexample-writer.json" \
+  || { fail "counterexample did not suppress the real runtime writer"; COUNTEREXAMPLE_CAUSE_OK=0; }
+if [ "$COUNTEREXAMPLE_CAUSE_OK" -ne 1 ]; then
+  echo "runtime-transition counterexample unmeasured: real acknowledged write was not established"
+elif assert_manual_runtime true 5 >"$OUT/counterexample-rejected.log" 2>&1; then
   fail "acceptance passed an acknowledged Start with no runtime transition"
 else
   echo "runtime-transition counterexample rejected"
 fi
 runtime_state false >"$OUT/counterexample-runtime.json" || fail "counterexample did not preserve paused runtime"
-check --eval '(() => { if(!window.__dreamNativeFetch)return false; window.fetch=window.__dreamNativeFetch; delete window.__dreamNativeFetch; delete window.__dreamNativeAck; return true; })()' \
+check --eval '(() => { if(!window.__dreamNativeFetch)return false; window.fetch=window.__dreamNativeFetch; delete window.__dreamNativeFetch; delete window.__dreamNativeAck; delete window.__dreamNativeProbe; return true; })()' \
   || fail "counterexample fetch observer cleanup failed"
 runtime_fault remove || { fail "runtime counterexample cleanup failed"; exit 1; }
 

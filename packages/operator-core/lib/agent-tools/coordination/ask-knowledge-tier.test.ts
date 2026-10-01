@@ -13,10 +13,12 @@ const m = vi.hoisted(() => ({
   buildQueryEmbedder: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-active'),
 }));
-// configureSearchDefaults is inert here, but REQUIRED: an inline factory
-// replaces the module wholesale, and lib/search/configure-search-defaults.ts
-// calls it at module load (P-017), so omitting it fails COLLECTION.
-vi.mock('@papercusp/search', () => ({
+// Partial mock over `importOriginal`, never a hand-listed factory: a factory
+// replaces the module wholesale, so ANY export a transitively-imported module
+// touches at load time (configureSearchDefaults via P-017, createEmbeddingSpace
+// via lib/search/prose-vector-dims.ts) fails COLLECTION. WI-10004518.
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   runHybridSearch: m.runHybridSearch,
   configureSearchDefaults: vi.fn(),
 }));

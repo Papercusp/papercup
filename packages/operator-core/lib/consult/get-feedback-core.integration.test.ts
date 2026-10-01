@@ -1407,6 +1407,15 @@ describe('getFeedbackCore — origin_task_ref default', () => {
   });
 });
 
+describe('getFeedbackCore — subjectRef routing', () => {
+  it('passes the exact routing subject through to transcript retrieval', async () => {
+    const { deps, routeCalls } = makeDeps(routeOf([cand('agent-a')]));
+    asOk(await getFeedbackCore({ ...baseReq, subjectRef: 'acceptance-x' }, deps));
+    expect(routeCalls).toHaveLength(1);
+    expect(routeCalls[0]?.subjectRef).toBe('acceptance-x');
+  });
+});
+
 // ── P-005: recursion lineage — depth + cycle refusal (D-005 / D-007 §7) ──
 describe('getFeedbackCore — recursion lineage (P-005)', () => {
   /** Seed a consult_state row that acts as a lineage parent. */

@@ -13,7 +13,7 @@
  *
  * The case most likely to be "simplified" later — and the one that would do the
  * most damage — is `unknown`. An unresolvable holder must NOT read as dead: the
- * oracle omits an entry when its wakeability fetch degrades, so folding unknown
+ * oracle returns an in-band unknown when its wakeability fetch degrades, so folding unknown
  * into lost converts one transient DB hiccup into simultaneous false-abandonment
  * verdicts across every goal in the workspace. Tests below pin that in both
  * directions (unknown alone; unknown alongside a dead holder).
@@ -28,7 +28,7 @@ import {
   resolveGoalHoldersFromRows,
   type GoalHolderRow,
 } from './holder';
-import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
+import { unknownVerdict, type LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 
 const WS = 'ws-1';
 const G = 'goal-abc';
@@ -314,6 +314,18 @@ describe('resolveGoalHoldersFromRows — the four verdicts', () => {
     expect(r.liveness).toBe('unknown');
     expect(r.holders[0].live).toBeNull();
     expect(r.holders[0].sessionState).toBeNull();
+  });
+
+  it.each([
+    unknownVerdict({ ownerId: 'unresolved' }, NOW),
+    verdict({ ownerId: 'unresolved', sessionState: null }),
+    verdict({ ownerId: 'unresolved', signalMissing: true }),
+  ])('preserves an in-band unresolved oracle verdict as unknown ($sessionState, $signalMissing)', (unresolved) => {
+    const result = resolveGoalHoldersFromRows(G, WS, [row('unresolved')], verdicts(unresolved), NOW);
+    expect(result.liveness).toBe('unknown');
+    expect(result.elected?.live).toBeNull();
+    expect(result.live).toEqual([]);
+    expect(result.allLive).toEqual([]);
   });
 
   it('the elected unresolvable holder yields unknown even when a historical holder is dead', () => {

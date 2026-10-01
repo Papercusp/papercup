@@ -60,7 +60,7 @@ const USAGE_ROWS = [
     profile: 'papercusp-engineer',
     spec_layers: ['domain:papercusp-engineer'],
     axis_layers: [],
-    cost_source: 'billed',
+    cost_source: 'provider',
     cost_usd: '1.000000',
     samples: '10',
   },

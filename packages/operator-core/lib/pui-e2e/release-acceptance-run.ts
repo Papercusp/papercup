@@ -93,6 +93,7 @@ export interface RunResult {
   stockMachines: StockMachineResult[];
   cloudDeviceStart: CloudDeviceStartResult;
   suiteProvenance: Array<{ file: string; candidateBlob: string | null; runBlob: string | null }>;
+  runnerTree: { before: RunnerTree; after: RunnerTree };
 }
 
 export interface StockMachineResult {
@@ -360,6 +361,56 @@ export function runStockMachineSmoke(
   });
 }
 
+/** The checkout the stage ran from: its HEAD and every tracked path that differs from it. */
+export interface RunnerTree {
+  root: string;
+  head: string | null;
+  /** `git status --porcelain` lines for tracked changes, submodule pins and content included. */
+  changed: string[];
+  /** Set when git could not answer; the tree is then unmeasured, never assumed clean. */
+  problem: string | null;
+}
+
+export function measureRunnerTree(root = REPO_ROOT): RunnerTree {
+  const gitIn = (...args: string[]) => spawnSync('git', ['-C', root, ...args], {
+    encoding: 'utf8', timeout: 300_000, maxBuffer: 64 * 1024 * 1024,
+  });
+  const head = gitIn('rev-parse', 'HEAD');
+  const status = gitIn('status', '--porcelain=v1', '--untracked-files=no', '--ignore-submodules=untracked');
+  const failed = [head, status].find((run) => run.status !== 0 || run.error);
+  return {
+    root,
+    head: head.status === 0 ? head.stdout.trim() : null,
+    changed: status.status === 0 ? status.stdout.split('\n').filter((line) => line.trim()) : [],
+    problem: failed ? `git exited ${failed.status ?? 'none'}${failed.error ? `: ${failed.error.message}` : ''}: ${(failed.stderr ?? '').trim().slice(-500)}` : null,
+  };
+}
+
+/**
+ * Whether the run's own code was the candidate's (EI-24692155752067316). The
+ * suites, the operator fixture they start, and every module those load come
+ * from the runner's checkout, not the archive. ACCEPTANCE_SOURCES pins only the
+ * suites and the runner, so a peer's mid-edit to operator-core or scripts/ in a
+ * shared tree changed rehearsal 37bc2d4c32's legs without tripping it. Measured
+ * before and after the legs, since an edit can land at any point in between.
+ * apps/tui/scripts/release-acceptance.sh runs the stage from an isolated
+ * checkout at the source commit, which passes both measurements.
+ */
+export function runnerTreeRefusals(tree: RunnerTree, sourceSha: string, when: string): string[] {
+  if (tree.problem) return [`the runner checkout ${tree.root} could not be measured ${when} (${tree.problem}), so the evidence may describe other code`];
+  const refusals: string[] = [];
+  if (tree.head !== sourceSha) {
+    refusals.push(`the runner checkout ${tree.root} was at ${tree.head ?? 'no commit'} ${when}, not the candidate source ${sourceSha}, `
+      + 'so the suites and operator fixture ran other code (run apps/tui/scripts/release-acceptance.sh, which checks the candidate out in isolation)');
+  }
+  if (tree.changed.length) {
+    const shown = tree.changed.slice(0, 5).map((line) => line.trim()).join('; ');
+    refusals.push(`the runner checkout ${tree.root} had ${tree.changed.length} uncommitted tracked change(s) ${when} (${shown}`
+      + `${tree.changed.length > 5 ? '; ...' : ''}), so the suites and operator fixture ran other code`);
+  }
+  return refusals;
+}
+
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
 const git = (...args: string[]) => execFileSync('git', ['-C', REPO_ROOT, ...args], { encoding: 'utf8' }).trim();
 
@@ -446,6 +497,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     target: string; source: { commit: string };
   };
   const sourceSha = provenance.source.commit;
+  const runnerTreeBefore = measureRunnerTree();
   let stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
   let cloudDeviceStartHistory = await measureCloudDeviceStart();
 
@@ -535,6 +587,11 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     const refusal = stockMachineRefusal(machine);
     if (refusal) extra.push(refusal);
   }
+  const runnerTree = { before: runnerTreeBefore, after: measureRunnerTree() };
+  extra.push(...new Set([
+    ...runnerTreeRefusals(runnerTree.before, sourceSha, 'before the legs'),
+    ...runnerTreeRefusals(runnerTree.after, sourceSha, 'after the legs'),
+  ]));
   const suiteProvenance = ACCEPTANCE_SOURCES.map((file) => ({ file, candidateBlob: blob(sourceSha, file), runBlob: blob(null, file) }));
   for (const entry of suiteProvenance) {
     if (!entry.candidateBlob || entry.candidateBlob !== entry.runBlob) {
@@ -554,9 +611,9 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     checkedAt: new Date().toISOString(),
     runner: {
       head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, cloudDeviceStart, cloudDeviceStartHistory,
-      suiteProvenance, work,
+      suiteProvenance, runnerTree, work,
     },
     ...verdict,
   }, null, 2)}\n`);
-  return { verdict, out, legs, stockMachines, cloudDeviceStart, suiteProvenance };
+  return { verdict, out, legs, stockMachines, cloudDeviceStart, suiteProvenance, runnerTree };
 }

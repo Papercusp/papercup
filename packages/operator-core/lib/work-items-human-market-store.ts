@@ -4,8 +4,13 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import { admittedWhereSql } from './work-items-admission';
 import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import {
-  claimHumanMarketJob, humanAssignee, readHumanMarketJob, submitHumanMarketJob,
+  claimHumanMarketJob, gradeHumanMarketJob, humanAssignee, readHumanMarketJob,
+  recordHumanMarketPayment, submitHumanMarketJob, type HumanMarketJob,
 } from './work-items-human-market';
+import { issuesScopeWorkspace } from './issues-engineer';
+import { getRubric } from './rubrics';
+import { ratingVerdict, readScorecardEvidence } from './scorecards';
+import { resolveAcceptanceGraderEligibility } from './agent-tools/scorecards/grader-eligibility';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 export interface HumanMarketItem {
@@ -73,6 +78,11 @@ export async function actOnHumanMarketItem(input: Scope & {
       : submitHumanMarketJob(before, input.userId, input.result ?? '', at);
     if (next.version === job.version) return before;
     const claiming = input.action === 'claim';
+    return writeJob(sql, input, before, next, claiming);
+  });
+}
+
+async function writeJob(sql: Sql, scope: Scope, before: HumanMarketItem, next: HumanMarketJob, claiming = false) {
     const rows = await sql<Row[]>`
       UPDATE harness_shared.work_items
          SET payload = COALESCE(payload, '{}'::jsonb)
@@ -85,13 +95,13 @@ export async function actOnHumanMarketItem(input: Scope & {
                         THEN payload->>'watchdogKey' ELSE NULL END),
                     'claim_history_post_id', COALESCE((
                       SELECT max(id) FROM harness_shared.coord_thread_posts
-                       WHERE workspace_id = ${input.workspaceId}), 0))
+                       WHERE workspace_id = ${scope.workspaceId}), 0))
                   ELSE '{}'::jsonb END,
-             status = 'wip', taken_by = ${humanAssignee(input.userId)},
+             status = 'wip', taken_by = ${humanAssignee(next.claim!.userId)},
              taken_at = CASE WHEN ${claiming} THEN now() ELSE taken_at END,
              last_progress_at = now(), updated_ts = ${Date.now()}
-       WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harness}
-         AND feature_id = ${input.id}
+       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harness}
+         AND feature_id = ${scope.id}
          AND status = ${before.state}
          AND taken_by IS NOT DISTINCT FROM ${before.assignee}
          AND payload->'humanWork' = ${JSON.stringify(before.payload.humanWork)}::text::jsonb
@@ -103,5 +113,63 @@ export async function actOnHumanMarketItem(input: Scope & {
     // The canonical base-table trigger captures this write under the existing
     // family-specific wire name and invalidates the work-item sync queries.
     return itemFromRow(rows[0]);
+}
+
+/** A canonical card must cite the immutable human result in every criterion. */
+async function resolveGrade(scope: Scope, job: HumanMarketJob, scorecardRef: string) {
+  if (!job.submission || !job.claim) throw new Error('submission_required');
+  if (!job.rubricRevision || !job.rubricCriteriaHash) throw new Error('market_rubric_identity_required');
+  // The existing scorecard/rubric stores use the issues workspace. Refuse an
+  // ambient mismatch instead of reading a same-id receipt from another tenant.
+  if (issuesScopeWorkspace() !== scope.workspaceId) throw new Error('market_scope_required');
+  const [evidence, rubric] = await Promise.all([readScorecardEvidence(scorecardRef), getRubric(job.rubricRef)]);
+  if (evidence.kind !== 'found' || !rubric || rubric.workspaceId !== scope.workspaceId ||
+      rubric.status !== 'active') throw new Error('market_scorecard_required');
+  const card = evidence.scorecard;
+  if (!card.createdBy || [job.ownerUserId, job.claim.userId, humanAssignee(job.claim.userId)].includes(card.createdBy) ||
+      card.rubricRef !== job.rubricRef || card.subject?.kind !== 'work-item' || card.subject.ref !== scope.id ||
+      !card.auditTarget.current || card.synthesized || card.provisional ||
+      (card.gradingAudit && card.gradingAudit.state !== 'passed') ||
+      !card.rubricResolved || card.missingKeys.length || card.extraKeys.length || !card.criteria.length ||
+      rubric.revision !== job.rubricRevision || rubric.criteriaHash !== job.rubricCriteriaHash ||
+      card.rubricRevision !== job.rubricRevision || card.criteriaHash !== job.rubricCriteriaHash ||
+      !(Date.parse(card.createdAt) >= Date.parse(job.submission.submittedAt)) ||
+      !card.criteria.every(criterion => criterion.evidence.includes(`submission-sha256:${job.submission!.sha256}`))) {
+    throw new Error('market_scorecard_mismatch');
+  }
+  if (rubric.kind === 'acceptance') {
+    const eligibility = await resolveAcceptanceGraderEligibility({ rubric,
+      callerId: card.createdBy, workspaceId: scope.workspaceId });
+    if (eligibility.refusal || eligibility.callerIsImplementer) throw new Error('market_grader_not_independent');
+  }
+  const verdicts = card.criteria.map(criterion => ratingVerdict(criterion.rating));
+  if (verdicts.some(verdict => verdict !== 'pass' && verdict !== 'fail')) throw new Error('market_grade_unsettled');
+  return { scorecardRef: card.issueId, rubricRef: card.rubricRef, graderId: card.createdBy,
+    submissionSha256: job.submission.sha256, passed: verdicts.every(verdict => verdict === 'pass') };
+}
+
+/** Owner cookie attests payment; this adapter never initiates a money transfer. */
+export async function reviewHumanMarketItem(input: Scope & {
+  userId: string; version: number;
+} & ({ action: 'grade'; scorecardRef: string } | { action: 'payment'; receiptRef: string })): Promise<HumanMarketItem> {
+  return boundedOrgTxn(async sql => {
+    const before = await readItem(sql, input);
+    const job = before && readHumanMarketJob(before);
+    if (!before || !job) throw new Error('market_offer_required');
+    if (job.ownerUserId !== input.userId) throw new Error('market_owner_required');
+    if (job.version !== input.version) throw new Error('market_offer_changed');
+    let next: HumanMarketJob;
+    if (input.action === 'grade') {
+      next = gradeHumanMarketJob(before, await resolveGrade(input, job, input.scorecardRef));
+    } else {
+      if (!job.grade?.passed) throw new Error('passing_grade_required');
+      // Retraction, rubric edits, supersession or failed audit after grading
+      // prevent payment from treating an obsolete grade as current evidence.
+      const current = await resolveGrade(input, job, job.grade.scorecardRef);
+      if (!current.passed || current.graderId !== job.grade.graderId) throw new Error('market_grade_unsettled');
+      next = recordHumanMarketPayment(before, { receiptRef: input.receiptRef.trim(),
+        paidBy: input.userId, paidAt: new Date().toISOString(), amountCents: job.amountCents, currency: job.currency });
+    }
+    return writeJob(sql, input, before, next);
   });
 }

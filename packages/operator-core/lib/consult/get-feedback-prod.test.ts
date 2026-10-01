@@ -48,7 +48,7 @@ describe('getFeedbackProd expert-routing settings', () => {
 
   it('uses one persisted snapshot for comparison recency and dispatch ranks', async () => {
     await getFeedbackProd(
-      { workspaceId: 'workspace-1', requesterId: 'requester', question: 'question' },
+      { workspaceId: 'workspace-1', requesterId: 'requester', question: 'question', subjectRef: 'acceptance-x' },
       { ownerId: 'requester' } as never,
     );
 
@@ -58,9 +58,18 @@ describe('getFeedbackProd expert-routing settings', () => {
       route: (params: unknown) => Promise<unknown>;
       reach: (params: unknown) => Promise<unknown>;
     };
-    await deps.route({ workspaceId: 'workspace-1', requesterId: 'requester', question: 'question' });
-    const routeParams = h.routeConsult.mock.calls[0]?.[0] as { recencyHalfLifeDays?: number };
+    await deps.route({
+      workspaceId: 'workspace-1',
+      requesterId: 'requester',
+      question: 'question',
+      subjectRef: 'acceptance-x',
+    });
+    const routeParams = h.routeConsult.mock.calls[0]?.[0] as {
+      recencyHalfLifeDays?: number;
+      subjectRef?: string | null;
+    };
     expect(routeParams.recencyHalfLifeDays).toBe(14);
+    expect(routeParams.subjectRef).toBe('acceptance-x');
 
     await deps.reach({ responder: 'expert', conversationId: 'conversation', summary: 'summary', body: 'body' });
     const dispatchDeps = h.makeConsultReachDispatcher.mock.calls[0]?.[1] as {

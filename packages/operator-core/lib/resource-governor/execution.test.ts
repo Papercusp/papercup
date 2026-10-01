@@ -13,6 +13,7 @@ import {
   withGovernedProcessRuntime,
   type GovernedProcessClient,
 } from './execution';
+import { AGENT_ADMISSION_GOVERNOR_BINDING } from './spawn-execution';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -301,6 +302,30 @@ describe('governed execution lifecycle', () => {
         { governor: new Governor(driver), driver: {} as WorkItemAdmissionQueueDriver },
       ),
     ).rejects.toThrow(/requires a durable queued receipt/);
+  });
+
+  // goal-brief D-031: placement readers treat an unpublished agent-class admission state
+  // as open only while the agent door declares the governor observe-only. That claim is
+  // this behavior — admit, then lease our OWN receipt in the same call, never waiting on a
+  // controller's lease selection. A door that starts waiting fails here until the
+  // declaration in spawn-execution.ts moves to 'binding' with it.
+  it('leases an agent receipt without a controller while the agent door is observe-only', async () => {
+    const d = deps();
+    const leaseNext = vi.spyOn(d.store, 'leaseNext');
+    const leaseReceipt = vi.spyOn(d.store, 'leaseReceipt');
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'launch-4', admissionClass: 'agent' },
+      { owner: 'agent-launcher' },
+      d,
+    );
+    if (AGENT_ADMISSION_GOVERNOR_BINDING === 'observe-only') {
+      expect(leaseNext).not.toHaveBeenCalled();
+      expect(leaseReceipt).toHaveBeenCalledOnce();
+      expect(leaseReceipt.mock.calls[0]![1]).toBe(execution.receiptId);
+      expect(d.current()).toMatchObject({ state: 'running', lease: { owner: 'agent-launcher' } });
+    } else {
+      expect(leaseReceipt).not.toHaveBeenCalled();
+    }
   });
 });
 

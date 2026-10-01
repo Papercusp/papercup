@@ -15,7 +15,9 @@ import {
   assertPortalRelayConsent,
   beginPortalRelayLink,
   cancelPortalRelayLink,
+  describeFetchFailure,
   disconnectPortalRelay,
+  fetchPortalRelayClient,
   isPapercuspHostedMachine,
   normalizePortalOrigin,
   portalRelayMcpUrl,
@@ -465,5 +467,37 @@ describe('user actions after linking', () => {
     const out = await cancelPortalRelayLink(w.deps);
     expect(out.state).toBe('off');
     expect(w.secrets.deviceCode).toBeNull();
+  });
+});
+
+// WI-10004520: P-014 c1 run 14 got 502 portal_unavailable "fetch failed" with the real reason
+// (undici's err.cause) discarded, so the failure could not be diagnosed.
+describe('a portal that does not answer is reported with the reason the request failed', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const undiciFailure = (code: string, message: string) =>
+    new TypeError('fetch failed', { cause: Object.assign(new Error(message), { code }) });
+
+  it('names the network cause of a failed fetch, not just "fetch failed"', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(undiciFailure('EAI_AGAIN', 'getaddrinfo EAI_AGAIN app.papercusp.com')));
+    const err = await fetchPortalRelayClient
+      .requestCode('https://app.papercusp.com', { installId: 'inst-1', installLabel: 'Desk' } as never)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PortalRelayError);
+    expect((err as PortalRelayError).code).toBe('portal_unavailable');
+    expect((err as PortalRelayError).message).toBe('The Papercusp portal did not answer: fetch failed: getaddrinfo EAI_AGAIN app.papercusp.com');
+  });
+
+  it('adds a cause code the message does not already carry, and follows a nested cause', () => {
+    const inner = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+    const outer = new TypeError('fetch failed', { cause: inner });
+    expect(describeFetchFailure(outer)).toBe('fetch failed: other side closed (UND_ERR_SOCKET)');
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }))).toBe('fetch failed: ECONNRESET');
+  });
+
+  it('leaves an error without a cause (the 15s timeout) as its own message', () => {
+    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    expect(describeFetchFailure(timeout)).toBe('The operation was aborted due to timeout');
+    expect(describeFetchFailure('plain string')).toBe('plain string');
   });
 });

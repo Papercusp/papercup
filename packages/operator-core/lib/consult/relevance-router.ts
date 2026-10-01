@@ -436,6 +436,13 @@ export function extractPathTokens(question: string, cap = 4): string[] {
   return [...seen];
 }
 
+/** Build a case-insensitive whole-reference matcher for transcript evidence.
+ * Slug punctuation stays inside the token, so a suffixed slug is not exact. */
+function exactSubjectMentionPattern(subjectRef: string): string {
+  const escaped = subjectRef.replace(/[.*+?^$(){}|[\]\\]/g, '\\$&');
+  return '(^|[^[:alnum:]_.-])' + escaped + '($|[^[:alnum:]_.-])';
+}
+
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 const MS_PER_DAY = 86_400_000;
@@ -624,6 +631,8 @@ export async function routeConsult(
   const maxQualified = params.maxQualified ?? 3;
   const turnLimit = params.turnLimit ?? 200;
   const evidencePerOwner = params.evidencePerOwner ?? 3;
+  const subjectRef = params.subjectRef?.trim() || null;
+  const subjectPattern = subjectRef ? exactSubjectMentionPattern(subjectRef) : null;
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
@@ -663,6 +672,7 @@ export async function routeConsult(
            AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
            AND text_tsv @@ plainto_tsquery('english', ${params.question})
+           AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
       ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
       `) as unknown as Array<{
@@ -784,6 +794,7 @@ export async function routeConsult(
        AND owner IS NOT NULL
        AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
+       AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
   ORDER BY text_embedding <=> ${qVec}::vector
      LIMIT ${turnLimit}
   `)) as unknown as Array<{

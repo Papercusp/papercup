@@ -43,6 +43,8 @@ type AdmissionInput = { ownerId: string; workspaceId: string; row: PlacementRow;
 export interface GoalPlacementAdmissionDeps {
   preflight: (input: AdmissionInput) => Promise<{ ready: boolean; reason: ExactPlanAdmissionReason; plan: string }>;
   governor: (workspaceId: string) => Promise<GovernorStateSnapshot | null>;
+  /** Whether the governor can restrict an agent launch at all (D-031; spawn-execution.ts). */
+  agentGovernorBinding: () => Promise<'observe-only' | 'binding'>;
   attempts: (input: AdmissionInput, now: number) => Promise<string[]>;
   now: () => number;
 }
@@ -84,6 +86,7 @@ export async function observeGoalPlacementAdmission(input: AdmissionInput, deps:
   },
   governor: async (workspaceId) => (await (await import('./resource-governor/state-snapshot'))
     .readGovernorStateSnapshot(workspaceId))?.payload ?? null,
+  agentGovernorBinding: async () => (await import('./resource-governor/spawn-execution')).AGENT_ADMISSION_GOVERNOR_BINDING,
   attempts: readGoalPlacementAdmissionAttempts, now: Date.now,
 }): Promise<GoalPlacementAdmissionObservation> {
   const now = deps.now();
@@ -92,8 +95,8 @@ export async function observeGoalPlacementAdmission(input: AdmissionInput, deps:
     ...(input.row.launch ? { launch: { ...input.row.launch } } : {}) };
   if (!input.row.launch || (input.window && (!Number.isFinite(Date.parse(input.window.offeredAt)) ||
     !Number.isFinite(Date.parse(input.window.completedAt)) || Date.parse(input.window.offeredAt) > Date.parse(input.window.completedAt)))) return out;
-  const [plan, governor, attempts] = await Promise.allSettled([
-    deps.preflight(input), deps.governor(input.workspaceId), deps.attempts(input, now),
+  const [plan, governor, binding, attempts] = await Promise.allSettled([
+    deps.preflight(input), deps.governor(input.workspaceId), deps.agentGovernorBinding(), deps.attempts(input, now),
   ]);
   if (plan.status === 'fulfilled' && plan.value.plan === input.row.planSlug &&
     plan.value.ready === (plan.value.reason === 'ready')) {
@@ -108,6 +111,12 @@ export async function observeGoalPlacementAdmission(input: AdmissionInput, deps:
         (snapshot.admission.state === 'constrained' && snapshot.admission.constrainedClasses.includes('agent')) ? 'restricted' : 'open';
       out.evidenceRefs.push(snapshot.evidenceRef);
     }
+  }
+  // D-031: with no published agent-class decision, the leg reads the door's own binding. An
+  // observe-only governor cannot hold or refuse an agent launch; a binding one stays unmeasured.
+  if (out.governor === 'unknown' && binding.status === 'fulfilled' && binding.value === 'observe-only') {
+    out.governor = 'open';
+    out.evidenceRefs.push('governor:agent:observe-only');
   }
   if (attempts.status === 'fulfilled') {
     out.attempts = attempts.value.length ? 'present' : 'none';

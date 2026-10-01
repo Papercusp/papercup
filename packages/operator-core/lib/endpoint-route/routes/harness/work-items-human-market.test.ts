@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/tooldef';
 import { claimHumanMarketJob, humanAssignee } from '../../../work-items-human-market';
 
-const f = vi.hoisted(() => ({ session: vi.fn(), read: vi.fn(), act: vi.fn() }));
+const f = vi.hoisted(() => ({ session: vi.fn(), read: vi.fn(), act: vi.fn(), review: vi.fn() }));
 vi.mock('../../../auth', () => ({ getSessionUser: f.session }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'pilot-workspace' }));
-vi.mock('../../../work-items-human-market-store', () => ({ getHumanMarketItem: f.read, actOnHumanMarketItem: f.act }));
+vi.mock('../../../work-items-human-market-store', () => ({ getHumanMarketItem: f.read, actOnHumanMarketItem: f.act,
+  reviewHumanMarketItem: f.review }));
 import routes from './work-items';
 const get = routes.find(r => r.method === 'GET' && r.path.endsWith('/human-work'))!;
 const post = routes.find(r => r.method === 'POST' && r.path.endsWith('/human-work'))!;
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   f.session.mockResolvedValue({ id: human, workspace_id: 'pilot-workspace' });
   f.read.mockResolvedValue(offer);
+  f.review.mockResolvedValue(offer);
   f.act.mockResolvedValue({ ...offer, state: 'wip', assignee: humanAssignee(human),
     payload: { ...offer.payload, humanWork: claimHumanMarketJob(offer, human, '2026-10-01T02:00:00Z') } });
 });
@@ -53,7 +55,7 @@ describe('human-work HTTP actions', () => {
     expect(response.status).toBe(200);
     expect(f.act).toHaveBeenCalledWith({ workspaceId: 'pilot-workspace', harness: 'pilot', id: 'WI-job', userId: human, action: 'claim', version: 0 });
     for (const body of [{ action: 'claim', version: 0, userId: owner },
-      { action: 'grade', version: 0, passed: true }, { action: 'payment', version: 0, receiptRef: 'made-up' }]) {
+      { action: 'grade', version: 0, passed: true }, { action: 'payment', version: 0, receiptRef: 'made-up', paidBy: human }]) {
       expect((await post.handler(request(body), ctx)).status).toBe(400);
     }
     expect((await post.handler(request({ action: 'claim', version: 0 }, { origin: 'https://foreign.example' }), ctx)).status).toBe(403);
@@ -71,5 +73,34 @@ describe('human-work HTTP actions', () => {
     const failure = await post.handler(request({ action: 'claim', version: 0 }), ctx);
     expect(failure.status).toBe(500);
     expect(await failure.json()).toEqual({ error: 'human_work_write_failed' });
+  });
+
+  it('passes only a receipt reference and authenticated owner identity to the review adapter', async () => {
+    f.session.mockResolvedValue({ id: owner, workspace_id: 'pilot-workspace' });
+    expect((await post.handler(request({ action: 'grade', version: 2, scorecardRef: 'EI-grade' }), ctx)).status).toBe(200);
+    expect(f.review).toHaveBeenLastCalledWith({ workspaceId: 'pilot-workspace', harness: 'pilot',
+      id: 'WI-job', userId: owner, action: 'grade', version: 2, scorecardRef: 'EI-grade' });
+    expect((await post.handler(request({ action: 'payment', version: 3, receiptRef: 'receipt:real-transfer' }), ctx)).status).toBe(200);
+    expect(f.review).toHaveBeenLastCalledWith(expect.objectContaining({ userId: owner, action: 'payment', receiptRef: 'receipt:real-transfer' }));
+    for (const extra of [{ passed: true }, { graderId: human }, { paidBy: human }, { amountCents: 1 }]) {
+      expect((await post.handler(request({ action: 'grade', version: 2, scorecardRef: 'EI-grade', ...extra }), ctx)).status).toBe(400);
+    }
+    expect(f.act).not.toHaveBeenCalled();
+  });
+
+  it('accepts the maintained desktop origin policy and retains credentialed CORS', async () => {
+    expect(get.cors).toBe(true);
+    expect(post.cors).toBe(true);
+    for (const origin of ['tauri://tauri.localhost', 'https://tauri.localhost', 'http://localhost:3055']) {
+      expect((await post.handler(request({ action: 'claim', version: 0 }, { origin }), ctx)).status).toBe(200);
+    }
+    expect((await post.handler(request({ action: 'claim', version: 0 }, { origin: 'https://tauri.localhost.evil.example' }), ctx)).status).toBe(403);
+  });
+
+  it('reports owner-only and unsettled-grade refusals without masking them as storage failures', async () => {
+    f.review.mockRejectedValue(new Error('market_owner_required'));
+    expect((await post.handler(request({ action: 'payment', version: 3, receiptRef: 'receipt:x' }), ctx)).status).toBe(403);
+    f.review.mockRejectedValue(new Error('market_scorecard_mismatch'));
+    expect((await post.handler(request({ action: 'grade', version: 2, scorecardRef: 'EI-grade' }), ctx)).status).toBe(409);
   });
 });

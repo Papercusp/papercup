@@ -2566,3 +2566,126 @@ Evidence: `/tmp/p008-ingest-phase-preflight-20261001.json` (task
 **P-008 remains open and unaccepted.** Next: exercise the maintained isolated
 background route with a pinned workload and explicit cleanup, then compare its
 phase costs before choosing a performance fix.
+
+### Isolated ingestion execution and phase receipt — 02:46Z
+
+The new project integration fixture
+`packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`
+uses the maintained `with-test-pg.mjs --isolated-runtime` route. A fresh Node/tsx
+child executes the real `runSessionIngestOnce`, adapters, filesystem, clock,
+flags and database. Its preflight verifies private HOME/workspace, the wrapper's
+loopback PG port, stripped agent credentials/IPC, background environment and
+disabled global routines. Source SHA-256 is checked before and after execution.
+The fixture invokes background ingestion directly; shared bg-host adoption and
+the complete DBOS host lifecycle remain unmeasured by this fixture.
+
+Workload `synthetic-offset-tail-v1` fixes 320 managed Codex homes with 15 rollouts
+each: 4,800 candidate files and 80 changed tails per useful pass. Each useful pass
+adds exactly 64 text turns and 640 faithful parts. A nonempty metadata prefix and
+its saved offset model unchanged files; offsets on the 80 private files are reset
+between three repetitions while their turn/part indices keep increasing. The
+final unchanged pass must perform zero decoding/writes and insert no duplicates.
+This deliberately small synthetic content matches the observed candidate/tail
+scale; live transcript contents, backlog, concurrent requests and pool contention
+are outside its measured scope. These repetitions are descriptive phase receipts,
+not paired control/candidate windows or a production p95 acceptance result.
+
+| Fixed pass | Total wall ms | Discovery ms | State ms | Metadata ms | Decode ms | Writes ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Initial unchanged | 720 | 396.0 | 17.4 | 275.1 | 0 | 0 |
+| New tail 1 | 2105 | 418.9 | 16.4 | 287.8 | 976.2 | 379.8 |
+| New tail 2 | 2265 | 418.3 | 17.3 | 293.7 | 1071.0 | 435.6 |
+| New tail 3 | 2042 | 372.9 | 12.3 | 265.4 | 961.0 | 408.4 |
+| Final unchanged | 585 | 322.9 | 15.3 | 222.8 | 0 | 0 |
+
+The other exclusive phase buckets remain in the full log receipt; the test checks
+their sum against total wall time, finite nonnegative durations, no errors or
+historical backfill, exact useful outputs, and byte offsets equal to file sizes.
+It read back 192 private turns and 1,920 private parts. After the child exited,
+the test confirmed removal of its HOME and PG data directory and an
+`ECONNREFUSED` probe on the private database port. In this fixture, decode is the
+largest useful-pass bucket; discovery and metadata dominate the unchanged pass.
+Await/scheduling time is included, so these buckets do not establish CPU cost or
+the mechanism behind the previously observed live 69–85-second passes.
+
+Canonical command: `PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+One integration test passed, zero skipped, native command exit 0, at 02:46Z.
+Receipt: `/tmp/p008-ingest-runtime-20261001-r4.log`; loaded child HEAD
+`eef7edb49fe872a03813f14c40145604b88ed8d8` plus the local untracked test.
+Source SHA-256: `a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`;
+test: `34ae4ca795bce991ef39a8b2570173303d200b4745b43b199674654fad4dea14`;
+workload descriptor: `417b4388c355a7f415df05df56d3904a314be517ced4ec6bf61fe0c222249421`.
+The source fingerprint matches the prior five-file 57-test regression receipt;
+those proofs were reused without a reconstruction rerun.
+
+The first three attempt logs remain separate. They failed respectively on nested
+SQL template syntax, an overly specific loopback hostname assertion, and empty
+seed files excluded by the real candidate filter. Before the successful attempt,
+the harness gained a child syntax preflight, bound SQL parameters, accepted
+loopback spellings with exact wrapper-port checks, nonempty prefix/offset seeds,
+production-walker layout preflight, and cleanup assertions on failing children.
+Their failed outcomes are not performance samples and were not replaced in an
+acceptance matrix. No whole-tree typecheck, shared-runtime adoption, shipment,
+live latency improvement, or R-8 acceptance is claimed. **P-008 remains open.**
+
+### Frozen mixed-record tail measurement — 03:07Z
+
+The maintained integration fixture now also accepts a local frozen Codex tail.
+It checks the tail SHA-256 before and after execution, complete JSONL records,
+the per-file byte bound and useful-turn budget. The guarded adapter preflight
+determines expected outputs before private writes; the fixture still verifies
+real database counts, file offsets, the final unchanged pass and teardown. Raw
+transcript content stays outside the repository and is absent from receipts.
+The default synthetic mode remains self-contained for CI.
+
+This run selected the last 100 complete records from this worker's ended native
+session `01a0f54a-98ea-7d61-8565-eff52bada864`, under managed home `session-32189`.
+The immutable source rollout SHA-256 is
+`daf3b19c556879679f73cc71e49822eda166ac5756cfffb19586787ffd16f4a7`;
+the selected tail SHA-256 is
+`aca19605813043b6c1ba7d82bd89344f50c90aee1bddf47bcd51aec0064eb37e`.
+Each of 80 changed files receives the same 214,497-byte, 100-record tail among
+4,800 candidates. Its mix includes messages, reasoning, tool calls/results,
+completion events and token records. This produces 240 recall turns and 2,160
+faithful parts per pass; three repetitions read back 720 turns and 6,480 parts.
+Replaying one tail 80 times is a frozen local sample, not a census of live
+transcripts, concurrent work, database state or the full background-host lifecycle.
+
+| Frozen pass | Wall ms | Discovery ms | Metadata ms | Decode ms | Writes ms | Child process CPU ms |
+|---|---:|---:|---:|---:|---:|---:|
+| New tail 1 | 4699 | 1201.1 | 568.4 | 970.8 | 1834.8 | 2268.8 |
+| New tail 2 | 4048 | 1075.7 | 433.5 | 1156.6 | 1280.3 | 1854.6 |
+| New tail 3 | 3060 | 1051.2 | 381.9 | 708.6 | 864.0 | 1689.1 |
+| Final unchanged | 913 | 603.9 | 272.9 | 0 | 0 | unmeasured |
+
+CPU is `process.cpuUsage` user plus system microseconds divided by 1,000,
+bracketing each entire ingestion pass in the child. It includes all threads in
+that process, excludes the separate PostgreSQL process, and is not per-phase
+CPU or a connection-acquisition measurement. Phase buckets remain exclusive
+wall times including awaits and scheduling. These runs do not reproduce the
+saved 69–85-second live sweeps and do not identify their cause. They are not a
+paired performance comparison with the earlier synthetic runs.
+
+The frozen mode passed one canonical integration test, zero skips, native exit 0;
+receipt `/tmp/p008-ingest-frozen-runtime-20261001-r1.log`, test start 03:06:06Z.
+The default synthetic regression also passed one integration test, zero skips,
+native exit 0; `/tmp/p008-ingest-runtime-default-20261001-r5.log`, start 03:07:45Z.
+Both confirm private HOME/data-directory removal and a refused database port.
+Loaded child HEAD remains `eef7edb49fe872a03813f14c40145604b88ed8d8` plus the local
+untracked fixture. Ingestion source SHA-256 remains `a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`;
+updated test SHA-256 is `94b732691b66c53566dde190c0c3b0eef91d5adb35f81468eb20a0d4c0e2b167`.
+Frozen workload descriptor SHA-256 is
+`58a9a2c9d81e0021819064c5fcedbe45140c21e27b285dbbae7a7d143b57b835`;
+the default descriptor remains `417b4388c355a7f415df05df56d3904a314be517ced4ec6bf61fe0c222249421`.
+
+Reproduce the frozen input by extracting the last 100 complete lines from the
+named ended rollout and checking both hashes, then run the canonical test with
+`TEST_INGEST_CORPUS_PATH` naming that local snapshot. Default command remains
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`.
+The temporary raw snapshot was removed after receipt capture.
+
+Performance-plan decision D-006 explicitly reserves shared federation-host
+adoption for a separately coordinated runtime lane. This worker performed only
+a `dev:restart` dry-run and did not restart the shared host. The current runtime
+report still names bg-host `244f7d127c`, `containsChange:false`; live adoption,
+causal attribution, latency acceptance and final shipment remain open.

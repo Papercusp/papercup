@@ -67,7 +67,15 @@ export interface SessionTurnLiteralPolicy {
   /** At most this many query tokens are expanded (each multiplies the variant list). */
   fuzzyMaxTokens: number;
   fuzzyExpandDeadlineMs: number;
+  /** TOTAL budget for resolving every fuzzy variant (the sum across the isolated variant statements). */
   fuzzyResolveDeadlineMs: number;
+  /**
+   * Cap for ONE fuzzy variant's statement (WI-10004501). A variant is resolved in its own statement, so one
+   * whose trigram candidates are mostly false positives (lossy recheck, measured 5.8 s for 'finished finder')
+   * times out ALONE and the other variants' hits are still returned. Cost tracks the trigram posting
+   * intersection, NOT the neighbour's document frequency, so a df ceiling cannot bound it.
+   */
+  fuzzyVariantDeadlineMs: number;
   /** Characters of context kept each side of the matched literal in the excerpt. */
   snippetRadius: number;
 }
@@ -86,6 +94,7 @@ export const SESSION_TURN_LITERAL_POLICY: SessionTurnLiteralPolicy = {
   fuzzyMaxTokens: 3,
   fuzzyExpandDeadlineMs: 1000,
   fuzzyResolveDeadlineMs: 2000,
+  fuzzyVariantDeadlineMs: 500,
   snippetRadius: 160,
 };
 
@@ -148,6 +157,8 @@ export interface TierReceipt {
   error?: string;
   /** Fuzzy only: what each expanded token was expanded to. */
   expanded?: Array<{ token: string; words: Array<{ word: string; similarity: number; ndoc: number }> }>;
+  /** Fuzzy only: variants that hit their own deadline (or the total budget) and so contributed no hits. */
+  timedOutVariants?: string[];
 }
 
 export interface SessionTurnLiteralReceipt {
@@ -206,7 +217,7 @@ export function markFirst(text: string, needle: string): string {
 
 type Sql = postgres.Sql;
 
-interface LiteralRow {
+export interface LiteralRow {
   source_kind: string;
   session_id: string;
   turn_idx: number;
@@ -214,6 +225,8 @@ interface LiteralRow {
   owner: string | null;
   harness_slug: string | null;
   ts: string | null;
+  /** epoch seconds of COALESCE(ts, ingested_at) — the newest-first sort key when variant rows are merged. */
+  sort_epoch: number | null;
   needle: string | null;
   needle_ord: number | null;
   snippet: string | null;
@@ -266,7 +279,8 @@ async function runLiteralBranch(
            LIMIT ${policy.candidateCap}
         )
         SELECT c.source_kind, c.session_id, c.turn_idx, c.speaker, c.owner, c.harness_slug,
-               c.ts::text AS ts, m.needle, m.ord AS needle_ord,
+               c.ts::text AS ts, extract(epoch FROM COALESCE(c.ts, c.ingested_at))::float8 AS sort_epoch,
+               m.needle, m.ord AS needle_ord,
                substr(c.text, GREATEST(m.pos - ${radius}, 1), ${radius * 2} + length(m.needle)) AS snippet
           FROM cand c
           JOIN LATERAL (
@@ -354,6 +368,45 @@ async function vocabNeighbours(
   }
 }
 
+/**
+ * Resolve fuzzy variants ISOLATED (WI-10004501): `run` executes ONE variant under `deadlineMs`; a variant
+ * that times out is recorded and skipped, never allowed to zero the others. `variants` are best-similarity
+ * first, so on budget exhaustion the dropped tail is the least likely. Rows merge newest-first
+ * (`sort_epoch`), a turn matched by several variants keeps the EARLIEST (best-similarity) one's row.
+ * Pure over `run` + `now`, so the isolation contract is unit-testable without a database.
+ */
+export async function resolveVariantsIsolated(
+  variants: readonly string[],
+  run: (variant: string, deadlineMs: number) => Promise<{ rows: LiteralRow[]; deadline: boolean }>,
+  opts: { limit: number; totalDeadlineMs: number; variantDeadlineMs: number; now?: () => number },
+): Promise<{ rows: LiteralRow[]; deadline: boolean; timedOut: string[] }> {
+  const now = opts.now ?? Date.now;
+  const start = now();
+  const timedOut: string[] = [];
+  const byTurn = new Map<string, LiteralRow>();
+  for (let i = 0; i < variants.length; i++) {
+    const remaining = opts.totalDeadlineMs - (now() - start);
+    if (remaining < 1) {
+      timedOut.push(...variants.slice(i)); // total budget spent: the rest never ran
+      break;
+    }
+    const variant = variants[i]!;
+    const r = await run(variant, Math.min(opts.variantDeadlineMs, remaining));
+    if (r.deadline) {
+      timedOut.push(variant);
+      continue;
+    }
+    for (const row of r.rows) {
+      const key = `${row.source_kind}\u0000${row.session_id}\u0000${row.turn_idx}`;
+      if (!byTurn.has(key)) byTurn.set(key, row);
+    }
+  }
+  const rows = [...byTurn.values()]
+    .sort((a, b) => (b.sort_epoch ?? -Infinity) - (a.sort_epoch ?? -Infinity))
+    .slice(0, opts.limit);
+  return { rows, deadline: timedOut.length > 0, timedOut };
+}
+
 /** The fuzzy tier (vocabulary expansion, then the exact predicate). Readiness is the caller's. */
 export async function retrieveSessionTurnFuzzy(
   sql: Sql,
@@ -363,6 +416,7 @@ export async function retrieveSessionTurnFuzzy(
   hits: SessionTurnLiteralHit[];
   deadline: boolean;
   expanded: NonNullable<TierReceipt['expanded']>;
+  timedOutVariants: string[];
 }> {
   const lowered = q.query.trim().toLowerCase();
   const tokens = expandableTokens(lowered, policy);
@@ -378,19 +432,24 @@ export async function retrieveSessionTurnFuzzy(
       if (text !== lowered) variants.push({ text, match: { token, word: w.word, similarity: w.similarity } });
     }
   }
-  if (variants.length === 0) return { hits: [], deadline, expanded };
+  if (variants.length === 0) return { hits: [], deadline, expanded, timedOutVariants: [] };
 
-  // Best-similarity variant first: the lateral join keeps the FIRST needle a turn contains.
+  // Best-similarity variant first: it runs first and wins a turn that several variants contain.
   variants.sort((a, b) => b.match.similarity - a.match.similarity);
   const byText = new Map(variants.map((v) => [v.text, v.match] as const));
   const texts = [...byText.keys()];
-  const resolved = await runLiteralBranch(
-    sql, q, texts.map((t) => `%${escapeLikeLiteral(t)}%`), texts, policy.fuzzyReserve, policy.fuzzyResolveDeadlineMs, policy,
+  // One statement per variant: a lossy-trigram variant (73k candidates / 0 true matches, 5.8 s on the real
+  // corpus) times out alone instead of zeroing the batch (WI-10004501).
+  const resolved = await resolveVariantsIsolated(
+    texts,
+    (text, deadlineMs) => runLiteralBranch(sql, q, [`%${escapeLikeLiteral(text)}%`], [text], policy.fuzzyReserve, deadlineMs, policy),
+    { limit: policy.fuzzyReserve, totalDeadlineMs: policy.fuzzyResolveDeadlineMs, variantDeadlineMs: policy.fuzzyVariantDeadlineMs },
   );
   return {
     hits: resolved.rows.map((r) => toHit(r, 'fuzzy', r.needle ? byText.get(r.needle) : undefined)),
     deadline: deadline || resolved.deadline,
     expanded,
+    timedOutVariants: resolved.timedOut,
   };
 }
 
@@ -434,8 +493,17 @@ export async function retrieveSessionTurnLiteralTiers(
     if (expandableTokens(literal, policy).length === 0) return { hits: [], receipt: skipped('no-expandable-token') };
     const t0 = Date.now();
     try {
-      const { hits, deadline, expanded } = await retrieveSessionTurnFuzzy(sql, q, policy);
-      return { hits, receipt: { status: deadline ? 'deadline' : 'ran', returned: hits.length, elapsedMs: Date.now() - t0, expanded } };
+      const { hits, deadline, expanded, timedOutVariants } = await retrieveSessionTurnFuzzy(sql, q, policy);
+      return {
+        hits,
+        receipt: {
+          status: deadline ? 'deadline' : 'ran',
+          returned: hits.length,
+          elapsedMs: Date.now() - t0,
+          expanded,
+          ...(timedOutVariants.length > 0 ? { timedOutVariants } : {}),
+        },
+      };
     } catch (err) {
       return { hits: [], receipt: { status: 'error', returned: 0, elapsedMs: Date.now() - t0, error: (err as Error).message } };
     }

@@ -529,6 +529,90 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_stale');
   });
 
+  it('stales an operational grading when artifact content changes at the same evidence path', () => {
+    const input = provedFixture(1);
+    const base = input.evidence.rows[0]!;
+    const evidenceRef = 'docs/evidence/osr-r15-live-2026-09-30.json';
+    base.evidenceKind = 'operational';
+    base.evidenceRef = evidenceRef;
+    base.fingerprints = { ...base.fingerprints, sourceFingerprint: 'a'.repeat(64) };
+    const gradedAt = degrade(input, 'The operational artifact did not establish the outcome.');
+    addBinding(input, gradedAt + 60_000, {
+      evidenceKind: 'operational',
+      evidenceRef,
+      fingerprints: { ...base.fingerprints, sourceFingerprint: 'b'.repeat(64) },
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'stale', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_stale');
+  });
+
+  it.each(['sourceFingerprint', 'testFingerprint'] as const)(
+    'stales a repo-files cohort when its bound %s changes at the same evidence path',
+    (fingerprint) => {
+      const input = provedFixture(1);
+      const base = input.evidence.rows[0]!;
+      const evidenceRef = 'test-run-group:attempt-1:0';
+      const currentMeasurement = {
+        schemaVersion: 1 as const,
+        kind: 'repo-files' as const,
+        sourcePaths: ['src/subject.ts'],
+        testPaths: ['test/subject.test.ts'],
+      };
+      base.evidenceRef = evidenceRef;
+      base.details = { ...base.details, currentMeasurement };
+      base.fingerprints = { ...base.fingerprints, [fingerprint]: 'a'.repeat(64) };
+      const gradedAt = degrade(input, 'The measured source or test content did not establish the outcome.');
+      addBinding(input, gradedAt + 60_000, {
+        evidenceRef,
+        details: { ...base.details },
+        fingerprints: { ...base.fingerprints, [fingerprint]: 'b'.repeat(64) },
+      });
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+      expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'stale', rating: 'degraded' });
+      expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_stale');
+    },
+  );
+
+  it('CONTROL: a new testRunId with unchanged repo-files content does not stale a non-pass grading', () => {
+    const input = provedFixture(1);
+    const base = input.evidence.rows[0]!;
+    const evidenceRef = 'test-run-group:attempt-1:0';
+    base.evidenceRef = evidenceRef;
+    base.details = {
+      ...base.details,
+      currentMeasurement: {
+        schemaVersion: 1,
+        kind: 'repo-files',
+        sourcePaths: ['src/subject.ts'],
+        testPaths: ['test/subject.test.ts'],
+      },
+    };
+    base.fingerprints = {
+      ...base.fingerprints,
+      sourceFingerprint: 'a'.repeat(64),
+      testFingerprint: 'b'.repeat(64),
+    };
+    const gradedAt = degrade(input, 'A rerun with identical measured content remains the same cohort.');
+    addBinding(input, gradedAt + 60_000, {
+      evidenceRef,
+      testRunId: 4242,
+      details: { ...base.details },
+      fingerprints: { ...base.fingerprints },
+    });
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.grading).toMatchObject({ state: 'not-pass', rating: 'degraded' });
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_grading_not_pass');
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_grading_stale');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').staleGradingScorecardId).toBeNull();
+  });
+
   it('CONTROL: a metadata-only rebind of the SAME artifact does NOT stale — the measured ~3:1 over-trigger stays closed', () => {
     const input = provedFixture(1);
     const gradedAt = degrade(input, 'The outcome is not yet satisfied.');

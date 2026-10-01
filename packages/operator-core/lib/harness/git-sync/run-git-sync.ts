@@ -2190,9 +2190,15 @@ export async function lsofLockHolder(
   return null;
 }
 
-function runLsof(
+/** lsof walks every process's descriptor table, so its wall time grows with the
+ *  host's process count: ~7-12s per call at ~8,000 processes on the dev box
+ *  (2026-10-01). git-sync only reaches it on /proc-less hosts, where 10s holds. */
+export const LSOF_TIMEOUT_MS = 10_000;
+
+export function runLsof(
   bin: string,
   args: string[],
+  timeoutMs: number = LSOF_TIMEOUT_MS,
 ): Promise<{ code: number | null; stdout: string; stderr: string; missing?: boolean }> {
   return new Promise((resolve) => {
     let settled = false;
@@ -2209,7 +2215,7 @@ function runLsof(
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       done({ code: null, stdout: out.stdout.text(), stderr: out.stderr.text() || 'lsof timed out' });
-    }, 10_000);
+    }, timeoutMs);
     child.on('error', (e: NodeJS.ErrnoException) =>
       done({ code: null, stdout: out.stdout.text(), stderr: String(e.message), missing: e.code === 'ENOENT' }),
     );

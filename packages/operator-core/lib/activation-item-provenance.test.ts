@@ -197,3 +197,35 @@ describe('fetchSourceTurns — WI-10004057: a long paste-wrapped injection is no
     expect(isOwnerTurnVerdict(verdict)).toBe(false);
   });
 });
+
+describe('fetchSourceTurns — WI-10004510: an unproven clean turn is not owner evidence', () => {
+  const CLEAN = 'Okay, write this into a plan and implement it';
+  // One stored row per ref; `turn_idx` doubles as the selector for its stored verdict.
+  const stored: Record<number, string | null> = { 0: 'owner-typed', 5: 'unenrolled-origin', 6: null };
+  const fakeSql: TurnSql = (async (strings: TemplateStringsArray) => {
+    expect(strings.join('?')).toMatch(/turn_origin_verdict/);
+    return Object.entries(stored).map(([idx, verdict]) => ({
+      source_kind: 'claude', session_id: 's1', turn_idx: Number(idx), speaker: 'user',
+      head: CLEAN, tail: CLEAN, turn_origin: null, turn_origin_verdict: verdict,
+    }));
+  }) as TurnSql;
+  const PROVEN = 'session_turn:claude:s1:0';
+  const UNENROLLED = 'session_turn:claude:s1:5';
+  const PRE_794 = 'session_turn:claude:s1:6';
+
+  it('reads a stored unenrolled-origin turn as unknown, and keeps a proven or never-classified one', async () => {
+    const turns = await fetchSourceTurns(fakeSql, 'ws', [PROVEN, UNENROLLED, PRE_794]);
+    expect(turns.get(PROVEN)?.verdict).toBe('owner-typed');
+    expect(turns.get(UNENROLLED)?.verdict).toBe('unknown');
+    expect(turns.get(PRE_794)?.verdict).toBe('owner-typed');
+  });
+
+  it('an item backed only by an unenrolled-origin turn stays unresolved; a proven turn resolves it', async () => {
+    const turns = await fetchSourceTurns(fakeSql, 'ws', [PROVEN, UNENROLLED]);
+    const lookup = (ref: string) => turns.get(ref)?.verdict;
+    const unproven = resolveItemProvenance({ itemIds: ['P-001'], mappings: [mapping('M-001', [UNENROLLED], ['P-001'])], originOf: lookup });
+    expect(unproven.items[0]).toMatchObject({ itemId: 'P-001', label: 'unresolved', reason: 'no_owner_ref' });
+    const proven = resolveItemProvenance({ itemIds: ['P-001'], mappings: [mapping('M-001', [UNENROLLED, PROVEN], ['P-001'])], originOf: lookup });
+    expect(proven.items[0]).toMatchObject({ itemId: 'P-001', label: 'owner' });
+  });
+});

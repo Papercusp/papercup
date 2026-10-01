@@ -127,6 +127,7 @@ export async function routeAcceptanceBarAmendmentReview(
       requesterId: applierId,
       question: input.brief,
       originTaskRef: rubricId,
+      subjectRef: rubricId,
       // The applier is also screened; excluding it up front keeps it out of
       // the router's own candidate accounting.
       excludeOwners: [applierId],
