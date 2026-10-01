@@ -25,7 +25,7 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
     const script = `
       import { createEmbedSidecarServer } from ${JSON.stringify(serverModule)};
       import { sidecarEmbedBatch } from ${JSON.stringify(clientModule)};
-      const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false,
+      const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 4,
         builders: { harrier: async () => async () => [1, ...Array(1023).fill(0)] }, log: () => {} });
       const events = [];
       sidecar.server.on('connection', socket => {
