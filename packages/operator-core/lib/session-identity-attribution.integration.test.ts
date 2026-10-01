@@ -573,6 +573,35 @@ describe('P-009 activation span views', () => {
       expect(await state(owner)).toEqual({ delivered: '67', applied: flipped, status: 'desired', receipts: '0' });
     });
 
+    // WI-10004663: a single-turn session (headless one-shot, consult answer) never
+    // produces the next-turn delivery proof, so before this it stayed `prepared` for
+    // life with no span and all its usage unattributed. Its launch artifact IS the
+    // consumption, exactly like a restart.
+    it('a fresh launch onto the launch record\'s revision is applied at the first turn (WI-10004663)', async () => {
+      const owner = `${OWNER}-fresh-launch`;
+      const launched = compiledLaunch('fresh-launch');
+      const none = compiledLaunch('fresh-launch-prior').revision;
+      await seed(owner, 9404, launched, launched.revision, none, 'launch');
+
+      await expect(applyRelaunchedActivation(owner, WS, 69, launched.revision, db.sql)).resolves.toBe(true);
+      expect(await state(owner)).toEqual({ delivered: '67', applied: launched.revision, status: 'applied', receipts: '1' });
+      // The span opens on that receipt — usage from the first turn on is attributed.
+      const [span] = await db.sql<Array<{ spec: string }>>`
+        SELECT specification_revision AS spec FROM harness_shared.session_identity_activation_spans
+         WHERE owner_id = ${owner}`;
+      expect(span?.spec).toBe(launched.revision.specificationRevision);
+    });
+
+    it('a fresh launch whose launch record carries a different revision is refused (WI-10004663)', async () => {
+      const owner = `${OWNER}-fresh-mismatch`;
+      const recorded = compiledLaunch('fresh-mismatch-recorded');
+      const wanted = compiledLaunch('fresh-mismatch-wanted').revision;
+      await seed(owner, 9405, recorded, wanted, recorded.revision, 'launch');
+
+      await expect(applyRelaunchedActivation(owner, WS, 69, wanted, db.sql)).resolves.toBe(false);
+      expect(await state(owner)).toEqual({ delivered: '67', applied: recorded.revision, status: 'desired', receipts: '0' });
+    });
+
     it('a restart whose relaunch never landed (launch record still the predecessor) is refused', async () => {
       const owner = `${OWNER}-unlanded`;
       const predecessor = compiledLaunch('unlanded-prev');

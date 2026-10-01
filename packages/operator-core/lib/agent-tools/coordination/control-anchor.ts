@@ -974,8 +974,10 @@ export async function convergeActivationToLaunchRecord(
  * consumed only once its text reaches the context. A restart is different: the
  * launch artifact IS the consumption. So this converges `applied` (authority and
  * attribution) when, and only when:
- *   1. the latest `desired` event for this owner was written by a RESTART onto
- *      exactly this revision — an in-place flip, even one back to the launched
+ *   1. the latest `desired` event for this owner was written by a RESTART or a
+ *      fresh LAUNCH onto exactly this revision (WI-10004663: a launch is consumed by
+ *      its artifact just as a restart is, and a single-turn session never produces
+ *      the next-turn proof) — an in-place flip, even one back to the launched
  *      specification, is `control`-sourced and keeps waiting for delivery proof;
  *   2. the gate-selected launch record carries exactly this specification and
  *      state revision — a relaunch that never landed keeps the old record; and
@@ -1004,7 +1006,12 @@ export async function applyRelaunchedActivation(
        LIMIT 1
     `;
     if (
-      latest?.source !== 'restart' ||
+      // WI-10004663: a fresh `launch` is consumed by its launch artifact exactly as a
+      // `restart` is. Excluding it left every single-turn session (headless one-shots,
+      // consult answers, sessions that end before a second prompt) at `prepared` for
+      // life — no delivery proof ever arrives, so no span opens and all of its
+      // inference cost reads unattributed. An in-place (`control`) flip still waits.
+      (latest?.source !== 'restart' && latest?.source !== 'launch') ||
       latest.specification_revision !== revision.specificationRevision ||
       latest.state_revision !== revision.stateRevision
     ) return false;
