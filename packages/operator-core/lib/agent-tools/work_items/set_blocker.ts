@@ -31,7 +31,8 @@ import {
 import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
-import { workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
+import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
+import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -254,10 +255,39 @@ export default defineTool({
               error: `work_item '${input.id}' blocker ref is required when setting a blocker. Blocker was not written.`,
             };
           }
-          // WI-2141488: a bare work-item id here is inert — no event key, nothing
-          // to await, nothing to clear — so the row would wait forever. Refuse at
-          // the write; `clear` is deliberately exempt so rows already carrying a
-          // bad ref stay clearable.
+          // WI-10005020 (P-002 / R-14): a ref naming ONLY work-items (bare ids or
+          // `work-item:done:<id>` keys) is a dependency, and its one canonical form is
+          // the `blocks` edge the claim floors, plans:items blockedBy and the
+          // dependency traversal read. Record that edge instead of an external row;
+          // the lifecycle is left alone because the edge itself gates claiming.
+          const referents = pureWorkItemDependencyReferents(input.ref);
+          if (referents) {
+            const linked = await linkWorkItemRefDependencies({
+              dependentId: input.id,
+              harness: input.harness,
+              referents,
+              by: identity.ownerId,
+            });
+            if (!linked.ok) return { ok: false as const, id: input.id, error: linked.error, code: linked.code };
+            return {
+              ok: true as const,
+              id: input.id,
+              changed: true,
+              workItem,
+              convertedToEdge: { rel: 'blocks' as const, blockers: linked.edges.map((edge) => edge.blocker) },
+              note:
+                `Recorded as work_item_deps blocks edge(s) ${referents.join(', ')} → ${input.id}; no external ` +
+                'blocker row was written. The edge resolves itself when the blocker is terminal (dropped counts); ' +
+                'remove it with work_items:link { rel:"blocks", remove:true }.',
+              activeBlockers: activeExternalBlockers(workItem.payload),
+              blockerHistory: readExternalBlockers(workItem.payload),
+              capabilityDisposition: externalBlockerCapabilityPolicy(input.capability ?? 'live-dependency'),
+              autoCleared: false,
+            };
+          }
+          // WI-2141488: a bare work-item id MIXED with other conditions is still
+          // inert as external text — refuse at the write; `clear` is deliberately
+          // exempt so rows already carrying a bad ref stay clearable.
           const workItemRef = workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
           if (workItemRef) {
             return {

@@ -12,6 +12,10 @@ vi.mock('../../work-items', () => ({
   setWorkItemClaimHold: (...args: unknown[]) => setWorkItemClaimHold(...args),
   setWorkItemStateWithAliasInfo: (...args: unknown[]) => setWorkItemStateWithAliasInfo(...args),
 }));
+const linkWorkItemRefDependencies = vi.fn();
+vi.mock('./work-item-ref-blocker-edges', () => ({
+  linkWorkItemRefDependencies: (...args: unknown[]) => linkWorkItemRefDependencies(...args),
+}));
 vi.mock('../../modes/store', () => ({
   getModes: (...args: unknown[]) => getModes(...args),
 }));
@@ -212,7 +216,7 @@ describe('work_items:set_blocker', () => {
       id: item.id,
       kind: 'gate',
       capability: 'live-dependency',
-      ref: 'work-item:done:WI-10001764',
+      ref: 'scorecards:peer-grading / WI-10001764',
       summary: 'The peer grading pass is still pending.',
       evidence: 'Verified on :3170; deployed :3070 misreports this field.',
       nextVerb: 'events:await',
@@ -221,7 +225,7 @@ describe('work_items:set_blocker', () => {
     expect(out).toMatchObject({ ok: true, id: item.id });
     expect(out.activeBlockers).toEqual([
       expect.objectContaining({
-        ref: 'work-item:done:WI-10001764',
+        ref: 'scorecards:peer-grading / WI-10001764',
         evidence: 'Verified on :3170; deployed :3070 misreports this field.',
       }),
     ]);
@@ -1164,34 +1168,75 @@ describe('work_items:set_blocker', () => {
       payload: {},
     };
 
-    it('refuses the write and names both repairs', async () => {
+    // WI-10005020 (P-002 / R-14): a ref naming only work-items is a dependency and
+    // is recorded as the canonical blocks edge — never as an external row.
+    const edgeFor = (blocker: string) => ({ blocker, blocked: { kind: 'issue', ref: 'WI-1' } });
+
+    it('records a bare work-item id as a blocks edge, writing no external row', async () => {
       getWorkItem.mockResolvedValue(openItem);
+      linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [edgeFor('WI-40086')] });
 
       const out = await one({ id: 'WI-1', kind: 'gate', ref: 'WI-40086' });
 
-      expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'work_item_ref_as_external_blocker' });
-      expect(out.error).toContain("work_items:link { id: 'WI-40086', rel:'blocks', target_id: 'WI-1' }");
-      expect(out.error).not.toContain('source_id');
-      expect(out.error).toContain('WI-40086');
-      // Nothing may be persisted by a refused write.
+      expect(out).toMatchObject({
+        ok: true,
+        id: 'WI-1',
+        convertedToEdge: { rel: 'blocks', blockers: ['WI-40086'] },
+        activeBlockers: [],
+      });
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledWith({
+        dependentId: 'WI-1',
+        harness: undefined,
+        referents: ['WI-40086'],
+        by: 'su-a',
+      });
       expect(mergeWorkItemPayload).not.toHaveBeenCalled();
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
-    it('refuses every kind, not just the one the reporter happened to hit', async () => {
-      getWorkItem.mockResolvedValue(openItem);
+    it('converts every kind and both ref forms, deduplicating referents', async () => {
       for (const kind of ['event', 'gate', 'runtime', 'human'] as const) {
         vi.clearAllMocks();
         getWorkItem.mockResolvedValue(openItem);
+        linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [edgeFor('EI-21330406073681578')] });
         const out = await one({
           id: 'WI-1',
           kind,
-          ref: 'EI-21330406073681578',
-          ...(kind === 'human' ? { summary: 'q', nextVerb: 'v' } : {}),
+          ref: 'EI-21330406073681578; work-item:done:EI-21330406073681578, work-item:done:WI-40509',
+          ...(kind === 'human' ? { summary: 'q', nextVerb: 'v', defaultIfUnanswered: 'stays parked' } : {}),
         });
-        expect(out).toMatchObject({ ok: false, code: 'work_item_ref_as_external_blocker' });
+        expect(out.ok).toBe(true);
+        expect(linkWorkItemRefDependencies).toHaveBeenCalledWith(
+          expect.objectContaining({ referents: ['EI-21330406073681578', 'WI-40509'] }),
+        );
         expect(mergeWorkItemPayload).not.toHaveBeenCalled();
       }
+    });
+
+    it('refuses without writing a row when the dependency cannot be recorded', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+      linkWorkItemRefDependencies.mockResolvedValue({
+        ok: false,
+        code: 'work_item_ref_dependency_refused',
+        error: "blocker work_item 'WI-404' was not found",
+      });
+
+      const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-404' });
+
+      expect(out).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused' });
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a bare id MIXED with an external condition, naming work_items:link', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+
+      const out = await one({ id: 'WI-1', kind: 'gate', ref: 'WI-40086; deploy-freeze:papercusp' });
+
+      expect(out).toMatchObject({ ok: false, id: 'WI-1', code: 'work_item_ref_as_external_blocker' });
+      expect(out.error).toContain("work_items:link { id: 'WI-40086', rel:'blocks', target_id: 'WI-1' }");
+      expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
     });
 
     // CALIBRATION — must hold before and after the guard exists. If these ever
@@ -1211,17 +1256,21 @@ describe('work_items:set_blocker', () => {
       ]);
     });
 
-    it('still accepts the live work-item:done await key', async () => {
+    // NEGATIVE CONTROL: a genuine external event key is not a work-item ref and
+    // must keep its external row + await, untouched by the edge conversion.
+    it('keeps a genuine external event key as an external row', async () => {
       getWorkItem.mockResolvedValue(openItem);
       mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
         ...openItem,
         payload: { ...openItem.payload, ...patch },
       }));
 
-      const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-40509' });
+      const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:deployed:papercusp' });
 
       expect(out.ok).toBe(true);
-      expect(out.await).toEqual({ event: 'work-item:done:WI-40509' });
+      expect(out.convertedToEdge).toBeUndefined();
+      expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+      expect(out.await).toEqual({ event: 'release:deployed:papercusp' });
     });
 
     // The load-bearing one: rows already carrying a bad ref must stay clearable,
