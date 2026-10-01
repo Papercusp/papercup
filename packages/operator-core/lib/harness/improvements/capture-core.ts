@@ -799,17 +799,25 @@ function sameWatchdogIdentity(
   );
 }
 
-/** Exact stable class identity check after the broad class-key lookup. */
+/** Class-key matches cross messages only when both reports have complete dimensions. */
 function sameToolFailureClassIdentity(
   issue: EngineerIssue,
-  classKey: string,
-  input: Pick<CaptureImprovementInput, 'origin' | 'scope'>,
+  incoming: ToolFailureProbationPayload,
+  input: Pick<CaptureImprovementInput, 'origin' | 'scope' | 'watchdogKey'>,
   origin: string,
 ): boolean {
   const payload = (issue.payload as Record<string, unknown> | null) ?? {};
   const probation = toolFailureProbationOf(payload);
+  const exactWatchdogIdentity = sameExactToolFailureWatchdogIdentity(
+    probation,
+    incoming,
+    input.watchdogKey,
+  );
   return (
-    probation?.classKey === classKey &&
+    probation?.classKey === incoming.classKey &&
+    (exactWatchdogIdentity ||
+      (hasCompleteToolFailureClassReport(probation?.report) &&
+        hasCompleteToolFailureClassReport(incoming.report))) &&
     isWatchdogNonTerminal(issue) &&
     effectiveOrigin(issue.signalOrigin) === origin &&
     issueScopeMatchesCapture(issue, input.scope)
@@ -981,6 +989,7 @@ interface ToolFailureProbationPayload {
   deployedRevision?: string;
   correlationFingerprint?: string;
   intendedKind?: 'bug' | 'change';
+  report?: Partial<SuspectedToolFailure>;
   [key: string]: unknown;
 }
 
@@ -991,6 +1000,49 @@ function toolFailureProbationOf(
   return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
     ? (candidate as ToolFailureProbationPayload)
     : null;
+}
+
+/** Missing-dimension sentinels describe uncertainty, not a shared failure class. */
+function hasCompleteToolFailureClassReport(
+  report: ToolFailureProbationPayload['report'] | undefined,
+): boolean {
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return false;
+  const required: Array<[keyof NonNullable<ToolFailureProbationPayload['report']>, string]> = [
+    ['errorCode', 'error-code-unknown'],
+    ['schemaRevision', 'schema-unknown'],
+    ['fieldPath', 'field-unknown'],
+    ['runtimeVersion', 'runtime-unknown'],
+  ];
+  return required.every(([field, sentinel]) => {
+    const value = report[field];
+    return typeof value === 'string' && value.trim() !== '' && value.trim().toLowerCase() !== sentinel;
+  });
+}
+
+/** Resolve the exact message identity even for legacy rows whose top-level key is a signature. */
+function exactToolFailureWatchdogKey(
+  probation: ToolFailureProbationPayload | null | undefined,
+): string | null {
+  const report = probation?.report;
+  if (report && typeof report === 'object' && !Array.isArray(report) &&
+      typeof report.toolName === 'string' && report.toolName.trim() &&
+      typeof report.message === 'string' && report.message.trim()) {
+    return normalizeSuspectedToolFailure(report as SuspectedToolFailure).watchdogKey;
+  }
+  const recordedKey = probation?.watchdogKey;
+  return typeof recordedKey === 'string' && recordedKey.startsWith('repeated-tool-error:')
+    ? recordedKey
+    : null;
+}
+
+function sameExactToolFailureWatchdogIdentity(
+  prior: ToolFailureProbationPayload | null | undefined,
+  incoming: ToolFailureProbationPayload | null | undefined,
+  expectedKey?: string,
+): boolean {
+  const priorKey = exactToolFailureWatchdogKey(prior);
+  const incomingKey = exactToolFailureWatchdogKey(incoming);
+  return priorKey !== null && priorKey === incomingKey && (!expectedKey || expectedKey === incomingKey);
 }
 
 /**
@@ -1011,7 +1063,11 @@ function compatibleToolFailureClassIdentity(
   const incomingClassKey = incoming?.classKey;
   const priorKnown = typeof priorClassKey === 'string' && priorClassKey.length > 0;
   const incomingKnown = typeof incomingClassKey === 'string' && incomingClassKey.length > 0;
-  return !priorKnown || !incomingKnown || priorClassKey === incomingClassKey;
+  if (priorKnown && incomingKnown && priorClassKey !== incomingClassKey) return false;
+  if (!priorKnown || !incomingKnown) return true;
+  return sameExactToolFailureWatchdogIdentity(prior, incoming) ||
+    (hasCompleteToolFailureClassReport(prior?.report) &&
+      hasCompleteToolFailureClassReport(incoming?.report));
 }
 
 function initialImplementationReadiness(reviewRequired: boolean): ImplementationReadinessState {
@@ -1606,12 +1662,12 @@ export async function captureToolInvocationFriction(
   };
   const normalized = normalizeSuspectedToolFailure(report);
   const kind = normalized.class === 'caller' || normalized.class === 'rate-limit' ? 'change' : 'bug';
-  // D-010 (review-system-rework-reduction-2026-09-23): migration 865's arbiter
-  // keys watchdogKey, so the ROW identity is the build-independent signature.
-  // The contract/build class stays the CORROBORATION identity: it is the row's
-  // probation classKey and is tallied per class below, so a report on another
-  // build counts onto the row but can neither corroborate nor rewrite it.
+  // D-010 (review-system-rework-reduction-2026-09-23): use the build-independent
+  // signature as row identity only when all class dimensions were measured.
+  // Unknown sentinels cannot merge unrelated reports, so incomplete metadata
+  // falls back to the exact message-shaped watchdog key.
   const signatureKey = toolFailureSignatureKey(report, normalized.class);
+  const rowKey = hasCompleteToolFailureClassReport(report) ? signatureKey : normalized.watchdogKey;
   // WI-10003605: a workspace-spanning invocation records its harness as the wildcard
   // '*'. The work-item scope guard (work-item-scope.ts) refuses `harness:*`, so every
   // such friction report threw and console.warned once per invocation (failing every
@@ -1621,7 +1677,7 @@ export async function captureToolInvocationFriction(
   const scope = concreteHarness ? `harness:${concreteHarness}` : 'operator';
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
   const incomingProbation = {
-    ...normalized, watchdogKey: signatureKey, signatureKey, state: 'probation' as const, intendedKind: kind,
+    ...normalized, watchdogKey: rowKey, signatureKey, state: 'probation' as const, intendedKind: kind,
     reporters: [ownerId], firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
   };
   const base: CaptureImprovementInput = {
@@ -1629,13 +1685,13 @@ export async function captureToolInvocationFriction(
     body: `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
     kind, severity: 'nit', lane: 'observation', scope,
     workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
-    watchdogKey: signatureKey,
+    watchdogKey: rowKey,
     // Do not set sourceRole:'system': an automated report is still this
     // caller's evidence, not a trusted watchdog promotion or review waiver.
   };
   // Fail open like every other capture lookup: an unreadable index mints, and
   // migration 865's arbiter still refuses a second open row for the signature.
-  const signatureHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([signatureKey])
+  const signatureHits = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([rowKey])
     .catch(() => [] as EngineerIssue[]);
   const signatureRow = signatureHits.find((issue) =>
     (issue.payload as Record<string, unknown> | null)?.watchdogKey === signatureKey &&
@@ -1650,7 +1706,11 @@ export async function captureToolInvocationFriction(
   };
   const tally = tallyToolFailureClass(toolFailureSignatureOf(priorPayload), signatureKey, occurrence,
     rowProbation?.classKey);
-  if (!signatureRow || rowProbation?.classKey === normalized.classKey) {
+  const sameCompleteClass = rowProbation?.classKey === normalized.classKey &&
+    hasCompleteToolFailureClassReport(report) && hasCompleteToolFailureClassReport(rowProbation.report);
+  const sameExactReportClass = rowProbation?.classKey === normalized.classKey &&
+    rowKey === normalized.watchdogKey && priorPayload.watchdogKey === rowKey;
+  if (!signatureRow || sameCompleteClass || sameExactReportClass) {
     // A new signature, or the row's own class: the ordinary class-key route
     // mints, coalesces or corroborates exactly as it did before D-010.
     return captureImprovement({
@@ -1658,7 +1718,7 @@ export async function captureToolInvocationFriction(
       payloadExtra: { toolFailureProbation: incomingProbation, toolFailureSignature: tally, toolInvocation },
     }, deps);
   }
-  const identity = admissionIdentity(base.title, signatureKey);
+  const identity = admissionIdentity(base.title, rowKey);
   const coverage: DedupCoverage = { lexical: 'skipped', semantic: 'skipped', degraded: false };
   const harness = harnessFromScope(signatureRow.scope);
   const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
@@ -1667,10 +1727,11 @@ export async function captureToolInvocationFriction(
   // corroborated class and is promoted; the uncorroborated first class never
   // promotes it, and a single new-build report never rewrites it.
   const earlierReporters = toolFailureSignatureOf(priorPayload)?.classes[normalized.classKey]?.reporters ?? [];
-  if (issueWatchdogLane(signatureRow) === 'observation' && rowProbation?.state === 'probation' &&
+  if (hasCompleteToolFailureClassReport(report) && issueWatchdogLane(signatureRow) === 'observation' &&
+      rowProbation?.state === 'probation' &&
       earlierReporters.length > 0 && !earlierReporters.includes(ownerId)) {
     const classView: EngineerIssue = { ...signatureRow, payload: { ...priorPayload,
-      toolFailureProbation: { ...rowProbation, ...normalized, watchdogKey: signatureKey, signatureKey,
+      toolFailureProbation: { ...rowProbation, ...normalized, watchdogKey: rowKey, signatureKey,
         reporters: earlierReporters } } };
     const input = { ...base, payloadExtra: { toolFailureProbation: incomingProbation, toolInvocation } };
     const promoted = await promoteToolFailureProbation(classView, input, deps, signatureHits, true);
@@ -1907,7 +1968,7 @@ export async function captureImprovement(
       return [] as EngineerIssue[];
     });
     const classPrior = classKeyIssues.find((issue) =>
-      sameToolFailureClassIdentity(issue, incomingProbation.classKey!, input, origin),
+      sameToolFailureClassIdentity(issue, incomingProbation, input, origin),
     );
     if (!checkOnly && isObservation && classPrior && issueWatchdogLane(classPrior) !== 'observation') {
       // A later retry is evidence on the accountable existing issue. Preserve

@@ -324,8 +324,8 @@ describe('tokensFromFileSize (WI-3176 base64-image discount)', () => {
     const p = join(dir, 'async-io.jsonl');
     writeFileSync(p, 'x'.repeat(MB));
     const fileOps = {
-      stat: vi.fn((filePath: string) => fs.promises.stat(filePath)),
-      open: vi.fn((filePath: string, flags: string) => fs.promises.open(filePath, flags)),
+      stat: vi.fn(fs.promises.stat),
+      open: vi.fn(fs.promises.open),
     };
     const tokens = await tokensFromFileSize(p, fileOps);
 

@@ -2854,6 +2854,9 @@ export default defineTool({
       .describe(
         'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
       ),
+  }).meta({
+    'x-papercusp-call-constraint':
+      'When `items` is omitted, top-level `to`, `summary`, and `expects` are required; when `items` is used, each item must include its own `to`, `summary`, and `expects`.',
   })),
   result: z
     .object({

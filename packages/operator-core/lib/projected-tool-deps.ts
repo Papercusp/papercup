@@ -55,6 +55,7 @@ import { isRecoveryDoorCall } from './capability-envelope/recovery-door';
 // Dependency-free leaf, like recovery-door: building the lazy launch-record
 // handle must not statically import the identity port it is handed to.
 import { lazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
+import { selectNarrowedLaunchSpecBody } from './capability-envelope/identity-receipt-narrowing';
 // Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
@@ -244,15 +245,16 @@ async function loadIdentityLaunchRecord(
   advSessionId: number | string | null,
   ownerId: string,
   workspaceId: string,
+  receipts?: readonly unknown[],
 ): Promise<LoadedIdentityLaunchRecord | null> {
   if (advSessionId == null) return null;
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>>`
-    SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin
-      FROM harness_shared.adv_sessions s
-     WHERE s.id = ${advSessionId} AND s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
-     LIMIT 1
-  `;
+  // WI-10004801: identityHistory is narrowed to the requested receipts in
+  // PostgreSQL — the retained history is most of a 13 MB record, and parsing it
+  // on every cache miss is what spiked worker heaps (#1155).
+  const rows = await selectNarrowedLaunchSpecBody(sql, {
+    advSessionId, ownerId, workspaceId, revisions: receipts ?? null,
+  });
   const row = rows[0];
   return row ? { record: row.launch_spec, rowVersion: row.launch_spec_xmin ?? null } : null;
 }
@@ -498,7 +500,7 @@ export async function readControlAnchorKernelState(
           harnessSlug: launchHeader.harnessSlug,
           hasAcceptedOperation: launchHeader.hasAcceptedOperation,
           acceptedOperation: launchHeader.acceptedOperation,
-          load: () => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId),
+          load: (receipts) => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId, receipts),
         }) } : {}),
     ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null
       ? { identityLaunchRecordVersion: {

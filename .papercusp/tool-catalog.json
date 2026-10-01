@@ -17508,7 +17508,7 @@
           "POST"
         ]
       },
-      "description": "List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable. Browse a large registry with `q` (name substring) and/or `limit`: both narrow resources[] only, never holders[]; registryCount reports the narrowing.",
+      "description": "List registered named resources (name, rule, enforcement level) and who currently holds each, with a draining flag. Your own holder rows include lock_id for locks:heartbeat_resource; other owners’ IDs are null. This is a workspace-global lock diagnostic: omit workspace/harness and pass resource only when narrowing. The authoritative discovery surface for resource locks — only registered names are acquirable. Browse a large registry with `q` (name substring) and/or `limit`: both narrow resources[] only, never holders[]; registryCount reports the narrowing.",
       "capabilities": [
         "locks:read"
       ],
@@ -17571,7 +17571,7 @@
       "guidance": {
         "when": "Before acquiring a named resource (to learn the exact name + the rule), or to see who holds a resource / whether it is draining. This is workspace-global: omit workspace/harness and pass only resource. The fileLocks block measures the FILE plane on this same call — holders[] alone never answers \"is a peer on this file\".",
         "notWhen": "Full file-lock rows or a release handle — that is locks:queue; this carries a bounded fileLocks summary only.",
-        "chaining": "Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? | q?, limit? } → locks:acquire_resource { resource, mode }."
+        "chaining": "Workspace-global diagnostic (omit workspace/harness) → locks:list { resource? | q?, limit? } → locks:acquire_resource { resource, mode }. After resuming a held resource, use your holder row’s lock_id with locks:heartbeat_resource { lock_id, ttl_sec }; peer IDs are redacted."
       }
     },
     {

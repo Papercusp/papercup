@@ -409,6 +409,67 @@ describe('P-010 reversible improvement dismiss', () => {
   });
 });
 
+// observation-candidate-acceptance-promotion-2026-09-30 P-006 (D-014): applying a
+// recorded intake decision goes through the injected server executor only.
+describe('P-006 apply-intake', () => {
+  const decision = {
+    disposition: 'promote' as const,
+    reason: 'reproduced',
+    decidedBy: 'su-reviewer',
+    owner: 'engineering' as const,
+    targetRef: null,
+    missingInformation: null,
+    decidedAt: '2026-10-01T10:00:00.000Z',
+    workKind: 'fix' as const,
+    acceptance: null,
+    sourceRevision: 'rev-1',
+  };
+
+  it('executes the recorded decision against the improvement source and resolves on effect', async () => {
+    const deps = spyDeps();
+    const executeIntakeDecision = vi.fn(async () => ({ terminal: true }));
+    const result = await dispatchAttentionTerminalAction({
+      item: asTerminalItem(FIXTURES.improvement),
+      actionId: 'apply-intake',
+      deps: { ...deps, executeIntakeDecision },
+      intake: { decision, runId: 'run-9' },
+    });
+    expect(result).toEqual({ resolved: true });
+    expect(executeIntakeDecision).toHaveBeenCalledWith({
+      sourceId: 'EI-1',
+      harnessSlug: FIXTURES.improvement.harnessSlug ?? null,
+      decision,
+      runId: 'run-9',
+      itemId: FIXTURES.improvement.id,
+    });
+    expect(sourceMutatingCalls(deps)).toBe(0);
+    expect(deps.triageAttentionItem).not.toHaveBeenCalled();
+  });
+
+  it('never resolves without a recorded decision or a server executor, and a refusal propagates', async () => {
+    const deps = spyDeps();
+    const item = asTerminalItem(FIXTURES.improvement);
+    expect(await dispatchAttentionTerminalAction({ item, actionId: 'apply-intake', deps })).toEqual({
+      resolved: false,
+    });
+    expect(
+      await dispatchAttentionTerminalAction({ item, actionId: 'apply-intake', deps, intake: { decision, runId: 'r' } }),
+    ).toEqual({ resolved: false });
+    const refusing = vi.fn(async () => {
+      throw new Error('intake promote refused (source-revision-changed): edited');
+    });
+    await expect(
+      dispatchAttentionTerminalAction({
+        item,
+        actionId: 'apply-intake',
+        deps: { ...deps, executeIntakeDecision: refusing },
+        intake: { decision, runId: 'r' },
+      }),
+    ).rejects.toThrow('source-revision-changed');
+    expect(sourceMutatingCalls(deps)).toBe(0);
+  });
+});
+
 describe('P-003 conversation close', () => {
   it('a bare close does NOT capture its close note as an answer', async () => {
     const deps = spyDeps();

@@ -324,6 +324,42 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(captureCalls()[0]!.args.verbatim).toBe(prompt);
   });
 
+  it('an envelope-less partial loop-fire carry wake is unverified and never captured as owner', async () => {
+    writeMachineRow({
+      origin: 'loop-fire',
+      sha256: sha256Normalized('the complete loop-fire payload'),
+      ts: Date.now() - 560,
+    });
+    const prompt =
+      '• ✓ R-18-P-004@6 fails only correct-layer and freshness — re-check the carried result.\n' +
+      'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —\n' +
+      '    loop:checkpoint { did, left, insight, next } (compressed facts, not a transcript)';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-partial-loop-fire' }),
+    );
+
+    expect(ctx).toContain('UNVERIFIED partial loop-fire input');
+    expect(ctx).not.toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(0);
+    expect(calls.some((call) => call.name === 'sessions:record-prompt-origin')).toBe(false);
+  });
+
+  it('a plain owner prompt shortly after loop-fire remains capturable', async () => {
+    writeMachineRow({
+      origin: 'loop-fire',
+      sha256: sha256Normalized('the complete loop-fire payload'),
+      ts: Date.now() - 560,
+    });
+    const prompt = 'please fix the login page';
+    const ctx = contextOf(
+      await runHook({ prompt, session_id: 'native-session-owner-after-loop-fire' }),
+    );
+
+    expect(ctx).toContain('OWNER (interactive)');
+    expect(captureCalls()).toHaveLength(1);
+    expect(captureCalls()[0]!.args.verbatim).toBe(prompt);
+  });
+
   for (const origin of VERIFIED_ORIGINS) {
     it(`CONTROL: a VERIFIED ${origin} turn is classified agent-origin and captures nothing`, async () => {
       const payload = `the injected payload for ${origin}`;

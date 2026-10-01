@@ -25,7 +25,7 @@ import { blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation, getBl
 import { seedContentHash } from '../../cupboard/rubric-store';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
-import { runScheduledPlanFire } from './plan-run-action';
+import { handlePlanRun, runScheduledPlanFire } from './plan-run-action';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
 import { observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
 import { recordAdvSession } from '../../adv-sessions';
@@ -1122,6 +1122,107 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'does-not-exist' not found"));
     warn.mockRestore();
+  });
+
+  // WI-10004721: the daily schedule of a SHIPPED plan cloned it 21 times — every run
+  // born all-done, zero work-items, settled in seconds like a healthy fire.
+  const SHIPPED_CONTENT = `# Monitor X
+
+## Phase 1
+
+- **P-001** \`done\` check campaign stats
+- **P-002** \`dropped\` already handled`;
+  const SHIPPED_ITEMS = [
+    { id: 'P-001', text: 'check campaign stats', status: 'done' },
+    { id: 'P-002', text: 'already handled', status: 'dropped' },
+  ];
+  async function shipTemplate(storedItems: unknown[]): Promise<void> {
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${SHIPPED_CONTENT}, content_hash = ${hashPlanContent(SHIPPED_CONTENT)},
+             items = ${JSON.stringify(storedItems)}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+  }
+  async function countRunsAndInstances(): Promise<{ runs: number; instances: number; workItems: number }> {
+    const [r] = await sql<Array<{ runs: number; instances: number; work_items: number }>>`
+      SELECT
+        (SELECT count(*)::int FROM harness_shared.plan_runs
+          WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}) AS runs,
+        (SELECT count(*)::int FROM harness_shared.harness_plans
+          WHERE workspace_id = ${WS} AND template_slug = ${TEMPLATE}) AS instances,
+        (SELECT count(*)::int FROM harness_shared.harness_features_consolidated
+          WHERE harness_slug = ${HARNESS} AND source_plan_slug = ${TEMPLATE}) AS work_items`;
+    return { runs: r!.runs, instances: r!.instances, workItems: r!.work_items };
+  }
+
+  it('WI-10004721: refuses a template whose items are ALL done/dropped — no instance, no run, no work-items', async () => {
+    await shipTemplate(SHIPPED_ITEMS);
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'monitor-x' has nothing left to run"));
+    warn.mockRestore();
+    expect(res).toMatchObject({
+      started: false,
+      reason: 'template-all-terminal',
+      detail: "template 'monitor-x' has nothing left to run: all 2 item(s) are done/dropped",
+      retryable: false,
+      instanceSlug: '',
+      runId: -1,
+      minted: 0,
+    });
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: reads the content-derived index when the stored index is empty (legacy rows)', async () => {
+    await shipTemplate([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    warn.mockRestore();
+    expect(res).toMatchObject({ started: false, reason: 'template-all-terminal' });
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: the routine door (handlePlanRun) disarms an exhausted schedule — routine inactive, schedule_active false', async () => {
+    await shipTemplate(SHIPPED_ITEMS);
+    await sql`
+      UPDATE harness_shared.harness_plans SET schedule_active = true
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    const before = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(before[0]?.active).toBe(true);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await handlePlanRun({
+      installSlug: HARNESS,
+      workspaceId: WS,
+      triggerConfig: {},
+      payloadTemplate: { templateSlug: TEMPLATE, harnessSlug: HARNESS },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("auto-disarmed schedule 'monitor-x'"));
+    warn.mockRestore();
+
+    const after = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(after[0]?.active).toBe(false);
+    const plan = await sql<Array<{ schedule_active: boolean }>>`
+      SELECT schedule_active FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(plan[0]?.schedule_active).toBe(false);
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: a template with one open item among terminal ones still mints (guard is all-terminal only)', async () => {
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    // The default fixture is P-001 todo, P-002 done, P-003 todo — mixed.
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res.started).toBe(true);
+    const routine = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(routine[0]?.active).toBe(true);
   });
 
   it('D-044: refuses a post-epoch template with no acceptance BAR contract with the documented refusal, minting nothing', async () => {

@@ -1876,9 +1876,11 @@ export default defineTool({
                 'no restart was scheduled and the cooldown marker was released.',
             });
           }
-          const stagingHandoff = finalStagingSyncCheck
-            ? await prepareStagingRestartHandoff(finalStagingSyncCheck.detail.lockPath, scheduledRestartCmd)
-            : null;
+          const stagingLockPath = finalStagingSyncCheck ? finalStagingSyncCheck.detail.lockPath : null;
+          const stagingHandoff =
+            stagingLockPath !== null
+              ? await prepareStagingRestartHandoff(stagingLockPath, scheduledRestartCmd)
+              : null;
           if (stagingHandoff && !stagingHandoff.acquired) {
             await releaseGitSyncBarrierOnAbort();
             await releaseCooldownOnAbort();
@@ -1893,14 +1895,14 @@ export default defineTool({
               drained: true,
               staging_sync_collision: {
                 kind: collision ? 'staging-sync-in-flight' : 'handoff-failed',
-                lockPath: finalStagingSyncCheck.detail.lockPath,
+                lockPath: stagingLockPath,
                 lockHeld: collision ? true : null,
                 ...(stagingHandoff.exitCode === undefined ? {} : { exitCode: stagingHandoff.exitCode }),
                 ...(stagingHandoff.detail ? { detail: stagingHandoff.detail } : {}),
               },
               note: collision
-                ? `Restart REFUSED — papercup-staging-sync acquired its exclusive checkout lock after the final check (${finalStagingSyncCheck.detail.lockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released. Retry after the sync completes.`
-                : `Restart REFUSED — the detached command could not acquire and transfer the shared staging-sync lock (${finalStagingSyncCheck.detail.lockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released.`,
+                ? `Restart REFUSED — papercup-staging-sync acquired its exclusive checkout lock after the final check (${stagingLockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released. Retry after the sync completes.`
+                : `Restart REFUSED — the detached command could not acquire and transfer the shared staging-sync lock (${stagingLockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released.`,
             });
           }
           try {
@@ -1931,9 +1933,10 @@ export default defineTool({
                 : stagingSync
                   ? { kind: stagingSync.kind, ...stagingSync.detail }
                   : null,
-              stagingSyncHandoff: stagingHandoff
+              stagingSyncHandoff:
+                stagingHandoff && stagingLockPath !== null
                 ? {
-                    lockPath: finalStagingSyncCheck!.detail.lockPath,
+                    lockPath: stagingLockPath,
                     mode: 'shared',
                     heldThrough: 'systemctl-restart',
                   }

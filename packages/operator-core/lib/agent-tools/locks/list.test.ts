@@ -14,6 +14,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
+import { shapeLocksList } from './list-shape';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: '/caller/tree' })),
@@ -133,6 +134,37 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(tool.args.safeParse({}).success).toBe(true);
     expect(tool.args.safeParse({ resource: 'dev-server' }).success).toBe(true);
     expect(tool.args.safeParse({ workspace: 'papercusp-workspace' }).success).toBe(false);
+  });
+
+  it('returns a lock_id only for the caller and preserves it in flat and nested default-shaped holder rows', async () => {
+    mockResolvedTyped(listResourcesM, [
+      {
+        resource: 'dev-server',
+        description: '',
+        rule_text: 'rule text',
+        enforcement: 'advisory',
+        match_patterns: [],
+        max_holders: null,
+      },
+    ]);
+    heldOnlyIn('/caller/tree', [
+      { ...holder('me'), lock_id: 'self-lock-id' },
+      { ...holder('peer-agent'), lock_id: 'peer-lock-id' },
+    ]);
+
+    const b = await call({});
+    const shaped = shapeLocksList(b.data, 'trimmed') as {
+      holders: Array<{ owner: string; lock_id: string | null }>;
+      resources: Array<{ holders: Array<{ owner: string; lock_id: string | null }> }>;
+    };
+    const expected = expect.arrayContaining([
+      expect.objectContaining({ owner: 'me', lock_id: 'self-lock-id' }),
+      expect.objectContaining({ owner: 'peer-agent', lock_id: null }),
+    ]);
+
+    expect(shaped.holders).toEqual(expected);
+    expect(shaped.resources[0]?.holders).toEqual(expected);
+    expect(JSON.stringify(shaped)).not.toContain('peer-lock-id');
   });
 
   // EI-21733256625452096: these three assert a SCOPED query reaches the domain

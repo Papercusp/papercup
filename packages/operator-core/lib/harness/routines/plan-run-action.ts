@@ -26,6 +26,8 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
+import { disarmPlanSchedule } from './arm-plan-schedule';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 import { ACTIVE_FEATURE_FAMILY_KINDS, type ActiveFeatureFamilyKind } from '../../work-items';
 import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
@@ -77,7 +79,14 @@ export type ScheduledPlanFireRefusalReason =
    * ratification round, not a repair of the plan document — collapsing them would
    * send whoever reads the refusal to edit a plan that needs no editing.
    */
-  | 'not-admitted';
+  | 'not-admitted'
+  /**
+   * WI-10004721: the template HAS items and every one is terminal (done/dropped), so a
+   * run would clone a finished plan, mint zero work-items and settle in seconds as if
+   * it had succeeded. The scheduled routine door also disarms the schedule on this
+   * refusal (see handlePlanRun); re-arming is one call once the plan has work again.
+   */
+  | 'template-all-terminal';
 
 type FailedPlanStartReadiness = Extract<PlanStartReadiness, { ready: false }>;
 
@@ -473,6 +482,47 @@ async function runScheduledPlanFireTx(
     };
   }
 
+  // 3a. WI-10004721 — nothing left to run. A template whose items are ALL terminal
+  // clones into an instance born all-done: zero work-items, a run that settles
+  // within seconds, and a ledger that reads like a healthy fire. The daily schedule
+  // of a SHIPPED plan did exactly that 21 times with nobody noticing. Refuse before
+  // anything is written. Placed AFTER the replay check on purpose: a fire that
+  // already seeded its instance (while the template still had open items) must keep
+  // its promotion-repair path even if the template finished in between.
+  //
+  // A template with NO items keeps its existing behaviour — that is a different
+  // shape (an outputs-only plan), not an exhausted one. The index is read the same
+  // way the clone below reads it: stored index first, else derived from content.
+  // A missing/unknown status is NOT terminal, so a legacy row fails open (runs).
+  const templateItems =
+    Array.isArray(template.items) && template.items.length > 0
+      ? template.items
+      : deriveIndexFromContent(template.content).items;
+  if (
+    templateItems.length > 0 &&
+    templateItems.every((item) => isTerminalItemStatus(typeof item.status === 'string' ? item.status : ''))
+  ) {
+    const detail =
+      `template '${templateSlug}' has nothing left to run: all ${templateItems.length} ` +
+      `item(s) are done/dropped`;
+    console.warn(`[plan-run] ${detail} — skip`);
+    return {
+      started: false,
+      instanceSlug: '',
+      runId: -1,
+      runSeq: -1,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: false,
+      reason: 'template-all-terminal',
+      detail,
+      // Terminal for this fire: only an edit to the plan (reopen/add an item) changes it.
+      retryable: false,
+      ...(execution ? { execution } : {}),
+    };
+  }
+
   // 3b. EI-1386 — overlap policy (D-014). The schedule's `concurrency` was authored
   // (set-schedule → materializePlanSchedule → routines.concurrency) but nothing at
   // fire time ever read it, so an overrunning template accumulated overlapping runs
@@ -792,6 +842,35 @@ async function promoteScheduledFire(
   };
 }
 
+/**
+ * WI-10004721: disarm a schedule whose template has nothing left to run. Refusing the
+ * fire stops the empty runs; leaving the routine armed would still re-fire (and re-log
+ * the same refusal) every cadence forever while `schedule_active` claimed the plan was
+ * live. This mirrors the reconcile guardrails (failure streak / cost breach), which
+ * pause through the same disarmPlanSchedule mechanism: authored schedule kept, routine
+ * deactivated, so re-arming after the plan regains open items is one plans:arm-schedule.
+ *
+ * The template row and the routine can sit under different slugs (WI-6978), so both are
+ * passed explicitly rather than reusing installSlug for the plan row.
+ */
+export async function disarmExhaustedPlanSchedule(
+  sql: Sql,
+  input: { installSlug: string; workspaceId: string; templateSlug: string; detail: string },
+): Promise<void> {
+  const planStorageSlug = await routineStorageSlug(input.installSlug, input.workspaceId);
+  await disarmPlanSchedule({
+    sql,
+    workspaceId: input.workspaceId,
+    harnessSlug: planStorageSlug,
+    routineInstallSlug: input.installSlug,
+    templateSlug: input.templateSlug,
+  });
+  console.warn(
+    `[plan-run] auto-disarmed schedule '${input.templateSlug}' (${input.installSlug}) — ${input.detail}. ` +
+      `Re-arm with plans:arm-schedule once the plan has open items again.`,
+  );
+}
+
 /** The registered `system:plan-run` handler. Never throws (durable-step contract). */
 export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
   const templateSlug =
@@ -814,6 +893,14 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
     });
     if (fired.started === true && fired.dispatch && !fired.dispatch.ok) {
       throw new Error(`plan_run_agentic_dispatch_failed:${fired.dispatch.failure?.code ?? 'assignment_failed'}`);
+    }
+    if (fired.started === false && fired.reason === 'template-all-terminal') {
+      await disarmExhaustedPlanSchedule(sql, {
+        installSlug: ctx.installSlug,
+        workspaceId: ctx.workspaceId,
+        templateSlug,
+        detail: fired.detail,
+      });
     }
   } catch (e) {
     // Durable-step contract: log + return, never throw (the next cadence fire retries).

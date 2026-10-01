@@ -54,8 +54,15 @@ vi.mock('../../psu-launch-log.mjs', async (orig) => ({
   readPsuLaunchLogTail: (...args: unknown[]) => readPsuLaunchLogTailMock(...args),
 }));
 
+type CodexThreadWriterHolder = {
+  held: boolean;
+  pid: number | null;
+  lockPath: string | null;
+  sessionId: string | null;
+  reason: string;
+};
 const codexThreadWriterHolderMock = vi.hoisted(() =>
-  vi.fn((_codexHome: string, _sessionId: string | null) => ({
+  vi.fn((_codexHome: string, _sessionId: string | null): CodexThreadWriterHolder => ({
     held: false,
     pid: null,
     lockPath: null,

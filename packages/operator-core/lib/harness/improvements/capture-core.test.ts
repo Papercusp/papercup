@@ -547,13 +547,18 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     correlationFingerprint: 'coord:send|invalid_args|42|body|codex-1.2|invalid-args-body-must-be',
     intendedKind: 'change' as const,
     reporters: [reporter],
+    report: {
+      toolName: 'coord:send', errorCode: 'invalid_args', status: 'error',
+      message: 'invalid_args: body must be an array', schemaRevision: '42',
+      fieldPath: 'body', runtimeVersion: 'codex-1.2',
+    },
   });
 
   it('R-7 automatically coalesces the frozen retry population with zero incident fields', async () => {
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-METADATA-FRICTION', title: 'known friction', kind: 'change',
       scope: 'harness:papercusp', payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
-        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'], report: metadataToolFailure } } });
     const d = { ...deps(),
       findIssuesByWatchdogKeys: async () => [prior],
       findIssuesByToolFailureClassKeys: async () => [prior],
@@ -581,7 +586,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-PROMOTED', title: 'confirmed actionable defect', severity: 'major',
       scope: 'harness:papercusp', payload: { lane: 'improvement', watchdogKey: normalized.watchdogKey,
-        toolFailureProbation: { ...normalized, state: 'promoted', reporters: ['su-a'] } } });
+        toolFailureProbation: { ...normalized, state: 'promoted', reporters: ['su-a'], report: metadataToolFailure } } });
     const original = structuredClone(prior);
     const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
     expect(await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-a',
@@ -600,6 +605,34 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created[0].payload).toMatchObject({ lane: 'observation', toolFailureProbation: {
       state: 'probation', direct: false, contractFingerprint: 'schema-unknown~field-unknown', deployedRevision: 'runtime-unknown' } });
     expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
+  });
+
+  it('does not class-coalesce agent reports with missing dimensions and different messages', async () => {
+    const firstReport: SuspectedToolFailure = {
+      toolName: 'coord:send', errorCode: 'invalid_args', status: 'error',
+      message: 'invalid_args: first body value was rejected',
+    };
+    const incomingReport: SuspectedToolFailure = {
+      ...firstReport, message: 'invalid_args: second body value was rejected',
+    };
+    const first = normalizeSuspectedToolFailure(firstReport);
+    const incoming = normalizeSuspectedToolFailure(incomingReport);
+    expect(incoming.classKey).toBe(first.classKey);
+    expect(incoming.watchdogKey).not.toBe(first.watchdogKey);
+    const prior = existing({ id: 'EI-INCOMPLETE-CLASS', title: 'first report', scope: 'harness:papercusp',
+      payload: { lane: 'observation', watchdogKey: first.watchdogKey,
+        toolFailureProbation: { ...first, state: 'probation', reporters: ['su-a'], report: firstReport } } });
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior] };
+
+    const result = await captureImprovement({
+      title: 'second report', kind: 'change', lane: 'observation', scope: 'harness:papercusp',
+      workspaceId: 'ws', createdBy: 'su-b', watchdogKey: incoming.watchdogKey,
+      payloadExtra: { toolFailureProbation: { ...incoming, state: 'probation', reporters: ['su-b'], report: incomingReport } },
+    }, d);
+
+    expect(result).toMatchObject({ created: true });
+    expect(d.created).toHaveLength(1);
+    expect((prior.payload as Record<string, any>).toolFailureProbation.reporters).toEqual(['su-a']);
   });
 
   // WI-10003605: a workspace-spanning invocation records harness '*'. Scoping it
@@ -626,7 +659,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-R7', title: 'first report', scope: 'harness:papercusp',
       payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
-        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'], report: metadataToolFailure } } });
     const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior],
       findIssuesByWatchdogKeys: async () => [prior],
       updateIssuePatch: async (_id: string, patch: object) => Object.assign(prior, patch),
@@ -648,7 +681,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-OTHER', title: 'first report', scope: 'harness:papercusp',
       payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
-        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'] } } });
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'], report: metadataToolFailure } } });
     const original = structuredClone(prior);
     const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior],
       findIssuesByWatchdogKeys: async () => [prior], updateIssuePatch: vi.fn(), mergeIssuePayload: vi.fn(),
@@ -928,6 +961,11 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const classKey = 'repeated-tool-error-class:coord:send:caller:schema-7~field-body:runtime-9';
     const canonicalKey = 'repeated-tool-error:coord:send:caller:first-report';
     const incomingKey = 'repeated-tool-error:coord:send:caller:colliding-report';
+    const classReport = {
+      toolName: 'coord:send', errorCode: 'invalid_args', status: 'error',
+      message: 'invalid_args: body must be an array', schemaRevision: 'schema-7',
+      fieldPath: 'body', runtimeVersion: 'runtime-9',
+    };
     const canonical = existing({
       id: 'EI-CLASS-CANONICAL',
       title: 'coord:send rejected a valid body',
@@ -940,6 +978,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
           classKey,
           watchdogKey: canonicalKey,
           state: 'probation',
+          report: classReport,
         },
       },
     });
@@ -975,6 +1014,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
             classKey,
             watchdogKey: incomingKey,
             state: 'probation',
+            report: classReport,
           },
         },
       },
@@ -997,6 +1037,11 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     const classKey = 'repeated-tool-error-class:work_items:get:structural:schema-8~field-body:runtime-10';
     const canonicalKey = 'repeated-tool-error:work_items:get:structural:first-report';
     const incomingKey = 'repeated-tool-error:work_items:get:structural:second-report';
+    const classReport = {
+      toolName: 'work_items:get', errorCode: 'structural', status: 'error',
+      message: 'work_items:get rejected the first shape', schemaRevision: 'schema-8',
+      fieldPath: 'body', runtimeVersion: 'runtime-10',
+    };
     const canonical = existing({
       id: 'EI-CLASS-PROBATION',
       title: 'work_items:get rejected a valid body',
@@ -1010,6 +1055,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
           classKey,
           watchdogKey: canonicalKey,
           state: 'probation',
+          report: classReport,
         },
       },
     });
@@ -1042,6 +1088,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
             watchdogKey: incomingKey,
             state: 'promoted',
             directEvidence: true,
+            report: classReport,
           },
         },
       },
@@ -1179,6 +1226,11 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
           class: 'structural',
           classKey,
           watchdogKey: 'repeated-tool-error:work_items:get:structural:first-shape',
+          report: {
+            toolName: 'work_items:get', errorCode: 'structural', status: 'error',
+            message: 'work_items:get failed the first shape', schemaRevision: 'schema-42',
+            fieldPath: 'required', runtimeVersion: 'runtime-7',
+          },
           intendedKind: 'bug',
           reporters: ['su-a'],
         },
@@ -1214,6 +1266,11 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
             class: 'structural',
             classKey,
             watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+            report: {
+              toolName: 'work_items:get', errorCode: 'structural', status: 'error',
+              message: 'work_items:get failed the second shape', schemaRevision: 'schema-42',
+              fieldPath: 'required', runtimeVersion: 'runtime-7',
+            },
             intendedKind: 'bug',
             directEvidence: true,
             reporters: ['su-a'],
@@ -4123,6 +4180,28 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     await store.capture('su-a', 'build-1', { toolName: 'coord:inbox' });
     expect(store.rows).toHaveLength(4);
     expect(new Set(store.rows.map((row) => store.payloadOf(row).watchdogKey)).size).toBe(4);
+  });
+
+  it('uses the exact message key when any class dimension is missing', async () => {
+    const store = signatureStore();
+    const firstMessage = 'invalid_args: first body value was rejected';
+    const secondMessage = 'invalid_args: second body value was rejected';
+    const incomplete = { schemaRevision: '', fieldPath: '', message: firstMessage };
+    await store.capture('su-a', '', incomplete);
+    const first = store.rows[0];
+    const expectedFirstKey = normalizeSuspectedToolFailure({ ...metadataToolFailure, runtimeVersion: '', ...incomplete }).watchdogKey;
+    expect(store.payloadOf(first).watchdogKey).toBe(expectedFirstKey);
+    expect(store.payloadOf(first).watchdogKey).not.toBe(SIGNATURE);
+
+    await store.capture('su-b', '', { ...incomplete, message: secondMessage });
+    await store.capture('su-a', '', incomplete);
+
+    expect(store.rows).toHaveLength(2);
+    expect(store.payloadOf(store.rows[0]).watchdogKey).not.toBe(store.payloadOf(store.rows[1]).watchdogKey);
+    expect(store.payloadOf(store.rows[0]).repeatCount).toBe(2);
+    expect(store.payloadOf(store.rows[1])).not.toHaveProperty('repeatCount');
+    expect(store.payloadOf(store.rows[0]).toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-a'] });
+    expect(store.payloadOf(store.rows[1]).toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['su-b'] });
   });
 
   it('bounds the per-class tally but always keeps the class the probation is about', () => {

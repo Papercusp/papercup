@@ -139,6 +139,12 @@ beforeAll(async () => {
   // assignment + adopted-name tables as well as live claim leases. Install their
   // production schema in this narrowed fixture before any claim query is prepared.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
+  // WI-10004426: both work-item semantic sources rank through the chunk-aware vector
+  // leg, which reads the shared chunk store. Without it every embedding call throws
+  // `relation "harness_shared.text_chunks" does not exist` and the leg reports
+  // `errored` with no items, so install the production schema rather than a copy.
+  await db.sql.unsafe(readMigration('1242-text-chunks.sql')).simple();
+  await db.sql.unsafe(readMigration('1266-text-chunks-parent-key-stats.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple(); // claim path's watchdog recovery-window floor reads watchdog_ticks
@@ -2884,6 +2890,9 @@ describe('unified work_items surface (real PG)', () => {
 
     expect(first.items.some((w) => w.title === 'boot prewarm work item')).toBe(true);
     expect(first.legs.semantic.blocked).toBeNull();
+    // The lexical leg alone satisfies the item assertion above, so a source whose
+    // vector query throws would otherwise pass unseen (WI-10004426).
+    expect(first.legs.semantic.failures).toEqual([]);
     expect(first.retry).toBeUndefined();
     expect(resolver).toHaveBeenCalledTimes(1);
     expect(embed).toHaveBeenNthCalledWith(1, 'work-items search embedder warmup');
@@ -2931,7 +2940,11 @@ describe('unified work_items surface (real PG)', () => {
 
     // Leg first: an empty item list is ambiguous between "the leg never ran"
     // and "it ran but filtered the matching row out" (WI-10004426).
-    expect(result.legs.semantic, JSON.stringify(result.legs.semantic)).toMatchObject({ status: 'ran', blocked: null });
+    expect(result.legs.semantic, JSON.stringify(result.legs.semantic)).toMatchObject({
+      status: 'ran',
+      blocked: null,
+      failures: [],
+    });
     expect(result.items.map((item) => item.id)).toContain(matching.id);
     expect(result.items.map((item) => item.id)).not.toContain(foreign.id);
   });

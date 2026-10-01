@@ -631,6 +631,8 @@ export async function rebuildSuLaunchArtifact(
     harnessSlug: record.harnessSlug,
     role: 'su',
     stack: spec.stack,
+    // WI-10004747: the rebuilt persona composes the su static layers; record them.
+    impliedStack: 'su-static',
     compositionRootId: selectedResolution?.compositionRootId ?? null,
     stateRevision: precedence.watermark,
     state: {

@@ -349,6 +349,18 @@ export interface LaunchArtifactInput {
   renderStack?: boolean;
   /** Exact already-produced component receipts from the existing identity binder. */
   producerBindings?: readonly { identityId: string; artifact: CompiledAgentSpecification }[];
+  /** Layers the rendered prompt always carries without an explicit selection, as
+   *  `slot:id` refs, or `'su-static'` for the interactive su's static layers (the
+   *  same `SU_STATIC_LAYERS` its persona render composes). Recorded in the artifact
+   *  for each slot the source and `stack` leave empty; never added to the returned
+   *  `stack`, which stays the explicit selection (WI-10004747). */
+  impliedStack?: readonly string[] | 'su-static';
+}
+
+async function impliedStackRefs(implied: LaunchArtifactInput['impliedStack']): Promise<string[]> {
+  if (implied !== 'su-static') return [...(implied ?? [])];
+  const { SU_STATIC_LAYERS } = await import('@papercusp/orchestrator/blueprint');
+  return SU_STATIC_LAYERS.map((layer) => `${layer.slot}:${layer.id}`);
 }
 
 export interface LaunchArtifactResult {
@@ -500,6 +512,7 @@ async function selectedLaunchCompositionSource(
   cwd: string,
   producerBindings: readonly { identityId: string; artifact: CompiledAgentSpecification }[] = [],
   compositionRootId?: string | null,
+  implied: readonly string[] = [],
 ) : Promise<EffectiveLaunchSource> {
   const [{ BlueprintSourceDocumentSchema, layerSourceDocument, mergeByRules, replayAgentSpecification,
     resolveBlueprint, resolveBlueprintSource, slotSpec, stackBindingFromRefs },
@@ -516,7 +529,18 @@ async function selectedLaunchCompositionSource(
     providerInputs: [],
     contributionOmissions: [],
   });
-  if (stack.length === 0) return original();
+  // WI-10004747: the rendered prompt can carry identity layers the launch never
+  // selected explicitly (the interactive su always composes SU_STATIC_LAYERS). Record
+  // each one whose slot neither the launch source nor the explicit stack holds, so
+  // the artifact's slotted layers match what the agent was actually given.
+  const explicitLayers = stackBindingFromRefs(stack).layers;
+  const heldSlots = new Set<string>([
+    ...explicitLayers.map((layer) => layer.slot),
+    ...(source.loaded?.layers.flatMap((layer) => layer.slots) ?? []),
+  ]);
+  const impliedLayers = stackBindingFromRefs(implied).layers.filter((layer) => !heldSlots.has(layer.slot));
+  const compositionStack = [...stack, ...impliedLayers.map((layer) => `${layer.slot}:${layer.id}`)];
+  if (compositionStack.length === 0) return original();
   const selectedRoot = compositionRootId
     ? await resolveNamedIdentityCompositionSelection(compositionRootId, cwd) : null;
   if (selectedRoot && JSON.stringify(selectedRoot.stack) !== JSON.stringify(stack)) {
@@ -533,7 +557,7 @@ async function selectedLaunchCompositionSource(
   const providerInputs: ResolvedAgentInput[] = [];
   const contributionOmissions: EffectiveLaunchSource['contributionOmissions'] = [];
   const usedBindings = new Set<string>();
-  for (const [index, layer] of stackBindingFromRefs(stack).layers.entries()) {
+  for (const [index, layer] of stackBindingFromRefs(compositionStack).layers.entries()) {
     const identity = await getIdentitySource(layer.id, { repoDir: cwd });
     if (!identity.ok || !identity.sourcePath ||
         !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
@@ -609,7 +633,9 @@ async function selectedLaunchCompositionSource(
         path: path.join(path.dirname(identity.sourcePath), 'prompts', `${fileName}.md`) });
     }
     const alias = `__launch_identity_${index}__`;
-    if (!selectedRoot) {
+    // A named root composes its own selected stack; an implied layer is never part
+    // of that root, so it always joins as a peer parent.
+    if (!selectedRoot || index >= explicitLayers.length) {
       paths.set(alias, identity.sourcePath);
       parents.push(alias);
     }
@@ -705,7 +731,7 @@ function identityModelDefault(configuration: EffectiveLaunchSource['configuratio
  * selection. This provisions no resources and writes no launch artifacts.
  * Final compilation checks the default again to refuse a source-change race. */
 export async function resolveLaunchIdentityModelDefault(
-  input: Pick<LaunchArtifactInput, 'cwd' | 'harnessSlug' | 'role' | 'stack' | 'producerBindings'>,
+  input: Pick<LaunchArtifactInput, 'cwd' | 'harnessSlug' | 'role' | 'stack' | 'producerBindings' | 'impliedStack'>,
 ): Promise<string | null> {
   const source = await launchCompositionSource(input);
   let stack = input.stack == null
@@ -718,7 +744,7 @@ export async function resolveLaunchIdentityModelDefault(
     stack = (await resolveNamedIdentityCompositionSelection(compositionRootId, input.cwd)).stack;
   }
   const composition = await selectedLaunchCompositionSource(source, stack, input.cwd,
-    input.producerBindings, compositionRootId);
+    input.producerBindings, compositionRootId, await impliedStackRefs(input.impliedStack));
   return identityModelDefault(composition.configuration, input.role);
 }
 
@@ -734,7 +760,7 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
     await import('@papercusp/orchestrator/blueprint');
   const resourceArtifacts: CompiledAgentSpecification[] = [];
   const composition = await selectedLaunchCompositionSource(source, stack, input.cwd,
-    input.producerBindings, input.compositionRootId);
+    input.producerBindings, input.compositionRootId, await impliedStackRefs(input.impliedStack));
   if (input.expectedModelDefault !== undefined &&
       input.expectedModelDefault !== identityModelDefault(composition.configuration, input.role)) {
     throw new Error('selected identity model default changed after launch preflight');

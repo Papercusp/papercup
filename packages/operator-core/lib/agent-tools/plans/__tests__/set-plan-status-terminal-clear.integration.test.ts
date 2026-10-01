@@ -203,7 +203,7 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
     expect(await opStatus()).toBe('started');
 
     const { data, isError } = await runSetPlanStatus('shipped', 'shipped');
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify(data)).toBe(false);
     expect(data).toMatchObject({ ok: true, changed: false });
 
     expect(await opStatus()).toBe('done');

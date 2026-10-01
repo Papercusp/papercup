@@ -296,6 +296,45 @@ describe('classifier boundaries', () => {
     },
   );
 
+  const partialLoopFireFragment =
+    '• ✓ R-18-P-004@6 fails only correct-layer and freshness — re-check the carried result.\n' +
+    'Before you END this turn you MUST refresh this carry-note so the NEXT cold wake can continue —\n' +
+    '    loop:checkpoint { did, left, insight, next } (compressed facts, not a transcript)';
+
+  it('a fresh loop-fire row plus the truncated carry footer is unverified, never owner', () => {
+    const r = row({
+      origin: 'loop-fire',
+      sha256: payloadSha256('the complete loop-fire payload'),
+      ts: NOW,
+    });
+    const res = classify(partialLoopFireFragment, [r], { nowMs: NOW + 4_000, ttlMs: TTL });
+
+    expect(res.verdict).toBe('unverified-claim');
+    expect(res.origin).toBe('loop-fire');
+    expect(res.textMangled).toBe(true);
+    expect(res.reason).toMatch(/UNVERIFIED partial loop-fire input/u);
+  });
+
+  it('the loop-fire footer without a loop-fire ledger row stays owner-interactive', () => {
+    const res = classify(partialLoopFireFragment, [], { nowMs: NOW, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
+  it('a recent loop-fire row alone does not shadow ordinary owner input', () => {
+    const r = row({ origin: 'loop-fire', ts: NOW });
+    const res = classify('please fix the login page', [r], { nowMs: NOW + 4_000, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
+  it('an old loop-fire row does not shadow later owner text containing the footer', () => {
+    const r = row({ origin: 'loop-fire', ts: NOW });
+    const res = classify(partialLoopFireFragment, [r], { nowMs: NOW + 120_001, ttlMs: TTL });
+
+    expect(res.verdict).toBe('owner-interactive');
+  });
+
   it('a launch row older than the startup window does not shadow a later owner prompt', () => {
     const r = row({
       origin: 'fleet-kickoff',

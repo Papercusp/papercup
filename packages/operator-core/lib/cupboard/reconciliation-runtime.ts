@@ -48,6 +48,7 @@ import {
 } from './money-journal-producers';
 import { MICROS_PER_CENT, type JournalEntry } from './money-journal';
 import { postMoneyJournalEntry, readMoneyJournalEntries } from './money-journal-store';
+import { recordPaymentReceipts, type RecordPaymentReceiptsResult } from './payment-receipt-store';
 import {
   reconciliationPeriod,
   runReconciliation,
@@ -402,6 +403,8 @@ export interface WorkspaceReconciliation {
   readonly workspaceId: string;
   readonly stripeImport: ImportReport | { readonly skipped: string } | { readonly failed: string };
   readonly daoTransferImport: DaoTransferImportReport | { readonly skipped: string } | { readonly failed: string };
+  /** P-046: a salted receipt commitment for every balance transaction the import listed. */
+  readonly paymentReceipts: RecordPaymentReceiptsResult | { readonly skipped: string } | { readonly failed: string };
   readonly run: ReconciliationRunRecord | null;
   readonly error: string | null;
 }
@@ -423,6 +426,11 @@ export interface ReconciliationPassDeps {
   readonly gate?: GatePublisher;
   readonly post?: (workspaceId: string) => JournalPoster;
   readonly readEntries?: (workspaceId: string) => Promise<JournalEntry[]>;
+  /** P-046: record receipts for the balance transactions the import listed (default: Postgres). */
+  readonly recordReceipts?: (
+    workspaceId: string,
+    transactions: readonly StripeBalanceTransaction[],
+  ) => Promise<RecordPaymentReceiptsResult>;
   readonly now?: () => number;
   readonly fetchImpl?: typeof fetch;
 }
@@ -490,6 +498,9 @@ export async function runReconciliationPass(
         return r.ok ? { ok: true, duplicate: r.duplicate } : { ok: false, code: r.code, detail: r.detail };
       });
   const readEntries = deps.readEntries ?? ((ws: string) => readMoneyJournalEntries(ws, { sql: sql() }));
+  const recordReceipts =
+    deps.recordReceipts ??
+    ((ws: string, transactions: readonly StripeBalanceTransaction[]) => recordPaymentReceipts(ws, transactions, { sql: sql() }));
 
   // The Worker's records are deployment-wide (one Cupboard per operator), read once.
   let cupboard: SourceRead<ReconciliationInputs> = cupboardUnavailable;
@@ -520,13 +531,22 @@ export async function runReconciliationPass(
     const treasuryReconciled = ownsTreasury && cupboard.status === 'ok' && verified.status === 'ok';
     let stripeImport: WorkspaceReconciliation['stripeImport'] = { skipped: 'this workspace has no Stripe account' };
     let daoTransferImport: WorkspaceReconciliation['daoTransferImport'] = { skipped: 'this workspace does not own the Cupboard treasury' };
+    let paymentReceipts: WorkspaceReconciliation['paymentReceipts'] = { skipped: 'this workspace has no Stripe account' };
     try {
       const post = postFor(workspaceId);
       // 1. Import.
       if (ownsStripe && stripeLister && config.policy) {
+        // Tee the lister: every balance transaction the import sees also gets a receipt (D-029 §4).
+        const listed: StripeBalanceTransaction[] = [];
+        const lister = stripeLister;
+        const teed: StripeBalanceTransactionLister = async (params) => {
+          const page = await lister(params);
+          listed.push(...page.data);
+          return page;
+        };
         try {
           stripeImport = await importStripeBalanceTransactions({
-            list: stripeLister,
+            list: teed,
             post,
             policy: config.policy,
             createdGte: Math.floor(period.fromMs / 1000),
@@ -534,7 +554,16 @@ export async function runReconciliationPass(
         } catch (error) {
           stripeImport = { failed: errorText(error) };
         }
-      } else if (ownsStripe) stripeImport = { skipped: stripeUnavailable.status === 'failed' ? stripeUnavailable.detail : 'Stripe is not configured' };
+        // Whatever was listed before a failure still gets its receipt; the rest arrives next pass.
+        try {
+          paymentReceipts = await recordReceipts(workspaceId, listed);
+        } catch (error) {
+          paymentReceipts = { failed: errorText(error) };
+        }
+      } else if (ownsStripe) {
+        stripeImport = { skipped: stripeUnavailable.status === 'failed' ? stripeUnavailable.detail : 'Stripe is not configured' };
+        paymentReceipts = { skipped: 'Stripe is not configured' };
+      }
       if (ownsTreasury && verified.status === 'ok') {
         try {
           daoTransferImport = await importDaoTransfers(verified.value.confirmed, post);
@@ -588,9 +617,9 @@ export async function runReconciliationPass(
         { workspaceId, mode: input.mode, entries, sources, startedAtMs },
         { store, filer, gate: gateFor(treasuryReconciled), now, newRunId: () => `recon-${randomUUID()}` },
       );
-      results.push({ workspaceId, stripeImport, daoTransferImport, run, error: null });
+      results.push({ workspaceId, stripeImport, daoTransferImport, paymentReceipts, run, error: null });
     } catch (error) {
-      results.push({ workspaceId, stripeImport, daoTransferImport, run: null, error: errorText(error) });
+      results.push({ workspaceId, stripeImport, daoTransferImport, paymentReceipts, run: null, error: errorText(error) });
     }
   }
   return { mode: input.mode, workspaces: results };

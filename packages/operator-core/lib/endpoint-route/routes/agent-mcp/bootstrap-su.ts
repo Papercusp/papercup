@@ -1976,6 +1976,7 @@ export const bootstrapSu = defineTool({
     try {
       identityModelDefault = await resolveLaunchIdentityModelDefault({
         cwd, harnessSlug, role: suRoleRaw ?? 'su', stack: body.stack,
+        impliedStack: 'su-static',
       });
     } catch (error: any) {
       return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
@@ -2963,6 +2964,8 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
+        // WI-10004747: the persona always composes the su static layers; record them.
+        impliedStack: 'su-static',
         expectedModelDefault: identityModelDefault,
         compositionRootId: body.stack?.length === 1 && body.stack[0]?.startsWith('composition:')
           ? body.stack[0].slice('composition:'.length) : null,

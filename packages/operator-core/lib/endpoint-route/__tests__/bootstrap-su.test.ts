@@ -726,7 +726,13 @@ describe('bootstrap-su', () => {
       expect.objectContaining({
         promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
         role: 'su',
+        // WI-10004747: the persona composes the su static layers, so the artifact (and the
+        // model preflight that must agree with it) records them as slotted inputs.
+        impliedStack: 'su-static',
       }),
+    );
+    expect(resolveLaunchIdentityModelDefaultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ impliedStack: 'su-static' }),
     );
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).

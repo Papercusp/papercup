@@ -109,18 +109,30 @@ function object(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
+/**
+ * The receipt for one revision pair: the FIRST of `[record, ...identityHistory]`
+ * matching both revisions. A body read narrowed to that pair
+ * (identity-receipt-narrowing.ts, WI-10004801) must select the identical entry.
+ */
+export function selectAppliedReceipt(
+  raw: unknown,
+  revision: KernelExecutionRevision | null | undefined,
+): Record<string, unknown> | null {
+  const record = object(raw);
+  if (!record || !revision) return null;
+  const receipts = [record, ...(Array.isArray(record.identityHistory) ? record.identityHistory : [])];
+  return receipts.map(object).find((entry) =>
+    entry?.specificationRevision === revision.specificationRevision &&
+    entry?.stateRevision === revision.stateRevision) ?? null;
+}
+
 /** Exact receipt selection; do not select a newer desired artifact for execution. */
 export function appliedIdentityArtifact(
   raw: unknown,
   revision: KernelExecutionRevision | null | undefined,
 ): ResolvedAgentSpecification | null {
-  const record = object(raw);
-  if (!record || !revision) return null;
-  const receipts = [record, ...(Array.isArray(record.identityHistory) ? record.identityHistory : [])];
-  const receipt = receipts.map(object).find((entry) =>
-    entry?.specificationRevision === revision.specificationRevision &&
-    entry?.stateRevision === revision.stateRevision);
-  if (!receipt?.specificationArtifact) return null;
+  const receipt = selectAppliedReceipt(raw, revision);
+  if (!revision || !receipt?.specificationArtifact) return null;
   const artifact = replayAgentSpecification(receipt.specificationArtifact);
   return artifact.specificationRevision === revision.specificationRevision ? artifact : null;
 }
@@ -727,7 +739,12 @@ export async function checkIdentityGrantKernel(
     // Cache miss: read the body. It is resolved AND keyed at the row version it
     // was read at, so a row updated between the header read and this one is
     // judged as one consistent snapshot rather than a header/body mix.
-    const loaded = await lazy.load();
+    //
+    // WI-10004801: only the receipt for `applied` is ever consulted
+    // (`selectAppliedReceipt`), so the body arrives with identityHistory
+    // narrowed to that pair in PostgreSQL instead of every retained ~1 MB
+    // artifact. No applied pair means no history is consulted at all.
+    const loaded = await lazy.load(applied ? [applied] : []);
     const full = object(loaded?.record);
     // The row vanished or stopped being an object between the two reads:
     // exactly the "no usable record" outcome the header path would have given.

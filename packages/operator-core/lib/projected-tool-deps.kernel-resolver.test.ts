@@ -44,18 +44,32 @@ const db = vi.hoisted(() => {
     const at = strings.findIndex((part) => part.endsWith('(s.id::text = '));
     return at < 0 ? { id: null, xmin: null } : { id: values[at], xmin: values[at + 1] };
   };
+  const bodyReads: Array<{ advSessionId: unknown; want: unknown }> = [];
   const sql = vi.fn(async (strings: readonly string[], ...values: unknown[]) => {
-    if (strings.join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')) {
+    // The narrowed body read (identity-receipt-narrowing.ts, WI-10004801):
+    // values are [want, advSessionId, ownerId, workspaceId]. The mock applies
+    // the module's own JS statement of the narrowing, which the real-PG test
+    // holds the SQL to.
+    // `AS want) AS w` is unique to the body read; the anchor read also selects
+    // `s.xmin::text AS launch_spec_xmin`.
+    if (strings.join(' ').includes('AS want) AS w')) {
+      bodyReads.push({ advSessionId: values[1], want: values[0] });
       const override = loadOverrides.shift();
       if (override instanceof Error) throw override;
       if (override) return override;
-      const body = bodies.get(String(values[0]));
-      return body ? [body] : [];
+      const body = bodies.get(String(values[1]));
+      if (!body) return [];
+      const { narrowIdentityHistory } = await import('./capability-envelope/identity-receipt-narrowing');
+      return [{
+        ...body,
+        launch_spec: values[0] == null ? body.launch_spec
+          : narrowIdentityHistory(body.launch_spec, JSON.parse(String(values[0])) as unknown[]),
+      }];
     }
     const known = knownFrom(strings, values);
     return (rows.shift() ?? []).map((row) => toWire(row, known));
   });
-  return { rows, sql, bodies, loadOverrides, failClient: false };
+  return { rows, sql, bodies, bodyReads, loadOverrides, failClient: false };
 });
 const grants = vi.hoisted(() => ({ read: vi.fn(), claim: vi.fn(async () => true), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
@@ -167,6 +181,7 @@ function appliedActivation(revision = REVISION_A) {
 beforeEach(() => {
   db.rows.splice(0, db.rows.length);
   db.bodies.clear();
+  db.bodyReads.splice(0, db.bodyReads.length);
   db.loadOverrides.splice(0, db.loadOverrides.length);
   // The identity-resolution cache is process-pinned; a verdict cached by one
   // test must not turn the next test's miss into a hit.
@@ -239,9 +254,46 @@ describe('control-anchor kernel resolver (D-030)', () => {
     expect(await handle.load()).toEqual({ record: launchRow.launch_spec, rowVersion: '1549' });
     const [bodyTemplate, ...bodyParams] = db.sql.mock.calls[1] as unknown[];
     const bodySql = (bodyTemplate as readonly string[]).join(' ');
-    expect(bodySql).toContain('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin');
+    expect(bodySql).toContain('s.xmin::text AS launch_spec_xmin');
     expect(bodySql).toContain('FROM harness_shared.adv_sessions s');
-    expect(bodyParams).toEqual([27, 'owner-a', 'ws-a']);
+    // No receipts requested ⇒ `want` is null ⇒ the record is read whole.
+    expect(bodyParams).toEqual([null, 27, 'owner-a', 'ws-a']);
+  });
+
+  // WI-10004801 (#1155): the body read narrows identityHistory to the receipt
+  // the gate will select. A retained history entry is ~1 MB, so shipping all of
+  // them to the request worker is what spiked worker heaps.
+  it('asks PostgreSQL for only the applied receipt on a cache miss, and still resolves from history', async () => {
+    const current = anchorRow({ activation: appliedActivation() }).launch_spec as Record<string, unknown>;
+    // The top-level record is at a later STATE revision, so the applied receipt
+    // (REVISION_A) must come from identityHistory. One unrelated entry must not
+    // survive the narrowing; the matching one must.
+    const spec = {
+      ...current,
+      stateRevision: 'state-later',
+      identityHistory: [
+        { specificationRevision: 'c'.repeat(64), stateRevision: 'state-c', specificationArtifact: { bulky: 'x'.repeat(64) } },
+        {
+          specificationRevision: REVISION_A.specificationRevision,
+          stateRevision: REVISION_A.stateRevision,
+          specificationArtifact: current.specificationArtifact,
+        },
+      ],
+    };
+    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 41, adv_session_xmin: '4100', launch_spec: spec,
+    })]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+    expect(db.bodyReads).toHaveLength(1);
+    expect(db.bodyReads[0]).toEqual({
+      advSessionId: 41,
+      want: JSON.stringify([{
+        specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision,
+      }]),
+    });
+    const { narrowIdentityHistory } = await import('./capability-envelope/identity-receipt-narrowing');
+    const narrowed = narrowIdentityHistory(spec, [REVISION_A]) as { identityHistory: Array<{ stateRevision: string }> };
+    expect(narrowed.identityHistory.map((entry) => entry.stateRevision)).toEqual([REVISION_A.stateRevision]);
   });
 
   // WI-10002721 — the recurrence guard for the per-call body read. Every
@@ -250,7 +302,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
   // verdict for that exact row version.
   describe('launch record body is read only on an identity-resolution cache miss (WI-10002721)', () => {
     const bodyReads = () => db.sql.mock.calls.filter(([template]) =>
-      (template as readonly string[]).join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')).length;
+      (template as readonly string[]).join(' ').includes('AS want) AS w')).length;
     const rowAt = (xmin: string, over: Record<string, unknown> = {}) =>
       anchorRow({ activation: appliedActivation() }, { adv_session_id: 31, adv_session_xmin: xmin, ...over });
 
@@ -264,8 +316,11 @@ describe('control-anchor kernel resolver (D-030)', () => {
       expect(db.sql).toHaveBeenCalledTimes(3);
       // The body query stays scoped to the anchor's owner and workspace.
       const bodyCall = db.sql.mock.calls.find(([template]) =>
-        (template as readonly string[]).join(' ').includes('SELECT s.launch_spec'))!;
-      expect(bodyCall.slice(1)).toEqual([31, 'owner-a', 'ws-a']);
+        (template as readonly string[]).join(' ').includes('AS want) AS w'))!;
+      expect(bodyCall.slice(1)).toEqual([
+        JSON.stringify([{ specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision }]),
+        31, 'owner-a', 'ws-a',
+      ]);
     });
 
     it('reads the body again when the launch row version changes', async () => {

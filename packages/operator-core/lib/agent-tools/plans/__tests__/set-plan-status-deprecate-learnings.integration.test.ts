@@ -189,7 +189,7 @@ describe('plans:set-plan-status — deprecate emits a learnings observation (B10
     await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
 
     const { data, isError } = await runDeprecate({ status: 'ready', learnings: LEARNINGS });
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify(data)).toBe(false);
     expect(data).toMatchObject({ ok: true, newStatus: 'ready' });
     expect(data.learningsObservation).toBeUndefined();
     expect(await observationRows()).toHaveLength(0);

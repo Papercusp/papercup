@@ -399,6 +399,84 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  // WI-10004747: a workspace-level su has no materialized blueprint, so it compiles from the
+  // compatibility adapter, yet its persona always composes SU_STATIC_LAYERS (the seal names
+  // domain:papercusp-engineer). Shadow metering prices identity only from SLOTTED
+  // blueprint-layer inputs, so an artifact that omitted them priced ~900 sessions as
+  // inferred-profile. The su callers pass impliedStack:'su-static'; whatever the render
+  // composes for the domain slot must be recorded, and an implied layer must never displace
+  // a slot the source or the explicit stack already holds.
+  it('records the su static layers that the source and explicit stack leave empty', async () => {
+    const { SU_STATIC_LAYERS } = await import('@papercusp/orchestrator/blueprint');
+    const staticDomain = SU_STATIC_LAYERS.find((layer) => layer.slot === 'domain');
+    expect(staticDomain, 'the su persona composes a static domain layer').toBeDefined();
+    const slotted = (inputs: readonly unknown[]) => inputs.flatMap((raw) => {
+      const entry = raw as { kind?: string; ref?: string; document?: { slots?: Array<{ slot: string }> } };
+      const slots = entry.document?.slots ?? [];
+      return entry.kind === 'blueprint-layer' && slots.length > 0
+        ? slots.map((slot) => `${slot.slot}:${String(entry.ref)}`) : [];
+    });
+    const workspaceDir = mkdtempSync(join(tmpdir(), 'su-implied-workspace-'));
+    const potDir = mkdtempSync(join(tmpdir(), 'su-implied-pot-'));
+    try {
+      const workspaceLevel = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(workspaceLevel.compositionSource).toBe('compatibility');
+      expect(workspaceLevel.stack).toEqual([]);
+      expect(workspaceLevel.promptText).toBe('SU KERNEL');
+      expect(slotted(workspaceLevel.specificationArtifact.inputs))
+        .toContain(`domain:${staticDomain!.id}`);
+      // Without the implied stack the same launch records no slotted layer (the defect).
+      const unmarked = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], state: { schemaVersion: 1 },
+      });
+      expect(slotted(unmarked.specificationArtifact.inputs)).toEqual([]);
+      expect(workspaceLevel.specificationRevision).not.toBe(unmarked.specificationRevision);
+      await expect(resolveLaunchIdentityModelDefault({ cwd: workspaceDir, harnessSlug: null,
+        role: 'su', stack: [], impliedStack: 'su-static' })).resolves.toBeNull();
+
+      const blueprintDir = join(potDir, '.papercusp', 'blueprints');
+      for (const id of ['pot-domain', 'chosen-domain']) {
+        mkdirSync(join(blueprintDir, id), { recursive: true });
+        writeFileSync(join(blueprintDir, id, 'blueprint.yaml'), [
+          `id: ${id}`, 'extends: base', 'version: 1.0.0', 'slots:', '  - slot: domain', '',
+        ].join('\n'));
+      }
+      writeFileSync(join(potDir, '.papercusp', 'blueprint.yaml'), [
+        'id: fixture-pot', 'extends: pot-domain', 'kind: pot', 'version: 1.0.0',
+        'workItem:', '  kind: feature', '  idPrefix: WI',
+        'spine:', '  decider: su', '  claimModel: self-claim-priority',
+        '  default: { to: idle }',
+        'roles:', '  - id: su', '    description: Fixture su.', '',
+      ].join('\n'));
+      const potHeld = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: potDir, workspaceId: 'fixture-workspace',
+        harnessSlug: 'fixture', role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      const potSlots = slotted(potHeld.specificationArtifact.inputs);
+      expect(potSlots).toContain('domain:pot-domain');
+      expect(potSlots.filter((ref) => ref.startsWith('domain:'))).toEqual(['domain:pot-domain']);
+      expect(potHeld.specificationArtifact.configuration.workItem?.idPrefix).toBe('WI');
+
+      const explicitHeld = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: potDir, workspaceId: 'fixture-workspace',
+        harnessSlug: 'fixture', role: 'su', stack: ['domain:chosen-domain'], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(explicitHeld.stack).toEqual(['domain:chosen-domain']);
+      expect(slotted(explicitHeld.specificationArtifact.inputs)
+        .filter((ref) => ref.startsWith('domain:'))).toEqual(['domain:chosen-domain']);
+    } finally {
+      rmSync(workspaceDir, { recursive: true, force: true });
+      rmSync(potDir, { recursive: true, force: true });
+    }
+  });
+
   // WI-10003611: installed identities carry a per-layer attestation (identity-lint requires it).
   // Replacing an inherited exclusive slot peer-assembles the surviving layers; copying a layer's
   // attestation onto the synthesized effective-launch root failed attestation-hash-mismatch, so
