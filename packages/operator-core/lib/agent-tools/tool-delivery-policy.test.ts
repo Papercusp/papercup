@@ -18,8 +18,13 @@ import {
   type AgentKind,
   type DeliveryCatalogTool,
   type DeliveryDemandRow,
+  FLOOR_HEADROOM_MARGIN_BYTES,
+  describeFloorHeadroom,
   explainToolDelivery,
+  floorHeadroom,
+  floorHeadroomOf,
   resolveToolDelivery,
+  summarizeDelivery,
 } from './tool-delivery-policy';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -258,5 +263,64 @@ describe('resolveToolDelivery — a catalog tool absent from the snapshot', () =
     });
     expect(r.tiers.has('retired:gone')).toBe(false);
     expect(r.tiers.size).toBe(1);
+  });
+});
+
+describe('floorHeadroom — the edit-time floor-budget signal (WI-10004590)', () => {
+  it('is budget minus the floors’ compact bytes, with an inclusive margin boundary', () => {
+    const at = (budget: number) => floorHeadroom(budget, [600, 400]);
+    expect(at(1100)).toMatchObject({ floorBytes: 1000, floorCount: 2, headroomBytes: 100, status: 'ok' });
+    // Exactly the margin is OK; one byte under it is LOW; one byte past zero is an OVERRUN.
+    expect(at(1000 + FLOOR_HEADROOM_MARGIN_BYTES).status).toBe('ok');
+    expect(at(1000 + FLOOR_HEADROOM_MARGIN_BYTES - 1).status).toBe('low');
+    expect(at(1000).status).toBe('low');
+    expect(at(999)).toMatchObject({ headroomBytes: -1, status: 'overrun' });
+  });
+
+  it('agrees with explainToolDelivery: overrun ⇔ budgetOverrun > 0, at every budget', () => {
+    const catalog = [tool('f:a', 900, 600), tool('f:b', 700, 400), tool('n:c', 500, 300)];
+    const demand = [row('n:c', 5, 50), row('f:a', 3, 30)];
+    for (const budget of [0, 999, 1000, 1001, 1063, 1064, 1299, 1300, 5000]) {
+      const r = explainToolDelivery({ agentKind: 'claude', catalog, demand, floors: ['f:a', 'f:b'], budgetBytes: budget });
+      const h = floorHeadroomOf(r);
+      expect(h.status === 'overrun').toBe(r.budgetOverrun > 0);
+      expect(h.headroomBytes).toBe(budget - 1000);
+    }
+  });
+
+  it('prices the floors’ SEATS, never the filler spend that fills the leftover budget', () => {
+    // Budget 5000 buys filler + upgrades, so spentBytes is far above 1000 — but the floors
+    // themselves still seat 1000 B, which is what bounds a floor-tool edit.
+    const r = explainToolDelivery({
+      agentKind: 'claude',
+      catalog: [tool('f:a', 900, 600), tool('f:b', 700, 400), tool('n:c', 500, 300)],
+      demand: [row('n:c', 9, 90), row('f:a', 4, 40)],
+      floors: ['f:a', 'f:b'],
+      budgetBytes: 5000,
+    });
+    expect(r.spentBytes).toBeGreaterThan(1000);
+    expect(floorHeadroomOf(r)).toMatchObject({ floorBytes: 1000, headroomBytes: 4000, status: 'ok' });
+  });
+
+  it('summarizeDelivery flags floors from the resolution, even when `floors` is a one-shot iterator', () => {
+    const floors = (function* () {
+      yield 'f:a';
+    })();
+    const s = summarizeDelivery({
+      agentKind: 'claude',
+      catalog: [tool('f:a', 900, 600), tool('n:c', 500, 300)],
+      demand: [],
+      floors,
+      budgetBytes: 1000,
+    });
+    expect(s.tools.get('f:a')).toMatchObject({ isFloor: true, tier: 'compact', compactBytes: 600, fullBytes: 900 });
+    expect(s.tools.get('n:c')).toMatchObject({ isFloor: false, tier: 'deferred' });
+    expect(s.headroom.floorBytes).toBe(600);
+  });
+
+  it('names the lever in each state, so the three surfaces print one wording', () => {
+    expect(describeFloorHeadroom(floorHeadroom(1100, [1000]))).toMatch(/^floor headroom: OK 100 B of 1100/);
+    expect(describeFloorHeadroom(floorHeadroom(1010, [1000]))).toMatch(/LOW 10 B .*more than 10 B overruns/);
+    expect(describeFloorHeadroom(floorHeadroom(900, [1000]))).toMatch(/OVERRUN by 100 B of 900/);
   });
 });

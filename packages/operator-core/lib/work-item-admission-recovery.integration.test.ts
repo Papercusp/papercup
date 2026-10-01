@@ -47,6 +47,7 @@ async function current() {
 function deps(overrides: Partial<AdmissionRecoveryDeps> = {}): AdmissionRecoveryDeps {
   return {
     authorize,
+    lockSql: db.sql,
     screen: vi.fn(async (_scope, beforePersist) => {
       await beforePersist();
       await db.sql`UPDATE harness_shared.work_items SET admission = 'admitted' WHERE feature_id = ${scope.workItemId}`;
@@ -313,6 +314,40 @@ describe('original-item durable admission recovery', () => {
     await Promise.all([runAdmissionRecoveries(scope, d, db.sql), runAdmissionRecoveries(scope, d, db.sql)]);
     expect(d.screen).toHaveBeenCalledTimes(1);
     expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not keep a transaction open while screening waits and keeps recovery serialized', async () => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    let releaseScreen!: () => void;
+    let screenStarted!: () => void;
+    const screenGate = new Promise<void>((resolve) => { releaseScreen = resolve; });
+    const screenStartedPromise = new Promise<void>((resolve) => { screenStarted = resolve; });
+    const d = deps({
+      screen: vi.fn(async (_scope, beforePersist) => {
+        await beforePersist();
+        screenStarted();
+        await screenGate;
+        await db.sql`UPDATE harness_shared.work_items SET admission = 'admitted' WHERE feature_id = ${scope.workItemId}`;
+      }),
+    });
+    const running = runAdmissionRecoveries(scope, d, db.sql);
+    try {
+      await screenStartedPromise;
+      const [activity] = await db.sql<{ count: number }[]>`SELECT count(*)::int AS count
+        FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid()
+          AND state = 'idle in transaction'`;
+      expect(activity?.count).toBe(0);
+
+      const retry = await requestAdmissionRecovery(input, { authorize }, db.sql);
+      expect(retry).toMatchObject({ ok: true, workItemId: scope.workItemId, inProgress: true });
+    } finally {
+      releaseScreen();
+      await running;
+    }
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', pickupConfirmed: false,
+    });
   });
 
   it('refuses changed target, cross-scope identity, remote origin, and peer holds', async () => {

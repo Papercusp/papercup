@@ -33,6 +33,13 @@ const usage = (total: number, input = 1000) => line({ type: 'event_msg', payload
   },
 } });
 const adapter = () => [{ name: 'codex', root, parse: parseCodexChunk, replayStateFromPrefix: true, sessionIdForFile: codexSessionIdForFile }];
+const migrationsDir = new URL('../../../../libs/papercusp/libs/db/sql/', import.meta.url);
+const readMigration = (name: string) => fs.readFile(new URL(name, migrationsDir), 'utf8')
+  .catch(() => fs.readFile(new URL(name + '.DRAFT', migrationsDir), 'utf8'));
+// Migration 1293's guard. Cases that seed rows as the PRE-FIX ingester wrote them drop it first.
+const PROVIDER_MESSAGE_KEY_CHECK = 'agent_usage_samples_provider_message_key_ck';
+const dropProviderMessageKeyCheck = () =>
+  sql.unsafe(`ALTER TABLE harness_shared.agent_usage_samples DROP CONSTRAINT IF EXISTS ${PROVIDER_MESSAGE_KEY_CHECK}`);
 
 beforeAll(async () => {
   org = await createOrgTestDb();
@@ -519,7 +526,8 @@ describe('persistent transcript accounting', () => {
   });
 
   it('migration 1287 collapses pre-fix transcript copies onto the key the fixed ingester writes (WI-10004637)', async () => {
-    const migration = new URL('../../../../libs/papercusp/libs/db/sql/1287-dedupe-claude-transcript-usage-copies.sql', import.meta.url);
+    await dropProviderMessageKeyCheck(); // the pre-fix rows seeded below predate 1293's constraint
+    const migration =new URL('../../../../libs/papercusp/libs/db/sql/1287-dedupe-claude-transcript-usage-copies.sql', import.meta.url);
     const body = await fs.readFile(migration, 'utf8').catch(() => fs.readFile(new URL(migration.href + '.DRAFT'), 'utf8'));
     await sql.unsafe(body);
     const model = 'claude-opus-4-8';
@@ -568,6 +576,87 @@ describe('persistent transcript accounting', () => {
     const [count] = await sql`SELECT count(*)::int AS n FROM harness_shared.agent_usage_samples
       WHERE workspace_id=${WS} AND usage_provenance->>'sourceId' = 'message:msg_legacy'`;
     expect(count!.n).toBe(1);
+  });
+
+  it('migration 1292 sweeps copies a still-running pre-fix ingester wrote after 1287 rekeyed the survivors (WI-10004637)', async () => {
+    await dropProviderMessageKeyCheck(); // the pre-fix rows seeded below predate 1293's constraint
+    const sqlDir = new URL('../../../../libs/papercusp/libs/db/sql/', import.meta.url);
+    const readMigration = (name: string) => fs.readFile(new URL(name, sqlDir), 'utf8')
+      .catch(() => fs.readFile(new URL(name + '.DRAFT', sqlDir), 'utf8'));
+    await sql.unsafe(await readMigration('1287-dedupe-claude-transcript-usage-copies.sql'));
+    const model = 'claude-opus-4-8';
+    const oldKey = (file: string, sourceId: string) =>
+      createHash('sha256').update(JSON.stringify([file, 0, model, sourceId])).digest('hex');
+    const newKey = (sourceId: string) => transcriptUsageEventKey({ file: '/any', fileGeneration: 0, model, sourceId });
+    const seed = async (sessionId: string, key: string, sourceId: string) => {
+      const [row] = await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, ts, bucket_key, provider, model_class, source, input_tokens, output_tokens,
+         cache_read_tokens, cost_usd, model, cost_source, session_id, usage_event_key, ingested_at, usage_provenance)
+        VALUES (${WS}, 1, 'anthropic:opus', 'anthropic', 'opus', 'interactive', 10, 100, 0, 0.1,
+          ${model}, 'estimated', ${sessionId}, ${key}, 1, ${sql.json({ sourceId, adapter: 'claude-iso-0' })})
+        RETURNING id`;
+      return Number(row!.id);
+    };
+    // The survivor 1287 already moved onto the file-independent key.
+    const survivor = await seed('session-original', newKey('message:msg_rekeyed'), 'message:msg_rekeyed');
+    // The pre-fix ingester, still running after 1287, wrote further copies under the old file key.
+    await seed('session-copy-1', oldKey('/b/s.jsonl', 'message:msg_rekeyed'), 'message:msg_rekeyed');
+    await seed('session-copy-2', oldKey('/c/s.jsonl', 'message:msg_rekeyed'), 'message:msg_rekeyed');
+    // It also saw a new message first; once fixed, the ingester read that message again from another copy.
+    const firstSeen = await seed('session-window', oldKey('/d/s.jsonl', 'message:msg_window'), 'message:msg_window');
+    await seed('session-after-restart', newKey('message:msg_window'), 'message:msg_window');
+    // A message only the pre-fix ingester saw keeps its one row, under the new key.
+    const lone = await seed('session-lone', oldKey('/e/s.jsonl', 'message:msg_lone'), 'message:msg_lone');
+
+    await sql.unsafe(await readMigration('1292-sweep-claude-transcript-usage-copies.sql'));
+
+    const rows = await sql`SELECT id, session_id, usage_event_key, usage_provenance->>'sourceId' AS source_id
+      FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS} ORDER BY id`;
+    expect(rows.map((r) => [Number(r.id), r.session_id, r.source_id, r.usage_event_key])).toEqual([
+      [survivor, 'session-original', 'message:msg_rekeyed', newKey('message:msg_rekeyed')],
+      [firstSeen, 'session-window', 'message:msg_window', newKey('message:msg_window')],
+      [lone, 'session-lone', 'message:msg_lone', newKey('message:msg_lone')],
+    ]);
+    const [again] = await sql`SELECT * FROM harness_shared.collapse_transcript_usage_copies()`;
+    expect(again).toEqual({ deleted_rows: 0, rekeyed_rows: 0, multi_row_groups: 0 });
+  });
+
+  it('migration 1293 refuses a provider-message usage row that is not on the file-independent key (WI-10004637)', async () => {
+    const model = 'claude-opus-4-8';
+    const fileKey = (sourceId: string) =>
+      createHash('sha256').update(JSON.stringify(['/a/s.jsonl', 0, model, sourceId])).digest('hex');
+    const messageKey = (sourceId: string) => transcriptUsageEventKey({ file: '/a/s.jsonl', fileGeneration: 0, model, sourceId });
+    const insert = (key: string, sourceId: string) => sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, bucket_key, provider, model_class, source, input_tokens, output_tokens,
+       cache_read_tokens, cost_usd, model, cost_source, session_id, usage_event_key, ingested_at, usage_provenance)
+      VALUES (${WS}, 1, 'anthropic:opus', 'anthropic', 'opus', 'interactive', 10, 100, 0, 0.1,
+        ${model}, 'estimated', 'session-guard', ${key}, 1, ${sql.json({ sourceId })})`;
+    const validated = async () => {
+      const rows = await sql`SELECT convalidated FROM pg_constraint
+        WHERE conrelid = 'harness_shared.agent_usage_samples'::regclass AND conname = ${PROVIDER_MESSAGE_KEY_CHECK}`;
+      return rows.map((r) => r.convalidated as boolean);
+    };
+
+    // An install still holding a row the collapse could not repair (diverged copies keep their
+    // old key) must still migrate: the constraint is added NOT VALID and guards new writes.
+    await dropProviderMessageKeyCheck();
+    await insert(fileKey('message:msg_diverged_legacy'), 'message:msg_diverged_legacy');
+    await sql.unsafe(await readMigration('1293-provider-message-usage-key-check.sql'));
+    expect(await validated()).toEqual([false]);
+    await expect(insert(fileKey('message:msg_after_unvalidated'), 'message:msg_after_unvalidated')).rejects.toMatchObject({ code: '23514' });
+
+    // A clean install validates it, and re-running the migration changes nothing.
+    await dropProviderMessageKeyCheck();
+    await sql`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
+    await sql.unsafe(await readMigration('1293-provider-message-usage-key-check.sql'));
+    await sql.unsafe(await readMigration('1293-provider-message-usage-key-check.sql'));
+    expect(await validated()).toEqual([true]);
+    await expect(insert(fileKey('message:msg_guard'), 'message:msg_guard')).rejects.toMatchObject({ code: '23514' });
+    await insert(messageKey('message:msg_guard'), 'message:msg_guard');
+    // Id-less observations stay file-scoped and are not constrained.
+    await insert(fileKey('line:7'), 'line:7');
+    // With the unique (workspace_id, usage_event_key) index, a second row for the same message cannot exist.
+    await expect(insert(messageKey('message:msg_guard'), 'message:msg_guard')).rejects.toMatchObject({ code: '23505' });
   });
 
   it('distinguishes reused byte offsets after transcript truncation', async () => {

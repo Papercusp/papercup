@@ -572,7 +572,10 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     if (fs.existsSync(file)) {
       const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (saved.identityHash !== identityHash || saved.promptSha256 !== promptSha256 || !saved.invocationId
-        || !saved.finishedAt || !saved.result || typeof saved.result.text !== 'string') throw new Error('invalid recovered blind transport receipt');
+        || !saved.finishedAt || !saved.result || typeof saved.result.text !== 'string'
+        || hashJson({ system: saved.system, messages: saved.messages, model: saved.model }) !== promptSha256
+        || saved.result.stopReason === 'max_tokens'
+        || ![saved.result.inputTokens, saved.result.outputTokens, saved.result.costUsd].every((n) => Number.isFinite(n) && n >= 0)) throw new Error('invalid recovered blind transport receipt');
       return saved;
     }
     const invocationId = crypto.randomUUID(), startedAt = new Date().toISOString(), deadline = Date.now() + 240_000;
@@ -580,10 +583,11 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     const result = await opts.llm({ model: BLIND_COHORT_CONTRACT.model, system, messages, responseFormat: 'json',
       maxTokens: 16000, temperature: 0, ownerId, harnessSlug: 'papercusp', priority: 'su',
       governorMaxWaitMs: 180_000, retryDeadlineMs: deadline, signal: AbortSignal.timeout(240_000) });
-    if (result.stopReason === 'max_tokens' || ![result.inputTokens, result.outputTokens, result.costUsd].every((n) => Number.isFinite(n) && n >= 0)) throw new Error('incomplete/unpriced blind model result');
     const saved = { identityHash, invocationId, startedAt, finishedAt: new Date().toISOString(),
       model: BLIND_COHORT_CONTRACT.model, promptSha256, system, messages, result };
-    write(file, saved); log(`blind ${name} finished ${invocationId}`); return saved;
+    write(file, saved);
+    if (result.stopReason === 'max_tokens' || ![result.inputTokens, result.outputTokens, result.costUsd].every((n) => Number.isFinite(n) && n >= 0)) throw new Error(`incomplete/unpriced blind model result retained at ${file}`);
+    log(`blind ${name} finished ${invocationId}`); return saved;
   };
   const allLabels: Record<string, HeldoutQuery[]> = {}, allProofs: Record<string, unknown> = {};
   for (const corpus of ['memory', 'prose'] as const) {
@@ -592,6 +596,8 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     for (const entry of entries) {
       const group = String(entry.metadata?.cluster ?? '');
       if (entry.metadata?.partition !== candidateSourcePartition(group, snapshot.seed)) throw new Error('frozen source partition mismatch');
+      if (corpus === 'memory' && (entry.metadata?.sourceAttribution !== 'session'
+        || !entry.metadata.sourceSession || group !== `session:${entry.metadata.sourceSession}`)) throw new Error('blind memory labels require recorded source-session provenance');
       groups.set(group, [...(groups.get(group) ?? []), entry]);
     }
     const questions: HeldoutQuery[] = [];
@@ -610,6 +616,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       }
     }
     const passes: [BlindVote[], BlindVote[]] = [[], []], judges: Array<Record<string, unknown>> = [];
+    const invocationIds = new Set<string>();
     for (let pass = 0; pass < 2; pass++) {
       const order = [...entries].sort((a, b) => hashJson([snapshot.seed, pass, a.key]).localeCompare(hashJson([snapshot.seed, pass, b.key])));
       const combined = new Map(questions.map((q) => [q.id, { queryId: q.id, relevantKeys: [] as string[], ambiguous: false, note: '' }]));
@@ -618,6 +625,8 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
         const chunk = order.slice(offset, offset + BLIND_COHORT_CONTRACT.documentChunk), chunkKeys = new Set(chunk.map((e) => e.key));
         const raw = await call(`${corpus}-judge-${pass + 1}-${offset}`, BLIND_COHORT_CONTRACT.judge,
           { questions: questions.map((q) => ({ queryId: q.id, query: q.query })), sources: chunk.map((e) => ({ key: e.key, text: e.text })) });
+        if (invocationIds.has(raw.invocationId)) throw new Error('reused blind judge invocation');
+        invocationIds.add(raw.invocationId);
         const votes = blindVotesSchema.parse(raw.result.json ?? JSON.parse(raw.result.text)).votes;
         if (votes.length !== questions.length || new Set(votes.map((v) => v.queryId)).size !== questions.length) throw new Error('incomplete blind chunk judgment');
         for (const vote of votes) {

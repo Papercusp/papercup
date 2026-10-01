@@ -19,18 +19,8 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
-
-const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
-const readMigration = (name: string) =>
-  readFileSync(resolve(SQL_DIR, name), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
 
 // releaseWorkItem's no-live-recipient fallback records the event in the durable
 // coordination log and resolves the workspace's shared Hive scope. Keep both
@@ -116,22 +106,52 @@ beforeAll(async () => {
   // releaseWorkItem emits the claim-released event and retires lifecycle-bound awaits.
   // Keep this fixture on the same event schema those side effects use, so a missing
   // coordination table cannot obscure the claim-hold regression.
-  for (const migration of [
-    '123-coordination-substrate.sql',
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '387-event-wake-delivery-source.sql',
-    '533-add-event-awaits-payload-filter.sql',
-    '541-predicate-watches.sql',
-    '572-event-await-nodes-threshold-tree.sql',
-    '599-event-announcement-generation.sql',
-    '602-work-item-follow-blockers.sql',
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-    '825-verified-wait-producer-health.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  //
+  // WI-10004685: this list was a hand-rolled loop, so the stale-list audit never ran on
+  // it. Migration 1216 added event_awaits.fired_delivery_intent_at, which fireAwaitsForKey
+  // writes on every emit; the fixture never built it, the emit's "does not exist" error is
+  // swallowed by failSoft, nothing fired, and the post-release lifecycle retire then
+  // cancelled the still-pending awaits. applyMigrationsForTest audits the list against
+  // the real migration directory, so the next column added to these runtime tables fails
+  // here by name instead of as a silently missing fire.
+  await applyMigrationsForTest(
+    db.sql,
+    [
+      '123-coordination-substrate.sql',
+      '163-await-event-subscriptions.sql',
+      '175-watch-floor-coalesce-cols.sql',
+      '387-event-wake-delivery-source.sql',
+      '533-add-event-awaits-payload-filter.sql',
+      '541-predicate-watches.sql',
+      '572-event-await-nodes-threshold-tree.sql',
+      '599-event-announcement-generation.sql',
+      '602-work-item-follow-blockers.sql',
+      '632-event-key-fire-latch.sql',
+      '825-verified-wait-producer-health.sql',
+      '871-lifecycle-bound-watches.sql',
+      '1216-event-await-fired-delivery-intent-marker.sql',
+      '1250-predicate-watch-evaluator-baselines.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
+    ],
+    {
+      label: 'work-items-release-request.integration.test.ts',
+      knownInapplicable: [
+        {
+          file: '149-coord-threads-federation.sql',
+          reason:
+            'attaches federation outbox triggers to coord_threads/coord_thread_posts that call ' +
+            'harness_shared.capture_substrate_outbox(), created by 108-substrate-capture-reconcile ' +
+            'alongside tables this fixture does not build; release never writes coord threads',
+        },
+      ],
+      runtimeTables: [
+        'harness_shared.event_awaits',
+        'harness_shared.event_key_fires',
+        'harness_shared.event_wake_deliveries',
+        'harness_shared.predicate_watches',
+      ],
+    },
+  );
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(POTS_DDL);
 }, 180_000);

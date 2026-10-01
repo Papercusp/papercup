@@ -312,6 +312,8 @@ export interface OpenBreak {
   readonly workItemId: string | null;
   readonly openedAtMs: number;
   readonly openedByRunId: string;
+  /** The mode of the run that opened it; absent when that run never recorded (treated as provisional). */
+  readonly openedMode?: ReconciliationMode;
 }
 
 export type BreakAction =
@@ -323,13 +325,25 @@ export type BreakAction =
  * Diff this run's verdicts against the open breaks. A break is only RESOLVED by
  * an `ok` verdict: an invariant that could not be evaluated keeps its break open,
  * because nothing has shown the money is right again.
+ *
+ * A break opened by a FINAL run concerns a closed month, which a provisional run
+ * (over the open month) never looks at. Only a final run can resolve it; a
+ * provisional run leaves it open and untouched, so its detail keeps the evidence.
  */
-export function planBreakActions(verdicts: readonly InvariantVerdict[], open: readonly OpenBreak[]): BreakAction[] {
+export function planBreakActions(
+  verdicts: readonly InvariantVerdict[],
+  open: readonly OpenBreak[],
+  mode: ReconciliationMode = 'provisional',
+): BreakAction[] {
   const openByInvariant = new Map(open.map((b) => [b.invariant, b]));
   const actions: BreakAction[] = [];
   for (const verdict of verdicts) {
     const existing = openByInvariant.get(verdict.invariant);
-    if (verdict.status === 'broken') actions.push(existing ? { kind: 'keep', open: existing, verdict } : { kind: 'open', verdict });
+    const closedMonthBreak = existing?.openedMode === 'final' && mode !== 'final';
+    if (verdict.status === 'broken') {
+      if (!existing) actions.push({ kind: 'open', verdict });
+      else if (!closedMonthBreak) actions.push({ kind: 'keep', open: existing, verdict });
+    } else if (closedMonthBreak) continue;
     else if (existing && verdict.status === 'ok') actions.push({ kind: 'resolve', open: existing, verdict });
     else if (existing) actions.push({ kind: 'keep', open: existing, verdict });
   }
@@ -417,7 +431,7 @@ export async function runReconciliation(
   const period = reconciliationPeriod(input.mode, startedAtMs);
   const verdicts = evaluateReconciliation({ entries: input.entries, sources: input.sources, period });
   const open = await deps.store.listOpenBreaks(input.workspaceId);
-  const actions = planBreakActions(verdicts, open);
+  const actions = planBreakActions(verdicts, open, input.mode);
   const opened: ReconciliationInvariant[] = [];
   const resolved: ReconciliationInvariant[] = [];
   const stillOpen = new Set(open.map((b) => b.invariant));
@@ -425,7 +439,7 @@ export async function runReconciliation(
   for (const action of actions) {
     const invariant = action.verdict.invariant;
     if (action.kind === 'open') {
-      const row: OpenBreak = { invariant, workItemId: null, openedAtMs: startedAtMs, openedByRunId: runId };
+      const row: OpenBreak = { invariant, workItemId: null, openedAtMs: startedAtMs, openedByRunId: runId, openedMode: input.mode };
       stillOpen.add(invariant);
       // The row is written BEFORE the item is filed, so a concurrent run loses the
       // insert and files nothing: one break, one item.
@@ -483,7 +497,14 @@ export function memoryReconciliationStore(): ReconciliationStore & {
     async listOpenBreaks(ws) {
       return [...rows.entries()]
         .filter(([k, r]) => k.startsWith(`${ws}\u0000`) && r.resolvedAtMs === null)
-        .map(([, r]) => ({ invariant: r.invariant, workItemId: r.workItemId, openedAtMs: r.openedAtMs, openedByRunId: r.openedByRunId }));
+        .map(([, r]) => ({
+          invariant: r.invariant,
+          workItemId: r.workItemId,
+          openedAtMs: r.openedAtMs,
+          openedByRunId: r.openedByRunId,
+          // Like the PG store, the mode is known only once the opening run recorded.
+          openedMode: runs.find((run) => run.runId === r.openedByRunId)?.period.mode,
+        }));
     },
     async openBreak(ws, b, detail) {
       const existing = rows.get(key(ws, b.invariant));

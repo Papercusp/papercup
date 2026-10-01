@@ -32,7 +32,14 @@ export interface Snapshot {
   suites: Record<'memory' | 'prose', { entries: CorpusEntry[] }>;
 }
 export interface CandidateSnapshotOptions {
-  seed?: string; memoryLimit?: number; proseBudget?: number; maxClusterRows?: number; censusOut?: string;
+  seed?: string; memoryLimit?: number; proseBudget?: number; maxClusterRows?: number; censusOut?: string; requireMemorySource?: boolean;
+}
+export function candidateMemoryEntry(row: { id: string; text: string; source_session?: string | null }): CorpusEntry {
+  const session = row.source_session?.trim() || null;
+  return { key: `memory:${row.id}`, text: row.text, kind: 'fact', metadata: {
+    cluster: session ? `session:${session}` : `unattributed-fact:${row.id}`,
+    sourceSession: session, sourceAttribution: session ? 'session' : 'unknown',
+  } };
 }
 /** Assign the real source, rather than a query, before any label or inference. */
 export function candidateSourcePartition(cluster: string, seed: string): 'calibration' | 'test' {
@@ -64,7 +71,8 @@ export function selectCandidateSources(population: Snapshot['suites'], options: 
     const cluster = String(entry.metadata!.cluster); groups.set(cluster, [...(groups.get(cluster) ?? []), entry]);
   }
   const picked = pickClusters([...groups].map(([key, rows]) => ({ key, size: rows.length })), proseBudget, maxClusterRows, seed);
-  return { memory: { entries: stable(population.memory.entries).slice(0, memoryLimit).map(annotate) },
+  const memories = options.requireMemorySource ? population.memory.entries.filter((e) => e.metadata?.sourceAttribution === 'session') : population.memory.entries;
+  return { memory: { entries: stable(memories).slice(0, memoryLimit).map(annotate) },
     prose: { entries: picked.keys.flatMap((key) => stable(groups.get(key)!).slice(0, maxClusterRows)).map(annotate) } };
 }
 export function validateHeldout(entries: CorpusEntry[], queries: HeldoutQuery[]): void {
@@ -114,7 +122,8 @@ export async function takeCandidateSnapshot(file: string, options: CandidateSnap
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const time = await db.query('SELECT now() AS snapshot_at');
     // Exclude this evaluation's own new memories and synthetic bench scopes.
-    const memories = await db.query(`SELECT id, payload->>'data' AS text
+    const memories = await db.query(`SELECT id, payload->>'data' AS text,
+      COALESCE(payload->>'source_session',payload->'metadata'->>'source_session') AS source_session
       FROM harness_shared.memory_canonical WHERE row_kind='memory'
       AND payload->>'user_id'='harness:papercusp' AND invalid_at IS NULL
       AND length(payload->>'data') BETWEEN 100 AND 1600 AND created_at < '2026-09-30T22:18:00Z'
@@ -126,22 +135,24 @@ export async function takeCandidateSnapshot(file: string, options: CandidateSnap
         text: `${row.title ?? ''}\n${row.content}`.slice(0, 2000), kind: 'doc',
         metadata: { cluster: `${row.source_key} ${row.slug}` }, description: row.title ?? undefined }));
     await db.query('COMMIT');
-    const population: Snapshot['suites'] = { memory: { entries: memories.rows.map((row) => ({ key: `memory:${row.id}`,
-      text: row.text, kind: 'fact', metadata: { cluster: row.id } })) }, prose: { entries: docs } };
+    const population: Snapshot['suites'] = { memory: { entries: memories.rows.map(candidateMemoryEntry) }, prose: { entries: docs } };
     const snapshot: Snapshot = { formatVersion: 1, snapshotAt: time.rows[0].snapshot_at.toISOString(), seed,
       suites: selectCandidateSources(population, options) };
     if (options.censusOut) {
       const census = { formatVersion: 1, snapshotAt: snapshot.snapshotAt, seed,
-        selection: { memoryLimit: options.memoryLimit ?? 48, proseBudget: options.proseBudget ?? 48, maxClusterRows: options.maxClusterRows ?? 4 },
+        selection: { memoryLimit: options.memoryLimit ?? 48, proseBudget: options.proseBudget ?? 48, maxClusterRows: options.maxClusterRows ?? 4,
+          requireMemorySource: options.requireMemorySource ?? false },
         eligibility: { memory: "active harness:papercusp memory, 100..1600 chars, created before 2026-09-30T22:18:00Z",
           prose: "papercusp% documentation source, 100..2000 content chars; rendered text capped at 2000" },
         // Full private source bytes allow later power expansion without re-reading a changing live corpus.
-        population, selectedKeys: { memory: snapshot.suites.memory.entries.map((e) => e.key), prose: snapshot.suites.prose.entries.map((e) => e.key) } };
+        population, excludedMemory: options.requireMemorySource ? population.memory.entries
+          .filter((e) => e.metadata?.sourceAttribution !== 'session').map((e) => ({ key: e.key, reason: 'unknown-source-provenance' })) : [],
+        selectedKeys: { memory: snapshot.suites.memory.entries.map((e) => e.key), prose: snapshot.suites.prose.entries.map((e) => e.key) } };
       fs.mkdirSync(path.dirname(options.censusOut), { recursive: true });
-      fs.writeFileSync(options.censusOut, JSON.stringify(census, null, 2), { flag: 'wx' });
+      fs.writeFileSync(options.censusOut, JSON.stringify(census, null, 2), { flag: 'wx', mode: 0o600 });
     }
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(snapshot, null, 2), { flag: 'wx' });
+    fs.writeFileSync(file, JSON.stringify(snapshot, null, 2), { flag: 'wx', mode: 0o600 });
     return snapshot;
   } finally { await db.end(); }
 }
@@ -282,6 +293,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     ...(process.argv.includes('--prose-budget') ? { proseBudget: Number(arg('--prose-budget')) } : {}),
     ...(process.argv.includes('--max-cluster-rows') ? { maxClusterRows: Number(arg('--max-cluster-rows')) } : {}),
     ...(process.argv.includes('--census-out') ? { censusOut: arg('--census-out') } : {}),
+    requireMemorySource: process.argv.includes('--require-memory-source'),
   })
     : runCandidateHybrid({ snapshot: arg('--snapshot'), gold: arg('--gold'), model: arg('--model') as 'mdenseon',
       modelDirectory: arg('--mdenseon-model'), corpus: arg('--corpus') as 'memory', out: arg('--out'),

@@ -234,7 +234,7 @@ function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) 
 function tick() {
   return runAdmissionPromoterWithRecovery({
     ...scope, runId: `chain-${++run}`, batchSize: 10, recentTerminalDays: 30, model: undefined,
-  }, { sql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
+  }, { sql: db.sql, lockSql: db.sql, llmCall: h.model, authorize: authorizeAdmissionRecovery, dispatch });
 }
 async function row(id: string) {
   const [r] = await db.sql`SELECT feature_id, title, status, admission, taken_by, payload

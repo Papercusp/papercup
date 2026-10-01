@@ -62,7 +62,9 @@ function testExecution(): GovernedExecution {
   };
 }
 
-const executionDeps: ExecProcessDeps = { beginExecution: async () => testExecution() };
+// lazyReceiptMs:0 — these tests pin admit-BEFORE-spawn; the lazy path has its own suite
+// (sidecar-exec-lazy-receipt.test.ts).
+const executionDeps: ExecProcessDeps = { beginExecution: async () => testExecution(), lazyReceiptMs: 0 };
 
 vi.mock('./spawner-sidecar-spawn', () => ({
   spawnSpawnerSidecar: async () => {},

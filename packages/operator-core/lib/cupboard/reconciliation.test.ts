@@ -94,7 +94,8 @@ function harness() {
   const tick = () => {
     clock += HOUR;
   };
-  return { store, filed, resolvedNotes, published, run, tick };
+  const hours = () => clock - NOW;
+  return { store, filed, resolvedNotes, published, run, tick, hours };
 }
 
 const BREAKS: readonly { invariant: ReconciliationInvariant; sources: () => ReconciliationSources }[] = [
@@ -183,6 +184,35 @@ describe('reconciliation (R-31)', () => {
     const again = await h.run(breakFixture.sources());
     expect(again.opened).toEqual([breakFixture.invariant]);
     expect(h.filed.map((f) => f.id)).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('a break found at month close stays open through provisional runs of the new month; only a final re-run resolves it', async () => {
+    const h = harness();
+    // Move to 2026-11-01T01:00Z: a final run now covers October, where the fixture's entries sit.
+    while (h.store.runs.length === 0 && Date.UTC(2026, 10, 1, 1) > NOW + h.hours()) h.tick();
+    const breakFixture = BREAKS[0]!;
+    const closed = await h.run(breakFixture.sources(), 'final');
+    expect(closed.opened).toEqual([breakFixture.invariant]);
+    const detailAtClose = h.store.rows.get(`${WS}\u0000${breakFixture.invariant}`)!.detail;
+    h.tick();
+    // November is clean (no movements yet), but that says nothing about October.
+    const november = {
+      ...cleanSources(),
+      stripe: { status: 'ok', value: [] },
+      bank: { status: 'ok', value: [] },
+      chain: { status: 'ok', value: [] },
+    } as const;
+    const hourly = await h.run(november);
+    expect(hourly.resolved).toEqual([]);
+    expect(hourly.gate).toEqual({ open: false, reasons: [`break open: ${breakFixture.invariant}`] });
+    expect(h.store.rows.get(`${WS}\u0000${breakFixture.invariant}`)!.detail).toBe(detailAtClose);
+    expect(h.resolvedNotes).toEqual([]);
+    h.tick();
+    const reclose = await h.run(cleanSources(), 'final');
+    expect(reclose.resolved).toEqual([breakFixture.invariant]);
+    expect(h.resolvedNotes).toEqual(['WI-1']);
+    expect(reclose.gate.open).toBe(true);
+    expect(h.filed).toHaveLength(1);
   });
 
   it('a source that fails keeps the gate closed without filing a break, and does not resolve an open one', async () => {

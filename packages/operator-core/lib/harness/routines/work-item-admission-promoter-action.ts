@@ -83,13 +83,14 @@ async function productionPromoter(ctx: SystemActionCtx): Promise<PromoterRunResu
  */
 export async function runAdmissionPromoterWithRecovery(
   options: ReturnType<typeof admissionPromoterOptions>,
-  deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch'> & { sql: Sql; llmCall: PromoterLlmCall },
+  deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch' | 'lockSql'> & { sql: Sql; llmCall: PromoterLlmCall },
 ): Promise<PromoterRunResult> {
   const { runAdmissionRecoveries } = await import('../../work-item-admission-recovery');
   const recoveryRuns: PromoterRunResult[] = [];
   const recovered = await runAdmissionRecoveries(options, {
     authorize: deps.authorize,
     dispatch: deps.dispatch,
+    lockSql: deps.lockSql,
     screen: async (scope, beforePersist) => {
       const result = await runWorkItemAdmissionPromoter({
         ...options,

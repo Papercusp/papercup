@@ -436,7 +436,8 @@ export async function runReconciliationPass(
   input: { readonly mode: ReconciliationMode; readonly workspaces?: readonly string[] },
   deps: ReconciliationPassDeps = {},
 ): Promise<ReconciliationPassResult> {
-  const sql = deps.sql ?? getOrgPg().sql;
+  // Resolved only by the defaults that need it, so a fully injected pass never opens a pool.
+  const sql = (): Sql => deps.sql ?? getOrgPg().sql;
   const config = deps.config ?? readReconciliationRuntimeConfig();
   const now = deps.now ?? Date.now;
   const resolveSecret = deps.resolveSecret ?? defaultResolveSecret;
@@ -477,7 +478,7 @@ export async function runReconciliationPass(
   const chainVerifier =
     deps.chainVerifier !== undefined ? deps.chainVerifier : config.chainRpcUrl ? viemChainReceiptVerifier(config.chainRpcUrl) : null;
 
-  const store = deps.store ?? pgReconciliationStore(sql);
+  const store = deps.store ?? pgReconciliationStore(sql());
   const filer = deps.filer ?? workItemBreakFiler();
   const gateFor = (treasuryReconciled: boolean): GatePublisher =>
     deps.gate ?? cupboardGatePublisher({ baseUrl: config.cupboardUrl, secret: gateSecret, treasuryReconciled, fetchImpl, now });
@@ -485,10 +486,10 @@ export async function runReconciliationPass(
     deps.post ??
     ((workspaceId: string): JournalPoster =>
       async (entry) => {
-        const r = await postMoneyJournalEntry({ workspaceId, entry }, { sql });
+        const r = await postMoneyJournalEntry({ workspaceId, entry }, { sql: sql() });
         return r.ok ? { ok: true, duplicate: r.duplicate } : { ok: false, code: r.code, detail: r.detail };
       });
-  const readEntries = deps.readEntries ?? ((ws: string) => readMoneyJournalEntries(ws, { sql }));
+  const readEntries = deps.readEntries ?? ((ws: string) => readMoneyJournalEntries(ws, { sql: sql() }));
 
   // The Worker's records are deployment-wide (one Cupboard per operator), read once.
   let cupboard: SourceRead<ReconciliationInputs> = cupboardUnavailable;
@@ -509,7 +510,7 @@ export async function runReconciliationPass(
   }
 
   const workspaceIds =
-    input.workspaces ?? (await reconciliationWorkspaces(sql, [config.stripeJournalWorkspace, config.treasuryWorkspace]));
+    input.workspaces ?? (await reconciliationWorkspaces(sql(), [config.stripeJournalWorkspace, config.treasuryWorkspace]));
   const results: WorkspaceReconciliation[] = [];
   for (const workspaceId of workspaceIds) {
     const startedAtMs = now();
@@ -593,6 +594,39 @@ export async function runReconciliationPass(
     }
   }
   return { mode: input.mode, workspaces: results };
+}
+
+/** The month (`YYYY-MM`) of each workspace's latest final run. */
+export async function latestFinalMonths(sql: Sql): Promise<Map<string, string>> {
+  const rows = await sql<{ workspace_id: string; month: string }[]>`
+    SELECT workspace_id, max(month) AS month FROM harness_shared.reconciliation_runs WHERE mode = 'final' GROUP BY workspace_id`;
+  return new Map(rows.map((r) => [r.workspace_id, r.month]));
+}
+
+export interface ScheduledReconciliationResult {
+  readonly final: ReconciliationPassResult | null;
+  readonly provisional: ReconciliationPassResult;
+}
+
+/**
+ * The scheduled tick. The month-close (final) run goes first, for every
+ * workspace whose closed month has no final run yet, so a tick missed on day 1
+ * is made up by the next one; then the hourly provisional run, whose gate push
+ * is the latest and so the one in force.
+ */
+export async function runScheduledReconciliation(
+  deps: ReconciliationPassDeps & { readonly finalMonths?: () => Promise<Map<string, string>> } = {},
+): Promise<ScheduledReconciliationResult> {
+  const now = deps.now ?? Date.now;
+  const sql = (): Sql => deps.sql ?? getOrgPg().sql;
+  const config = deps.config ?? readReconciliationRuntimeConfig();
+  const workspaces = await reconciliationWorkspaces(sql(), [config.stripeJournalWorkspace, config.treasuryWorkspace]);
+  const closedMonth = reconciliationPeriod('final', now()).month;
+  const finals = await (deps.finalMonths ?? (() => latestFinalMonths(sql())))();
+  const due = workspaces.filter((ws) => (finals.get(ws) ?? '') < closedMonth);
+  const final = due.length > 0 ? await runReconciliationPass({ mode: 'final', workspaces: due }, { ...deps, config }) : null;
+  const provisional = await runReconciliationPass({ mode: 'provisional', workspaces }, { ...deps, config });
+  return { final, provisional };
 }
 
 /** The cash movement a balance transaction records, or null when the journal deliberately skips it (payouts). */

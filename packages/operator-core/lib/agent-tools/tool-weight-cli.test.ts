@@ -8,6 +8,7 @@ import {
   SCHEMA_BYTE_BUDGET,
   type NamedToolWeight,
 } from './tool-guidance-budget';
+import { FLOOR_HEADROOM_MARGIN_BYTES, summarizeDelivery } from './tool-delivery-policy';
 import {
   formatToolWeightReport,
   measureToolWeights,
@@ -139,6 +140,87 @@ describe('tool-weight CLI', () => {
       );
       expect(report).toContain(`argSchema ${OVER} bytes`);
       expect(report).not.toContain('prose ');
+    });
+  });
+
+  /**
+   * The edit-time floor-budget signal (WI-10004590). A floor-tool description edit is only
+   * caught by psu-launcher.test.ts at gate time; these pin that the CLI surfaces the
+   * remaining headroom — and flips to LOW / OVERRUN — before the gate does.
+   */
+  describe('tool-delivery floor headroom', () => {
+    // Two floors seat 600 + 400 = 1000 compact bytes; `other:tool` is a non-floor.
+    const catalog = [
+      { name: 'floor:a', fullBytes: 900, compactBytes: 600 },
+      { name: 'floor:b', fullBytes: 700, compactBytes: 400 },
+      { name: 'other:tool', fullBytes: 500, compactBytes: 300 },
+    ];
+    const deliveryWith = (budgetBytes: number) =>
+      summarizeDelivery({
+        agentKind: 'claude',
+        catalog,
+        demand: [],
+        floors: ['floor:a', 'floor:b'],
+        budgetBytes,
+      });
+    const toolWeights: NamedToolWeight[] = [
+      { name: 'floor:a', weight: 200 },
+      { name: 'other:tool', weight: 200 },
+    ];
+    const run = (args: string[], delivery?: ReturnType<typeof deliveryWith>) => {
+      const out: string[] = [];
+      const code = runToolWeightCli(args, toolWeights, (t) => out.push(t), vi.fn(), delivery);
+      return { code, text: out.join('\n') };
+    };
+
+    it('prints the headroom line under the header, and nothing when delivery was not measured', () => {
+      const withDelivery = run(['--all'], deliveryWith(1000 + FLOOR_HEADROOM_MARGIN_BYTES + 36));
+      expect(withDelivery.text).toContain('floor headroom: OK 100 B of 1100');
+      expect(withDelivery.text.split('\n')[1]).toMatch(/^floor headroom:/);
+      // A bare fixture run must keep its old shape — no phantom zero-headroom line.
+      expect(run(['--all']).text).not.toContain('floor headroom');
+    });
+
+    it('flips to LOW below the margin, names the byte count, and stays advisory (exit 0)', () => {
+      const lowBudget = 1000 + FLOOR_HEADROOM_MARGIN_BYTES - 1;
+      const r = run(['floor:a'], deliveryWith(lowBudget));
+      expect(r.text).toContain(`floor headroom: LOW ${FLOOR_HEADROOM_MARGIN_BYTES - 1} B of ${lowBudget}`);
+      expect(r.text).toContain(`more than ${FLOOR_HEADROOM_MARGIN_BYTES - 1} B overruns`);
+      expect(r.code).toBe(0);
+    });
+
+    it('is OK at exactly the margin — the boundary is inclusive of the margin itself', () => {
+      const r = run(['floor:a'], deliveryWith(1000 + FLOOR_HEADROOM_MARGIN_BYTES));
+      expect(r.text).toContain(`floor headroom: OK ${FLOOR_HEADROOM_MARGIN_BYTES} B`);
+    });
+
+    it('reports an OVERRUN and exits non-zero, even for a tool that is not a floor', () => {
+      const r = run(['other:tool'], deliveryWith(900));
+      expect(r.text).toContain('floor headroom: OVERRUN by 100 B of 900');
+      expect(r.code).toBe(1);
+    });
+
+    it('labels a FLOOR tool and sizes it for a single-tool query, but not in a listing', () => {
+      const delivery = deliveryWith(1100);
+      const floor = run(['floor:a'], delivery).text;
+      expect(floor).toContain('delivery compact · FLOOR tool (counts against the headroom above)');
+      expect(floor).toContain('compact 600 B · full 900 B');
+      const plain = run(['other:tool'], delivery).text;
+      expect(plain).toContain('not a floor tool');
+      expect(plain).toContain('compact 300 B · full 500 B');
+      expect(run(['--all'], delivery).text).not.toContain('delivery ');
+    });
+
+    it('carries floorHeadroom and per-tool delivery in --json, and omits both without delivery', () => {
+      const json = JSON.parse(run(['--json', '--all'], deliveryWith(1010)).text) as {
+        floorHeadroom: { headroomBytes: number; status: string };
+        tools: Array<{ name: string; delivery?: { isFloor: boolean } }>;
+      };
+      expect(json.floorHeadroom).toMatchObject({ headroomBytes: 10, status: 'low' });
+      expect(json.tools.find((t) => t.name === 'floor:a')?.delivery?.isFloor).toBe(true);
+      expect(json.tools.find((t) => t.name === 'other:tool')?.delivery?.isFloor).toBe(false);
+      const bare = JSON.parse(run(['--json', '--all']).text) as Record<string, unknown>;
+      expect('floorHeadroom' in bare).toBe(false);
     });
   });
 

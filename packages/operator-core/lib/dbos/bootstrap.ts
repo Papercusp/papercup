@@ -436,6 +436,11 @@ async function startDbosOnce(): Promise<void> {
   // and PAPERCUSP_LEDGER_ANCHOR_BACKEND=none turns it off.
   await import('./ledger-anchor-workflow');
 
+  // agent-economy-flywheel-2026-08-30 P-043 (D-025): hourly money reconciliation, plus the
+  // month-close final run. Registered ungated: with no rails configured every source reads
+  // not-configured and no gate is pushed, so the Worker keeps DAO transfers paused.
+  await import('./reconciliation-workflow');
+
   // EI-20196041413229589: register the release:checkpoint-run eligibility waiter before
   // DBOS.launch, then install its request-side enqueue seam only after the runtime is live.
   // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.

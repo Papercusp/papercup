@@ -363,6 +363,11 @@ export interface NewHarnessInput {
   pinned_commit_sha?: string | null;
   pinned_tree_digest?: string | null;
   pinned_at?: number | null;
+  // Worker-computed recipe authority (migration 039 / P-007). Recipe kind only;
+  // null on every other kind. 1 = could not prove the script's effects statically
+  // (the Worker never writes 0 on a failure path).
+  authority_unresolved?: number | null;
+  authority_unresolved_cause?: string | null;
   created_at: number;
 }
 
@@ -385,9 +390,10 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           release_version, release_content_hash, release_manifest_digest,
           release_signature, release_manifest, identity_surface, release_published_at,
           pinned_commit_sha, pinned_tree_digest, pinned_at,
+          authority_unresolved, authority_unresolved_cause,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -438,6 +444,8 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.pinned_commit_sha ?? null,
       h.pinned_tree_digest ?? null,
       h.pinned_at ?? null,
+      h.authority_unresolved ?? null,
+      h.authority_unresolved_cause ?? null,
       h.created_at,
       h.created_at,
     )
@@ -526,6 +534,9 @@ export interface ApproveListingVersionInput {
   approved: { commitSha: string; treeDigest: string } | null;
   /** True when `approved` replaces a different stored pin (a drifted row). */
   repinned: boolean;
+  /** The Worker's authority verdict for the RE-PINNED bytes (recipe kind, P-007). Applied
+   *  only when `repinned`; null leaves the stored verdict untouched. */
+  authority?: { unresolved: boolean; cause: string | null } | null;
   /** The identity whose older versions this approval retires; null = retire none. */
   retire: Pick<HarnessRow, 'github_repository_id' | 'listing_kind' | 'listing_ref' | 'created_at'> | null;
 }
@@ -547,7 +558,9 @@ export async function approveListingVersion(db: D1Database, input: ApproveListin
                 drift = 0,
                 pinned_commit_sha = COALESCE(?, pinned_commit_sha),
                 pinned_tree_digest = COALESCE(?, pinned_tree_digest),
-                pinned_at = COALESCE(?, pinned_at)
+                pinned_at = COALESCE(?, pinned_at),
+                authority_unresolved = COALESCE(?, authority_unresolved),
+                authority_unresolved_cause = CASE WHEN ? = 1 THEN ? ELSE authority_unresolved_cause END
           WHERE id = ? AND review_status = 'pending' AND unlisted_at IS NULL`,
       )
       .bind(
@@ -560,6 +573,11 @@ export async function approveListingVersion(db: D1Database, input: ApproveListin
         input.repinned ? (approved?.commitSha ?? null) : null,
         input.repinned ? (approved?.treeDigest ?? null) : null,
         input.repinned ? now : null,
+        // P-007: the Worker's verdict for the re-pinned bytes. The cause is replaced (possibly by
+        // NULL = resolved) only when a verdict accompanies the re-pin; otherwise both are kept.
+        input.repinned && input.authority ? (input.authority.unresolved ? 1 : 0) : null,
+        input.repinned && input.authority ? 1 : 0,
+        input.repinned && input.authority ? input.authority.cause : null,
         id,
       ),
   ];

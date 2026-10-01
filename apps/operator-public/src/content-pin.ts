@@ -39,6 +39,59 @@ export function isSelfDescribingKind(kind: ListingKind): boolean {
 export const PIN_FILE_BUDGET = 2_000;
 export const PIN_BYTE_BUDGET = 32 * 1024 * 1024;
 
+/**
+ * The Worker's OWN verdict on a recipe's authority (P-007, D-005, D-010) — computed
+ * from the script bytes it fetched, never read from a publisher-supplied manifest field.
+ */
+export interface RecipeAuthorityVerdict {
+  /** TRUE unless the Worker PROVED the script resolvable. Every failure path (analyzer
+   *  unavailable, manifest missing or unreadable) is `true` — "could not analyze" is
+   *  never reported as "safe". */
+  unresolved: boolean;
+  /** The analyzer's cause kind, or the Worker's own `analyzer-unavailable` /
+   *  `recipe-manifest-missing` / `recipe-manifest-invalid`; null only when resolved. */
+  cause: string | null;
+}
+
+/** The manifest file the `recipe` kind installs from (`recipe-store.ts` RECIPE_MANIFEST). */
+export const RECIPE_MANIFEST_FILE = 'recipe.json';
+
+/** Injected analyzer seam: the production default is `deriveRecipeAuthority`. */
+export type RecipeAuthorityAnalyzer = (
+  script: string,
+) => Promise<{ unresolved: boolean; unresolvedCause?: { kind: string } | null }>;
+
+/** Derive the Worker-side recipe authority verdict from the fetched package parts. */
+export async function deriveWorkerRecipeAuthority(
+  parts: ReadonlyArray<{ path: string; text: string }>,
+  listingRef: string,
+  analyzer?: RecipeAuthorityAnalyzer,
+): Promise<RecipeAuthorityVerdict> {
+  const manifestPath = `${listingRef.replace(/\/+$/, '')}/${RECIPE_MANIFEST_FILE}`;
+  const manifest = parts.find((part) => part.path === manifestPath);
+  if (!manifest) return { unresolved: true, cause: 'recipe-manifest-missing' };
+  let script: unknown;
+  try {
+    script = (JSON.parse(manifest.text) as { script?: unknown } | null)?.script;
+  } catch {
+    return { unresolved: true, cause: 'recipe-manifest-invalid' };
+  }
+  if (typeof script !== 'string' || script.trim() === '') {
+    return { unresolved: true, cause: 'recipe-manifest-invalid' };
+  }
+  try {
+    // Lazy: the TypeScript compiler is ~1.7 MiB gzipped and costs ~360 ms CPU to initialise
+    // (D-010), so only a recipe publish pays for it — never a cold start or another kind.
+    const analyze =
+      analyzer ?? (await import('@papercusp/operator-core/lib/recipe-authority-derive')).deriveRecipeAuthority;
+    const descriptor = await analyze(script);
+    const unresolved = descriptor.unresolved === true;
+    return { unresolved, cause: unresolved ? (descriptor.unresolvedCause?.kind ?? 'analyzer-unavailable') : null };
+  } catch {
+    return { unresolved: true, cause: 'analyzer-unavailable' };
+  }
+}
+
 export interface ContentPin {
   ok: true;
   /** The default-branch head at publish time — what the installer fetches. */
@@ -47,6 +100,8 @@ export interface ContentPin {
   treeDigest: string;
   fileCount: number;
   byteCount: number;
+  /** The Worker's own authority verdict — present for the `recipe` kind only (P-007). */
+  recipeAuthority?: RecipeAuthorityVerdict;
 }
 
 export interface ContentIdentityLeakSite {
@@ -89,6 +144,11 @@ export interface PinListingContentInput {
    *  review approve path re-pins a drifted row to the SHA the operator actually
    *  read. `defaultBranch` is ignored when it is set. */
   commitSha?: string;
+  /** The listing kind. `recipe` makes the pin also compute the Worker's own authority
+   *  verdict from the fetched script (P-007); any other value (or none) skips it. */
+  kind?: ListingKind;
+  /** Test seam for the recipe authority analyzer; defaults to `deriveRecipeAuthority`. */
+  authorityAnalyzer?: RecipeAuthorityAnalyzer;
   /** Injected for tests / alternate hosts; defaults to the ambient `fetch`. */
   fetchImpl?: typeof fetch;
 }
@@ -325,5 +385,18 @@ export async function pinListingContent(input: PinListingContentInput): Promise<
   if (leaks.length > 0) return { ok: false, code: 'identity_leak', commitSha, hits: leaks };
 
   const treeDigest = await canonicalTreeDigest(entries);
-  return { ok: true, commitSha, treeDigest, fileCount: entries.length, byteCount };
+  // P-007 (D-005): the verdict is computed only after the bytes passed the identity scan, from
+  // the SAME blobs the digest covers — so it describes exactly the commit that is pinned.
+  const recipeAuthority =
+    input.kind === 'recipe'
+      ? await deriveWorkerRecipeAuthority(packageParts, input.listingRef, input.authorityAnalyzer)
+      : undefined;
+  return {
+    ok: true,
+    commitSha,
+    treeDigest,
+    fileCount: entries.length,
+    byteCount,
+    ...(recipeAuthority ? { recipeAuthority } : {}),
+  };
 }

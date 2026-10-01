@@ -17,7 +17,7 @@ vi.mock('./sidecar-exec-process', async (original) => {
   return {
     ...actual,
     execProcess: (params: Parameters<typeof actual.execProcess>[0], deps: Parameters<typeof actual.execProcess>[1]) =>
-      actual.execProcess(params, { ...deps, beginExecution: h.begin, killGraceMs: 100 }),
+      actual.execProcess(params, { ...deps, beginExecution: h.begin, killGraceMs: 100, lazyReceiptMs: 0 }),
   };
 });
 

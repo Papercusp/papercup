@@ -1575,6 +1575,7 @@ import './cupboard/ledger-chain-witness';
 // (read) and run-now (write).
 import './cupboard/ledger-anchor';
 import './cupboard/ledger-anchor-run';
+import './cupboard/reconciliation';
 import './cupboard/bind-wallet';
 import './cupboard/bind-identity-funding';
 // P-031 — the per-unit half of the same commerce surface. A per-use offer has no

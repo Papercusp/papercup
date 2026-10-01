@@ -782,6 +782,7 @@ function registerListingEndpoints(
         name: body.github_name,
         defaultBranch: repoMeta.default_branch,
         listingRef: body.listing_ref as string,
+        kind,
       });
       if (!pinned.ok) {
         if (pinned.code === 'github_tree_unreachable') {
@@ -1061,6 +1062,10 @@ function registerListingEndpoints(
       pinned_commit_sha: pin?.commitSha ?? null,
       pinned_tree_digest: pin?.treeDigest ?? null,
       pinned_at: pin ? now : null,
+      // P-007: the Worker's OWN authority verdict for a recipe (never the publisher's manifest
+      // claim); null on every other kind.
+      authority_unresolved: pin?.recipeAuthority ? (pin.recipeAuthority.unresolved ? 1 : 0) : null,
+      authority_unresolved_cause: pin?.recipeAuthority?.cause ?? null,
       created_at: now,
     });
     // SPEC-P-004@2: a new SHA is a new VERSION, and the previously approved one

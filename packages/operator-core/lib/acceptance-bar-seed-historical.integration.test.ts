@@ -367,6 +367,7 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
       requiredTestLayers: [],
       mutationRequired: false,
       lifecycleStatus: 'superseded',
+      sourceBar: null,
       acceptanceRef: 'superseded by reviewed R-1 remap to P-002',
       actorId: 'su-reviewer',
     }, {

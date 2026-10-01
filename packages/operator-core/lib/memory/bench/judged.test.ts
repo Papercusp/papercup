@@ -5,6 +5,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { candidateSourcePartition } from './candidate-hybrid-bench';
 
 import { deriveRubricVersion, JUDGE_PROMPT_SCAFFOLD_VERSION } from '@papercusp/testing-shell/llm';
 import type { LlmCallFn } from '@papercusp/testing-shell/llm';
@@ -26,6 +30,7 @@ import {
   synthesizeRun,
   deriveBlindConsensus,
   BLIND_COHORT_CONTRACT,
+  collectIndependentCohort,
   type JudgedQueryOutcome,
 } from './judged';
 import type { BackendCtx } from './run-bench';
@@ -63,6 +68,56 @@ describe('independent blind label consensus', () => {
   it('rejects unsubmitted keys and malformed class bundles', () => {
     expect(() => deriveBlindConsensus(entries, questions, [votes, votes.map((v) => ({ ...v, relevantKeys: ['unsubmitted'] }))])).toThrow('unknown');
     expect(() => deriveBlindConsensus(entries, questions.map((q) => ({ ...q, class: 'exact-identifier' })), [votes, votes])).toThrow('unbalanced');
+  });
+});
+
+describe('blind label collection through the injected stateless transport', () => {
+  it('retains separate raw calls, labels from full-chunk consensus and exact-input recovery guards', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blind-cohort-test-'));
+    try {
+      const seed = 'blind-test';
+      const sourceFor = (partition: 'calibration' | 'test') => {
+        for (let i = 0; i < 1000; i++) if (candidateSourcePartition(`session:s${i}`, seed) === partition) return `s${i}`;
+        throw new Error('test source not found');
+      };
+      const entries = ['calibration', 'test'].map((partition) => {
+        const sourceSession = sourceFor(partition as 'calibration' | 'test');
+        return { key: sourceSession, text: `frozen source ${sourceSession}`, kind: 'fact', metadata: {
+          cluster: `session:${sourceSession}`, sourceSession, sourceAttribution: 'session', partition,
+        } };
+      });
+      const snapshot = path.join(root, 'snapshot.json');
+      fs.writeFileSync(snapshot, JSON.stringify({ formatVersion: 1, seed, snapshotAt: '2026-01-01T00:00:00.000Z',
+        suites: { memory: { entries }, prose: { entries } } }));
+      let calls = 0;
+      const llm: LlmCallFn = async (opts) => {
+        calls++; expect(opts.ownerId).toBeTruthy(); expect(opts.model).toBe(BLIND_COHORT_CONTRACT.model);
+        const input = JSON.parse(opts.messages[0].content);
+        const json = input.questions ? { votes: input.questions.map((q: { queryId: string; query: string }) => ({
+          queryId: q.queryId, relevantKeys: q.queryId.endsWith('hard-negative') ? []
+            : input.sources.filter((s: { key: string }) => q.query.includes(`target=${s.key};`)).map((s: { key: string }) => s.key),
+          ambiguous: false, note: 'fixture judgment',
+        })) } : { queries: ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'].map((cls) => ({
+          class: cls, query: `target=${input.sources[0].key}; fixture question ${cls}`,
+        })) };
+        return { text: JSON.stringify(json), json, inputTokens: 1, outputTokens: 1, costUsd: 0, raw: null };
+      };
+      const out = path.join(root, 'run');
+      const receipt = await collectIndependentCohort({ snapshot, out, llm, targetsPerPartition: 1 });
+      expect(calls).toBe(8);
+      const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+      const proofs = JSON.parse(fs.readFileSync(receipt.judgments.path, 'utf8'));
+      expect(labels.memory).toHaveLength(8); expect(labels.prose).toHaveLength(8);
+      expect(proofs.memory.agreement).toBe(1);
+      expect(new Set(proofs.memory.judges.map((j: { transport: string }) => j.transport)).size).toBe(2);
+      await expect(collectIndependentCohort({ snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('already finished');
+      fs.unlinkSync(receipt.judgments.path);
+      const rawFile = fs.readdirSync(out).find((name) => name.startsWith('memory-author-'))!;
+      const raw = JSON.parse(fs.readFileSync(path.join(out, rawFile), 'utf8'));
+      raw.messages[0].content = 'altered provenance'; fs.writeFileSync(path.join(out, rawFile), JSON.stringify(raw));
+      await expect(collectIndependentCohort({ snapshot, out, llm, targetsPerPartition: 1 })).rejects.toThrow('invalid recovered');
+      expect(calls).toBe(8);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 });
 

@@ -52,19 +52,23 @@ export function pgReconciliationStore(sql?: Sql): ReconciliationStore {
   const db = (): Sql => sql ?? getOrgPg().sql;
   return {
     async listOpenBreaks(workspaceId) {
+      // The opening run's mode comes from its run row, which is recorded at the
+      // end of the run: a break whose opener died first has no mode (provisional).
       const rows = (await db().unsafe(
-        `SELECT invariant, work_item_id, opened_at, opened_by_run
-           FROM harness_shared.reconciliation_breaks
-          WHERE workspace_id = $1 AND resolved_at IS NULL
-          ORDER BY opened_at ASC, invariant ASC`,
+        `SELECT b.invariant, b.work_item_id, b.opened_at, b.opened_by_run, r.mode AS opened_mode
+           FROM harness_shared.reconciliation_breaks b
+           LEFT JOIN harness_shared.reconciliation_runs r ON r.run_id = b.opened_by_run
+          WHERE b.workspace_id = $1 AND b.resolved_at IS NULL
+          ORDER BY b.opened_at ASC, b.invariant ASC`,
         [workspaceId],
-      )) as unknown as BreakRow[];
+      )) as unknown as Array<BreakRow & { opened_mode: 'provisional' | 'final' | null }>;
       return rows.map(
         (row): OpenBreak => ({
           invariant: asInvariant(row.invariant),
           workItemId: row.work_item_id,
           openedAtMs: toMs(row.opened_at),
           openedByRunId: row.opened_by_run,
+          ...(row.opened_mode ? { openedMode: row.opened_mode } : {}),
         }),
       );
     },

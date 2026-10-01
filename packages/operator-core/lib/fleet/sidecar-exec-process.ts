@@ -30,7 +30,9 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
 
-import type { AdmissionContext } from '../resource-governor/admission';
+import * as path from 'node:path';
+
+import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
@@ -91,6 +93,154 @@ export interface ExecProcessDeps {
   onOutputActivity?: () => void;
   /** Injectable grace for real-process cancellation tests. */
   killGraceMs?: number;
+  /**
+   * How long a read-only git exec (see `qualifiesForLazyReceipt`) may run before
+   * it mints its durable admission receipt. `0` restores eager admit-before-spawn
+   * for EVERY command. Default `SIDECAR_LAZY_RECEIPT_DELAY_MS`. Commands that do
+   * not qualify are always admitted eagerly, whatever this says.
+   */
+  lazyReceiptMs?: number;
+}
+
+/**
+ * WI-10004674 / WI-10003465 — a read-only git exec lives ~4 ms, but its durable
+ * receipt costs four awaited PG statements (admit INSERT, lease UPDATE,
+ * markRunning UPDATE, release UPDATE). Fleet-wide that is ~10 execs/s = ~40
+ * statements/s through the sidecar's 2-connection pool on a WAL-saturated disk:
+ * measured enqueue->complete p50 0.5-3.5 s per read against 5 ms for bare git,
+ * and ~59% of native-PG WAL. The receipt is observe-only evidence here
+ * (decision reason `observe-only-targeted-lease`), so a read that is already
+ * finished by the time anyone could look at the ledger does not need one.
+ *
+ * A qualifying exec therefore spawns FIRST and mints its receipt only if it is
+ * still running after this delay. Slow reads (a network `ls-remote`, a huge
+ * `log`) keep full ledger visibility, merely `delay` late.
+ */
+export const SIDECAR_LAZY_RECEIPT_DELAY_MS = 750;
+
+/**
+ * Subcommands that read repository state and cannot fire a hook, so a late
+ * receipt never loses nested-process lineage worth keeping. `commit`, `push`,
+ * `fetch`, `checkout`, `merge`, `status` (fsmonitor hook) and anything unknown
+ * stay eager.
+ */
+const LAZY_RECEIPT_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'cat-file',
+  'check-ref-format',
+  'config',
+  'describe',
+  'diff',
+  'diff-files',
+  'diff-index',
+  'diff-tree',
+  'for-each-ref',
+  'log',
+  'ls-files',
+  'ls-remote',
+  'ls-tree',
+  'merge-base',
+  'name-rev',
+  'rev-list',
+  'rev-parse',
+  'show',
+  'show-ref',
+  'symbolic-ref',
+  'var',
+]);
+const GIT_GLOBAL_OPTIONS_WITH_SEPARATE_VALUE: ReadonlySet<string> = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+]);
+const GIT_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
+  '--no-pager',
+  '--no-optional-locks',
+  '--no-replace-objects',
+  '--literal-pathspecs',
+  '--bare',
+]);
+
+/** The git subcommand after its global options, or null when the argv is not understood. */
+export function gitSubcommandOf(args: readonly string[]): string | null {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (!arg.startsWith('-')) return arg;
+    if (GIT_GLOBAL_OPTIONS_WITH_SEPARATE_VALUE.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (/^--(?:git-dir|work-tree|namespace)=/.test(arg) || GIT_GLOBAL_FLAGS.has(arg)) continue;
+    // An option this parser does not know could swallow the next token; do not guess.
+    return null;
+  }
+  return null;
+}
+
+export function qualifiesForLazyReceipt(params: Pick<ExecParams, 'command' | 'args'>): boolean {
+  if (path.basename(params.command) !== 'git') return false;
+  const sub = gitSubcommandOf(params.args ?? []);
+  return sub !== null && LAZY_RECEIPT_GIT_SUBCOMMANDS.has(sub);
+}
+
+/** What `execProcess` needs from the durable receipt, whether minted eagerly or late. */
+interface ReceiptHandle {
+  /** Env override handed to the child (its nested-lineage context). */
+  readonly childEnv: Record<string, string>;
+  /** Call right after spawn: starts the lazy mint timer (no-op when eager). */
+  armAfterSpawn(): void;
+  finish(demand: ResourceDemand): Promise<void>;
+  cancel(reason: string): Promise<void>;
+}
+
+function eagerReceipt(execution: GovernedExecution): ReceiptHandle {
+  return {
+    childEnv: { PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context) },
+    armAfterSpawn: () => {},
+    // Eager settlement failures propagate: the caller reports them in stderr.
+    finish: async (demand) => { await execution.finish(demand); },
+    cancel: async (reason) => { await execution.cancel(reason); },
+  };
+}
+
+function lazyReceipt(
+  begin: (params: ExecParams) => Promise<GovernedExecution>,
+  params: ExecParams,
+  delayMs: number,
+): ReceiptHandle {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let minting: Promise<void> | null = null;
+  let execution: GovernedExecution | null = null;
+  const settle = async (op: (e: GovernedExecution) => Promise<unknown>): Promise<void> => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (minting) await minting;
+    if (!execution) return; // finished before the delay: no receipt was ever minted
+    // Evidence only: a late receipt is bookkeeping for a read that already
+    // succeeded, so its settlement failure must not turn that result into an error.
+    await op(execution).catch(() => undefined);
+  };
+  return {
+    // The child inherits the caller-supplied parent lineage; there is no receipt of its own yet.
+    childEnv: params.admissionContext
+      ? { PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(params.admissionContext) }
+      : {},
+    armAfterSpawn: () => {
+      timer = setTimeout(() => {
+        timer = null;
+        minting = begin(params).then(
+          (e) => { execution = e; },
+          () => undefined, // best-effort: never disturbs a running read
+        );
+      }, delayMs);
+      timer.unref?.();
+    },
+    finish: (demand) => settle((e) => e.finish(demand)),
+    cancel: (reason) => settle((e) => e.cancel(reason)),
+  };
 }
 
 async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
@@ -135,9 +285,12 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     return { code: -1, stdout: '', stderr: `spawner sidecar could not open a handoff file: ${String(e)}` };
   }
 
-  let execution: GovernedExecution;
+  const begin = deps.beginExecution ?? beginSidecarProcessExecution;
+  const lazyDelayMs = qualifiesForLazyReceipt(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
+  let execution: ReceiptHandle;
   try {
-    execution = await (deps.beginExecution ?? beginSidecarProcessExecution)(params);
+    // Lazy: nothing to admit yet — the receipt is minted only if the read outlives the delay.
+    execution = lazyDelayMs > 0 ? lazyReceipt(begin, params, lazyDelayMs) : eagerReceipt(await begin(params));
   } catch (e) {
     await stdinHandle?.close().catch(() => {});
     await stdoutHandle?.close().catch(() => {});
@@ -171,13 +324,15 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         env: {
           ...process.env,
           ...(params.env ?? {}),
-          PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
+          ...execution.childEnv,
         },
         stdio,
         // Own the command's helper processes too. Keep the child referenced;
         // detached here creates a POSIX process group, not a fire-and-forget job.
         detached: process.platform !== 'win32',
       });
+      // A lazy receipt's delay measures the child's runtime, not the setup before it.
+      execution.armAfterSpawn();
       // Decode across chunk boundaries: a multi-byte UTF-8 character split between
       // two `data` events decodes to replacement chars under a plain
       // `String(chunk)`, silently corrupting output (e.g. a non-ASCII author or

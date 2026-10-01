@@ -139,6 +139,7 @@ function harness(over: Partial<HarnessRow> = {}): HarnessRow {
     yanked_at: null, yanked_reason: null, revoked_at: null, revoked_reason: null,
     pinned_commit_sha: null, pinned_tree_digest: null, pinned_at: null,
     approved_commit_sha: null, approved_tree_digest: null, approved_at: null, drift: 0,
+    authority_unresolved: null, authority_unresolved_cause: null,
     ...over,
   };
 }

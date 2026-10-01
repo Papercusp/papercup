@@ -22,7 +22,10 @@ describe('current-build ingestion on a private background runtime', () => {
     const probe = String.raw`
       import assert from 'node:assert/strict';
       import { readFileSync } from 'node:fs';
+      import fsPromises from 'node:fs/promises';
       import { mkdir, writeFile } from 'node:fs/promises';
+      import { syncBuiltinESMExports } from 'node:module';
+      import { performance } from 'node:perf_hooks';
       import { createHash } from 'node:crypto';
       import { execFileSync } from 'node:child_process';
       import { join } from 'node:path';
@@ -54,7 +57,66 @@ describe('current-build ingestion on a private background runtime', () => {
       // 640 faithful parts. Metadata-only unchanged files isolate discovery,
       // state loading and metadata; this is not a production p95 workload.
       const workload = { id: 'synthetic-offset-tail-v1', homes: 320, filesPerHome: 15,
-        changedFiles: 80, usefulTurns: 64, parts: 640, repeats: 3 };
+        changedFiles: 80, usefulTurns: 64, parts: 640, repeats: 4 };
+      // A/B/B/A compares the same workload with and without the observer.
+      // These are awaited-operation spans, including queueing and scheduling;
+      // neither their wall time nor eventLoopUtilization measures kernel IO time.
+      const observerOrder = [false, true, true, false];
+      const managedRoot = join(e.PAPERCUSP_HOME, 'su-codex-homes');
+      const originals = { readdir: fsPromises.readdir, stat: fsPromises.stat };
+      let fsObservation = null;
+      function observeDiscovery(enabled) {
+        fsObservation = enabled ? { pending: 0, maxPending: 0,
+          readdir: { calls: 0, awaitMs: 0, activeMs: 0, idleMs: 0 },
+          stat: { calls: 0, awaitMs: 0, activeMs: 0, idleMs: 0 } } : null;
+        for (const name of ['readdir', 'stat']) {
+          fsPromises[name] = enabled ? async function(...args) {
+            if (typeof args[0] !== 'string' || !args[0].startsWith(managedRoot)) {
+              return originals[name](...args);
+            }
+            const bucket = fsObservation[name];
+            bucket.calls++;
+            fsObservation.maxPending = Math.max(fsObservation.maxPending, ++fsObservation.pending);
+            const began = performance.now();
+            const loopBegan = performance.eventLoopUtilization();
+            try { return await originals[name](...args); }
+            finally {
+              const loop = performance.eventLoopUtilization(loopBegan);
+              bucket.awaitMs += performance.now() - began;
+              bucket.activeMs += loop.active;
+              bucket.idleMs += loop.idle;
+              fsObservation.pending--;
+            }
+          } : originals[name];
+        }
+        syncBuiltinESMExports();
+      }
+      async function measuredSweep(observe) {
+        observeDiscovery(observe);
+        const cpuStarted = process.cpuUsage();
+        const loopStarted = performance.eventLoopUtilization();
+        try {
+          const stats = await runSessionIngestOnce();
+          const loop = performance.eventLoopUtilization(loopStarted);
+          const cpu = process.cpuUsage(cpuStarted);
+          const observation = fsObservation;
+          if (observation) {
+            assert.equal(observation.pending, 0);
+            assert.equal(observation.maxPending, 1, 'production discovery is sequential');
+            assert.equal(observation.readdir.calls, workload.homes * 4 + 1);
+            assert.equal(observation.stat.calls, workload.homes * workload.filesPerHome);
+            for (const bucket of [observation.readdir, observation.stat]) {
+              assert.ok(bucket.awaitMs > 0 && bucket.activeMs >= 0 && bucket.idleMs >= 0);
+            }
+            assert.ok(observation.readdir.awaitMs + observation.stat.awaitMs <= stats.phaseMs.discovery + 1,
+              'non-overlapping discovery spans must fit their production phase');
+          }
+          return { ...stats, discoveryFs: observation,
+            mainLoopMs: { active: loop.active, idle: loop.idle },
+            // Includes all process threads; never label this per-phase JS CPU.
+            processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 } };
+        } finally { observeDiscovery(false); }
+      }
       let frozenTail = null;
       let corpusHash = null;
       if (e.TEST_INGEST_CORPUS_PATH) {
@@ -117,6 +179,7 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(baseline.filesIngested, 0);
         assert.equal(baseline.turnsInserted, 0);
         const passes = [];
+        const matchedUnchanged = [];
         for (let repeat = 0; repeat < workload.repeats; repeat++) {
           const sizes = [];
           for (let i = 0; i < workload.changedFiles; i++) {
@@ -141,9 +204,7 @@ describe('current-build ingestion on a private background runtime', () => {
             'counts_backfill_offset = $2::bigint, parts_backfill_offset = $2::bigint',
             'WHERE file_path IN (SELECT jsonb_array_elements_text($1::jsonb))',
           ].join(' '), [changedPaths, prefixBytes]);
-          const cpuStarted = process.cpuUsage();
-          const stats = await runSessionIngestOnce();
-          const cpu = process.cpuUsage(cpuStarted);
+          const stats = await measuredSweep(observerOrder[repeat]);
           assert.equal(stats.errors, 0, JSON.stringify(stats));
           assert.equal(stats.filesScanned, 4800);
           assert.equal(stats.filesIngested, workload.changedFiles);
@@ -162,7 +223,16 @@ describe('current-build ingestion on a private background runtime', () => {
           ].join(' '), [changedPaths]);
           const byPath = new Map(offsets.map(r => [r.file_path, Number(r.byte_offset)]));
           for (let i = 0; i < workload.changedFiles; i++) assert.equal(byPath.get(files[i]), sizes[i]);
-          passes.push({ ...stats, processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 } });
+          passes.push(stats);
+          const noTail = await measuredSweep(observerOrder[repeat]);
+          assert.equal(noTail.errors, 0);
+          assert.equal(noTail.filesScanned, files.length);
+          assert.equal(noTail.filesIngested, 0);
+          assert.equal(noTail.turnsInserted, 0);
+          assert.equal(noTail.partsInserted ?? 0, 0);
+          assert.equal(noTail.phaseMs.decode, 0);
+          assert.equal(noTail.phaseMs.writes, 0);
+          matchedUnchanged.push(noTail);
         }
         const rows = await sql.unsafe("SELECT count(*)::int AS n FROM harness_shared.session_turns WHERE source_kind = 'codex'");
         const parts = await sql.unsafe("SELECT count(*)::int AS n FROM harness_shared.session_turn_parts WHERE source_kind = 'codex'");
@@ -181,7 +251,8 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
         console.log('INGEST_RUNTIME_PROBE ' + JSON.stringify({
           sourceHash, head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-          workload, workloadHash, baseline, passes, unchanged,
+          workload, workloadHash, observerOrder, baseline, passes, matchedUnchanged, unchanged,
+          child: { pid: process.pid, node: process.version, backgroundWorkers: e.PAPERCUSP_BACKGROUND_WORKERS },
           privateRows: rows[0].n, privateParts: parts[0].n, home: e.HOME, dbPort: dbUrl.port,
         }));
       } finally { await sql.end(); }

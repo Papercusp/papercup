@@ -247,6 +247,7 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
     // it, and make this the single served version of its identity.
     let approved: { commitSha: string; treeDigest: string } | null = null;
     let repinned = false;
+    let repinAuthority: { unresolved: boolean; cause: string | null } | null = null;
     if (isSelfDescribingKind(row.listing_kind)) {
       // Non-null: the content_pin_required guard above refused a NULL pin.
       approved = { commitSha: row.pinned_commit_sha as string, treeDigest: row.pinned_tree_digest as string };
@@ -272,12 +273,16 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
           defaultBranch: '',
           listingRef: row.listing_ref as string,
           commitSha: reviewed,
+          kind: row.listing_kind,
         });
         if (!repin.ok) {
           const refusal = pinRefusalToHttp(repin);
           return c.json(refusal.body, refusal.status);
         }
         approved = { commitSha: repin.commitSha, treeDigest: repin.treeDigest };
+        // P-007: a re-pin replaces the pinned bytes, so the Worker's authority verdict must be
+        // the one computed from THOSE bytes, not the superseded commit's.
+        repinAuthority = repin.recipeAuthority ?? null;
         repinned = true;
       }
     }
@@ -288,6 +293,7 @@ export function adminRoute(): Hono<{ Bindings: Env }> {
       now,
       approved,
       repinned,
+      authority: repinAuthority,
       retire: approved ? row : null,
     });
     await audit(c.env.DB, now, 'review_decided', {

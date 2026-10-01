@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout,
-  selectCandidateSources, candidateSourcePartition, type HeldoutQuery } from './candidate-hybrid-bench';
+  selectCandidateSources, candidateSourcePartition, candidateMemoryEntry, type HeldoutQuery } from './candidate-hybrid-bench';
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
   mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -22,6 +22,18 @@ const queries: HeldoutQuery[] = [
   { id: 't', class: 'exact-identifier', query: 'question b', expected: ['b'], partition: 'test', group: 'b' },
 ];
 describe('candidate hybrid fairness guards', () => {
+  it('keeps distinct facts from one recorded session together and excludes unknown provenance for blind labels', () => {
+    const facts = Array.from({ length: 64 }, (_, i) => candidateMemoryEntry({ id: String(i), text: `fact ${i}`,
+      source_session: i < 32 ? 'same-session' : i < 63 ? `session-${i}` : null }));
+    const selected = selectCandidateSources({ memory: { entries: facts }, prose: { entries: [] } },
+      { seed: 'independent-source', memoryLimit: 64, requireMemorySource: true });
+    expect(selected.memory.entries).toHaveLength(63);
+    const siblings = selected.memory.entries.filter((e) => e.metadata!.sourceSession === 'same-session');
+    expect(siblings).toHaveLength(32);
+    expect(new Set(siblings.map((e) => e.metadata!.partition)).size).toBe(1);
+    expect(selected.memory.entries.every((e) => e.metadata!.sourceAttribution === 'session')).toBe(true);
+    expect(candidateMemoryEntry({ id: 'legacy', text: 'legacy fact' }).metadata).toMatchObject({ sourceAttribution: 'unknown' });
+  });
   it('freezes larger samples with real-source partitions that survive reordering and expansion', () => {
     const rows = Array.from({ length: 96 }, (_, i) => ({ key: `key-${i}`, text: `source ${i}`, kind: 'doc',
       metadata: { cluster: `page-${Math.floor(i / 4)}` } }));
