@@ -12,7 +12,7 @@ use crate::models::{
 use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::Style,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
@@ -1059,21 +1059,72 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
                     app.unseen_notifs
                 };
                 if badge > 0 {
-                    Line::from(format!(" {}:{} ({}) ", k, label, badge))
+                    Line::from(format!("{}:{} ({})", k, label, badge))
                 } else {
-                    Line::from(format!(" {}:{} ", k, label))
+                    Line::from(format!("{}:{}", k, label))
                 }
             } else {
-                Line::from(format!(" {}:{} ", k, label))
+                Line::from(format!("{}:{}", k, label))
             }
         })
         .collect();
     // Selection index is the position within the VISIBLE list (which differs
     // from Tab::index() when a subset is active).
     let sel = visible.iter().position(|t| *t == app.tab).unwrap_or(0);
-    let tabs = Tabs::new(titles)
+    // Keep a contiguous window around the selected tab. Passing every title to
+    // Ratatui lets it clip a label at the terminal edge (e.g. `7:T` at 110
+    // columns), which looks like another tab exists with a broken name.
+    let divider = " │ ";
+    let divider_width = Line::from(divider).width();
+    // Ratatui adds one cell of padding on each side of every tab title.
+    let marker_width = Line::from("‹").width() + 2;
+    let title_widths: Vec<usize> = titles.iter().map(|line| line.width() + 2).collect();
+    let window_width = |start: usize, end: usize| {
+        let markers = usize::from(start > 0) + usize::from(end < titles.len());
+        let title_width = title_widths[start..end].iter().sum::<usize>();
+        let item_count = end - start + markers;
+        title_width
+            + markers * marker_width
+            + item_count.saturating_sub(1) * divider_width
+    };
+
+    let mut start = sel;
+    let mut end = sel + 1;
+    loop {
+        let current_width = window_width(start, end);
+        let left_width = (start > 0).then(|| window_width(start - 1, end));
+        let right_width = (end < titles.len()).then(|| window_width(start, end + 1));
+        let left_fits = left_width.is_some_and(|width| width <= area.width as usize);
+        let right_fits = right_width.is_some_and(|width| width <= area.width as usize);
+        match (left_fits, right_fits) {
+            (false, false) => break,
+            (true, false) => start -= 1,
+            (false, true) => end += 1,
+            (true, true) => {
+                let left_added = left_width.unwrap().saturating_sub(current_width);
+                let right_added = right_width.unwrap().saturating_sub(current_width);
+                if left_added <= right_added {
+                    start -= 1;
+                } else {
+                    end += 1;
+                }
+            }
+        }
+    }
+
+    let mut window = Vec::with_capacity(end - start + 2);
+    if start > 0 {
+        window.push(Line::from(Span::styled("‹", Theme::dim())));
+    }
+    window.extend(titles[start..end].iter().cloned());
+    if end < titles.len() {
+        window.push(Line::from(Span::styled("›", Theme::dim())));
+    }
+    let selected_index = sel - start + usize::from(start > 0);
+    let tabs = Tabs::new(window)
         .style(Theme::tab_bar())
-        .select(sel)
+        .divider(divider)
+        .select(selected_index)
         .highlight_style(Theme::selected());
     f.render_widget(tabs, area);
 }
@@ -5373,10 +5424,19 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     let Some(setup) = &app.session_setup else {
         return;
     };
-    let area = f.area().inner(Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
+    // A one-cell inset put the modal border directly beside workbench pane
+    // borders, doubling the outline at ordinary terminal sizes (WI-10003290).
+    let frame_area = f.area();
+    let area = centered_rect(84, 80, frame_area);
+    // Clear one cell around the modal as well. Pane edges immediately outside
+    // the old clear rectangle remained adjacent to its border and doubled it.
+    let clear_area = Rect::new(
+        area.x.saturating_sub(1),
+        area.y.saturating_sub(1),
+        area.width.saturating_add(2),
+        area.height.saturating_add(2),
+    )
+    .intersection(frame_area);
     let title = ["1 Context", "2 Runtime", "3 Review"][setup.step as usize];
     if let Some(field) = setup.project_entry {
         let lines = vec![
@@ -5400,7 +5460,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             }),
             Line::from(setup.note.clone().unwrap_or_default()),
         ];
-        f.render_widget(Clear, area);
+        f.render_widget(Clear, clear_area);
         f.render_widget(
             Paragraph::new(lines)
                 .style(Theme::popup())
@@ -5413,7 +5473,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     if setup.show_help {
         let text = "Setup and recovery\n\nNo operator on this computer? For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page; the desktop app is optional. l signs in to Papercusp cloud in your browser, then opens PUI on one of your cloud workspaces. h connects to a remote host you saved with psu (a cloud sign-in or an SSH host). Both hand this terminal to the psu bundled with PUI; when the remote PUI exits, this one exits too. Cancel (Ctrl-C) or a failed sign-in returns you here.\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start Papercusp Server. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
         let text = format!("{text}\n\nAccount setup: {}/settings/deploy-accounts\nOperator tokens entered here last for this PUI process only.", setup.endpoint);
-        f.render_widget(Clear, area);
+        f.render_widget(Clear, clear_area);
         f.render_widget(
             Paragraph::new(text)
                 .style(Theme::popup())
@@ -5448,7 +5508,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             Line::from("A changed address clears the previous operator token."),
             Line::from(setup.note.clone().unwrap_or_default()),
         ];
-        f.render_widget(Clear, area);
+        f.render_widget(Clear, clear_area);
         f.render_widget(
             Paragraph::new(lines)
                 .style(Theme::popup())
@@ -5577,7 +5637,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
     lines.push(Line::from(
         "← / Shift-Tab back · Esc close (message retained) · r retry · ? help",
     ));
-    f.render_widget(Clear, area);
+    f.render_widget(Clear, clear_area);
     f.render_widget(
         Paragraph::new(lines)
             .style(Theme::popup())
@@ -8627,6 +8687,64 @@ mod tests {
         ] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");
         }
+    }
+
+    #[test]
+    fn session_setup_overlay_does_not_double_border_workbench_edges() {
+        let mut app = App::new();
+        app.session_setup = Some(crate::session_config::SessionSetup::new(
+            "http://127.0.0.1:3170".into(),
+            "first words".into(),
+        ));
+
+        let text = render(&app, 110, 34);
+        let chars: Vec<char> = text.chars().collect();
+        let rows: Vec<String> = chars
+            .chunks(110)
+            .map(|row| row.iter().collect())
+            .collect();
+
+        let top = rows
+            .iter()
+            .find(|row| row.contains("New session"))
+            .expect("setup popup title renders");
+        let title_byte = top.find("New session").unwrap();
+        let title_col = top[..title_byte].chars().count();
+        let top_left = top[..title_byte].rfind('┌').unwrap();
+        let left_col = top[..top_left].chars().count();
+        let top_right_byte = top[title_byte..].find('┐').unwrap() + title_byte;
+        let right_col = top[..top_right_byte].chars().count();
+        let top_chars: Vec<char> = top.chars().collect();
+        assert_eq!(top_chars[left_col - 1], ' ', "left title gutter: {top}");
+        assert_eq!(top_chars[right_col + 1], ' ', "right title gutter: {top}");
+        assert!(title_col > left_col);
+
+        let body = rows
+            .iter()
+            .find(|row| row.contains("Operator: http://"))
+            .expect("setup popup body renders");
+        let body_chars: Vec<char> = body.chars().collect();
+        let operator_byte = body.find("Operator:").unwrap();
+        let body_left_byte = body[..operator_byte].rfind('│').unwrap();
+        let body_left = body[..body_left_byte].chars().count();
+        let body_right_byte = body[operator_byte..].find('│').unwrap() + operator_byte;
+        let body_right = body[..body_right_byte].chars().count();
+        assert_eq!(body_chars[body_left - 1], ' ', "left body gutter: {body}");
+        assert_eq!(body_chars[body_right + 1], ' ', "right body gutter: {body}");
+    }
+
+    #[test]
+    fn tab_strip_keeps_whole_labels_and_marks_hidden_tabs() {
+        let app = App::new();
+        let text = render(&app, 110, 34);
+        let row: String = text.chars().take(110).collect();
+
+        assert!(row.contains("h:Overview"), "default tab remains visible: {row}");
+        assert!(row.contains("›"), "hidden trailing tabs are indicated: {row}");
+        assert!(
+            !row.contains("7:T") || row.contains("7:Testing"),
+            "a tab label must be fully shown or omitted, never clipped: {row}"
+        );
     }
 
     /// Owner #783: in chat-first the first Enter opened a New-session form the
