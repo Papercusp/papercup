@@ -1070,6 +1070,126 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   }, 35_000);
 
+  // WI-10004943 (d): the ordinary kickoff budget used to DROP a kickoff whose Codex
+  // footer still read `Starting` (`codex-startup-still-starting`), discarding the
+  // session's first turn. Production footers read `Starting` for 10-20 minutes and
+  // then painted the frame. The kickoff must be HELD for the frame up to a ceiling.
+  const codexStartingChild = (readyAtMs: number | null, exitAtMs: number) =>
+    "process.stdout.write('psu: launcher banner\\n');" +
+    "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
+    "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
+    "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+    "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+    "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
+    "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+    "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
+    (readyAtMs === null
+      ? ''
+      : "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');}," +
+        readyAtMs + ');') +
+    '},100);' +
+    `setTimeout(()=>process.exit(0),${exitAtMs});`;
+  const runCodexStartingKickoff = (name: string, childCode: string, env: Record<string, string>) => {
+    const ownerId = `su-codex-${name}-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const { captured, io } = fakeIo();
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '8000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+        ...env,
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      kickoff: '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nKICKOFF-HELD',
+      onExit: () => undefined,
+    });
+    const hostEvents = (): Array<Record<string, unknown>> => {
+      const path = eventLogPathForOwner(ownerId);
+      if (!existsSync(path)) return [];
+      return readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    };
+    return { sock: socketPathFor(ownerId), captured, done, hostEvents };
+  };
+
+  it('holds a fresh Codex kickoff past its budget while the footer reads Starting, then delivers on the frame', async () => {
+    const run = runCodexStartingKickoff('starting-hold', codexStartingChild(4000, 25_000), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2500',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '15000',
+    });
+    try {
+      await vi.waitFor(() => expect(run.captured()).toContain('ECHO:KICKOFF-HELD'), { timeout: 14000 });
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      const held = run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame');
+      expect(held).toHaveLength(1);
+      expect(held[0]).toMatchObject({ label: 'launch kickoff', budgetMs: 2500, holdCeilingMs: 15000 });
+      expect(held[0].elapsedMs as number).toBeGreaterThanOrEqual(2500);
+      expect(run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended'))
+        .toMatchObject({ label: 'launch kickoff', outcome: 'frame-observed' });
+      const written = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
+      expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+    } finally {
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+    }
+  }, 35_000);
+
+  it('drops a held Codex kickoff at the hold ceiling, without typing into the Starting composer', async () => {
+    const run = runCodexStartingKickoff('starting-ceiling', codexStartingChild(null, 9000), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '3000',
+    });
+    try {
+      const dropped = await vi.waitFor(() => {
+        const row = run.hostEvents().find((e) => e.kind === 'startup-turn-dropped');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(dropped).toMatchObject({ label: 'launch kickoff', reason: 'codex-startup-still-starting' });
+      expect(run.hostEvents().filter((e) => e.kind === 'kickoff-held-for-codex-frame')).toHaveLength(1);
+      const ended = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
+      expect(ended).toMatchObject({ outcome: 'ceiling-still-starting' });
+      expect(ended?.heldMs as number).toBeGreaterThanOrEqual(1500);
+      expect(run.captured()).not.toContain('SWALLOWED:');
+      expect(run.captured()).not.toContain('ECHO:KICKOFF-HELD');
+    } finally {
+      if (existsSync(run.sock)) await rawInject(run.sock, 'QUIT\n');
+      await run.done;
+    }
+  }, 20_000);
+
+  it('ends a held Codex kickoff when the host tears down instead of polling until the ceiling', async () => {
+    const run = runCodexStartingKickoff('starting-host-end', codexStartingChild(null, 2500), {
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1000',
+      PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS: '600000',
+    });
+    await run.done;
+    const ended = await vi.waitFor(() => {
+      const row = run.hostEvents().find((e) => e.kind === 'kickoff-codex-frame-hold-ended');
+      expect(row).toBeDefined();
+      return row;
+    }, { timeout: 3000 });
+    expect(ended).toMatchObject({ label: 'launch kickoff', outcome: 'host-ended' });
+    expect(run.hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+  }, 15_000);
+
   // WI-10004943: in 4 of 4 production cases a Codex footer read `Starting` for
   // 10-20 minutes and the session frame then appeared 6-18s before a `turn inject`
   // was confirmed. Either Codex became ready on its own (hung MCP boot) or the
