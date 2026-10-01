@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { parseGen0Args, makeSpend, SpendCapError, buildRubric, buildManifest } from './beekeeper-gen0-runner';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 describe('parseGen0Args', () => {
   it('defaults: live, $50 cap, 1 case/variant, 1 repeat, 10-min timeout', () => {
@@ -77,7 +78,7 @@ describe('makeSpend — hard cap', () => {
 describe('buildRubric / buildManifest', () => {
   it('rubric pins canonical Sol xhigh, temp 0, d1/d2/d3 weights summing to 1', () => {
     const r = buildRubric() as unknown as { model: string; temperature: number; weights: Record<string, number> };
-    expect(r.model).toBe('gpt-5.6-sol:xhigh');
+    expect(r.model).toBe(LEARNING_MODEL_SPEC);
     expect(r.temperature).toBe(0);
     expect(r.weights.d1 + r.weights.d2 + r.weights.d3).toBeCloseTo(1);
   });
@@ -86,7 +87,7 @@ describe('buildRubric / buildManifest', () => {
     const m = buildManifest('ws-x');
     expect(m.manifest.instanceId).toContain('ws-x');
     expect(m.manifest.workspaceId).toBe('ws-x');
-    expect(m.instanceUrl).toContain('gpt-5.6-sol:xhigh');
+    expect(m.instanceUrl).toContain(LEARNING_MODEL_SPEC);
     expect(m.manifest.createdAt).toBeInstanceOf(Date);
   });
 });
