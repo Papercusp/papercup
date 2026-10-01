@@ -488,12 +488,23 @@ export async function fetchWakeability(
     // Codex turns can emit tool_invocations without a newer agent_activity row.
     // invoked_at is stamped at dispatch-settle time with coord_owner_id; this is
     // the same per-owner freshness source already used by fleet presence.
+    // P-014(b): a top-1 probe per owner on tool_invocations_coord_owner_idx
+    // (coord_owner_id, invoked_at DESC). The former GROUP BY max() aggregated
+    // every invocation in the 7-day window for each owner (~265k buffers for
+    // 155 live owners vs ~1.7k for this form, identical rows) and ran ~17×/s.
     sql<{ owner_id: string; last_tool_call_at: Date | string | null }[]>`
-      SELECT coord_owner_id AS owner_id, max(invoked_at) AS last_tool_call_at
-        FROM harness_shared.tool_invocations
-       WHERE coord_owner_id = ANY(${ownerIds}::text[])
-         AND invoked_at > now() - make_interval(secs => ${activityWindowSec})
-       GROUP BY coord_owner_id`,
+      SELECT owner_id, last_tool_call_at
+        FROM (
+          SELECT o.owner_id,
+                 (SELECT t.invoked_at
+                    FROM harness_shared.tool_invocations t
+                   WHERE t.coord_owner_id = o.owner_id
+                     AND t.invoked_at > now() - make_interval(secs => ${activityWindowSec})
+                   ORDER BY t.invoked_at DESC
+                   LIMIT 1) AS last_tool_call_at
+            FROM (SELECT DISTINCT unnest(${ownerIds}::text[]) AS owner_id) o
+        ) latest
+       WHERE last_tool_call_at IS NOT NULL`,
   ]);
 
   const wakeSet = new Set(wake.map((r) => r.subscriber_id));

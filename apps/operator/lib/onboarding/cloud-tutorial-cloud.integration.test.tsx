@@ -12,7 +12,8 @@ import type { CloudWorkspacesControlRow } from "@/app/cloud-workspaces/page";
 const data = vi.hoisted(() => ({ rows: [] as CloudWorkspacesControlRow[], mutate: vi.fn(), invalidate: vi.fn() }));
 // Substitute only the authenticated network boundary. The Cloud forms, Radix
 // dialog, guide, highlighting, URL state and router are actual application code.
-vi.mock("@papercusp/sync", () => ({
+vi.mock("@papercusp/sync", async importOriginal => ({
+  ...(await importOriginal<typeof import("@papercusp/sync")>()),
   useSyncQuery: () => ({ data: data.rows, loading: false, fetching: false, error: null, invalidate: data.invalidate }),
   useSyncMutate: () => data.mutate, planChunks: vi.fn(),
 }));
@@ -44,6 +45,19 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); delete window.__PAPERCUSP_HOSTED_BROWSER__; });
 describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
+  it("recognizes an existing healthy workspace, records real cost review and waits for the host-specific connector", async () => {
+    data.rows = [connection, { ...workspace, health: { status: "healthy", checks: [] } }];
+    mount("/cloud-workspaces?step=operate&host=customer");
+    const guide = await screen.findByRole("region", { name: "First agent guide" });
+    await within(guide).findByRole("heading", { name: "Review configuration and cost" });
+    fireEvent.click(within(guide).getByRole("button", { name: "Show me" }));
+    const review = await screen.findByRole("button", { name: "I've reviewed the configuration and cost" });
+    expect(document.querySelector('[data-tutorial-target="cloud-configuration"]')).not.toBeNull();
+    fireEvent.click(review);
+    await within(guide).findByRole("heading", { name: "Wait for a healthy workspace" });
+    expect(screen.queryByRole("button", { name: "+ New session" })).toBeNull();
+    expect(data.mutate).not.toHaveBeenCalled();
+  });
   it("explains and highlights the actual connection action without filling or submitting the form", async () => {
     const { router } = mount();
     const guide = await screen.findByRole("region", { name: "First agent guide" });

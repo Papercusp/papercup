@@ -332,7 +332,7 @@ describe('trigger dispatcher hold count through the real builders (WI-10004955)'
     routine({
       name: 'doc-freshness-sweep',
       group: 'docs',
-      category: 'sync-triggered',
+      category: 'docs',
       cron: null,
       cadence: null,
       kind: 'triggered',

@@ -252,8 +252,9 @@ describe('P-013 workload A fixture', () => {
         overlappingChildren: number;
       } & PgCounters> = [];
       // D-047: every warm sample's accepted→dispatched step split, in completion order.
-      // runPairedBenchmark awaits each trial before starting the next, so these rows
-      // split exactly into consecutive per-trial chunks (see attributeDispatchSteps).
+      // runPairedBenchmark awaits each (concurrency, repetition, mode) block before the next;
+      // inside a block the arms alternate in D-050 ABBA chunks, so these rows split into
+      // consecutive per-block runs, then by arm (see attributeDispatchSteps).
       const warmDispatchSteps: WarmDispatchStepRow[] = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },

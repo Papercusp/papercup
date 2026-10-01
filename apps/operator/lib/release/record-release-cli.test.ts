@@ -863,6 +863,27 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
   });
 });
 
+describe('R-6 Android result falsifier detector', () => {
+  const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
+
+  it('rejects empty, skipped, failed, errored, and missing instrumentation results', () => {
+    const result = spawnSync('make', ['test-android-runner'], {
+      cwd: mobileDir,
+      encoding: 'utf8',
+    });
+    expect(
+      result.status,
+      [result.error?.message, result.stdout, result.stderr]
+        .filter(Boolean)
+        .join('\n'),
+    ).toBe(0);
+    expect(result.stdout).toContain('Android result guard tests: 10 passed');
+    expect(result.stdout).toContain(
+      'Android CI working-set guards: host refusals, four target-only cleans and pinned NDK preservation passed',
+    );
+  }, 15_000);
+});
+
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
   const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');

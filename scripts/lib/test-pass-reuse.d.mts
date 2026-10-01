@@ -214,12 +214,18 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  *        files vite and vite-tsconfig-paths read (libs/test-config/src/toolchain-tsconfigs.ts).
  *        A drift tsconfig outside it is neither global nor an ancestor config; it still
  *        invalidates a proof whose readPaths name it. Omitted = no tsconfig is narrowed.
+ * @param {((proof: ReuseProof) => boolean) | null} [o.schemaDriftJudge] P-007 (D-010): asked when
+ *        a proof EXECUTED a drifted generated DB schema file (GENERATED_SCHEMA_FILES) without
+ *        reading it through fs; returning exactly `true` says no table that changed reaches this
+ *        proof, so that drift path does not invalidate it (summary.schemaNarrowed). Any other
+ *        result, or a throw, keeps the whole-file rule. Omitted = nothing is narrowed. Implemented
+ *        over git by gitSchemaDriftJudge (scripts/lib/schema-symbol-drift.mjs).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
  *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, toolchainTsconfigs, schemaDriftJudge, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -232,6 +238,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     inertGlobalChange?: ((rel: string, fromSha: string, toSha: string) => boolean) | null | undefined;
     testConfigMainProcess?: ReadonlySet<string> | null | undefined;
     toolchainTsconfigs?: ReadonlySet<string> | null | undefined;
+    schemaDriftJudge?: ((proof: ReuseProof) => boolean) | null | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;

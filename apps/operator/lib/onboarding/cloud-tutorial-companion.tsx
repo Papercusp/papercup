@@ -1,11 +1,12 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/app/harness/Button";
 import type { TutorialStepId } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
 import type { WorkspaceHostConnectionRow, WorkspaceHostControlRow } from "@/app/cloud-workspaces/workspace-view-model";
-import { CloudTutorialSession, type TutorialSessionObservation } from "./cloud-tutorial-session";
+import type { TutorialSessionObservation } from "./cloud-tutorial-session";
 import { CloudTutorialGuide } from "./cloud-tutorial-guide";
 import { useCloudTutorialProgress } from "./use-cloud-tutorial-progress";
+const CloudTutorialSession = lazy(async () => ({ default: (await import("./cloud-tutorial-session")).CloudTutorialSession }));
 
 export function CloudTutorialCompanion({ selectionKey, connection, workspace, boundWorkspaceId, configurationValid, configurationReviewed, controlLoading, controlError, onCheckAgain, onShowStep }: {
   selectionKey: string; connection: WorkspaceHostConnectionRow | null;
@@ -36,8 +37,8 @@ export function CloudTutorialCompanion({ selectionKey, connection, workspace, bo
       {!loading && <Button onClick={retry}>Check lesson again</Button>}</> :
       <CloudTutorialGuide state={state} dispatch={dispatch} onShowStep={onShowStep}
         onCheckAgain={() => { onCheckAgain(); if (notice) retry(); }} />}
-    {state && workspaceReady && configurationValid && configurationReviewed && !controlError && <CloudTutorialSession
+    {state && workspaceReady && configurationValid && configurationReviewed && !controlError && <Suspense fallback={<p role="status">Preparing your workspace session controls…</p>}><CloudTutorialSession
       key={`${selectionKey}:${state.scope.tenantId}:${state.scope.userId}:${state.scope.workspaceId}`} scope={state.scope}
-      onObservation={onSessionObservation} onInspect={task => dispatch({ type: "inspect-result", scope: state.scope, sessionId: task.sessionId, taskId: task.id, resultId: task.resultId! })} />}
+      onObservation={onSessionObservation} onInspect={task => dispatch({ type: "inspect-result", scope: state.scope, sessionId: task.sessionId, taskId: task.id, resultId: task.resultId! })} /></Suspense>}
   </div>;
 }

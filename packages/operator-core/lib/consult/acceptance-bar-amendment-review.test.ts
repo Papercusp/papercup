@@ -331,14 +331,18 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     });
   });
 
-  it('the brief carries what the reviewer signs and the one line the apply guard accepts', () => {
+  it('the routed brief uses typed consult verbs for the approval and settled outcome', () => {
     const brief = buildAmendmentReviewBrief(baseInput);
     expect(brief).toContain(JSON.stringify(approval));
     expect(brief).toContain(JSON.stringify(baseInput.patch));
     expect(brief).toContain('R-1 (bar-meaning: falsifier)');
     expect(brief).toContain('Tighten the falsifier.');
     // The apply resolver accepts exactly /^approve thread-post:(\d+)$/ on the reviewer's post.
-    expect(brief.split('\n')).toContain('To approve, answer this consult with exactly one line: approve thread-post:42');
+    expect(brief).toContain("To approve, use consult:reply { conversation_id:'<this consult>', kind:'answer', body:'approve thread-post:42', evidence:[...] }; the body must be exactly one line: approve thread-post:42.");
+    expect(brief).toContain("Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }.");
+    expect(brief).toContain('consult:reply records the signed post; consult:close records the accepted answer.');
+    expect(brief).not.toContain('answer this consult');
+    expect(brief).not.toContain('conversations:post');
     expect(/^approve thread-post:([1-9][0-9]*)$/.test('approve thread-post:42')).toBe(true);
     expect(brief).not.toContain('coord:send');
   });

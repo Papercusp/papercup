@@ -23,9 +23,11 @@ import type { WorkspaceHostControlRow } from "./workspace-view-model";
 export function HostedDesktopConnection({
   workspace,
   showDesktop = true,
+  onWorkspaceBound,
 }: {
   workspace: WorkspaceHostControlRow;
   showDesktop?: boolean;
+  onWorkspaceBound?: (hostId: string, workspaceId: string | null) => void;
 }) {
   const routeLabel =
     readHostedWorkspaceConnector(workspace.tunnel)?.routeLabel ?? null;
@@ -36,6 +38,7 @@ export function HostedDesktopConnection({
       workspace={workspace}
       routeLabel={routeLabel}
       showDesktop={showDesktop}
+      onWorkspaceBound={onWorkspaceBound}
     />
   );
 }
@@ -44,10 +47,12 @@ function DesktopConnection({
   workspace,
   routeLabel,
   showDesktop,
+  onWorkspaceBound,
 }: {
   workspace: WorkspaceHostControlRow;
   routeLabel: string | null;
   showDesktop: boolean;
+  onWorkspaceBound?: (hostId: string, workspaceId: string | null) => void;
 }) {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [bridge, setBridge] = useState<HostedWorkspaceDesktopBridge | null>(
@@ -181,6 +186,7 @@ function DesktopConnection({
           routeLabel={routeLabel}
           workspaceName={workspace.name}
           onWorkspaceIdChange={setWorkspaceId}
+          onWorkspaceBound={id => onWorkspaceBound?.(workspace.id, id)}
           onDesktopBridgeChange={onBridgeChange}
           onDesktopRosterChange={onRosterChange}
           onDesktopThumbnailChange={onThumbnailChange}

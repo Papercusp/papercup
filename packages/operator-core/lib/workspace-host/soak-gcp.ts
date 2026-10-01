@@ -11,9 +11,15 @@
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
 import {
+  buildWorkspaceHostAgentCredentialExpiryProbe,
+  parseWorkspaceHostAgentCredentialExpiryOutput,
+  type WorkspaceHostAgentCredentialExpiryReading,
+} from './agent-credential-expiry';
+import {
   GcpIapWorkspaceHostBootstrapNotReadyError,
   GcpIapWorkspaceHostInitializationOperations,
   NodeGcpIapWorkspaceHostInitializationCommandRunner,
+  formatGcpIapDiagnosticTail,
   type GcpIapWorkspaceHostInitializationCommandRunner,
 } from './gcp-iap-initialization-operations';
 import { resolveGcpWorkspaceHostInstanceIdentity, type GcpWorkspaceHostApiClient } from './gcp-provider';
@@ -61,10 +67,15 @@ export interface GcpWorkspaceHostSoakSeamsInput {
   now?: () => Date;
 }
 
+/** The soak probe plus the standing-health-only agent-login read (WI-10003720). */
+export interface GcpWorkspaceHostSoakProbe extends WorkspaceHostSoakProbe {
+  readAgentCredentialExpiry(): Promise<WorkspaceHostAgentCredentialExpiryReading>;
+}
+
 export interface GcpWorkspaceHostSoakSeams {
   desired: WorkspaceHostDesiredSpec;
   readInstance(): Promise<WorkspaceHostSoakInstanceReading>;
-  probeFor(subject: WorkspaceHostSoakSubject): WorkspaceHostSoakProbe;
+  probeFor(subject: WorkspaceHostSoakSubject): GcpWorkspaceHostSoakProbe;
 }
 
 function detailOf(error: unknown): string {
@@ -120,20 +131,41 @@ export async function resolveGcpWorkspaceHostSoakSeams(
     }
   };
 
-  const probeFor = (subject: WorkspaceHostSoakSubject): WorkspaceHostSoakProbe => ({
+  const profileFor = (subject: WorkspaceHostSoakSubject) =>
+    resolveGcpIapWorkspaceHostInitializationProfile(
+      desired,
+      input.controller ?? resolveWorkspaceHostInitializationControllerProfile(),
+      { instanceId: subject.instanceId },
+    );
+  const runner = () =>
+    input.runner ??
+    new NodeGcpIapWorkspaceHostInitializationCommandRunner({
+      timeoutMs: WORKSPACE_HOST_SOAK_REACH_ATTEMPT_TIMEOUT_MS,
+    });
+
+  const probeFor = (subject: WorkspaceHostSoakSubject): GcpWorkspaceHostSoakProbe => ({
     readInstance,
     now,
+    // Same pinned profile (incarnation host-key alias) and runner as the reach probe, so a
+    // recreated machine fails StrictHostKeyChecking here too instead of being re-trusted.
+    async readAgentCredentialExpiry(): Promise<WorkspaceHostAgentCredentialExpiryReading> {
+      try {
+        const result = await runner().run(buildWorkspaceHostAgentCredentialExpiryProbe(profileFor(subject)));
+        if (result.exitCode !== 0) {
+          return {
+            kind: 'transport-failure',
+            detail: `agent-login read exited ${result.exitCode}${formatGcpIapDiagnosticTail(result.stderr)}`.slice(0, 500),
+          };
+        }
+        return { kind: 'read', slots: parseWorkspaceHostAgentCredentialExpiryOutput(result.stdout) };
+      } catch (error) {
+        return { kind: 'transport-failure', detail: detailOf(error) };
+      }
+    },
     async probeReach(): Promise<WorkspaceHostSoakReachOutcome> {
       const operations = new GcpIapWorkspaceHostInitializationOperations(
-        resolveGcpIapWorkspaceHostInitializationProfile(
-          desired,
-          input.controller ?? resolveWorkspaceHostInitializationControllerProfile(),
-          { instanceId: subject.instanceId },
-        ),
-        input.runner ??
-          new NodeGcpIapWorkspaceHostInitializationCommandRunner({
-            timeoutMs: WORKSPACE_HOST_SOAK_REACH_ATTEMPT_TIMEOUT_MS,
-          }),
+        profileFor(subject),
+        runner(),
         input.timing ?? {},
       );
       try {

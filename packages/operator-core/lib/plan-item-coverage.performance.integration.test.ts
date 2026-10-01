@@ -111,18 +111,43 @@ describe('matched plan coverage phase benchmark', () => {
             CASE WHEN n <= 8 THEN ${plan} ELSE 'unrelated-benchmark' END,'item_id','P-' || n),
             '_claimHold', n % 5 = 0),100 FROM generate_series(1,128) n`;
     }
-    const windows = live ? 10 : 2;
-    const requests = live ? 100 : 4;
+    // A small explicit preflight checks live identity/isolation before the
+    // expensive matrix. Its actual bounds are retained; it cannot masquerade
+    // as the ten-window, hundred-request acceptance measurement.
+    const windows = live ? Number(process.env.PAPERCUSP_P010_WINDOWS ?? 10) : 2;
+    const requests = live ? Number(process.env.PAPERCUSP_P010_REQUESTS ?? 100) : 4;
+    expect(Number.isInteger(windows) && windows >= 1 && windows <= 10).toBe(true);
+    expect(Number.isInteger(requests) && requests >= 1 && requests <= 100).toBe(true);
     const samples: any[] = [];
     const fingerprints = Object.fromEntries(['plan-item-coverage.ts','fleet/assignments.ts']
       .map(path => [path, createHash('sha256').update(readFileSync(new URL(path, import.meta.url))).digest('hex')]));
     const startedAt = new Date().toISOString();
     let identity: any;
-    let expected: ReturnType<typeof normalized>;
+    let serving: any;
+    let preflightError: string | undefined;
+    let expected: ReturnType<typeof normalized> = [];
+    try {
+    if (live) {
+      const response = await fetch('http://127.0.0.1:3170/api/health', { signal: AbortSignal.timeout(5000) });
+      expect(response.ok).toBe(true);
+      serving = await response.json();
+      expect(typeof serving.sha).toBe('string');
+      for (const [path, hash] of Object.entries(fingerprints)) {
+        const blob = execFileSync('git', ['show', `${serving.sha}:packages/operator-core/lib/${path}`]);
+        expect(createHash('sha256').update(blob).digest('hex')).toBe(hash);
+      }
+      // Retain only build provenance, never the entire health payload.
+      serving = { sha: serving.sha, endpoint: 'http://127.0.0.1:3170/api/health' };
+    }
     await root!.begin('isolation level repeatable read read only', async (tx) => {
       await tx`SET LOCAL statement_timeout = '30s'`;
       identity = (await tx`SELECT current_database() AS database, version() AS postgres,
         txid_current_snapshot()::text AS snapshot, now() AS transaction_time`)[0];
+      if (live) {
+        expect(identity.database).toBe('papercusp');
+        identity.schema = await tx`SELECT filename, sha256, applied_at
+          FROM harness_shared.schema_migrations ORDER BY applied_at DESC LIMIT 5`;
+      }
       h.sql = observed(tx as unknown as postgres.Sql);
       expected = normalized(await getAllPlanItemCoverage(), plan);
       expect(expected.length).toBeGreaterThan(0);
@@ -157,8 +182,19 @@ describe('matched plan coverage phase benchmark', () => {
       }
       expect(normalized(await getAllPlanItemCoverage(), plan)).toEqual(expected);
     });
+    if (live) {
+      const response = await fetch(serving.endpoint, { signal: AbortSignal.timeout(5000) });
+      const after = await response.json();
+      expect(after.sha).toBe(serving.sha);
+    }
+    } catch (error) {
+      // Incomplete/failed measurements remain visible in the report. Never
+      // replace a failed window or manufacture a completed comparison.
+      preflightError = error instanceof Error ? error.message : String(error);
+    }
     const report = { schemaVersion: 1, workItem: 'WI-10004889', startedAt, endedAt: new Date().toISOString(),
-      mode: live ? 'live-read-only' : 'private-PG', host: hostname(), plan, identity, fingerprints,
+      mode: live ? 'live-read-only' : 'private-PG', host: hostname(), plan, identity, serving, fingerprints,
+      ...(preflightError ? { incomplete: true, error: preflightError } : {}),
       sourceSha: execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
       control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
       profiles: { concurrency: [1,8], windows, requestsPerSideWindow: requests,
@@ -170,6 +206,7 @@ describe('matched plan coverage phase benchmark', () => {
         'This is the production reader on frozen live data, not HTTP end-to-end timing.'],
     };
     if (process.env.PAPERCUSP_P010_REPORT) writeFileSync(process.env.PAPERCUSP_P010_REPORT, JSON.stringify(report) + '\n');
+    expect(preflightError).toBeUndefined();
     const outcomes = samples.flatMap(s => s.batch);
     expect(outcomes.filter(s => !s.ok)).toEqual([]);
     const stampRows = (arm: string) => samples.filter(s => s.arm === arm)

@@ -124,6 +124,11 @@ async function fetchDirectiveActuationEntries(
          AND e.surface = 'messages'
          AND e.body ? 'expectEffect'
          AND jsonb_typeof(e.body->'to') = 'array'
+         -- P-014(c): an index-usable restatement of the recipient predicate
+         -- below (coord_event_log_msgs_to_gin). Without it every call walked
+         -- all ~573k messages to find the ~1.5k carrying expectEffect
+         -- (~895k buffers/call; 127 for one recipient with it, same rows).
+         AND e.body->'to' ?| ${recipientIds}::text[]
          AND r = ANY(${recipientIds}::text[])
          AND e.body->>'from' IS DISTINCT FROM r
          AND (${from}::text IS NULL OR e.body->>'from' = ${from})

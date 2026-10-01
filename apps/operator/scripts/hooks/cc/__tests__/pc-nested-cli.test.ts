@@ -20,9 +20,20 @@ import * as fs from "node:fs";
 import { createServer } from "node:http";
 import * as os from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const HOOK_DIR = join(__dirname, "..");
+
+/** The inject dispatcher's .mjs modules carry no declarations; type what the tests use. */
+type InjectIndex = {
+  dispatch: (opts: Record<string, unknown>) => Promise<string | null>;
+  NESTED_CLI_SKIP_PORTS: Set<string>;
+};
+type ClaudeAdapter = { default: { portForEvent: (event: string) => string | null } };
+async function loadInject<T>(rel: string): Promise<T> {
+  return (await import(pathToFileURL(join(HOOK_DIR, "..", "inject", rel)).href)) as T;
+}
 // Overridable so a falsifiability probe can point the end-to-end cases at an OUT-OF-TREE
 // copy of hooks/cc with the guard stripped (it must then fail) — never mutate the tree.
 const LIFECYCLE_HOOK =
@@ -219,7 +230,7 @@ async function runHookUnder(
   event: string,
   hookPath: string = LIFECYCLE_HOOK,
   extraPayload: Record<string, unknown> = {},
-  opts: { runner?: string; env?: Record<string, string> } = {},
+  opts: { runner?: string; env?: Record<string, string>; mcpUrl?: boolean } = {},
 ) {
   const requests: string[] = [];
   const server = createServer((req, res) => {
@@ -270,6 +281,8 @@ async function runHookUnder(
       LIFECYCLE_HOOK: hookPath,
       HOOK_RUNNER: opts.runner ?? "bash",
       FAKE_CLAUDE_BODY: body,
+      // The codex PreCompact bridge calls the per-session MCP URL, not the operator URL.
+      ...(opts.mcpUrl ? { PAPERCUSP_MCP_URL: `http://127.0.0.1:${address.port}/api/mcp` } : {}),
       ...opts.env,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -581,42 +594,72 @@ describe("pc_nested_cli.sh — the per-CLI verdict cache (WI-10004945)", () => {
 // The bug class is "a hook keyed on PAPERCUSP_SID acts as the su for whatever CLI
 // inherited it". A NEW hook that reads the SID fails here until someone decides what it
 // should do for a nested CLI; that decision must be made, not inherited by default.
-type NestedPolicy = "skip-per-turn" | "skip-cached" | "as-owner" | "helper" | "unreviewed";
+// WI-10004953 closed the census: no hook is left unreviewed, so "unreviewed" is no
+// longer a policy. A new SID reader must be given a REAL decision to pass.
+type NestedPolicy = "skip-per-turn" | "skip-cached" | "skip-dispatcher" | "as-owner" | "helper";
 const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
   // Skip a nested CLI, uncached (fires once per turn or session): pc_nested_cli.py.
   "lifecycle-report.sh": "skip-per-turn",
   "userpromptsubmit-provenance.sh": "skip-per-turn",
   "stop-turn-journal.sh": "skip-per-turn",
-  // Skip a nested CLI through the per-CLI cache: pc_nested_cli.sh.
+  // Skip a nested CLI through the per-CLI cache: pc_nested_cli.sh / pc_nested_cli.mjs.
   "pretooluse-activity-report.sh": "skip-cached",
   "posttooluse-activity-report.sh": "skip-cached",
   "ask-gate-mirror.sh": "skip-cached",
   "workitem-verify-nudge.sh": "skip-cached",
   "stop-owner-directive-check.mjs": "skip-cached",
-  // Act AS the su on purpose: a nested CLI's edits land in the shared tree on the su's
-  // behalf, and skipping would take the lock rail off them (see pretooluse-locks-acquire.sh).
+  // The su's tip-notice cursor + a title written to an inherited tty (codex display pipe).
+  "posttooluse-objective-title.sh": "skip-cached",
+  // coord:glance AS the su + the su's title on the su's own PAPERCUSP_TTY.
+  "statusline-fleet.sh": "skip-cached",
+  // Would request session:request-compaction on the SU's route: a respawn of the live su.
+  "precompact-managed-carry.mjs": "skip-cached",
+  // Its wake is delivered to the nested CLI, whose provenance hook skips it; the row could
+  // only ever misclassify a real owner turn in the su.
+  "pretooluse-schedule-wakeup-provenance.mjs": "skip-cached",
+  // Thin shims over the inject dispatcher, which skips a nested CLI per PORT
+  // (inject/index.mjs NESTED_CLI_SKIP_PORTS): CTRL transition, delivery ledger, recall
+  // dedup, identity hook turn. The census checks each shim's port is in that set.
+  "userpromptsubmit-memory.sh": "skip-dispatcher",
+  "posttoolbatch-midturn-context.sh": "skip-dispatcher",
+  "stop-identity-context.sh": "skip-dispatcher",
+  "sessionstart-identity-context.sh": "skip-dispatcher",
+  // Act AS the su on purpose: a nested CLI works in the shared tree on the su's behalf.
+  // Skipping would take the lock rail off its edits (see pretooluse-locks-acquire.sh).
   "pretooluse-locks-acquire.sh": "as-owner",
   "posttooluse-locks-release.sh": "as-owner",
   "posttoolbatch-locks-release.sh": "as-owner",
+  // The su's identity guard only ever votes deny and writes nothing: the su's rail.
+  "pretooluse-identity-guard.sh": "as-owner",
+  // Enforcement (holds, exclusives, deny rules) as the su; only its say-once advisory
+  // seen-set re-keys to the nested CLI's own session (_advisory_session_key).
+  "pretooluse-bash-resource-gate.sh": "as-owner",
+  // These ledger an EDIT under the lock identity. The su answers for (and `admit`s) its
+  // nested CLI's edits, a peer whose proof it staled is told the su edited it, and a
+  // nested `lint:tsc` writes the su's verdict marker, so the stale-verdict nudge must
+  // see the same identity.
+  "posttooluse-frozen-candidate-edit-nudge.mjs": "as-owner",
+  "posttooluse-proof-stale-nudge.mjs": "as-owner",
+  "posttooluse-tsc-verdict-stale-nudge.mjs": "as-owner",
   "pc_nested_cli.sh": "helper",
-  // Not yet reviewed for a nested CLI (WI-10004945 residue). Shrink this list; never
-  // add a new hook to it to get past the census.
-  "posttooluse-objective-title.sh": "unreviewed",
-  "posttoolbatch-midturn-context.sh": "unreviewed",
-  "pretooluse-bash-resource-gate.sh": "unreviewed",
-  "statusline-fleet.sh": "unreviewed",
-  "userpromptsubmit-memory.sh": "unreviewed",
-  "posttooluse-frozen-candidate-edit-nudge.mjs": "unreviewed",
-  "posttooluse-proof-stale-nudge.mjs": "unreviewed",
-  "posttooluse-tsc-verdict-stale-nudge.mjs": "unreviewed",
-  "precompact-managed-carry.mjs": "unreviewed",
-  "pretooluse-schedule-wakeup-provenance.mjs": "unreviewed",
+  "pc_nested_cli.mjs": "helper",
 };
-const UNREVIEWED_CEILING = 10;
 
-describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945)", () => {
+/** Where each skip-cached hook first acts as the su, when it is not the default marker. */
+const FIRST_SU_ACTION: Record<string, string> = {
+  "posttooluse-objective-title.sh": 'python3 - "${PAPERCUSP_SID:-fixture}"',
+  "statusline-fleet.sh": 'python3 - "$OPERATOR_URL"',
+  "pretooluse-schedule-wakeup-provenance.mjs": "return ledgerRowForScheduleWakeup(",
+};
+
+describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945, WI-10004953)", () => {
+  // A hook reads the SID directly, or hands the event to the inject dispatcher, which
+  // reads it for every client (core.mjs sessionId) — the census missed the second kind
+  // until WI-10004953, which is how three identity shims escaped it.
   const readsSid = (name: string) =>
-    /PAPERCUSP_SID|\bsessionId\(/.test(fs.readFileSync(join(HOOK_DIR, name), "utf8"));
+    /PAPERCUSP_SID|\bsessionId\(|inject\/index\.mjs/.test(
+      fs.readFileSync(join(HOOK_DIR, name), "utf8"),
+    );
   const population = fs
     .readdirSync(HOOK_DIR, { withFileTypes: true })
     .filter((e) => e.isFile() && /\.(sh|mjs)$/.test(e.name) && readsSid(e.name))
@@ -626,15 +669,11 @@ describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945)",
   it("the census instrument finds the known SID readers (positive control)", () => {
     expect(population).toContain("lifecycle-report.sh");
     expect(population).toContain("stop-owner-directive-check.mjs");
+    expect(population).toContain("pretooluse-identity-guard.sh");
   });
 
   it("classifies exactly the hooks that read PAPERCUSP_SID", () => {
     expect(population).toEqual(Object.keys(NESTED_CLI_POLICY).sort());
-  });
-
-  it("the unreviewed list only shrinks", () => {
-    const unreviewed = Object.values(NESTED_CLI_POLICY).filter((p) => p === "unreviewed");
-    expect(unreviewed.length).toBeLessThanOrEqual(UNREVIEWED_CEILING);
   });
 
   it("each skip-cached hook consults the cached guard BEFORE it first acts as the su", () => {
@@ -642,19 +681,238 @@ describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945)",
       if (policy !== "skip-cached") continue;
       const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
       if (name.endsWith(".mjs")) {
-        const guard = src.indexOf("if (isNested()) return null;");
-        const work = src.indexOf("await fetchImpl(");
+        const guard = src.search(/if \(isNested\(\)\) return\b/);
+        const work = src.indexOf(FIRST_SU_ACTION[name] ?? "await fetchImpl(");
         expect(guard, `${name}: no isNested() guard`).toBeGreaterThan(-1);
-        expect(work, `${name}: operator call not found (instrument broken)`).toBeGreaterThan(-1);
-        expect(guard, `${name}: guard must run before the operator call`).toBeLessThan(work);
+        expect(work, `${name}: su action not found (instrument broken)`).toBeGreaterThan(-1);
+        expect(guard, `${name}: guard must run before the su action`).toBeLessThan(work);
         continue;
       }
       const guard = src.indexOf('pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached');
       // The first place the hook hands the inherited SID to code that acts on it.
-      const work = src.indexOf('"$PAPERCUSP_SID"');
+      const work = src.indexOf(FIRST_SU_ACTION[name] ?? '"$PAPERCUSP_SID"');
       expect(guard, `${name}: no cached pc_nested_cli.sh guard`).toBeGreaterThan(-1);
       expect(work, `${name}: no SID use found (instrument broken)`).toBeGreaterThan(-1);
       expect(guard, `${name}: guard must run before the SID is used`).toBeLessThan(work);
     }
   });
+
+  it("each dispatcher shim's port matches its policy (skip vs the as-owner guard)", async () => {
+    const claude = (await loadInject<ClaudeAdapter>("adapters/claude.mjs")).default;
+    const { NESTED_CLI_SKIP_PORTS } = await loadInject<InjectIndex>("index.mjs");
+    for (const [name, policy] of Object.entries(NESTED_CLI_POLICY)) {
+      const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
+      if (!src.includes("inject/index.mjs")) continue;
+      const event = /--event=([A-Za-z]+)/.exec(src)?.[1];
+      const port = event ? claude.portForEvent(event) : null;
+      expect(port, `${name}: no dispatcher port (instrument broken)`).toBeTruthy();
+      expect(NESTED_CLI_SKIP_PORTS.has(port ?? ""), `${name} (${port}) vs policy ${policy}`).toBe(
+        policy === "skip-dispatcher",
+      );
+    }
+  });
+});
+
+// ── WI-10004953: the dispatcher's per-port skip, as a pure function ──────────────
+describe("inject dispatcher: a nested CLI spends none of the su's per-session state", () => {
+  const PAYLOADS: Record<string, Record<string, unknown>> = {
+    UserPromptSubmit: { prompt: "say ok" },
+    PostToolBatch: { tool_calls: [{ tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x" }] },
+    Stop: {},
+    SessionStart: { source: "startup" },
+    PreToolUse: { tool_name: "Bash", tool_input: { command: "ls" } },
+  };
+
+  async function dispatchOnce(event: string, env: Record<string, string>, nested: boolean) {
+    const { dispatch } = await loadInject<InjectIndex>("index.mjs");
+    const { Readable } = await import("node:stream");
+    const calls: string[] = [];
+    let asked = 0;
+    await dispatch({
+      argv: ["--client=claude", `--event=${event}`],
+      stdin: Readable.from([JSON.stringify({ hook_event_name: event, cwd: "/x", ...PAYLOADS[event] })]),
+      env: { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9", ...env },
+      fetchImpl: (async (url: string) => {
+        calls.push(url);
+        return new Response(JSON.stringify({ ok: true, text: "" }));
+      }) as unknown as typeof fetch,
+      isNested: () => {
+        asked += 1;
+        return nested;
+      },
+    });
+    return { calls, asked };
+  }
+
+  for (const event of ["UserPromptSubmit", "PostToolBatch", "Stop", "SessionStart"]) {
+    it(`${event}: a nested CLI sends nothing; a managed one still does (calibration)`, async () => {
+      const nested = await dispatchOnce(event, { PAPERCUSP_SID: "su-x" }, true);
+      expect(nested.calls).toEqual([]);
+      expect(nested.asked).toBe(1);
+      const managed = await dispatchOnce(event, { PAPERCUSP_SID: "su-x" }, false);
+      expect(managed.calls).toHaveLength(1);
+    });
+  }
+
+  it("PreToolUse (the identity guard) keeps the su's rail on a nested CLI", async () => {
+    const nested = await dispatchOnce("PreToolUse", { PAPERCUSP_SID: "su-x" }, true);
+    expect(nested.calls).toHaveLength(1);
+    expect(nested.calls[0]).toContain("/api/agent-mcp/tool-guard");
+  });
+
+  it("a session with no PAPERCUSP_SID never pays for the nested verdict", async () => {
+    const r = await dispatchOnce("UserPromptSubmit", {}, true);
+    expect(r.asked).toBe(0);
+    expect(r.calls).toEqual([]);
+  });
+});
+
+// ── WI-10004953: the reviewed hooks, end-to-end under a real process tree ─────────
+const DISPATCHER_SHIMS: Array<{ shim: string; event: string; payload: Record<string, unknown>; nested: number }> = [
+  { shim: "userpromptsubmit-memory.sh", event: "UserPromptSubmit", payload: { prompt: "say ok" }, nested: 0 },
+  {
+    shim: "posttoolbatch-midturn-context.sh",
+    event: "PostToolBatch",
+    payload: { tool_calls: [{ tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "x" }] },
+    nested: 0,
+  },
+  { shim: "stop-identity-context.sh", event: "Stop", payload: {}, nested: 0 },
+  { shim: "sessionstart-identity-context.sh", event: "SessionStart", payload: { source: "startup" }, nested: 0 },
+  // as-owner: the nested CLI still asks the su's guard (one request in BOTH shapes).
+  {
+    shim: "pretooluse-identity-guard.sh",
+    event: "PreToolUse",
+    payload: { tool_name: "Bash", tool_input: { command: "ls" } },
+    nested: 1,
+  },
+];
+
+describe("reviewed hooks skip (or deliberately keep) a nested CLI end-to-end (WI-10004953)", () => {
+  for (const shape of ["nested-cli", "psu-managed"] as const) {
+    for (const c of DISPATCHER_SHIMS) {
+      const want = shape === "nested-cli" ? c.nested : 1;
+      it(`${c.shim} (${c.event}): a ${shape} CLI sends ${want} request(s)`, async () => {
+        const r = await runHookUnder(shape, c.event, join(GUARDED_DIR, c.shim), c.payload);
+        expect(r.exitCode).toBe(0);
+        expect(r.requests).toHaveLength(want);
+      });
+    }
+
+    it(`precompact-managed-carry: a ${shape} codex ${shape === "nested-cli" ? "compacts natively, the su is never respawned" : "is bridged (calibration)"}`, async () => {
+      const r = await runHookUnder(
+        shape,
+        "PreCompact",
+        join(GUARDED_DIR, "precompact-managed-carry.mjs"),
+        { trigger: "auto" },
+        { runner: "node", mcpUrl: true },
+      );
+      expect(r.exitCode).toBe(0);
+      const decision = JSON.parse(r.stdout.trim()) as { continue: boolean };
+      if (shape === "nested-cli") {
+        expect(r.requests).toEqual([]);
+        expect(decision.continue).toBe(true);
+      } else {
+        expect(r.requests).toHaveLength(1);
+        expect(decision.continue).toBe(false);
+      }
+    });
+
+    it(`schedule-wakeup provenance: a ${shape} CLI ${shape === "nested-cli" ? "enrolls nothing under the su" : "enrolls (calibration)"}`, async () => {
+      const dir = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-tp-"));
+      try {
+        const r = await runHookUnder(
+          shape,
+          "PreToolUse",
+          join(GUARDED_DIR, "pretooluse-schedule-wakeup-provenance.mjs"),
+          { tool_name: "ScheduleWakeup", tool_input: { prompt: "wake up", delaySeconds: 60 } },
+          { runner: "node", env: { PAPERCUSP_TURN_PROVENANCE_DIR: dir } },
+        );
+        expect(r.exitCode).toBe(0);
+        expect(fs.existsSync(join(dir, "su-nested-guard-test.jsonl"))).toBe(shape === "psu-managed");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`posttooluse-objective-title: a ${shape} CLI ${shape === "nested-cli" ? "leaves the su's tip cursor alone" : "surfaces the tip (calibration)"}`, async () => {
+      const dir = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-title-"));
+      try {
+        const glance = join(dir, "glance.json");
+        fs.writeFileSync(glance, JSON.stringify({ display: { title: "T", notice: { id: "n1", text: "TIP-MARK" } } }));
+        const r = await runHookUnder(
+          shape,
+          "PostToolUse",
+          join(GUARDED_DIR, "posttooluse-objective-title.sh"),
+          { tool_name: "Bash" },
+          {
+            env: {
+              PAPERCUSP_OBJECTIVE_FIXTURE: glance,
+              PAPERCUSP_OBJECTIVE_TTY: join(dir, "tty"),
+              PAPERCUSP_LOCKS_CACHE_DIR: join(dir, "cache"),
+            },
+          },
+        );
+        expect(r.exitCode).toBe(0);
+        const cursor = join(dir, "cache", "tip-notice-su-nested-guard-test.json");
+        if (shape === "nested-cli") {
+          expect(r.stdout).toBe("");
+          expect(fs.existsSync(cursor)).toBe(false);
+        } else {
+          expect(r.stdout).toContain("TIP-MARK");
+          expect(fs.existsSync(cursor)).toBe(true);
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`statusline-fleet: a ${shape} CLI ${shape === "nested-cli" ? "renders nothing as the su" : "renders (calibration)"}`, async () => {
+      const dir = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-sl-"));
+      try {
+        const glance = join(dir, "glance.json");
+        fs.writeFileSync(glance, JSON.stringify({ display: { title: "T", statusline: ["STATUS-MARK"] } }));
+        const titleOut = join(dir, "title");
+        const r = await runHookUnder(shape, "Statusline", join(GUARDED_DIR, "statusline-fleet.sh"), {}, {
+          env: { PAPERCUSP_STATUSLINE_FIXTURE: glance, PAPERCUSP_STATUSLINE_TITLE_OUT: titleOut },
+        });
+        expect(r.exitCode).toBe(0);
+        expect(r.requests).toEqual([]);
+        if (shape === "nested-cli") {
+          expect(r.stdout).toBe("");
+          expect(fs.existsSync(titleOut)).toBe(false);
+        } else {
+          expect(r.stdout).toContain("STATUS-MARK");
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`bash-resource-gate: a ${shape} CLI still hears the advisory, keyed to ${shape === "nested-cli" ? "its OWN session" : "the su"}`, async () => {
+      // A fresh $HOME per shape: the seen-set is per-$HOME, and a shared one would let the
+      // managed run's key satisfy the nested assertion.
+      const h = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-gate-"));
+      try {
+        fs.mkdirSync(join(h, ".papercusp"), { recursive: true });
+        fs.writeFileSync(join(h, ".papercusp", "superuser-token"), "test-token\n");
+        // The gate exits 0 at once without an su-agent-id (it is an su-only hook).
+        fs.writeFileSync(join(h, ".papercusp", "su-agent-id"), "test-agent\n");
+        const r = await runHookUnder(
+          shape,
+          "PreToolUse",
+          join(GUARDED_DIR, "pretooluse-bash-resource-gate.sh"),
+          // The long-foreground-exec advisory: soft, deterministic, no operator round-trip.
+          { tool_name: "Bash", tool_input: { command: "npm ci", timeout: 300_000 } },
+          { env: { HOME: h, PC_HEAVY_LOAD1_OVERRIDE: "0", PAPERCUSP_ADVISORY_LEDGER: "0" } },
+        );
+        expect(r.exitCode).toBe(0);
+        // as-owner for enforcement: the advisory reaches the nested model too.
+        expect(r.stdout).toContain("run_in_background");
+        const seen = fs.readdirSync(join(h, ".papercusp", "advisory-seen"));
+        expect(seen).toEqual(shape === "nested-cli" ? ["nested-nested-native-1"] : ["su-nested-guard-test"]);
+      } finally {
+        fs.rmSync(h, { recursive: true, force: true });
+      }
+    });
+  }
 });

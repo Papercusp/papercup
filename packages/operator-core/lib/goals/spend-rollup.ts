@@ -244,6 +244,35 @@ export async function sessionSpendForGoal(
       SELECT b.owner_id FROM harness_shared.session_briefs b
        WHERE b.workspace_id = ${opts.workspaceId}
          AND b.goal_id = ${opts.goalId}
+    ),
+    -- P-014(a): the selected consult answer sessions, computed ONCE. This used
+    -- to be a correlated EXISTS evaluated per usage sample, rescanning
+    -- consult_state + jsonb_array_elements for each of ~126k samples
+    -- (~24.7 s and ~48M buffers per call, every 5 min per active goal). The
+    -- per-sample conditions (session match, s.ts >= answer start) moved to the
+    -- probe below; MIN(started_ms) preserves "any qualifying answer session".
+    -- Live equivalence across all 5 active goals 2026-10-01: identical cost,
+    -- samples, priced/unpriced and session counts; 20–37 s → 0.4–0.8 s.
+    consult_answer_sessions AS MATERIALIZED (
+      SELECT answer_session.session_id,
+             MIN((EXTRACT(EPOCH FROM answer_session.started_at) * 1000)::bigint) AS started_ms
+        FROM harness_shared.consult_state cs
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
+              THEN cs.routing #> '{selection,selected}'
+            ELSE '[]'::jsonb
+          END
+        ) selected
+        JOIN harness_shared.adv_sessions answer_session
+          ON answer_session.workspace_id = cs.workspace_id
+         AND answer_session.coord_owner_id = NULLIF(selected->>'answeringOwnerId', '')
+         AND answer_session.session_id IS NOT NULL
+         AND answer_session.started_at >= cs.created_at
+       WHERE cs.workspace_id = ${opts.workspaceId}
+         AND cs.requester_id IN (SELECT owner_id FROM goal_owners)
+         AND NULLIF(selected->>'answeringOwnerId', '') IS NOT NULL
+       GROUP BY answer_session.session_id
     )
     SELECT COALESCE(SUM(s.cost_usd), 0) AS cost,
            COUNT(*)                     AS samples,
@@ -268,24 +297,9 @@ export async function sessionSpendForGoal(
              )
              OR EXISTS (
                SELECT 1
-                 FROM harness_shared.consult_state cs
-                 CROSS JOIN LATERAL jsonb_array_elements(
-                   CASE
-                     WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
-                       THEN cs.routing #> '{selection,selected}'
-                     ELSE '[]'::jsonb
-                   END
-                 ) selected
-                 JOIN harness_shared.adv_sessions answer_session
-                   ON answer_session.workspace_id = cs.workspace_id
-                  AND answer_session.coord_owner_id = NULLIF(selected->>'answeringOwnerId', '')
-                  AND answer_session.session_id IS NOT NULL
-                  AND answer_session.started_at >= cs.created_at
-                WHERE cs.workspace_id = ${opts.workspaceId}
-                  AND cs.requester_id IN (SELECT owner_id FROM goal_owners)
-                  AND answer_session.session_id = s.session_id
-                  AND s.ts >= (EXTRACT(EPOCH FROM answer_session.started_at) * 1000)::bigint
-                  AND NULLIF(selected->>'answeringOwnerId', '') IS NOT NULL
+                 FROM consult_answer_sessions cas
+                WHERE cas.session_id = s.session_id
+                  AND s.ts >= cas.started_ms
              )
            )
          )

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostHealthAttestation } from '@papercusp/deployment-driver';
+import type { WorkspaceHostAgentCredentialExpiryReading } from './agent-credential-expiry';
 import type { WorkspaceHostSoakInstanceReading, WorkspaceHostSoakReachOutcome, WorkspaceHostSoakSubject } from './soak';
 import {
   probeWorkspaceHostStandingHealth,
@@ -25,6 +26,8 @@ interface HostScript {
   reading?: WorkspaceHostSoakInstanceReading | Error;
   reach?: WorkspaceHostSoakReachOutcome | Error;
   seamsError?: Error;
+  /** When set, the seam exposes `readAgentCredentialExpiry` and answers with this. */
+  agentLogins?: WorkspaceHostAgentCredentialExpiryReading | Error;
 }
 
 function fakeRuntime(
@@ -35,6 +38,7 @@ function fakeRuntime(
   const recorded: { workspaceId: string; attestation: WorkspaceHostHealthAttestation }[] = [];
   const steps: string[] = [];
   const reachSubjects: WorkspaceHostSoakSubject[] = [];
+  const agentLoginReads: string[] = [];
   const listTargets = vi.fn(async () => targets);
   const runtime: WorkspaceHostStandingHealthRuntime = {
     step: async (name, fn) => {
@@ -57,6 +61,15 @@ function fakeRuntime(
             if (script.reach instanceof Error) throw script.reach;
             return script.reach ?? { kind: 'reached' };
           },
+          ...(script.agentLogins !== undefined
+            ? {
+                readAgentCredentialExpiry: async () => {
+                  agentLoginReads.push(subject.hostId);
+                  if (script.agentLogins instanceof Error) throw script.agentLogins;
+                  return script.agentLogins!;
+                },
+              }
+            : {}),
         }),
       };
     },
@@ -66,7 +79,7 @@ function fakeRuntime(
     },
     now: () => NOW,
   };
-  return { runtime, recorded, steps, reachSubjects, listTargets };
+  return { runtime, recorded, steps, reachSubjects, agentLoginReads, listTargets };
 }
 
 const target = (hostId: string, healthAttestedAt: string | null = null): WorkspaceHostStandingHealthTarget => ({
@@ -236,5 +249,61 @@ describe('workspaceHostStandingHealthIsFresh', () => {
 
   it('a 15-minute standing write is not fresh at the next tick, so the pass never starves itself', () => {
     expect(workspaceHostStandingHealthIsFresh(target('h', new Date(nowMs - 15 * 60_000).toISOString()), nowMs)).toBe(false);
+  });
+});
+
+describe('agent-login expiry in the standing attestation (WI-10003720)', () => {
+  const at = (offsetMs: number) => new Date(NOW.getTime() + offsetMs).toISOString();
+  const logins = (claudeAt: string, codex: 'absent' | 'self-renewing' = 'absent'): WorkspaceHostAgentCredentialExpiryReading => ({
+    kind: 'read',
+    slots: [
+      { slot: 'claude', kind: 'fixed', accessExpiresAt: claudeAt },
+      codex === 'absent' ? { slot: 'codex', kind: 'absent' } : { slot: 'codex', kind: 'self-renewing', accessExpiresAt: null },
+    ],
+  });
+
+  async function attest(script: HostScript) {
+    const { runtime, recorded, agentLoginReads } = fakeRuntime([target('host-a')], { 'host-a': script });
+    await runWorkspaceHostStandingHealthPass(runtime);
+    return { attestation: recorded[0]!.attestation, agentLoginReads };
+  }
+
+  it('goes DEGRADED once a delivered login has expired, and names the agent', async () => {
+    const { attestation } = await attest({ agentLogins: logins(at(-60_000), 'self-renewing') });
+    expect(attestation.status).toBe('degraded');
+    expect(attestation.checks.map((check) => [check.name, check.ok])).toEqual([
+      ['compute-running', true],
+      ['controller-reach', true],
+      ['agent-credential:claude', false],
+      ['agent-credential:codex', true],
+    ]);
+  });
+
+  it('stays HEALTHY but flags amber while the login is inside the warning window', async () => {
+    const { attestation } = await attest({ agentLogins: logins(at(30 * 60_000)) });
+    expect(attestation.status).toBe('healthy');
+    expect(attestation.checks.find((check) => check.name === 'agent-credential:claude')).toMatchObject({
+      ok: true,
+      warn: true,
+    });
+  });
+
+  it('does not ask an UNREACHED host about its logins (the reach check already says why)', async () => {
+    const { attestation, agentLoginReads } = await attest({
+      reach: { kind: 'transport-failure', detail: 'ssh exited 255' },
+      agentLogins: logins(at(-60_000)),
+    });
+    expect(agentLoginReads).toEqual([]);
+    expect(attestation.checks.map((check) => check.name)).toEqual(['compute-running', 'controller-reach']);
+  });
+
+  it('a login read that throws is NOT MEASURED, never a silent pass', async () => {
+    const { attestation } = await attest({ agentLogins: new Error('ssh exited 255') });
+    expect(attestation.status).toBe('unknown');
+    expect(attestation.checks.at(-1)).toEqual({
+      name: 'agent-credentials',
+      ok: null,
+      detail: 'not measured: ssh exited 255',
+    });
   });
 });

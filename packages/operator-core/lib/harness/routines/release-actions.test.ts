@@ -4867,3 +4867,35 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
     ).toBe(true);
   });
 });
+
+describe('WI-10004928 part 1: emitGateToolingCrashEvent', () => {
+  it('emits the global and pipeline-scoped inconclusive wake with reason gate-tooling-crash', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    await emitGateToolingCrashEvent(
+      '/x/papercusp',
+      { exitCode: 1, runId: 'r1', logPath: '/tmp/l.log', tail: 'Top-level await is currently not supported' },
+      emit as never,
+    );
+    const calls = emit.mock.calls.map(([a]) => a as { key: string; payload: Record<string, unknown>; summary: string });
+    expect(calls.map((c) => c.key)).toEqual(['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:papercusp']);
+    for (const c of calls) {
+      expect(c.payload).toMatchObject({ reason: 'gate-tooling-crash', exitCode: 1, pipeline: 'papercusp', sha: null });
+      expect(c.summary).toContain('GATE TOOLING CRASHED (exit 1)');
+    }
+  });
+
+  it('a failing emit on one key never throws and still tries the other', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn(async () => {
+      throw new Error('db down');
+    });
+    await expect(
+      emitGateToolingCrashEvent('/x/papercusp', { exitCode: null, runId: null, logPath: null, tail: null }, emit as never),
+    ).resolves.toBeUndefined();
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+});

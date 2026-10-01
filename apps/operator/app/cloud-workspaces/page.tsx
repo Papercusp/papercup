@@ -160,6 +160,15 @@ export default function CloudWorkspacesPage() {
     () => new Set(),
   );
   const inFlightKeysRef = useRef(new Set<string>());
+  const [boundHost, setBoundHost] = useState<{ hostId: string; workspaceId: string } | null>(null);
+  const onWorkspaceBound = useCallback((hostId: string, workspaceId: string | null) => setBoundHost(current => workspaceId === null ? current?.hostId === hostId ? null : current : current?.hostId === hostId && current.workspaceId === workspaceId ? current : { hostId, workspaceId }), []);
+  const [configurationReview, setConfigurationReview] = useState<{ kind: "draft" | "host"; hostId: string; key: string } | null>(null);
+  useEffect(() => {
+    const reset = () => { setConfigurationReview(null); setBoundHost(null); };
+    window.addEventListener("workspacechange", reset);
+    window.addEventListener("papercusp:session-changed", reset);
+    return () => { window.removeEventListener("workspacechange", reset); window.removeEventListener("papercusp:session-changed", reset); };
+  }, []);
   const uncertainValidationsRef = useRef(new Map<string, string | undefined>());
 
   // The origin scheduler can stop waiting at 20 seconds while the server keeps
@@ -300,6 +309,14 @@ export default function CloudWorkspacesPage() {
     ],
   );
   const canProvision = canProvisionFrom(checks);
+  const tutorialHost = workspaces.find(row => row.id === hostParam) ?? null;
+  const hostReviewKey = (row: WorkspaceHostControlRow) => JSON.stringify([row.id, row.connectionId, row.scopeLabel, row.region, row.size, row.image, row.diskGiB, row.network, row.estimatedMonthlyUsd]);
+  const draftReviewKey = JSON.stringify([selectedConnection?.id, nameParam, selectedScope?.id, selectedRegion?.id, selectedZone, selectedSize?.id, selectedImage?.id, selectedNetwork?.id, diskParam]);
+  const reviewDraftConfiguration = () => { if (canProvision) setConfigurationReview({ kind: "draft", hostId: workspaceHostIdFromName(nameParam), key: draftReviewKey }); };
+  const configurationReviewed = Boolean(configurationReview && (configurationReview.kind === "host"
+    ? tutorialHost && configurationReview.hostId === tutorialHost.id && configurationReview.key === hostReviewKey(tutorialHost)
+    : configurationReview.key === draftReviewKey && (!tutorialHost || configurationReview.hostId === tutorialHost.id)));
+  const configurationValid = tutorialHost ? Boolean(tutorialHost.region && tutorialHost.size && tutorialHost.image && tutorialHost.network && tutorialHost.diskGiB > 0) : canProvision;
   const estimatedMonthlyUsd = estimateMonthlyUsd(
     selectedSize,
     diskGiB,
@@ -652,6 +669,7 @@ export default function CloudWorkspacesPage() {
               onImageChange={(value) => void setImageParam(value)}
               onNetworkChange={(value) => void setNetworkParam(value)}
               onProvision={handleProvision}
+              onReviewConfiguration={hostedTutorial ? reviewDraftConfiguration : undefined}
               onOpenConnect={() => {
                 void setStepParam("connect");
                 void setConnectTarget("gcp");
@@ -671,6 +689,8 @@ export default function CloudWorkspacesPage() {
               onLifecycle={handleLifecycle}
               onDestroy={(workspaceId) => void setDestroyId(workspaceId)}
               onGoToConfigure={() => void setStepParam("configure")}
+              onWorkspaceBound={onWorkspaceBound}
+              onReviewConfiguration={hostedTutorial ? id => { const row = workspaces.find(value => value.id === id); if (row) setConfigurationReview({ kind: "host", hostId: id, key: hostReviewKey(row) }); } : undefined}
             />
           ) : null}
         </div>
@@ -678,10 +698,14 @@ export default function CloudWorkspacesPage() {
 
       {hostedTutorial && <CloudTutorialCompanion
         selectionKey={`${hostedTutorial.controlPlaneWorkspaceId}:${hostParam ?? ""}`}
-        connection={selectedConnection} controlLoading={control.loading} controlError={control.error}
+        connection={tutorialHost ? connections.find(row => row.id === tutorialHost.connectionId) ?? null : selectedConnection}
+        workspace={tutorialHost} boundWorkspaceId={boundHost?.hostId === tutorialHost?.id ? boundHost?.workspaceId ?? null : null}
+        configurationValid={configurationValid} configurationReviewed={configurationReviewed}
+        controlLoading={control.loading} controlError={control.error}
         onCheckAgain={() => void control.invalidate?.()}
         onShowStep={(step) => {
-          void setStepParam(step === "connection" ? "connect" : step === "configuration" ? "configure" : "operate");
+          void setStepParam(step === "connection" ? "connect" : step === "configuration" && !tutorialHost ? "configure" : "operate");
+          if (step === "configuration" && tutorialHost) void setTabParam("cost");
           if (step === "connection") void setConnectTarget("gcp");
         }}
       />}

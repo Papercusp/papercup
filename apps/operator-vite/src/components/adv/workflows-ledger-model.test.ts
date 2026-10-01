@@ -381,7 +381,13 @@ describe('trigger dispatcher pause (WI-10004922)', () => {
 
   it('counts only workflows with an ARMED event trigger as held, never schedule-only plans', () => {
     const external = (armed: boolean | null): AutomationTrigger =>
-      trigger({ id: `external:b-${String(armed)}`, kind: 'external', provider: 'google calendar', armed });
+      trigger({
+        id: `external:b-${String(armed)}`,
+        kind: 'external',
+        provider: 'google calendar',
+        armed,
+        bindingId: `b-${String(armed)}`,
+      });
     const scheduleOnly = item({ id: 'plan:papercusp:nightly', triggers: [trigger({ armed: true })] });
     const armedEvent = item({ id: 'plan:papercusp:on-meeting', triggers: [external(true)] });
     const disarmedEvent = item({ id: 'plan:papercusp:on-mail', triggers: [external(false)] });
@@ -395,6 +401,15 @@ describe('trigger dispatcher pause (WI-10004922)', () => {
     expect(dispatcherDependentWorkflows([armedEvent, mixed])).toBe(2);
     // Disarmed or unknown-armed event triggers are not counted as held.
     expect(dispatcherDependentWorkflows([disarmedEvent, unknownEvent])).toBe(0);
+    // WI-10004955: an armed event trigger with no binding (a sync-triggered routine such as
+    // doc-freshness-sweep) never passes through the dispatcher, so a pause does not hold it.
+    const syncSweep = item({
+      id: 'routine:doc-freshness-sweep:papercusp',
+      kind: 'system-task',
+      triggers: [trigger({ id: 'routine-trigger:doc-freshness-sweep:papercusp', kind: 'external', provider: 'sync triggered', armed: true })],
+    });
+    expect(dispatcherDependentWorkflows([syncSweep])).toBe(0);
+    expect(dispatcherDependentWorkflows([syncSweep, armedEvent])).toBe(1);
     expect(
       buildNeedsYou({
         sources: [],

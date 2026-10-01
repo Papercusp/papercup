@@ -572,6 +572,22 @@ def assert_boundary_provider(session, provider, cuda_tf32):
             raise ValueError(f"CUDA precision recipe not honored: requested {cuda_tf32}, effective {effective}")
 
 
+def select_boundary_cells(request, selected_cell):
+    """A batch diagnostic measures its single baselines in the same process."""
+    singles = [{"id": "single-" + case["id"], "caseIds": [case["id"]]} for case in request["cases"]]
+    cells = singles + request["batches"]
+    promised = [cell["id"] for cell in cells]
+    if not selected_cell:
+        return cells, promised
+    selected = [cell for cell in cells if cell["id"] == selected_cell]
+    if len(selected) != 1:
+        raise ValueError("diagnostic selection requires one declared cell")
+    if len(selected[0]["caseIds"]) == 1:
+        return selected, promised
+    baselines = {cell["caseIds"][0]: cell for cell in singles}
+    return [baselines[identifier] for identifier in selected[0]["caseIds"]] + selected, promised
+
+
 def measure_boundaries(request_file, device, out_directory, selected_cell=None, cuda_tf32=None):
     """Actual graph vs independently loaded PyTorch, one immutable file/cell.
 
@@ -586,6 +602,7 @@ def measure_boundaries(request_file, device, out_directory, selected_cell=None, 
     if device == "cuda" and cuda_tf32 is None:
         cuda_tf32 = "0"
     request = validate_boundary_request(json.loads(Path(request_file).read_text()))
+    cells, promised_cells = select_boundary_cells(request, selected_cell)
     for asset in request["assets"]:
         if Path(asset["path"]).stat().st_size != asset["bytes"] or file_sha256(asset["path"]) != asset["sha256"]:
             raise ValueError("boundary source/reference/export fingerprint drift")
@@ -609,12 +626,6 @@ def measure_boundaries(request_file, device, out_directory, selected_cell=None, 
     model = AutoModel.from_pretrained(snapshot, config=load_pinned_config(snapshot),
                                     attn_implementation="eager", local_files_only=True).eval()
     cases = {case["id"]: case for case in request["cases"]}
-    cells = [{"id": "single-" + case["id"], "caseIds": [case["id"]]} for case in request["cases"]] + request["batches"]
-    promised_cells = [cell["id"] for cell in cells]
-    if selected_cell:
-        cells = [cell for cell in cells if cell["id"] == selected_cell and len(cell["caseIds"]) == 1]
-        if len(cells) != 1:
-            raise ValueError("diagnostic selection requires one declared single cell")
     singles = {}
     all_vector_gates_passed = True
     for cell in cells:
@@ -700,7 +711,7 @@ def main():
     parser.add_argument("--freeze-boundaries", help="Freeze new input/batch cells using an existing pinned export")
     parser.add_argument("--boundary-request", help="Measure actual graph inference against independently tokenized pinned PyTorch")
     parser.add_argument("--boundary-device", choices=["cpu", "cuda"], default="cpu")
-    parser.add_argument("--boundary-cell", help="One declared single-cell diagnostic, never full-population proof")
+    parser.add_argument("--boundary-cell", help="One declared diagnostic cell plus its single-input batch baselines, never full-population proof")
     parser.add_argument("--boundary-cuda-tf32", choices=["0", "1"], help="Explicit separately identified CUDA arithmetic recipe")
     parser.add_argument("--corpus", choices=["memory", "prose", "both"], default="both")
     args = parser.parse_args()

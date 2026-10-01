@@ -33,6 +33,10 @@ import {
   type WorkspaceHostHealthCheck,
 } from '@papercusp/deployment-driver';
 import {
+  workspaceHostAgentCredentialChecks,
+  type WorkspaceHostAgentCredentialExpiryReading,
+} from './agent-credential-expiry';
+import {
   workspaceHostComputeCheck,
   workspaceHostReachCheck,
   type WorkspaceHostSoakInstanceReading,
@@ -57,7 +61,14 @@ export interface WorkspaceHostStandingHealthTarget {
 /** The subset of the soak seams this pass uses. */
 export interface WorkspaceHostStandingHealthSeams {
   readInstance(): Promise<WorkspaceHostSoakInstanceReading>;
-  probeFor(subject: WorkspaceHostSoakSubject): { probeReach(): Promise<WorkspaceHostSoakReachOutcome> };
+  probeFor(subject: WorkspaceHostSoakSubject): {
+    probeReach(): Promise<WorkspaceHostSoakReachOutcome>;
+    /**
+     * Read the agent logins' expiry on the host (WI-10003720). Optional so a provider without it
+     * still attests compute + reach; asked only after a successful reach, over the same transport.
+     */
+    readAgentCredentialExpiry?(): Promise<WorkspaceHostAgentCredentialExpiryReading>;
+  };
 }
 
 export type WorkspaceHostStandingHealthOutcome =
@@ -132,6 +143,7 @@ export async function probeWorkspaceHostStandingHealth(
       .catch((error: unknown): WorkspaceHostSoakInstanceReading => ({ kind: 'unreadable', detail: errorDetail(error) }));
     const blocker = reachBlocker(reading);
     let reach: WorkspaceHostHealthCheck;
+    let agentChecks: WorkspaceHostHealthCheck[] = [];
     if (blocker !== null || reading.kind !== 'observed') {
       reach = notAttempted(blocker ?? 'no observed instance');
     } else {
@@ -142,16 +154,27 @@ export async function probeWorkspaceHostStandingHealth(
         instanceId: reading.instanceId!,
         image: reading.sourceImage ?? '',
       };
-      const outcome = await seams
-        .probeFor(subject)
+      const probe = seams.probeFor(subject);
+      const outcome = await probe
         .probeReach()
         .catch((error: unknown): WorkspaceHostSoakReachOutcome => ({
           kind: 'transport-failure',
           detail: errorDetail(error),
         }));
       reach = workspaceHostReachCheck(outcome);
+      // Only a host we actually reached is asked about its logins: an unreached host already
+      // says why in its reach check, and a second failed ssh would only repeat it.
+      if (outcome.kind === 'reached' && probe.readAgentCredentialExpiry) {
+        const expiry = await probe
+          .readAgentCredentialExpiry()
+          .catch((error: unknown): WorkspaceHostAgentCredentialExpiryReading => ({
+            kind: 'transport-failure',
+            detail: errorDetail(error),
+          }));
+        agentChecks = workspaceHostAgentCredentialChecks(expiry, new Date(observedAt));
+      }
     }
-    checks = [workspaceHostComputeCheck(reading), reach];
+    checks = [workspaceHostComputeCheck(reading), reach, ...agentChecks];
   }
   const compute = checks.find((check) => check.name === 'compute-running');
   return {

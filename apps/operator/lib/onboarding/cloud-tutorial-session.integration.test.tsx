@@ -11,9 +11,10 @@ import { CloudTutorialCompanion } from "./cloud-tutorial-companion";
 import { correlatedTutorialTask } from "./cloud-tutorial-session";
 
 vi.mock("@papercusp/sync", async importOriginal => ({ ...(await importOriginal<typeof import("@papercusp/sync")>()), useSyncQuery: () => ({ data: [], loading: false, error: null }) }));
-vi.mock("@/lib/useLexicon", () => ({ useLexicon: () => (value: string) => value }));
-vi.mock("@/app/admin/plans/plans-api", () => ({ usePlanList: () => ({ data: { plans: [] }, loading: false }) }));
-vi.mock("@/app/adv/sessions/use-su-launch-options", () => ({
+vi.mock("@/lib/useLexicon", async importOriginal => ({ ...(await importOriginal<typeof import("@/lib/useLexicon")>()), useLexicon: () => (value: string) => value }));
+vi.mock("@/app/admin/plans/plans-api", async importOriginal => ({ ...(await importOriginal<typeof import("@/app/admin/plans/plans-api")>()), usePlanList: () => ({ data: { plans: [] }, loading: false }) }));
+vi.mock("@/app/adv/sessions/use-su-launch-options", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/app/adv/sessions/use-su-launch-options")>()),
   useSuLaunchOptions: () => ({ fleets: [], accounts: [], schemes: [], nextScheme: null, ompCatalog: { status: "unavailable", models: [] }, loading: false, error: null, refresh: () => {} }),
   useIdentityLaunchCatalog: () => ({ identities: [], unreadable: [], nextAfter: null, loading: false, error: null, loadMore: () => {} }),
 }));

@@ -145,6 +145,36 @@ async function connected() {
   return M.sockets[M.sockets.length - 1];
 }
 
+describe("tutorial host binding receipts", () => {
+  it("waits for an authorized ticket and validated session.bound; sign-in, PTY output and stale sockets cannot certify a host", async () => {
+    const onWorkspaceBound = vi.fn();
+    const onWorkspaceIdChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" onWorkspaceBound={onWorkspaceBound} onWorkspaceIdChange={onWorkspaceIdChange} />);
+    const socket = await connected();
+    expect(onWorkspaceIdChange).toHaveBeenCalledWith("ws-1");
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "wrong", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    await waitFor(() => expect(onWorkspaceBound).toHaveBeenCalledWith("ws-1"));
+    socket.emit("close", { code: 1000, reason: "closed" });
+    expect(onWorkspaceBound).toHaveBeenLastCalledWith(null);
+    const positiveCount = onWorkspaceBound.mock.calls.filter(([id]) => id !== null).length;
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toHaveLength(positiveCount);
+  });
+  it("does not certify the selected host when its connector ticket is refused", async () => {
+    const original = M.fetch.getMockImplementation()!;
+    M.fetch.mockImplementation((input: RequestInfo | URL) => String(input).includes("session-ticket") ? Promise.resolve(Response.json({ error: "workspace_binding_mismatch" }, { status: 403 })) : original(input));
+    const onWorkspaceBound = vi.fn();
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" onWorkspaceBound={onWorkspaceBound} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Could not mint a workspace session ticket/);
+    expect(M.sockets).toHaveLength(0);
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+  });
+});
+
 /**
  * Host handshake. Omitting `limits` is how an older, non-chunking host looks.
  *

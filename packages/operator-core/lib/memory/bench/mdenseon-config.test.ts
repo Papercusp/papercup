@@ -3,6 +3,29 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const bench = fileURLToPath(new URL('.', import.meta.url));
+it('measures a selected batch with its own single baselines and preserves the promised population', () => {
+  const result = spawnSync('python3', ['-c', `
+import ast
+from pathlib import Path
+source = Path('mdenseon-vectors.py'); tree = ast.parse(source.read_text())
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'select_boundary_cells')
+scope = {}; exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
+request = dict(cases=[dict(id=i) for i in ['short-query','unicode','full-8192']],
+ batches=[dict(id='padded',caseIds=['short-query','unicode']),dict(id='mixed-length',caseIds=['short-query','full-8192'])])
+select = scope['select_boundary_cells']; complete, population = select(request,None)
+assert [c['id'] for c in complete] == population
+for requested, expected in [('padded',['single-short-query','single-unicode','padded']),
+ ('mixed-length',['single-short-query','single-full-8192','mixed-length']), ('single-unicode',['single-unicode'])]:
+ cells, promised = select(request,requested)
+ assert [c['id'] for c in cells] == expected and promised == population
+try: select(request,'unsubmitted')
+except ValueError: pass
+else: raise AssertionError('accepted unsubmitted diagnostic cell')
+print('boundary-batch-selection-passed')
+`], { cwd: bench, encoding: 'utf8' });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('boundary-batch-selection-passed');
+});
 it('records timed GPU memory in MiB and treats missing or malformed queries as unknown', () => {
   const result = spawnSync('python3', ['-c', `
 import ast, subprocess, types
@@ -63,7 +86,8 @@ import ast, json, sys, tempfile, types
 from pathlib import Path
 source = Path('mdenseon-vectors.py'); tree = ast.parse(source.read_text())
 function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'measure_boundaries')
-scope = dict(Path=Path, json=json, validate_boundary_request=lambda request: request)
+scope = dict(Path=Path, json=json, validate_boundary_request=lambda request: request,
+             select_boundary_cells=lambda request, selected: ([],[]))
 exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
 class Captured(Exception): pass
 seen = []

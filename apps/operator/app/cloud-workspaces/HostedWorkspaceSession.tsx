@@ -81,6 +81,8 @@ export interface HostedWorkspaceSessionProps {
   routeLabel: string;
   workspaceName: string;
   onWorkspaceIdChange?: (workspaceId: string) => void;
+  /** Authenticated host-specific relay receipt; null revokes a previous binding. */
+  onWorkspaceBound?: (workspaceId: string | null) => void;
   onDesktopBridgeChange?: (bridge: HostedWorkspaceDesktopBridge | null) => void;
   onDesktopRosterChange?: (desktops: HostedDesktopRosterEntry[]) => void;
   onDesktopThumbnailChange?: (result: HostedDesktopThumbnailResult) => void;
@@ -166,6 +168,7 @@ export function HostedWorkspaceSession({
   routeLabel,
   workspaceName,
   onWorkspaceIdChange,
+  onWorkspaceBound,
   onDesktopBridgeChange,
   onDesktopRosterChange,
   onDesktopThumbnailChange,
@@ -177,6 +180,7 @@ export function HostedWorkspaceSession({
   const fitRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);
   const resizeRef = useRef<ResizeObserver | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const ticketWorkspaceRef = useRef<string | null>(null);
   const roleRef = useRef<HostedWorkspaceTabRole | null>(null);
   /*
    * The relay's message listener is registered ONCE, inside connect(), so it
@@ -208,6 +212,7 @@ export function HostedWorkspaceSession({
   const startTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const callbackRefs = useRef({
     onWorkspaceIdChange,
+    onWorkspaceBound,
     onDesktopBridgeChange,
     onDesktopRosterChange,
     onDesktopThumbnailChange,
@@ -216,6 +221,7 @@ export function HostedWorkspaceSession({
   });
   callbackRefs.current = {
     onWorkspaceIdChange,
+    onWorkspaceBound,
     onDesktopBridgeChange,
     onDesktopRosterChange,
     onDesktopThumbnailChange,
@@ -338,6 +344,8 @@ export function HostedWorkspaceSession({
 
   const dispose = useCallback((notify = true) => {
     connectEpochRef.current += 1;
+    ticketWorkspaceRef.current = null;
+    callbackRefs.current.onWorkspaceBound?.(null);
     const socket = socketRef.current;
     socketRef.current = null;
     pendingListPathsRef.current.clear();
@@ -502,6 +510,7 @@ export function HostedWorkspaceSession({
       if (!event) return;
 
       if (event.kind === "bound") {
+        if (ticketWorkspaceRef.current) callbackRefs.current.onWorkspaceBound?.(ticketWorkspaceRef.current);
         setRole(event.role);
         setMeta((current) => ({
           ...current,
@@ -664,6 +673,7 @@ export function HostedWorkspaceSession({
       }
       if (epoch !== connectEpochRef.current) return;
 
+      ticketWorkspaceRef.current = workspaceId;
       setStatus("connecting");
       setNotice("Opening the generation-bound workspace relay…");
       const socket = new WebSocket(
@@ -694,6 +704,8 @@ export function HostedWorkspaceSession({
         )
           return;
         socketRef.current = null;
+        ticketWorkspaceRef.current = null;
+        callbackRefs.current.onWorkspaceBound?.(null);
         pendingDesktopRequestsRef.current.clear();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
@@ -718,10 +730,14 @@ export function HostedWorkspaceSession({
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
         setError("The workspace relay connection failed.");
+        ticketWorkspaceRef.current = null;
+        callbackRefs.current.onWorkspaceBound?.(null);
         setStatus("error");
       });
     } catch (cause) {
       if (epoch !== connectEpochRef.current) return;
+      ticketWorkspaceRef.current = null;
+      callbackRefs.current.onWorkspaceBound?.(null);
       callbackRefs.current.onDesktopBridgeChange?.(null);
       callbackRefs.current.onDesktopQueryStateChange?.("idle");
       setError(cause instanceof Error ? cause.message : String(cause));

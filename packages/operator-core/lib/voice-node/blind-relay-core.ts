@@ -14,6 +14,11 @@
  * NoiseSecretStream it cannot decrypt.
  */
 
+// The untyped holepunch modules are declared in this shim. Referencing it here
+// keeps the declarations visible to every program that compiles this file,
+// including the agent-mcp typecheck, which reaches it across packages.
+/// <reference path="../sync/hyperbee/holepunch.d.ts" />
+
 export interface BlindRelayServerOpts {
   /** 32-byte keypair seed. The public key is derived from it, so the same seed gives the same key. */
   seed: Buffer;

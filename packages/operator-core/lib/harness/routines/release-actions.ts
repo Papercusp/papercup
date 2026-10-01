@@ -452,6 +452,16 @@ async function reconcileLoadedScheduledCheckpointTerminal(
       logPath: terminal.logPath,
     });
   }
+  // WI-10004928 part 1: no result marker + an unexplained non-zero exit = the gate's own tooling
+  // crashed (e.g. a module-load failure). First exact-attempt transition only, like the red wake.
+  if (settlement.status === 'updated' && terminal.integrationRoot && !emittedReason && reason === 'error') {
+    await emitGateToolingCrashEvent(terminal.integrationRoot, {
+      exitCode: terminal.exitCode,
+      runId: terminal.runId,
+      logPath: terminal.logPath,
+      tail: logText ? logText.trim().split(/\r?\n/).slice(-5).join('\n') : null,
+    });
+  }
   if (settlement.status === 'conflict') {
     // A different logical attempt is stale. A conflict within THIS attempt can mean the
     // scheduled wrapper finished before its unitless reservation attached to the CLI. Its
@@ -758,6 +768,46 @@ async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdic
     console.warn(
       `${orchestratorStdoutTag()} legacy green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`,
     );
+  }
+}
+
+/**
+ * WI-10004928 part 1: the gate's OWN tooling died before it could report. The CLI is the only
+ * producer of `green-checkpoint:inconclusive`, so a run that crashes at module load (the
+ * 2026-10-01 top-level-await-under-CJS crash: exit 1 in ~9s, for 70+ min) emitted NOTHING and
+ * every `checkpoint:await` slept to its deadline. The routine is the only observer that outlives
+ * that crash, so it emits the inconclusive wake on the CLI's behalf, with reason
+ * `gate-tooling-crash` so a reader can tell it from an ordinary cancel/timeout.
+ * Only call this for a non-zero exit with NO result marker. Best-effort: never changes recording.
+ */
+export async function emitGateToolingCrashEvent(
+  root: string,
+  info: { exitCode: number | null; runId: string | null; logPath: string | null; tail: string | null },
+  emit: typeof emitAwaitedEvent = emitAwaitedEvent,
+): Promise<void> {
+  const pipeline = pipelineName(root);
+  const exit = info.exitCode === null ? 'unknown exit' : `exit ${info.exitCode}`;
+  const summary =
+    `${pipelineTag(pipeline)} green-checkpoint: GATE TOOLING CRASHED (${exit}) before any verdict — ` +
+    `no suite ran; the gate is not judging anything until this is fixed`;
+  const payload = {
+    sha: null,
+    pipeline,
+    reason: 'gate-tooling-crash',
+    exitCode: info.exitCode,
+    runId: info.runId,
+    logPath: info.logPath,
+    summary: info.tail ? info.tail.slice(-300) : null,
+  };
+  const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
+  for (const key of ['green-checkpoint:inconclusive', `green-checkpoint:inconclusive:${pipeline}`]) {
+    try {
+      await emit({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+    } catch (e) {
+      console.warn(
+        `${orchestratorStdoutTag()} gate-tooling-crash ${key} emit failed: ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }
 }
 
@@ -2668,6 +2718,15 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       !isPinnedCheckpointVerdict(parsed) && parsed?.green === false && parsed.candidate &&
       (!atomicallyRecorded || fallbackQualification?.status === 'updated')) {
     await emitLegacyRedVerdictEvent(root, parsed);
+  }
+  // WI-10004928 part 1: with a terminal file the reconcile above already emitted this wake.
+  if (!r.terminalPath && !recordedByRun && !parsed?.reason && status === 'error') {
+    await emitGateToolingCrashEvent(root, {
+      exitCode: r.code ?? null,
+      runId: null,
+      logPath: null,
+      tail: (r.stderr || r.stdout || '').slice(-300) || null,
+    });
   }
 
   // P-004: track the red streak + time-since-last-green across ticks and fire a

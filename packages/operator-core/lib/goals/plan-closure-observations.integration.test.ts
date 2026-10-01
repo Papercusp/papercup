@@ -16,6 +16,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => WORKSPACE }));
 
 const { beginPlanClosureObservation, readPlanClosureObservations } = await import('./plan-closure-observations');
+const { resolvePlanClosure } = await import('./plan-closure');
+const { compileGoalPlanPlacement } = await import('../goal-launch-settings');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = (name: string) => resolve(here, '../../../../libs/papercusp/libs/db/sql', name);
@@ -111,6 +113,46 @@ describe('plan closure observations (D-032)', () => {
     const [stored] = await db.sql`SELECT build_sha, fingerprint FROM harness_shared.plan_closure_observations`;
     expect(stored.build_sha).toBe('abc1234');
     expect(stored.fingerprint).toMatchObject({ planVersion: '36', acceptanceBarEpoch: 1, auditSeq: '5', rubrics: [`${RUBRIC}@10`] });
+  });
+
+  it('persisted placement contract: shipped-without-closure', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+
+    const observation = await read();
+    expect(observation).toMatchObject({
+      status: 'fresh', gate: { satisfied: false, code: 'acceptance_ungraded' },
+    });
+    if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+    const closure = resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate });
+    expect(closure.evidenceSatisfied).toBe(false);
+
+    expect(compileGoalPlanPlacement({
+      plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+      status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {}, closure,
+    })).toMatchObject({
+      state: 'awaiting-closure',
+      reconciliation: { action: 'close-plan', consistent: false, toolCall: null },
+    });
+  });
+
+  it('persisted placement contract: satisfied-closure', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      satisfied: true, buildProvenance: { sha: 'abc1234' },
+    });
+
+    const observation = await read();
+    expect(observation).toMatchObject({ status: 'fresh', gate: { satisfied: true } });
+    if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+    const closure = resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate });
+    expect(closure.evidenceSatisfied).toBe(true);
+
+    expect(compileGoalPlanPlacement({
+      plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+      status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {}, closure,
+    })).toMatchObject({
+      state: 'terminal',
+      reconciliation: { action: 'none', consistent: true, toolCall: null },
+    });
   });
 
   it('goes stale on a grading scorecard, a vetting scorecard, a plan write, an item, an audit or a rubric amend', async () => {
