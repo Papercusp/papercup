@@ -51,6 +51,17 @@ describe('memory degraded latch — self-healing', () => {
     expect(isMemoryDegraded()).toBe(false);
   });
 
+  it('request-budget expiry cannot arm or extend a backend cooldown', () => {
+    const requestTimeout = new MemoryTimeoutError('shared prompt budget expired', 'request-budget');
+    noteMemoryFailure(requestTimeout);
+    expect(isMemoryDegraded()).toBe(false);
+    noteMemoryFailure(new MemoryTimeoutError('explicit tool search hung'));
+    vi.advanceTimersByTime(memoryDegradedCooldownMs() - 100);
+    noteMemoryFailure(requestTimeout);
+    vi.advanceTimersByTime(101);
+    expect(isMemoryDegraded()).toBe(false);
+  });
+
   it('a fresh timeout during the cooldown re-arms (extends) the quiet window', () => {
     noteMemoryFailure(new MemoryTimeoutError('t1'));
     vi.advanceTimersByTime(memoryDegradedCooldownMs() - 100);
@@ -85,6 +96,22 @@ describe('memory degraded latch — self-healing', () => {
 });
 
 describe('withMemoryTimeout — deadline race', () => {
+  it('distinguishes a shared lifetime from a shorter backend-operation cap', async () => {
+    vi.useFakeTimers();
+    const shared = createMemoryWorkDeadline(100);
+    const capped = createMemoryWorkDeadline(100);
+    try {
+      const sharedFailure = shared.run(() => new Promise(() => {}), 'shared search')
+        .catch((error: unknown) => error);
+      const cappedFailure = capped.run(() => new Promise(() => {}), 'capped search', 20)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(await cappedFailure).toMatchObject({ scope: 'backend-operation' });
+      await vi.advanceTimersByTimeAsync(80);
+      expect(await sharedFailure).toMatchObject({ scope: 'request-budget' });
+    } finally { shared.close(); capped.close(); vi.useRealTimers(); }
+  });
+
   it('preserves an explicitly disabled local bound while honoring parent cancellation', async () => {
     const parent = new AbortController();
     const deadline = createMemoryWorkDeadline(Number.POSITIVE_INFINITY, parent.signal);

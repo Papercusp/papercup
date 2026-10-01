@@ -228,6 +228,54 @@ it('cancels upstream search when the existing injection phase deadline expires',
   }
 });
 
+it('recovers useful recall on the next turn after a shared prompt budget expires', async () => {
+  vi.useFakeTimers();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const budgetMs = 2000;
+  const firstDeadline = createMemoryWorkDeadline(budgetMs);
+  const backend = mockBackend([{ id: 'recovered', text: 'The http2 transport uses stream cancellation.' }]);
+  let upstream!: AbortSignal;
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  backend.search.mockImplementationOnce((_query, opts) => {
+    upstream = opts.signal!;
+    started();
+    return new Promise((_resolve, reject) => {
+      upstream.addEventListener('abort', () => reject(upstream.reason), { once: true });
+    });
+  });
+  useBackend(backend);
+  let nextDeadline: ReturnType<typeof createMemoryWorkDeadline> | undefined;
+  try {
+    const first = buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'first http2 query',
+      harnessSlugs: ['papercusp'], potSlugs: [], deadline: firstDeadline,
+    });
+    await didStart;
+    await vi.advanceTimersByTimeAsync(budgetMs + 1);
+    await expect(first).resolves.toContain('memory leg: timed-out');
+    expect(upstream.aborted).toBe(true);
+    expect(upstream.reason).toBeInstanceOf(MemoryTimeoutError);
+
+    // No latch reset, cooldown wait, or budget increase between turns.
+    nextDeadline = createMemoryWorkDeadline(budgetMs);
+    const next = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'next http2 query',
+      harnessSlugs: ['papercusp'], potSlugs: [], deadline: nextDeadline,
+    });
+    expect(next).toContain('id=recovered');
+    expect(next).not.toContain('memory leg: timed-out');
+    expect(backend.available).toHaveBeenCalledTimes(2);
+    expect(backend.search).toHaveBeenCalledTimes(2);
+  } finally {
+    firstDeadline.close();
+    nextDeadline?.close();
+    vi.useRealTimers();
+    log.mockRestore();
+    resetMemoryDegradedForTest();
+  }
+});
+
 it('keeps useful memory when the concurrently running corpus exhausts their shared budget', async () => {
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

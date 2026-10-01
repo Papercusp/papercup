@@ -12,11 +12,12 @@
  *
  * This primitive was previously private to `injection.ts` and only guarded the
  * pre-turn auto-injection (push) path. It now lives here so BOTH paths share
- * one process-level degraded latch: a timeout anywhere quiets the hot per-turn
- * inject path immediately (it stops paying the deadline every turn), while the
+ * one process-level degraded latch: a backend-operation timeout quiets the hot
+ * per-turn inject path immediately (it stops paying the deadline every turn), while the
  * explicit tools keep attempting under their own deadline so they recover once
  * the backend does. The latch resets on restart — the backend's own
- * poison-cache handles client-level recovery.
+ * poison-cache handles client-level recovery. A shared request budget expiring
+ * says nothing about backend health and must not quiet unrelated future turns.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -24,8 +25,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 /** Thrown when a memory backend call exceeds its deadline. Distinct from
  *  `MemoryUnavailableError` (a clean "store is down" probe result) so callers
  *  can map a HANG to its own `memory_timeout` reason. */
+export type MemoryTimeoutScope = 'backend-operation' | 'request-budget';
+
 export class MemoryTimeoutError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly scope: MemoryTimeoutScope = 'backend-operation') {
     super(message);
     this.name = 'MemoryTimeoutError';
   }
@@ -159,13 +162,14 @@ export async function runWithTrackedMemoryTimeouts<T>(run: () => Promise<T>): Pr
  */
 export function withMemoryTimeout<T>(
   p: Promise<T>, label: string, timeoutMs: number, controller?: AbortController,
+  scope: MemoryTimeoutScope = 'backend-operation',
 ): Promise<T> {
   trackUnderlyingMemoryWork(p);
   return new Promise<T>((resolve, reject) => {
     const signal = controller?.signal;
     const onAbort = () => { cleanup(); reject(signal?.reason); };
     const timer = Number.isFinite(timeoutMs) ? setTimeout(() => {
-      const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`);
+      const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`, scope);
       controller?.abort(error);
       reject(error);
     }, timeoutMs) : undefined;
@@ -203,7 +207,7 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
   if (parent?.aborted) onParentAbort();
   else parent?.addEventListener('abort', onParentAbort, { once: true });
   const expiresAt = Date.now() + timeoutMs;
-  const expire = () => controller.abort(new MemoryTimeoutError(`memory block exceeded ${timeoutMs}ms`));
+  const expire = () => controller.abort(new MemoryTimeoutError(`memory block exceeded ${timeoutMs}ms`, 'request-budget'));
   const timer = Number.isFinite(timeoutMs) ? setTimeout(expire, timeoutMs) : undefined;
   return {
     signal: controller.signal,
@@ -211,7 +215,11 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
       const remaining = expiresAt - Date.now();
       if (remaining <= 0 && !controller.signal.aborted) expire();
       controller.signal.throwIfAborted();
-      return await withMemoryTimeout(start(), label, Math.min(remaining, capMs), controller);
+      // Only a shorter operation cap measures a backend-operation timeout.
+      // Exhausting the shared lifetime also includes queueing/other phases;
+      // cancellation remains local to this request, never a global health signal.
+      return await withMemoryTimeout(start(), label, Math.min(remaining, capMs), controller,
+        capMs < remaining ? 'backend-operation' : 'request-budget');
     },
     close() { if (timer !== undefined) clearTimeout(timer); parent?.removeEventListener('abort', onParentAbort); },
   };
@@ -313,11 +321,11 @@ export async function withMemoryWriteRetry<T>(
   throw lastErr;
 }
 
-/** Flip the process into degraded mode on a memory timeout. Other failures are
- *  ignored here (they are handled per-caller); only a HANG should quiet the
- *  inject path. */
+/** Quiet injection for a backend-operation timeout. Shared request-budget
+ *  expiry and other failures stay local to the caller; they cannot establish
+ *  a backend-wide hang. */
 export function noteMemoryFailure(err: unknown): void {
-  if (err instanceof MemoryTimeoutError) {
+  if (err instanceof MemoryTimeoutError && err.scope === 'backend-operation') {
     const wasDegraded = isMemoryDegraded();
     memoryDegradedUntil = Date.now() + memoryDegradedCooldownMs();
     // NODE_ENV guard mirrors injection.ts — the latch still arms; only the log
