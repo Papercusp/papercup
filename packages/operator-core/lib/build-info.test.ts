@@ -169,7 +169,6 @@ describe('bundled /api/health build identity', () => {
   it('serves the artifact SHA when the process environment contains an older SHA', async () => {
     const root = resolve(__dirname, '../../..');
     const healthRoute = resolve(root, 'packages/operator-core/lib/endpoint-route/routes/misc/health.ts');
-    const defineRoute = resolve(root, 'packages/operator-core/lib/endpoint-route/define-route.ts');
     const dir = mkdtempSync(join(tmpdir(), 'build-info-health-bundle-'));
     const outfile = join(dir, 'health-host.mjs');
     const bundleSha = 'bundle-sha-7f31c2';
@@ -178,10 +177,9 @@ describe('bundled /api/health build identity', () => {
         stdin: {
           contents: [
             "import { Hono } from 'hono';",
-            `import { registerRoute } from ${JSON.stringify(defineRoute)};`,
             `import health from ${JSON.stringify(healthRoute)};`,
             'const api = new Hono();',
-            'registerRoute(api, health);',
+            'api.on(health.method, health.path, (c) => health.handler(c));',
             'const root = new Hono();',
             "root.route('/api', api);",
             "const response = await root.request('/api/health');",
@@ -196,27 +194,22 @@ describe('bundled /api/health build identity', () => {
         platform: 'node',
         format: 'esm',
         target: 'node22',
-        // Keep the test bundle's resolution boundary aligned with the host
-        // bundle's shared optional/runtime-only externals. The route stack
-        // reaches DBOS instrumentation at build time even though /health
-        // itself does not use those packages.
-        external: [
-          '@lydell/*',
-          'bufferutil',
-          'utf-8-validate',
-          'fsevents',
-          'cpu-features',
-          '@opentelemetry/context-async-hooks',
-          '@opentelemetry/core',
-          '@opentelemetry/resources',
-          '@opentelemetry/sdk-trace-base',
-          '@opentelemetry/sdk-trace-node',
-          '@opentelemetry/sdk-logs',
-          '@opentelemetry/sdk-metrics',
-          '@opentelemetry/exporter-trace-otlp-proto',
-          '@opentelemetry/exporter-logs-otlp-proto',
-          '@opentelemetry/exporter-metrics-otlp-proto',
-        ],
+        // defineTool only wraps route metadata; endpoint dispatch is outside
+        // this regression's scope. Keep the real health module and handler,
+        // while avoiding the unrelated full route-stack dependency graph.
+        plugins: [{
+          name: 'health-test-define-tool-shim',
+          setup(build) {
+            build.onResolve({ filter: /^@papercusp\/agent-mcp$/ }, (args) => ({
+              path: args.path,
+              namespace: 'health-test',
+            }));
+            build.onLoad({ filter: /.*/, namespace: 'health-test' }, () => ({
+              contents: 'export const defineTool = (definition) => definition;',
+              loader: 'js',
+            }));
+          },
+        }],
         outfile,
         define: {
           __PAPERCUSP_BUNDLED_SIDECAR__: 'true',
