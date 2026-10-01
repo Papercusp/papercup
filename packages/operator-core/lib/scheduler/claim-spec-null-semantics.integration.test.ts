@@ -59,6 +59,14 @@ vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
+// WI-10004742 / EI-24400810686776632: getNextWorkItem reads the operation-worker receipt from
+// adv_sessions + session_briefs, which this fixture never builds, so every claim failed closed
+// ('operation claim authority unavailable'). The subject is claim-spec NULL semantics, not
+// operation claims: stub the read to "no operation worker", as work-items.integration does.
+vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) };
+});
 
 const { getNextWorkItem } = await import('./get-next');
 const { validateClaimSpec } = await import('./claim-spec');

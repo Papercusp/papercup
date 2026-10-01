@@ -386,6 +386,20 @@ export function programRootEffectWhereSql(
   )`;
 }
 
+const RECEIPT_READ_FAULT = 'active operation worker receipt could not be read';
+
+/** EI-24400810686776632: the receipt read fails CLOSED on any error, which is right, but a
+ * bare reason hid the commonest cause: a test database that never built a relation this read
+ * joins (adv_sessions, session_briefs). Name a SCHEMA fault (missing relation / column) so the
+ * refusal points at the missing table; a transient fault keeps the generic reason. */
+export function describeOperationReceiptReadFault(err: unknown): string {
+  const e = err && typeof err === 'object' ? err as { code?: unknown; message?: unknown } : null;
+  if (e && (e.code === '42P01' || e.code === '42703') && typeof e.message === 'string' && e.message) {
+    return `${RECEIPT_READ_FAULT}: ${e.message} (SQLSTATE ${e.code}; the database lacks a relation or column this read needs)`;
+  }
+  return RECEIPT_READ_FAULT;
+}
+
 /** Read the current, applied operation identity for a claim target. A launch
  * request is only a desired identity; it cannot authorize a claim until the
  * host has applied it. Read a small role header first so ordinary SU pulls do
@@ -494,8 +508,8 @@ export async function readActiveOperationWorkerClaimBinding(
         requiredTools: [...new Set(requiredTools as string[])].sort(),
       },
     };
-  } catch {
-    return { status: 'unavailable', reason: 'active operation worker receipt could not be read' };
+  } catch (err) {
+    return { status: 'unavailable', reason: describeOperationReceiptReadFault(err) };
   }
 }
 

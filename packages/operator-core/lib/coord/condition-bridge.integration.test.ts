@@ -121,6 +121,15 @@ vi.mock('../pot-membership', async (importOriginal) => {
   };
 });
 
+// EI-24400810686776632 / WI-10004742: every terminal transition reads the operation-worker
+// receipt from adv_sessions + session_briefs, which this fixture never builds; the read fails
+// CLOSED and the bridge's settle is refused. The subject here is the condition bridge, not
+// operation claims, so stub the read to "no operation worker" (as condition-upsert does).
+vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) };
+});
+
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
 const bridge = await import('./condition-bridge');
 const { findConditionObject, linkWorkItemToCondition } = await import('./condition-object');

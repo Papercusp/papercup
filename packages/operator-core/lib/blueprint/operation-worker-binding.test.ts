@@ -15,7 +15,7 @@ vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem })
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
 
-import { matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
+import { describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
@@ -259,5 +259,29 @@ describe('accepted blueprint operation worker binding', () => {
     await expect(resolveAcceptedOperationWorkerBinding(args)).rejects.toThrow('exactly the domain slot');
     getIdentitySource.mockResolvedValue({ ...source, identity: { ...source.identity, grants: undefined } });
     await expect(resolveAcceptedOperationWorkerBinding(args)).rejects.toThrow('declare grants explicitly');
+  });
+});
+
+describe('describeOperationReceiptReadFault (EI-24400810686776632)', () => {
+  const generic = 'active operation worker receipt could not be read';
+
+  it('names a missing relation, so a fixture that never built adv_sessions says so', () => {
+    const err = Object.assign(new Error('relation "harness_shared.adv_sessions" does not exist'), { code: '42P01' });
+    const reason = describeOperationReceiptReadFault(err);
+    expect(reason.startsWith(`${generic}: `)).toBe(true);
+    expect(reason).toContain('harness_shared.adv_sessions');
+    expect(reason).toContain('42P01');
+  });
+
+  it('names a missing column the same way', () => {
+    const err = Object.assign(new Error('column s.launch_spec does not exist'), { code: '42703' });
+    expect(describeOperationReceiptReadFault(err)).toContain('s.launch_spec');
+  });
+
+  it('keeps the generic reason for transient and unknown faults', () => {
+    expect(describeOperationReceiptReadFault(Object.assign(new Error('Connection terminated'), { code: '57P01' }))).toBe(generic);
+    expect(describeOperationReceiptReadFault(new Error('boom'))).toBe(generic);
+    expect(describeOperationReceiptReadFault(undefined)).toBe(generic);
+    expect(describeOperationReceiptReadFault({ code: '42P01', message: '' })).toBe(generic);
   });
 });
