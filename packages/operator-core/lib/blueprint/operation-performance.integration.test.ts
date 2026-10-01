@@ -100,7 +100,13 @@ const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
-const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+// Diagnostic-only extra server settings, e.g. statement logging for per-statement
+// attribution of a step (WI-10004402). Graded matrices leave P013_PG_EXTRA_SETTINGS unset;
+// setup echoes a set value so a run log always shows it was not a graded configuration.
+const DEDICATED_PG_EXTRA_SETTINGS = parseExtraPgSettings(process.env.P013_PG_EXTRA_SETTINGS);
+const DEDICATED_PG_SETTINGS: Record<string, string> = {
+  max_connections: '200', dynamic_shared_memory_type: 'mmap', ...DEDICATED_PG_EXTRA_SETTINGS,
+};
 // D-024: both arms reach getOrgPg() through fixture.sql, so its pool must be sized
 // like the production admin pool (resource-profile pgPoolMax; 52 on the server
 // host class) — at the fixture default of 2 the WI-10003586 headroom cap admits
@@ -138,6 +144,9 @@ beforeAll(async () => {
     dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     stamp('dedicated-native-pg-started');
+    if (Object.keys(DEDICATED_PG_EXTRA_SETTINGS).length > 0) {
+      console.error(`P013_SETUP diagnostic-pg-settings=${JSON.stringify(DEDICATED_PG_EXTRA_SETTINGS)} (not a graded configuration)`);
+    }
   } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarted
     // this cluster mid-run under load (2026-09-27 warm smoke, see the helper).
@@ -457,6 +466,18 @@ describe('P-013 workload A fixture', () => {
     expect({ items, plans, runs }).toEqual({ items: sequence, plans: 0, runs: 0 });
   }, coldMatrixBudgetMs());
 });
+
+/** P013_PG_EXTRA_SETTINGS: a JSON object of string server settings, appended after the
+ * fixed ones (a later `-c` wins). Unset or empty means none. */
+function parseExtraPgSettings(raw: string | undefined): Record<string, string> {
+  if (raw === undefined || raw.trim() === '') return {};
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) ||
+      Object.values(parsed).some((value) => typeof value !== 'string')) {
+    throw new Error('P-013 P013_PG_EXTRA_SETTINGS must be a JSON object of string values');
+  }
+  return parsed as Record<string, string>;
+}
 
 /** P013_MATRIX=1 (or the historical P013_COLD_PILOT=1) selects the paired D-016 matrix. */
 function matrixRequested(): boolean {
