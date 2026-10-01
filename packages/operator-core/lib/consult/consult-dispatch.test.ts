@@ -314,7 +314,12 @@ describe('dispatchConsultResponder — the fork leg', () => {
     const result = await dispatchConsultResponder(OPTS, CTX, deps);
 
     expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent });
-    expect(calls.spawn[0]!.envelope.greetingCmd).toContain(`--account=${account}`);
+    const cmd = calls.spawn[0]!.envelope.greetingCmd;
+    expect(cmd).toContain(`--account=${account}`);
+    // A port keeps the source expert's coordination identity. The requester is
+    // the process launcher, not the parent of that existing identity; stamping
+    // it would make acceptance-lineage treat the expert as the requester's child.
+    expect(cmd).not.toContain('--launched-by=su-requester');
   });
 
   it('FORKS a LIVE source rather than refusing it — the retired reviver refused here', async () => {

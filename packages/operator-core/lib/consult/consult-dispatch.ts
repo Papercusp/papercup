@@ -1198,7 +1198,14 @@ async function launchAnsweringSession(
     // the consult's.
     return failed('launch-failed', `launch command could not be composed: ${(e as Error)?.message ?? String(e)}`);
   }
-  cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
+  // The fork mints a new answering identity, so its launch parent is the
+  // requester. A conversion ports the expert's existing coordination identity;
+  // passing the requester as --launched-by would persist a false identity edge
+  // on that expert's new adv_sessions row. spawnHeadless still records the
+  // requester as the task launcher, which is process-level attribution.
+  if (operation === 'fork') {
+    cmd = d.injectLaunchedByArg(cmd, ctx.launchedBy).command;
+  }
 
   let envelope: Awaited<ReturnType<typeof buildConsoleEnvelope>>;
   try {
