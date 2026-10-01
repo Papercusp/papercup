@@ -24,6 +24,9 @@ describe('portable managed app test evidence', () => {
     }
     writeFileSync(testFile, 'export {};\n');
     writeFileSync(join(ambient, 'tests', 'operator.test.ts'), 'export {};\n');
+    const decoy = join(ambient, '.papercusp', 'apps', 'phone-app', 'tests');
+    mkdirSync(decoy, { recursive: true });
+    writeFileSync(join(decoy, 'call.test.ts'), 'export {};\n');
     const outside = join(fixture, 'outside.test.ts');
     writeFileSync(outside, 'export {};\n');
     symlinkSync(outside, join(app, 'tests', 'escape.test.ts'));
@@ -74,9 +77,23 @@ describe('portable managed app test evidence', () => {
 
   it('cannot resolve another workspace through the process-global registry', () => {
     expect(runWithWorkspace('two', () => normalizeTestFilePaths([portable], ambient)))
-      .toEqual({ ok: true, files: [portable] });
+      .toMatchObject({ ok: false, path: portable, matches: [] });
     expect(runInRequestScope(() => normalizeTestFilePaths([portable], ambient)))
-      .toEqual({ ok: true, files: [portable] });
+      .toMatchObject({ ok: false, path: portable, matches: [] });
+  });
+
+  it('cannot admit a missing or foreign app file as planned operator evidence', () => {
+    for (const [workspace, file] of [
+      ['one', '.papercusp/apps/phone-app/tests/missing.test.ts'],
+      ['two', portable],
+    ]) {
+      const result = runWithWorkspace(workspace!, () => validateCriterionCheckPaths([
+        { key: 'call', check: { kind: 'tests', files: [file!] } },
+      ], { root: ambient, allowPlannedPaths: true }));
+      expect(result.ok).toBe(false);
+      expect(result.planned).toEqual([]);
+      expect(result.failures[0]?.reason).toContain('current request workspace');
+    }
   });
 
   it.each([
@@ -86,7 +103,7 @@ describe('portable managed app test evidence', () => {
     '.papercusp/apps/phone-checkpoint/tests/call.test.ts',
   ])('refuses unsafe or noncanonical app evidence %s', (path) => {
     expect(runWithWorkspace('one', () => normalizeTestFilePaths([path], ambient)))
-      .toEqual({ ok: true, files: [path] });
+      .toMatchObject({ ok: false, path, matches: [] });
     expect(runWithWorkspace('one', () => validateCriterionCheckPaths([
       { key: 'call', check: { kind: 'tests', files: [path] } },
     ], { root: ambient })).ok).toBe(false);

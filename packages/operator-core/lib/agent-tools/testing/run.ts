@@ -446,7 +446,9 @@ export function buildDetachedMixedTestRunRequest(opts: {
   };
 }
 
-type TestFilePathResolution = { ok: true; files: string[] } | { ok: false; path: string; matches: string[] };
+type TestFilePathResolution =
+  | { ok: true; files: string[] }
+  | { ok: false; path: string; matches: string[]; reason?: string };
 
 /**
  * Expand the root package's declared workspace directories. The repository's root workspace
@@ -746,6 +748,14 @@ export function normalizeTestFilePaths(
       } catch {
         // Missing files, invalid checkouts and escaping symlinks remain unresolved.
       }
+    }
+    if (appPath) {
+      return {
+        ok: false,
+        path: file,
+        matches: [],
+        reason: 'Managed app test path must resolve inside an independent npm workspace checkout in the current request workspace.',
+      };
     }
 
     const rootCandidate = resolve(root, file);
@@ -2940,10 +2950,10 @@ export async function runTestFilesCore(opts: {
       ok: false,
       runId,
       root,
-      error: 'ambiguous_workspace_path',
+      error: pathResolution.reason ? 'managed_app_path_unresolved' : 'ambiguous_workspace_path',
       path: pathResolution.path,
       matches: pathResolution.matches,
-      hint:
+      hint: pathResolution.reason ??
         `workspace-relative test path ${JSON.stringify(pathResolution.path)} exists in multiple declared ` +
         `workspaces (${pathResolution.matches.join(', ')}). Re-run with a repo-root-relative or absolute path.`,
     };
