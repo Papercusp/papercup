@@ -335,6 +335,38 @@ describe('goals:update — partial writes preserve untouched state', () => {
     expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(true);
   });
 
+  it('advises on tripwires no resolver will measure, judged against the PERSISTED window (WI-10004424)', async () => {
+    const tripwires = [
+      { metric: 'spend_usd_week', label: 'weekly spend', threshold: 100 },
+      { metric: 'spend_usd_7d', label: '7d spend', threshold: 100 },
+      { metric: 'spend_usd_24h', label: 'daily spend', threshold: 20 },
+    ];
+    // The re-read row is what the advisory reads: a 7d budget window.
+    finalRow = { id: 'g1', ...existingRow, tripwires, budget_window_sec: 604800 };
+    const res = (await tool.handler(tool.args.parse({ id: 'g1', tripwires }) as never, CTX() as never)) as {
+      data: { tripwire_advisories?: Array<{ metric: string; code: string; suggestedMetric: string | null }> };
+      degraded?: boolean;
+    };
+    expect(res.degraded).not.toBe(true);
+    expect(res.data.tripwire_advisories?.map((a) => [a.metric, a.code, a.suggestedMetric])).toEqual([
+      ['spend_usd_week', 'platform-shaped-metric-unresolved', 'spend_usd_7d'],
+      ['spend_usd_24h', 'spend-window-never-measured', null],
+    ]);
+  });
+
+  it('does not re-advise on an update that touches neither tripwires nor the budget window', async () => {
+    finalRow = {
+      id: 'g1',
+      ...existingRow,
+      tripwires: [{ metric: 'spend_usd_week', label: 'weekly spend', threshold: 100 }],
+    };
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never,
+      CTX() as never,
+    )) as { data: unknown };
+    expect(res.data).not.toHaveProperty('tripwire_advisories');
+  });
+
   it('revising the kill criterion does NOT clear previously reported spend', async () => {
     // ⚠ THE INCOMING CRITERION MUST BE ≥ KILL_CRITERION_MIN_CHARS (12) — do not
     // shorten these fixtures back to 'old'/'new'. The handler validates
@@ -1150,5 +1182,49 @@ describe('goals:update — the deliberate-pause record (P-005)', () => {
     await tool.handler(tool.args.parse({ id: 'g1', status: 'achieved' }) as never, CTX() as never);
     expect(writtenMetadata().pause).toBeUndefined();
     expect(writtenMetadata().lastPause).toBeUndefined();
+  });
+});
+
+/**
+ * EI-24732367604234855 — a wind-down stamps `metadata.disposition*` on the goal
+ * and flips it to killed/achieved; reactivating it with goals:update must drop
+ * that stamp, or loop:end / session:end read the stale record as "this end is
+ * already covered" and wave a later end through the disposition gate.
+ */
+describe('goals:update — reactivating a terminal goal clears the wind-down disposition', () => {
+  const STAMP = {
+    disposition: 'killed',
+    dispositionBy: 'su-holder',
+    dispositionAt: '2026-09-30T22:38:28.000Z',
+    handoffTo: 'su-next',
+  };
+
+  it('drops disposition/dispositionBy/dispositionAt/handoffTo when a KILLED goal goes active', async () => {
+    existingRow!.status = 'killed';
+    existingRow!.metadata = { ...STAMP, spentCents: 999 };
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'active' }) as never, CTX() as never);
+    // Every other key survives — only the wind-down stamp goes.
+    expect(writtenMetadata()).toEqual({ spentCents: 999 });
+  });
+
+  it('does the same for an ACHIEVED goal', async () => {
+    existingRow!.status = 'achieved';
+    existingRow!.metadata = { ...STAMP, disposition: 'achieved' };
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'active' }) as never, CTX() as never);
+    expect(writtenMetadata()).toEqual({});
+  });
+
+  it('CONTROL: a handoff stamp on an ACTIVE goal survives status:"active" (active → active)', async () => {
+    existingRow!.status = 'active';
+    existingRow!.metadata = { disposition: 'handoff', dispositionBy: 'su-holder', handoffTo: 'su-next' };
+    await tool.handler(tool.args.parse({ id: 'g1', status: 'active' }) as never, CTX() as never);
+    expect(writtenMetadata()).toMatchObject({ disposition: 'handoff', handoffTo: 'su-next' });
+  });
+
+  it('CONTROL: an unrelated edit on a killed goal keeps the record that explains why it ended', async () => {
+    existingRow!.status = 'killed';
+    existingRow!.metadata = { ...STAMP };
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Renamed' }) as never, CTX() as never);
+    expect(writtenMetadata()).toMatchObject({ disposition: 'killed', dispositionBy: 'su-holder' });
   });
 });

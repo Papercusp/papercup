@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { drive, selectSessions, sessionFor, summarize } from './load-driver';
+import { drive, selectSessions, sessionFor, summarize, toolOutcomesDiverge } from './load-driver';
 
 function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
   const repo = over.repo ?? 'r';
@@ -53,6 +53,14 @@ describe('selection and scheduling', () => {
     expect([0, 1, 2, 3].map((slot) => sessionFor(s, slot, 0).sessionId)).toEqual(['a', 'b', 'c', 'a']);
     expect([0, 1, 2].map((it) => sessionFor(s, 1, it).sessionId)).toEqual(['b', 'c', 'a']);
   });
+
+  it('calls a replay tool-diverged when its tool results or failures differ from the recording', () => {
+    expect(toolOutcomesDiverge({ results: 6, errors: 1 }, { results: 6, errors: 1 })).toBe(false);
+    expect(toolOutcomesDiverge({ results: 6, errors: 0 }, { results: 6, errors: 1 })).toBe(true);
+    expect(toolOutcomesDiverge({ results: 6, errors: 0 }, { results: 5, errors: 0 })).toBe(true);
+    // No recorded CLI log: nothing to compare against.
+    expect(toolOutcomesDiverge(null, { results: 5, errors: 2 })).toBe(false);
+  });
 });
 
 // cgroup accounting and event-loop hygiene: session-process.test.ts (shared with record-session).
@@ -63,17 +71,41 @@ describe('drive (end to end with a fake CLI)', () => {
 
   // A stand-in `claude`: sends the requests a two-turn session would (2 then 4 messages),
   // plus one extra when FAKE_EXTRA=1 so the replay diverges; prints the -p prompt it got.
+  // Like the real CLI it runs the tool calls it is streamed: each tool_use input (reassembled
+  // from input_json_delta fragments) is a Write of `file_path`, reported as a stream-json
+  // tool_result line that is_error when the write fails.
   const FAKE = `#!/usr/bin/env node
+const fs = require('node:fs');
 const base = process.env.ANTHROPIC_BASE_URL;
 const prompt = process.argv[process.argv.indexOf('-p') + 1];
+const results = [];
+const runTools = (text) => {
+  const inputs = {};
+  for (const line of text.split('\\n')) {
+    if (!line.startsWith('data: ')) continue;
+    try {
+      const j = JSON.parse(line.slice(6));
+      if (j.type === 'content_block_delta' && j.delta.type === 'input_json_delta') inputs[j.index] = (inputs[j.index] || '') + j.delta.partial_json;
+    } catch {}
+  }
+  for (const s of Object.values(inputs)) {
+    const { file_path } = JSON.parse(s);
+    let is_error = false, content = file_path;
+    try { fs.writeFileSync(file_path, 'x'); } catch (e) { is_error = true; content = e.code; }
+    results.push(JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', is_error, content }] } }));
+  }
+};
 const call = async (n) => {
   const r = await fetch(base + '/v1/messages?beta=true', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'claude-sonnet-5-5', stream: true, messages: Array(n).fill({}), tools: Array(20).fill({}) }) });
-  return [r.status, await r.text()];
+  const text = await r.text();
+  runTools(text);
+  return [r.status, text];
 };
 (async () => {
   const out = [await call(2), await call(4)];
   if (process.env.FAKE_EXTRA === '1') out.push(await call(6));
+  for (const l of results) console.log(l);
   console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset' }));
   process.exit(out.every(([s]) => s === 200) ? 0 : 1);
 })();
@@ -175,5 +207,79 @@ const call = async (n) => {
     const [r] = await run(1);
     expect(r).toMatchObject({ exitCode: 1, diverged: true, served: { exact: 2, exhausted: 1 } });
     expect(summarize([r])).toMatchObject({ clean: 0, failed: 1, diverged: 1 });
+  });
+
+  describe('a recording whose tool call names its own absolute checkout path', () => {
+    // The recorded session ran in recWork and its Write named `${recWork}/out.txt`, streamed
+    // as two input_json_delta fragments that split the path.
+    let recWork: string;
+    const writeRecording = (recordedToolError: boolean) => {
+      const input = JSON.stringify({ file_path: `${recWork}/out.txt` });
+      const cut = input.indexOf(recWork) + 10;
+      const delta = (pj: string) => `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: pj } })}\n\n`;
+      const toolTurn = { ...exch(0, 2), chunks: [encodeChunk(0, Buffer.from(delta(input.slice(0, cut)))), encodeChunk(3, Buffer.from(delta(input.slice(cut))))] };
+      const dir = path.join(root, 'corpus', 'claude-s1');
+      writeFileSync(path.join(dir, 'exchanges.jsonl'), [toolTurn, exch(1, 4)].map((e) => JSON.stringify(e)).join('\n') + '\n');
+      writeFileSync(path.join(dir, 'cli.jsonl'), JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', is_error: recordedToolError, content: 'ok' }] } }) + '\n');
+    };
+    const runWith = (workDir: string) =>
+      drive({
+        cacheDir: path.join(root, 'cache'),
+        agents: 1,
+        sessions: [{ ...meta({ id: 'claude-s1' }), workDir }],
+        corpus,
+        corpusDir: path.join(root, 'corpus'),
+        outDir: path.join(root, 'out'),
+        runId: 'W',
+        speed: 0,
+        staggerMs: 0,
+        durationSec: 0,
+        isolation: 'none',
+        keepWork: true,
+      });
+    const toolResults = (instance: string) =>
+      readFileSync(path.join(root, 'out', 'sessions', `${instance}.cli.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l))
+        .filter((j) => j.type === 'user')
+        .map((j) => j.message.content[0]);
+
+    beforeEach(() => {
+      recWork = path.join(root, 'rec-work', 'claude-s1-20261001T003519');
+    });
+
+    it('rewrites the path so the replayed tool writes into the replay checkout, matching the recording', async () => {
+      writeRecording(false);
+      const [r] = await runWith(recWork);
+      const replayWork = path.join(root, 'cache', 'replay-work', 'W', 's0-i0');
+      expect(toolResults(r.instance)).toEqual([{ type: 'tool_result', is_error: false, content: `${replayWork}/out.txt` }]);
+      expect(readFileSync(path.join(replayWork, 'out.txt'), 'utf8')).toBe('x');
+      expect(r).toMatchObject({
+        exitCode: 0,
+        served: { exact: 2, exhausted: 0 },
+        toolOutcomes: { recorded: { results: 1, errors: 0 }, replayed: { results: 1, errors: 0 } },
+        toolDiverged: false,
+        diverged: false,
+      });
+      const served = readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(served.map((s) => s.rewritten)).toEqual([true, false]);
+    });
+
+    it('flags the replay diverged when its tool failed where the recording succeeded, though every request matched exact', async () => {
+      // The meta names the wrong checkout, so nothing is rewritten and the Write targets the
+      // recording's directory, which does not exist here: the bug this check exists to catch.
+      writeRecording(false);
+      const [r] = await runWith(path.join(root, 'elsewhere'));
+      expect(toolResults(r.instance)).toEqual([{ type: 'tool_result', is_error: true, content: 'ENOENT' }]);
+      expect(r).toMatchObject({
+        exitCode: 0,
+        served: { exact: 2, shape: 0, path: 0, exhausted: 0 },
+        toolOutcomes: { recorded: { results: 1, errors: 0 }, replayed: { results: 1, errors: 1 } },
+        toolDiverged: true,
+        diverged: true,
+      });
+      expect(summarize([r])).toMatchObject({ clean: 0, diverged: 1, toolDiverged: 1 });
+    });
   });
 });

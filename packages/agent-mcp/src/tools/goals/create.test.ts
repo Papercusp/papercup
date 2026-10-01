@@ -341,6 +341,38 @@ describe('goals:create — the kill criterion is a COLUMN, not a metadata key', 
     expect(JSON.stringify(insert.params)).toContain('spend_usd');
   });
 
+  it('advises on a tripwire that reads as platform-measured but no resolver measures (WI-10004424)', async () => {
+    const tripwires = [
+      { metric: 'spend_usd_week', label: 'weekly spend', threshold: 100, unit: 'usd' },
+      { metric: 'spend_usd', label: 'spend', threshold: 500, unit: 'usd' },
+      { metric: 'species_covered', label: 'species', threshold: 20 },
+    ];
+    const res = await call(ARGS({ killCriterion: 'stop at $500 total spend', tripwires }), CTX());
+    const data = res.data as { tripwire_advisories?: Array<{ metric: string; suggestedMetric: string | null }> };
+    // The goal is still written — the advisory never blocks.
+    expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
+    expect(data.tripwire_advisories?.map((a) => [a.metric, a.suggestedMetric])).toEqual([
+      ['spend_usd_week', 'spend_usd_7d'],
+    ]);
+  });
+
+  it('advises that a window-suffixed spend metric is never measured on a lifetime-window goal', async () => {
+    // goals:create writes no budget window, and spend_usd_7d resolves only on a 7d one.
+    const tripwires = [{ metric: 'spend_usd_7d', label: '7d spend', threshold: 100, unit: 'usd' }];
+    const res = await call(ARGS({ killCriterion: 'stop at $100 per week', tripwires }), CTX());
+    const data = res.data as { tripwire_advisories?: Array<{ code: string }> };
+    expect(data.tripwire_advisories?.map((a) => a.code)).toEqual(['spend-window-never-measured']);
+  });
+
+  it('omits tripwire_advisories when every tripwire is measured or executor-scored', async () => {
+    const tripwires = [
+      { metric: 'spend_usd', label: 'spend', threshold: 500, unit: 'usd' },
+      { metric: 'days_elapsed', label: 'day of 30', threshold: 30 },
+    ];
+    const res = await call(ARGS({ killCriterion: 'stop at $500 total spend', tripwires }), CTX());
+    expect(res.data).not.toHaveProperty('tripwire_advisories');
+  });
+
   it('leaves tripwires null when none are given — a prose-only criterion is valid', async () => {
     // ⚠ The criterion here must clear `killCriterionProblem` (≥12 chars, no
     // placeholder opener). This test is about TRIPWIRES — the criterion is

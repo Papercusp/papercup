@@ -93,7 +93,12 @@ interface ValidationIssue {
   readonly path?: ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>;
   readonly code?: string;
   readonly origin?: string;
-  readonly maximum?: number;
+  /**
+   * Zod v4 types `$ZodIssueTooBig.maximum` as `number | bigint` (a `z.bigint().max()`
+   * bound). Declaring it narrower makes `r.error.issues` unassignable to this type
+   * (WI-10004468); the renderers below already narrow with `typeof === 'number'`.
+   */
+  readonly maximum?: number | bigint;
   /** Zod v4 `unrecognized_keys`: names of the offending object keys. */
   readonly keys?: ReadonlyArray<PropertyKey>;
   /**

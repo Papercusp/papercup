@@ -125,6 +125,43 @@ export function summarizeToolCalls(cli: Cli, jsonl: string): Record<string, numb
   return counts;
 }
 
+/**
+ * How many tool calls finished, and how many of them failed, per the CLI's own JSON event
+ * stream: claude `tool_result` blocks (`is_error`), codex completed items (`status: failed`).
+ * A replay whose counts differ from its recording's ran different tool work than the recording
+ * did, however exactly its model requests matched.
+ */
+export function summarizeToolOutcomes(cli: Cli, jsonl: string): { results: number; errors: number } {
+  let results = 0;
+  let errors = 0;
+  for (const line of jsonl.split('\n')) {
+    if (!line.trim()) continue;
+    let ev: Record<string, any>;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (cli === 'claude') {
+      if (ev.type !== 'user' || !Array.isArray(ev.message?.content)) continue;
+      for (const block of ev.message.content) {
+        if (block?.type !== 'tool_result') continue;
+        results++;
+        if (block.is_error === true) errors++;
+      }
+    } else if (ev.type === 'item.completed' && ev.item && ev.item.type !== 'agent_message' && ev.item.type !== 'reasoning') {
+      results++;
+      if (ev.item.status === 'failed') errors++;
+    }
+  }
+  return { results, errors };
+}
+
+/** Where `recordSession` runs a session's checkout: tool calls in its recording name this path. */
+export function recordedWorkDir(sessionId: string, cacheDir = CACHE): string {
+  return path.join(cacheDir, 'work', sessionId);
+}
+
 async function cliVersion(cli: Cli): Promise<string> {
   try {
     return (await execFileAsync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 })).stdout.trim();
@@ -148,6 +185,12 @@ export interface SessionMeta {
   exchanges: number;
   toolCalls: Record<string, number>;
   diffBytes: number;
+  /**
+   * The absolute checkout path the session ran in. Its tool calls name files under it, so a
+   * replay rewrites it to the replay's own checkout. Absent on recordings made before it was
+   * stored; those ran in `recordedWorkDir(sessionId)` on the recording host.
+   */
+  workDir?: string;
   /** How the session ran; absent on recordings made before per-session accounting existed. */
   isolation?: Isolation;
   /** The session cgroup's memory.peak (CLI plus every tool it spawned); null without systemd isolation. */
@@ -173,7 +216,7 @@ export async function recordSession(opts: {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
   const sessionId = `${cli}-${task.id}-${stamp}`;
   const sessionDir = path.join(opts.outDir, sessionId);
-  const workDir = path.join(CACHE, 'work', sessionId);
+  const workDir = recordedWorkDir(sessionId);
   const prepared = path.join(CACHE, 'prepared', task.repo);
   if (!existsSync(prepared)) throw new Error(`prepared checkout missing: ${prepared}`);
   const head = (await execFileAsync('git', ['-C', prepared, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).stdout.trim();
@@ -247,6 +290,7 @@ export async function recordSession(opts: {
     exchanges: proxy.count(),
     toolCalls: summarizeToolCalls(cli, readFileSync(path.join(sessionDir, 'cli.jsonl'), 'utf8')),
     diffBytes: Buffer.byteLength(diff),
+    workDir,
     isolation,
     ...stats,
   };

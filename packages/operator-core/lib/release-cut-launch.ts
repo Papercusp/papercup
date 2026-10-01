@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { serviceUnitForTask, TASK_ROOT_SLICE } from './task-manager/types';
 
 /** Transient systemd unit for the detached cut. Distinct from DEPLOY_UNIT /
  *  the checkpoint unit — a cut, a deploy and a green-checkpoint touch different trees and
@@ -65,6 +66,10 @@ export const PLATFORMS: readonly Platform[] = ['linux', 'mac', 'windows', 'arm64
 export function cutUnitFor(platform?: Platform): string {
   return platform ? `${CUT_UNIT}-${platform}` : CUT_UNIT;
 }
+/** Task-manager service unit for one managed release cut. */
+export function cutUnitForTask(taskId: string): string {
+  return serviceUnitForTask(taskId);
+}
 export function cutLogFor(platform?: Platform): string {
   return platform ? `/tmp/${CUT_UNIT}-${platform}.log` : CUT_LOG;
 }
@@ -73,6 +78,10 @@ export function cutDoneFor(platform?: Platform): string {
 }
 export function cutStartedFor(platform?: Platform): string {
   return platform ? `/tmp/${CUT_UNIT}-${platform}.started` : CUT_STARTED;
+}
+/** Stable lock for the logical whole-cut/platform slot, independent of task unit id. */
+export function cutLockFor(platform?: Platform): string {
+  return platform ? `/tmp/${CUT_UNIT}-${platform}.lock` : `/tmp/${CUT_UNIT}.lock`;
 }
 
 /** Map a single platform leg to the `CutLegs` flags release-local.sh reads (WITH_MAC=1 /
@@ -360,10 +369,12 @@ export function buildCutArgv(
   const envPrefix = Object.entries(env)
     .map(([k, v]) => `${k}=${shellSingleQuote(v)}`)
     .join(' ');
-  const unit = cutUnitFor(platform);
+  const taskId = runtime.releaseTaskId?.trim();
+  const unit = taskId ? cutUnitForTask(taskId) : cutUnitFor(platform);
   const log = cutLogFor(platform);
   const done = cutDoneFor(platform);
   const started = cutStartedFor(platform);
+  const lock = cutLockFor(platform);
   // A first pass writes these version fields before cutting the seed. A retry
   // validates that exact residue in release:cut, then restores only those files
   // so release-local.sh starts from a clean provenance baseline and reapplies the
@@ -401,11 +412,16 @@ export function buildCutArgv(
     operationId && taskId
       ? `printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n' "$(date +%s)" ${shellSingleQuote(operationId)} ${shellSingleQuote(taskId)} > ${started}; `
       : `printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; `;
-  const inner = `rm -f ${done}; ${startedMarker}` + `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
+  const inner =
+    `exec 9>${shellSingleQuote(lock)}; flock -n 9 || { echo 'release_cut_slot_busy' >&2; exit 73; }; ` +
+    `rm -f ${done}; ${startedMarker}systemd-notify --ready || exit $?; ` +
+    `${resumeReset}${envPrefix} ${cutterInvocation} > ${log} 2>&1; echo "DONE:$?" > ${done}`;
   return [
     '--user',
     ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
     `--unit=${unit}`,
+    `--slice=${TASK_ROOT_SLICE}`,
+    '--property=Type=notify',
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
     'bash',
@@ -478,7 +494,9 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,
-      unit: cutUnitFor(opts.platform),
+      unit: opts.runtime.releaseTaskId?.trim()
+        ? cutUnitForTask(opts.runtime.releaseTaskId.trim())
+        : cutUnitFor(opts.platform),
       version: opts.version,
       channel: opts.channel,
       legs,
@@ -552,6 +570,28 @@ export function parseCutStartedMarker(text: string): CutOperationMarker {
   };
 }
 
+function cutTaskIdFromStartedMarker(
+  startedPath: string,
+  exists: (path: string) => boolean,
+  read: (path: string) => string,
+): string | null {
+  if (!exists(startedPath)) return null;
+  try {
+    return parseCutStartedMarker(read(startedPath)).taskId;
+  } catch {
+    return null;
+  }
+}
+
+function cutUnitFromStartedMarker(
+  platform: Platform | undefined,
+  exists: (path: string) => boolean,
+  read: (path: string) => string,
+): string {
+  const taskId = cutTaskIdFromStartedMarker(cutStartedFor(platform), exists, read);
+  return taskId ? cutUnitForTask(taskId) : cutUnitFor(platform);
+}
+
 export interface ReadCutStatusDeps {
   existsSync?: (p: string) => boolean;
   readFileSync?: (p: string) => string;
@@ -589,11 +629,20 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
   const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const active = deps.isUnitActive ?? defaultIsUnitActive;
-  const unit = cutUnitFor(deps.platform);
   const logPath = cutLogFor(deps.platform);
   const donePath = cutDoneFor(deps.platform);
   const startedPath = cutStartedFor(deps.platform);
 
+  const startedSeen = exists(startedPath);
+  let operation: CutOperationMarker | null = null;
+  if (startedSeen) {
+    try {
+      operation = parseCutStartedMarker(read(startedPath));
+    } catch {
+      operation = { operationId: null, taskId: null, startedAtSec: null };
+    }
+  }
+  const unit = operation?.taskId ? cutUnitForTask(operation.taskId) : cutUnitFor(deps.platform);
   const running = active(unit);
   let exitCode: number | null = null;
   let doneSeen = false;
@@ -604,17 +653,8 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
       doneSeen = true;
     }
   }
-  const startedSeen = exists(startedPath);
   // A marker that exists but cannot be read is still evidence a cut STARTED, so the
-  // state machine below must not lose that; only the identity degrades to null.
-  let operation: CutOperationMarker | null = null;
-  if (startedSeen) {
-    try {
-      operation = parseCutStartedMarker(read(startedPath));
-    } catch {
-      operation = { operationId: null, taskId: null, startedAtSec: null };
-    }
-  }
+  // state machine above keeps the interrupted/running decision and only identity degrades.
   const logTail = exists(logPath) ? tailLines(read(logPath), 40) : null;
 
   let state: CutStateKind;
@@ -1094,6 +1134,7 @@ export function releaseToolingDrift(args: {
 
 export interface PreflightDeps {
   exists?: (p: string) => boolean;
+  readFileSync?: (p: string) => string;
   isUnitActive?: (unit: string) => boolean;
   /** HOME for resolving the signing key (default process.env.HOME). */
   home?: string;
@@ -1164,9 +1205,10 @@ export function preflightCut(
 ): PreflightResult {
   const root = opts.root ?? desktopRoot();
   const exists = deps.exists ?? ((p: string) => fs.existsSync(p));
+  const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const active = deps.isUnitActive ?? defaultIsUnitActive;
   const home = deps.home ?? process.env.HOME ?? '';
-  const unit = cutUnitFor(opts.platform);
+  const unit = cutUnitFromStartedMarker(opts.platform, exists, read);
 
   const checks: PreflightCheck[] = [];
 
@@ -1407,6 +1449,8 @@ export interface AbortLegResult {
 export interface AbortLegDeps {
   /** `systemctl --user stop <unit>` by default; throws on failure. Injectable for tests. */
   stopUnit?: (unit: string) => void;
+  existsSync?: (p: string) => boolean;
+  readFileSync?: (p: string) => string;
 }
 
 /** Stop ONE platform leg's detached unit (best-effort — a leg that already finished or
@@ -1414,7 +1458,9 @@ export interface AbortLegDeps {
  *  Its log/done files are left in place for post-mortem; the next op:run-leg for the same
  *  platform clears the done sentinel itself (buildCutArgv's `rm -f`). */
 export function abortLeg(platform: Platform, deps: AbortLegDeps = {}): AbortLegResult {
-  const unit = cutUnitFor(platform);
+  const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
+  const read = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const unit = cutUnitFromStartedMarker(platform, exists, read);
   const stop =
     deps.stopUnit ??
     ((u: string) => {

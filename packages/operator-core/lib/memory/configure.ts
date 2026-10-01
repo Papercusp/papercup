@@ -37,7 +37,7 @@ import {
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
-import { buildSidecarAwareEmbedder } from './embed-sidecar-wiring';
+import { buildSidecarAwareEmbedder, hasLocalEmbedEngineOverride } from './embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, EmbedBudgetExhaustedError } from './embed-admission';
 import { clearEmbedExhaustionAlertIfActive, maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
@@ -441,6 +441,11 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
 /** Is the local transformers package installed?
  *  Exported as a seam for the `resolveEmbedder` cascade tests (GAP 4). */
 export async function localAvailable(): Promise<boolean> {
+  // A local-engine override (test fixtures only) serves every local leg itself,
+  // so the engine IS available — and probing by import would dlopen the
+  // onnxruntime native binding for nothing (EI-24688584300743328: measured in
+  // every P-013 cold child with the deterministic embedder installed).
+  if (hasLocalEmbedEngineOverride()) return true;
   try {
     await dynamicImport(TRANSFORMERS_PACKAGE);
     return true;

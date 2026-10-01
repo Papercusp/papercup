@@ -34,7 +34,7 @@ import http from 'node:http';
 import { createWriteStream, existsSync, readFileSync, type WriteStream } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { decodeChunk, fingerprintRequest, type RecordedExchange, type RequestFingerprint } from './record-proxy';
+import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedChunk, type RecordedExchange, type RequestFingerprint } from './record-proxy';
 
 export type MatchTier = 'exact' | 'shape' | 'path';
 
@@ -105,6 +105,239 @@ export function parseExchanges(jsonl: string): RecordedExchange[] {
   return out.sort((a, b) => a.seq - b.seq);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Work-dir rewriting.
+//
+// A recording's tool calls name ABSOLUTE paths inside the checkout it ran in
+// (`~/.cache/agent-capacity/work/<sessionId>`). Served unchanged, a replay's Write lands outside
+// its own checkout and the next Bash fails, so the tool work no longer follows the recording
+// even while every request matches `exact`. Each instance therefore gets the recorded work dir
+// rewritten to its own.
+//
+// The path is rarely whole inside one SSE event: tool input streams as `input_json_delta`
+// (Anthropic) or `*.delta` (OpenAI Responses) fragments that split it anywhere. So the rewrite
+// reassembles each delta stream, replaces across the fragment boundaries, and redistributes
+// the result over the same events; non-delta events get a recursive string replace.
+// ---------------------------------------------------------------------------------------------
+
+export interface PathRewrite {
+  from: string;
+  to: string;
+}
+
+/**
+ * Replace `from` with `to` in the concatenation of `pieces`, then cut the result back into the
+ * same number of pieces at the mapped boundaries. A boundary that fell inside a match moves to
+ * the end of its replacement. Returns `pieces` itself when nothing matched.
+ */
+export function replaceAcross(pieces: readonly string[], from: string, to: string): readonly string[] {
+  const s = pieces.join('');
+  if (!from || from === to || !s.includes(from)) return pieces;
+  const matches: number[] = [];
+  for (let i = s.indexOf(from); i >= 0; i = s.indexOf(from, i + from.length)) matches.push(i);
+  const out = s.split(from).join(to);
+  const d = to.length - from.length;
+  const mapCut = (cut: number): number => {
+    let shift = 0;
+    for (const m of matches) {
+      if (m + from.length <= cut) shift += d;
+      else if (m < cut) return m + shift + to.length;
+      else break;
+    }
+    return cut + shift;
+  };
+  const res: string[] = [];
+  let oldEnd = 0;
+  let newStart = 0;
+  for (let k = 0; k < pieces.length; k++) {
+    oldEnd += pieces[k].length;
+    const newEnd = k === pieces.length - 1 ? out.length : mapCut(oldEnd);
+    res.push(out.slice(newStart, newEnd));
+    newStart = newEnd;
+  }
+  return res;
+}
+
+/** Both spellings a path can take: raw (text, already-parsed JSON) and JSON-escaped (partial_json source). */
+function variants(rw: PathRewrite): PathRewrite[] {
+  const esc = (s: string) => JSON.stringify(s).slice(1, -1);
+  const out = [rw];
+  if (esc(rw.from) !== rw.from) out.push({ from: esc(rw.from), to: esc(rw.to) });
+  return out;
+}
+
+function replaceAllVariants(pieces: readonly string[], rw: PathRewrite): readonly string[] {
+  let cur = pieces;
+  for (const v of variants(rw)) cur = replaceAcross(cur, v.from, v.to);
+  return cur;
+}
+
+/** Recursive string replace; returns the input itself when nothing changed. */
+function deepReplace(v: unknown, rw: PathRewrite): unknown {
+  if (typeof v === 'string') {
+    const [r] = replaceAllVariants([v], rw);
+    return r;
+  }
+  if (Array.isArray(v)) {
+    let changed = false;
+    const out = v.map((x) => {
+      const y = deepReplace(x, rw);
+      if (y !== x) changed = true;
+      return y;
+    });
+    return changed ? out : v;
+  }
+  if (v && typeof v === 'object') {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v)) {
+      const y = deepReplace(x, rw);
+      if (y !== x) changed = true;
+      out[k] = y;
+    }
+    return changed ? out : v;
+  }
+  return v;
+}
+
+interface SseEvent {
+  /** Raw event text including its blank-line terminator (or the unterminated tail). */
+  text: string;
+  /** Recorded time of the chunk that completed this event. */
+  t: number;
+  data: Record<string, unknown> | null;
+  modified: boolean;
+}
+
+/** Split recorded chunks into SSE events, each stamped with the time its last byte arrived. */
+export function sseEvents(chunks: readonly RecordedChunk[]): SseEvent[] {
+  const bufs = chunks.map(decodeChunk);
+  const body = Buffer.concat(bufs);
+  const ends: number[] = [];
+  let acc = 0;
+  for (const b of bufs) ends.push((acc += b.length));
+  const tAt = (byte: number): number => {
+    for (let i = 0; i < ends.length; i++) if (byte < ends[i]) return chunks[i].t;
+    return chunks.at(-1)?.t ?? 0;
+  };
+  const events: SseEvent[] = [];
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== 0x0a) continue;
+    const blank = (i >= 1 && body[i - 1] === 0x0a) || (i >= 2 && body[i - 1] === 0x0d && body[i - 2] === 0x0a);
+    if (!blank) continue;
+    events.push(parseEvent(body.subarray(start, i + 1).toString('utf8'), tAt(i)));
+    start = i + 1;
+  }
+  if (start < body.length) events.push(parseEvent(body.subarray(start).toString('utf8'), tAt(body.length - 1)));
+  return events;
+}
+
+function parseEvent(text: string, t: number): SseEvent {
+  const lines = text.split(/\r?\n/);
+  const dataLines = lines.filter((l) => l.startsWith('data:')).map((l) => l.slice(5).replace(/^ /, ''));
+  let data: Record<string, unknown> | null = null;
+  if (dataLines.length) {
+    try {
+      const j = JSON.parse(dataLines.join('\n'));
+      if (j && typeof j === 'object' && !Array.isArray(j)) data = j as Record<string, unknown>;
+    } catch {
+      // `[DONE]` and other non-JSON payloads pass through untouched.
+    }
+  }
+  return { text, t, data, modified: false };
+}
+
+function serializeEvent(e: SseEvent): string {
+  if (!e.modified || !e.data) return e.text;
+  const nl = e.text.includes('\r\n') ? '\r\n' : '\n';
+  const body = e.text.replace(/\r?\n\r?\n$/, '');
+  const out: string[] = [];
+  let wroteData = false;
+  for (const l of body.split(/\r?\n/)) {
+    if (!l.startsWith('data:')) out.push(l);
+    else if (!wroteData) {
+      out.push(`data: ${JSON.stringify(e.data)}`);
+      wroteData = true;
+    }
+  }
+  return out.join(nl) + nl + nl;
+}
+
+/** The string-valued field of a streamed delta event, and the stream it belongs to. */
+function deltaSlot(d: Record<string, unknown>): { key: string; get: () => string; set: (s: string) => void } | null {
+  const type = typeof d.type === 'string' ? d.type : '';
+  if (type === 'content_block_delta' && d.delta && typeof d.delta === 'object') {
+    const delta = d.delta as Record<string, unknown>;
+    const field = delta.type === 'input_json_delta' ? 'partial_json' : delta.type === 'text_delta' ? 'text' : null;
+    if (!field || typeof delta[field] !== 'string') return null;
+    return { key: `cb:${String(d.index)}:${field}`, get: () => delta[field] as string, set: (s) => (delta[field] = s) };
+  }
+  if (type.endsWith('.delta') && typeof d.delta === 'string') {
+    const key = [type, d.item_id, d.output_index, d.content_index, d.summary_index].map((x) => String(x ?? '')).join('|');
+    return { key, get: () => d.delta as string, set: (s) => (d.delta = s) };
+  }
+  return null;
+}
+
+/**
+ * The exchange with every occurrence of `rw.from` in its response replaced by `rw.to`, or the
+ * same object when nothing referenced it. Rewritten SSE responses are re-chunked one chunk per
+ * set of events completed at the same recorded time, so a client sees each event when the
+ * recording delivered its last byte.
+ */
+export function rewriteExchange(ex: RecordedExchange, rw: PathRewrite): RecordedExchange {
+  if (!rw.from || rw.from === rw.to || ex.chunks.length === 0) return ex;
+  if (!(ex.contentType ?? '').includes('event-stream')) {
+    const body = Buffer.concat(ex.chunks.map(decodeChunk)).toString('utf8');
+    const [out] = replaceAllVariants([body], rw);
+    if (out === body) return ex;
+    return { ...ex, chunks: [encodeChunk(ex.chunks.at(-1)!.t, Buffer.from(out, 'utf8'))] };
+  }
+  const events = sseEvents(ex.chunks);
+  const streams = new Map<string, { events: SseEvent[]; slots: NonNullable<ReturnType<typeof deltaSlot>>[] }>();
+  for (const e of events) {
+    if (!e.data) continue;
+    const slot = deltaSlot(e.data);
+    if (slot) {
+      const s = streams.get(slot.key) ?? { events: [], slots: [] };
+      s.events.push(e);
+      s.slots.push(slot);
+      streams.set(slot.key, s);
+      continue;
+    }
+    const next = deepReplace(e.data, rw);
+    if (next !== e.data) {
+      e.data = next as Record<string, unknown>;
+      e.modified = true;
+    }
+  }
+  for (const s of streams.values()) {
+    const before = s.slots.map((x) => x.get());
+    const after = replaceAllVariants(before, rw);
+    if (after === before) continue;
+    after.forEach((piece, i) => {
+      if (piece === before[i]) return;
+      s.slots[i].set(piece);
+      s.events[i].modified = true;
+    });
+  }
+  if (!events.some((e) => e.modified)) return ex;
+  const chunks: RecordedChunk[] = [];
+  let pending = '';
+  let pendingT: number | null = null;
+  for (const e of events) {
+    if (pendingT !== null && e.t !== pendingT) {
+      chunks.push(encodeChunk(pendingT, Buffer.from(pending, 'utf8')));
+      pending = '';
+    }
+    pending += serializeEvent(e);
+    pendingT = e.t;
+  }
+  if (pendingT !== null) chunks.push(encodeChunk(pendingT, Buffer.from(pending, 'utf8')));
+  return { ...ex, chunks };
+}
+
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 
 /** Split `/r/<sessionId>/<instance>/<rest>`; null for anything else (or an unsafe token). */
@@ -131,6 +364,8 @@ export interface ServedRecord {
   /** ms from request-body-complete to the last byte written. */
   servedMs: number;
   recordedMs: number | null;
+  /** True when the instance's work-dir rewrite changed this response. */
+  rewritten?: boolean;
 }
 
 export interface ReplayServerOptions {
@@ -147,6 +382,8 @@ export interface ReplayServer {
   url: string;
   /** Replay base URL for one agent. */
   baseUrl(sessionId: string, instance: string): string;
+  /** Serve this instance its recording with `rw.from` (the recorded work dir) rewritten to `rw.to`. */
+  rewritePaths(sessionId: string, instance: string, rw: PathRewrite): void;
   states(): ReplayState[];
   close(): Promise<void>;
 }
@@ -160,8 +397,17 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
   const states = new Map<string, ReplayState>();
   const log: WriteStream | null = opts.logFile ? createWriteStream(opts.logFile, { flags: 'a' }) : null;
   const inflight = new Set<Promise<void>>();
+  const rewrites = new Map<string, PathRewrite>();
+  // Exchanges already found not to mention a given `from`: every later instance skips the parse.
+  const untouched = new WeakMap<RecordedExchange, string>();
+  const served = (ex: RecordedExchange, rw: PathRewrite | undefined): RecordedExchange => {
+    if (!rw || untouched.get(ex) === rw.from) return ex;
+    const out = rewriteExchange(ex, rw);
+    if (out === ex) untouched.set(ex, rw.from);
+    return out;
+  };
 
-  const recording = (sessionId: string): RecordedExchange[] | null => {
+  const recording =(sessionId: string): RecordedExchange[] | null => {
     const hit = recordings.get(sessionId);
     if (hit) return hit;
     const file = path.join(opts.corpusDir, sessionId, 'exchanges.jsonl');
@@ -233,7 +479,9 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           write({ tier: 'exhausted', seq: null, status: 400, recordedReqBytes: null, recordedMessages: null, recordedMs: null });
           return;
         }
-        const { exchange: ex, tier } = picked;
+        const { tier } = picked;
+        const ex = served(picked.exchange, rewrites.get(key));
+        const rewritten = ex !== picked.exchange;
         void (async () => {
           let aborted = false;
           res.on('close', () => {
@@ -241,7 +489,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           });
           const first = ex.chunks[0];
           if (first) await sleep(delayOf(first.t));
-          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs });
+          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten });
           const headers: http.OutgoingHttpHeaders = {};
           if (ex.contentType) headers['content-type'] = ex.contentType;
           res.writeHead(ex.status, headers);
@@ -256,7 +504,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const tail = ex.totalMs - prevT;
           if (!aborted && tail > 0 && ex.chunks.length === 0) await sleep(delayOf(tail));
           res.end();
-          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs });
+          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten });
         })();
       });
     });
@@ -272,7 +520,8 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     port,
     url,
     baseUrl: (sessionId, instance) => `${url}/r/${sessionId}/${instance}`,
-    states: () => [...states.values()],
+    rewritePaths: (sessionId, instance, rw) => void rewrites.set(`${sessionId}/${instance}`, rw),
+    states:() => [...states.values()],
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

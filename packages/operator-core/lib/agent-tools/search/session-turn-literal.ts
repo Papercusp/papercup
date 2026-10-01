@@ -125,6 +125,14 @@ export interface SessionTurnLiteralHit {
   excerpt: string;
   /** Same excerpt with the matched run wrapped in <mark>. */
   highlight: string;
+  /**
+   * The lowercased literal this turn ACTUALLY contains — the exact needle, or the fuzzy phrase
+   * variant (e.g. `plan` for a typed `plam`). A deep-link into the transcript must anchor on THIS,
+   * not on the typed query: the viewer corroborates its anchor by requiring the focused message to
+   * contain the term (SessionChatModal.focusIndex), so a fuzzy hit anchored on the typo falls back
+   * to the transcript tail. Absent only when the SQL branch returned no needle.
+   */
+  focusTerm?: string;
   /** Present on fuzzy hits only. */
   fuzzy?: FuzzyMatch;
 }
@@ -296,6 +304,7 @@ function toHit(
     tier,
     excerpt: head + snippet,
     highlight: markFirst(snippet, r.needle ?? ''),
+    ...(r.needle ? { focusTerm: r.needle } : {}),
     ...(fuzzy ? { fuzzy } : {}),
   };
 }
@@ -461,6 +470,8 @@ export interface TieredTurnHit {
   matchedBy: MatchProvenance;
   lexicalScore?: number;
   semanticScore?: number;
+  /** Literal-tier hits only: the lowercased literal the turn contains (see SessionTurnLiteralHit). */
+  focusTerm?: string;
   fuzzy?: FuzzyMatch;
 }
 
@@ -476,12 +487,23 @@ export interface ComposeInput {
   /** Total slots to return. Defaults to the policy's resultSlots. */
   limit?: number;
   policy?: Pick<SessionTurnLiteralPolicy, 'resultSlots' | 'exactReserve' | 'fuzzyReserve'>;
+  /**
+   * At most this many turns per (sourceKind, sessionId), counted across ALL tiers in precedence
+   * order and applied BEFORE slotting. Callers that page by SESSION (the agents-pill/HUD search)
+   * need it: the hybrid engine groups to one hit per session, but a literal tier can return
+   * dozens of turns of one chatty session and would otherwise consume the whole page before a
+   * second session appeared. A turn dropped by the cap is gone from every tier; a higher tier's
+   * turn always claims the session's slots first. Unset = no cap.
+   */
+  maxPerSession?: number;
 }
 
 export interface ComposeResult {
   hits: TieredTurnHit[];
   /** Candidates per tier BEFORE dedup/slotting, and how many each tier contributed AFTER. */
   counts: Record<'exact' | 'fuzzy' | 'hybrid', { candidates: number; kept: number }>;
+  /** Turns dropped by `maxPerSession` (after dedup, before slotting), all tiers together. */
+  sessionCapped: number;
 }
 
 const keyOf = (kind: string, sid: string, idx: number): string => `${kind}:${sid}:${idx}`;
@@ -504,23 +526,60 @@ export function composeSessionTurnTiers(input: ComposeInput): ComposeResult {
   const limit = Math.max(0, input.limit ?? policy.resultSlots);
 
   // Index the hybrid hits once so a literal hit can absorb its lexical/semantic provenance.
-  const hybridByKey = new Map<string, { hit: SearchHit; prov: ReturnType<typeof hitProvenance>; kind: string; sid: string; idx: number }>();
+  const hybridByKey = new Map<string, { hit: SearchHit; prov: ReturnType<typeof hitProvenance>; kind: string; sid: string; idx: number; rank: number }>();
   for (const h of input.hybrid) {
     const ref = parseTurnRef(h.source_id);
     if (!ref) continue;
     const key = keyOf(ref.sourceKind, ref.sessionId, ref.turnIdx);
     if (!hybridByKey.has(key)) {
-      hybridByKey.set(key, { hit: h, prov: hitProvenance(h), kind: ref.sourceKind, sid: ref.sessionId, idx: ref.turnIdx });
+      hybridByKey.set(key, { hit: h, prov: hitProvenance(h), kind: ref.sourceKind, sid: ref.sessionId, idx: ref.turnIdx, rank: hybridByKey.size });
     }
   }
+  /**
+   * In-tier order. A literal tier arrives newest-first (its SQL has no relevance signal), so for a
+   * common word ("plan") the page would fill with the newest substring hits and the engine's
+   * reranked order — the only relevance signal there is — would be buried even for turns that are
+   * BOTH an exact match and highly relevant. Turns the hybrid engine also returned therefore lead
+   * the tier in ITS order; literal-only turns (the ones the engine missed — the reason this tier
+   * exists) follow in their incoming order. Tier precedence is untouched: this only orders INSIDE
+   * a tier, and it is stable.
+   */
+  const byHybridRank = (hits: readonly SessionTurnLiteralHit[]): SessionTurnLiteralHit[] => {
+    const known: Array<{ l: SessionTurnLiteralHit; rank: number }> = [];
+    const rest: SessionTurnLiteralHit[] = [];
+    for (const l of hits) {
+      const h = hybridByKey.get(keyOf(l.sourceKind, l.sessionId, l.turnIdx));
+      if (h) known.push({ l, rank: h.rank });
+      else rest.push(l);
+    }
+    known.sort((a, b) => a.rank - b.rank); // Array#sort is stable: equal ranks keep incoming order
+    return [...known.map((k) => k.l), ...rest];
+  };
 
   const claimed = new Set<string>();
+  // Per-session cap, shared by every tier so a higher tier claims a session's slots first.
+  const maxPerSession =
+    input.maxPerSession !== undefined && input.maxPerSession >= 1 ? Math.floor(input.maxPerSession) : null;
+  const perSession = new Map<string, number>();
+  let sessionCapped = 0;
+  const admitSession = (kind: string, sid: string): boolean => {
+    if (maxPerSession === null) return true;
+    const sk = `${kind}:${sid}`;
+    const n = perSession.get(sk) ?? 0;
+    if (n >= maxPerSession) {
+      sessionCapped++;
+      return false;
+    }
+    perSession.set(sk, n + 1);
+    return true;
+  };
   const literalTier = (hits: readonly SessionTurnLiteralHit[]): TieredTurnHit[] => {
     const out: TieredTurnHit[] = [];
-    for (const l of hits) {
+    for (const l of byHybridRank(hits)) {
       const key = keyOf(l.sourceKind, l.sessionId, l.turnIdx);
       if (claimed.has(key)) continue;
       claimed.add(key);
+      if (!admitSession(l.sourceKind, l.sessionId)) continue;
       const h = hybridByKey.get(key);
       out.push({
         key,
@@ -536,6 +595,7 @@ export function composeSessionTurnTiers(input: ComposeInput): ComposeResult {
         matchedBy: h ? h.prov.matchedBy : 'unknown',
         ...(h?.prov.lexicalScore !== undefined ? { lexicalScore: h.prov.lexicalScore } : {}),
         ...(h?.prov.semanticScore !== undefined ? { semanticScore: h.prov.semanticScore } : {}),
+        ...(l.focusTerm ? { focusTerm: l.focusTerm } : {}),
         ...(l.fuzzy ? { fuzzy: l.fuzzy } : {}),
       });
     }
@@ -551,6 +611,7 @@ export function composeSessionTurnTiers(input: ComposeInput): ComposeResult {
   for (const [key, h] of hybridByKey) {
     if (claimed.has(key)) continue;
     claimed.add(key);
+    if (!admitSession(h.kind, h.sid)) continue;
     hybrid.push({
       key,
       sourceKind: h.kind,
@@ -590,5 +651,46 @@ export function composeSessionTurnTiers(input: ComposeInput): ComposeResult {
       fuzzy: { candidates: input.fuzzy.length, kept: fFloor + fExtra },
       hybrid: { candidates: input.hybrid.length, kept: hKeep },
     },
+    sessionCapped,
+  };
+}
+
+/**
+ * The wire projection of one composed turn for `/api/adv/sessions/search-transcripts`
+ * (P-004). Pure, so the optional-field rules are testable without the route:
+ *   · `tier` is ALWAYS present — it is the real provenance claim for a literal-only turn;
+ *   · `alsoMatchedBy` only when a lower tier also returned the turn (an empty array is noise);
+ *   · `focusTerm` / `fuzzy` / `lexicalScore` / `semanticScore` only when set, so an older client
+ *     and a hybrid-only hit see exactly the shape they always did plus `tier`.
+ */
+export function tieredHitToWire(c: TieredTurnHit): {
+  sourceKind: string;
+  sessionId: string;
+  turnIdx: number;
+  excerpt: string;
+  highlight: string;
+  score: number;
+  matchedBy: MatchProvenance;
+  lexicalScore?: number;
+  semanticScore?: number;
+  tier: SessionTurnTier;
+  alsoMatchedBy?: SessionTurnTier[];
+  focusTerm?: string;
+  fuzzy?: FuzzyMatch;
+} {
+  return {
+    sourceKind: c.sourceKind,
+    sessionId: c.sessionId,
+    turnIdx: c.turnIdx,
+    excerpt: c.excerpt,
+    highlight: c.highlight,
+    score: c.score,
+    matchedBy: c.matchedBy,
+    ...(c.lexicalScore !== undefined ? { lexicalScore: c.lexicalScore } : {}),
+    ...(c.semanticScore !== undefined ? { semanticScore: c.semanticScore } : {}),
+    tier: c.tier,
+    ...(c.alsoMatchedBy.length > 0 ? { alsoMatchedBy: c.alsoMatchedBy } : {}),
+    ...(c.focusTerm ? { focusTerm: c.focusTerm } : {}),
+    ...(c.fuzzy ? { fuzzy: c.fuzzy } : {}),
   };
 }

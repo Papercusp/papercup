@@ -6,17 +6,18 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { Client } from 'pg';
 import {
-  CanonicalVectorStore, Mem0Backend, HybridBackend, LexicalLegBackend,
+  CanonicalVectorStore, HybridBackend, LexicalLegBackend,
   EMBEDDER_DIM_SPECS, CANDIDATE_DIM_SPECS, MEMORY_VECTOR_STORAGE_PROFILES,
   buildMdenseOnEmbedder, buildGemmaEmbedder, buildHarrierEmbedder,
   shutdownLocalEmbedder, getWorkerState,
-  type EmbedderProfileSpec, type MemoryVectorStorageProfile,
+  type EmbedderProfileSpec, type MemoryVectorStorageProfile, type MemoryBackend, type MemoryEntry,
 } from '@papercusp/memory';
 import { reciprocalRank, type CorpusEntry } from '@papercusp/memory/bench';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { ensureBenchSchema, releaseBenchSchema } from './bench-host';
 import { pickClusters } from './prose-corpus';
 import { MDENSEON_REVISION } from '../../../../../libs/generic/memory/src/mdenseon-embedder';
+import { applyScoreFloor } from '../../../../../libs/generic/memory/src/score-floor';
 
 export interface HeldoutQuery {
   id: string; class: string; query: string; expected: string[];
@@ -107,6 +108,30 @@ export function candidateProfile(model: 'mdenseon' | 'gemma' | 'harrier'): Embed
     documentRecipe: 'mdenseon-document-prefix@v1', queryRecipe: 'mdenseon-query-prefix@v1' };
 }
 
+/** Adapt the actual SQL store to its neutral retrieval seam. The benchmark
+ * supplies vectors explicitly, so extraction-client availability cannot turn
+ * a successfully seeded canonical store into an unrelated mem0 outage. */
+export function canonicalCandidateBackend(store: Pick<CanonicalVectorStore, 'search' | 'lexicalSearch'>): MemoryBackend {
+  const map = (rows: Array<{ id: string; payload: Record<string, unknown>; score?: number }>): MemoryEntry[] =>
+    rows.map((row) => ({ id: row.id, text: String(row.payload.data ?? ''), scope: String(row.payload.user_id ?? ''),
+      kind: String(row.payload.kind ?? 'fact'), score: row.score,
+      metadata: row.payload.metadata as Record<string, unknown> }));
+  const unsupported = async (): Promise<never> => { throw new Error('candidate adapter supports precomputed retrieval only'); };
+  return { name: 'canonical-candidate', scoreScale: 'cosine', lexicalScoreScale: 'lexical',
+    available: async () => ({ ok: true }),
+    search: async (_query, opts) => {
+      if (!opts.vector || opts.scope !== 'bench') throw new Error('candidate search requires vector and isolated bench scope');
+      return applyScoreFloor(map(await store.search(opts.vector, opts.limit ?? 10, { user_id: 'bench' })),
+        { minScore: opts.minScore, minScoreRatio: opts.minScoreRatio });
+    },
+    searchLexical: async (query, opts) => {
+      if (opts.scope !== 'bench') throw new Error('candidate lexical search requires isolated bench scope');
+      return map(await store.lexicalSearch(query, opts.limit ?? 10, { user_id: 'bench' }));
+    },
+    remember: unsupported, list: unsupported, get: unsupported, forget: unsupported, update: unsupported,
+  };
+}
+
 export async function runCandidateHybrid(opts: { snapshot: string; gold: string; model: 'mdenseon' | 'gemma' | 'harrier';
   modelDirectory?: string; corpus: 'memory' | 'prose'; out: string }) {
   const snapshot = JSON.parse(fs.readFileSync(opts.snapshot, 'utf8')) as Snapshot;
@@ -120,7 +145,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     : opts.model === 'gemma' ? buildGemmaEmbedder({ kind, dims: 768 }) : buildHarrierEmbedder({ kind });
   if (opts.model === 'mdenseon' && !opts.modelDirectory) throw new Error('mDenseOn requires its validated local model');
   const doc = build('document'); const query = build('query');
-  const schema = `bench_memory_candidate_${process.pid}`;
+  const schema = `bench_memory_${process.pid}`;
   const admin = new URL(getHarnessAdminUrl());
   const db = new Client({ connectionString: admin.href });
   await db.connect();
@@ -134,6 +159,12 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     store = new CanonicalVectorStore({ host: admin.hostname, port: Number(admin.port), user: decodeURIComponent(admin.username),
       password: decodeURIComponent(admin.password), dbname: admin.pathname.slice(1), schema,
       vecTable: storage.table, embeddingModelDims: profile.targetDims, embeddingProfile: profile, storageProfile: storage });
+    const cosine = canonicalCandidateBackend(store);
+    const hybrid = new HybridBackend(new LexicalLegBackend(cosine), cosine, { name: 'hybrid-pg' });
+    // Exercise the complete real SQL/fusion route on the empty owned schema
+    // before paying for inference; infrastructure failures must not score as a loss.
+    const preflightVector = new Array(profile.targetDims).fill(0); preflightVector[0] = 1;
+    await hybrid.search('preflight', { scope: 'bench', limit: 1, vector: preflightVector });
     const vectors: number[][] = [];
     const started = performance.now();
     for (const entry of entries) vectors.push(await doc(entry.text));
@@ -144,12 +175,6 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     });
     await store.insert(vectors, ids, entries.map((e) => ({ data: e.text, name: e.description ?? e.key,
       user_id: 'bench', metadata: { ...e.metadata, corpus_key: e.key }, createdAt: new Date().toISOString() })));
-    const canonical = store;
-    // The production precomputed-vector rung needs no extraction client or
-    // entity graph. Fail-closed if it ever tries to use either absent path.
-    const cosine = new Mem0Backend({ getClient: async () => null,
-      vectorSearch: (v, k, f) => canonical.search(v, k, f), lexicalSearch: (q, k, f) => canonical.lexicalSearch(q, k, f) });
-    const hybrid = new HybridBackend(new LexicalLegBackend(cosine), cosine, { name: 'hybrid-pg' });
     const embedded = [];
     for (const q of queries) {
       const t0 = performance.now(); const vector = await query(q.query); const embeddingMs = performance.now() - t0;
@@ -177,7 +202,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
       calibratedCosineFloor: floor, lexicalFloor: 0.04, documentMs, worker: getWorkerState(), rows,
       limitations: ['small structurally sampled corpus', 'agent-authored labels frozen before inference',
         'calibration and test split by source target', 'SQL timing uses precomputed vectors and averages two fusion calls',
-        'entity graph and extraction excluded; production canonical SQL, lexical and hybrid fusion retained'] };
+        'neutral adapter excludes extraction, entity graph and decay; production canonical SQL, lexical and hybrid fusion retained'] };
     fs.mkdirSync(path.dirname(opts.out), { recursive: true });
     fs.writeFileSync(opts.out, JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ model: opts.model, corpus: opts.corpus, docs: entries.length, heldout: rows.length, floor, out: opts.out }));
@@ -195,5 +220,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const run = process.argv.includes('--snapshot-out') ? takeCandidateSnapshot(arg('--snapshot-out'))
     : runCandidateHybrid({ snapshot: arg('--snapshot'), gold: arg('--gold'), model: arg('--model') as 'mdenseon',
       modelDirectory: arg('--mdenseon-model'), corpus: arg('--corpus') as 'memory', out: arg('--out') });
-  void run.catch((e) => { console.error(e instanceof Error ? e.message : e); process.exitCode = 1; });
+  void run.then(() => process.exit(0)).catch((e) => {
+    console.error(e instanceof Error ? e.message : e); process.exit(1);
+  });
 }

@@ -9,6 +9,7 @@ import { getuid } from 'node:process';
 import { build, type Metafile, type Plugin } from 'esbuild';
 import ts from 'typescript';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
+import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { createRequireSpecifiers, unfollowableImportCall } from './create-require-specifiers';
 
 /**
@@ -19,7 +20,13 @@ import { createRequireSpecifiers, unfollowableImportCall } from './create-requir
 export async function activeMutationProbePaths(checkoutRoot: string): Promise<string[]> {
   const coordinationDomain = await realpath(checkoutRoot);
   await ensureBootstrap();
-  const queue = await readQueue(getTxPool(), { coordinationDomain });
+  // readQueue has a 1s statement_timeout. Match locks:queue and the file-lock
+  // summary: a transient 57014/55P03 must not turn a cheap safety preflight into
+  // mutation_probe_state_unknown, but persistent or non-contention failures still
+  // fail closed in mutationProbeRefusal below.
+  const queue = await acquireWithContentionRetry(() =>
+    readQueue(getTxPool(), { coordinationDomain }),
+  );
   return queue.active_locks
     .filter((lock) => String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe')
     .map((lock) => lock.path)

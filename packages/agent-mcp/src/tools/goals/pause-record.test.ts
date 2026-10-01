@@ -17,6 +17,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  clearGoalDispositionOnReactivation,
   clearGoalPause,
   isGoalAdministrativelyPaused,
   readGoalLastPause,
@@ -76,6 +77,42 @@ describe('clearGoalPause', () => {
     const prev = stampGoalPause(null, { reason: 'hold', pausedBy: 'su-abc', nowMs: AT });
     clearGoalPause(prev, { nowMs: AT + 1 });
     expect(prev.pause).toEqual({ reason: 'hold', pausedBy: 'su-abc', pausedAtMs: AT });
+  });
+});
+
+describe('clearGoalDispositionOnReactivation (EI-24732367604234855)', () => {
+  const STAMP = {
+    disposition: 'killed',
+    dispositionBy: 'su-holder',
+    dispositionAt: '2026-09-30T22:38:28.000Z',
+    handoffTo: 'su-next',
+  };
+
+  it('drops the whole stamp on killed → active and achieved → active, keeping every other key', () => {
+    for (const prev of ['killed', 'achieved']) {
+      expect(clearGoalDispositionOnReactivation({ ...STAMP, spentCents: 7 }, prev, 'active')).toEqual({
+        spentCents: 7,
+      });
+    }
+  });
+
+  it('also clears on terminal → paused (the goal is no longer terminal)', () => {
+    expect(clearGoalDispositionOnReactivation({ ...STAMP }, 'killed', 'paused')).toEqual({});
+  });
+
+  it('KEEPS the stamp when the goal stays or becomes terminal, or was never terminal', () => {
+    expect(clearGoalDispositionOnReactivation({ ...STAMP }, 'killed', 'killed')).toEqual(STAMP);
+    expect(clearGoalDispositionOnReactivation({ ...STAMP }, 'killed', 'achieved')).toEqual(STAMP);
+    // handoff leaves the goal ACTIVE with the stamp — active → active must not erase it.
+    expect(clearGoalDispositionOnReactivation({ ...STAMP }, 'active', 'active')).toEqual(STAMP);
+    expect(clearGoalDispositionOnReactivation({ ...STAMP }, 'paused', 'active')).toEqual(STAMP);
+  });
+
+  it('is a no-op on empty metadata and does not mutate the input', () => {
+    expect(clearGoalDispositionOnReactivation(null, 'killed', 'active')).toEqual({});
+    const prev = { ...STAMP };
+    clearGoalDispositionOnReactivation(prev, 'killed', 'active');
+    expect(prev).toEqual(STAMP);
   });
 });
 

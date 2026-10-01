@@ -108,6 +108,32 @@ describe('buildDispositionRefusal — the acceptance wording', () => {
     }
   });
 
+  // EI-24732367604234855: a system-wide pause recipe told goal holders to pick
+  // 'killed' to get past this gate, which TERMINALLY killed a standing goal.
+  // The refusal is the one place a pausing agent is guaranteed to read, so it
+  // must name the non-terminal pause route (and that 'killed' is terminal).
+  const namesPauseRoute = (refusal: { error: string }) =>
+    refusal.error.includes("goals:update { status:'paused'") &&
+    refusal.error.includes("goals:update { status:'active'") &&
+    /do not pick 'killed'/i.test(refusal.error);
+
+  it('names the non-terminal PAUSE route so a pausing agent never kills a goal to pass the gate', () => {
+    for (const action of ['loop:end', 'session:end'] as const) {
+      const refusal = buildDispositionRefusal({ action, goalId: 'g-1', goalTitle: 'Standing goal' });
+      expect(namesPauseRoute(refusal)).toBe(true);
+      // The original three-values acceptance wording must survive the addition.
+      expect(namesArgAndAllValues(refusal)).toBe(true);
+    }
+  });
+
+  it('CONTROL: the pause-route predicate rejects the pre-fix wording', () => {
+    const preFix = {
+      error:
+        "REFUSED — requires a `disposition`: 'achieved' (the goal is done), 'killed' (deliberately stopped), or 'handoff'. Retry with disposition set.",
+    };
+    expect(namesPauseRoute(preFix)).toBe(false);
+  });
+
   it('CONTROL: the predicate rejects a refusal that names the arg but not the values', () => {
     // Deliberately-wrong control implementation, kept permanently: proves the
     // predicate above can fail, so a green run means the real wording earned it.

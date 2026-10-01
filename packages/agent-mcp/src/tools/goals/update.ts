@@ -44,7 +44,7 @@ import {
   isStopReport,
   type GoalTransitionReport,
 } from './stop-seam';
-import { clearGoalPause, stampGoalPause } from './pause-record';
+import { clearGoalDispositionOnReactivation, clearGoalPause, stampGoalPause } from './pause-record';
 import { addGoalFieldChange, appendGoalHistory, type GoalFieldChange } from './history';
 import { isGoalHolderAuthorityError } from '@papercusp/operator-core/lib/modes/goal-context';
 import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
@@ -501,6 +501,11 @@ const goalUpdateTool = defineTool({
       // report a hold that is over, which is the same false-premise state the
       // record exists to prevent, inverted.
       pauseMetadata = clearGoalPause(metadata);
+      // Leaving a terminal status ends the wind-down too: a reactivated goal
+      // must not keep `metadata.disposition:'killed'`, which the loop:end /
+      // session:end gates read as "this end is already covered"
+      // (EI-24732367604234855). Terminal → terminal keeps the record.
+      pauseMetadata = clearGoalDispositionOnReactivation(pauseMetadata, prev.status, args.status);
     }
 
     // Resolve every column in JS so "omitted" and "explicitly null" stay

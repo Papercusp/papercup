@@ -44,6 +44,21 @@ type Res = { data: unknown; degraded?: boolean; degradedReasons?: string[] };
 const call = async (args: unknown): Promise<Res> =>
   (await tool.handler(args as never, CTX as never)) as Res;
 
+describe('goals:propose — tripwire advisories (WI-10004424)', () => {
+  it('flags a platform-shaped tripwire that no resolver measures, before the owner confirms it', async () => {
+    const res = await call(
+      PROPOSAL({ tripwires: [{ metric: 'spend_usd_week', label: 'weekly spend', threshold: 100 }] }),
+    );
+    const data = res.data as { tripwire_advisories?: Array<{ suggestedMetric: string | null }> };
+    expect(data.tripwire_advisories?.map((a) => a.suggestedMetric)).toEqual(['spend_usd_7d']);
+  });
+
+  it('omits the field when every tripwire is measured', async () => {
+    const res = await call(PROPOSAL({ tripwires: [{ metric: 'spend_usd', label: 'spend', threshold: 100 }] }));
+    expect(res.data).not.toHaveProperty('tripwire_advisories');
+  });
+});
+
 describe('goals:propose — validateProposal', () => {
   it('passes a well-formed new-top-level proposal', () => {
     expect(validateProposal(PROPOSAL())).toEqual([]);

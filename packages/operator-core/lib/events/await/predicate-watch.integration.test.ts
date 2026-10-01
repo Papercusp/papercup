@@ -66,6 +66,7 @@ async function seedWatch(opts: {
   once?: boolean;
   awaitOnce?: boolean;
   intervalSec?: number;
+  timeoutSec?: number;
   op?: PredicateOp;
   value?: unknown;
   path?: string;
@@ -78,6 +79,7 @@ async function seedWatch(opts: {
     subscriberId: subscriber,
     eventKey,
     once: opts.awaitOnce ?? opts.once ?? true,
+    timeoutSec: opts.timeoutSec,
     boundTo: opts.boundTo,
   });
   const row = await pw.registerPredicateWatch({
@@ -278,6 +280,38 @@ describe('predicate watches (real PG)', () => {
     expect((await pw.getPredicateWatch(dead.row.id))!.active).toBe(false);
     expect((await pw.getPredicateWatch(dead.row.id))!.lastError).toMatch(/gc:/);
     expect((await pw.getPredicateWatch(alive.row.id))!.active).toBe(true);
+  });
+
+  it('retains a timed-out predicate spec for its registrant, but not for another subscriber', async () => {
+    const timedOut = await seedWatch({ once: true, timeoutSec: 3600 });
+    await h.sql.unsafe(
+      'UPDATE harness_shared.event_awaits SET expires_ts = now() - make_interval(secs => 1) WHERE id = ' +
+        Number(timedOut.awaitRow.id),
+    );
+    const expiredAwaits = await store.fireTimedOutAwaits();
+    expect(expiredAwaits).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: timedOut.awaitRow.id, firedReason: 'timeout' })]),
+    );
+    await pw.gcOrphanedPredicateWatches();
+
+    const recovered = await pw.getPredicateTimeoutContext({
+      eventKey: timedOut.eventKey,
+      subscriberId: timedOut.subscriber,
+    });
+    expect(recovered).toMatchObject({
+      id: timedOut.row.id,
+      eventKey: timedOut.eventKey,
+      ownerId: timedOut.subscriber,
+      active: false,
+      tool: 'fake:read',
+      args: {},
+      path: 'wm',
+      op: 'gt',
+      value: 127,
+    });
+    await expect(
+      pw.getPredicateTimeoutContext({ eventKey: timedOut.eventKey, subscriberId: 'other-subscriber' }),
+    ).resolves.toBeNull();
   });
 
   it('pollDuePredicateWatches — one tick GCs, claims the due batch, and fires crossed rows', async () => {

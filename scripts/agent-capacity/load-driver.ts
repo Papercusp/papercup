@@ -24,16 +24,22 @@
  * `vm/sample-footprint.py` for the time series.
  *
  * Output: <out>/agents.jsonl (one line per session run), <out>/served.jsonl (every replayed
- * request and its match tier), <out>/summary.json. A run whose replay DIVERGED (a request that
- * found nothing at its path, or only a path-tier match) is flagged, because its tool work no
- * longer follows the recording.
+ * request and its match tier), <out>/summary.json. A run whose replay DIVERGED is flagged,
+ * because its tool work no longer follows the recording: a request that found nothing at its
+ * path or only a path-tier match, OR a tool-outcome mismatch (a different number of tool results
+ * or of failed tool calls than the recording's own CLI log). Request matching alone cannot see
+ * the second kind: a replayed tool call that fails still sends the next request `exact`.
+ *
+ * Each replay runs in its own checkout, so the server rewrites the recorded checkout path in the
+ * served responses to the replay's (`replay-server.ts` `rewritePaths`).
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, type Corpus, type SessionMeta } from './record-session';
+import { finished } from 'node:stream/promises';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
 // Checkouts are copied/removed with SPAWNED native cp/rm (see session-process.ts): the replay
 // server shares this event loop with every running agent's model replies.
 import { copyTree as cp, parseCgroupStats, removeTree as rm, sessionSpawn, type Isolation } from './session-process';
@@ -58,7 +64,23 @@ export interface AgentRun {
   cpuUsec: number | null;
   recordedExchanges: number;
   served: ReplayState['counts'];
+  /** Tool results and failed tool calls: the recording's (null without its cli.jsonl) vs this replay's. */
+  toolOutcomes: { recorded: ToolOutcomes | null; replayed: ToolOutcomes };
+  /** The replay's tool outcomes differ from the recording's. */
+  toolDiverged: boolean;
   diverged: boolean;
+}
+
+export type ToolOutcomes = ReturnType<typeof summarizeToolOutcomes>;
+
+/** A replay ran different tool work than its recording when the outcome counts differ. */
+export function toolOutcomesDiverge(recorded: ToolOutcomes | null, replayed: ToolOutcomes): boolean {
+  return recorded !== null && (recorded.results !== replayed.results || recorded.errors !== replayed.errors);
+}
+
+/** The checkout path the recording's tool calls name (see `SessionMeta.workDir`). */
+export function recordedWorkDirOf(meta: SessionMeta): string {
+  return meta.workDir ?? recordedWorkDir(meta.sessionId);
 }
 
 /** `cli=claude,profile=light` → predicate over session metas. Unknown keys are an error. */
@@ -112,6 +134,7 @@ async function runOne(o: {
   runId: string;
   outDir: string;
   corpus: Corpus;
+  corpusDir: string;
   meta: SessionMeta;
   slot: number;
   iteration: number;
@@ -128,6 +151,7 @@ async function runOne(o: {
   await cp(prepared, workDir);
   mkdirSync(home, { recursive: true });
   const base = o.server.baseUrl(meta.sessionId, instance);
+  o.server.rewritePaths(meta.sessionId, instance, { from: recordedWorkDirOf(meta), to: workDir });
   let env: Record<string, string>;
   if (meta.cli === 'claude') {
     env = claudeEnv(process.env, base, home);
@@ -142,11 +166,13 @@ async function runOne(o: {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
   let timedOut = false;
+  const cliLog = createWriteStream(`${logBase}.cli.jsonl`);
+  const errLog = createWriteStream(`${logBase}.stderr.log`);
   const exitCode = await new Promise<number | null>((resolve) => {
     const s = sessionSpawn(o.isolation, `capdrv-${instance}`, workDir, env, statsFile, argv, process.env);
     const child = spawn(s.cmd, s.args, { cwd: workDir, env: s.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout.pipe(createWriteStream(`${logBase}.cli.jsonl`));
-    child.stderr.pipe(createWriteStream(`${logBase}.stderr.log`));
+    child.stdout.pipe(cliLog);
+    child.stderr.pipe(errLog);
     const limitMs = o.corpus.timeoutSec[meta.task.profile] * 1000;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -161,8 +187,16 @@ async function runOne(o: {
     });
   });
   const wallMs = Date.now() - t0;
+  // The child's exit does not mean its log has reached disk; the outcome check reads it.
+  await Promise.all([finished(cliLog), finished(errLog)]);
   const state = o.server.states().find((s) => s.instance === instance);
   const served = state?.counts ?? { exact: 0, shape: 0, path: 0, exhausted: 0 };
+  const recordedLog = path.join(o.corpusDir, meta.sessionId, 'cli.jsonl');
+  const toolOutcomes = {
+    recorded: existsSync(recordedLog) ? summarizeToolOutcomes(meta.cli, readFileSync(recordedLog, 'utf8')) : null,
+    replayed: summarizeToolOutcomes(meta.cli, readFileSync(`${logBase}.cli.jsonl`, 'utf8')),
+  };
+  const toolDiverged = toolOutcomesDiverge(toolOutcomes.recorded, toolOutcomes.replayed);
   const stats = existsSync(statsFile) ? parseCgroupStats(readFileSync(statsFile, 'utf8')) : { memPeakBytes: null, cpuUsec: null };
   if (!o.keepWork) {
     await rm(workDir);
@@ -185,7 +219,9 @@ async function runOne(o: {
     ...stats,
     recordedExchanges: meta.exchanges,
     served,
-    diverged: served.exhausted > 0 || served.path > 0,
+    toolOutcomes,
+    toolDiverged,
+    diverged: served.exhausted > 0 || served.path > 0 || toolDiverged,
   };
 }
 
@@ -225,7 +261,7 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
     for (let it = 0; ; it++) {
       const meta = pick(s, it);
       if (!meta) break;
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork });
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
@@ -254,6 +290,7 @@ export function summarize(runs: AgentRun[]) {
     clean: ok.length,
     failed: runs.filter((r) => r.exitCode !== 0 || r.timedOut).length,
     diverged: runs.filter((r) => r.diverged).length,
+    toolDiverged: runs.filter((r) => r.toolDiverged).length,
     wallSlowdown: ok.length ? sum(ok.map((r) => r.wallMs)) / sum(ok.map((r) => r.recordedWallMs)) : null,
     memPeakMiB: { p50: pct(peaks, 50), p95: pct(peaks, 95), max: pct(peaks, 100) },
     cpuSecPerSession: { p50: (pct(cpu, 50) ?? 0) / 1e6, p95: (pct(cpu, 95) ?? 0) / 1e6, total: sum(cpu) / 1e6 },
@@ -298,7 +335,7 @@ async function main(): Promise<void> {
     sweep: process.argv.includes('--sweep'),
     onRun: (r) =>
       console.log(
-        `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)}${r.diverged ? ' DIVERGED' : ''}`,
+        `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)} tools=${r.toolOutcomes.replayed.results}/${r.toolOutcomes.recorded?.results ?? '?'} toolErrors=${r.toolOutcomes.replayed.errors}/${r.toolOutcomes.recorded?.errors ?? '?'}${r.diverged ? ' DIVERGED' : ''}${r.toolDiverged ? ' TOOL_DIVERGED' : ''}`,
       ),
   };
   // Agent units live in the user manager, outside this process's own cgroup: killing the driver

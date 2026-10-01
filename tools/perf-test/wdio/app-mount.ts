@@ -69,7 +69,11 @@ export function installPopupLayoutProbe() {
     const testId = element.getAttribute('data-testid');
     const id = element.id ? `#${element.id}` : '';
     const classes = Array.from(element.classList).slice(0, 4);
-    return `${element.tagName.toLowerCase()}${id}${testId ? `[data-testid="${testId}"]` : ''}${classes.length ? `.${classes.join('.')}` : ''}`.slice(0, 240);
+    const attributes = ['data-anim', 'data-state', 'role']
+      .map((name) => [name, element.getAttribute(name)] as const)
+      .filter(([, value]) => value)
+      .map(([name, value]) => `[${name}="${value}"]`).join('');
+    return `${element.tagName.toLowerCase()}${id}${testId ? `[data-testid="${testId}"]` : ''}${classes.length ? `.${classes.join('.')}` : ''}${attributes}`.slice(0, 240);
   };
   const observe = (proto: object, key: string) => {
     const descriptor = Object.getOwnPropertyDescriptor(proto, key);

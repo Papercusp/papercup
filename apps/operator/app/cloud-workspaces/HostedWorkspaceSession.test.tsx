@@ -592,10 +592,15 @@ describe("HostedWorkspaceSession", () => {
     socket.emit("message", {
       data: JSON.stringify({ type: "pty.ready", role: "observer", resumed: false }),
     });
-    await waitFor(() => expect(onDesktopBridgeChange).toHaveBeenCalled());
-    const bridge = onDesktopBridgeChange.mock.calls.at(-1)?.[0] as {
-      requestStart: () => boolean;
-    };
+    await waitFor(() =>
+      expect(
+        onDesktopBridgeChange.mock.calls.some(([bridge]) => bridge != null),
+      ).toBe(true),
+    );
+    const bridge = onDesktopBridgeChange.mock.calls
+      .map(([value]) => value)
+      .filter((value) => value != null)
+      .at(-1) as { requestStart: () => boolean };
     const sentTypes = () =>
       socket.send.mock.calls.map(
         (call) => (JSON.parse(String(call[0])) as { type: string }).type,
@@ -725,10 +730,15 @@ describe("HostedWorkspaceSession", () => {
     M.sockets[0].emit("message", {
       data: JSON.stringify({ type: "pty.ready", role: "controller", resumed: false }),
     });
-    await waitFor(() => expect(onDesktopBridgeChange).toHaveBeenCalled());
-    const bridge = onDesktopBridgeChange.mock.calls.at(-1)?.[0] as {
-      requestStart: () => boolean;
-    };
+    await waitFor(() =>
+      expect(
+        onDesktopBridgeChange.mock.calls.some(([bridge]) => bridge != null),
+      ).toBe(true),
+    );
+    const bridge = onDesktopBridgeChange.mock.calls
+      .map(([value]) => value)
+      .filter((value) => value != null)
+      .at(-1) as { requestStart: () => boolean };
 
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {

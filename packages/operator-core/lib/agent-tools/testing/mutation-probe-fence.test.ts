@@ -61,6 +61,17 @@ it('fails closed when the lock ledger cannot establish whether a probe is active
   expect("hint" in result ? result.hint : undefined).toContain('lock ledger unavailable');
 });
 
+it('retries a transient lock-query statement timeout before failing closed', async () => {
+  readQueueMock
+    .mockRejectedValueOnce(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }))
+    .mockResolvedValue({ active_locks: [], waiting: [] });
+
+  const result = await mutationProbeRefusal(makeRoot(), ['tests/subject.test.ts']);
+
+  expect(result).toBeNull();
+  expect(readQueueMock).toHaveBeenCalledTimes(2);
+});
+
 it('continues to ordinary root validation when no mutation-probe lock is active', async () => {
   readQueueMock.mockResolvedValue({ active_locks: [], waiting: [] });
 

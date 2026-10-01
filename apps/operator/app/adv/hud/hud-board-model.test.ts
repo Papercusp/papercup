@@ -1590,4 +1590,18 @@ describe('rollUpTranscriptSearch', () => {
     expect(rollUpTranscriptSearch(null).owners.size).toBe(0);
     expect(rollUpTranscriptSearch(undefined).hits.size).toBe(0);
   });
+
+  it('carries the top hit\'s focusTerm (P-004 exact/fuzzy tiers) so the open anchors on the literal the turn contains; absent stays absent', () => {
+    const { hits } = rollUpTranscriptSearch([
+      {
+        active: { ownerId: 'su-ff' },
+        sessionId: 's1',
+        hits: [{ excerpt: 'visit www.furnishedfinder.com', highlight: '<mark>furnishedfinder</mark>', focusTerm: 'furnishedfinder' }],
+      },
+      { active: { ownerId: 'su-plain' }, sessionId: 's2', hits: [{ excerpt: 'plain hybrid hit', focusTerm: null }] },
+    ]);
+    expect(hits.get('su-ff')?.focusTerm).toBe('furnishedfinder');
+    // null/missing focusTerm must NOT become an empty-string claim (the open then uses the typed query).
+    expect('focusTerm' in hits.get('su-plain')!).toBe(false);
+  });
 });

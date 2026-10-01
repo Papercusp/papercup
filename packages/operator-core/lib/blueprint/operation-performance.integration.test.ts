@@ -11,7 +11,12 @@ import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestra
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getResourceProfile } from '../resource-profile';
-import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
+import {
+  assertNoLocalModelLoaded,
+  installDeterministicEmbedder,
+  type InstalledDeterministicEmbedder,
+  type LocalModelLoadEvidence,
+} from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
 import { createTextCollector } from '../child-output';
@@ -112,6 +117,16 @@ beforeAll(async () => {
   const setupStartedAt = Date.now();
   const stamp = (step: string) => console.error(
     `P013_SETUP step=${step} elapsedMs=${Date.now() - setupStartedAt}`);
+  // F4 (WI-10004402): under VITEST the harness pool's connect_timeout defaults
+  // to 5 s (libs/papercusp/libs/db/src/connection.ts, EI-2582), a bound meant to
+  // fail unmocked unit tests fast. The cold children inherit VITEST, and an a2
+  // rep lost 30 minutes when one fresh connect to the dedicated cluster under
+  // host load hit it (CONNECT_TIMEOUT -> goal_holder_authority_unreadable, the
+  // correct fail-closed refusal). A benchmark measures a slow connect instead of
+  // aborting the rep, so this run uses postgres.js's own 30 s default. Set
+  // before any pool is built and before any child is forked (children inherit
+  // process.env); an explicit operator value still wins.
+  process.env.PAPERCUSP_DB_CONNECT_TIMEOUT ??= '30';
   // D-022(c): a cluster owned by THIS run, so cluster-wide WAL counters and
   // fsync waits belong to the measured arms alone rather than to whatever
   // else shares the reused test container. Durability stays at the server
@@ -284,9 +299,15 @@ describe('P-013 workload A fixture', () => {
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
                 `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
           });
-          child.on('message', (message: { kind?: string; stage?: string; sample?: P013Sample; calls?: number }) => {
+          let childLocalModel: LocalModelLoadEvidence | null = null;
+          child.on('message', (message: {
+            kind?: string; stage?: string; sample?: P013Sample; calls?: number; localModel?: LocalModelLoadEvidence;
+          }) => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;
-            if (message?.kind === 'p013-embedder') embedderCalls = message.calls ?? null;
+            if (message?.kind === 'p013-embedder') {
+              embedderCalls = message.calls ?? null;
+              childLocalModel = message.localModel ?? null;
+            }
             if (message?.kind === 'p013-sample') sample = message.sample;
           });
           const stopSampler = async () => {
@@ -308,7 +329,20 @@ describe('P-013 workload A fixture', () => {
               expect(sample?.arm).toBe(arm);
               // Positive control for D-022(a): the fixture must have served the
               // claim-time recall, or this sample re-measured the provider.
-              if (fixtureEmbedder) expect(embedderCalls).toBeGreaterThan(0);
+              if (fixtureEmbedder) {
+                // F3 (WI-10004402): a zero-call sample was seen once and its cause
+                // is unproven (a recall skipped by an expired memory deadline is
+                // one candidate), so the failure carries the child's stderr.
+                expect(embedderCalls, `P-013 A ${arm} child ${childSequence} made no fixture embed call; ` +
+                  `child stderr tail: ${stderr.slice(-2000)}`).toBeGreaterThan(0);
+                // Negative control (EI-24688584300743328): neither the child
+                // nor this parent may have loaded a real local model while the
+                // fixture is installed.
+                expect(childLocalModel).toEqual({
+                  pipelines: {}, workerAlive: false, onnxruntimeMappings: [], onnxruntimeLoadStack: null,
+                });
+                assertNoLocalModelLoaded(`P-013 A parent after ${arm} child ${childSequence}`);
+              }
               const after = await readPgCounters(db.adminSql);
               const delta = Object.fromEntries(Object.entries(after).map(([key, value]) =>
                 [key, value - countersBefore[key as keyof PgCounters]])) as unknown as PgCounters;
@@ -337,6 +371,12 @@ describe('P-013 workload A fixture', () => {
       expect(coldStarts).toBe(modes.includes('cold') ? 2 * repetitions * coldSamples * concurrencies.length : 0);
       expect(trials).toHaveLength(2 * repetitions * modes.length * concurrencies.length);
       expect(counterRows).toHaveLength(coldStarts);
+      // Negative control over the whole matrix, including in-process warm arms
+      // that ran after the last cold child (EI-24688584300743328).
+      if (fixtureEmbedder) {
+        console.info('P-013 workload A local-model evidence',
+          JSON.stringify(assertNoLocalModelLoaded('P-013 A parent after the matrix')));
+      }
       // A sample whose normal done-fire missed P013_NORMAL_FIRE_BUDGET_MS was
       // completed by production's reconciler; its business-event mark is the
       // repair, not the normal emit. Count them per arm so the report carries them.

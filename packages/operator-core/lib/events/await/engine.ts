@@ -1575,15 +1575,57 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
         log(`declared-gate recovery skipped: ${e instanceof Error ? e.message : e}`);
       }
       const generic = wakes.filter((a) => !recovery.has(a.id));
-      if (generic.length > 0) {
+      const predicateWakes = generic.filter((a) => a.eventKey.startsWith('predicate:'));
+      const ordinaryGeneric = generic.filter((a) => !a.eventKey.startsWith('predicate:'));
+      if (ordinaryGeneric.length > 0) {
         await insertDeliveries({
-          awaits: generic,
+          awaits: ordinaryGeneric,
           // P-004: the non-event is a prompt to RECONCILE, not to give up — carry the
           // re-orient/re-arm guidance so the woken agent reconciles instead of re-hanging.
           payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE },
           summary: TIMEOUT_WAKE_SUMMARY,
         });
       }
+      await Promise.all(
+        predicateWakes.map(async (awaited) => {
+          let predicate: {
+            tool: string;
+            args: Record<string, unknown>;
+            path: string;
+            op: string;
+            value?: unknown;
+            intervalSec: number;
+            once: boolean;
+          } | null = null;
+          try {
+            const { getPredicateTimeoutContext } = await import('./predicate-watch');
+            predicate = await getPredicateTimeoutContext({
+              eventKey: awaited.eventKey,
+              subscriberId: awaited.subscriberId,
+            });
+          } catch (e) {
+            log('predicate timeout context unavailable for ' + awaited.eventKey + ': ' + (e instanceof Error ? e.message : e));
+          }
+          const elapsedSec =
+            awaited.expiresTs && awaited.createdAt
+              ? (Date.parse(awaited.expiresTs) - Date.parse(awaited.createdAt)) / 1000
+              : undefined;
+          const { buildPredicateTimeoutFallback, buildPredicateTimeoutRecovery } = await import('./timeout-fallback');
+          const predicateRecovery = predicate
+            ? buildPredicateTimeoutRecovery({ spec: predicate, timeoutSec: elapsedSec })
+            : undefined;
+          const fallback = buildPredicateTimeoutFallback(awaited.eventKey, predicateRecovery);
+          await insertDeliveries({
+            awaits: [awaited],
+            payload: {
+              timeout: true,
+              guidance: fallback.guidance,
+              ...(fallback.predicateRecovery ? { predicateRecovery: fallback.predicateRecovery } : {}),
+            },
+            summary: fallback.summary,
+          });
+        }),
+      );
       for (const awaited of wakes) {
         const declaredGateRecovery = recovery.get(awaited.id);
         if (!declaredGateRecovery) continue;

@@ -22,6 +22,7 @@ import {
   deterministicEmbedding,
   installDeterministicEmbedder,
   localModelLoadEvidence,
+  type LocalModelLoadEvidence,
 } from './_deterministic-embedder';
 
 /** Sidecar deps that fail the test if the override ever lets resolution run. */
@@ -60,6 +61,14 @@ describe('installDeterministicEmbedder covers the sidecar-aware local cascade', 
     expect(assertNoLocalModelLoaded('deterministic-embedder.test')).toEqual(localModelLoadEvidence());
   });
 
+  it('reports the local engine available without importing transformers while the override is installed', async () => {
+    await installDeterministicEmbedder();
+    const { localAvailable } = await import('../lib/memory/configure');
+    expect(await localAvailable()).toBe(true);
+    // The availability probe must not have dlopened the onnxruntime binding.
+    expect(localModelLoadEvidence().onnxruntimeLoadStack).toBeNull();
+  });
+
   it('an override returning null falls through to the normal cascade', async () => {
     let consulted = 0;
     setLocalEmbedEngineOverride(() => {
@@ -80,15 +89,19 @@ describe('installDeterministicEmbedder covers the sidecar-aware local cascade', 
 });
 
 describe('assertNoLocalModelLoaded', () => {
+  const clean: LocalModelLoadEvidence = {
+    pipelines: {}, workerAlive: false, onnxruntimeMappings: [], onnxruntimeLoadStack: null,
+  };
+
   it('passes on clean evidence', () => {
-    const clean = { pipelines: {}, workerAlive: false, onnxruntimeMappings: [] };
     expect(assertNoLocalModelLoaded('clean', clean)).toBe(clean);
   });
 
-  it.each([
-    ['a constructed pipeline', { pipelines: { 'onnx-community/embeddinggemma-300m-ONNX': 'cuda' }, workerAlive: false, onnxruntimeMappings: [] }, /ONNX pipelines constructed/],
-    ['a live worker thread', { pipelines: {}, workerAlive: true, onnxruntimeMappings: [] }, /worker thread is alive/],
-    ['an onnxruntime mapping', { pipelines: {}, workerAlive: false, onnxruntimeMappings: ['/x/libonnxruntime.so.1'] }, /onnxruntime is mapped/],
+  it.each<[string, LocalModelLoadEvidence, RegExp]>([
+    ['a constructed pipeline', { ...clean, pipelines: { 'onnx-community/embeddinggemma-300m-ONNX': 'cuda' } }, /ONNX pipelines constructed/],
+    ['a live worker thread', { ...clean, workerAlive: true }, /worker thread is alive/],
+    ['an onnxruntime mapping', { ...clean, onnxruntimeMappings: ['/x/libonnxruntime.so.1'] }, /onnxruntime is mapped/],
+    ['a recorded onnxruntime load', { ...clean, onnxruntimeLoadStack: '/x/onnxruntime_binding.node\nError\n    at loader (y.ts:1:1)' }, /first onnxruntime load: [\s\S]*at loader/],
   ])('throws on %s', (_label, evidence, message) => {
     expect(() => assertNoLocalModelLoaded('dirty', evidence)).toThrow(message);
   });

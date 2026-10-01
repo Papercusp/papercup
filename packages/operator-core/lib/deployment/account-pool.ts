@@ -125,6 +125,11 @@ export interface ClaudeAccount {
    * Resolve via `egressEntries(account)`. The owner provisions the IPs (owner-gated infra, like creds).
    */
   egressPool?: AccountEgress[];
+  /** Metered spend policy (anthropic-credits-gateway-2026-09-30 P-008, D-003). `overflow` (absent ⇒
+   *  this): metered serving — an api-key account, or usage-credits overage on a subscription — is used
+   *  only when no included-allowance account can serve. `never`: the gateway never serves this account
+   *  while it is metered. */
+  meteredPolicy?: 'overflow' | 'never';
   /** When added (epoch ms). */
   addedAt: number;
   /** Swarm member harness slugs currently bound to this account (P-020). A MANUAL / deploy-time
@@ -370,6 +375,7 @@ export function registerAccount(
     egress?: AccountEgress;
     egressPool?: AccountEgress[];
     provider?: AccountProvider;
+    meteredPolicy?: 'overflow' | 'never';
   },
   now: number,
 ): AccountPool {
@@ -393,6 +399,7 @@ export function registerAccount(
               label: input.label ?? a.label,
               egress: input.egress ?? a.egress,
               egressPool: input.egressPool ?? a.egressPool,
+              ...((input.meteredPolicy ?? a.meteredPolicy) ? { meteredPolicy: input.meteredPolicy ?? a.meteredPolicy } : {}),
             }
           : a,
       ),
@@ -405,6 +412,7 @@ export function registerAccount(
     label: input.label,
     egress: input.egress,
     egressPool: input.egressPool,
+    ...(input.meteredPolicy ? { meteredPolicy: input.meteredPolicy } : {}),
     addedAt: now,
     boundTo: [],
     rate: freshRate(),

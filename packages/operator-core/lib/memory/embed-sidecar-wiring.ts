@@ -51,6 +51,51 @@ import {
 } from './embed-sidecar-server';
 import { verifySidecarFitness } from '../process-supervision/sidecar-spawn-shared';
 import { ensureEmbedDeviceSettingLoaded } from './embed-device-setting';
+import { pinModuleState } from '@papercusp/module-singleton';
+
+/**
+ * A process-wide replacement for the LOCAL embed engine (EI-24688584300743328).
+ *
+ * Returns the EmbedFn to use for `(model, kind)`, or null to fall through to
+ * the normal sidecar/in-process cascade. It is consulted FIRST in
+ * `buildSidecarAwareEmbedder`, before any sidecar resolution, so an override
+ * means no sidecar spawn, no /healthz probe and no model construction.
+ *
+ * Why it exists: this function is the single choke point for every
+ * in-process local model build in the operator (memory/configure.ts twice,
+ * search/embed-backfill, agent-tools/search/embedder, personal-vault). A test
+ * fixture that swaps only ONE of those cascades (the memory host) leaves the
+ * other three free to construct the real ONNX model — measured: the P-013
+ * benchmark parent loaded onnxruntime CUDA (~5 GB of GPU) through the
+ * declare-intent → embed-backfill leg while the fixture was installed. Setting
+ * the override here covers all four by construction.
+ *
+ * Only test fixtures set it. Production never does, so production behavior is
+ * byte-for-byte unchanged (the check is one null read).
+ */
+export type LocalEmbedEngineOverride = (
+  model: 'gemma' | 'local' | 'harrier',
+  kind: GemmaEmbedKind,
+) => EmbedFn | null;
+
+// Pinned through @papercusp/module-singleton: a fixture and production code can
+// reach this module through different specifiers (relative path vs the package
+// graph), and a split module record would silently leave the override unset
+// on the production side.
+const engineOverride = pinModuleState<{ embed: LocalEmbedEngineOverride | null }>(
+  '@papercusp/operator-core.localEmbedEngineOverride',
+  () => ({ embed: null }),
+);
+
+/** Install (or clear, with null) the process-wide local embed engine override. */
+export function setLocalEmbedEngineOverride(override: LocalEmbedEngineOverride | null): void {
+  engineOverride.embed = override;
+}
+
+/** Whether a local embed engine override is installed in this process. */
+export function hasLocalEmbedEngineOverride(): boolean {
+  return engineOverride.embed !== null;
+}
 
 /** Injectable seams (tests swap the env read + the spawn side effect). */
 export interface SidecarWiringDeps {
@@ -206,6 +251,9 @@ export async function buildSidecarAwareEmbedder(
   kind: GemmaEmbedKind,
   deps: SidecarWiringDeps = defaultDeps,
 ): Promise<EmbedFn> {
+  // A test-fixture override wins over every engine, before any sidecar I/O.
+  const overridden = engineOverride.embed?.(model, kind) ?? null;
+  if (overridden) return overridden;
   const url = await resolveProcessSidecarUrl(deps, [EMBED_SIDECAR_CAP_EMBED]);
   return buildSidecarFirstEmbedder({
     model,

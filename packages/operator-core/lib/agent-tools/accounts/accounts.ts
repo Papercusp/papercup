@@ -54,6 +54,12 @@ export default defineTool({
       })
       .optional()
       .describe('Per-account egress for per-account IP routing (optional; default = shared egress). Owner-provisioned. Superseded by egressPool when set.'),
+    meteredPolicy: z
+      .enum(['overflow', 'never'])
+      .optional()
+      .describe(
+        'Metered spend policy. overflow (default): an api-key account, or a subscription in usage-credits overage, serves only when no included-allowance account can. never: unselectable while metered.',
+      ),
     egressPool: z
       .array(
         z.object({
@@ -76,7 +82,7 @@ export default defineTool({
       // writer registered in between, which is exactly how owner-registered accounts
       // silently vanished from the Deploy Accounts page.
       const next = await updateAccountPool(
-        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool }, Date.now()),
+        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool, meteredPolicy: args.meteredPolicy }, Date.now()),
         ws,
       );
       return ok({ account: getAccount(next, args.id) });

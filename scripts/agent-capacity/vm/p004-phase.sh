@@ -45,11 +45,16 @@ if [ "$WHAT" = real ] || [ "$WHAT" = both ]; then
   hold caprec.slice
   sample_start caprec.slice "real-$PHASE"
   echo "PHASE_REAL_START $PHASE $(ts)"
+  # Wait on the two recorders' PIDs only: a bare `wait` also waits for the background sampler,
+  # whose --duration is hours, so the phase would hang after the sessions finish.
   case "$PHASE" in
     n1) rec claude exc-heavy-1 1; rec codex exc-typical-1 1 ;;
-    n4) rec claude exc-typical-2,mea-typical-1 2 & rec codex exc-light-3,mea-light-3 2 & wait ;;
-    n8) rec claude exc-typical-1,exc-typical-4,mea-light-2,mea-typical-4 4 &
-        rec codex exc-typical-2,exc-light-1,mea-light-4,mea-typical-1 4 & wait ;;
+    n4) rec claude exc-typical-2,mea-typical-1 2 & p1=$!
+        rec codex exc-light-3,mea-light-3 2 & p2=$!
+        wait "$p1" "$p2" ;;
+    n8) rec claude exc-typical-1,exc-typical-4,mea-light-2,mea-typical-4 4 & p1=$!
+        rec codex exc-typical-2,exc-light-1,mea-light-4,mea-typical-1 4 & p2=$!
+        wait "$p1" "$p2" ;;
   esac
   echo "PHASE_REAL_END $PHASE $(ts)"
   sample_stop "real-$PHASE"; unhold caprec.slice

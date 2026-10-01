@@ -50,7 +50,9 @@
  * single dir scan that computes the allocation max.
  */
 import { fileURLToPath } from 'node:url';
-import { resolve as resolvePath } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { lstat, open, link, unlink } from 'node:fs/promises';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { ALLOC_ADVISORY_KEY, scanMigrationDirs } from './lib/migration-allocation.mjs';
 import {
@@ -69,9 +71,11 @@ export { ALLOC_ADVISORY_KEY };
 // canonical dir.
 const CANONICAL_DIR = 'libs/papercusp/libs/db/sql';
 const SCAN_DIRS = [CANONICAL_DIR, 'papercusp-desktop/src-tauri/sidecar/db-sql'];
+const REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
+const ARM_SQL_DIR = resolvePath(REPO_ROOT, CANONICAL_DIR);
 
 function parseArgs(argv) {
-  const args = { dryRun: false };
+  const args = { dryRun: false, armRequested: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') args.dryRun = true;
@@ -79,9 +83,21 @@ function parseArgs(argv) {
     else if (a === '--name') args.name = argv[++i];
     else if (a === '--intent') args.intent = argv[++i];
     else if (a === '--by') args.by = argv[++i];
+    else if (a === '--arm') {
+      args.armRequested = true;
+      args.armPath = argv[++i];
+    }
     else if (a === '--help' || a === '-h') args.help = true;
   }
   return args;
+}
+
+function quotePosixArgument(value) {
+  return "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
+}
+
+function armCommandFor(draftPath) {
+  return 'npx tsx scripts/next-migration.mjs --arm ' + quotePosixArgument(draftPath);
 }
 
 function slugify(name) {
@@ -92,6 +108,127 @@ function slugify(name) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
   return slug || null;
+}
+
+/**
+ * Lint a DRAFT with the same per-file pre-apply gate used by boot and db:migrate,
+ * then atomically publish a separate, no-clobber .sql copy.
+ *
+ * @param {object} args
+ * @param {string} args.draftPath Repository-relative or absolute .sql.DRAFT path.
+ * @param {string} [args.sqlDir] SQL directory (default: canonical migrations; tests may use a temp dir).
+ * @returns {Promise<{ok: boolean, draft_path: string, arm_path: string, draft_removed: boolean, warning?: string}>}
+ */
+export async function armMigration({ draftPath, sqlDir = ARM_SQL_DIR }) {
+  if (typeof draftPath !== 'string' || draftPath.trim() === '') {
+    throw new Error('A .sql.DRAFT path is required.');
+  }
+
+  const resolvedSqlDir = resolvePath(REPO_ROOT, sqlDir);
+  const resolvedDraft = resolvePath(REPO_ROOT, draftPath);
+  if (dirname(resolvedDraft) !== resolvedSqlDir) {
+    throw new Error('Refusing to arm a draft outside its SQL directory: ' + resolvedDraft);
+  }
+  const draftName = basename(resolvedDraft);
+  if (!draftName.endsWith('.sql.DRAFT')) {
+    throw new Error('Refusing to arm a file that does not end in .sql.DRAFT: ' + draftName);
+  }
+  const filename = draftName.slice(0, -'.DRAFT'.length);
+  if (!/^\d{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.sql$/.test(filename)) {
+    throw new Error('Refusing to arm a migration with an invalid filename: ' + draftName);
+  }
+
+  const armPath = join(resolvedSqlDir, filename);
+  const originalStat = await lstat(resolvedDraft);
+  if (!originalStat.isFile() || originalStat.isSymbolicLink()) {
+    throw new Error('Refusing to arm a draft that is not a regular file: ' + resolvedDraft);
+  }
+  const source = await open(resolvedDraft, 'r');
+  let contents;
+  try {
+    const openedStat = await source.stat();
+    if (openedStat.dev !== originalStat.dev || openedStat.ino !== originalStat.ino) {
+      throw new Error('The draft path changed before it could be read; retry arming.');
+    }
+    contents = await source.readFile();
+    const readEndStat = await source.stat();
+    if (openedStat.size !== readEndStat.size || openedStat.mtimeMs !== readEndStat.mtimeMs) {
+      throw new Error('The draft changed while it was being read; retry arming.');
+    }
+  } finally {
+    await source.close();
+  }
+
+  const sqlText = contents.toString('utf8');
+  if (!Buffer.from(sqlText, 'utf8').equals(contents)) {
+    throw new Error('Refusing to arm a draft that is not valid UTF-8 SQL.');
+  }
+  const { assertMigrationPassesPreApplyLints } =
+    await import('../packages/operator-core/lib/migration-preapply-lint.ts');
+  assertMigrationPassesPreApplyLints({ filename, sqlText, sqlDir: resolvedSqlDir });
+
+  const tempPath =
+    join(resolvedSqlDir, '.' + filename + '.arm-' + process.pid + '-' + randomBytes(8).toString('hex') + '.tmp');
+  try {
+    const temporary = await open(tempPath, 'wx', originalStat.mode & 0o777);
+    try {
+      await temporary.writeFile(contents);
+      await temporary.sync();
+    } finally {
+      await temporary.close();
+    }
+    try {
+      await link(tempPath, armPath);
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        throw new Error('Refusing to arm ' + filename + ': target already exists; the draft was left unchanged.');
+      }
+      throw error;
+    }
+  } finally {
+    await unlink(tempPath).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+  }
+
+  let draftRemoved = false;
+  let warning;
+  try {
+    const currentStat = await lstat(resolvedDraft);
+    if (
+      currentStat.isFile() &&
+      !currentStat.isSymbolicLink() &&
+      currentStat.dev === originalStat.dev &&
+      currentStat.ino === originalStat.ino
+    ) {
+      const current = await open(resolvedDraft, 'r');
+      let currentContents;
+      try {
+        currentContents = await current.readFile();
+      } finally {
+        await current.close();
+      }
+      if (currentContents.equals(contents)) {
+        await unlink(resolvedDraft);
+        draftRemoved = true;
+      } else {
+        warning = 'The draft changed during arming; the linted snapshot was armed and the newer draft was preserved.';
+      }
+    } else {
+      warning = 'The draft path changed during arming; the linted snapshot was armed and the newer draft was preserved.';
+    }
+  } catch (error) {
+    if (error?.code === 'ENOENT') draftRemoved = true;
+    else warning = 'The arm target was created, but the draft could not be removed: ' + error.message;
+  }
+
+  return {
+    ok: true,
+    draft_path: resolvedDraft,
+    arm_path: armPath,
+    draft_removed: draftRemoved,
+    ...(warning ? { warning } : {}),
+  };
 }
 
 /**
@@ -128,7 +265,7 @@ export function buildAllocationResult({
     filename,
     path: draftPath,
     arm_path: armPath,
-    arm_command: `mv ${draftPath} ${armPath}`,
+    arm_command: armCommandFor(draftPath),
     reserved_by: reservedBy,
     ...(redundancyWarning ? { redundancy_warning: redundancyWarning } : {}),
     // Authoring-time reminder for the forward-compat guard (EI-19462877357083817).

@@ -1,7 +1,7 @@
-# Is this process actually doing work? The cgroup CPU delta, and two false-idle traps
+# Is this process doing work? Cgroup CPU deltas and PID namespace traps
 URL: /internal/docs/agent-insights/is-this-process-actually-doing-work
 
-How to measure whether a long-running process is burning CPU right now — a two-sample delta over its cgroup — the two hand-rolled /proc methods that report a confident FALSE IDLE, and how to attribute that CPU to code when ptrace and perf are both closed.
+Use two-sample cgroup CPU deltas, avoid false-idle /proc probes, and interpret liveness readings from PID-namespaced shells and proxied loopback.
 
 ## The question this answers
 
@@ -64,8 +64,17 @@ field 8 is the state column, so misreading it yields a whole column of `S` that 
 A liveness/progress heartbeat emitted by the process being judged cannot report main-thread
 saturation. `await` yields to the microtask queue, not the event loop, so a saturated Node main
 thread stops every `setInterval`/`setTimeout` while still looking perfectly asynchronous. The
-beat goes missing exactly when it is the thing you need. Observe from OUTSIDE (`/proc`), where
-a saturated process cannot suppress its own signal.
+beat goes missing exactly when it is the thing you need. Use a host-side reader such as `processes:list` for liveness; a shell may not share the host PID namespace.
+
+## PID-namespace readings can look like process death
+
+`capability:bash` may run in a separate PID namespace from the operator. A host PID missing from `/proc/<pid>` therefore means it is invisible to that shell's namespace; `ENOENT` does not establish that it exited.
+
+A `cgroup.procs` file containing only `0` means at least one process exists in the cgroup but is invisible in the reader's PID namespace. It does not mean the cgroup is empty, and `0` is not a process ID. `pids.current` counts kernel tasks, including threads, rather than task-manager process rows.
+
+`capability:bash` loopback traffic is proxied. A request to an unused port can return HTTP 502 rather than `ECONNREFUSED` (`curl` exit 7); the 502 comes from the proxy path and proves neither that the target answered nor that it is absent. Do not turn any of these shell readings into a death verdict.
+
+For current host-side liveness, use `processes:list` with an exact `scopeUnit` and `live:true`, inspect `live.exactScopeUnitMatches`, and use `dev:listening_ports` when the question is whether a specific host port is bound. A lifecycle candidate's `processLifecycleCandidate.liveness` is a timestamped host observation: `present` means the healthy task-reconcile scan saw it at `observedAt`; it is not proof that the process is present now. `unknown` means no such safe observation was established and does not mean dead.
 
 ## It IS burning CPU — now what is it burning it ON?
 

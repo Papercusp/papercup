@@ -167,6 +167,9 @@ export interface AgentObligationAgendaRead {
    *  Exposed so another read-side consumer can present the SAME snapshot
    *  without issuing a second portfolio query or rebuilding it client-side. */
   portfolio: GoalPortfolioBrief | null;
+  /** The exact-plan admissions the plan-placement provider selected against, from the same
+   *  snapshot as `portfolio`; null when that placement read was unknown. */
+  placementAdmissions: Readonly<Record<string, ExactPlanAdmission | null>> | null;
   observedAt: string;
   elapsedMs: number;
   degradedSources: string[];
@@ -633,6 +636,7 @@ export async function readAgentObligationAgenda(input: {
     goalId,
     planSlugs,
     portfolio: portfolio.value,
+    placementAdmissions: planPlacement?.read.status === 'known' ? planPlacement.read.value.admissions ?? null : null,
     observedAt,
     elapsedMs: Date.now() - startedAt,
     degradedSources,

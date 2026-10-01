@@ -17,8 +17,11 @@ import {
   LOOP_WAKE_SCAFFOLD_BYTE_BUDGETS,
   LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS,
   LOOP_AWAIT_HEARTBEAT_MS,
+  LOOP_NON_PARKING_AWAIT_BINDING_KINDS,
+  LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD,
   type LoopFireDeps,
 } from './loop-fire';
+import { AGENT_OBLIGATION_REMINDER_BINDING_KIND } from '../../agent-obligation-reminders';
 
 /** A fresh set of injected deps with sensible "allow + woke 1" defaults; override per test. */
 function mkDeps(
@@ -38,6 +41,7 @@ function mkDeps(
     | 'takeWallNag'
     | 'renderOwnerDirectives'
     | 'listBlockingAwaits'
+    | 'countActionableHeldItems'
     | 'readLastDeliveredAt'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
@@ -69,6 +73,9 @@ function mkDeps(
     takeWallNag: vi.fn(async () => null) as never,
     renderOwnerDirectives: vi.fn(async () => null) as never,
     listBlockingAwaits: vi.fn(async () => []) as never,
+    // WI-10004466: hermetic default — an UNKNOWN count keeps the pre-fix decision, so
+    // every existing suppression test is unaffected and no test reaches real PG.
+    countActionableHeldItems: vi.fn(async () => null) as never,
     // P-024: hermetic default — "never delivered" keeps the pre-heartbeat ceiling.
     readLastDeliveredAt: vi.fn(async () => null) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
@@ -554,6 +561,70 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(res).toMatchObject({ fired: true, woken: 1 });
       expect(deps.wake).toHaveBeenCalledTimes(1);
       expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+    });
+
+    it('WI-10004466: a platform obligation-reminder await does not pause an active work loop', async () => {
+      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => [{
+        eventKey: 'plan:acceptance:agent-economy-flywheel-2026-08-30', expiresTs: null,
+        createdAt: new Date().toISOString(),
+        boundTo: { kind: 'agent-obligation', ref: 'obl:plan-independent-verification:x' },
+      }]) as never });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+    });
+
+    it('WI-10004466: a caller await does not pause the loop while the owner holds 2+ actionable items', async () => {
+      const count = vi.fn(async () => 2);
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [{
+          eventKey: 'plan-item:done:su-mode-contract-identity-unification-2026-09-24:P-008',
+          expiresTs: new Date(Date.now() + 60 * 60_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }]) as never,
+        countActionableHeldItems: count as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
+      expect(count).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: baseInput.targetOwnerId, workspaceId: baseInput.workspaceId }),
+      );
+    });
+
+    it('WI-10004466: a caller await still parks the loop when the owner holds one actionable item (EI-10901 shape)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [{
+          eventKey: 'deploy:done', expiresTs: new Date(Date.now() + 10 * 60_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }]) as never,
+        countActionableHeldItems: vi.fn(async () => 1) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+      expect(deps.wake).not.toHaveBeenCalled();
+    });
+
+    it('WI-10004466: a failed actionable-count read keeps the suppression decision (never flips on a read error)', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [{
+          eventKey: 'deploy:done', expiresTs: new Date(Date.now() + 10 * 60_000).toISOString(),
+          createdAt: new Date().toISOString(),
+        }]) as never,
+        countActionableHeldItems: vi.fn(async () => {
+          throw new Error('work_items read timed out');
+        }) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+      expect(res).toMatchObject({ fired: false, reason: 'await-blocking' });
+    });
+
+    it('WI-10004466: the actionable count is read only when an await would suppress', async () => {
+      const count = vi.fn(async () => 5);
+      const deps = mkDeps({ listBlockingAwaits: vi.fn(async () => []) as never, countActionableHeldItems: count as never });
+      await fireLoopWake(baseInput, deps);
+      expect(count).not.toHaveBeenCalled();
     });
 
     it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
@@ -1251,6 +1322,36 @@ describe('decideLoopAwaitSuppression — the pure suppression decision (EI-10901
 
   it('no awaits ⇒ never suppress', () => {
     expect(decideLoopAwaitSuppression({ awaits: [], nowMs: now })).toEqual({ suppress: false, resumeAtMs: null });
+  });
+
+  it('WI-10004466: an agent-obligation reminder binding never parks the loop', () => {
+    const reminder = {
+      eventKey: 'plan:acceptance:p', createdAt: new Date(now).toISOString(), expiresTs: null,
+      boundTo: { kind: 'agent-obligation', ref: 'obl:x' },
+    };
+    expect(decideLoopAwaitSuppression({ awaits: [reminder], nowMs: now }).suppress).toBe(false);
+  });
+
+  it('WI-10004466: the non-parking kind set tracks the obligation-reminder binding constant', () => {
+    expect(LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has(AGENT_OBLIGATION_REMINDER_BINDING_KIND)).toBe(true);
+    expect(LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has('work-item-blocked')).toBe(true);
+  });
+
+  it('WI-10004466: more actionable held items than the bound lifts suppression and says why', () => {
+    const awaitRow = {
+      eventKey: 'plan-item:done:x:P-008', createdAt: new Date(now).toISOString(),
+      expiresTs: new Date(now + 60 * 60_000).toISOString(),
+    };
+    const over = LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD + 1;
+    expect(decideLoopAwaitSuppression({ awaits: [awaitRow], nowMs: now, actionableHeldItemCount: over })).toEqual({
+      suppress: false,
+      resumeAtMs: null,
+      drivingEventKey: 'plan-item:done:x:P-008',
+      overriddenByActionableHeldItems: over,
+    });
+    for (const n of [0, LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD, null, undefined]) {
+      expect(decideLoopAwaitSuppression({ awaits: [awaitRow], nowMs: now, actionableHeldItemCount: n }).suppress).toBe(true);
+    }
   });
 
   it('a fresh await with a future deadline ⇒ suppress until that deadline', () => {

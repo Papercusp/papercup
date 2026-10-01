@@ -46,7 +46,7 @@ test('startGatewayService composes account → resolver → proxy; /healthz + a 
     upstreamBase: up.base,
     log: () => {},
     resolveAccount: async () => ({ accountId: 'test-acct', credentialRef: 'token:/dev/null', source: 'env' }),
-    makeResolver: () => ({ kind: 'token', current: async () => 'bound-token', invalidate: () => {} }),
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'bound-token', invalidate: () => {} }),
     observePool: () => () => {},
   });
 
@@ -82,7 +82,7 @@ test('payload-spool lifecycle sweep is injectable, bounded, and stopped with the
     upstreamBase: up.base,
     log: () => {},
     resolveAccount: async () => ({ accountId: 'test-acct', credentialRef: 'token:/dev/null', source: 'env' }),
-    makeResolver: () => ({ kind: 'token', current: async () => 'bound-token', invalidate: () => {} }),
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'bound-token', invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
     localBackendReloadIntervalMs: 0,
@@ -116,7 +116,7 @@ test('startGatewayService sizes both provider priority-tier layers from the ONE 
       upstreamBase: up.base,
       log: (_level, message) => logs.push(message),
       resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-      makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+      makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
       // P-010: ONE seed feeds both lanes. There is no Codex-only size to pass, so the
       // observable property flips from "each lane sized from its own pool" to "both
       // lanes derive the same reserve from the same seed".
@@ -180,7 +180,7 @@ test('one Codex account does NOT multiply into a four-slot admission cap (D-006)
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -219,7 +219,7 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts,
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -245,7 +245,7 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
     log: () => {},
     resolveAccounts,
     concurrency: 12,
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -273,7 +273,7 @@ test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no rest
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async () => dbPool,
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0, // disable the auto-poll; drive reloadPool() deterministically
   });
@@ -317,7 +317,7 @@ test('/admin/config + /admin/reload expose the live config + on-demand hot-reloa
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async () => dbPool,
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -361,7 +361,7 @@ test('Codex account pool can hot-reload from empty to live without a gateway res
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -399,7 +399,7 @@ test('two ChatGPT subscription accounts populate a real health pool and hot-relo
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -425,7 +425,7 @@ test('startGatewayService throws when the initial account pool resolves empty (f
       port: 0,
       log: () => {},
       resolveAccounts: async () => [],
-      makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+      makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
       observePool: () => () => {},
     }),
     /no account resolved/,
@@ -443,7 +443,7 @@ test('reloadPool keeps the live pool when the DB resolves EMPTY (fail-safe, no w
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async () => dbPool,
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -480,7 +480,7 @@ test('reloadPool keeps the live CODEX pool when only codex momentarily resolves 
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -513,7 +513,7 @@ test('reloadPool follows the back-compat single resolveAccount path (re-resolves
     upstreamBase: up.base,
     log: () => {},
     resolveAccount: async () => ({ ...acct }),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -541,7 +541,7 @@ test('/admin/config exposes the live codexAccounts alongside the claude pool', a
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
-    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
@@ -568,8 +568,8 @@ test('proactive refresh timer invalidates only file-kind resolvers, never token-
     ],
     makeResolver: (_ref, id) =>
       id === 'filey'
-        ? { kind: 'file', current: async () => 'f-tok', invalidate: () => { fileInvalidates++; } }
-        : { kind: 'token', current: async () => 't-tok', invalidate: () => { tokenInvalidates++; } },
+        ? { kind: 'file', authMode: 'oauth', current: async () => 'f-tok', invalidate: () => { fileInvalidates++; } }
+        : { kind: 'token', authMode: 'oauth', current: async () => 't-tok', invalidate: () => { tokenInvalidates++; } },
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
     refreshIntervalMs: 25, // tiny — drive several proactive refreshes within the test window

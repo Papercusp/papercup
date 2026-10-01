@@ -20,6 +20,8 @@ import {
   TIMEOUT_FIRE_WARN_THRESHOLD,
   TIMEOUT_WAKE_SUMMARY,
   TIMEOUT_WAKE_GUIDANCE,
+  buildPredicateTimeoutFallback,
+  buildPredicateTimeoutRecovery,
 } from './timeout-fallback';
 
 describe('eventKeyFamily — collapse id-bearing segments to `*`', () => {
@@ -148,5 +150,51 @@ describe('timeout-wake guidance strings (P-004)', () => {
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/fallback/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-orient/i);
     expect(TIMEOUT_WAKE_GUIDANCE).toMatch(/re-arm/i);
+  });
+});
+
+describe('predicate timeout recovery', () => {
+  it('carries a one-call watch:create spec and explicitly avoids the expired key', () => {
+    const recovery = buildPredicateTimeoutRecovery({
+      spec: {
+        tool: 'state:read',
+        args: { cell: 'gate.greenCheckpoint.verdict' },
+        path: 'value.sha',
+        op: 'changed',
+        intervalSec: 30,
+        once: true,
+      },
+      timeoutSec: 3600,
+    });
+    expect(recovery).toEqual({
+      tool: 'watch:create',
+      args: {
+        pattern: 'predicate-timeout-recovery',
+        wake: true,
+        once: true,
+        interval_sec: 30,
+        on_timeout: 'wake',
+        timeout_sec: 3600,
+        predicate: {
+          tool: 'state:read',
+          args: { cell: 'gate.greenCheckpoint.verdict' },
+          path: 'value.sha',
+          op: 'changed',
+        },
+      },
+    });
+
+    const fallback = buildPredicateTimeoutFallback('predicate:expired-id', recovery);
+    expect(fallback.summary).toContain('do not re-arm the expired key');
+    expect(fallback.guidance).toContain('Do NOT call events:await on this expired key');
+    expect(fallback.guidance).toContain('predicateRecovery.args');
+    expect(fallback.predicateRecovery).toEqual(recovery);
+  });
+
+  it('keeps the no-spec fallback safe when the retired registration cannot be recovered', () => {
+    const fallback = buildPredicateTimeoutFallback('predicate:expired-id');
+    expect(fallback.guidance).toContain('Do NOT call events:await on this expired key');
+    expect(fallback.guidance).toContain('Recover the original predicate specification');
+    expect(fallback).not.toHaveProperty('predicateRecovery');
   });
 });

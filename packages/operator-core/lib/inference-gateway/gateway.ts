@@ -59,7 +59,13 @@ import {
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
-import { classifyClaudeCreditWallResponse, CREDIT_WALL_DEFAULT_PAUSE_MS, type ClaudeCreditWall } from './anthropic-billing';
+import {
+  classifyClaudeCreditWallResponse,
+  CREDIT_WALL_DEFAULT_PAUSE_MS,
+  parseClaudeBillingState,
+  type ClaudeBillingStateKind,
+  type ClaudeCreditWall,
+} from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
@@ -3239,6 +3245,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
       readingAt?: number;
     }
   >();
+  /** P-008 (anthropic-credits-gateway-2026-09-30): each Claude account's latest billing state, parsed
+   *  from the unified-limiter headers of its OWN upstream responses. `until` = the allowance reset the
+   *  same response named: a `usage-credits` reading stops applying there (the allowance is back). */
+  const claudeBillingByAccount = new Map<string, { state: ClaudeBillingStateKind; until?: number }>();
+  const recordClaudeBilling = (account: ActiveAccount, headers: Record<string, string | undefined>): void => {
+    const billing = parseClaudeBillingState(headers);
+    if (!billing) return;
+    const secToMs = (v: string | undefined): number | undefined =>
+      v && /^\d+$/.test(v.trim()) ? Number(v.trim()) * 1000 : undefined;
+    const until =
+      secToMs(headers['anthropic-ratelimit-unified-reset']) ?? secToMs(headers['anthropic-ratelimit-unified-5h-reset']);
+    claudeBillingByAccount.set(account.accountId, { state: billing.state, ...(until !== undefined ? { until } : {}) });
+    // `metered: never` makes usage-credit overage a WALL (D-003). Park the account in the pool until its
+    // allowance resets: every selection path (round-robin, failover walk, kernel rotation, internal retry)
+    // already skips a parked account, so no further request is billed per token. A hard pin bypasses the
+    // pool (select() ignores parks) and is refused before admission instead.
+    if (account.meteredPolicy === 'never' && inUsageCredits(account, Date.now())) {
+      pool.onExhausted(account.accountId, until ?? 0);
+    }
+  };
+  /** True while this subscription account is past its allowance and serving from usage credits. */
+  const inUsageCredits = (account: ActiveAccount, at: number): boolean => {
+    if (account.authMode === 'api-key') return false;
+    const b = claudeBillingByAccount.get(account.accountId);
+    return b?.state === 'usage-credits' && !(b.until !== undefined && b.until <= at);
+  };
+  /** Billed per token right now: an api-key account, or a subscription serving from usage credits. */
+  const isMeteredNow = (account: ActiveAccount, at: number): boolean =>
+    account.authMode === 'api-key' || inUsageCredits(account, at);
+
   /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
    *  Codex supplies the same durable capacity/burn hints plus shared transport state. Keeping the
    *  adaptation here prevents the provider handlers from growing subtly different health formulas. */
@@ -3251,22 +3287,30 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const accountId = account.accountId;
     const h = accountRateHints.get(accountId);
     const unified = cgov?.snapshot().unified;
+    // P-008/D-003: usage credits carry an overage account past its allowance, so the allowance walls
+    // (a rejected/full unified window, the store's allowance readings and their park) do not stop it —
+    // it is scored as METERED instead, behind every serviceable included-allowance account.
+    const overage = inUsageCredits(account, at);
     const base = accountLoadKey({
       paused:
         (cgov?.state.pausedUntil ?? 0) > at ||
         (egressPauseUntil.get(accountId) ?? 0) > at ||
-        (h?.pausedUntil ?? 0) > at,
-      exhausted: !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
+        (!overage && (h?.pausedUntil ?? 0) > at),
+      exhausted: !overage && !!unified?.rejected && !(unified.resetAt > 0 && unified.resetAt <= at),
       transportHealth: (egressFailStreak.get(accountId) ?? 0) > 0 ? 'degraded' : 'healthy',
       inFlight: cgov ? Math.max(0, cgov.state.inFlight + inFlightAdjustment) : undefined,
-      utilization: unified?.utilization,
-      capacityWindows: [
-        { utilization: unified?.utilization, resetAt: unified?.resetAt },
-        { utilization: h?.utilization, resetAt: h?.windowResetAt },
-        { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
-      ],
+      utilization: overage ? undefined : unified?.utilization,
+      capacityWindows: overage
+        ? []
+        : [
+            { utilization: unified?.utilization, resetAt: unified?.resetAt },
+            { utilization: h?.utilization, resetAt: h?.windowResetAt },
+            { utilization: h?.utilization7d, resetAt: h?.windowResetAt7d },
+          ],
       now: at,
       burnAction: h?.burnAction,
+      billing: account.authMode === 'api-key' || overage ? 'metered' : 'included',
+      meteredPolicy: account.meteredPolicy,
     });
     if (base === Infinity) return base;
     const poolEntries = effectiveEgressEntries(account);
@@ -5126,6 +5170,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const priorAccount = affinityPriorAccount(affinityKey, dynPin, wantAccount);
       if (priorAccount) affinityPinned = pool.select?.(priorAccount) ?? null;
       autoAffinityTally[affinityPinned ? 'hits' : 'cold']++;
+      // P-008/D-007: affinity is an IMPLICIT pin kept only for prompt-cache savings, so it never buys
+      // metered (per-token) spend while an included-allowance account can serve (D-003). Explicit header
+      // and hard pins are untouched.
+      if (affinityPinned) {
+        const at = Date.now();
+        if (isMeteredNow(affinityPinned, at)) {
+          const includedServes =
+            (pool.healthyCount?.((id) => {
+              const a = pool.select?.(id);
+              return !!a && !isMeteredNow(a, at) && accountHealthKey(a, at, governorForAccount(model, id)) < Infinity;
+            }) ?? 0) > 0;
+          if (includedServes) {
+            affinityPinned = null;
+            autoAffinityTally.yields++;
+          }
+        }
+      }
     } else if (headerPinned === null) {
       autoAffinityTally.nokey++;
     }
@@ -5452,6 +5513,41 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
         return;
       }
+    }
+
+    // P-008 / D-003: `metered: never` turns usage-credit overage into a WALL. Selection already scores such
+    // an account Infinity, but when EVERY alternative is also unserviceable (or the request is hard-pinned)
+    // routing still lands on it. Refuse here instead of sending a request that would bill per token. This
+    // is exact on purpose: a governor pause would re-probe the account on its reprobe cap, and each probe
+    // would itself be a metered charge the owner opted out of.
+    if (active.meteredPolicy === 'never' && isMeteredNow(active, Date.now())) {
+      const at = Date.now();
+      recordClaudeRoutingPick();
+      totalRequests++;
+      recordOwnerOutcome(wantOwner, 'shed', { detail: 'metered-never wall' });
+      const wallUntil = claudeBillingByAccount.get(active.accountId)?.until;
+      const retryAfterSec = Math.min(
+        BEE_RETRY_AFTER_CAP_S,
+        Math.max(1, Math.ceil(((wallUntil ?? at + 60_000) - at) / 1000)),
+      );
+      log(
+        'warn',
+        `inference-gateway: '${active.accountId}' is metered now (policy never) and no included-allowance account can serve → 429 wall`,
+      );
+      sendJson(
+        res,
+        429,
+        {
+          type: 'error',
+          error: {
+            type: 'rate_limit_error',
+            message: `inference-gateway: no included-allowance account can serve and '${active.accountId}' has metered policy never; retry after ${retryAfterSec}s`,
+          },
+          gateway: true,
+        },
+        { 'retry-after': String(retryAfterSec), 'x-should-retry': 'false' },
+      );
+      return;
     }
 
     totalRequests++;
@@ -6275,6 +6371,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const status = response.status;
                 const accountGov = governorForAccount(model, account.accountId);
                 accountGov.recordResponse(hobj);
+                recordClaudeBilling(account, hobj as Record<string, string | undefined>);
                 deps.onResponse?.(hobj, status, model, account.accountId);
 
                 // Transport succeeded for THIS account — its egress proxy works, so
@@ -6773,7 +6870,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 // than letting the throw escape uncaught to the generic 500 handler.
                 let reCand = active;
                 try {
-                  reCand = pool.active();
+                  // `pool.active()` falls back to a PARKED account when every account is parked, so the
+                  // re-route can name a `metered: never` account serving from usage credits. That account
+                  // is a wall (D-003): re-holding the throttled account is the only correct move.
+                  const c = pool.active();
+                  if (!(c.meteredPolicy === 'never' && isMeteredNow(c, Date.now()))) reCand = c;
                 } catch {
                   /* pool empty / all-exhausted → keep the current account; the re-acquire still waits */
                 }

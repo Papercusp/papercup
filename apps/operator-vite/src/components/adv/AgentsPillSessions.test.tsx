@@ -164,6 +164,44 @@ describe('searchHitStreamUrl', () => {
   });
 });
 
+describe('searchHitStreamUrl — focusTerm anchor (P-004 exact/fuzzy tiers)', () => {
+  const base = { active: null, session: null, sourceKind: 'claude', sessionId: 'sid-1' };
+
+  it('anchors `find` on the literal the turn actually contains, not the typed (typo) query', () => {
+    const url = searchHitStreamUrl(base, { ts: null, owner: null, focusTerm: 'furnishedfinder' }, 'furnisedfinder');
+    expect(url).toContain('&find=furnishedfinder');
+    expect(url).not.toContain('furnisedfinder');
+  });
+
+  it('falls back to the typed query when the hit carries no focusTerm (hybrid-only hit / older server)', () => {
+    expect(searchHitStreamUrl(base, { ts: null, owner: null }, 'red gate')).toContain('&find=red%20gate');
+    expect(searchHitStreamUrl(base, { ts: null, owner: null, focusTerm: '' }, 'red gate')).toContain('&find=red%20gate');
+  });
+});
+
+describe('hitMatchLabel — fuzzy tier chip (P-004)', () => {
+  it('a fuzzy hit says it is an approximate spelling match and names what the turn actually says', () => {
+    const l = hitMatchLabel({
+      matchedBy: 'unknown',
+      tier: 'fuzzy',
+      fuzzy: { token: 'furnisedfinder', word: 'furnishedfinder', similarity: 0.62 },
+      highlight: 'visit <mark>furnishedfinder</mark>',
+      excerpt: 'x',
+    });
+    expect(l?.label).toBe('fuzzy match');
+    expect(l?.unhighlighted).toBe(false);
+    expect(l?.title).toContain('furnisedfinder');
+    expect(l?.title).toContain('furnishedfinder');
+    expect(l?.title).toContain('0.62');
+  });
+
+  it('a fuzzy hit still gets the chip with no fuzzy block (older/partial payload), and an exact hit with a <mark> gets none', () => {
+    expect(hitMatchLabel({ tier: 'fuzzy', highlight: '<mark>a</mark>', excerpt: 'x' })?.label).toBe('fuzzy match');
+    // exact-tier hit: its <mark> IS the typed text — no chip, same as a highlighted lexical hit.
+    expect(hitMatchLabel({ matchedBy: 'unknown', tier: 'exact', highlight: '<mark>a</mark>', excerpt: 'x' })).toBeNull();
+  });
+});
+
 describe('searchResultResumeTarget (pure — Fork/Resume-button wiring, WI-3882; active+inactive 2026-07-11)', () => {
   it('active claude result → live:true, canFork:true, sessionId from the roster agent', () => {
     expect(

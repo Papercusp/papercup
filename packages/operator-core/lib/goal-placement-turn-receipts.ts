@@ -8,6 +8,7 @@ import type { ActivityRecord } from '@papercusp/activity-bridge';
 import type { ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 import type { GovernorStateSnapshot } from './resource-governor/state-snapshot';
 import type { GoalPlacementOpportunity } from './goal-placement-progress';
+import { goalPlacementCandidates } from './agent-obligation-providers';
 
 export const GOAL_PLACEMENT_DELIVERY_KEY = 'goalPlacementDeliveryV1';
 const nonempty = z.string().trim().min(1).max(1000);
@@ -186,6 +187,27 @@ export function noProgressAge(ageMs: number | undefined, observedAt: string):
   return { noProgressAgeMs: ageMs, noProgressSince: new Date(at - ageMs).toISOString() };
 }
 
+export const GOAL_PLACEMENT_TURN_END_MAX_ALTERNATIVES = 8;
+type PlacementAlternative = { planSlug: string; planRef: string; placementState: string;
+  admission: ExactPlanAdmissionReason | 'unread' };
+
+/** D-030: the selected plan's admission verdict and the other candidates the selector weighed, in
+ * canonical worklist order, from the same snapshot it selected against. Without them a row cannot
+ * tell an alternate-lane choice from a changed admission. Omitted when nothing was selected. */
+export function placementSelection(read: Pick<AgentObligationAgendaRead, 'portfolio' | 'placementAdmissions'>,
+  planSlug: string | null): { selectedAdmission: PlacementAlternative['admission']; alternatives?: PlacementAlternative[] }
+  | Record<string, never> {
+  if (!read.portfolio || !planSlug) return {};
+  const verdict = (ref: string): PlacementAlternative['admission'] => read.placementAdmissions?.[ref]?.reason ?? 'unread';
+  const { candidates } = goalPlacementCandidates(read.portfolio);
+  const selected = read.portfolio.worklist.find((plan) => plan.slug === planSlug);
+  if (!selected) return {};
+  const alternatives = candidates.filter((plan) => plan.slug !== planSlug)
+    .slice(0, GOAL_PLACEMENT_TURN_END_MAX_ALTERNATIVES).map((plan) => ({ planSlug: plan.slug, planRef: plan.ref,
+      placementState: plan.placement.state, admission: verdict(plan.ref) }));
+  return { selectedAdmission: verdict(selected.ref), ...(alternatives.length ? { alternatives } : {}) };
+}
+
 /** Sample policy at the native turn-end seam, independently of the next-turn ACK.
  * This is descriptive policy evidence, not a grade or a delivery receipt. Its
  * observedAt remains explicit; a later replay cannot masquerade as timely proof. */
@@ -244,6 +266,7 @@ export async function recordGoalPlacementTurnEnd(input: {
       // first completed eligible opportunity) at read.observedAt, so the anchor is recoverable exactly
       // and an audit can check that only a canonical effect ever moves it.
       ...noProgressAge(row.ageMs, read.observedAt),
+      ...placementSelection(read, row.scope.planSlug ?? null),
       // An `unknown` row is only diagnosable with its reason: without the code a
       // no-opportunity trial cannot tell a failed read from a genuinely unplaced plan.
       ...(row.measurementFailure ? { measurementFailure: {
@@ -413,6 +436,9 @@ const turnEndSchema = z.object({ version: z.literal(1), goalId: nonempty, comple
     applicableDemand: z.number(), actionKind: z.string().nullable(), obligationId: nonempty,
     sourceGeneration: nonempty, ruleRevision: nonempty,
     noProgressAgeMs: z.number().nonnegative().optional(), noProgressSince: dateTime.optional(),
+    selectedAdmission: nonempty.optional(),
+    alternatives: z.array(z.object({ planSlug: nonempty, planRef: planRefSchema, placementState: nonempty,
+      admission: nonempty })).max(GOAL_PLACEMENT_TURN_END_MAX_ALTERNATIVES).optional(),
     measurementFailure: z.object({ code: nonempty, detail: z.string() }).optional() })),
   admissions: z.array(z.object({ planRef: planRefSchema, admission: admissionSchema })).optional(),
 });

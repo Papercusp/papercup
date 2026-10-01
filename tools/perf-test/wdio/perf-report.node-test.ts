@@ -46,7 +46,7 @@ test("layout probe measures a later computed-style getter and preserves target, 
   try {
     const result = installPopupLayoutProbe();
     assert.ok(result.observed.includes('animationName'));
-    const element = { tagName: 'DIV', id: 'plan', classList: ['plan-popup'], getAttribute: () => 'popup' } as unknown as Element;
+    const element = { tagName: 'DIV', id: 'plan', classList: ['plan-popup'], getAttribute: (name: string) => name === 'data-testid' ? 'popup' : null } as unknown as Element;
     const computed = window.getComputedStyle(element);
     type Record = { api: string; ms: number; at: number; target?: string; waitMs?: number; firedAt?: number };
     const probe = (window as unknown as { __perfLayoutProbe: { records: Record[]; restore(): void } }).__perfLayoutProbe;
@@ -110,14 +110,15 @@ test("layout probe observes native-style object properties when a prototype gett
   try {
     const result = installPopupLayoutProbe();
     assert.ok(result.observed.includes('animationName-proxy'));
-    const element = { tagName: 'DIV', id: '', classList: ['h-modal__content'], getAttribute: () => null } as unknown as Element;
+    const attributes: Record<string, string> = { 'data-anim': 'fade', 'data-state': 'open' };
+    const element = { tagName: 'DIV', id: '', classList: ['h-modal__content'], getAttribute: (name: string) => attributes[name] ?? null } as unknown as Element;
     const computed = window.getComputedStyle(element);
     assert.equal(computed.animationName, 'none');
     assert.equal(computed.getPropertyValue('animation-name'), 'none');
     assert.equal(computed.getPropertyValue, computed.getPropertyValue, 'method identity remains stable');
     const probe = (window as unknown as { __perfLayoutProbe: { records: Array<{ api: string; ms: number; target?: string }>; restore(): void } }).__perfLayoutProbe;
     assert.deepEqual(probe.records.map(({ api, ms, target }) => ({ api, ms, target })), [
-      { api: 'animationName', ms: 40, target: 'div.h-modal__content' },
+      { api: 'animationName', ms: 40, target: 'div.h-modal__content[data-anim="fade"][data-state="open"]' },
     ]);
     probe.restore();
     assert.equal(fakeWindow.getComputedStyle(), styles);

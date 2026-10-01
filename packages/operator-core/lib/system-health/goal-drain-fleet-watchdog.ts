@@ -1441,6 +1441,7 @@ export async function defaultRelaunchDrainFleet(
       ? (
           await mintDrainFleetForGoal({
             workspaceId: goal.workspaceId,
+            harnessSlug: installSlug,
             goalId: goal.goalId,
             goalTitle: goal.title,
             agentOwnerId: holderOwnerId,

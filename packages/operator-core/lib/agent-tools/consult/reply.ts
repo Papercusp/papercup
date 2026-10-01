@@ -11,11 +11,69 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { parseJsonWithTrailer, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { hardText } from '../limits';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function consultReplyPayload(result: ToolResult): Record<string, unknown> | null {
+  const firstText = result.content.find(
+    (item): item is Extract<ToolResult['content'][number], { type: 'text' }> => item.type === 'text',
+  );
+  if (!firstText) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(firstText.text);
+  } catch {
+    parsed = parseJsonWithTrailer(firstText.text)?.value;
+  }
+  const root = asRecord(parsed);
+  return asRecord(root?.data) ?? root;
+}
+
+/**
+ * The handler writes the consult post before finishing its remaining work. If the
+ * handler returns after the tool deadline, preserve the completed reply identity so
+ * the caller does not mistake a committed post for a safe retry. This does not make
+ * the non-idempotent post globally idempotent.
+ */
+export function consultReplyAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const payload = consultReplyPayload(result);
+  const postId = payload?.post_id;
+  const conversationId = asRecord(args)?.conversation_id;
+  if (
+    payload?.ok === true && typeof postId === 'number' && Number.isSafeInteger(postId) && postId > 0
+  ) {
+    if (typeof conversationId !== 'string' || conversationId.length === 0) {
+      return {
+        status: 'recovery-incomplete',
+        reason: 'consult:reply args did not identify the conversation for the recorded post',
+        failures: ['missing-conversation-id'],
+      };
+    }
+    return {
+      status: 'recorded',
+      effectRef: 'consult-reply:' + conversationId + ':' + String(postId),
+    };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'consult:reply result did not confirm a persisted post id after abort',
+    failures: ['missing-post-id'],
+  };
+}
 
 const evidenceRef = z.object({
   session_id: z.string().min(1),
@@ -38,6 +96,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_REPLY_ROLES],
+  abortCompletionReceipt: consultReplyAbortCompletionReceipt,
   args: z
     .object({
       conversation_id: z.string().min(1).describe('The consult conversation (from the wake / get_feedback result).'),

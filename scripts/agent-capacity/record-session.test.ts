@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, summarizeToolCalls } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
 
 describe('corpus manifest', () => {
   const corpus = loadCorpus();
@@ -70,5 +70,27 @@ describe('tool-call summary', () => {
       { type: 'item.completed', item: { type: 'agent_message' } },
     ].map((l) => JSON.stringify(l));
     expect(summarizeToolCalls('codex', lines.join('\n'))).toEqual({ command_execution: 1, file_change: 1 });
+  });
+});
+
+describe('tool-outcome summary', () => {
+  it('counts claude tool_result blocks and those marked is_error', () => {
+    const lines = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'Exit code 2' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }, { type: 'text', text: 'not a result' }] } },
+      { type: 'user', message: { content: 'plain prompt' } },
+    ].map((l) => JSON.stringify(l));
+    expect(summarizeToolOutcomes('claude', lines.join('\n') + '\nnot-json\n')).toEqual({ results: 2, errors: 1 });
+  });
+  it('counts codex completed tool items and those with status failed', () => {
+    const lines = [
+      { type: 'item.completed', item: { type: 'command_execution', status: 'failed', exit_code: 1 } },
+      { type: 'item.completed', item: { type: 'command_execution', status: 'completed', exit_code: 0 } },
+      { type: 'item.started', item: { type: 'command_execution', status: 'in_progress' } },
+      { type: 'item.completed', item: { type: 'file_change', status: 'completed' } },
+      { type: 'item.completed', item: { type: 'agent_message' } },
+    ].map((l) => JSON.stringify(l));
+    expect(summarizeToolOutcomes('codex', lines.join('\n'))).toEqual({ results: 3, errors: 1 });
   });
 });

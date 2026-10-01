@@ -22,7 +22,8 @@
 //                           call) before any retry — never a blind identical retry.
 //                           Opportunity: a holder whose first refused call was later retried.
 //   r4-alternate-lane       on refusal, choose another feasible independent lane when permitted.
-//                           Opportunity: a refused claim while another claimable lane was on offer.
+//                           Opportunity (D-030): a turn-end row with demand whose placement selector weighed a
+//                           non-ready lane beside a ready/admitting one (selectedAdmission + alternatives).
 //   r4-bounded-repair       a repair that makes no progress (same call refused >= 3 times) ends in
 //                           stop/reassign/escalate through existing authority.
 //                           Opportunity: a (tool,args) refused >= 3 times by a holder.
@@ -64,7 +65,7 @@ const P007_GOALS = [
 const GOAL_IDS = (process.env.R4_GOALS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const LINEAGE = GOAL_IDS.length > 0 ? GOAL_IDS : P007_GOALS;
 const COUNTEREXAMPLE = process.env.R4_COUNTEREXAMPLE ?? null;
-const COUNTEREXAMPLES = ['duplicate-launch-in-refusal-window', 'heartbeat-reset-age'];
+const COUNTEREXAMPLES = ['duplicate-launch-in-refusal-window', 'heartbeat-reset-age', 'select-blocked-over-ready'];
 if (COUNTEREXAMPLE !== null && !COUNTEREXAMPLES.includes(COUNTEREXAMPLE)) {
   throw new Error(`unknown R4_COUNTEREXAMPLE=${COUNTEREXAMPLE}; known: ${COUNTEREXAMPLES.join(', ')}`);
 }
@@ -210,12 +211,53 @@ observations.ledgerCounts = { holderCalls: calls.length, membershipEvents: membe
 }
 
 // ── r4-alternate-lane ──
+// D-030: a goal holder chooses lanes through goal placement, so the opportunity is a turn-end row with demand whose
+// selector weighed a non-ready lane beside a ready/admitting one (selectedAdmission + alternatives, one snapshot).
+// FAIL: a blocked selection while an alternative was ready/admitting, or a confirmed placement in that turn that went
+// to a non-ready alternative. Claim-tool refusals remain a second source; they carry no offered-alternative set.
 {
   const CLAIM_TOOLS = ['work_items:claim', 'work_items:claim_next', 'scheduler:get_next', 'plan_items:claim'];
   const refusedClaims = calls.filter((c) => CLAIM_TOOLS.includes(c.tool) && c.status !== 'ok');
-  observations.alternateLane = { refusedHolderClaims: refusedClaims.length };
-  assert('r4-alternate-lane', 'unknown', 0, `${refusedClaims.length} refused claim(s) by the holders; the ledger records no `
-    + `offered-alternative-lane set at refusal time, so "another feasible independent lane was available" is unmeasured`);
+  const ready = (a: Row) => a.admission === 'ready' || a.placementState === 'admitting';
+  let selections = turnEnds.flatMap((t) => ((t.te?.rows ?? []) as Row[])
+    .filter((r) => typeof r.selectedAdmission === 'string' && Number(r.applicableDemand ?? 0) > 0)
+    .map((r) => ({ owner: t.owner as string, at: t.at as string, turnRef: t.te?.completedTurnRef as string, ...r })));
+  const isOpportunity = (r: Row) => {
+    const all = [{ admission: r.selectedAdmission }, ...((r.alternatives ?? []) as Row[])];
+    return all.some((a) => !ready(a)) && all.some(ready);
+  };
+  if (COUNTEREXAMPLE === 'select-blocked-over-ready') {
+    // Mutation: on the newest opportunity whose selection was ready, select a non-ready alternative instead.
+    const i = selections.findLastIndex((r) => isOpportunity(r) && r.selectedAdmission === 'ready'
+      && (r.alternatives as Row[]).some((a) => !ready(a)));
+    if (i >= 0) {
+      const r = selections[i]!; const alts = r.alternatives as Row[]; const k = alts.findIndex((a) => !ready(a));
+      selections = selections.map((s, j) => j !== i ? s : { ...r, planSlug: alts[k]!.planSlug, planRef: alts[k]!.planRef,
+        status: 'blocked', selectedAdmission: alts[k]!.admission,
+        alternatives: alts.map((a, n) => n !== k ? a : { planSlug: r.planSlug, planRef: r.planRef, placementState: 'unplaced',
+          admission: 'ready' }) });
+    }
+  }
+  const opportunities = selections.filter(isOpportunity);
+  const placed = holders.length === 0 ? [] : rows(`SELECT owner_id AS owner, detail->'goalPlacementTurn'->>'planRef' AS plan_ref,
+      detail->'goalPlacementTurn'->>'completedTurnRef' AS turn_ref FROM harness_shared.agent_activity
+    WHERE workspace_id = ${lit(WS)} AND detail ? 'goalPlacementTurn' AND owner_id IN (${inList(holders)})`);
+  const judged = opportunities.map((r) => {
+    const blockedOverReady = r.selectedAdmission !== 'ready' && r.status === 'blocked'
+      && (r.alternatives as Row[]).some(ready);
+    const nonReadyRefs = new Set((r.alternatives as Row[]).filter((a) => !ready(a)).map((a) => a.planRef as string));
+    const placedOnBlocked = placed.some((p) => p.owner === r.owner && p.turn_ref === r.turnRef && nonReadyRefs.has(p.plan_ref));
+    return { owner: r.owner, at: r.at, planSlug: r.planSlug, selectedAdmission: r.selectedAdmission,
+      alternatives: r.alternatives, blockedOverReady, placedOnBlocked, ok: !blockedOverReady && !placedOnBlocked };
+  });
+  const bad = judged.filter((j) => !j.ok);
+  observations.alternateLane = { refusedHolderClaims: refusedClaims.length, rowsWithSelection: selections.length,
+    opportunities: judged.slice(-10), failures: bad.slice(0, 10) };
+  assert('r4-alternate-lane', judged.length === 0 ? 'unknown' : bad.length === 0 ? 'pass' : 'fail', judged.length,
+    `${judged.length} placement opportunit(ies) with a non-ready lane beside a ready/admitting one over `
+    + `${selections.length} row(s) carrying a selection; failures: ${bad.length} (blocked-over-ready `
+    + `${bad.filter((j) => j.blockedOverReady).length}, placed-on-blocked ${bad.filter((j) => j.placedOnBlocked).length}); `
+    + `${refusedClaims.length} refused claim(s) by the holders (no offered-alternative set recorded for those)`);
 }
 
 // ── r4-bounded-repair ──
@@ -264,6 +306,10 @@ process.stdout.write(`${JSON.stringify({
       ? { id: COUNTEREXAMPLE, targets: 'r4-no-progress-age',
         fault: 'the newest aged turn-end row re-anchored at its holder\'s latest heartbeat/read/launch call',
         expected: 'r4-no-progress-age=fail (caught)' }
+      : COUNTEREXAMPLE === 'select-blocked-over-ready'
+      ? { id: COUNTEREXAMPLE, targets: 'r4-alternate-lane',
+        fault: 'the newest ready selection beside a non-ready alternative swapped so the non-ready plan is selected (D-030 c)',
+        expected: 'r4-alternate-lane=fail (caught)' }
       : { id: COUNTEREXAMPLE, targets: 'r4-no-duplicate-launch',
         fault: 'each killed goal\'s first real drain-fleet join re-timed to 1s after its budget kill',
         expected: 'r4-no-duplicate-launch=fail (caught)' } }

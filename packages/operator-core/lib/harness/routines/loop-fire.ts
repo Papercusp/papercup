@@ -32,6 +32,8 @@ import {
 } from '../../autoloop';
 import { wakeRecipients as defaultWakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   getLoopCarryNote as defaultGetLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
@@ -150,6 +152,11 @@ export interface LoopFireDeps {
   /** EI-10901: read the owner's currently-active BLOCKING awaits (defaults to
    *  listParkedAwaitsForSubscribers, scoped to one owner). */
   listBlockingAwaits?: (targetOwnerId: string) => Promise<BlockingAwaitLike[]>;
+  /** WI-10004466: count the owner's ACTIONABLE held work-items (assigned, non-terminal,
+   *  not blocked / needs-human, not an observation). Read only when an await would
+   *  otherwise suppress the wake. A failed read returns null, which keeps the
+   *  pre-WI-10004466 decision. Injected for tests. */
+  countActionableHeldItems?: (input: { ownerId: string; workspaceId: string; sql?: Sql }) => Promise<number | null>;
   /** EI-21350609923930437: re-arm a parked pure loop at the suppression threshold before
    *  withholding its wake. Injected for tests; a failed write fails open and delivers the
    *  wake rather than leaving the claimed row parked forever. */
@@ -232,12 +239,37 @@ export const LOOP_AWAIT_SUPPRESSION_MAX_QUIET_MS = 30 * 60_000;
  *  safety the max-quiet bound exists for — the agent still wakes, just once per period. */
 export const LOOP_AWAIT_HEARTBEAT_MS = 60 * 60_000;
 
+/** WI-10004466: platform lifecycle bindings that are NEVER a deliberate park. Each one is
+ *  armed by the platform on the owner's behalf as a side channel — a reminder or a watch
+ *  for one blocked item — while the owner may hold other actionable work. Letting them
+ *  suppress the work loop silenced a 120s AUTO loop from 00:24Z to 01:20Z on 2026-10-01.
+ *  The watch itself stays registered and still wakes the owner when it fires.
+ *  - 'work-item-blocked' (EI-22433430601034541): auto-armed when an item is set blocked.
+ *  - 'agent-obligation' (agent-obligation-reminders.ts AGENT_OBLIGATION_REMINDER_BINDING_KIND):
+ *    a turn-start obligation reminder (e.g. plan independent-verification). */
+export const LOOP_NON_PARKING_AWAIT_BINDING_KINDS: ReadonlySet<string> = new Set([
+  'work-item-blocked',
+  'agent-obligation',
+]);
+
+/** WI-10004466: an await may silence the work loop only while the owner holds at most
+ *  this many ACTIONABLE work-items. One is the EI-10901 shape (the agent parked on the
+ *  await that gates its single in-flight item). With two or more, an await cannot gate
+ *  all of them in any way the platform can verify, and the costs are asymmetric: a
+ *  needless wake costs one short turn, while a wrong suppression silently halted an
+ *  AUTO loop for ~1h. An item that is genuinely waiting should be registered as
+ *  blocked (`work_items:set_blocker`), which drops it from this count. */
+export const LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD = 1;
+
 export interface LoopAwaitSuppressionDecision {
   suppress: boolean;
   /** Earliest moment (ms epoch) suppression is expected to lift — null when not suppressed. */
   resumeAtMs: number | null;
   /** The blocking await that drove the decision (earliest-resuming, when suppressed). */
   drivingEventKey?: string;
+  /** WI-10004466: present only when an await WOULD have suppressed but the owner holds
+   *  more actionable work-items than LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD. */
+  overriddenByActionableHeldItems?: number;
 }
 
 /** Pure decision: given the owner's currently-active blocking awaits, should THIS
@@ -261,6 +293,9 @@ export function decideLoopAwaitSuppression(input: {
   /** Epoch ms the loop last reached its owner; null/absent = unknown. */
   lastDeliveredAtMs?: number | null;
   heartbeatMs?: number;
+  /** WI-10004466: the owner's actionable held work-items. null/absent = unknown, which
+   *  keeps the pre-WI-10004466 decision (an await alone may suppress). */
+  actionableHeldItemCount?: number | null;
 }): LoopAwaitSuppressionDecision {
   const maxQuietMs =
     typeof input.maxQuietMs === 'number' && Number.isFinite(input.maxQuietMs) && input.maxQuietMs > 0
@@ -277,10 +312,11 @@ export function decideLoopAwaitSuppression(input: {
   let earliestResumeAtMs = Infinity;
   let drivingEventKey: string | undefined;
   for (const a of input.awaits) {
-    // EI-22433430601034541: holding a blocked aggregate auto-arms these watches
-    // even while another owned item is actionable. Only a caller-owned park
-    // may pause the work loop. Keep the watch itself for its eventual wake.
-    if (a.boundTo?.kind === 'work-item-blocked') continue;
+    // EI-22433430601034541 / WI-10004466: platform side-channel watches (a blocked
+    // item's unblock watch, an obligation reminder) are armed on the owner's behalf
+    // even while other owned work is actionable. They are never a deliberate park,
+    // so they may not pause the work loop. The watch itself keeps its eventual wake.
+    if (a.boundTo?.kind && LOOP_NON_PARKING_AWAIT_BINDING_KINDS.has(a.boundTo.kind)) continue;
     const createdAtMs = Date.parse(a.createdAt);
     if (!Number.isFinite(createdAtMs)) continue; // malformed row — never suppress on it
     const heartbeatCeilingMs =
@@ -294,6 +330,17 @@ export function decideLoopAwaitSuppression(input: {
     }
   }
   if (!Number.isFinite(earliestResumeAtMs)) return { suppress: false, resumeAtMs: null };
+  // WI-10004466: an await parks the loop only when it can plausibly gate everything the
+  // owner holds. With more actionable items than the bound, the owner has work the await
+  // does not block, so the routine wake is delivered.
+  const actionable = input.actionableHeldItemCount;
+  if (
+    typeof actionable === 'number' &&
+    Number.isFinite(actionable) &&
+    actionable > LOOP_AWAIT_SUPPRESSION_MAX_ACTIONABLE_HELD
+  ) {
+    return { suppress: false, resumeAtMs: null, drivingEventKey, overriddenByActionableHeldItems: actionable };
+  }
   return { suppress: true, resumeAtMs: earliestResumeAtMs, drivingEventKey };
 }
 
@@ -302,6 +349,37 @@ export function decideLoopAwaitSuppression(input: {
 async function defaultListBlockingAwaits(targetOwnerId: string): Promise<BlockingAwaitLike[]> {
   const rows = await listParkedAwaitsForSubscribers([targetOwnerId]);
   return rows.map((r) => ({ eventKey: r.eventKey, expiresTs: r.expiresTs, createdAt: r.createdAt, boundTo: r.boundTo }));
+}
+
+/** WI-10004466: work-item states that are held but not actionable — the owner is
+ *  waiting on someone else, so an await may legitimately gate them. */
+const NON_ACTIONABLE_HELD_STATES: readonly string[] = ['blocked', 'needs-human'];
+
+/** Default resolver: the owner's ACTIONABLE held work-items in the loop's workspace —
+ *  taken by the owner, non-terminal in either family (derived from
+ *  ANY_FAMILY_TERMINAL_STATES, never re-listed), not blocked / needs-human, not an
+ *  observation, and not a resource-governor receipt (same exclusion as
+ *  carry-brief readHeldWorkItems). */
+export async function defaultCountActionableHeldItems(input: {
+  ownerId: string;
+  workspaceId: string;
+  sql?: Sql;
+}): Promise<number | null> {
+  const db = input.sql ?? getOrgPg().sql;
+  const ws = resolveConcreteWorkspaceId(input.workspaceId);
+  const excluded = [...ANY_FAMILY_TERMINAL_STATES, ...NON_ACTIONABLE_HELD_STATES];
+  const rows = await db<{ n: number }[]>`
+    SELECT count(*)::int AS n
+      FROM harness_shared.work_items
+     WHERE taken_by = ${input.ownerId}
+       AND workspace_id = ${ws}
+       AND lane IS DISTINCT FROM 'observation'
+       AND NOT jsonb_exists(COALESCE(payload, '{}'::jsonb), 'resource_governor')
+       AND status IS NOT NULL
+       AND NOT (status = ANY(${excluded}::text[]))
+  `;
+  const n = rows[0]?.n;
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -1008,7 +1086,25 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   if (!isMonitorLoop && blockingAwaits.length > 0) {
     const readLastDeliveredAt = deps.readLastDeliveredAt ?? defaultReadLoopLastDeliveredAtMs;
     const lastDeliveredAtMs = await readLastDeliveredAt(input.sql ?? undefined, input.routineId).catch(() => null);
-    const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now(), lastDeliveredAtMs });
+    const nowMs = Date.now();
+    let decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs, lastDeliveredAtMs });
+    if (decision.suppress) {
+      // WI-10004466: before silencing the loop, check whether the owner still holds work
+      // the await does not gate. Read lazily (only when an await would suppress) and
+      // fail-soft: an unknown count keeps the decision above.
+      const countActionable = deps.countActionableHeldItems ?? defaultCountActionableHeldItems;
+      const actionableHeldItemCount = await countActionable({
+        ownerId: input.targetOwnerId,
+        workspaceId: input.workspaceId,
+        sql: input.sql,
+      }).catch(() => null);
+      decision = decideLoopAwaitSuppression({
+        awaits: blockingAwaits,
+        nowMs,
+        lastDeliveredAtMs,
+        actionableHeldItemCount,
+      });
+    }
     if (decision.suppress) {
       let rearmFailed = false;
       if (decision.resumeAtMs != null) {

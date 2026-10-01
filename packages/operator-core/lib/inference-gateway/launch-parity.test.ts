@@ -149,7 +149,7 @@ async function bootAndRead(
       credentialRef: 'token:/dev/null',
       source: 'env' as const,
     }),
-    makeResolver: () => ({ kind: 'token', current: async () => 'parity-token', invalidate: () => {} }),
+    makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'parity-token', invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
     localBackendReloadIntervalMs: 0,

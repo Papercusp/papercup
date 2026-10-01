@@ -183,17 +183,27 @@ export interface PlanPlacementProviderInput extends ProviderBase {
 
 type GoalPortfolioPlan = GoalPortfolioBrief['worklist'][number];
 
-/** Use the same plan ordering for the reader's launch check and the provider's action. */
-export function selectGoalPlacementPlan(
-  portfolio: GoalPortfolioBrief,
-  admissions?: Readonly<Record<string, ExactPlanAdmission | null>>,
-): GoalPortfolioPlan | undefined {
+/** Worklist plans placement can still act on, in canonical order. `candidates` can take a fresh
+ *  launch or finish an admitting one; `actionable` also keeps inconsistent placements as the fallback.
+ *  Shared with the turn-end recorder so its recorded alternatives match what the selector weighed. */
+export function goalPlacementCandidates(portfolio: GoalPortfolioBrief): {
+  actionable: GoalPortfolioPlan[]; candidates: GoalPortfolioPlan[];
+} {
   const actionable = portfolio.worklist.filter(
     (plan) => plan.placement.state !== 'terminal' && !plan.placement.reconciliation.consistent,
   );
   const candidates = actionable.filter((plan) =>
     plan.placement.state === 'unplaced' || plan.placement.state === 'admitting',
   );
+  return { actionable, candidates };
+}
+
+/** Use the same plan ordering for the reader's launch check and the provider's action. */
+export function selectGoalPlacementPlan(
+  portfolio: GoalPortfolioBrief,
+  admissions?: Readonly<Record<string, ExactPlanAdmission | null>>,
+): GoalPortfolioPlan | undefined {
+  const { actionable, candidates } = goalPlacementCandidates(portfolio);
   // An already-admitting transaction stays actionable. For a fresh launch,
   // prefer the first independently admissible plan over an earlier blocked one.
   return (admissions

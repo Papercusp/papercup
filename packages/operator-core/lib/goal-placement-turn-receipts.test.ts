@@ -10,7 +10,7 @@ import {
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
-  type GoalPlacementAdmissionObservation, noProgressAge,
+  type GoalPlacementAdmissionObservation, noProgressAge, placementSelection,
 } from './goal-placement-turn-receipts';
 import type { GovernorStateSnapshot } from './resource-governor/state-snapshot';
 
@@ -256,6 +256,25 @@ describe('native turn-end policy observation', () => {
     expect(noProgressAge(undefined, at(4).toISOString())).toEqual({});
     expect(noProgressAge(-1, at(4).toISOString())).toEqual({});
     expect(noProgressAge(5, 'not-a-time')).toEqual({});
+  });
+  it('records the selected admission and the alternatives the selector weighed, in worklist order', async () => {
+    const f = endFixture();
+    const plan = (slug: string, state: string, consistent = false) =>
+      ({ slug, ref: `plan:harness/${slug}`, placement: { state, reconciliation: { consistent } } });
+    const portfolio = { worklist: [plan('blocked-first', 'unplaced'), plan('done', 'terminal'), plan('plan', 'unplaced'),
+      plan('led', 'placed', true), plan('unread-later', 'unplaced')] } as unknown as AgentObligationAgendaRead['portfolio'];
+    const placementAdmissions = { 'plan:harness/blocked-first': { reason: 'floor-gated' },
+      'plan:harness/plan': { reason: 'ready' } } as unknown as AgentObligationAgendaRead['placementAdmissions'];
+    f.deps.agenda = vi.fn(async () => ({ goalId: 'goal', portfolio, placementAdmissions, observedAt: at(4).toISOString(),
+      agenda: { evaluations: [row] } }) as AgentObligationAgendaRead);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+    const rows = (f.deps.append as ReturnType<typeof vi.fn>).mock.calls[0][0].detail.goalPlacementTurnEnd.rows;
+    expect(rows[0]).toMatchObject({ planSlug: 'plan', selectedAdmission: 'ready', alternatives: [
+      { planSlug: 'blocked-first', planRef: 'plan:harness/blocked-first', placementState: 'unplaced', admission: 'floor-gated' },
+      { planSlug: 'unread-later', planRef: 'plan:harness/unread-later', placementState: 'unplaced', admission: 'unread' },
+    ] });
+    expect(placementSelection({ portfolio, placementAdmissions }, null)).toEqual({});
+    expect(placementSelection({ portfolio: null, placementAdmissions }, 'plan')).toEqual({});
   });
   it('binds admission evidence to the pending token without claiming it was delivered', async () => {
     const f = endFixture();

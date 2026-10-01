@@ -3,11 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { encodeChunk, fingerprintRequest, type RecordedExchange } from './record-proxy';
+import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedExchange } from './record-proxy';
 import {
   newReplayState,
   parseExchanges,
   parseReplayUrl,
+  replaceAcross,
+  rewriteExchange,
+  sseEvents,
   startReplayServer,
   takeExchange,
   type ReplayServer,
@@ -91,6 +94,91 @@ describe('parseReplayUrl / parseExchanges', () => {
   });
 });
 
+// The recorded checkout and a replay's own: different lengths, so every boundary has to move.
+const REC = '/home/u/.cache/agent-capacity/work/claude-x-20261001T003519';
+const REP = '/home/u/.cache/agent-capacity/replay-work/R/s3-i0';
+
+const sse = (data: unknown, event?: string) => `${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`;
+const jsonDelta = (index: number, partial_json: string) => sse({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json } }, 'content_block_delta');
+const bodyOf = (e: RecordedExchange) => Buffer.concat(e.chunks.map(decodeChunk)).toString('utf8');
+
+/** Reassemble each streamed field the way a client does. */
+function reassemble(e: RecordedExchange): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ev of sseEvents(e.chunks)) {
+    const d = ev.data as Record<string, any> | null;
+    if (d?.type === 'content_block_delta') out[`cb${d.index}`] = (out[`cb${d.index}`] ?? '') + (d.delta.partial_json ?? d.delta.text ?? '');
+    else if (typeof d?.type === 'string' && d.type.endsWith('.delta')) out[d.type] = (out[d.type] ?? '') + d.delta;
+  }
+  return out;
+}
+
+describe('replaceAcross', () => {
+  it('replaces a match split over several pieces and keeps the piece count', () => {
+    const s = `cat ${REC}/a.txt && ls ${REC}`;
+    const m2 = s.lastIndexOf(REC);
+    // Cuts: inside match 1, between the matches, inside match 2.
+    const cuts = [9, m2 - 6, m2 + 20];
+    const pieces = [s.slice(0, cuts[0]), s.slice(cuts[0], cuts[1]), s.slice(cuts[1], cuts[2]), s.slice(cuts[2])];
+    const out = replaceAcross(pieces, REC, REP);
+    // A cut inside a match moves to the end of its replacement; a cut between matches shifts by
+    // the length change of the matches before it.
+    expect(out).toEqual([`cat ${REP}`, '/a.txt ', `&& ls ${REP}`, '']);
+  });
+
+  it('returns the same array when nothing matches', () => {
+    const pieces = ['no ', 'path here'];
+    expect(replaceAcross(pieces, REC, REP)).toBe(pieces);
+  });
+});
+
+describe('rewriteExchange', () => {
+  it('rewrites an Anthropic tool input whose path is split across input_json_delta events and chunks', () => {
+    const input = JSON.stringify({ file_path: `${REC}/tests/test_x.py`, content: 'x' });
+    const cut = input.indexOf(REC) + 17;
+    const chunks = [
+      encodeChunk(0, Buffer.from(sse({ type: 'message_start' }, 'message_start') + sse({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', input: {} } }, 'content_block_start'))),
+      encodeChunk(40, Buffer.from(jsonDelta(1, input.slice(0, cut)))),
+      // An event split across two network chunks: it completes at t=90.
+      encodeChunk(70, Buffer.from(jsonDelta(1, input.slice(cut)).slice(0, 25))),
+      encodeChunk(90, Buffer.from(jsonDelta(1, input.slice(cut)).slice(25) + sse({ type: 'message_stop' }, 'message_stop'))),
+    ];
+    const e = ex(0, { chunks, totalMs: 95 });
+    const out = rewriteExchange(e, { from: REC, to: REP });
+    expect(out).not.toBe(e);
+    expect(JSON.parse(reassemble(out).cb1)).toEqual({ file_path: `${REP}/tests/test_x.py`, content: 'x' });
+    expect(bodyOf(out)).not.toContain('agent-capacity/work/');
+    // Same events, delivered when the recording completed each of them.
+    expect(sseEvents(out.chunks)).toHaveLength(sseEvents(chunks).length);
+    expect(out.chunks.map((c) => c.t)).toEqual([0, 40, 90]);
+    expect(out.totalMs).toBe(95);
+  });
+
+  it('rewrites OpenAI Responses deltas and the full strings in their done events', () => {
+    const patch = `*** Begin Patch\n*** Update File: ${REC}/src/a.ts\n@@\n-x\n+y\n*** End Patch`;
+    const cut = patch.indexOf(REC) + 5;
+    const item = { id: 'ctc_1', type: 'custom_tool_call', name: 'apply_patch', input: patch };
+    const chunks = [
+      encodeChunk(0, Buffer.from(sse({ type: 'response.custom_tool_call_input.delta', item_id: 'ctc_1', output_index: 1, delta: patch.slice(0, cut) }))),
+      encodeChunk(10, Buffer.from(sse({ type: 'response.custom_tool_call_input.delta', item_id: 'ctc_1', output_index: 1, delta: patch.slice(cut) }))),
+      encodeChunk(20, Buffer.from(sse({ type: 'response.output_item.done', output_index: 1, item }) + 'data: [DONE]\n\n')),
+    ];
+    const out = rewriteExchange(ex(0, { chunks }), { from: REC, to: REP });
+    const want = patch.replace(REC, REP);
+    expect(reassemble(out)['response.custom_tool_call_input.delta']).toBe(want);
+    const done = sseEvents(out.chunks).find((e) => (e.data as any)?.type === 'response.output_item.done');
+    expect((done?.data as any).item.input).toBe(want);
+    expect(bodyOf(out).endsWith('data: [DONE]\n\n')).toBe(true);
+  });
+
+  it('rewrites a non-streamed JSON body and leaves an untouched exchange as the same object', () => {
+    const json = ex(0, { contentType: 'application/json', chunks: [encodeChunk(5, Buffer.from(JSON.stringify({ content: [{ type: 'tool_use', input: { path: REC } }] })))] });
+    expect(JSON.parse(bodyOf(rewriteExchange(json, { from: REC, to: REP }))).content[0].input.path).toBe(REP);
+    const plain = ex(0);
+    expect(rewriteExchange(plain, { from: REC, to: REP })).toBe(plain);
+  });
+});
+
 describe('startReplayServer', () => {
   let corpus: string;
   let srv: ReplayServer;
@@ -154,6 +242,22 @@ describe('startReplayServer', () => {
     const [a, b] = await Promise.all([post(`${srv.baseUrl('s1', 'a')}${MSG}`, body), post(`${srv.baseUrl('s1', 'b')}${MSG}`, body)]);
     expect([a.status, b.status]).toEqual([200, 200]);
     expect(srv.states().map((s) => s.counts.exact).sort()).toEqual([1, 1]);
+  });
+
+  it('rewrites the recorded work dir only for the instance registered for it, and logs it', async () => {
+    const input = JSON.stringify({ file_path: `${REC}/out.txt` });
+    const chunks = [encodeChunk(0, Buffer.from(jsonDelta(0, input.slice(0, 30)))), encodeChunk(5, Buffer.from(jsonDelta(0, input.slice(30))))];
+    writeSession('s1', [ex(0, { chunks, messages: 1, tools: 0 })]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    srv.rewritePaths('s1', 'a', { from: REC, to: REP });
+    const body = { model: 'm', messages: [{}], tools: [] };
+    const [a, b] = await Promise.all([post(`${srv.baseUrl('s1', 'a')}${MSG}`, body), post(`${srv.baseUrl('s1', 'b')}${MSG}`, body)]);
+    const pj = (buf: Buffer) => JSON.parse(reassemble(ex(0, { chunks: [encodeChunk(0, buf)] })).cb0);
+    expect(pj(a.body)).toEqual({ file_path: `${REP}/out.txt` });
+    expect(pj(b.body)).toEqual({ file_path: `${REC}/out.txt` });
+    await srv.close();
+    const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    expect(Object.fromEntries(served.map((s) => [s.instance, s.rewritten]))).toEqual({ a: true, b: false });
   });
 
   it('honours recorded delays scaled by speed', async () => {

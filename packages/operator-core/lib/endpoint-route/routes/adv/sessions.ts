@@ -15,6 +15,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
+import type { TranscriptTurnHit } from '../../../adv-session-search';
 import { createQueryEmbedderWarmup } from '../../../search/query-embedder-warmup';
 import { fitsProseColumns } from '../../../search/prose-vector-dims';
 import { closeWindowId } from '../../../adv-session-windows';
@@ -966,7 +967,7 @@ const searchTranscripts = defineTool({
     const stageTimingsMs: Record<string, number> = {};
     const mark = (label: string) => { stageTimingsMs[label] = Date.now() - t0; };
 
-    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { rerankCandidateCount, rerankPageHead }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
+    const [{ runHybridSearch }, { SEARCH_SOURCES }, { rerankCandidateCount, rerankPageHead }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
       await Promise.all([
         import('@papercusp/search'),
         import('../../../agent-tools/search/sources'),
@@ -984,6 +985,8 @@ const searchTranscripts = defineTool({
       ownerVisiblePage, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS, ownerVisibleCandidateCount,
     } = await import('../../../adv-session-search');
     const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
+    const { retrieveSessionTurnLiteralTiers, composeSessionTurnTiers, tieredHitToWire, SESSION_TURN_LITERAL_POLICY } =
+      await import('../../../agent-tools/search/session-turn-literal');
 
     /* `?includeMachineTurns=1` opts OUT of the owner-visibility filter — for
        debugging a wake or a hook wall, where the plumbing IS the thing you are
@@ -1023,6 +1026,31 @@ const searchTranscripts = defineTool({
     const embedder = selectedEmbedder.embedder;
     mark('embedAcquire'); // selection is synchronous; warmup continues in background
     const embedTimeoutMs = Number(process.env.PAPERCUSP_TRANSCRIPT_EMBED_BUDGET_MS) || 4000;
+    /* EXACT + FUZZY literal tiers (plan session-transcript-exact-fuzzy-search-2026-09-14 P-004;
+       D-001 precedence, D-003 bounded branches, D-005 readiness/degrade). The hybrid engine
+       tokenizes, so a literal INSIDE a lexeme (`furnishedfinder` in `www.furnishedfinder.com`) or a
+       one-letter typo never reaches it; these two index-backed tiers do, and they are composed AHEAD
+       of the hybrid remainder below. Started NOW, concurrent with embed + search — it depends on
+       nothing the engine produces (same reasoning as the roster hoist, WI-4734). Each tier carries
+       its own hard deadline (exact 2s; fuzzy 1s expand + 2s resolve), so no signal is threaded in.
+
+       ⚠ `filters` is passed through UNCHANGED (since/until/plan owners) but `ownerCandidates` is NOT
+       added: OWNER_CANDIDATE_TURN_VERDICTS would also drop every ASSISTANT turn in SQL, while the
+       owner-visibility rule is applied post-hydration by `ownerVisiblePage` and deliberately fails
+       open (adv-session-search.ts must not have it restated in SQL). Machine-turn drops are
+       disclosed through `hiddenMachineHits`.
+
+       Fail-soft: the retrieval function already degrades per tier; this catch only covers an
+       unexpected throw so the hybrid results always still serve. */
+    const workspaceId = activeWorkspaceId();
+    const literalP = retrieveSessionTurnLiteralTiers(sql, { workspaceId, query: q, scopeFilter: null, filters }).catch(
+      (err: unknown): Awaited<ReturnType<typeof retrieveSessionTurnLiteralTiers>> => {
+        const failed = { status: 'error' as const, returned: 0, elapsedMs: 0, error: (err as Error)?.message ?? String(err) };
+        return { exact: [], fuzzy: [], receipt: { policy: SESSION_TURN_LITERAL_POLICY, exact: failed, fuzzy: failed } };
+      },
+    );
+    // The route's aborted-catch path may return before `literalP` is awaited below.
+    literalP.catch(() => {});
     // The route watchdog's signal is threaded into the engine so a timed-out
     // search stops running instead of grinding all sources to completion
     // after the 408 already went out (2026-07-09 incident: 34–69s server
@@ -1032,7 +1060,7 @@ const searchTranscripts = defineTool({
       caller: 'adv:sessions-search',
       sql,
       query: q,
-      workspaceId: activeWorkspaceId(),
+      workspaceId,
       scopeFilter: null,
       // Retrieve a POOL, not the page. Two independent over-fetches want a
       // say here and the budget is the larger of them:
@@ -1107,6 +1135,10 @@ const searchTranscripts = defineTool({
       sourceKind: string; sessionId: string; turnIdx: number;
       excerpt: string; highlight: string; score: number;
       matchedBy?: MatchProvenance; lexicalScore?: number; semanticScore?: number;
+      // P-004 tier wire fields (see TranscriptTurnHit): the winning precedence tier, the other
+      // tiers that also found the turn, the literal a deep-link must anchor on, the fuzzy match.
+      tier?: TranscriptTurnHit['tier']; alsoMatchedBy?: TranscriptTurnHit['alsoMatchedBy'];
+      focusTerm?: string; fuzzy?: TranscriptTurnHit['fuzzy'];
       ts?: string | null; speaker?: string | null; owner?: string | null;
       // WI-37883 — hydrated below, read only by filterOwnerVisibleTurnHits and
       // then STRIPPED before the rollup (`groups` is serialized hit-for-hit).
@@ -1118,25 +1150,26 @@ const searchTranscripts = defineTool({
     // ⚠ `ordered`, NOT `results` — post-Stage-B the ARRAY ORDER is the relevance
     // order and `score` is only the retrieval score it was reranked out of.
     // groupHitsBySession preserves this order for exactly that reason.
-    for (const r of ordered) {
-      const ref = parseTurnRef(r.source_id);
-      if (!ref) continue;
-      // P-004: classify WHY this turn matched, here — the engine's ranker
-      // names ('bm25' / 'embeddings') stay engine-side and the wire carries a
-      // stable, self-describing verdict instead of raw internals every client
-      // would have to re-interpret. A vector-only hit matched no query term,
-      // so its `highlight` is the head of the turn rather than the match, and
-      // the card MUST say so instead of presenting it as one.
-      turnHits.push({
-        sourceKind: ref.sourceKind,
-        sessionId: ref.sessionId,
-        turnIdx: ref.turnIdx,
-        excerpt: r.excerpt,
-        highlight: r.highlight,
-        score: r.score,
-        ...hitProvenance(r),
-      });
-    }
+    /* EXACT > FUZZY > the hybrid remainder (D-001/D-006), composed here so everything
+       DOWNSTREAM — hydration, owner-visibility, rollup, classify — is unchanged and sees one
+       homogeneous list. The hybrid order (`ordered`, post-Stage-B) is kept inside the remainder;
+       `composeSessionTurnTiers` classifies WHY each hybrid turn matched through the same
+       `hitProvenance` this loop used to call (the engine's ranker names stay engine-side, and a
+       vector-only hit's `highlight` is the head of the turn, not the match — the card must say
+       so). A literal-only turn carries `matchedBy: 'unknown'` ("no claim") with `tier` as the real
+       claim. `maxPerSession`: this endpoint pages by SESSION CARD, and the engine's groupBy gave
+       the hybrid pool one hit per session — an uncapped literal tier could otherwise spend the whole
+       page on one chatty session. */
+    const literal = await literalP;
+    mark('literalTiers');
+    const composed = composeSessionTurnTiers({
+      exact: literal.exact,
+      fuzzy: literal.fuzzy,
+      hybrid: ordered,
+      limit: Math.max(hitLimit, candidateBudget),
+      maxPerSession: 2,
+    });
+    for (const c of composed.hits) turnHits.push(tieredHitToWire(c));
 
     // Hydrate per-turn metadata (ts/speaker/owner) — ts anchors the deep-link
     // into the transcript viewer; owner matches claude isolation transcripts to
@@ -1278,6 +1311,16 @@ const searchTranscripts = defineTool({
            least N", never as a total. */
         hiddenMachineHits: page.hidden,
         sessions,
+        /* P-004 receipt: what the literal tiers did for THIS query (ran / skipped + why /
+           deadline / error), what they returned, and what composition kept — so "why did exact
+           not appear" is a read, not a guess (D-005: a tier whose index is absent is skipped, never
+           a seq scan). Ignorable by clients, like `_stageTimingsMs`. */
+        _tiers: {
+          exact: literal.receipt.exact,
+          fuzzy: literal.receipt.fuzzy,
+          counts: composed.counts,
+          sessionCapped: composed.sessionCapped,
+        },
         _stageTimingsMs: stageTimingsMs,
       }),
       { status: 200, headers: JSON_HEADERS },

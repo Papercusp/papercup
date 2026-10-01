@@ -14,6 +14,7 @@ import {
   evidenceKey,
   isDerived,
   refreshTripwireCurrents,
+  unmeasuredTripwireAdvisories,
   type GoalTripwireLike,
   type TripwireMeasurement,
 } from './tripwire-refresh';
@@ -579,5 +580,79 @@ describe('declared evidence bindings', () => {
       },
     ];
     expect(breachedTripwires(derived)).toEqual([]);
+  });
+});
+
+describe('unmeasuredTripwireAdvisories — a metric that reads as measured but never will be (WI-10004424)', () => {
+  const tw = (metric: string, extra: Record<string, unknown> = {}) => ({ metric, ...extra });
+  const byMetric = (metrics: string[], opts?: { budgetWindowSec?: number | null }) =>
+    Object.fromEntries(
+      unmeasuredTripwireAdvisories(metrics.map((m) => tw(m)), opts).map((a) => [a.metric, a]),
+    );
+
+  it('flags platform-shaped names that no resolver answers, naming the nearest measured metric', () => {
+    const got = byMetric(['spend_usd_week', 'spend_usd_1d', 'spend_total', 'spend_cents_monthly', 'days_left', 'hours', 'Spend_USD']);
+    expect(got.spend_usd_week?.suggestedMetric).toBe('spend_usd_7d');
+    expect(got.spend_usd_1d?.suggestedMetric).toBe('spend_usd_24h');
+    expect(got.spend_total?.suggestedMetric).toBe('spend_usd');
+    expect(got.spend_cents_monthly?.suggestedMetric).toBe('spend_cents_30d');
+    expect(got.days_left?.suggestedMetric).toBe('days_elapsed');
+    expect(got.hours?.suggestedMetric).toBe('hours_elapsed');
+    // The resolver lookup is case-sensitive, so a case variant is unmeasured too.
+    expect(got.Spend_USD?.suggestedMetric).toBe('spend_usd');
+    for (const a of Object.values(got)) {
+      expect(a.code).toBe('platform-shaped-metric-unresolved');
+      expect(GENERICALLY_MEASURABLE_METRICS).toContain(a.suggestedMetric);
+    }
+  });
+
+  it('stays SILENT on every metric a resolver actually measures (no window known)', () => {
+    expect(unmeasuredTripwireAdvisories(GENERICALLY_MEASURABLE_METRICS.map((m) => tw(m)))).toEqual([]);
+  });
+
+  it('stays silent on executor-scored domain metrics, including the live fixtures', () => {
+    // hours_since_verdict_advance is a real goal's domain metric (DESKTOP_GOAL_TRIPWIRES):
+    // a prefix rule would tell its author to swap it for goal age, a different quantity.
+    const domain = [...DESKTOP_GOAL_TRIPWIRES, ...GUI_GOAL_TRIPWIRES].map((t) => tw(t.metric));
+    expect(unmeasuredTripwireAdvisories(domain)).toEqual([]);
+    expect(byMetric(['spend_ads_usd', 'species_covered', 'days_until_launch_review', 'openReleaseWalls'])).toEqual({});
+  });
+
+  it('stays silent when a declared evidence binding measures the metric', () => {
+    expect(
+      unmeasuredTripwireAdvisories([tw('spend_usd_week', { evidence: { kind: 'saved-query', ref: 'weekly' } })]),
+    ).toEqual([]);
+    // A malformed binding measures nothing (rule 1), so it does not silence the advisory.
+    expect(unmeasuredTripwireAdvisories([tw('spend_usd_week', { evidence: { kind: '' } })])).toHaveLength(1);
+  });
+
+  it('flags a window-suffixed spend metric whose suffix differs from the goal budget window', () => {
+    const lifetime = byMetric(['spend_usd_7d', 'spend_usd'], { budgetWindowSec: null });
+    expect(Object.keys(lifetime)).toEqual(['spend_usd_7d']);
+    expect(lifetime.spend_usd_7d.code).toBe('spend-window-never-measured');
+    expect(lifetime.spend_usd_7d.suggestedMetric).toBe('spend_usd');
+    const daily = byMetric(['spend_cents_7d'], { budgetWindowSec: 86_400 });
+    expect(daily.spend_cents_7d.code).toBe('spend-window-never-measured');
+    expect(daily.spend_cents_7d.suggestedMetric).toBeNull();
+    expect(daily.spend_cents_7d.message).toContain('604800');
+  });
+
+  it('agrees with the resolver: a window-matched metric IS measured, a mismatched one is NOT', () => {
+    // Cross-check against refreshTripwireCurrents so the advisory cannot drift from
+    // what the rollup actually advances.
+    const weekly = { measuredSpentCents: 1234, measuredWindowSec: 604_800, goalAgeMs: 0 };
+    for (const [metric, windowSec] of [['spend_usd_7d', 604_800], ['spend_usd_7d', 86_400], ['spend_usd_24h', 604_800]] as const) {
+      const measured =
+        refreshTripwireCurrents([{ metric, label: 'x', threshold: 1 }], { ...weekly, measuredWindowSec: windowSec })
+          .outcomes[0].reason === 'advanced';
+      const advised = unmeasuredTripwireAdvisories([tw(metric)], { budgetWindowSec: windowSec }).length > 0;
+      expect(advised).toBe(!measured);
+    }
+  });
+
+  it('tolerates null / empty / malformed input', () => {
+    expect(unmeasuredTripwireAdvisories(null)).toEqual([]);
+    expect(unmeasuredTripwireAdvisories(undefined)).toEqual([]);
+    expect(unmeasuredTripwireAdvisories([{ metric: 42 } as unknown as { metric: string }])).toEqual([]);
   });
 });

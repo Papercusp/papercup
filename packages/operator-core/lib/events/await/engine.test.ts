@@ -117,7 +117,11 @@ vi.mock('./compose-store', () => h.compose);
 const recoveryHook = vi.hoisted(() => ({
   annotateTimedOutAnnouncedAwaits: vi.fn(async (): Promise<Map<number, Record<string, unknown>>> => new Map()),
 }));
+const predicateTimeoutHook = vi.hoisted(() => ({
+  getPredicateTimeoutContext: vi.fn(async (_input: unknown): Promise<unknown> => null),
+}));
 vi.mock('./declared-gate-recovery-runtime', () => recoveryHook);
+vi.mock('./predicate-watch', () => predicateTimeoutHook);
 
 const {
   emitAwaitedEvent,
@@ -191,6 +195,7 @@ beforeEach(() => {
   h.store.claimDueDeliveries.mockResolvedValue([]);
   h.store.settleCancelledAwaitDeliveries.mockResolvedValue([]);
   h.compose.claimDueComposedRoots.mockResolvedValue([]);
+  predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValue(null);
   // The engine logs wake outcomes deliberately (visible drops, D-004);
   // the suite-wide fail-on-console guard must not count those.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -231,6 +236,62 @@ describe('sweepOnce — declared-gate recovery on timed-out announced waits', ()
     expect(h.store.insertDeliveries).toHaveBeenCalledTimes(1);
     expect(h.store.insertDeliveries).toHaveBeenCalledWith(
       expect.objectContaining({ awaits: [a], payload: expect.objectContaining({ timeout: true }) }),
+    );
+  });
+
+  it('gives predicate timeouts the stored spec and directs the caller to a fresh key', async () => {
+    const timedOut = awaitRow({
+      id: 4,
+      eventKey: 'predicate:expired-id',
+      subscriberId: 'su-w',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      expiresTs: '2026-01-01T01:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+    });
+    predicateTimeoutHook.getPredicateTimeoutContext.mockResolvedValueOnce({
+      tool: 'state:read',
+      args: { cell: 'gate.greenCheckpoint.verdict' },
+      path: 'value.sha',
+      op: 'changed',
+      value: null,
+      intervalSec: 30,
+      once: true,
+    });
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce([timedOut]);
+
+    await sweepOnce('ws-test');
+
+    expect(predicateTimeoutHook.getPredicateTimeoutContext).toHaveBeenCalledWith({
+      eventKey: 'predicate:expired-id',
+      subscriberId: 'su-w',
+    });
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(
+      expect.objectContaining({
+        awaits: [timedOut],
+        summary: expect.stringContaining('do not re-arm the expired key'),
+        payload: expect.objectContaining({
+          timeout: true,
+          guidance: expect.stringContaining('Do NOT call events:await on this expired key'),
+          predicateRecovery: {
+            tool: 'watch:create',
+            args: {
+              pattern: 'predicate-timeout-recovery',
+              wake: true,
+              once: true,
+              interval_sec: 30,
+              on_timeout: 'wake',
+              timeout_sec: 3600,
+              predicate: {
+                tool: 'state:read',
+                args: { cell: 'gate.greenCheckpoint.verdict' },
+                path: 'value.sha',
+                op: 'changed',
+              },
+            },
+          },
+        }),
+      }),
     );
   });
 });
