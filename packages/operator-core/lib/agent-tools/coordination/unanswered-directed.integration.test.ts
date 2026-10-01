@@ -417,12 +417,16 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
         expectEffect: { kind: 'checkpoint', itemId: EXPLICIT_SCOPE_ITEM, harness: 'papercusp' },
       },
     ];
+    const seededMessages: Array<{ workspace_id: string; msg_id: string }> = [];
     for (const body of bodies) {
-      await fx.admin`
+      const insertedRows = await fx.admin<{ workspace_id: string; msg_id: string }[]>`
         INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id, origin)
         VALUES ('messages', ${body.msg_id}, ${JSON.stringify(body)}::jsonb, ${new Date(sentAtMs)}, ${EXPLICIT_SCOPE_WORKSPACE}, 'local')
+        RETURNING workspace_id, msg_id
       `;
+      seededMessages.push(...insertedRows);
     }
+    expect(seededMessages.map((row) => row.msg_id).sort()).toEqual(bodies.map((body) => body.msg_id).sort());
     const inserted = await fx.admin`
       SELECT count(*)::int AS total,
              count(*) FILTER (WHERE body ? 'expectEffect')::int AS effect_count
@@ -430,6 +434,7 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
        WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE}
          AND surface = 'messages'
          AND body->>'from' = ${LEADER.ownerId}
+         AND msg_id = ANY(${bodies.map((body) => body.msg_id)}::text[])
     `;
     expect(inserted[0]).toMatchObject({ total: 2, effect_count: 1 });
 
