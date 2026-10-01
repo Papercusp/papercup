@@ -4226,12 +4226,17 @@ export async function defaultPapercuspCollectors(
         // row. Bounded per tick; runs before recovery so its failure is visible
         // in the note without blocking pending deliveries.
         const { foldLegacyToolFailureRows } = await import('./tool-failure-signature-fold');
-        const fold = await foldLegacyToolFailureRows(workspaceId).catch((error: unknown) => ({
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        const foldNote = 'error' in fold
-          ? `signature-fold error=${fold.error}`
-          : `signature-fold scanned=${fold.scanned} folded=${fold.folded} rekeyed=${fold.rekeyed} failedGroups=${fold.failedGroups}`;
+        const foldPass = async (scope: 'probation' | 'promoted') => {
+          const fold = await foldLegacyToolFailureRows(workspaceId, {}, undefined, scope).catch((error: unknown) => ({
+            error: error instanceof Error ? error.message : String(error),
+          }));
+          return 'error' in fold
+            ? `signature-fold[${scope}] error=${fold.error}`
+            : `signature-fold[${scope}] scanned=${fold.scanned} folded=${fold.folded} rekeyed=${fold.rekeyed} failedGroups=${fold.failedGroups}`;
+        };
+        // WI-10004648: the promoted pass folds never-worked promoted legacy rows
+        // (bulk_dedup's reviewed gate refuses them by design). Same 200/tick bound.
+        const foldNote = `${await foldPass('probation')}; ${await foldPass('promoted')}`;
         const result = await recoverInvocationFriction(workspaceId);
         return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}; ${foldNote}` };
       },
