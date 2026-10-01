@@ -174,6 +174,16 @@ export interface GitnexusArmConfig {
   /** Scratch HOME so the serving `~/.gitnexus` registry is never touched. */
   readonly home: string;
   readonly timeoutMs?: number;
+  /**
+   * Line base of THIS version's raw `startLine` (default 0 = what the production facade assumes
+   * via `LINE_INDEX_BASE.gitnexus`). MEASURED, not assumed: for `getLongLivedAdminPool`, declared
+   * on 1-based line 145 of long-lived-admin-pool.ts, `gitnexus context` reports startLine 144 on
+   * 1.6.9 (0-based) and 145 on 1.6.12 (1-based). The facade adds 1 unconditionally, so a 1-based
+   * version comes back one line late for EVERY site and an exact path:line grader scores it 0 by
+   * construction. `1` undoes that +1 here, so the bench grades the engine, not the facade's
+   * version assumption (the production facade is a separate, tracked finding).
+   */
+  readonly startLineBase?: 0 | 1;
 }
 
 /**
@@ -199,6 +209,16 @@ export function createGitnexusCliDispatch(cfg: GitnexusArmConfig): (tool: string
     if (r.code !== 0) throw new Error(`gitnexus ${argv[0]} exit ${r.code}: ${r.stderr.trim().slice(-200)}`);
     return r.stdout;
   };
+}
+
+/**
+ * The facade normalizes a GitNexus `startLine` with `toOneIndexed('gitnexus', …)`, i.e. +1. For a
+ * version whose raw line is already 1-based (`startLineBase: 1`) that is one line late, so undo it;
+ * a `null` line (file-level edge) stays `null`. Base 0 (the facade's own assumption) is identity.
+ */
+export function correctStartLineBase(sites: readonly SymbolSite[], base: 0 | 1 | undefined): readonly SymbolSite[] {
+  if (base !== 1) return sites;
+  return sites.map((s) => (s.line1 === null || s.line1 === undefined ? s : { ...s, line1: s.line1 - 1 }));
 }
 
 export function createGitnexusArm(
@@ -246,7 +266,7 @@ export function createGitnexusArm(
         return out;
       };
       const ans = await facade(op, { name: kase.query }, counting);
-      return { sites: ans.sites, responseBytes: bytes, error: ans.error ?? null };
+      return { sites: correctStartLineBase(ans.sites, cfg.startLineBase), responseBytes: bytes, error: ans.error ?? null };
     },
     indexBytes: async () => dirBytes(join(cfg.treeRoot, '.gitnexus'), cfg.treeRoot),
   };
