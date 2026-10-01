@@ -268,6 +268,42 @@ describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail
     expect(ctx).not.toContain('OWNER-DIRECTIVE CAPTURE FAILED');
   });
 
+  it('a Codex owner turn records Codex provenance and keys repeated prompts by native turn id', async () => {
+    writeMachineRow();
+    const prompt = 'Pause the Codex task and capture this owner turn.';
+    const payload = {
+      hook_event_name: 'UserPromptSubmit',
+      cwd: '/workspace/papercusp',
+      model: 'gpt-5.6',
+      permission_mode: 'bypass',
+      prompt,
+      session_id: 'codex-session-capture-rail',
+      transcript_path: '/tmp/codex-capture-rail.jsonl',
+      turn_id: 'codex-turn-001',
+    };
+
+    for (const event of [payload, payload, { ...payload, turn_id: 'codex-turn-002' }]) {
+      const ctx = contextOf(await runHook(event, { PAPERCUSP_AGENT: 'codex' }));
+      expect(ctx).toContain('OWNER (interactive)');
+    }
+
+    const captures = captureCalls();
+    expect(captures).toHaveLength(3);
+    expect(captures[0]!.args.sourceTurnRef).toBe(captures[1]!.args.sourceTurnRef);
+    expect(captures[2]!.args.sourceTurnRef).not.toBe(captures[0]!.args.sourceTurnRef);
+    expect(captures[0]!.args.sourceTurnRef).toContain('codex-turn-001');
+    expect(captures[0]!.args.sessionRef).toBe('codex-session-capture-rail');
+
+    const provenance = calls.filter((call) => call.name === 'sessions:record-prompt-origin');
+    expect(provenance).toHaveLength(3);
+    expect(provenance.map((call) => call.args.sourceKind)).toEqual(['codex', 'codex', 'codex']);
+    expect(provenance.map((call) => call.args.sessionId)).toEqual([
+      'codex-session-capture-rail',
+      'codex-session-capture-rail',
+      'codex-session-capture-rail',
+    ]);
+  });
+
   it('the turn key is STABLE across submissions, so a retry of the same turn is idempotent at the server', async () => {
     writeMachineRow();
     const prompt = 'ship it';
