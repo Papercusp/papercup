@@ -343,6 +343,67 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     expect(s.sessions).toBe(2);
   });
 
+  it('P-014(a): reads consult_state once per call, not once per usage sample', async () => {
+    // Recurrence guard for the correlated-EXISTS regression: when the consult
+    // answer-session leg was evaluated per sample, every unattributed sample
+    // re-read consult_state (live: ~24.7 s and ~48M buffers per call). The
+    // per-transaction counters are deterministic, so this asserts the SHAPE
+    // (consult_state reads independent of sample count) without timing.
+    await seedGoal();
+    await inheritedOwner('su-child');
+    for (let i = 0; i < 3; i += 1) {
+      await consult(`consult-guard-${i}`, 'su-child', [`guard-answerer-${i}`], GOAL_MS + 20_000);
+      await ownedSession(`guard-answerer-${i}`, `S-guard-answer-${i}`, GOAL_MS + 30_000);
+      await sample({ session: `S-guard-answer-${i}`, usd: 1 });
+    }
+    await ownedSession('su-noise', 'S-noise', GOAL_MS + 30_000);
+    const NOISE = 60;
+    for (let i = 0; i < NOISE; i += 1) await sample({ session: 'S-noise', usd: 0.01 });
+
+    const { spend, consultReads } = await rootSql.begin(async (tx) => {
+      const spend = await sessionSpendForGoal(tx as unknown as typeof rootSql, { workspaceId: WS, goalId: GOAL });
+      const [row] = await tx<{ reads: string }[]>`
+        SELECT (COALESCE(seq_tup_read, 0) + COALESCE(idx_tup_fetch, 0))::text AS reads
+          FROM pg_stat_xact_user_tables
+         WHERE schemaname = 'harness_shared' AND relname = 'consult_state'`;
+      return { spend, consultReads: Number(row?.reads ?? 0) };
+    });
+    // Semantics unchanged: exactly the three consult answer sessions count.
+    expect(spend.costUsd).toBeCloseTo(3, 10);
+    expect(spend.samples).toBe(3);
+    // Shape: a per-sample correlated scan reads consult_state >= NOISE times.
+    expect(consultReads).toBeGreaterThan(0);
+    expect(consultReads).toBeLessThan(NOISE / 4);
+
+    // CONTROL (keeps the guard falsifiable): the pre-P-014 correlated form of
+    // the same consult predicate, on the same fixture, must trip the counter.
+    const controlReads = await rootSql.begin(async (tx) => {
+      await tx`
+        SELECT count(*) FROM harness_shared.agent_usage_samples s
+         WHERE s.workspace_id = ${WS} AND s.goal_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.consult_state cs
+              CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(cs.routing #> '{selection,selected}') = 'array'
+                     THEN cs.routing #> '{selection,selected}' ELSE '[]'::jsonb END) selected
+              JOIN harness_shared.adv_sessions answer_session
+                ON answer_session.workspace_id = cs.workspace_id
+               AND answer_session.coord_owner_id = NULLIF(selected->>'answeringOwnerId', '')
+               AND answer_session.session_id IS NOT NULL
+               AND answer_session.started_at >= cs.created_at
+             WHERE cs.workspace_id = ${WS}
+               AND cs.requester_id = 'su-child'
+               AND answer_session.session_id = s.session_id
+               AND s.ts >= (EXTRACT(EPOCH FROM answer_session.started_at) * 1000)::bigint)`;
+      const [row] = await tx<{ reads: string }[]>`
+        SELECT (COALESCE(seq_tup_read, 0) + COALESCE(idx_tup_fetch, 0))::text AS reads
+          FROM pg_stat_xact_user_tables
+         WHERE schemaname = 'harness_shared' AND relname = 'consult_state'`;
+      return Number(row?.reads ?? 0);
+    });
+    expect(controlReads).toBeGreaterThanOrEqual(NOISE);
+  });
+
   it('preserves write-time attribution after live session membership disappears', async () => {
     await seedGoal();
     await subjectOwner('su-subject');
