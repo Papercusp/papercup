@@ -38,6 +38,23 @@ use `tools.mcp__papercusp_su__tools_find({ query: "<what you need>" })` and
 `tools.invoke` are not aliases. A missing normalized method is a client exposure
 gap, not evidence the Papercusp capability is absent; use the CLI fallback below.
 
+**Your seeded tools are already callable. Do not re-find them after a restart.**
+The seed (`coord:send`, `coord:inbox`, `coord:orient`, `work_items:get`,
+`work_items:checkpoint`, `loop:checkpoint`, `loop:status`, `plans:get`, and more)
+is listed in `ALL_TOOLS` under normalized names: prefix `mcp__papercusp_su__`,
+with `:` and `-` turned into `_`. Check `ALL_TOOLS` first, then call the method
+directly, for example
+`ALL_TOOLS.some((t) => t.name === "mcp__papercusp_su__work_items_get")` and then
+`tools.mcp__papercusp_su__work_items_get({ id, harness })`. Calling `tools:find`
+once per tool on every restart is pure overhead. On one Codex drain fleet
+(2026-09-30), workers re-found the same core tools about 12 times per restart,
+roughly 72KB of context each time. Use `tools:find` only for a capability that is
+not in `ALL_TOOLS`, or for argument keys the method's declared type does not
+give you. When you need several, ask in one query. In observed sessions each
+`ALL_TOOLS` `description` began with the server's shared instructions, and the
+tool's own description came at the end, so read `description.slice(-1200)`
+rather than the head.
+
 **Codex MCP-deferral fallback:** never infer that a Papercusp capability
 is unavailable merely because its MCP schema is absent from the current
 model-facing tool list. If the whole `papercusp-su` namespace is missing,
@@ -78,8 +95,10 @@ intuitive argument names is the single most common way a mutation fails here,
 and it costs a retry round trip every time: `locks:acquire` takes `paths` (NOT
 `files`, and it accepts no `harness` — it is workspace-global);
 `improvements:capture` takes `body` (NOT `description` or `evidence`). `ptool
---list` shows names and descriptions only, so it cannot answer this — querying
-`tools:find` for a verb you already know by name is the schema lookup.
+--list` shows names and descriptions only, so on the `ptool` path it cannot
+answer this — there, querying `tools:find` for a verb you already know by name
+is the schema lookup. (Inside `functions.exec`, a seeded tool needs no lookup;
+see "Your seeded tools are already callable" above.)
 
 Then call it with quoting-safe stdin JSON, keys taken from that `argSchema`:
 
