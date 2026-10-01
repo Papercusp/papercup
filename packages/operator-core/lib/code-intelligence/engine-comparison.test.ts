@@ -16,6 +16,7 @@ import {
   phaseCostFromTimeLogs,
   withPrecomputedIndex,
 } from './engine-comparison-precomputed';
+import { correctStartLineBase } from './engine-comparison-arms';
 import type { CorpusCase } from './acceptance-corpus';
 import { SELECTIVE_ACCEPTANCE_CORPUS } from './selective-corpus';
 
@@ -250,5 +251,27 @@ describe('precomputed cold-index cost', () => {
     expect(realIndexCalls).toBe(0);
     // refresh/query/indexBytes stay live
     expect(await arm.indexBytes()).toBe(123);
+  });
+});
+
+describe('correctStartLineBase (GitNexus raw startLine base is per-version)', () => {
+  // The facade already added +1 (toOneIndexed('gitnexus')): a 1-based version (1.6.12) arrives one line late.
+  const site = (line1: number | null) => ({ path: 'a.ts', line1, kind: null, detail: '' });
+
+  it('base 1 undoes the facade +1 so a 1.6.12 site lands on the grep -n line; null stays null', () => {
+    // getLongLivedAdminPool is declared on 1-based line 145: 1.6.12 raw startLine=145 -> facade 146 -> corrected 145.
+    expect(correctStartLineBase([site(146), site(null)], 1).map((s) => s.line1)).toEqual([145, null]);
+  });
+
+  it('base 0 (1.6.9, the facade assumption) and an unset base are the identity', () => {
+    const sites = [site(145), site(null)];
+    expect(correctStartLineBase(sites, 0)).toBe(sites);
+    expect(correctStartLineBase(sites, undefined)).toBe(sites);
+  });
+
+  it('does not mutate its input', () => {
+    const sites = [site(146)];
+    correctStartLineBase(sites, 1);
+    expect(sites[0]!.line1).toBe(146);
   });
 });
