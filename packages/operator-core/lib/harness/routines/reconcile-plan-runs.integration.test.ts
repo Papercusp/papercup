@@ -17,6 +17,7 @@ import {
   PLAN_RUN_PROMOTION_GRACE_MS,
 } from './reconcile-plan-runs';
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
+import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -113,6 +114,70 @@ describe('reconcileScheduledPlanRuns', () => {
 
     expect(await instancePlanRow(instanceSlug)).toEqual({ status: 'superseded', template_slug: 'p-instance' });
     expect((await runRow(id)).status).toBe('done');
+  });
+
+  /**
+   * WI-10005040 — retiring the instance used to flip ONLY harness_plans.status, so the
+   * instance's never-promoted plan_items stayed `todo` on a superseded plan forever
+   * (28 phantom-open items on 10 instances, +~3 per fire). The retirement must close
+   * the items in the `items` jsonb AND the derived `plan_items` index, together.
+   */
+  it('closes the instance plan_items (jsonb + index) when it retires the plan', async () => {
+    const id = await seedRun('p-phantom');
+    const instanceSlug = `p-phantom@run-${id}`;
+    const items = [
+      { id: 'P-001', status: 'todo' },
+      { id: 'P-002', status: 'done' },
+      { id: 'P-003', status: 'wip' },
+    ];
+    const content = [
+      '---',
+      'status: active',
+      '---',
+      '# Instance',
+      '',
+      '- **P-001** `todo` never promoted',
+      '- **P-002** `done` completed by a work-item',
+      '- **P-003** `wip` never promoted either',
+      '',
+    ].join('\n');
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, status, template_slug, content, content_hash, items)
+      VALUES (${WS}, ${HARNESS}, ${instanceSlug}, 'active', 'p-phantom', ${content}, 'h',
+              ${JSON.stringify(items)}::text::jsonb)`;
+    await writePlanIndexRows(
+      sql as unknown as Parameters<typeof writePlanIndexRows>[0],
+      { workspaceId: WS, harnessSlug: HARNESS, planSlug: instanceSlug },
+      { items, decisions: [] },
+    );
+    await sql`
+      UPDATE harness_shared.plan_runs
+         SET workspace_id = ${WS}, instance_plan_slug = ${instanceSlug}, launched_at = 0
+       WHERE id = ${id}`;
+
+    await reconcileScheduledPlanRuns({ sql });
+
+    expect(await instancePlanRow(instanceSlug)).toEqual({ status: 'superseded', template_slug: 'p-phantom' });
+    const [plan] = await sql<{ items: Array<{ id: string; status: string }>; content: string }[]>`
+      SELECT items, content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${instanceSlug}`;
+    expect(plan.items.map((i) => [i.id, i.status])).toEqual([
+      ['P-001', 'dropped'],
+      ['P-002', 'done'],
+      ['P-003', 'dropped'],
+    ]);
+    expect(plan.content).toMatch(/^status: superseded$/m);
+    // The derived index — what plans:items / the open-item counters actually read.
+    const indexed = await sql<{ item_id: string; status: string }[]>`
+      SELECT item_id, status FROM harness_shared.plan_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${instanceSlug}
+       ORDER BY seq`;
+    expect(indexed.map((r) => [r.item_id, r.status])).toEqual([
+      ['P-001', 'dropped'],
+      ['P-002', 'done'],
+      ['P-003', 'dropped'],
+    ]);
   });
 
   it('settles partial when some passed and some failed', async () => {
