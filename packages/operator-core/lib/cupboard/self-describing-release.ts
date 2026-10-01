@@ -29,7 +29,9 @@ import {
   type ArtifactDistributionManifest,
 } from '../p2p/artifact-distribution';
 import { buildArtifactPackage } from '../p2p/artifact-package';
-import type { BlueprintReleaseSigner } from './blueprint-release';
+// The leaf, never './blueprint-release': even a type-only or dynamic import compiles that file,
+// and its lifecycle graph reaches agent-tools (WI-10004876).
+import type { BlueprintReleaseSigner } from './blueprint-release-signer';
 import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
 import type { ReleaseGateInput } from './publish-release-gate';
 import type { ListingKind } from './types';
@@ -183,7 +185,7 @@ export async function buildSelfDescribingRelease(
 ): Promise<BuiltSelfDescribingRelease> {
   const bytes = packSelfDescribingDir(input.dir);
   const pkg = buildArtifactPackage(bytes);
-  const signer = input.signer ?? (await (await import('./blueprint-release')).defaultReleaseSigner());
+  const signer = input.signer ?? (await (await import('./blueprint-release-signer')).defaultReleaseSigner());
   const unsignedRelease: Omit<CupboardReleaseManifest, 'signature'> = {
     schemaVersion: 1,
     listingKind: input.listingKind,

@@ -179,16 +179,10 @@ export interface BlueprintJournalReport {
   residue: Array<{ dependentId: string; error: string }>;
 }
 
-export class BlueprintLifecycleError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-    readonly code?: string,
-  ) {
-    super(message);
-    this.name = 'BlueprintLifecycleError';
-  }
-}
+// The error class and the release signer live in a leaf so the self-describing kinds can
+// sign without compiling this file's lifecycle graph (WI-10004876).
+import { BlueprintLifecycleError, defaultReleaseSigner, type BlueprintReleaseSigner } from './blueprint-release-signer';
+export { BlueprintLifecycleError, defaultReleaseSigner, type BlueprintReleaseSigner } from './blueprint-release-signer';
 
 /** Run `switchRelease` between the journal's prepare and apply; compensate on failure. */
 async function journaledSwitch(
@@ -223,13 +217,6 @@ export interface BlueprintReleaseSourceSnapshot {
   grants: { requires: string[]; optional: string[] };
   contributions: BlueprintSourceDocument['contributions'];
   archive: BlueprintReleaseArchive;
-}
-
-export interface BlueprintReleaseSigner {
-  githubUserId: number;
-  githubLogin: string;
-  devicePubkey: string;
-  sign(bytes: Buffer): Promise<Buffer>;
 }
 
 export interface PreparedBlueprintPublicRelease {
@@ -455,26 +442,6 @@ export async function snapshotBlueprintReleaseSource(input: {
     grants: { requires: resolved.grants?.requires ?? [], optional: resolved.grants?.optional ?? [] },
     contributions: resolved.contributions,
     archive,
-  };
-}
-
-/** The local-device release signer. Exported so the self-describing kinds (P-011) sign their
- * release manifests with the SAME identity path the blueprint kind already uses. */
-export async function defaultReleaseSigner(): Promise<BlueprintReleaseSigner> {
-  const { resolveLocalGithubIdentity } = await import('../identity/resolve-local-github-identity');
-  const identity = await resolveLocalGithubIdentity();
-  if (identity.kind !== 'ok')
-    throw new BlueprintLifecycleError('GitHub authentication is required to sign a blueprint release', 401);
-  const { resolveDeviceKeychainId } = await import('../identity/device-keychain-id');
-  const keychainId = resolveDeviceKeychainId(identity.githubUserId);
-  const { loadOrGenerateDeviceKeypair } = await import('../identity/attest');
-  const keypair = await loadOrGenerateDeviceKeypair(keychainId);
-  const { signWithDeviceKey } = await import('../identity/sign-with-device-key');
-  return {
-    githubUserId: identity.githubUserId,
-    githubLogin: identity.githubLogin,
-    devicePubkey: keypair.pubkeyBase64,
-    sign: (bytes) => signWithDeviceKey(keychainId, bytes),
   };
 }
 
