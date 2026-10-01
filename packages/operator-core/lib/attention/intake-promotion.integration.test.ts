@@ -21,6 +21,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const { createIssue, getIssue, issuesOutLinksMany } = await import('../issues-engineer');
 const {
+  assertIntakeLockPool,
   currentIntakeSourceRevision,
   defaultIntakePromotionDeps,
   executeIntakeDecision,
@@ -42,7 +43,11 @@ type Deps = import('./intake-promotion').IntakePromotionDeps;
 let db: OrgTestDb;
 
 beforeAll(async () => {
-  db = await createOrgTestDb();
+  // Sized like the pool getOrgPg() itself gets in a vitest worker (VITEST_ORG_POOL_MAX),
+  // per the rig's D-024 note: the double-accept cases run a lock holder, its writer and
+  // a waiter at once, so the default 2-connection admin pool, not the executor, would
+  // decide whether they can make progress.
+  db = await createOrgTestDb({ adminPoolMax: 4 });
   h.sql = db.adminSql;
 }, 180_000);
 
@@ -116,6 +121,23 @@ async function promotedFrom(sourceId: string): Promise<string[]> {
 async function outLinks(id: string): Promise<string[]> {
   const links = (await issuesOutLinksMany([id])).get(id) ?? [];
   return links.map((l) => `${l.rel}:${l.dst.ref}`);
+}
+
+async function payloadOf(id: string): Promise<Record<string, unknown>> {
+  const issue = await getIssue(id);
+  return (issue?.payload ?? {}) as Record<string, unknown>;
+}
+
+async function isReadyAndQualifying(id: string): Promise<boolean> {
+  const issue = await getIssue(id);
+  if (!issue) return false;
+  const readiness = readImplementationReadiness(issue.payload);
+  const verdict = evaluateImplementationAcceptance(issue.payload, {
+    kind: issue.kind,
+    title: issue.title,
+    summary: issue.body ?? '',
+  });
+  return readiness?.status === 'ready' && verdict.state === 'qualifying';
 }
 
 describe('promote / investigate', () => {
@@ -212,6 +234,28 @@ describe('the promotion key is fenced by the database, not only by the lock', ()
     expect(await isReadyAndQualifying(a.workItemId!)).toBe(true);
   });
 
+  it('control: with every application-level lookup blinded, only the unique index stops a second promoted row', async () => {
+    // Deterministic, unlike the race above: the second execution cannot see the first
+    // one's row through any dependency, so it reaches createItem and only the database
+    // can refuse it. Without migration 1298 this test creates a duplicate and fails.
+    const obs = await file({ observation: true });
+    const decision = await decide(obs.id, { disposition: 'promote', reason: 'fence control', acceptance: FULL_ACCEPTANCE });
+    const blind: Deps = {
+      ...defaultIntakePromotionDeps(),
+      withLocks: (_ids, fn) => fn(),
+      findByPromotionKey: async () => null,
+      findPromotedFromSource: async () => [],
+    };
+    const first = await exec(obs.id, decision, blind);
+    expect(first).toMatchObject({ ok: true, created: true });
+    const second = await exec(obs.id, decision, blind).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(isPromotionKeyConflict(second)).toBe(true);
+    expect(await promotedFrom(obs.id)).toHaveLength(1);
+  });
+
   it('a second row carrying the same promotion key is refused as a promotion-key conflict', async () => {
     const t = tag();
     const payload = { intakePromotion: { key: `intake-exec:fence-${t}:rev` } };
@@ -224,6 +268,12 @@ describe('the promotion key is fenced by the database, not only by the lock', ()
     expect(err).not.toBeNull();
     expect(isPromotionKeyConflict(err)).toBe(true);
     expect(isPromotionKeyConflict(new Error('unrelated failure'))).toBe(false);
+  });
+
+  it('refuses a one-connection pool instead of letting the lock holder wait forever for its own writers', () => {
+    expect(() => assertIntakeLockPool({ options: { max: 1 } })).toThrow(/at least 2 connections/);
+    expect(() => assertIntakeLockPool({ options: { max: 2 } })).not.toThrow();
+    expect(() => assertIntakeLockPool(db.adminSql)).not.toThrow();
   });
 });
 

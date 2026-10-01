@@ -6,6 +6,7 @@ import {
   enqueueDependencyPrebuild,
   parseDependencyPrebuildState,
   recoverQueuedDependencyPrebuild,
+  resolveDependencyGenerationRoot,
   runDependencyGenerationPrebuild,
   type DependencyPrebuildBuildingState,
   type DependencyPrebuildCommand,

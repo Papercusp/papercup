@@ -79,7 +79,7 @@ export default defineTool({
         attestedOn: args.attestedOn,
         scope: args.scope,
         ...(args.statementDigest ? { expectedStatementDigest: args.statementDigest.toLowerCase() } : {}),
-        recordedBy: ctx?.ownerId ?? null,
+        recordedBy: ctx?.principal?.slug ?? null,
       };
       if (!args.confirm) {
         // Validate against the published statement without writing: a memory store and chain take the writes.

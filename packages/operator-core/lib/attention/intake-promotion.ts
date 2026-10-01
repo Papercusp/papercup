@@ -740,16 +740,40 @@ function toIntakeWorkItem(issue: {
  */
 export const INTAKE_LOCK_WAIT_BUDGET_MS = 10_000;
 
+/**
+ * Connection budget of {@link defaultIntakePromotionDeps}' withLocks: the lock
+ * transaction pins one pooled connection for the whole of `fn`, and `fn`'s writers
+ * (createIssue, mergeIssuePayload, linkIssue, setIssueState) run on the SAME pool, so
+ * a holder needs two connections and every concurrent waiter pins one more until it
+ * acquires or its {@link INTAKE_LOCK_WAIT_BUDGET_MS} wait fails (55P03, retryable).
+ * On a one-connection pool the holder would wait forever for its own writers, with
+ * no timeout to end it (lock_timeout bounds only the lock wait, not a client-side
+ * pool wait), so that configuration is refused loudly instead of hanging.
+ */
+export const INTAKE_LOCK_MIN_POOL = 2;
+
+export function assertIntakeLockPool(sql: { options?: { max?: unknown } }): void {
+  const max = sql.options?.max;
+  if (typeof max === 'number' && max < INTAKE_LOCK_MIN_POOL) {
+    throw new Error(
+      `intake promotion needs a Postgres pool of at least ${INTAKE_LOCK_MIN_POOL} connections (got max=${max}): ` +
+        'the advisory-lock transaction pins one connection while the promotion writes use another',
+    );
+  }
+}
+
 export function defaultIntakePromotionDeps(): IntakePromotionDeps {
   const orgSql = () => getOrgPg().sql;
   return {
     async withLocks(ids, fn) {
+      const sql = orgSql();
+      assertIntakeLockPool(sql);
       const keys = [...new Set(ids)].sort();
       // The advisory locks live for this transaction; `fn` runs while it is open,
       // so every executor for an overlapping source waits here and then sees the
       // committed result of the one before it.
       let result!: Awaited<ReturnType<typeof fn>>;
-      await orgSql().begin(async (tx) => {
+      await sql.begin(async (tx) => {
         await tx`SELECT set_config('lock_timeout', ${String(INTAKE_LOCK_WAIT_BUDGET_MS)}, true)`;
         for (const id of keys) {
           await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`intake-exec:${id}`}, 0))`;

@@ -76,7 +76,19 @@ export interface HostedWorkspaceSessionBrokerOptions {
   pingIntervalMs?: number;
   /** Clock for connector last-seen stamps (the app relay's offline check). */
   now?: () => number;
+  /**
+   * WI-10004257: the `membership.report` frame for a connector's organization — the addresses
+   * whose membership in it is no longer active — or null to send nothing. Sent after `bound`,
+   * then re-read every `membershipRefreshMs` and re-sent only when it changed. Absent: no
+   * reports (tests and hosts without the membership tables).
+   */
+  membershipReport?: (binding: HostedConnectorBinding) => Promise<unknown | null>;
+  /** Re-read cadence for `membershipReport`, driven by the liveness sweep. */
+  membershipRefreshMs?: number;
 }
+
+/** How often the broker re-reads each organization's membership report (WI-10004257). */
+export const HOSTED_MEMBERSHIP_REFRESH_MS = 5 * 60_000;
 
 type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding | null };
 
@@ -235,6 +247,11 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   private readonly onConnectorLiveness: (binding: HostedConnectorBinding, alive: boolean) => void;
   private readonly liveness = new Map<HostedWorkspaceRelaySocket, LivenessEntry>();
   private readonly pingTimer: ManagedHandle | null;
+  private readonly membershipReport: ((binding: HostedConnectorBinding) => Promise<unknown | null>) | null;
+  private readonly membershipRefreshMs: number;
+  /** The last membership frame sent on each connector socket, serialized. */
+  private readonly membershipSent = new WeakMap<HostedWorkspaceRelaySocket, string>();
+  private lastMembershipRefreshAt: number;
 
   constructor(options: HostedWorkspaceSessionBrokerOptions = {}) {
     this.idleMs = options.idleMs ?? HOSTED_WORKSPACE_SESSION_IDLE_MS;
@@ -243,6 +260,9 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     this.onAudit = options.onAudit ?? (() => {});
     this.onConnectorLiveness = options.onConnectorLiveness ?? (() => {});
     this.now = options.now ?? Date.now;
+    this.membershipReport = options.membershipReport ?? null;
+    this.membershipRefreshMs = options.membershipRefreshMs ?? HOSTED_MEMBERSHIP_REFRESH_MS;
+    this.lastMembershipRefreshAt = this.now();
     const pingIntervalMs = options.pingIntervalMs ?? HOSTED_WORKSPACE_PING_INTERVAL_MS;
     this.pingTimer = pingIntervalMs > 0
       ? managedSetInterval('hosted-relay-liveness', pingIntervalMs, () => this.sweepLiveness(), {
@@ -284,6 +304,56 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         // A socket that cannot even be pinged is reaped on the next sweep.
       }
     }
+    if (this.membershipReport && this.now() - this.lastMembershipRefreshAt >= this.membershipRefreshMs) {
+      void this.refreshMembership();
+    }
+  }
+
+  /**
+   * Re-read the membership report of every attached connector's organization, once per
+   * organization, and send it to each of that organization's connectors whose last report differs
+   * (WI-10004257). Public so tests and hosts without a timer can drive it.
+   */
+  async refreshMembership(): Promise<void> {
+    if (!this.membershipReport) return;
+    this.lastMembershipRefreshAt = this.now();
+    const byOrganization = new Map<string, Array<{ binding: HostedConnectorBinding; socket: HostedWorkspaceRelaySocket }>>();
+    for (const [key, state] of this.connectorState) {
+      const socket = this.connectors.get(key);
+      if (!socket || !open(socket)) continue;
+      const list = byOrganization.get(state.binding.organizationId) ?? [];
+      list.push({ binding: state.binding, socket });
+      byOrganization.set(state.binding.organizationId, list);
+    }
+    await Promise.all([...byOrganization.values()].map(async (connectors) => {
+      const frame = await this.loadMembershipFrame(connectors[0].binding);
+      if (frame) for (const { socket } of connectors) this.sendMembershipFrame(socket, frame);
+    }));
+  }
+
+  /** The serialized report for one binding, or null when there is none or the read failed. */
+  private async loadMembershipFrame(binding: HostedConnectorBinding): Promise<string | null> {
+    if (!this.membershipReport) return null;
+    try {
+      const frame = await this.membershipReport(binding);
+      return frame ? JSON.stringify(frame) : null;
+    } catch (error) {
+      console.warn(
+        `[hosted-relay] could not read the membership report for organization ${binding.organizationId}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    }
+  }
+
+  private sendMembershipFrame(socket: HostedWorkspaceRelaySocket, frame: string): void {
+    if (this.membershipSent.get(socket) === frame || !open(socket)) return;
+    try {
+      socket.send(frame);
+      this.membershipSent.set(socket, frame);
+    } catch {
+      // The socket is going away; its replacement gets a fresh report after `bound`.
+    }
   }
 
   /** Enrol a socket in the ping sweep. Any inbound frame counts as proof of life. */
@@ -311,6 +381,12 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     const seen = () => { if (this.connectorState.get(key) === state) state.lastSeenAt = this.now(); };
     socket.on('pong', seen);
     sendJson(socket, { type: 'bound', role: 'connector', protocol: HOSTED_WORKSPACE_SESSION_PROTOCOL, binding });
+    // After `bound`: the machine builds its adapter on `bound`, and drops frames that arrive before it.
+    if (this.membershipReport) {
+      void this.loadMembershipFrame(binding).then((frame) => {
+        if (frame && this.connectors.get(key) === socket) this.sendMembershipFrame(socket, frame);
+      });
+    }
     this.audit(binding, 'connector_attached');
     this.watchLiveness(socket, binding);
     this.onConnectorLiveness(binding, true);

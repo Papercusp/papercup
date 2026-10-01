@@ -45,15 +45,25 @@ const db = vi.hoisted(() => {
     return at < 0 ? { id: null, xmin: null } : { id: values[at], xmin: values[at + 1] };
   };
   const bodyReads: Array<{ advSessionId: unknown; want: unknown }> = [];
-  const sql = vi.fn(async (strings: readonly string[], ...values: unknown[]) => {
-    // The narrowed body read (identity-receipt-narrowing.ts, WI-10004801):
-    // values are [want, advSessionId, ownerId, workspaceId]. The mock applies
-    // the module's own JS statement of the narrowing, which the real-PG test
-    // holds the SQL to.
-    // `AS want) AS w` is unique to the body read; the anchor read also selects
-    // `s.xmin::text AS launch_spec_xmin`.
-    if (strings.join(' ').includes('AS want) AS w')) {
-      bodyReads.push({ advSessionId: values[1], want: values[0] });
+  // The narrowing is a postgres.js FRAGMENT (narrowedLaunchSpecSql,
+  // identity-receipt-narrowing.ts, WI-10004801): built with `sql`…`` and never
+  // awaited, then interpolated into the body read as its first value. Modelled
+  // as a marker carrying the `want` parameter (null = read the record whole).
+  const fragment = (strings: readonly string[], values: unknown[]) => {
+    const text = strings.join(' ').trim();
+    return text === 'n.launch_spec' || text.startsWith('CASE')
+      ? { narrowedLaunchSpecFragment: true, want: text === 'n.launch_spec' ? null : values[0] }
+      : null;
+  };
+  const query = async (strings: readonly string[], values: unknown[]) => {
+    // The narrowed body read: values are [fragment, advSessionId, ownerId,
+    // workspaceId]. The mock applies the module's own JS statement of the
+    // narrowing, which the real-PG test holds the SQL to.
+    // `AS launch_spec, n.launch_spec_xmin` is unique to the body read; the
+    // anchor read also selects `s.xmin::text AS launch_spec_xmin`.
+    if (strings.join(' ').includes(BODY_READ_MARKER)) {
+      const want = (values[0] as { want: unknown }).want;
+      bodyReads.push({ advSessionId: values[1], want });
       const override = loadOverrides.shift();
       if (override instanceof Error) throw override;
       if (override) return override;
@@ -62,8 +72,8 @@ const db = vi.hoisted(() => {
       const { narrowIdentityHistory } = await import('./capability-envelope/identity-receipt-narrowing');
       return [{
         ...body,
-        launch_spec: values[0] == null ? body.launch_spec
-          : narrowIdentityHistory(body.launch_spec, JSON.parse(String(values[0])) as unknown[]),
+        launch_spec: want == null ? body.launch_spec
+          : narrowIdentityHistory(body.launch_spec, JSON.parse(String(want)) as unknown[]),
       }];
     }
     const known = knownFrom(strings, values);

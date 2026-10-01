@@ -32,6 +32,7 @@ function deps(overrides: Partial<PlanCleanupSweepDeps> = {}) {
       truncated: input.planSlugs.length - 2,
     })),
     readPolicy: vi.fn(async () => ({ mode: 'recommend', minConfidence: 'high' }) as never),
+    readLaunchProfile: vi.fn(async () => null),
     start: vi.fn(async () => ({
       kind: 'settled' as const,
       runId: 'run-1',
@@ -99,6 +100,52 @@ describe('system:plan-cleanup-sweep', () => {
     expect(result.diagnostics).toMatchObject({ outcome: 'skipped' });
     expect(String(result.diagnostics?.reason)).toMatch(reason);
     expect(logs.join('\n')).toMatch(reason);
+    expect(d.start).not.toHaveBeenCalled();
+  });
+
+  // WI-10004814: run bulk-c830bde2 launched claude on `default` while the standing
+  // plan-cleanup profile named gpt-6.1-sol/xhigh — the sweep never read the profile.
+  it('launches the standing plan-cleanup resolver profile, with authority from the policy', async () => {
+    const { deps: d } = deps({
+      // The standing policy's LEVEL drives the mode (bulkAutomationSnapshot: L0 → review-all).
+      readPolicy: vi.fn(async () => ({ level: 'L0', minConfidence: 'high' }) as never),
+      readLaunchProfile: vi.fn(async () => ({
+        model: 'gpt-6.1-sol',
+        effort: 'xhigh' as const,
+        account: 'default',
+        carry: 'warm' as const,
+        // A profile-borne mode must NOT override the standing policy's authority.
+        automationMode: 'safe-medium-plus' as const,
+      })),
+    });
+    await makePlanCleanupSweepAction(d)(CTX);
+    expect(d.readLaunchProfile).toHaveBeenCalledTimes(1);
+    const launch = (d.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.launch;
+    expect(launch).toMatchObject({
+      model: 'gpt-6.1-sol',
+      effort: 'xhigh',
+      account: 'default',
+      carry: 'warm',
+      backend: 'codex',
+      automationMode: 'review-all',
+      minConfidence: 'high',
+    });
+  });
+
+  it('no stored profile launches the built-in defaults', async () => {
+    const { deps: d } = deps();
+    await makePlanCleanupSweepAction(d)(CTX);
+    const launch = (d.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.launch;
+    expect(launch).toMatchObject({ model: null, effort: null, account: 'default', carry: 'warm' });
+  });
+
+  it('an unreadable profile FAILS the fire instead of silently launching the defaults', async () => {
+    const { deps: d } = deps({
+      readLaunchProfile: vi.fn(async () => {
+        throw new Error('operator_state unavailable');
+      }),
+    });
+    await expect(makePlanCleanupSweepAction(d)(CTX)).rejects.toThrow(/operator_state unavailable/);
     expect(d.start).not.toHaveBeenCalled();
   });
 

@@ -10,6 +10,9 @@
  * it's here for legibility, not asserted. The shapes (error_code / status /
  * message-prefix) are the load-bearing part and rarely change.
  * The nested checkpoint-refusal row was added 2026-10-01 from a 24h sample (n=15).
+ * The acceptance-BAR vetting refusal was added 2026-10-01 from the repeated
+ * watchdog sample (n=3) to keep caller-authored readiness failures out of the
+ * structural repair lane.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -191,6 +194,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'rubric not found',
     expectedClass: 'caller',
     note: 'rubrics:get rejected an unsupported rubricRef@revision form; revision is supplied separately as a numeric argument',
+  },
+  {
+    n: 3, errorCode: 'handler_error', status: 'error',
+    message: 'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid; R-2: bar_snapshot_role_invalid; R-3: bar_snapshot_role_invalid; R-4: bar_snapshot_role_invalid; R-5: bar_snapshot_role_invalid; R-6: bar_snapshot_role_invalid; R-7: bar_snapshot_role_invalid',
+    expectedClass: 'caller',
+    note: 'the caller-authored BAR roles fail lifecycle pre-vetting; deterministic readiness refusal is caller input, not a structural tool defect',
   },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────

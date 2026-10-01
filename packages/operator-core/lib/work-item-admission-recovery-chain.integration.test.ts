@@ -46,7 +46,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
 vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
-  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'reviewer' && h.revoked }),
+  getPresence: async (actor: string) => ({ workspaceId: 'default', revoked: actor === 'system:reviewer/reviewer' && h.revoked }),
 }));
 vi.mock('./modes/store', async (orig) => ({
   ...await orig<typeof import('./modes/store')>(), getModes: async () => [],
@@ -87,7 +87,7 @@ vi.mock('./work-scope-policy', async (orig) => ({
 vi.mock('./scheduler/fleet-scope-admission', async (orig) => ({
   ...await orig<typeof import('./scheduler/fleet-scope-admission')>(),
   admitWorkItemForFleetTarget: async ({ target }: { target: string }) =>
-    h.denied && target === 'reviewer'
+    h.denied && target === 'system:reviewer/reviewer'
       ? { allowed: false, reason: 'restrictive reviewer override' } : { allowed: true },
 }));
 // Peripheral lifecycle subscriptions/events must not escape into live agent queues.
@@ -118,6 +118,11 @@ const originalContext = {
   chunkId: 'original-chunk', featureId: 'original-feature', planRunSessionId: null,
   transport: 'mcp' as const,
 };
+// The authenticated principal is `system:reviewer` with uiClientId `reviewer`;
+// resolveAgentIdentity namespaces that caller as `system:reviewer/reviewer`.
+// Recovery dispatch, durable assignment, and target-owned pickup must use that same
+// owner id; the role label `reviewer` correctly fails the real holder-CAS claim.
+const reviewerOwnerId = 'system:reviewer/reviewer';
 const { runAdmissionPromoterWithRecovery } = await import('./harness/routines/work-item-admission-promoter-action');
 
 let db: FreshPgDb;
@@ -204,12 +209,12 @@ beforeEach(async () => {
 async function create(title = 'Original independent review') {
   return wi.createWorkItem({
     kind: 'feature', title, harness: scope.harnessSlug, workspaceId: scope.workspaceId,
-    assignee: 'reviewer', admission: 'pending', payload: { keep: 'original instructions' },
+    assignee: reviewerOwnerId, admission: 'pending', payload: { keep: 'original instructions' },
   });
 }
 function request(id: string) {
   return requestAdmissionRecovery({
-    ...scope, workItemId: id, caller: 'requester', target: 'reviewer',
+    ...scope, workItemId: id, caller: 'requester', target: reviewerOwnerId,
     note: 'Review original work', body: 'Report findings; do not implement.',
     authority: {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,
@@ -257,7 +262,7 @@ function dispatch(args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) 
     explainClaimFloors: wi.explainIssueClaimFloors, blockers: wi.readUnresolvedDepBlockers,
     planBlock: planItemLaneBlockReason, planClaim: planItemLiveClaimReason,
     resolveTarget: async () => ({
-      requested: 'reviewer', ownerId: 'reviewer-session', present: true, sessionState: 'parked', wakeable: true,
+      requested: reviewerOwnerId, ownerId: reviewerOwnerId, present: true, sessionState: 'parked', wakeable: true,
     }),
     wake: h.wake,
   });
@@ -294,7 +299,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
   it('requires authenticated binding instead of synthesizing a role from presence', async () => {
     const original = await create();
     await expect(requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
     })).rejects.toThrow('authenticated recovery binding missing');
     expect((await row(original.id)).payload).not.toHaveProperty('_admissionRecovery');
     expect(h.claim).not.toHaveBeenCalled();
@@ -337,7 +342,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
   it('holds an expired proof and a payload-spoofed role without a handler invocation', async () => {
     const original = await create();
     await expect(requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
       authority: { kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 1, context: originalContext,
         credentialSha256: admissionCredentialDigest(Buffer.alloc(32, 42)) },
     })).rejects.toThrow('expired');
@@ -356,7 +361,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     const original = await create();
     await db.sql`TRUNCATE harness_shared.system_principals`;
     await requestAdmissionRecovery({
-      ...scope, workItemId: original.id, caller: 'requester', target: 'reviewer',
+      ...scope, workItemId: original.id, caller: 'requester', target: reviewerOwnerId,
       authority: { kind: 'superuser', role: 'operator', context: originalContext,
         credentialSha256: admissionCredentialDigest(h.suToken) },
     });
@@ -375,7 +380,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     const original = await create();
     const unrelated = await create('Unrelated pending work');
     expect((await row(original.id)).taken_by).toBeNull();
-    expect(await wi.claimWorkItem(original.id, 'reviewer', { harness: scope.harnessSlug })).toBeNull();
+    expect(await wi.claimWorkItem(original.id, reviewerOwnerId, { harness: scope.harnessSlug })).toBeNull();
     h.denied = true;
     await expect(request(original.id)).rejects.toThrow('restrictive reviewer override');
     expect((await row(original.id)).payload).not.toHaveProperty('_admissionRecovery');
@@ -384,19 +389,19 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect((await row(original.id)).admission).toBe('pending');
     const result = await tick();
     expect(result).toMatchObject({ promoted: 1, writerCoverageGap: [] });
-    expect(h.claim).toHaveBeenCalledWith(original.id, 'reviewer', { harness: 'papercusp' });
-    expect(h.wake).toHaveBeenCalledWith(['reviewer-session'], expect.objectContaining({
+    expect(h.claim).toHaveBeenCalledWith(original.id, reviewerOwnerId, { harness: 'papercusp' });
+    expect(h.wake).toHaveBeenCalledWith([reviewerOwnerId], expect.objectContaining({
       payload: { kind: 'actionable-work-item-dispatch', workItemIds: [original.id],
         instructions: 'Report findings; do not implement.' },
     }));
     expect(await row(original.id)).toMatchObject({
-      title: original.title, admission: 'admitted', taken_by: 'reviewer',
+      title: original.title, admission: 'admitted', taken_by: reviewerOwnerId,
       payload: { keep: 'original instructions', _admissionRecovery: {
         requestId: queued.request.requestId, state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
       } },
     });
     expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
-    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: 'reviewer' } });
+    expect(await pickup(original.id)).toMatchObject({ ok: true, claimed: true, item: { id: original.id, assignee: reviewerOwnerId } });
     expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual([
       'work_items:pickup', 'work_items:get', 'work_items:claim',
     ]);
@@ -449,7 +454,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     h.wake.mockRejectedValueOnce(new Error('transport crash after committed claim'));
     await expect(tick()).rejects.toThrow('transport crash after committed claim');
     expect(await row(original.id)).toMatchObject({
-      admission: 'admitted', taken_by: 'reviewer',
+      admission: 'admitted', taken_by: reviewerOwnerId,
       payload: { _admissionRecovery: { state: 'queued', requestId: queued.request.requestId } },
     });
     await tick();
@@ -499,7 +504,7 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     h.wake.mockResolvedValueOnce({ queued: 0, woken: 1, staged: 1, timedOutTargets: [] });
     await tick();
     expect(await row(original.id)).toMatchObject({
-      admission: 'admitted', taken_by: 'reviewer', payload: { _admissionRecovery: {
+      admission: 'admitted', taken_by: reviewerOwnerId, payload: { _admissionRecovery: {
         requestId: first.request.requestId, state: 'held', stage: 'wake', pickupConfirmed: false,
         reason: expect.stringContaining('not required-wakeable'),
       } },

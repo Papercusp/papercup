@@ -185,6 +185,18 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'rubric not found')).toBe('structural');
   });
 
+  it('classifies an incomplete acceptance BAR vetting refusal as caller input', () => {
+    const message =
+      'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    // The nested tools:invoke JSON wrapper must preserve the same caller class.
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ ok: false, error: message })))
+      .toBe('caller');
+    // Keep the rule specific to the deliberate readiness refusal.
+    expect(classifyToolError('handler_error', 'error', 'acceptance BAR contract could not be loaded from the database'))
+      .toBe('structural');
+  });
+
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
     expect(
       classifyToolError(

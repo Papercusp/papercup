@@ -87,6 +87,12 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * call. Defaults to {@link defaultRelayUsageReport}, which raises the relay-limit alert.
    */
   onRelayUsage?: (customerWorkspaceId: string, relayUsage: unknown) => void;
+  /**
+   * WI-10004257: the portal's report of this organization's removed members, already checked
+   * against the binding's organization. Defaults to {@link defaultMembershipReport}, which stores
+   * it for the connected-app creator-removed alert.
+   */
+  onMembershipReport?: (report: unknown) => void;
   /** Test seam — swap the transport. */
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
@@ -136,6 +142,17 @@ export function defaultRelayUsageReport(customerWorkspaceId: string, relayUsage:
   void import('../connected-apps/alert-sweep')
     .then(({ onRelayUsageReported }) => onRelayUsageReported(customerWorkspaceId, relayUsage))
     .catch((error) => console.warn('[hosted-workspace-host] relay usage report failed:', error));
+}
+
+/**
+ * The default membership-report sink: store the portal's removed-member set on this machine
+ * (WI-10004257), where the connected-app alert sweep reads it. Lazy for the same reason as
+ * {@link defaultRelayUsageReport}.
+ */
+export function defaultMembershipReport(report: unknown): void {
+  void import('../connected-apps/membership-report')
+    .then(({ onMembershipReported }) => onMembershipReported(report))
+    .catch((error) => console.warn('[hosted-workspace-host] membership report failed:', error));
 }
 
 /**
@@ -237,6 +254,7 @@ export function createHostedWorkspaceHostRuntime(
         onAudit,
         onWarning: warn,
         onRelayUsage: (relayUsage) => (options.onRelayUsage ?? defaultRelayUsageReport)(next.customerWorkspaceId, relayUsage),
+        onMembershipReport: options.onMembershipReport ?? defaultMembershipReport,
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
         ...(options.allowedChannelKinds ? { allowedChannelKinds: options.allowedChannelKinds } : {}),

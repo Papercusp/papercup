@@ -2510,9 +2510,10 @@ export function injectTurn(sock: string, text: string, ownerId?: string): Promis
  * Only launcher-managed URLs may heal, using the existing provenance marker shared
  * with ptool. An explicit target stays authoritative even when its server is down:
  * a refusal does not authorize moving a current-build session to stable code.
- * A managed pin is replaced only when it REFUSES the connection. A slow or erroring
- * operator stays authoritative. The replacement is the local MCP proxy, and only when it
- * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
+ * A managed pin is replaced only when it refuses connections or its /api/mcp route
+ * is confirmed missing. A slow/erroring service and a live MCP endpoint stay
+ * authoritative. The replacement is the local MCP proxy, and it must answer both
+ * /api/health and /api/mcp. Mutates `env` in place and returns `{ from, to }` when it
  * healed, otherwise null. Never throws.
  *
  * @param {EnvironmentMap} env

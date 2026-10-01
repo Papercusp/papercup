@@ -486,3 +486,92 @@ describe('HostedWorkspaceSessionBroker — relay liveness (P-001)', () => {
     });
   });
 });
+
+describe('HostedWorkspaceSessionBroker membership reports (WI-10004257)', () => {
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const report = (removedEmails: string[]) => ({ type: 'membership.report', organizationId: 'org-1', removedEmails });
+  const reports = (socket: FakeSocket) =>
+    socket.sent.filter((frame) => (frame as { type?: string }).type === 'membership.report');
+
+  it("sends the connector's organization report right after bound, and nothing without a loader", async () => {
+    const reads: string[] = [];
+    const broker = new HostedWorkspaceSessionBroker({
+      pingIntervalMs: 0,
+      membershipReport: async (binding) => {
+        reads.push(binding.organizationId);
+        return report(['gone@example.test']);
+      },
+    });
+    const host = new FakeSocket();
+    broker.attachConnector(connector, host);
+    await tick();
+    expect(host.sent[0]).toMatchObject({ type: 'bound', role: 'connector' });
+    expect(host.sent[1]).toEqual(report(['gone@example.test']));
+    expect(reads).toEqual(['org-1']);
+
+    const plain = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0 });
+    const other = new FakeSocket();
+    plain.attachConnector(connector, other);
+    await tick();
+    expect(other.sent.map((frame) => (frame as { type: string }).type)).toEqual(['bound']);
+  });
+
+  it('re-reads on its cadence, once per organization, and re-sends only a changed report', async () => {
+    let clock = 0;
+    let removed = ['gone@example.test'];
+    const reads: string[] = [];
+    const broker = new HostedWorkspaceSessionBroker({
+      pingIntervalMs: 0,
+      now: () => clock,
+      membershipRefreshMs: 1_000,
+      membershipReport: async (binding) => {
+        reads.push(binding.organizationId);
+        return report(removed);
+      },
+    });
+    const a = new FakeSocket();
+    const b = new FakeSocket();
+    broker.attachConnector(connector, a);
+    broker.attachConnector({ ...connector, customerWorkspaceId: 'workspace-2', hostId: 'host-2' }, b);
+    await tick();
+    reads.length = 0;
+
+    clock = 999;
+    broker.sweepLiveness();
+    await tick();
+    expect(reads).toEqual([]);
+
+    clock = 1_000;
+    broker.sweepLiveness();
+    await tick();
+    expect(reads).toEqual(['org-1']);
+    expect(reports(a)).toHaveLength(1);
+    expect(reports(b)).toHaveLength(1);
+
+    removed = ['gone@example.test', 'left@example.test'];
+    clock = 2_000;
+    broker.sweepLiveness();
+    await tick();
+    expect(reports(a)).toEqual([report(['gone@example.test']), report(['gone@example.test', 'left@example.test'])]);
+    expect(reports(b)).toHaveLength(2);
+  });
+
+  it('keeps the connector and sends nothing when the report cannot be read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const broker = new HostedWorkspaceSessionBroker({
+        pingIntervalMs: 0,
+        membershipReport: async () => { throw new Error('database unavailable'); },
+      });
+      const host = new FakeSocket();
+      broker.attachConnector(connector, host);
+      await tick();
+      await broker.refreshMembership();
+      expect(host.sent.map((frame) => (frame as { type: string }).type)).toEqual(['bound']);
+      expect(host.closed).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('membership report'), 'database unavailable');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

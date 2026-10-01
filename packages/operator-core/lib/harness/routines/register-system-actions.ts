@@ -541,6 +541,10 @@ import './launch-cost-ceiling-action';
 // burst detector. None of these actions spawns an agent.
 import './work-item-admission-promoter-action';
 import './work-item-admission-bulk-dedup-action';
+// WI-10004722 (work-queue-bulk-cleanup-remediation-2026-10-01 P-005): the daily driver
+// that arms one bounded bulk-dedup run unless one is already in flight. Landed with its
+// TARGET_ROLE_SPEND entry, its seed script and its BESPOKE_ACTIVE_SEEDS row.
+import './work-item-admission-bulk-dedup-driver-action';
 import './work-item-admission-delta-sweep-action';
 import './completion-claim-recheck-action';
 import './dead-citation-sweep-action';

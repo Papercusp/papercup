@@ -312,6 +312,13 @@ export interface HostedWorkspaceHostOptions {
    */
   onRelayUsage?: (relayUsage: unknown) => void;
   /**
+   * WI-10004257: the portal's `membership.report` frame — the addresses in this machine's
+   * organization whose membership is no longer active. Sent outside any channel, after `bound`
+   * and whenever it changes. Called only for a frame naming THIS binding's organization; the raw
+   * frame is passed through and the receiver validates it.
+   */
+  onMembershipReport?: (report: unknown) => void;
+  /**
    * The channel kinds this adapter serves; any other `relay.open` is closed with
    * `channel_kind_not_allowed`. Absent means every kind (a Papercusp-hosted machine).
    * A relay-linked local install passes {@link LOCAL_RELAY_CHANNEL_KINDS} (D-031 #7).
@@ -830,6 +837,25 @@ export class HostedWorkspaceHostSessionAdapter {
     else if (type === 'relay') await this.relay(message);
     else if (type === 'relay.close')
       this.detach(string(message.channelId, 256), string(message.reason, 256) ?? 'remote_closed');
+    else if (type === 'membership.report') this.membershipReport(message);
+  }
+
+  /**
+   * A membership report applies only to the organization this connector is bound to. A frame
+   * naming another organization is dropped: the binding, not the frame, is the authority on which
+   * organization this machine belongs to.
+   */
+  private membershipReport(message: Record<string, unknown>): void {
+    if (!this.options.onMembershipReport) return;
+    if (message.organizationId !== this.options.binding.organizationId) {
+      this.warn('dropped a membership report for another organization');
+      return;
+    }
+    try {
+      this.options.onMembershipReport(message);
+    } catch (err) {
+      this.warn(`membership report failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   close(reason = 'connector_closed'): void {

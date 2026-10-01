@@ -83,13 +83,14 @@ export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
  *  of carried safety rows,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
  *  a missing / unregistered harness, a registered standalone harness passed
- *  to the Hive-scoped plan store, or a desktop-only capability called before
- *  its sandbox lease was provisioned. A missing WORKSPACE-scope
+ *  to the Hive-scoped plan store, a desktop-only capability called before its
+ *  sandbox lease was provisioned, or a pre-vetting refusal caused by the
+ *  caller-authored acceptance BAR contract. A missing WORKSPACE-scope
  *  ("requires a workspace-scoped call") is deliberately NOT here — a
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^invalid_input: *invalid_args:|^invalid_args:|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased';
+  '^invalid_input: *invalid_args:|^invalid_args:|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a

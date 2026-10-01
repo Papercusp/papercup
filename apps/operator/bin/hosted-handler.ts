@@ -9,6 +9,7 @@ import {
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-runtime";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
 import { resolveHostedSecretRef } from "@papercusp/operator-core/lib/auth/hosted/secret-ref";
+import { loadMembershipReportFrame } from "@papercusp/operator-core/lib/connected-apps/membership-report";
 import { createSpaRoutes } from "./host-spa";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
@@ -17,6 +18,7 @@ import { authenticateHostedConnectorSocket } from "@papercusp/operator-core/lib/
 import {
   HostedWorkspaceSessionBroker,
   type HostedWorkspaceAttachRequest,
+  type HostedWorkspaceSessionBrokerOptions,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
 import {
   hostedDesktopAuditRow,
@@ -115,6 +117,12 @@ export interface HostedHandlerOptions {
    * Without it the consent page cannot resolve a signed-in account, so it always asks to sign in.
    */
   controlPlaneWorkspaceId?: string;
+  /**
+   * WI-10004257: each connector's organization's removed members, sent to the machine so its
+   * creator-removed connected-app alert can fire there. Production reads the portal's membership
+   * tables as the hosted service role; absent sends no reports.
+   */
+  membershipReport?: HostedWorkspaceSessionBrokerOptions["membershipReport"];
 }
 
 export function createHostedHandler(
@@ -153,6 +161,7 @@ export function createHostedHandler(
         );
       });
     },
+    ...(options.membershipReport ? { membershipReport: options.membershipReport } : {}),
   });
 
   // P-007 (external-app-access-to-workspaces-2026-09-29): outside apps call a
@@ -273,5 +282,6 @@ export async function createHostedHandlerFromEnvironment(
     appRelayUsage: new PostgresHostedAppRelayUsageStore(runService),
     mcpOAuthStore: new PostgresPortalOAuthStore(runService),
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
+    membershipReport: (binding) => loadMembershipReportFrame(binding.organizationId, runService),
   });
 }
