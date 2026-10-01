@@ -41,6 +41,7 @@ import { withCanonicalWorklistDeclaration } from '../../goals/package-property-d
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
 import { clearWorkItemGoalAtStart, stampWorkItemGoalAtStart } from '../../work-items';
 import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
+import { unmeasuredTripwireAdvisories } from '../../goals/tripwire-refresh';
 import { evaluateGoalStartInputs } from '../../goals/goal-io-validation';
 import { isCompilableSchema } from '../../json-schema-validation';
 import { buildConsoleEnvelope } from '../../console-launcher';
@@ -1170,6 +1171,12 @@ export default defineTool({
       }
     }
 
+    // WI-10004424: tripwires named like platform metrics that nothing will
+    // measure, judged against the window this goal was actually written with.
+    const tripwireAdvisories = unmeasuredTripwireAdvisories(args.tripwires, {
+      budgetWindowSec: args.budgetWindowSec ?? null,
+    });
+
     return {
       data: {
         id,
@@ -1179,6 +1186,7 @@ export default defineTool({
         budget_cents: args.budgetCents,
         parent_id: args.parentId ?? null,
         tripwires: args.tripwires ?? null,
+        ...(tripwireAdvisories.length ? { tripwire_advisories: tripwireAdvisories } : {}),
         workspace_id: workspaceId,
         install_slug: installSlug,
         // The agent that owns it, and the handle to open its chat, poll
