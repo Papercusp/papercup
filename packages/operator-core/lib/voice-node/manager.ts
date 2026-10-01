@@ -108,9 +108,10 @@ async function ensureNode(): Promise<VoiceNode> {
     // hyperswarm retries failed hole-punches THROUGH the blind relay (it stays
     // blind — the Noise stream is peer↔peer, so D-012's E2E guarantee holds).
     const { getVoiceRelayKeys } = await import('./voice-relay');
-    const relayKeys = await getVoiceRelayKeys();
+    const ctorOpts = swarmConstructorOpts();
+    const relayKeys = await getVoiceRelayKeys({ dhtBootstrap: ctorOpts.bootstrap });
     swarm = new mod.default({
-      ...(swarmConstructorOpts() as Record<string, unknown>),
+      ...(ctorOpts as Record<string, unknown>),
       ...(relayKeys.length > 0 ? { relayThrough: relayKeys } : {}),
     });
     const codec = await getOpusCodec();

@@ -40,6 +40,7 @@ import {
   describeSyncRelayFallback,
   resolveSyncRelayKeys,
   scheduleRelayLivenessCheck,
+  syncRelayKeyReader,
   syncRelayThroughOption,
 } from './sync-relay';
 import {
@@ -4110,7 +4111,7 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   // the voice blind-relay set; hyperswarm uses it only after a direct connect
   // fails (sync-relay.ts). Read once per process: a relay added later takes
   // effect on the next restart.
-  const relayKeys = await resolveSyncRelayKeys();
+  const relayKeys = await resolveSyncRelayKeys(syncRelayKeyReader(opts.bootstrap));
   console.info(describeSyncRelayFallback(relayKeys));
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands

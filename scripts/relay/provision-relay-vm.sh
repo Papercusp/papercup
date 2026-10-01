@@ -20,6 +20,12 @@ NAME="${RELAY_VM:-pc-blind-relay-1}"
 PORT="${RELAY_PORT:-49737}"
 SEED_DIR="${RELAY_SEED_DIR:-$HOME/.papercusp/relay}"
 NODE_MAJOR="${RELAY_NODE_MAJOR:-22}"
+REGION="${ZONE%-*}"
+# A dedicated VPC: this project has no `default` network, and every pc-host-* network
+# belongs to the hosted-workspace controller, so the relay must not borrow one.
+NETWORK="${RELAY_NETWORK:-pc-blind-relay-net}"
+SUBNET="${NETWORK%-net}-subnet"
+SUBNET_RANGE="${RELAY_SUBNET_RANGE:-10.250.0.0/24}"
 TAG="blind-relay"
 FW_UDP="pc-blind-relay-udp"
 FW_IAP="pc-blind-relay-iap-ssh"
@@ -40,15 +46,27 @@ seed_file() {
 vm_ssh() { "${GC[@]}" compute ssh "$NAME" --zone="$ZONE" --tunnel-through-iap --command="$1"; }
 vm_scp() { "${GC[@]}" compute scp --zone="$ZONE" --tunnel-through-iap "$@"; }
 
+ensure_network() {
+  if ! "${GC[@]}" compute networks describe "$NETWORK" >/dev/null 2>&1; then
+    log "creating network $NETWORK"
+    "${GC[@]}" compute networks create "$NETWORK" --subnet-mode=custom
+  fi
+  if ! "${GC[@]}" compute networks subnets describe "$SUBNET" --region="$REGION" >/dev/null 2>&1; then
+    log "creating subnet $SUBNET ($SUBNET_RANGE, $REGION)"
+    "${GC[@]}" compute networks subnets create "$SUBNET" --network="$NETWORK" --region="$REGION" \
+      --range="$SUBNET_RANGE"
+  fi
+}
+
 ensure_firewall() {
   if ! "${GC[@]}" compute firewall-rules describe "$FW_UDP" >/dev/null 2>&1; then
     log "creating firewall rule $FW_UDP (udp:$PORT from anywhere → tag $TAG)"
-    "${GC[@]}" compute firewall-rules create "$FW_UDP" --network=default --direction=INGRESS \
+    "${GC[@]}" compute firewall-rules create "$FW_UDP" --network="$NETWORK" --direction=INGRESS \
       --action=ALLOW --rules="udp:$PORT" --source-ranges=0.0.0.0/0 --target-tags="$TAG"
   fi
   if ! "${GC[@]}" compute firewall-rules describe "$FW_IAP" >/dev/null 2>&1; then
     log "creating firewall rule $FW_IAP (tcp:22 from IAP → tag $TAG)"
-    "${GC[@]}" compute firewall-rules create "$FW_IAP" --network=default --direction=INGRESS \
+    "${GC[@]}" compute firewall-rules create "$FW_IAP" --network="$NETWORK" --direction=INGRESS \
       --action=ALLOW --rules=tcp:22 --source-ranges=35.235.240.0/20 --target-tags="$TAG"
   fi
 }
@@ -61,7 +79,7 @@ ensure_vm() {
   log "creating $NAME (e2-micro, debian-12, $ZONE)"
   "${GC[@]}" compute instances create "$NAME" --zone="$ZONE" --machine-type=e2-micro \
     --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=10GB \
-    --tags="$TAG" --labels="papercusp-role=blind-relay" --metadata=enable-oslogin=FALSE
+    --network="$NETWORK" --subnet="$SUBNET" --tags="$TAG" --labels="papercusp-role=blind-relay" --metadata=enable-oslogin=FALSE
 }
 
 wait_ssh() {
@@ -140,10 +158,12 @@ status() {
 down() {
   "${GC[@]}" compute instances delete "$NAME" --zone="$ZONE" || true
   "${GC[@]}" compute firewall-rules delete "$FW_UDP" "$FW_IAP" || true
+  "${GC[@]}" compute networks subnets delete "$SUBNET" --region="$REGION" || true
+  "${GC[@]}" compute networks delete "$NETWORK" || true
 }
 
 case "${1:-}" in
-  up) seed_file >/dev/null; ensure_firewall; ensure_vm; wait_ssh; install_remote; verify ;;
+  up) seed_file >/dev/null; ensure_network; ensure_firewall; ensure_vm; wait_ssh; install_remote; verify ;;
   verify) verify ;;
   status) status ;;
   down) down ;;
