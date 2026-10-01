@@ -483,7 +483,10 @@ export function qualifyGoalPlacementTurn(input: {
   if (row.status !== 'due' || row.applicableDemand <= 0 || !['delegate', 'repair'].includes(row.actionKind ?? '')) {
     eligibleAtCompletion = false;
   } else {
-    if (row.obligationId !== receipt.obligationId || row.sourceGeneration !== receipt.sourceGeneration) return null;
+    // The same plan's demand, not the same digest: sourceGeneration (and an episode
+    // keyed on it) hashes every worklist plan, lease and budget sample, so it moves
+    // within almost any real turn. Plan, rule revision, launch binding and the
+    // completion-time admission below identify the opportunity.
     const admissions = end.admissions?.filter((entry) => entry.planRef === receipt.planRef) ?? [];
     if (admissions.length !== 1) return null;
     const finish = admissions[0]!.admission;

@@ -90,19 +90,26 @@ describe('exact completed-opportunity proof join', () => {
     expect(qualifyGoalPlacementTurn({ receipt: { ...f.receipt, atConfirmation: { status: 'satisfied' } },
       turnEnd: f.end, nativeSessionId: 'native-1' })).toEqual(f.qualify());
   });
-  it.each(['token', 'goal', 'native', 'plan', 'generation', 'revision', 'late', 'admission'])(
+  it.each(['token', 'goal', 'native', 'plan', 'revision', 'late', 'admission'])(
     'cannot count missing, stale or mismatched %s proof', (change) => {
       const f = proof();
       if (change === 'token') f.end.deliveryToken = 'wrong';
       if (change === 'goal') f.end.goalId = 'other';
       if (change === 'native') f.end.completedTurnRef = 'codex:other:request';
       if (change === 'plan') f.end.rows[0]!.planRef = 'plan:harness/other';
-      if (change === 'generation') f.end.rows[0]!.sourceGeneration = 'new-generation';
       if (change === 'revision') f.end.rows[0]!.ruleRevision = 'new-rule';
       if (change === 'late') f.end.admissions[0]!.admission.observedAt = at(5).toISOString();
       if (change === 'admission') f.end.admissions = [];
       expect(f.qualify()).toBeNull();
     });
+  it('qualifies the same plan demand after an unrelated portfolio change moved the source digest', () => {
+    // Live receipt 6400376: offer obl:…d6b91a89/91cbb1db, completion obl:…63c85e0e/cd2b8393 for
+    // the same plan two minutes later. Requiring digest equality left every opportunity unmeasured.
+    const f = proof();
+    f.end.rows[0]!.sourceGeneration = 'new-generation';
+    f.end.rows[0]!.obligationId = 'obl:goal-plan-placement:new-episode';
+    expect(f.qualify()).toMatchObject({ eligibleAtOffer: true, eligibleAtCompletion: true });
+  });
   it.each(['blocked', 'in-progress', 'not-applicable', 'satisfied'])('consumes a %s interval as excluded', (status) => {
     const f = proof(); f.end.rows[0]!.status = status;
     expect(f.qualify()).toMatchObject({ eligibleAtOffer: true, eligibleAtCompletion: false });
