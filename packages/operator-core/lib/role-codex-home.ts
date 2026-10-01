@@ -1195,6 +1195,8 @@ function mcpUrlWithClient(mcpUrl: string, sid: string): string {
  * The per-session client identity is baked into the url because codex cannot
  * env-expand config.toml, and the superuser bearer rides as an http_headers
  * Authorization (D-006 — the env-var form doesn't deliver on codex 0.135).
+ * `env_http_headers` resolves CODEX_SESSION_ID at request time, independently
+ * proving which native Codex incarnation is using the inherited coord owner.
  */
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const url = mcpUrlWithClient(opts.mcpUrl, opts.sid);
@@ -1224,6 +1226,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
+    'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
     ...projectHttpMcpToml(opts.projectDir ?? opts.trustDir),
     '',
   ].join('\n');
@@ -1283,6 +1286,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   const expectedContextConfig = codexContextConfigToml(resolvedModel, { codexHome });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
+  const expectedNativeSessionHeader = 'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
@@ -1308,6 +1312,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes('[mcp_servers.papercusp-su]') &&
       current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
+      current.includes(expectedNativeSessionHeader) &&
       contextMatches &&
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
