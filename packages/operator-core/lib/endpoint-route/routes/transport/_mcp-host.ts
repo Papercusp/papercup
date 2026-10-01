@@ -85,7 +85,11 @@ import {
   dispatchProjectedToolToMcp,
   isDispatchValidationFailure,
 } from '@papercusp/tooldef-mcp';
-import { mcpDataPlaneDegradedAtFromExtra, mcpTraceIdFromExtra } from '../../../mcp-request-trace';
+import {
+  logMcpRequestTrace,
+  mcpDataPlaneDegradedAtFromExtra,
+  mcpTraceIdFromExtra,
+} from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
@@ -3318,13 +3322,30 @@ export function registerMcpHost(server: McpServer): void {
       },
       extra: unknown,
     ) => {
-      await ensureOperatorToolsLoaded();
       const toolName = req.params.name;
       // Wall-clock at handler entry. The dispatcher stamps its own startedAt for
       // a real dispatch; this one exists for the paths that answer WITHOUT
       // dispatching — today the idempotency replay branch, whose telemetry row
       // records how long serving the stored result took (WI-6792).
       const callStartedAt = Date.now();
+      // The local proxy owns and overwrites this UUID before forwarding. Keep a
+      // generated fallback for direct/native callers, then carry the same value
+      // through request, dispatch and deadline evidence without logging args.
+      const traceId = mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID();
+      const trace = (
+        stage: Parameters<typeof logMcpRequestTrace>[0]['stage'],
+        details: Omit<Parameters<typeof logMcpRequestTrace>[0], 'traceId' | 'toolName' | 'stage' | 'elapsedMs'> = {},
+      ): void => {
+        logMcpRequestTrace({
+          traceId,
+          toolName: toolName.slice(0, 120),
+          stage,
+          elapsedMs: Math.max(0, Date.now() - callStartedAt),
+          ...details,
+        });
+      };
+      trace('request_started');
+      await ensureOperatorToolsLoaded();
       // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
       // `harness:'all'` on plans:list into a workspace-wide read of the session's
       // own workspace (F-A1) before dispatch — see the clamp block below.
@@ -4182,7 +4203,8 @@ export function registerMcpHost(server: McpServer): void {
            * blocking the response on a tool that is still running server-side.
            */
           deadlineFired: boolean;
-        } = { toolOutcome: null, deadlineFired: false };
+          innerDispatchStarted: boolean;
+        } = { toolOutcome: null, deadlineFired: false, innerDispatchStarted: false };
         // P2-5 must cover workspace/principal synthesis as well as the tool
         // handler. Keep one deadline result and one deadline origin for both
         // races so a slow pre-dispatch acquisition cannot start a handler
@@ -4190,7 +4212,13 @@ export function registerMcpHost(server: McpServer): void {
         const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
         const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null;
         const timeoutResult = (): McpCallResult => {
-          raced.deadlineFired = true;
+          if (!raced.deadlineFired) {
+            raced.deadlineFired = true;
+            trace('deadline', {
+              deadlineMs,
+              phase: raced.innerDispatchStarted ? 'inner_dispatch' : 'pre_dispatch',
+            });
+          }
           return {
             isError: true,
             content: [
@@ -4630,6 +4658,18 @@ export function registerMcpHost(server: McpServer): void {
             () => {
               const outcome = execute();
               raced.toolOutcome = outcome;
+              void outcome.then(
+                (result) =>
+                  trace('inner_dispatch_settled', {
+                    outcome: result.isError ? 'tool_error' : 'success',
+                    afterDeadline: raced.deadlineFired,
+                  }),
+                () =>
+                  trace('inner_dispatch_settled', {
+                    outcome: 'rejected',
+                    afterDeadline: raced.deadlineFired,
+                  }),
+              );
               return outcome;
             },
             timeoutResult,
@@ -4660,10 +4700,15 @@ export function registerMcpHost(server: McpServer): void {
               // handler after that point; only a dispatch that had already
               // started is allowed to continue server-side after timeout.
               if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
-                raced.deadlineFired = true;
+                if (!raced.deadlineFired) {
+                  raced.deadlineFired = true;
+                  trace('deadline', { deadlineMs, phase: 'pre_dispatch' });
+                }
                 throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
               }
               dispatchStarted = true;
+              raced.innerDispatchStarted = true;
+              trace('inner_dispatch_started', { deadlineMs });
               return runDispatch(ctx);
             });
           } catch (error) {
