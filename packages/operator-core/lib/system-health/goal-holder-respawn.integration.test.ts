@@ -767,9 +767,16 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
   it("an UNRESOLVABLE holder (degraded oracle fetch) is 'unknown', never 'lost' — no spawn", async () => {
     await seedGoal({ id: 'goal-unknown', launchSettings: RESPAWN_SETTINGS });
     await attachHolder('su-vanished-holder', 'goal-unknown');
-    // No fixture entry: the oracle's wakeability fetch yields no signal for this
-    // owner, so it emits NO verdict — the degraded-fetch contract. The fold must
-    // read that as 'unknown' and the respawner must not treat it as death.
+    // No fixture entry: the oracle returns an explicit, in-band UNKNOWN verdict.
+    // Assert its classification as well as the absence of a launch: incorrectly
+    // treating this verdict as a live holder also suppresses a launch.
+    const holderRows = await readGoalHolderRows(rootSql, { workspaceId: WS, goalIds: ['goal-unknown'] });
+    const verdicts = await resolveLiveness(holderRows.map((holder) => holder.ownerId));
+    expect(verdicts.get('su-vanished-holder')).toMatchObject({ sessionState: null, signalMissing: true });
+    const fold = resolveGoalHoldersFromRows('goal-unknown', WS, holderRows, verdicts);
+    expect(fold.liveness).toBe('unknown');
+    expect(fold.elected?.live).toBeNull();
+    expect(fold.live).toEqual([]);
     const { deps, launches } = drillDeps();
     const tick = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
