@@ -117,8 +117,18 @@ describe('queueForRoutine — operator-home release-finalizer lane (EI-214466371
 
 describe('queueForRoutine — bounded heavy/background lane (EI-22469496587311452)', () => {
   it('routes the exact gitnexus reindex action to the serial heavy lane', () => {
-    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex']);
+    expect([...HEAVY_ROUTINE_ACTIONS]).toEqual(['gitnexus-reindex', 'work-item-admission-bulk-dedup']);
     expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
+  });
+
+  // D-005 (work-queue-bulk-cleanup-remediation-2026-10-01): a bulk-dedup stage held a
+  // shared-queue slot for 1h53m while the window was 3, and 117 cron routines went
+  // overdue. Its fires must never share the housekeeping lane again.
+  it('routes bulk-dedup fires to the heavy lane and keeps its sibling admission actions shared', () => {
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup')).toBe(ROUTINES_HEAVY_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup-census')).toBe(ROUTINES_QUEUE);
   });
 
   it('keeps near-miss and non-system targets on the shared queue (exact match)', () => {

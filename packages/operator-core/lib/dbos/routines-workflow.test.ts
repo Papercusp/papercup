@@ -528,6 +528,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
     }
     expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup')).toBe(ROUTINES_HEAVY_QUEUE);
     expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()));
   });
 
