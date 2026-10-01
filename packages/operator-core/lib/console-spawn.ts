@@ -50,6 +50,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
+import { prepareKickoffEnvironment } from './agent-kickoff/prompt-transport.mjs';
 import type { ColorScheme } from './console-color-schemes';
 // WI-37920 / P-001: plain-ESM shared module — psu-launcher.mjs (bare `node`,
 // cannot import TypeScript) imports the SAME definitions, so detection and
@@ -1597,6 +1598,14 @@ async function pollTerminalPidReceipt(
  * client that died off-screen.
  */
 export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsoleResult> {
+  try {
+    return await spawnConsolePrepared({ ...opts, envelope: { ...opts.envelope, env: prepareKickoffEnvironment(opts.envelope.env) } });
+  } catch (error) {
+    return { status: 'error', code: 500, error: `console spawn failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
 
   // 1. Optional .mcp.json displacement (backup the user's, write ours).
@@ -2577,6 +2586,14 @@ export function buildConsoleScopedSpawnCommand(
  * error-with-log-tail instead of a false ok+pid.
  */
 export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
+  try {
+    return await spawnHeadlessPrepared({ ...opts, envelope: { ...opts.envelope, env: prepareKickoffEnvironment(opts.envelope.env) } });
+  } catch (error) {
+    return { status: 'error', code: 500, error: `headless spawn failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnConsoleResult> {
   const { envelope } = opts;
   const mcpJsonError = writeMcpJsonFile(envelope, opts.writeMcpJson ?? false);
   if (mcpJsonError) {
