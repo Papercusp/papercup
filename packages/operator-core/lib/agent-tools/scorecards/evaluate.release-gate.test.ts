@@ -15,10 +15,11 @@ import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
+  const lookup = vi.fn();
   return {
     ...actual,
-    getRubric: vi.fn(),
-    getRubricWithoutSeeding: vi.fn(),
+    getRubric: lookup,
+    getRubricWithoutSeeding: lookup,
     getRubricPlanRevision: vi.fn(async () => 3),
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 3 })),
   };

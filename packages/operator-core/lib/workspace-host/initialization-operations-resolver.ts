@@ -1043,6 +1043,7 @@ const CONTROLLER_ENV = {
   identityFile: 'PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE',
   sshExecutable: 'PAPERCUSP_WORKSPACE_HOST_SSH_EXECUTABLE',
   gcloudExecutable: 'PAPERCUSP_WORKSPACE_HOST_GCLOUD_EXECUTABLE',
+  awsExecutable: 'PAPERCUSP_WORKSPACE_HOST_AWS_EXECUTABLE',
 } as const;
 
 const DEFAULT_CONTROLLER_REMOTE_ENTRYPOINT = WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT;
@@ -1116,6 +1117,7 @@ export function resolveWorkspaceHostInitializationControllerProfile(
   const identityFile = optional('identityFile', true);
   const sshExecutable = optional('sshExecutable', false);
   const gcloudExecutable = optional('gcloudExecutable', false);
+  const awsExecutable = optional('awsExecutable', false);
 
   if (problems.length > 0) throw new WorkspaceHostInitializationControllerProfileError(problems);
 
@@ -1127,6 +1129,7 @@ export function resolveWorkspaceHostInitializationControllerProfile(
     ...(identityFile ? { identityFile } : {}),
     ...(sshExecutable ? { sshExecutable } : {}),
     ...(gcloudExecutable ? { gcloudExecutable } : {}),
+    ...(awsExecutable ? { awsExecutable } : {}),
   };
 }
 

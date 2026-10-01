@@ -296,6 +296,30 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
       ),
     ).toBe(true);
   });
+
+  // EI-24821039535031884: a git read that hits its deadline is 'unmeasured' (the caller
+  // retries), never undefined (persisted residue). CONTROL: a git that exits non-zero is a
+  // deterministic refusal and stays undefined, so only the timeout outcome flips the answer.
+  // Both git reads are covered: the top-level path runs `git log` alone, and the nested path
+  // runs the gitlink `ls-tree` first.
+  it('answers unmeasured for a timed-out git read and undefined for a git that refuses', async () => {
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-fake-git-'));
+    TEMP_ROOTS.push(bin);
+    const slowGit = join(bin, 'slow-git');
+    const refusingGit = join(bin, 'refusing-git');
+    writeFileSync(slowGit, '#!/bin/sh\nexec sleep 10\n', { mode: 0o755 });
+    writeFileSync(refusingGit, '#!/bin/sh\nexit 128\n', { mode: 0o755 });
+    const ask = (gitBinary: string, path: string) =>
+      completionBlobHistoryContains(bin, 'a'.repeat(40), 'b'.repeat(40), path, 'c'.repeat(40), {
+        gitBinary,
+        timeoutMs: 200,
+      });
+
+    expect(await ask(slowGit, 'file.ts')).toBe('unmeasured');
+    expect(await ask(refusingGit, 'file.ts')).toBeUndefined();
+    expect(await ask(slowGit, 'dir/file.ts')).toBe('unmeasured');
+    expect(await ask(refusingGit, 'dir/file.ts')).toBeUndefined();
+  });
 });
 
 /**
@@ -425,6 +449,33 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
         ),
     ).toBe(false);
     expect(warn.mock.calls.some(([line]) => String(line).includes('exact-tree lookup') && String(line).includes('WI-42476'))).toBe(true);
+  });
+
+  // EI-24821039535031884: the per-path history read has the same 5s deadline. A timed-out
+  // history read must skip the row exactly like a failed exact-tree lookup: no write.
+  it('writes nothing for a row whose history read was unmeasured, and names it lookupUnavailable', async () => {
+    const sql = settlementSql({ updateHits: [true] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const historyLookup = vi.fn(async () => 'unmeasured' as const);
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      // a.ts is committed at a later blob, so its proof needs the history read.
+      lookup: () => new Map([['a.ts', resolved('f'.repeat(40))], ['nested/b.ts', resolved('e'.repeat(40))]]),
+      historyLookup,
+      emit: settlementEmitMock(),
+    });
+
+    expect(historyLookup).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ inspected: 1, upgraded: [], residual: 0, unreadable: [], lookupUnavailable: ['WI-42476'] });
+    expect(
+      vi
+        .mocked(sql)
+        .mock.calls.some(([strings]) =>
+          (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'),
+        ),
+    ).toBe(false);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('history read') && String(line).includes('WI-42476'))).toBe(true);
+    warn.mockRestore();
   });
 
   it('stops before a late settlement write when the action signal aborts', async () => {
@@ -1001,6 +1052,16 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     expect(await verdict(undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'content-mismatch' }]);
     // History could not answer: the server's failure, not the closer's.
     expect(await verdict(async () => undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'identity-unavailable' }]);
+  });
+
+  // EI-24821039535031884: a timed-out history read measured nothing, so the row is skipped
+  // (undefined) and retried. CONTROLS in the same test: a deterministic refusal (undefined)
+  // still persists `identity-unavailable`, and a measured `false` still persists a verdict,
+  // so an implementation that returns undefined for every history answer cannot pass.
+  it('skips the row on an unmeasured history read, but persists deterministic and measured answers', async () => {
+    expect(await verdict(async () => 'unmeasured' as const, LATER_BLOB)).toBeUndefined();
+    expect(await verdict(async () => undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'identity-unavailable' }]);
+    expect(await verdict(neverCommitted, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
   });
 
   function strandedSql(storedManifest: unknown, updateHit = true) {

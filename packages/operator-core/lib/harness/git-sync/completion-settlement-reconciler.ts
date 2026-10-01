@@ -179,6 +179,11 @@ export async function residualPathsForCommit(
         )
       : false;
     if (signal?.aborted) return undefined;
+    // EI-24821039535031884: a history read that hit its 5s deadline measured nothing.
+    // Skip the WHOLE row (undefined, counted as `lookupUnavailable`) exactly like the
+    // whole-batch branch above, instead of persisting this path as `identity-unavailable`.
+    // Only deterministic refusals (undefined below) are durable residue.
+    if (foundInHistory === 'unmeasured') return undefined;
     if (foundInHistory === true) {
       onHistoryMatch?.(path, expectedSha);
       continue;
@@ -556,8 +561,9 @@ async function reconcileProposedCompletionsCore(
       );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
       if (!residualPaths) {
-        // The manifest parsed above and the pass is not aborted, so the exact-tree lookup
-        // itself came back empty. Leave the row untouched for the next fire, but count it.
+        // The manifest parsed above and the pass is not aborted, so a git lookup measured
+        // nothing: the exact-tree lookup came back empty, or a per-path history read timed
+        // out (EI-24821039535031884). Leave the row untouched for the next fire, but count it.
         lookupUnavailableByIndex[index] = row.feature_id;
         return;
       }
@@ -764,8 +770,9 @@ async function reconcileProposedCompletionsCore(
   if (lookupUnavailable.length > 0) {
     console.warn(
       `[git-sync-completion-settlement] ${scope.installSlug}: ${lookupUnavailable.length} of ${rows.length} ` +
-        `proposed completion(s) were skipped because the exact-tree lookup at ${commitSha.slice(0, 12)} ` +
-        'returned nothing (git timeout or failure); nothing was written and the next fire retries them: ' +
+        `proposed completion(s) were skipped because a git read at ${commitSha.slice(0, 12)} measured nothing ` +
+        '(the exact-tree lookup returned nothing, or a per-path history read timed out); ' +
+        'nothing was written and the next fire retries them: ' +
         `${lookupUnavailable.slice(0, 10).join(', ')}${lookupUnavailable.length > 10 ? ` (+${lookupUnavailable.length - 10} more)` : ''}`,
     );
   }

@@ -1010,7 +1010,6 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],

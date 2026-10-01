@@ -44,6 +44,17 @@ node_modules.old*/
 # not sweep it into commits or guarded-build source fingerprints.
 .papercusp-tmp/
 **/.papercusp-tmp/
+
+# These repository-root names are reserved for agent/test scratch. Keep the
+# rules root-anchored so legitimate nested source directories with similar
+# names remain visible. Existing tracked files still need index-only removal.
+/.agent-tmp
+/.tmp
+/.tmp-*
+/.tsx-tmp
+/scratch
+/scratchpad
+/scratch-*
 # Stray nested lockfiles (workspace members must ride the root lock) stay
 # ignored, but the ROOT lockfile is the npm-ci source of truth for CI +
 # fresh clones (regenerated + validated 2026-06-11, audit P-024/EI-84) —
@@ -209,7 +220,9 @@ apps/operator/docs/plans/**/*.md
 **/.papercusp/scratch/
 **/.papercusp/vitest-tmp/
 **/.papercusp/tmp/
-**/.papercusp/tmp-*/
+**/.papercusp/tmp-*
+**/.papercusp/node-compile-cache
+**/.papercusp/tsx-*
 **/.papercusp/logs/
 **/.papercusp/bench-reports/
 **/.papercusp/pi-sessions/

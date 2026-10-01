@@ -40,6 +40,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric,
+    getRubricWithoutSeeding: getRubric,
     getRubricCriteriaHash,
     getRubricPlanRevision,
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),

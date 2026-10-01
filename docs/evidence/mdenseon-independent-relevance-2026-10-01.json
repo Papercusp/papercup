@@ -1734,19 +1734,71 @@
   "expansionV4": {
     "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
     "durableTaskId": "0muq5fy1x1d5o9gp1mz",
-    "status": "running at 2026-10-01T23:13:03Z; no complete-label or power claim",
+    "status": "completed exit 0 at 2026-10-01T23:27:30Z; independent labels frozen, expanded model comparisons and power analysis pending",
+    "frozenAt": "2026-10-01T23:27:30.191Z",
+    "identityHash": "74e512104a2f259c2f2a061511223e5ee82fc42843fceb8c3779f53c1917c72f",
     "targetsPerPartition": 32,
-    "authorRecovery": "All128 saved v3 authors selected for reuse; no new author calls planned. Fresh independent judge calls use the unchanged frozen generation contract.",
+    "authorRecovery": "All 128 saved v3 authors were reused; no new author calls. All original prompt, invocation, identity and fingerprint references were followed to the original priced author receipts.",
+    "labels": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/labels.json",
+      "sha256": "0adca29735f180166016d3965e54f3639f16f5f09b541220294c7228f155d023",
+      "bytes": 49862
+    },
+    "judgments": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/judgments.json",
+      "sha256": "1acf4353a543f89ab035c3fab84701b0ef98fbabd570c34f87e954055026a81f",
+      "bytes": 39973
+    },
+    "corpora": {
+      "memory": {
+        "documents": 512,
+        "authoredSourceTargets": 64,
+        "authoredQueries": 256,
+        "acceptedQueries": 68,
+        "excludedQueries": 188,
+        "ambiguousQueries": 81,
+        "acceptedCalibrationTargets": 9,
+        "acceptedTestTargets": 8,
+        "agreement": 0.7890625,
+        "formatAbstentions": 0
+      },
+      "prose": {
+        "documents": 515,
+        "authoredSourceTargets": 64,
+        "authoredQueries": 256,
+        "acceptedQueries": 40,
+        "excludedQueries": 216,
+        "ambiguousQueries": 107,
+        "acceptedCalibrationTargets": 8,
+        "acceptedTestTargets": 2,
+        "agreement": 0.65234375,
+        "formatAbstentions": 0
+      }
+    },
+    "verification": {
+      "authorReceipts": 128,
+      "authorReferenceLinksChecked": 224,
+      "newJudgeChunks": 34,
+      "uniqueJudgeInvocations": 34,
+      "judgeInputTokens": 909540,
+      "judgeOutputTokens": 116694,
+      "judgeCostUsd": 4.47903,
+      "judgeStopReasons": "Every retained new judge response ended with end_turn and finite non-negative usage and cost.",
+      "procedure": "Verified snapshot/source/contract identity, each author reference chain and original prompt, each judge prompt and raw fingerprint. Reconstructed all questions and both chunk-vote passes using the existing parser, recomputed consensus, and required exact equality with saved votes, labels, exclusion lists and agreement. Both corpus proofs passed validateIndependentCohort.",
+      "outputLockReleased": true,
+      "agreementDefinition": "Exact equality of both aggregated relevance-key sets and ambiguity flags across all 256 authored questions; malformed abstentions cannot earn agreement. Agreement does not imply a source target was retained.",
+      "balancedClasses": "Every retained source target supplies all four query classes; calibration and test are separate. Exclusions remove the entire four-class target."
+    },
     "acceptanceComplete": false
   },
   "limitations": [
     "Memory has five accepted heldout source targets; prose has two. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
-    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting, V3 stopped on a malformed ambiguous judgment, and V4 has not yet produced complete labels.",
+    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting and V3 stopped on a malformed ambiguous judgment. V4 completed with eight memory and two prose heldout targets after conservative exclusions; its expanded model comparisons and source-group power analysis have not run.",
     "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
     "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
   ],
-  "next": "Continue P-005/P-006 non-LLM measurements and full P-004 preparation. Resume stronger blind power collection only through the unchanged independent judging contract when transport serves; preserve previous authored inputs/receipt IDs and failed expansion.",
+  "next": "Freeze a new relevance manifest bound to the completed V4 labels and judgments, preserve the original V1 measurements, and measure the expanded cohort before source-group power analysis. Continue P-005 executable-source isolation, P-006 and P-004 preparation under the existing plan; no superiority or census-exhaustion claim is established.",
   "reproduction": {
     "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
     "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",

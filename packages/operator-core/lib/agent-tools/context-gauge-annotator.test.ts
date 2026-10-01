@@ -61,6 +61,51 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     expect((out._meta as Record<string, unknown>)?._contextGauge).toContain('90%');
   });
 
+  // EI-23761864550626068: the gauge numerator is transcript bytes/4, so the rendered line
+  // and the structured meta must both say it is an ESTIMATE rather than a measured count.
+  it('qualifies a CRITICAL gauge as a bytes/4 estimate and attaches the evidence contract', () => {
+    trackOwner('su-evidence', 270_000, 300_000); // 90% → critical
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence'));
+    const texts = gaugeText(out);
+    expect(texts[1]).toContain('estimate: transcript-bytes/4, not provider usage');
+    expect(texts[1]).toContain('no provider-measured corroboration');
+    const ev = (out._meta as Record<string, unknown>)?._contextGaugeEvidence as {
+      exactness: string;
+      method: string;
+      denominator: { value: number; recordedAt: number | null; source: string };
+      corroboratedByObservedFloor: boolean;
+    };
+    expect(ev.exactness).toBe('estimate');
+    expect(ev.method).toBe('transcript-bytes/4');
+    expect(ev.denominator.value).toBe(300_000);
+    expect(ev.denominator.source).toBe('watchdog-cache(coord_presence.compaction_limit)');
+    // The cache entry was recorded moments ago by trackOwner — calibration time must be real.
+    expect(typeof ev.denominator.recordedAt).toBe('number');
+    expect(Date.now() - (ev.denominator.recordedAt as number)).toBeLessThan(60_000);
+    expect(ev.corroboratedByObservedFloor).toBe(false);
+  });
+
+  it('marks corroboration when the cache carries a provider-observed floor', () => {
+    trackOwner('su-evidence-floor', 270_000, 300_000, { tokens: 120_000, observations: 4 });
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence-floor'));
+    const ev = (out._meta as Record<string, unknown>)?._contextGaugeEvidence as {
+      corroboratedByObservedFloor: boolean;
+    };
+    expect(ev.corroboratedByObservedFloor).toBe(true);
+    expect(gaugeText(out)[1]).toContain('a provider-observed input floor is shown');
+  });
+
+  it('keeps the quiet band a bare fact (no qualifier cost) while still carrying the meta contract', () => {
+    trackOwner('su-evidence-quiet', 210_000, 300_000); // 70% → quiet
+    const out = contextGaugeAnnotator(ok('result body'), ctx('su-evidence-quiet'));
+    const texts = gaugeText(out);
+    expect(texts[1]).toBe('context: 210000/300000 (70%)');
+    expect(texts[1]).not.toContain('estimate:');
+    expect(
+      ((out._meta as Record<string, unknown>)?._contextGaugeEvidence as { exactness: string }).exactness,
+    ).toBe('estimate');
+  });
+
   it('appends NOTHING below the quiet band (the common case)', () => {
     trackOwner('su-cool', 60_000, 300_000); // 20%
     const r = ok('body');

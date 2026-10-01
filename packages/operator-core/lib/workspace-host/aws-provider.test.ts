@@ -149,6 +149,11 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
       .map((groupId) => ({ groupId, ingressRuleCount: this.securityGroupIngress.get(groupId) ?? 0 }));
   }
 
+  /** The provider never reads the console; initialization does (initialization-operations-resolver). */
+  async getConsoleOutput(_instanceId: string): Promise<string | undefined> {
+    return undefined;
+  }
+
   async createVolume(input: AwsCreateVolumeInput): Promise<AwsCreatedVolume> {
     this.createVolumeCalls.push(input);
     const existing = this.volumeTokens.get(input.ClientToken);

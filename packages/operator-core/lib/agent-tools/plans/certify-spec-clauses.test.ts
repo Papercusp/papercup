@@ -66,6 +66,7 @@ const captureImprovement = vi.fn();
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
   getRubric: (...args: unknown[]) => getRubric(...args),
+  getRubricWithoutSeeding: (...args: unknown[]) => getRubric(...args),
   getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
   getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
   readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),

@@ -36,6 +36,7 @@ import capabilityRead from '../capability/read';
 import factsAssert from '../facts/assert';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
+import recipesRun from '../recipes/run';
 import rubricsPropose from '../rubrics/propose';
 import './invoke';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
@@ -1154,6 +1155,16 @@ describe('handler — graceful degrade + result shape', () => {
 
     expect(schema).toContain(
       'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
+    );
+  });
+
+  it('keeps recipes:run authority alternatives visible in compact discovery', async () => {
+    expect(recipesRun.name).toBe('recipes:run');
+    const { schemaByTool } = buildCorpus();
+    const schema = compactSchemaForResult(schemaByTool.get('recipes:run')) ?? '';
+
+    expect(schema).toContain(
+      'authority?:object(one-of:version&revision&context|version&revision&refs&requiresContext&runnable)',
     );
   });
 

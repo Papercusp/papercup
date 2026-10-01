@@ -29,8 +29,11 @@ import {
   WorkspaceHostHostKeyPublicationTimeoutError,
   WorkspaceHostInitializationHostKeyError,
   WorkspaceHostInstanceUnavailableError,
+  enrollAwsSsmHostKeys,
   enrollGcpIapHostKeys,
+  establishAwsSsmHostKeyTrust,
   gcpBootstrapStatusSource,
+  parseEc2ConsoleHostKeys,
   pruneGcpIapHostKeysForAbsentHost,
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
@@ -40,9 +43,12 @@ import {
 } from './initialization-operations-resolver';
 import { resolveGcpWorkspaceHostInstanceIdentity, type GcpInstanceGuestAttribute } from './gcp-provider';
 import {
+  awsSsmHostKeyAlias,
   buildGcpIapWorkspaceHostInitializationCommand,
   gcpIapHostKeyAliasFamily,
+  workspaceHostSshHostKeyAlias,
 } from './gcp-iap-initialization-operations';
+import { AWS_WORKSPACE_HOST_TRANSPORT_FEATURES } from './aws-connection-profile';
 
 const controller: WorkspaceHostInitializationControllerProfile = {
   sshUser: 'papercusp',
@@ -1216,5 +1222,340 @@ describe('gcpBootstrapStatusSource (WI-10002837)', () => {
   it('ignores a bootstrap key under another namespace', async () => {
     const { read } = sourceReturning([{ namespace: 'other', key: 'bootstrap', value: 'failed exit=1 phase= error=' }]);
     await expect(read()).resolves.toBeNull();
+  });
+});
+
+// aws-byoc-gcp-parity-2026-10-01 P-005: AWS reaches its hosts through SSM Session Manager and pins
+// trust from the EC2 serial console, where cloud-init prints the host keys at first boot.
+const AWS_INSTANCE_ID = 'i-0123456789abcdef0';
+const AWS_REGION = 'us-east-2';
+const AWS_ALIAS = `aws-ssm-${AWS_REGION}-${AWS_INSTANCE_ID}`;
+
+function awsDesired(): WorkspaceHostDesiredSpec {
+  return desired({
+    target: 'aws',
+    scope: { kind: 'account', id: '413781344298' },
+    region: AWS_REGION,
+    zone: 'us-east-2a',
+    size: 't3.large',
+    image: { id: 'ami-0123456789abcdef0' },
+  } as never);
+}
+
+/** The block cloud-init's `ssh_authkey_fingerprints`/`keys_to_console` module writes at boot. */
+function consoleKeyBlock(marker = 'first', extraLines: readonly string[] = []): string {
+  return [
+    '-----BEGIN SSH HOST KEY KEYS-----',
+    publicKey('ecdsa-sha2-nistp256', marker).replace('generated-on-host', 'root@ip-10-0-0-5'),
+    publicKey('ssh-ed25519', marker).replace('generated-on-host', 'root@ip-10-0-0-5'),
+    publicKey('ssh-rsa', marker).replace('generated-on-host', 'root@ip-10-0-0-5'),
+    ...extraLines,
+    '-----END SSH HOST KEY KEYS-----',
+  ].join('\n');
+}
+
+describe('parseEc2ConsoleHostKeys', () => {
+  it('reads every supported key from the LAST complete block, ignoring the surrounding boot log', () => {
+    const output = [
+      '[    0.000000] Linux version 6.8.0-1015-aws',
+      consoleKeyBlock('earlier-boot'),
+      'cloud-init[812]: Cloud-init v. 24.1 finished',
+      consoleKeyBlock('latest-boot').replace(/\n/g, '\r\n'),
+      '[  OK  ] Reached target multi-user.target.',
+    ].join('\n');
+    const keys = parseEc2ConsoleHostKeys(output);
+    expect([...keys!.keys()].sort()).toEqual(['ecdsa-sha2-nistp256', 'ssh-ed25519', 'ssh-rsa']);
+    expect(keys!.get('ssh-ed25519')).toBe(publicKeyBlob('ssh-ed25519', 'latest-boot'));
+    expect(keys!.get('ssh-ed25519')).not.toBe(publicKeyBlob('ssh-ed25519', 'earlier-boot'));
+  });
+
+  it('is null while the block is not printed yet, or only half-printed, so the caller keeps waiting', () => {
+    expect(parseEc2ConsoleHostKeys('')).toBeNull();
+    expect(parseEc2ConsoleHostKeys('[    0.000000] Linux version 6.8.0-1015-aws\n')).toBeNull();
+    expect(parseEc2ConsoleHostKeys(consoleKeyBlock().split('-----END')[0]!)).toBeNull();
+  });
+
+  it('skips algorithms the trust store does not pin, as the GCP guest agent omits them', () => {
+    const keys = parseEc2ConsoleHostKeys(consoleKeyBlock('first', ['ssh-dss AAAAB3NzaC1kc3MAAACB root@ip-10-0-0-5']));
+    expect(keys!.has('ssh-dss')).toBe(false);
+    expect(keys!.size).toBe(3);
+  });
+
+  it('refuses a present-but-corrupt block instead of reporting it absent', () => {
+    expect(() =>
+      parseEc2ConsoleHostKeys('-----BEGIN SSH HOST KEY KEYS-----\n-----END SSH HOST KEY KEYS-----'),
+    ).toThrow(WorkspaceHostInitializationHostKeyError);
+    expect(() =>
+      parseEc2ConsoleHostKeys(consoleKeyBlock('first', [publicKey('ssh-ed25519', 'second')])),
+    ).toThrow(/repeats 'ssh-ed25519'/);
+    expect(() =>
+      parseEc2ConsoleHostKeys(consoleKeyBlock('first', ['ssh-ed25519 not-base64 root@ip-10-0-0-5'])),
+    ).toThrow(WorkspaceHostInitializationHostKeyError);
+  });
+});
+
+describe('AWS SSM controller known_hosts enrollment', () => {
+  it('pins the console keys under the incarnation alias the SSH transport checks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const unrelated = `example.test ${publicKey('ssh-ed25519').split(' ').slice(0, 2).join(' ')}`;
+    await writeFile(knownHostsFile, `${unrelated}\n`, { mode: 0o600 });
+    try {
+      const keys = parseEc2ConsoleHostKeys(consoleKeyBlock('trusted'))!;
+      await enrollAwsSsmHostKeys({ identity: { region: AWS_REGION, instanceId: AWS_INSTANCE_ID }, knownHostsFile, keys });
+      const written = await readFile(knownHostsFile, 'utf8');
+
+      // The alias the pin is written under must be the one the transport's HostKeyAlias names.
+      expect(awsSsmHostKeyAlias({ region: AWS_REGION, instanceId: AWS_INSTANCE_ID })).toBe(AWS_ALIAS);
+      expect(written).toContain(`${unrelated}\n`);
+      expect(written.match(new RegExp(`^${AWS_ALIAS} `, 'gm'))).toHaveLength(3);
+      expect(written).not.toContain('root@ip-10-0-0-5');
+      expect((await stat(knownHostsFile)).mode & 0o777).toBe(0o600);
+
+      // Same instance, different keys: refused, and the trust store is left exactly as it was.
+      await expect(
+        enrollAwsSsmHostKeys({
+          identity: { region: AWS_REGION, instanceId: AWS_INSTANCE_ID },
+          knownHostsFile,
+          keys: parseEc2ConsoleHostKeys(consoleKeyBlock('tampered'))!,
+        }),
+      ).rejects.toThrow(/changed/);
+      await expect(readFile(knownHostsFile, 'utf8')).resolves.toBe(written);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a relative trust-store path before touching the filesystem', async () => {
+    await expect(
+      enrollAwsSsmHostKeys({
+        identity: { region: AWS_REGION, instanceId: AWS_INSTANCE_ID },
+        knownHostsFile: 'known_hosts',
+        keys: parseEc2ConsoleHostKeys(consoleKeyBlock())!,
+      }),
+    ).rejects.toThrow(/must be absolute/);
+  });
+});
+
+describe('establishAwsSsmHostKeyTrust', () => {
+  const target = { region: AWS_REGION, instanceId: AWS_INSTANCE_ID, knownHostsFile: '/nonexistent/known_hosts' };
+
+  it('enrolls the console keys of exactly the registered instance', async () => {
+    const reads: string[] = [];
+    const enrolled: unknown[] = [];
+    const outcome = await establishAwsSsmHostKeyTrust(
+      {
+        async getConsoleOutput(instanceId) {
+          reads.push(instanceId);
+          return consoleKeyBlock('trusted');
+        },
+      },
+      target,
+      { enroll: async (input) => void enrolled.push(input) },
+    );
+    expect(outcome).toBe('enrolled');
+    expect(reads).toEqual([AWS_INSTANCE_ID]);
+    expect(enrolled).toEqual([
+      {
+        identity: { region: AWS_REGION, instanceId: AWS_INSTANCE_ID },
+        knownHostsFile: target.knownHostsFile,
+        keys: parseEc2ConsoleHostKeys(consoleKeyBlock('trusted')),
+      },
+    ]);
+  });
+
+  it('waits out a fresh instance whose console has no key block yet, then enrolls', async () => {
+    let clock = 0;
+    const outputs = [undefined, '[    0.000000] Linux version 6.8.0-1015-aws', consoleKeyBlock()];
+    const waiting: number[] = [];
+    const enroll = vi.fn(async () => undefined);
+    const outcome = await establishAwsSsmHostKeyTrust(
+      { getConsoleOutput: async () => outputs.shift() },
+      target,
+      {
+        enroll,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        pollIntervalMs: 5_000,
+        timeoutMs: 60_000,
+        onWaiting: ({ elapsedMs }) => void waiting.push(elapsedMs),
+      },
+    );
+    expect(outcome).toBe('enrolled');
+    expect(enroll).toHaveBeenCalledTimes(1);
+    expect(waiting).toEqual([0, 5_000]);
+  });
+
+  it('proceeds on an existing pin when the boot-time block has scrolled out of the console', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    try {
+      await enrollAwsSsmHostKeys({
+        identity: { region: AWS_REGION, instanceId: AWS_INSTANCE_ID },
+        knownHostsFile,
+        keys: parseEc2ConsoleHostKeys(consoleKeyBlock())!,
+      });
+      const enroll = vi.fn(async () => undefined);
+      const outcome = await establishAwsSsmHostKeyTrust(
+        { getConsoleOutput: async () => 'Ubuntu 24.04 LTS ip-10-0-0-5 ttyS0\n' },
+        { ...target, knownHostsFile },
+        { enroll, sleep: async () => undefined },
+      );
+      expect(outcome).toBe('pinned');
+      expect(enroll).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses after the publication budget when there is neither a key block nor a pin', async () => {
+    let clock = 0;
+    await expect(
+      establishAwsSsmHostKeyTrust({ getConsoleOutput: async () => undefined }, target, {
+        enroll: async () => undefined,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+        pollIntervalMs: 10_000,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostHostKeyPublicationTimeoutError);
+  });
+});
+
+describe('resolveWorkspaceHostInitializationOperationsForHost (AWS)', () => {
+  const sharedProfileConnection = {
+    connection: {
+      target: 'aws',
+      provider: { credentialSource: { environment: 'byoc', method: 'shared-profile', profile: 'papercusp-byoc' } },
+    },
+  };
+
+  it('pins the registered instance from its console, then tunnels SSH through SSM with the connection profile', async () => {
+    const calls: string[] = [];
+    const spec = awsDesired();
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: spec.hostId,
+      controller,
+      readDesiredSpec: async () => ({ desired: spec, connectionId: 'connection-aws' }),
+      readConnection: (async (workspaceId: string, connectionId: string) => {
+        calls.push(`connection:${workspaceId}:${connectionId}`);
+        return sharedProfileConnection;
+      }) as never,
+      async readAwsInstanceId(workspaceId, hostId) {
+        calls.push(`instance:${workspaceId}:${hostId}`);
+        return AWS_INSTANCE_ID;
+      },
+      awsClient: {
+        async getConsoleOutput(instanceId) {
+          calls.push(`console:${instanceId}`);
+          return consoleKeyBlock();
+        },
+      },
+      async enrollAwsHostKeys(input) {
+        calls.push(`enroll:${input.identity.region}:${input.identity.instanceId}:${input.keys.size}`);
+      },
+      gcpClient: {
+        getInstance: async () => {
+          throw new Error('an AWS host must never be resolved through the GCP client');
+        },
+        getInstanceGuestAttributes: async () => {
+          throw new Error('an AWS host must never be resolved through the GCP client');
+        },
+      },
+    });
+
+    expect(calls).toEqual([
+      'instance:ws-1:host-alpha',
+      'connection:ws-1:connection-aws',
+      `console:${AWS_INSTANCE_ID}`,
+      `enroll:${AWS_REGION}:${AWS_INSTANCE_ID}:3`,
+    ]);
+    expect(resolved.desired).toBe(spec);
+    expect(resolved.transport).toMatchObject({
+      kind: 'aws-ssm-ssh',
+      region: AWS_REGION,
+      instanceId: AWS_INSTANCE_ID,
+      awsProfile: 'papercusp-byoc',
+      knownHostsFile: controller.knownHostsFile,
+      identityFile: controller.identityFile,
+    });
+    expect(resolved.transport).not.toHaveProperty('remoteEntrypoint');
+    // The SSH HostKeyAlias the operations will check is the alias the pin was just written under.
+    expect(workspaceHostSshHostKeyAlias(resolved.transport)).toBe(AWS_ALIAS);
+    expect(resolved.deliveryCapabilities).toBe(AWS_WORKSPACE_HOST_TRANSPORT_FEATURES);
+    expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
+    expect(typeof resolved.operations.awaitBootstrapReady).toBe('function');
+  });
+
+  it('refuses a host the provisioner never registered an instance for, before any cloud call', async () => {
+    const getConsoleOutput = vi.fn(async () => consoleKeyBlock());
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: awsDesired(), connectionId: 'connection-aws' }),
+        readConnection: (async () => sharedProfileConnection) as never,
+        readAwsInstanceId: async () => null,
+        awsClient: { getConsoleOutput },
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostDesiredSpecUnavailableError);
+    expect(getConsoleOutput).not.toHaveBeenCalled();
+  });
+
+  it('refuses a host with no stored connection instead of falling back to ambient credentials', async () => {
+    const getConsoleOutput = vi.fn(async () => consoleKeyBlock());
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: awsDesired() }),
+        readAwsInstanceId: async () => AWS_INSTANCE_ID,
+        awsClient: { getConsoleOutput },
+      }),
+    ).rejects.toThrow('aws_workspace_host_connection_missing');
+    expect(getConsoleOutput).not.toHaveBeenCalled();
+  });
+
+  it('carries a configured AWS CLI executable from the controller environment into the transport', async () => {
+    const configured = resolveWorkspaceHostInitializationControllerProfile({
+      PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS: '/var/lib/papercusp/known_hosts',
+      PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE: '/var/lib/papercusp/id_ed25519',
+      PAPERCUSP_WORKSPACE_HOST_AWS_EXECUTABLE: '/opt/aws-cli/bin/aws',
+    });
+    expect(configured.awsExecutable).toBe('/opt/aws-cli/bin/aws');
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller: configured,
+      readDesiredSpec: async () => ({ desired: awsDesired(), connectionId: 'connection-aws' }),
+      readConnection: (async () => sharedProfileConnection) as never,
+      readAwsInstanceId: async () => AWS_INSTANCE_ID,
+      awsClient: { getConsoleOutput: async () => consoleKeyBlock() },
+      enrollAwsHostKeys: async () => undefined,
+    });
+    expect(resolved.transport).toMatchObject({ kind: 'aws-ssm-ssh', awsExecutable: '/opt/aws-cli/bin/aws' });
+  });
+
+  it('omits the CLI profile for a connection that is not a shared profile', async () => {
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller,
+      readDesiredSpec: async () => ({ desired: awsDesired(), connectionId: 'connection-aws' }),
+      readConnection: (async () => ({
+        connection: { target: 'aws', provider: { credentialSource: { environment: 'hosted', method: 'customer-role' } } },
+      })) as never,
+      readAwsInstanceId: async () => AWS_INSTANCE_ID,
+      awsClient: { getConsoleOutput: async () => consoleKeyBlock() },
+      enrollAwsHostKeys: async () => undefined,
+    });
+    expect(resolved.transport).not.toHaveProperty('awsProfile');
   });
 });
