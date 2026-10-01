@@ -196,6 +196,27 @@ describe('bundled /api/health build identity', () => {
         platform: 'node',
         format: 'esm',
         target: 'node22',
+        // Keep the test bundle's resolution boundary aligned with the host
+        // bundle's shared optional/runtime-only externals. The route stack
+        // reaches DBOS instrumentation at build time even though /health
+        // itself does not use those packages.
+        external: [
+          '@lydell/*',
+          'bufferutil',
+          'utf-8-validate',
+          'fsevents',
+          'cpu-features',
+          '@opentelemetry/context-async-hooks',
+          '@opentelemetry/core',
+          '@opentelemetry/resources',
+          '@opentelemetry/sdk-trace-base',
+          '@opentelemetry/sdk-trace-node',
+          '@opentelemetry/sdk-logs',
+          '@opentelemetry/sdk-metrics',
+          '@opentelemetry/exporter-trace-otlp-proto',
+          '@opentelemetry/exporter-logs-otlp-proto',
+          '@opentelemetry/exporter-metrics-otlp-proto',
+        ],
         outfile,
         define: {
           __PAPERCUSP_BUNDLED_SIDECAR__: 'true',
