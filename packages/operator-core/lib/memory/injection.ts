@@ -91,6 +91,13 @@ export interface MemoryInjectionInput {
    */
   respondByMs?: number;
   /**
+   * Whether the caller still waits on this build (injection-block-cache
+   * MemoryBlockBuildContext). Read when Jev's time is set: once it is false the
+   * build answers nobody, so `respondByMs` no longer bounds Jev and only the
+   * build's own deadline does. Absent: treated as waiting.
+   */
+  callerWaiting?: () => boolean;
+  /**
    * Per-user memory scope. Omit (or pass null) on workspace-bearer
    * routes that don't have a session user — the helper will then
    * inject only the harness/workspace pools.
@@ -1644,9 +1651,17 @@ async function buildBlockInner(
         // What Jev may use: the smaller of what is left of the client's wall and of
         // this build's own deadline, which ends first on turn-start. A wait sized
         // from the wall alone was cut off by the deadline (jevMemoryBudgetMs).
-        const budgetMs = jevMemoryBudgetMs(Date.now(), {
-          ...(input.respondByMs !== undefined ? { respondByMs: input.respondByMs } : {}),
-          deadlineRemainingMs: deadline.remainingMs(),
+        // The wall counts only while someone still waits on this build. A
+        // stale-while-revalidate rebuild answers nobody, yet sized from the wall it
+        // skipped Jev with budgets down to -2,175 ms while its own deadline still
+        // had time (WI-10004485 step D, staging, 2026-10-01).
+        const jevNow = Date.now();
+        const deadlineLeftMs = deadline.remainingMs();
+        const callerWaiting = input.callerWaiting?.();
+        const wallApplies = input.respondByMs !== undefined && callerWaiting !== false;
+        const budgetMs = jevMemoryBudgetMs(jevNow, {
+          ...(wallApplies ? { respondByMs: input.respondByMs } : {}),
+          deadlineRemainingMs: deadlineLeftMs,
         });
         const verdict = await deadline.run(() => runJevMemoryGate({
           workspaceId: input.workspaceId,
@@ -1659,7 +1674,11 @@ async function buildBlockInner(
           // The same label memory_recall_stats.surface records for this recall.
           surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
         }), 'admission');
-        const jevEntry = jevFunnelEntry(verdict, budgetMs);
+        const jevEntry = jevFunnelEntry(verdict, budgetMs, {
+          ...(callerWaiting !== undefined ? { callerWaiting } : {}),
+          ...(input.respondByMs !== undefined ? { wallLeftMs: input.respondByMs - jevNow } : {}),
+          deadlineLeftMs,
+        });
         if (jevEntry) funnel.jev = jevEntry;
         if (verdict.effective === 'on' && verdict.outcome === 'answered') {
           const drop = new Set(pooled.filter((_, i) => verdict.keep[i] === false));

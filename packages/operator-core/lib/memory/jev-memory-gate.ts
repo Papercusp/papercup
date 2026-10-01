@@ -348,14 +348,37 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
 }
 
 /**
+ * What bounded the time {@link jevMemoryBudgetMs} gave Jev, recorded beside it so a
+ * no-time skip names the bound that caused it instead of leaving it to inference.
+ */
+export interface JevFunnelBounds {
+  /** Whether a caller still waited on the build (the wall applied only if so). */
+  readonly callerWaiting?: boolean;
+  /** What was left of the client wall, ms (negative: already past). */
+  readonly wallLeftMs?: number;
+  /** What was left of the build's own deadline, ms. */
+  readonly deadlineLeftMs?: number;
+}
+
+/**
  * The admission-funnel record of one gate result (memory_recall_stats.admission.jev),
  * or undefined when the filter was Off. `budgetMs` is what the caller offered
  * ({@link jevMemoryBudgetMs}). A no-time skip is marked `skipped` in both modes, so
  * one predicate counts it whether the filter was On or Log only.
  */
-export function jevFunnelEntry(result: JevMemoryGateResult, budgetMs: number | undefined): JevFunnelEntry | undefined {
+export function jevFunnelEntry(
+  result: JevMemoryGateResult,
+  budgetMs: number | undefined,
+  bounds: JevFunnelBounds = {},
+): JevFunnelEntry | undefined {
   if (result.effective === 'off') return undefined;
-  const budget = budgetMs !== undefined && Number.isFinite(budgetMs) ? { budgetMs: Math.round(budgetMs) } : {};
+  const finite = (v: number | undefined): v is number => v !== undefined && Number.isFinite(v);
+  const budget = {
+    ...(finite(budgetMs) ? { budgetMs: Math.round(budgetMs) } : {}),
+    ...(bounds.callerWaiting !== undefined ? { callerWaiting: bounds.callerWaiting } : {}),
+    ...(finite(bounds.wallLeftMs) ? { wallLeftMs: Math.round(bounds.wallLeftMs) } : {}),
+    ...(finite(bounds.deadlineLeftMs) ? { deadlineLeftMs: Math.round(bounds.deadlineLeftMs) } : {}),
+  };
   if (result.effective === 'shadow') {
     return {
       effective: 'shadow',
