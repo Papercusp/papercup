@@ -3508,3 +3508,73 @@ shared-host restart. A :3271 MCP transport send failure during the later
 lock acquisition was handled through sanctioned `ptool --url=:9071` under
 the same session: the path was first read as unheld, then claimed and
 released with native edit proof. No incidental DRAIN item was filed.
+
+### Matched isolated CPU samples — October 1, 09:25Z
+
+WI-10002830 extended the same canonical runtime test with two cases: the
+existing discovery comparison and a CPU-sampling comparison. The latter
+keeps real filesystem observation enabled throughout and alternates the
+inspector profiler off/on/on/off. Both cases retain the identical synthetic
+workload hash `6fda56724fe55c56706e4c99460603d83685d6e3debceca2f24a3210b6140ad4`.
+This reuses Node's inspector and the maintained disposable background route;
+it adds no serving-host observer or production configuration.
+
+The sampler uses 10,000-microsecond intervals. Each sampled leaf is joined
+to its real ancestor frames; the receipt retains every sampled stack's count,
+preceding sample intervals, and a SHA-256 of the original profile. Assertions
+require actual samples with ingestion-source ancestry, rather than merely
+finding a function name in the profiler's node dictionary. Start/stop costs
+are measured separately from the sweep's wall, loop and process-CPU counters.
+The inspector disconnects before private database teardown.
+
+The canonical command remains:
+
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts`
+
+Run `r1` passed **2/2, zero skipped, exit 0**. The router started at
+`2026-10-01T09:24:21.190Z` on `b190bcc76b` with the local fixture edit; automatic
+git-sync moved HEAD during the run. Both child receipts report
+`532f72579866b96c503d963ed6dc7b73615313ff`, and post-run path provenance reports
+that HEAD with the fixture clean. The ingestion source hash was asserted
+unchanged before and after both child workloads:
+`a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`.
+Fixture SHA-256:
+`a43b41bccf88a35b14434dc57efe6829fbac3204c28ecc188c215420e2887dd2`.
+
+Child PIDs 3663053 and 3682630 used Node v25.9.0 with background workers
+enabled and DBOS routines disabled. Each read back 256 turns and 2,560 parts,
+verified offsets, removed its private HOME/datadir, and verified its DB port
+refused a connection. The sampling child produced these distinguishing rows:
+
+| Sampled sweep | Wall ms | Decode ms | Writes ms | Samples | Samples with ingestion ancestry | Samples with parseCodexParts ancestry |
+|---|---:|---:|---:|---:|---:|---:|
+| Useful tail 2 | 1343 | 677.8 | 148.3 | 135 | 90 | 59 |
+| Matched unchanged 2 | 466 | 0 | 0 | 48 | 22 | 0 |
+| Useful tail 3 | 1441 | 739.7 | 180.6 | 143 | 89 | 71 |
+| Matched unchanged 3 | 526 | 0 | 0 | 54 | 21 | 0 |
+
+Useful sampled stacks locate active work in `parseCodexParts` below
+`readNewLines`; unchanged stacks include synchronous `readFileSync` below
+`codexTranscriptMeta` and `codexAdvSessionMetadata`. This distinguishes active
+decoding from unchanged metadata work on this exact private fixture. It does
+not distinguish JSON parsing, redaction, allocation and other operations
+inlined into `parseCodexParts`, nor prove redundant metadata reads caused the
+dated live slow sweeps.
+
+Profiler starts took 83.94–115.86 ms and stops 6.90–7.81 ms. Equal-scale
+unprofiled useful passes took 1665/1468 ms and unchanged passes 581/540 ms.
+The four alternating observations expose startup cost and retain controls;
+they do not establish a stable sampling-overhead percentage or an acceptable
+overhead bound. Raw profile intervals include inspector startup frames, and
+preceding-interval allocation is not exact per-function/per-phase CPU time.
+Counts are sampling observations, not CPU utilization. Process CPU still
+includes all child threads and excludes the separate PostgreSQL process.
+
+Full stack summaries, profile hashes and both cleanup receipts are retained
+in `/tmp/p008-ingest-cpu-runtime-20261001-r1.log`, SHA-256
+`8612e1ff2bbbefcc7ea6acc54c58912b5f0c80fe7487ed0e5b0ed1193b62c6ef`.
+The dated live phase receipt and historical attribution/retention limits stay
+separate. **P-008/R-8 remains open: no live causal closure, acceptance binding,
+performance improvement or shipment is claimed.** Next distinguish the
+decoder's cleaning/redaction cost from its parsing work using a bounded
+canonical regression before changing that correctness/security surface.
