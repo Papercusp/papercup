@@ -170,6 +170,20 @@
 #     source the printed environment from a later agent tool call.
 #
 # ENV OVERRIDES (all optional)
+#   VERIFY_TAURI_REQUIRE_BUILT  repo-relative files/dirs (comma or space
+#                                separated) the frozen SPA MUST contain: the
+#                                paths your change edited (WI-10004972). Before
+#                                freezing, wait until the shared dist's build
+#                                stamp (dist/.vite-rebuild-source-stamp, dated to
+#                                when that build STARTED) is newer than every
+#                                listed path. If it never is, refuse with an
+#                                SPA_STALE_VS_SOURCE line and exit 3. Unset =
+#                                freeze whatever is there (the default) and log
+#                                how many sources are newer than the bundle.
+#   PAPERCUSP_SPA_REQUIRE_BUILT_WAIT_SEC
+#                               max wait for that rebuild (default 2400; one
+#                                measured build took 26 min). Poll interval:
+#                                PAPERCUSP_SPA_REQUIRE_BUILT_POLL_SEC (default 15).
 #   VERIFY_TAURI_ISOLATED_DB    1 = boot a genuinely isolated, throwaway,
 #                                fully-migrated embedded Postgres and WebView
 #                                profile for this run instead of sharing the live
@@ -2259,8 +2273,32 @@ fi
 SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
 SPA_DIST=""
 if [ -f "$SHARED_SPA_DIST/index.html" ]; then
+  # WI-10004972: quiescence (below) proves the dist stopped CHANGING, not that it
+  # CONTAINS the edit under test. The shared dist is built by the oneshot
+  # papercup-vite-rebuild.timer -> ~/.local/bin/papercup-vite-rebuild.sh (an
+  # `npm run build`, not a `vite build --watch`); one build took 26 min, so a
+  # quiet dist can predate an edit by that whole window and hand back a verdict
+  # about OLD code. VERIFY_TAURI_REQUIRE_BUILT=<repo-relative paths> waits for a
+  # build whose start stamp is newer than every listed path, or refuses
+  # (SPA_STALE_VS_SOURCE, exit 3 — the same "this run cannot exercise your
+  # change" code as the post-boot VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS check).
+  # It complements that check: it WAITS before the freeze instead of failing
+  # after a full boot, and it needs no source string that survives
+  # minification. Every run logs how many sources are newer than the bundle.
+  # shellcheck source=lib/spa-require-built.sh
+  if ! . "$SCRIPT_DIR/lib/spa-require-built.sh"; then
+    log "FATAL: cannot load $SCRIPT_DIR/lib/spa-require-built.sh"
+    rm -rf "$WORK"
+    exit 1
+  fi
+  if [ -n "${VERIFY_TAURI_REQUIRE_BUILT:-}" ] \
+    && ! spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"; then
+    rm -rf "$WORK"
+    exit 3
+  fi
+  spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"
   # EI-19382195051346372: wait for QUIESCENCE before freezing. The shared
-  # `vite build --watch` rewrites $SHARED_SPA_DIST/assets every ~3min and
+  # dist's builder rewrites $SHARED_SPA_DIST/assets on every rebuild and
   # RETAINS old hashed chunks (emptyOutDir:false), so a freeze racing a
   # rebuild can copy a MIX of old+new chunks — a snapshot with no single
   # consistent build behind it. From inside the webview that is
@@ -2351,6 +2389,13 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   log "  → edited source AFTER this boot? run: bash \"$WORK/check-freshness.sh\" (\$VERIFY_TAURI_FRESHNESS_CHECK) BEFORE trusting a re-check — it warns loudly if the shared bundle drifted (EI-17134)."
   log "  → waiting for a REBUILD (not just checking one)? do NOT stat one specific hashed asset (e.g. dist/assets/adv-D5qbAjO8.js) — a rebuild emits a NEW content-hash filename, so the file you're watching is orphaned and its mtime is frozen forever; the poll hangs indefinitely (EI-18812301452864060). Compare the newest matching file instead: \`ls -t dist/assets/adv-*.js | head -1\`, or just use check-freshness.sh above."
 else
+  if [ -n "${VERIFY_TAURI_REQUIRE_BUILT:-}" ]; then
+    # WI-10004972: the caller asked for proof the SPA contains its edits, and
+    # there is no built SPA to prove it against.
+    log "SPA_STALE_VS_SOURCE reason=no-dist dist=$SHARED_SPA_DIST — VERIFY_TAURI_REQUIRE_BUILT is set but there is no built SPA here. Refusing."
+    rm -rf "$WORK"
+    exit 3
+  fi
   log "WARNING: no built SPA at $SHARED_SPA_DIST (operator-vite not built yet) — NOT freezing a"
   log "         snapshot; the sidecar falls through to the shared dist as before. Build"
   log "         operator-vite first for a genuinely isolated (watcher-proof) module server."
@@ -3846,9 +3891,9 @@ if [ -n "$SNAPSHOT_NEEDLE" ]; then
           echo "  │  a false negative about PRE-EDIT code — refusing to run the assertion"
           echo "  │  rather than hand you a confident wrong answer (EI-19444780917356384)."
           echo "  │                                                                        │"
-          echo "  │  Fix: wait for the shared build to emit your change, then re-run this"
-          echo "  │  script (the snapshot is frozen at boot — reloading never picks it up)."
-          echo "  │  Watch for the rebuild with: ls -t apps/operator-vite/dist/assets/*.js"
+          echo "  │  Fix: re-run with VERIFY_TAURI_REQUIRE_BUILT=<the paths you edited>;"
+          echo "  │  it waits BEFORE the freeze for a shared build that contains them"
+          echo "  │  (the snapshot is frozen at boot — reloading never picks it up)."
           echo "  └────────────────────────────────────────────────────────────────────────┘"
           echo
         } >&2

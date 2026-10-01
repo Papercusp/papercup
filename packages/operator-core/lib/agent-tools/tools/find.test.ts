@@ -963,6 +963,19 @@ describe('confirmed hive discovery visibility (WI-39255)', () => {
     ).resolves.toBe(corpus);
   });
 
+  it('fails open when the Hive-scope registry read exceeds its budget', async () => {
+    const { corpus } = buildCorpus();
+
+    await expect(
+      filterCorpusForConfirmedHiveScope(
+        corpus,
+        { workspaceId: 'ws-1', harnessSlug: 'member-a' },
+        () => new Promise<string | null>(() => {}),
+        1,
+      ),
+    ).resolves.toBe(corpus);
+  });
+
   it('does not resolve hive membership for an unscoped caller', async () => {
     const { corpus } = buildCorpus();
     const resolveHive = vi.fn();

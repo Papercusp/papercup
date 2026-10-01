@@ -278,22 +278,49 @@ export async function keychainDelete(
 /** Per-site kill-switch for secret-tool's sidecar route (`0` = force a local spawn). */
 export const SECRET_TOOL_SIDECAR_VAR = 'PAPERCUSP_SECRET_TOOL_SPAWN_SIDECAR';
 
+/** Options a host-installed secret-tool executor receives (`execFileViaSidecar`'s shape). */
+export interface SecretToolExecOpts {
+  timeoutMs: number;
+  subsystem: string;
+  sidecarVar: string;
+}
+
+/** A host-installed `secret-tool <args>` runner — see {@link configureKeychainSecretToolExec}. */
+export type SecretToolExec = (args: string[], opts: SecretToolExecOpts) => Promise<{ stdout: string }>;
+
+const secretToolExecSeam = pinModuleState(
+  '@papercusp/operator-core.identity.keychain.secret-tool-exec',
+  () => ({ exec: null as SecretToolExec | null }),
+);
+
 /**
- * `secret-tool <args>` (lookup / clear — never `store`, which needs stdin the sidecar
- * exec does not carry) forked by the spawner sidecar where this host has one
- * (WI-10004975: the boot-time keychain probe's secret-tool lookups were ~34% of a 13 GB
- * bg-host's spawn samples; a local fork costs time proportional to the parent's RSS).
- * Lazy import keeps this module import-safe in the SPA bundle; the local fallback is this
- * module's own `execFile`, so a missing binary still surfaces as ENOENT below.
+ * Install (or clear, with `null`) the executor secret-tool lookups/clears run through. The
+ * host wires the spawner-sidecar route here via `installKeychainSidecarExec`
+ * (`fleet/keychain-sidecar-exec.ts`) — WI-10004975: the boot-time keychain probe's
+ * secret-tool lookups were ~34% of a 13 GB bg-host's spawn samples, and a local fork costs
+ * time proportional to the parent's RSS.
+ *
+ * ⛔ INJECTED, never imported — not even with a lazy `import()`. This module is reached from
+ * esbuild-bundled runtime workers (`snapshot-fold.worker.ts` → hive-epoch-crypto-impl → here),
+ * and esbuild INLINES a literal dynamic import: the sidecar module's graph (task-manager →
+ * DBOS → testcontainers, ~11.9k inputs) failed the worker bundle and kept bg-host from
+ * starting on 2026-10-01 21:01Z. `runtime-worker-bundle-graph.test.ts` guards the class.
+ */
+export function configureKeychainSecretToolExec(exec: SecretToolExec | null): void {
+  secretToolExecSeam.exec = exec;
+}
+
+/**
+ * `secret-tool <args>` (lookup / clear — never `store`, which needs stdin the sidecar exec
+ * does not carry). Runs through the host-installed executor when one is configured, else
+ * this module's own `execFile`; a missing binary surfaces as ENOENT below either way.
  */
 async function runSecretTool(args: string[]): Promise<{ stdout: string }> {
-  const { execFileViaSidecar } = await import('../fleet/git-via-sidecar');
-  return execFileViaSidecar(
-    'secret-tool',
-    args,
-    { timeoutMs: 5000, subsystem: 'keychain-secret-tool', sidecarVar: SECRET_TOOL_SIDECAR_VAR },
-    { local: (c, a, o) => execFile(c, a, { timeout: o.timeout }) },
-  );
+  const exec = secretToolExecSeam.exec;
+  if (exec) {
+    return exec(args, { timeoutMs: 5000, subsystem: 'keychain-secret-tool', sidecarVar: SECRET_TOOL_SIDECAR_VAR });
+  }
+  return execFile('secret-tool', args, { timeout: 5000 });
 }
 
 async function trySecretTool(

@@ -5674,18 +5674,97 @@ def _has_computed_write_path(body):
 # tracked (last assignment anywhere in the body wins, the same top-to-bottom
 # approximation `_payload_literal_tree_path`'s direct-literal scan already
 # relies on) — an accepted, documented approximation, not a claim of soundness.
+# EI-24345357866084290: retain only statement-boundary assignments whose path
+# expression can be reduced to quoted strings, already-known variables,
+# process.env.HOME, and path.join. The whole write argument is resolved too, so
+# a known out-of-tree prefix is never split into a repo-relative basename.
 _SIMPLE_ASSIGN_RE = re.compile(
-    r'(?:^|[\n;])[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(["\'])((?:(?!\2)[^\\]|\\.)*)\2'
+    r'(?:^|[\n;])[ \t]*(?:(?:const|let|var)[ \t]+)?'
+    r'([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*([^;\n]*)'
 )
 _BARE_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_STATIC_PATH_JOIN_RE = re.compile(r'(?:(?:path|os\.path)\.)join\s*\((.*)\)$')
+
+
+def _split_static_expression(expr, delimiter):
+    """Split on a delimiter outside strings and nested brackets."""
+    parts = []
+    start = 0
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if quote:
+            if ch == '\\' and i + 1 < len(expr):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        elif ch == delimiter and depth == 0:
+            parts.append(expr[start:i].strip())
+            start = i + 1
+        i += 1
+    parts.append(expr[start:].strip())
+    return parts
+
+
+def _static_path_expression(expr, variables, depth=0):
+    """Evaluate literal path pieces, known variables, HOME, and path.join."""
+    if expr is None or depth > 8 or len(expr) > 2000:
+        return None
+    expr = expr.strip()
+    if not expr:
+        return None
+
+    _literal = _QUOTED_LITERAL_RE.fullmatch(expr)
+    if _literal:
+        value = _literal.group(1) if _literal.group(1) is not None else _literal.group(2)
+        # Escapes need language-specific decoding; leave them to the
+        # existing literal scanner instead of guessing at their value.
+        return None if '\\' in value else value
+
+    if expr == 'process.env.HOME':
+        return os.environ.get('HOME') or os.path.expanduser('~')
+    if _BARE_IDENT_RE.fullmatch(expr):
+        return variables.get(expr)
+
+    _parts = _split_static_expression(expr, '+')
+    if len(_parts) > 1:
+        _values = [_static_path_expression(part, variables, depth + 1) for part in _parts]
+        if all(value is not None for value in _values):
+            return ''.join(_values)
+        return None
+
+    _join = _STATIC_PATH_JOIN_RE.fullmatch(expr)
+    if _join:
+        _args = _split_static_expression(_join.group(1), ',')
+        _values = [_static_path_expression(arg, variables, depth + 1) for arg in _args]
+        if _values and all(value is not None for value in _values):
+            return os.path.join(*_values)
+    return None
 
 
 def _literal_var_assignments(body):
-    """{ varName: literalValue } for simple `VAR = 'literal'` assignments in
-    `body` — last assignment wins (top-to-bottom scan order)."""
+    """{ varName: literalValue } for simple assignments in the body.
+
+    Last assignment wins (top-to-bottom scan order). Static path expressions
+    are reduced to one value; unsupported expressions are omitted, not guessed.
+    """
     out = {}
     for _m in _SIMPLE_ASSIGN_RE.finditer(body):
-        out[_m.group(1)] = _m.group(3)
+        _name = _m.group(1)
+        _value = _static_path_expression(_m.group(2), out)
+        if _value is None:
+            out.pop(_name, None)
+        else:
+            out[_name] = _value
     return out
 
 
@@ -5733,6 +5812,17 @@ def _payload_literal_tree_path(body, canon, cwd):
                     if (resolved and (resolved == canon or resolved.startswith(canon + os.sep))
                             and not _is_sanctioned_scratch(resolved, canon)):
                         return cand
+        _static_target = _static_path_expression(_first_arg, _var_literals or {})
+        if _static_target is None and _var_literals is None:
+            _var_literals = _literal_var_assignments(body)
+            _static_target = _static_path_expression(_first_arg, _var_literals)
+        if _static_target is not None:
+            if _looks_like_path_candidate(_static_target):
+                resolved = _resolve_write_target(_static_target, cwd)
+                if (resolved and (resolved == canon or resolved.startswith(canon + os.sep))
+                        and not _is_sanctioned_scratch(resolved, canon)):
+                    return _static_target
+            continue  # resolve the whole known expression, never its pieces
         for _m in _QUOTED_LITERAL_RE.finditer(_first_arg):
             raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
             if any(ch in raw for ch in ('$', '`', '{', '}')):

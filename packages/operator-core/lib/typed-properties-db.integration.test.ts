@@ -51,7 +51,7 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       workspaceId: WS,
       title: 'String list',
       description: 'A list of strings',
-      tier: 'first-class',
+      tier: 'first-class', nature: 'record',
       payloadSchema: { type: 'array', items: { type: 'string' } },
     });
     // …and one WITHOUT (constrains nothing).
@@ -60,7 +60,7 @@ describe('typed-properties-db (real PG, migration 923)', () => {
       workspaceId: WS,
       title: 'Freeform',
       description: 'Unconstrained value',
-      tier: 'first-class',
+      tier: 'first-class', nature: 'record',
     });
     // Owning rows: one goal, one plan.
     await db.adminSql`

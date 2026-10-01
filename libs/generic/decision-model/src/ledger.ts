@@ -57,6 +57,10 @@ export interface DecisionLedgerEntry {
   /** sha256 of the canonical JSON encoding of `state`. Detects repeats; reveals nothing. */
   readonly stateSha256: string;
   readonly startedAt: Date;
+  /** Ms the calling thread spent running code during the call; null when not measured. */
+  readonly loopBusyMs: number | null;
+  /** `loopBusyMs` over the call window, in [0, 1]; null when not measured. */
+  readonly loopUtilization: number | null;
 }
 
 /**
@@ -122,6 +126,22 @@ function costOf(pricing: DecisionPricing | undefined, input: number | null, outp
   return Number.isFinite(usd) && usd >= 0 ? usd : null;
 }
 
+/**
+ * The host-load measurement as ledger columns. A value outside its range (a meter
+ * bug, or a record built by hand) is stored as null — not measured — rather than
+ * a number an auditor would trust.
+ */
+function hostLoadColumns(record: DecisionCallRecord): { loopBusyMs: number | null; loopUtilization: number | null } {
+  const load = record.hostLoad;
+  if (!load) return { loopBusyMs: null, loopUtilization: null };
+  const busyOk = Number.isFinite(load.busyMs) && load.busyMs >= 0;
+  const utilOk = Number.isFinite(load.utilization) && load.utilization >= 0 && load.utilization <= 1;
+  return {
+    loopBusyMs: busyOk ? Math.round(load.busyMs) : null,
+    loopUtilization: utilOk ? load.utilization : null,
+  };
+}
+
 export interface DecisionLedgerOptions {
   readonly pricing?: DecisionPricing;
 }
@@ -141,6 +161,7 @@ export function toDecisionLedgerEntry(record: DecisionCallRecord, options: Decis
     subjectIds: [...record.subjectIds],
     stateSha256: stateSha256(request.state),
     startedAt: record.startedAt,
+    ...hostLoadColumns(record),
   };
 
   if (outcome.kind === 'answered') {

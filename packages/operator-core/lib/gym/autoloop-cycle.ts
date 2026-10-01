@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { createHash, randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
@@ -60,9 +60,11 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '../../../..');
-const FAKE_AGENT = join(__dirname, 'fixtures/fake-agent.mjs');
+// Anchored on the checkout, not on this module's directory: this module is inlined into the
+// esbuild host bundle, where import.meta.url is the bundle's URL, so both a `..` climb and a
+// sibling `fixtures/` path resolved outside the checkout (P-016; see module-repo-root.ts).
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
+const FAKE_AGENT = join(REPO_ROOT, 'packages/operator-core/lib/gym/fixtures/fake-agent.mjs');
 
 // EI-18154750714519366: the gym-operator's default port used to be the FIXED 3976 — on a busy
 // box where a routine cycle (or a leftover process) already holds it, a concurrent manual

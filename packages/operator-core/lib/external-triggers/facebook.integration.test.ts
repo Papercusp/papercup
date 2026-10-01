@@ -30,6 +30,8 @@ beforeAll(async () => {
     title: socialType.title,
     description: socialType.description,
     tier: socialType.tier,
+    nature: socialType.nature,
+    audience: socialType.audience,
     workItemKind: socialType.workItemKind,
     payloadSchema: socialType.payloadSchema,
     authoritativeWriter: socialType.authoritativeWriter,

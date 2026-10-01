@@ -159,6 +159,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   // workspace-host recovery state machine was dead code), which makes "landed a seed script the
   // guard cannot see" the one omission it must not reproduce one level up.
   { name: 'hosted-lifecycle-reconcile', seedScript: 'seed-hosted-lifecycle-reconcile-routine.ts' },
+  // WI-10004437. Added with the action, its import, its spend entry and its seed script, for the
+  // reason the hosted-lifecycle-reconcile entry above records: a tripwire nothing arms is the same
+  // silent nothing as the ingress gaps it exists to catch.
+  { name: 'hosted-public-ingress-probe', seedScript: 'seed-hosted-public-ingress-probe-routine.ts' },
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-drain-sweep', seedScript: 'seed-plan-drain-sweep-routine.ts' },

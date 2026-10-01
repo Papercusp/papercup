@@ -49,6 +49,8 @@ describe('frontier placement opt-in (real PG)', () => {
       title: 'Bet analysis',
       description: 'reason about a bet',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'agent',
       workItemKind: 'bet-analysis',
       tags: ['oddsmith', HIVE_PLACEMENT_TAG],
     });
@@ -59,6 +61,8 @@ describe('frontier placement opt-in (real PG)', () => {
       title: 'Note',
       description: 'a plain note',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'agent',
       workItemKind: 'note',
       tags: ['oddsmith'],
     });
@@ -77,6 +81,7 @@ describe('frontier placement opt-in (real PG)', () => {
       title: 'Wager',
       description: 'a wager',
       tier: 'generic-kind',
+      nature: 'record', // D-007: a wager is a record of a position taken, not work
       workItemKind: 'wager',
       tags: [HIVE_PLACEMENT_TAG],
     });
@@ -92,6 +97,7 @@ describe('frontier placement opt-in (real PG)', () => {
       title: 'Position',
       description: 'engine-owned money truth',
       tier: 'projection',
+      nature: 'record',
       workItemKind: 'position', // even if a kind is set, projection is engine-written, not bee-placed
       authoritativeWriter: 'engine:oddsmith',
       tags: [HIVE_PLACEMENT_TAG],

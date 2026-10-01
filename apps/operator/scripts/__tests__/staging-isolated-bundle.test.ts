@@ -69,7 +69,9 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
   it("blocks a bundle read until the in-place checkout finishes", () => {
     const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
     const acquire = sync.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
-    const setup = sync.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const setup = sync.indexOf(
+      '"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \\\n      --ref "$BRANCH"',
+    );
     const downgrade = sync.indexOf("flock -s 9");
     const prebuild = sync.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"');
     expect(acquire).toBeGreaterThanOrEqual(0);
@@ -157,5 +159,25 @@ describe("bundle-host-freshness proof", () => {
     expect(run("stamp").status).toBe(0);
     writeFileSync(join(repo, "dist-host", "sql", "001.sql"), "select 2;\n");
     expect(run("check").status).not.toBe(0);
+  });
+});
+
+describe("bundle-host freshness helper paths", () => {
+  const bundleHost = readFileSync(
+    join(REPO_ROOT, "apps/operator/bin/bundle-host.sh"),
+    "utf8",
+  );
+
+  it("passes relative or absolute paths unchanged to both freshness operations", () => {
+    // The verifier supplies an absolute dist-verify outfile. Prefixing PWD to
+    // that value creates an invalid double-rooted path and makes the optional
+    // freshness stamp fail open, so both check and stamp must pass the original
+    // arguments to the Node helper (which resolves relative paths itself).
+    expect(bundleHost.match(/--entry "\$ENTRY"/g)).toHaveLength(2);
+    expect(bundleHost.match(/--outfile "\$OUTFILE"/g)).toHaveLength(2);
+    expect(bundleHost.match(/--manifest "\$FRESH_MARKER"/g)).toHaveLength(2);
+    expect(bundleHost).not.toContain('--entry "$PWD/$ENTRY"');
+    expect(bundleHost).not.toContain('--outfile "$PWD/$OUTFILE"');
+    expect(bundleHost).not.toContain('--manifest "$PWD/$FRESH_MARKER"');
   });
 });

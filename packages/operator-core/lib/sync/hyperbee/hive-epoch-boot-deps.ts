@@ -166,7 +166,13 @@ export async function buildHiveRekeyBootDeps(opts: {
       try {
         // Cached per keychainId (WI-10004975): this diagnostic used to re-spawn secret-tool
         // per harness on every rekey refresh — ~34% of a 13 GB bg-host's spawn samples.
-        const { keychainProbeTiersCached } = await import('../../identity/keychain');
+        const [{ keychainProbeTiersCached }, { installKeychainSidecarExec }] = await Promise.all([
+          import('../../identity/keychain'),
+          // Host-side wiring of keychain's secret-tool seam: keychain.ts itself must not
+          // import the sidecar module — it sits inside a bundled runtime worker's graph.
+          import('../../fleet/keychain-sidecar-exec'),
+        ]);
+        installKeychainSidecarExec();
         const tiers = await keychainProbeTiersCached(localDevice.keychainId);
         recordBootEvent(
           opts.workspaceId,

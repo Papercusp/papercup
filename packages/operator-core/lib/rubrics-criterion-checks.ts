@@ -659,6 +659,17 @@ export type CriterionProbeDispatcher = (
 ) => Promise<unknown>;
 
 /**
+ * Per-probe budget for GRADING-time criterion probes. Grading is deliberate and
+ * fail-closed, so the budget is sized to the slowest probe-able read's measured
+ * tail rather than to the wake path's 2.5s critical-path budget. Measured over
+ * 24h of tool_invocations (2026-10-01): dev:pipeline_position p95 28s / p99 58s,
+ * state:read p99 22s. The 2.5s wake budget sat below dev:pipeline_position's
+ * p50, so most emits on such a criterion were refused unjudgeable
+ * (EI-24809550207915153). Still a small fraction of SCORECARD_TEST_CHECK_TIMEOUT_MS.
+ */
+export const CRITERION_PROBE_TIMEOUT_MS = 60_000;
+
+/**
  * GRADING-time evaluation for kind:'probe' checks. Rubrics deliberately keep
  * `check.probe` dependency-light (`unknown`) so the template does not import
  * the continuity subsystem; this evaluator is the semantic boundary that
@@ -675,6 +686,8 @@ export async function evaluateCriterionProbeChecks(input: {
   ratings: Record<string, { rating: string } | undefined>;
   dispatchTool?: CriterionProbeDispatcher;
   nowIso?: () => string;
+  /** Per-probe dispatch budget; defaults to CRITERION_PROBE_TIMEOUT_MS. */
+  probeTimeoutMs?: number;
 }): Promise<CriterionCheckEvaluation> {
   const planned: Array<{ key: string; probe: ContinuityProbe }> = [];
   for (const c of input.criteria) {
@@ -719,7 +732,10 @@ export async function evaluateCriterionProbeChecks(input: {
       probe: item.probe,
     },
   }));
-  const batch = await runContinuityProbeBatch(sources, { dispatchTool: input.dispatchTool });
+  const batch = await runContinuityProbeBatch(sources, {
+    dispatchTool: input.dispatchTool,
+    timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
+  });
   if (batch.truncated > 0 || batch.results.length !== planned.length) {
     return {
       ok: false,

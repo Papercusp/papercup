@@ -1182,9 +1182,17 @@ sync_one_node_modules() {
 record_node_modules_copy_metadata() {
   local metadata_root="$RELEASE_ROOT/node_modules"
   mkdir -p "$metadata_root"
-  [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
-    && cp "$INTEGRATION_ROOT/package-lock.json" "$metadata_root/.papercusp-source-package-lock.json"
+  # WI-10004928 part 7: a REUSED immutable generation carries both markers
+  # read-only (0444). A plain `cp` / `>` onto one fails EACCES and the verify
+  # ends verdictless. Unlink first (needs only directory write), so each write
+  # creates a fresh file. Never chmod the inherited file in place: it may be a
+  # hard link into the immutable generation store.
+  if [ -f "$INTEGRATION_ROOT/package-lock.json" ]; then
+    rm -f "$metadata_root/.papercusp-source-package-lock.json"
+    cp "$INTEGRATION_ROOT/package-lock.json" "$metadata_root/.papercusp-source-package-lock.json"
+  fi
   if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+    rm -f "$metadata_root/.papercusp-dependency-generation"
     printf 'identity=%s\nsource=%s\n' \
       "$PINNED_DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
       > "$metadata_root/.papercusp-dependency-generation"

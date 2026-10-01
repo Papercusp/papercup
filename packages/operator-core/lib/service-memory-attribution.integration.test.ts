@@ -147,13 +147,23 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       expect(endpoints, startup).toHaveLength(2);
       expect(endpoints[0]).not.toBe(endpoints[1]);
       expect(inspectorEndpoints(startup.slice(0, startup.indexOf(endpoints[0]) + 12))).toEqual([]);
-      const { createCdpClient } = await import('../../../scripts/cdp-inspector.mjs');
+      const { createCdpClient, readProcessMemory } = await import('../../../scripts/cdp-inspector.mjs');
       const stale = createCdpClient(endpoints[0]);
       try { await expect(stale.connect()).rejects.toThrow(); } finally { stale.close(); }
       client = createCdpClient(endpoints.at(-1));
       await client.connect();
       const measured = await client.evaluate('({ pid: process.pid, cap: process.env.MALLOC_ARENA_MAX })', { returnByValue: true });
       expect(measured.result.value).toEqual(identity);
+      // Exercise the maintained reader on a real inspector without an ESM
+      // import callback. A wrong target must fail even when its counters look valid.
+      const memory = await readProcessMemory(client, { expectedPid: child.pid });
+      expect(memory.pid).toBe(child.pid);
+      expect(memory.memory.heapUsed).toBeGreaterThan(0);
+      expect(memory.memory.external).toBeGreaterThanOrEqual(0);
+      expect(memory.heap.used_heap_size).toBeGreaterThan(0);
+      expect(memory.heap.number_of_detached_contexts).toBeGreaterThanOrEqual(0);
+      await expect(readProcessMemory(client, { expectedPid: child.pid! + 1 })).rejects.toThrow('Inspector PID mismatch');
+      await expect(readProcessMemory(client, {})).rejects.toThrow('positive expectedPid');
       await client.evaluate("globalThis[Symbol.for('@papercusp/p011.retainer.fixture')] = { map: new Map(Array.from({length: 5}, (_, i) => [i, i])), array: Array(7).fill(1), fakeMap: Object.create(Map.prototype), fakeArray: Object.create(Array.prototype) }");
       const remoteIds: string[] = [];
       const observer = { evaluate: client.evaluate, send: async (method: string, args: object) => {

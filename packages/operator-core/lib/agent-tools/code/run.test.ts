@@ -144,6 +144,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('do not read `result.content[0].text`');
   });
 
+  it('documents bounded read-only results recovered after a script timeout', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('timeoutSettledReadRecovery.calls');
+    expect(scriptDescription).toContain('omittedReadCount');
+    expect(scriptDescription).toContain('Write results are never included in timeout recovery');
+  });
+
   it('documents JavaScript escaping for literal shell backslashes', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =

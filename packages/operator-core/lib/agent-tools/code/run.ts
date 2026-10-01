@@ -208,6 +208,8 @@ export default defineTool({
       .max(20_000)
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
+          'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
           'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
           'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +

@@ -238,6 +238,51 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
       ),
     ).toBe(`identity=${generationId}\nsource=${sourceFingerprint}\n`);
   });
+
+  it('WI-10004928 part 7: overwrites both markers when a reused generation left them read-only (0444)', () => {
+    const generationId = `v1-${'f'.repeat(64)}`;
+    const sourceFingerprint = 'f'.repeat(64);
+    const lock = '{"lockfileVersion":3,"fresh":true}';
+    writeFileSync(join(int, 'package-lock.json'), lock);
+    const lockMarker = join(rel, 'node_modules/.papercusp-source-package-lock.json');
+    const genMarker = join(rel, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(lockMarker, '{"stale":true}');
+    writeFileSync(genMarker, 'identity=stale\nsource=stale\n');
+    chmodSync(lockMarker, 0o444);
+    chmodSync(genMarker, 0o444);
+
+    const result = recordCopyMetadata(int, rel, generationId, sourceFingerprint);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(lockMarker, 'utf8')).toBe(lock);
+    expect(readFileSync(genMarker, 'utf8')).toBe(
+      `identity=${generationId}\nsource=${sourceFingerprint}\n`,
+    );
+  });
+
+  it('WI-10004928 part 7: never writes through a read-only marker hard-linked into a generation', () => {
+    const generationId = `v1-${'a'.repeat(64)}`;
+    writeFileSync(join(int, 'package-lock.json'), '{"lockfileVersion":3}');
+    const store = mkdtempSync(join(tmpdir(), 'nm-gen-'));
+    try {
+      const storeMarker = join(store, '.papercusp-dependency-generation');
+      writeFileSync(storeMarker, 'identity=immutable\nsource=immutable\n');
+      chmodSync(storeMarker, 0o444);
+      const genMarker = join(rel, 'node_modules/.papercusp-dependency-generation');
+      spawnSync('ln', [storeMarker, genMarker]);
+      expect(statSync(genMarker).nlink).toBe(2);
+
+      const result = recordCopyMetadata(int, rel, generationId, 'a'.repeat(64));
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(storeMarker, 'utf8')).toBe('identity=immutable\nsource=immutable\n');
+      expect(statSync(storeMarker).mode & 0o777).toBe(0o444);
+      expect(readFileSync(genMarker, 'utf8')).toContain(`identity=${generationId}`);
+    } finally {
+      chmodSync(join(store, '.papercusp-dependency-generation'), 0o644);
+      rmSync(store, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('setup-release-checkout.sh dependency-generation retention wiring', () => {

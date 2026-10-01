@@ -31,7 +31,11 @@ describe('refreshLiveSessionsBeforeRead', () => {
       ingest: async () => undefined,
     });
 
-    expect(result).toEqual({ attempted: 2, refreshed: 1 });
+    expect(result).toEqual({
+      attempted: 2,
+      refreshed: 1,
+      failureReasons: { transcript_unavailable: 1 },
+    });
   });
 
   it('degrades a slow live resolve or ingest within the read budget', async () => {
@@ -46,7 +50,11 @@ describe('refreshLiveSessionsBeforeRead', () => {
 
       await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
 
-      await expect(pending).resolves.toEqual({ attempted: 1, refreshed: 0 });
+      await expect(pending).resolves.toEqual({
+        attempted: 1,
+        refreshed: 0,
+        failureReasons: { ingest_timeout: 1 },
+      });
       expect(ingest).toHaveBeenCalledWith('/tmp/slow.jsonl', { owner: 'su-slow', sessionId: 'slow' });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:live refresh'));
     } finally {
@@ -99,12 +107,55 @@ describe('refreshLiveSessionsBeforeRead', () => {
 
       await vi.advanceTimersByTimeAsync(SESSION_TARGET_REFRESH_TIMEOUT_MS);
 
-      await expect(pending).resolves.toEqual({ attempted: 1, refreshed: 0 });
+      await expect(pending).resolves.toEqual({
+        attempted: 1,
+        refreshed: 0,
+        failureReasons: { ingest_timeout: 1 },
+      });
       expect(ingest).toHaveBeenCalledWith('/tmp/codex/target-session.jsonl', {
         owner: 'su-owner',
         sessionId: 'target-session',
       });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:read target refresh'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('classifies a live transcript resolver error without exposing its raw message', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await refreshLiveSessionsBeforeRead(vi.fn() as never, ['su-error'], {
+        resolve: async () => { throw new Error('/private/session/path: permission denied'); },
+        ingest: async () => undefined,
+      });
+
+      expect(result).toEqual({ attempted: 1, refreshed: 0, failureReasons: { resolve_error: 1 } });
+      expect(JSON.stringify(result)).not.toContain('/private/session/path');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:live resolve'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports a failed live-owner lookup even when no session rows were enumerated', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sql = vi.fn(() => new Promise<never>(() => {})) as never;
+      const pending = refreshLiveSessionsBeforeRead(sql, null, {
+        resolve: async () => null,
+        ingest: async () => undefined,
+      });
+
+      await vi.advanceTimersByTimeAsync(SESSION_READ_REFRESH_TIMEOUT_MS);
+
+      await expect(pending).resolves.toEqual({
+        attempted: 0,
+        refreshed: 0,
+        failureReasons: { owner_lookup_timeout: 1 },
+      });
     } finally {
       warn.mockRestore();
       vi.useRealTimers();

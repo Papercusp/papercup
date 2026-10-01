@@ -993,6 +993,8 @@ describe('create-work-item direct Email dispatch (P-018)', () => {
       title: 'Email draft proposal',
       description: 'A draft-only reply proposal from Gmail.',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'human', // D-007: a person decides whether a draft is sent
       workItemKind: EMAIL_DRAFT_PROPOSAL_KIND,
       payloadSchema: EMAIL_DRAFT_PAYLOAD_SCHEMA,
       authoritativeWriter: 'papercusp',

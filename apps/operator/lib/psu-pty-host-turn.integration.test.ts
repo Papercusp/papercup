@@ -823,17 +823,21 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
   );
 }
 
-/** A child that models a MID-TURN agent: it writes a '.' to stdout every
- *  `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then goes
- *  QUIET (back at its prompt). It also echoes 'ECHO:<line>' per newline-terminated
- *  stdin line, so a CR-submitted wake turn is observable. Self-exits after ttlMs.
- *  The output stream is what the host's mid-turn gate watches. */
+/** A child that models a MID-TURN agent: a worker thread writes a '.' to stdout
+ *  every `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then
+ *  goes QUIET (back at its prompt). Keeping the emitter off the agent's main
+ *  event loop prevents a delayed timer from creating a false output-quiet window
+ *  while the fixture is meant to stay busy. It also echoes 'ECHO:<line>' per
+ *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
+ *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
 function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number): string {
   return (
+    "const {Worker}=require('node:worker_threads');" +
+    `const emitter=new Worker(${JSON.stringify(`setInterval(()=>process.stdout.write('.'),${intervalMs})`)},{eval:true});` +
+    `setTimeout(()=>{void emitter.terminate();},${busyMs});` +
+    "process.on('exit',()=>{void emitter.terminate();});" +
     "process.stdin.setEncoding('utf8');let b='';" +
     "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-    `const iv=setInterval(()=>process.stdout.write('.'),${intervalMs});` +
-    `setTimeout(()=>clearInterval(iv),${busyMs});` +
     `setTimeout(()=>process.exit(0),${ttlMs});`
   );
 }

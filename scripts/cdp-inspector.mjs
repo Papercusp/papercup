@@ -43,6 +43,32 @@ export class CdpTransportClosedError extends Error {
   }
 }
 
+/**
+ * Read process/V8 counters without GC or changing an active heap profiler.
+ * Inspector evaluations have no ESM dynamic-import callback on Node targets;
+ * getBuiltinModule reaches the target's existing builtin instead. The caller
+ * must name its PID so a reused inspector port cannot silently sample a peer.
+ * These counters are not a retainer graph or an estimate of total native bytes.
+ */
+export async function readProcessMemory(client, { expectedPid } = {}) {
+  if (!Number.isInteger(expectedPid) || expectedPid <= 0) {
+    throw new TypeError('readProcessMemory requires a positive expectedPid');
+  }
+  const result = await client.evaluate(String.raw`(() => {
+    if (typeof process.getBuiltinModule !== 'function') {
+      throw new Error('This Node target does not support getBuiltinModule');
+    }
+    const v8 = process.getBuiltinModule('v8');
+    return { pid: process.pid, at: Date.now(), uptime: process.uptime(),
+      memory: process.memoryUsage(), heap: v8.getHeapStatistics() };
+  })()`, { returnByValue: true });
+  const sample = result?.result?.value;
+  if (sample?.pid !== expectedPid) {
+    throw new Error(`Inspector PID mismatch: expected ${expectedPid}, observed ${sample?.pid ?? 'unknown'}`);
+  }
+  return sample;
+}
+
 function addListener(ws, event, handler) {
   if (typeof ws.on === 'function') {
     ws.on(event, handler);

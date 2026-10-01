@@ -56,6 +56,7 @@ describe('reflexive datatype instance loop (real PG)', () => {
       title: 'Bet',
       description: 'a market thesis with an edge',
       tier: 'generic-kind',
+      nature: 'record', // D-007: a bet is a record (minted in work_items, tagged non-work per D-011)
       workItemKind: 'bet',
       payloadSchema: BET_SCHEMA,
       selfImprovement: {
@@ -99,6 +100,8 @@ describe('reflexive datatype instance loop (real PG)', () => {
       title: 'Note',
       description: 'a free-form note',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'agent',
       workItemKind: 'note',
     });
     const dt = await getGenericKindDatatype(db.adminSql, ws, 'note');

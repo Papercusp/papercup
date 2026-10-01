@@ -47,8 +47,8 @@ import { hostname as osHostname, userInfo } from 'node:os';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { open, readdir, stat } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative } from 'node:path';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { GENERIC_ACCOUNTS, isGenericHost } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 /**
@@ -88,8 +88,8 @@ export function releaseSeedRedactionValues(
   root?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
-  const workspaceRoot = root ?? env.PAPERCUSP_WORKSPACE_ROOT ??
-    resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  // Fallback walks to `.git`, not a fixed `..` climb (wrong inside a bundle; P-016).
+  const workspaceRoot = root ?? env.PAPERCUSP_WORKSPACE_ROOT ?? moduleRepoRoot(import.meta.url);
   const audit = join(workspaceRoot, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
   const result = spawnSync('python3', [audit, '--identity-literals'], {
     encoding: 'utf8',

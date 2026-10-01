@@ -189,6 +189,20 @@ export interface DecisionProvider {
 }
 
 /**
+ * How busy the CALLING thread was while one call was open: the event loop's
+ * utilization over the call window. It separates the two ways a call can miss its
+ * deadline — the provider answered late, or the answer arrived on time and sat
+ * unread while this thread ran other code (a synchronous spawn, a blocking file
+ * read, a long callback).
+ */
+export interface HostLoad {
+  /** Milliseconds the thread spent running code, not idle waiting on I/O, during the call. */
+  readonly busyMs: number;
+  /** `busyMs` over the call window, in [0, 1]. */
+  readonly utilization: number;
+}
+
+/**
  * One completed call, handed to the host's observer (the audit ledger). Carries
  * no raw state text and no key: the host decides what to hash or store.
  */
@@ -211,4 +225,9 @@ export interface DecisionCallRecord {
    * ledger keeping a raw copy of it. Empty when the caller passed none.
    */
   readonly subjectIds: readonly string[];
+  /**
+   * The calling thread's event-loop activity over the call. Null when the
+   * measurement is disabled (`hostLoad: null` on the client) or failed.
+   */
+  readonly hostLoad: HostLoad | null;
 }

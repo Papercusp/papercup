@@ -5,6 +5,11 @@
 import { expect, test, type Page } from './_egress';
 import { stubSyncQueries } from './_sync-stub';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson';
+import AxeBuilder from '@axe-core/playwright';
+
+// The same maintained browser fixture can be paused for a real Orca/keyboard
+// review on an isolated desktop. Normal automated runs do not pause.
+test.use({ launchOptions: { args: process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1' ? ['--force-renderer-accessibility'] : [] } });
 
 const scope = { tenantId: 'tutorial-tenant', userId: 'tutorial-user', workspaceId: 'tutorial-customer' };
 const connection = {
@@ -28,6 +33,8 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
   let revision = 0;
   let disposition = 'active';
   let inspectedResult: unknown;
+  let progressStatus = 200;
+  let helpStatus = 200;
   let sentPrompt = '';
   const writes: Array<{ path: string; body: Record<string, any> }> = [];
   const socketMessages: Record<string, unknown>[] = [];
@@ -58,6 +65,7 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
     if (path.endsWith('/onboarding/select-workspace')) return json({ error: 'workspace_already_selected' }, 409);
     if (path.endsWith('/onboarding/tutorial-help')) {
       assistance.push({ path, body: request.postDataJSON() });
+      if (helpStatus !== 200) return json({ error: 'tutorial_help_unavailable' }, helpStatus);
       return json({ answer: 'Use the connection form to validate your Google Cloud project permissions.' });
     }
     if (path.endsWith('/onboarding/tutorial-speech')) {
@@ -73,6 +81,7 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
       return route.fulfill({ status: 200, contentType: 'audio/wav', body: wav });
     }
     if (path.endsWith('/onboarding/tutorial-progress')) {
+      if (progressStatus !== 200) return json({ error: 'tutorial_scope_denied' }, progressStatus);
       if (request.method() === 'POST') {
         const patch = request.postDataJSON();
         expect(patch.expectedScope).toEqual(scope);
@@ -130,8 +139,85 @@ async function setupJourney(page: Page, existing: boolean, speech = false) {
     setTimeout(() => socket.send(JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace.v1', channelId: 'tutorial-channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'tutorial-session' } })), 20);
     socket.onMessage(raw => { socketMessages.push(JSON.parse(String(raw))); });
   });
-  return { writes, socketMessages, apiHits, browserErrors, assistance, sync, get prompt() { return sentPrompt; } };
+  return { writes, socketMessages, apiHits, browserErrors, assistance, sync,
+    setProgressStatus: (status: number) => { progressStatus = status; },
+    setHelpStatus: (status: number) => { helpStatus = status; },
+    get prompt() { return sentPrompt; } };
 }
+
+test('guide remains keyboard operable with reduced motion and passes axe in active and paused states', async ({ page }) => {
+  const fixture = await setupJourney(page, false);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    const behaviors: Array<ScrollBehavior | undefined> = [];
+    Object.defineProperty(window, '__tutorialScrollBehaviors', { value: behaviors });
+    const scroll = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (options) {
+      if (typeof options === 'object') behaviors.push(options.behavior);
+      scroll.call(this, options);
+    };
+  });
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const guide = page.getByRole('region', { name: 'First agent guide' });
+  const show = guide.getByRole('button', { name: 'Show me' });
+  if (process.env.PAPERCUSP_TUTORIAL_ORCA_REVIEW === '1') {
+    await show.focus(); await page.pause();
+  }
+  await show.focus(); await page.keyboard.press('Enter');
+  const label = page.getByRole('textbox', { name: 'Connection label' });
+  await expect(label).toBeFocused(); await label.fill('Keyboard project'); await page.keyboard.press('Tab');
+  await expect(page.getByRole('textbox', { name: 'Injected credential reference' })).toBeFocused();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __tutorialScrollBehaviors: string[] }).__tutorialScrollBehaviors.length)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => (window as unknown as { __tutorialScrollBehaviors: string[] }).__tutorialScrollBehaviors)).not.toContain('smooth');
+  const audit = () => new AxeBuilder({ page }).include('[data-cloud-tutorial-guide]').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
+  const active = await audit(); expect(active.violations).toEqual([]);
+  await guide.getByRole('button', { name: 'Pause' }).focus(); await page.keyboard.press('Enter');
+  await expect(guide).toContainText('Your lesson is paused.');
+  await expect(page.locator('.react-joyride__overlay')).toHaveCount(0);
+  await expect(guide.getByRole('button', { name: 'Resume guide' })).toBeFocused();
+  const paused = await audit(); expect(paused.violations).toEqual([]);
+  await page.keyboard.press('Enter');
+  await expect(guide.getByRole('heading', { name: 'Connect Google Cloud' })).toBeVisible();
+  await expect(guide.getByRole('button', { name: 'Show me' })).toBeFocused();
+  await expect(label).toHaveValue('Keyboard project'); expect(fixture.writes).toEqual([]);
+  await test.info().attach('guide-axe-active-paused', { body: JSON.stringify({ active, paused }), contentType: 'application/json' });
+});
+
+test('reload resumes saved pause, AI outage leaves controls operable, and Help replays without product writes', async ({ page }) => {
+  const fixture = await setupJourney(page, false); fixture.setHelpStatus(503);
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const guide = page.getByRole('region', { name: 'First agent guide' });
+  await guide.locator('textarea').fill('Why do I need project permissions?'); await guide.locator('textarea').press('Enter');
+  await expect(guide).toContainText('AI help is unavailable. You can continue with the lesson instructions.');
+  await expect(guide).toContainText('0 of 6 steps confirmed');
+  const saved = page.waitForResponse(response => response.url().endsWith('/onboarding/tutorial-progress') && response.request().method() === 'POST');
+  await guide.getByRole('button', { name: 'Pause' }).click(); await saved;
+  await page.reload({ waitUntil: 'domcontentloaded' }); await expect(guide).toContainText('Your lesson is paused.');
+  await expect(page.locator('.react-joyride__overlay')).toHaveCount(0);
+  await guide.getByRole('button', { name: 'Resume guide' }).click(); await guide.getByRole('button', { name: 'Skip lesson' }).click();
+  await expect(guide).toContainText('You can start this lesson again from Help.');
+  await page.getByText('Help', { exact: true }).click();
+  await page.getByRole('button', { name: 'Get your first agent running', exact: true }).click();
+  await expect(guide.getByRole('heading', { name: 'Connect Google Cloud' })).toBeVisible();
+  await guide.getByRole('button', { name: 'Close guide' }).click();
+  await expect(guide).toHaveCount(0); await expect(page.locator('.react-joyride__overlay')).toHaveCount(0);
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.assistance.filter(row => row.path.endsWith('tutorial-help'))).toHaveLength(1);
+});
+
+test('permission refusal keeps real Cloud forms usable and recovers only after an authorized progress read', async ({ page }) => {
+  const fixture = await setupJourney(page, false); fixture.setProgressStatus(403);
+  await page.goto('/cloud-workspaces?step=connect&connect=gcp', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  await expect(page.getByText('Sign in and select an authorized workspace, then check again.')).toBeVisible();
+  const label = page.getByRole('textbox', { name: 'Connection label' }); await label.fill('Retain this draft');
+  await expect(page.getByRole('region', { name: 'First agent guide' })).toHaveCount(0);
+  fixture.setProgressStatus(200); await page.getByRole('button', { name: 'Check lesson again' }).click();
+  await expect(page.getByRole('region', { name: 'First agent guide' })).toContainText('0 of 6 steps confirmed');
+  await expect(label).toHaveValue('Retain this draft'); expect(fixture.writes).toEqual([]);
+});
 
 test('guide speaks current instructions and scoped help with real browser audio and no microphone', async ({ page }) => {
   const fixture = await setupJourney(page, false, true);

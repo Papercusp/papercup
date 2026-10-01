@@ -577,6 +577,24 @@ describe('provider failure reasons on the shared Google API transport', () => {
     },
   );
 
+  // P-318 r62b (2026-10-01): a subnetwork insert against a network Google is still creating
+  // answers 400 resourceNotReady. Without the throttle mark the 4xx rule halts the provision.
+  it('marks a 400 resourceNotReady (parent still being created) as retryable', async () => {
+    const error = await failWith(
+      {
+        error: {
+          code: 400,
+          message: "The resource 'projects/p/global/networks/n' is not ready",
+          errors: [{ reason: 'resourceNotReady', message: "The resource 'projects/p/global/networks/n' is not ready" }],
+        },
+      },
+      400,
+    );
+
+    expect((error as { status?: number }).status).toBe(400);
+    expect((error as { throttled?: boolean }).throttled).toBe(true);
+  });
+
   // The other half of the contract, and the reason this keys on reason codes rather than on the
   // canonical `RESOURCE_EXHAUSTED` status: a spent quota does not refill on a backoff, so retrying
   // it burns the schedule against a wall instead of surfacing a condition that needs an operator.

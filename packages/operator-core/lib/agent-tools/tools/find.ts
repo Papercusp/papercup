@@ -71,6 +71,8 @@ import { withInlinedSchemaRefs } from '../schema-ref-inline';
 export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
 /** Keep plugin readiness below the MCP transport deadline while preserving the base catalog. */
 export const PLUGIN_HOST_READINESS_TIMEOUT_MS = 5_000;
+/** The optional harness-registry read must not let catalog discovery hang on a DB pool wait. */
+export const DISCOVERY_HIVE_SCOPE_TIMEOUT_MS = 5_000;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
@@ -1054,6 +1056,7 @@ export async function filterCorpusForConfirmedHiveScope(
   corpus: ToolDiscoveryEntry[],
   scope: DiscoveryScopeContext,
   resolveHiveHome: HiveHomeResolver,
+  timeoutMs = DISCOVERY_HIVE_SCOPE_TIMEOUT_MS,
 ): Promise<ToolDiscoveryEntry[]> {
   const workspaceId = typeof scope.workspaceId === 'string' ? scope.workspaceId.trim() : '';
   const harnessSlug = typeof scope.harnessSlug === 'string' ? scope.harnessSlug.trim() : '';
@@ -1068,12 +1071,16 @@ export async function filterCorpusForConfirmedHiveScope(
     return corpus;
   }
 
-  let hiveHome: string | null;
-  try {
-    hiveHome = await resolveHiveHome(workspaceId, harnessSlug);
-  } catch {
-    return corpus;
-  }
+  const resolution = await withBoundedTimeout(
+    () => resolveHiveHome(workspaceId, harnessSlug),
+    {
+      fallback: null,
+      timeoutMs,
+      label: 'tools:find hive scope resolution',
+    },
+  );
+  const hiveHome = resolution.value;
+  if (resolution.degraded) return corpus;
   if (!hiveHome) return corpus;
 
   return corpus.filter((entry) => !entry.tool.startsWith('cross_harness:'));

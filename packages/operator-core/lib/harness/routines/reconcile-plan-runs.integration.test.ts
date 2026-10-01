@@ -18,6 +18,7 @@ import {
 } from './reconcile-plan-runs';
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
+import type { PlanIndexItem } from '../../agent-tools/plans/derive-index';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -125,10 +126,19 @@ describe('reconcileScheduledPlanRuns', () => {
   it('closes the instance plan_items (jsonb + index) when it retires the plan', async () => {
     const id = await seedRun('p-phantom');
     const instanceSlug = `p-phantom@run-${id}`;
+    const item = (id: string, status: string, text: string): PlanIndexItem => ({
+      id,
+      status,
+      text,
+      importance: 'normal',
+      blockedBy: [],
+      decisionRefs: [],
+      phase: null,
+    });
     const items = [
-      { id: 'P-001', status: 'todo' },
-      { id: 'P-002', status: 'done' },
-      { id: 'P-003', status: 'wip' },
+      item('P-001', 'todo', 'never promoted'),
+      item('P-002', 'done', 'completed by a work-item'),
+      item('P-003', 'wip', 'never promoted either'),
     ];
     const content = [
       '---',

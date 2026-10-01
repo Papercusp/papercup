@@ -179,7 +179,8 @@ export default defineTool({
     const liveRefresh = filters?.sessionId
       ? await refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
       : await refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null);
-    const refreshDegraded = liveRefresh.attempted > liveRefresh.refreshed;
+    const refreshDegraded =
+      liveRefresh.attempted > liveRefresh.refreshed || Boolean(liveRefresh.failureReasons);
 
     interface RawHit {
       sourceKind: string; sessionId: string; turnIdx: number;
@@ -285,8 +286,11 @@ export default defineTool({
     // failure arriving through a tool result instead of a summary.
     const staleIndexCaveat = pageHits.length === 0 && refreshDegraded
       ? `⚠ UNVERIFIABLE, NOT ABSENT: the pre-read ingest that tails live transcript(s) into the search index ` +
-        `FAILED for ${liveRefresh.attempted - liveRefresh.refreshed} of ${liveRefresh.attempted} session(s) in scope ` +
-        `(it is fail-soft and swallows its own error). Turns written since the last SUCCESSFUL ingest — including ` +
+        (liveRefresh.attempted > 0
+          ? `FAILED for ${liveRefresh.attempted - liveRefresh.refreshed} of ${liveRefresh.attempted} session(s) in scope. `
+          : `could not enumerate live sessions for refresh. `) +
+        `The refresh is fail-soft. Anonymized stage/reason counts are in indexRefresh.failureReasons; raw errors and session ids ` +
+        `are omitted. Turns written since the last SUCCESSFUL ingest — including ` +
         `ones from the session you are searching right now — are not in the index yet, so this 0 does not mean the ` +
         `text was never written. Re-running may fix it; if it still returns 0, read the transcript directly ` +
         `(sessions:read { session:'self' }) before concluding anything. Do NOT use this 0 as evidence that an owner ` +
@@ -526,7 +530,14 @@ export default defineTool({
       // Machine-legible receipt for the same fact, so a caller (or a later audit)
       // can distinguish a real empty from a degraded one without parsing prose.
       ...(refreshDegraded
-        ? { indexRefresh: { attempted: liveRefresh.attempted, refreshed: liveRefresh.refreshed, degraded: true } }
+        ? {
+            indexRefresh: {
+              attempted: liveRefresh.attempted,
+              refreshed: liveRefresh.refreshed,
+              degraded: true,
+              ...(liveRefresh.failureReasons ? { failureReasons: liveRefresh.failureReasons } : {}),
+            },
+          }
         : {}),
     };
 

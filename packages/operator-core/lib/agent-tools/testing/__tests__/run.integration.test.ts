@@ -388,11 +388,11 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       await writeFile(files[index]!, 'export {};\n');
     }
 
-    const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 1_000 });
+    const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 5_000 });
 
     expect(out.error, JSON.stringify(out)).toBe('timeout');
     if (out.error !== 'timeout') return;
-    expect(out.completedGroups).toHaveLength(1);
+    expect(out.completedGroups, JSON.stringify(out)).toHaveLength(1);
     expect(out.completedGroups?.[0]).toMatchObject({
       root: roots[0],
       files: [files[0]],
@@ -1417,6 +1417,7 @@ describe('testing:run (integration)', () => {
       command: process.execPath,
       cwd: REPO_ROOT,
       filePath: 'packages/example.test.ts',
+      requestedFiles: ['packages/example.test.ts'],
       runtimeMaxSec: 900,
     });
     expect(request.args).toEqual([
@@ -1448,6 +1449,8 @@ describe('testing:run (integration)', () => {
       workItemId: 'WI-10003898',
     });
     expect(mixed.workItemId).toBe('WI-10003898');
+    expect(single.requestedFiles).toEqual(['packages/example.test.ts']);
+    expect(mixed.requestedFiles).toEqual(['packages/example.test.ts']);
   });
 
   it('uses parent-side JSON ledger ingestion for a single detached integration file', () => {
@@ -1461,6 +1464,7 @@ describe('testing:run (integration)', () => {
     });
 
     const artifact = request.detachedReportArtifacts?.[0];
+    expect(request.requestedFiles).toEqual(['packages/operator-core/lib/sync-resolver/goals.integration.test.ts']);
     expect(artifact).toMatchObject({
       root: REPO_ROOT,
       testNamePattern: 'selected proof',

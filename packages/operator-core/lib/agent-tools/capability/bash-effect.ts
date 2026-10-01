@@ -312,7 +312,9 @@ function hasNumericPpidSelector(tokens: readonly string[]): boolean {
   return selectorCount === 1;
 }
 
-function classifiesReadOnlyAwk(tokens: readonly string[]): boolean {
+// Exported (EI-23749240882032210) so activity attribution reuses the SAME per-command
+// read-only decision instead of forking a second allowlist. Behaviour is unchanged.
+export function classifiesReadOnlyAwk(tokens: readonly string[]): boolean {
   if (commandBase(tokens[0] ?? '') !== 'awk' || tokens.length !== 2) return false;
   const program = tokens[1]!;
   // Only permit field-selection/printing programs. In particular, do not widen
@@ -358,7 +360,7 @@ export function isReadOnlyPsPpidPipeline(command: string): boolean {
   return segments !== null && isReadOnlyPsPpidPipelineSegments(segments);
 }
 
-function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
+export function classifiesSimpleRead(tokens: readonly string[], depth = 0): boolean {
   if (depth > 2 || tokens.length === 0) return false;
   const base = commandBase(tokens[0]!);
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]!)) return false;

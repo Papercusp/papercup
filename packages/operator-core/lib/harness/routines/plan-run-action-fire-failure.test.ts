@@ -13,9 +13,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => ({
   promote: vi.fn(),
+  retire: vi.fn(),
 }));
 
 vi.mock('../../plan-workitem-promotion-run', () => ({ promotePlanItems: H.promote }));
+// The retirement itself (status + items + plan_items index) is pinned by
+// retire-run-instance-plan.test.ts and the reconcile integration test; here we only
+// pin that the fire-failure path ROUTES through it rather than a bare status UPDATE
+// (WI-10005040: a bare UPDATE left the instance's plan_items open forever).
+vi.mock('./retire-run-instance-plan', () => ({ retireRunInstancePlan: H.retire }));
 vi.mock('../../pot-membership', () => ({ routineStorageSlug: async (slug: string) => slug }));
 
 import { recordScheduledFireFailure, runScheduledPlanFire } from './plan-run-action';
@@ -56,6 +62,8 @@ const OPTS = {
 
 beforeEach(() => {
   H.promote.mockReset();
+  H.retire.mockReset();
+  H.retire.mockResolvedValue({ retired: true, itemsClosed: 0 });
 });
 
 describe('runScheduledPlanFire — a fire that throws after its seed transaction', () => {
@@ -75,9 +83,16 @@ describe('runScheduledPlanFire — a fire that throws after its seed transaction
     expect(runUpdate?.text).toMatch(/status = 'failed', outcome = 'failed'/);
     expect(runUpdate?.values).toContain(1320);
     expect(runUpdate?.values.join(' ')).toMatch(/fire failed: plan_run_acceptance_bar_blocked/);
-    const instanceUpdate = calls.find((c) => c.text.startsWith('UPDATE harness_shared.harness_plans'));
-    expect(instanceUpdate?.text).toMatch(/SET status = 'superseded'/);
-    expect(instanceUpdate?.values).toContain(PREPARED.instanceSlug);
+    // No bare status UPDATE on the instance — retirement goes through the helper.
+    expect(calls.some((c) => c.text.startsWith('UPDATE harness_shared.harness_plans'))).toBe(false);
+    expect(H.retire).toHaveBeenCalledTimes(1);
+    expect(H.retire).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId: OPTS.workspaceId,
+      planStorageSlug: 'papercusp',
+      instanceSlug: PREPARED.instanceSlug,
+      templateSlug: OPTS.templateSlug,
+      outcome: 'failed',
+    });
   });
 
   it('control: a fire whose promotion succeeds writes no failure', async () => {
@@ -88,6 +103,7 @@ describe('runScheduledPlanFire — a fire that throws after its seed transaction
 
     expect(result).toMatchObject({ started: true, runId: 1320, workItemIds: ['WI-1'] });
     expect(calls.some((c) => c.text.includes("status = 'failed'"))).toBe(false);
+    expect(H.retire).not.toHaveBeenCalled();
   });
 
   it('still rethrows the ORIGINAL error when recording the failure itself fails', async () => {

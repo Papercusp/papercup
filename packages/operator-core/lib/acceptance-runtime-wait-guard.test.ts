@@ -207,8 +207,11 @@ describe('advisory construction', () => {
     );
     expect(bars.map((b) => b.barKey)).toEqual(['R-1', 'R-3']);
     const advisory = buildAcceptancePlaneAdvisory(bars);
-    expect(advisory).toMatch(/bg-host: psu-pty-plan#R-1, psu-pty-plan#R-3 \(inferred\)/);
-    expect(advisory).toMatch(/None of your held bars needs the release operator/);
+    expect(advisory).toMatch(/bg-host: psu-pty-plan#R-1/);
+    expect(advisory).toMatch(/psu-pty-plan#R-3: runtime unknown/);
+    expect(advisory).toMatch(/read the BAR method/);
+    expect(advisory).not.toMatch(/bg-host: psu-pty-plan#R-1, psu-pty-plan#R-3/);
+    expect(advisory).not.toContain('None of your held bars needs the release operator');
     expect(advisory).toMatch(/background-federation: node scripts\/with-test-pg\.mjs --isolated-runtime/);
     expect(advisory).toMatch(/Disposable migrated DB, HOME\/device keychain/);
     expect(advisory).toMatch(/Registered anyway/);
@@ -238,6 +241,28 @@ describe('advisory construction', () => {
     );
     expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/Only psu-pty-plan#R-9 genuinely need the release operator/);
     expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/operator-api: http:\/\/127\.0\.0\.1:3170/);
+  });
+
+  it('respects a BAR method that explicitly requires :3070 while treating path-only inference as unknown', async () => {
+    const bars = await loadHeldLiveBars(
+      'su-x',
+      deps([
+        {
+          key: 'r-1', barKey: 'R-1', evidencePlane: 'deployed',
+          method: `Compare bytes in the deployed :3070 release checkout for packages/operator-core/lib/agent-tools/plans/get.ts`,
+        },
+        {
+          key: 'r-2', barKey: 'R-2', evidencePlane: 'live',
+          method: 'Call the tool implemented in packages/operator-core/lib/agent-tools/plans/get.ts',
+        },
+        { key: 'r-3', barKey: 'R-3', evidencePlane: 'live', evidenceRuntime: 'bg-host' },
+      ]),
+    );
+    expect(bars[0]?.resolution.runtime).toBe('release-operator');
+    const advisory = buildAcceptancePlaneAdvisory(bars);
+    expect(advisory).toMatch(/psu-pty-plan#R-2: runtime unknown/);
+    expect(advisory).toMatch(/Only psu-pty-plan#R-1 genuinely need the release operator/);
+    expect(advisory).not.toContain('staging-operator: psu-pty-plan#R-2');
   });
 });
 

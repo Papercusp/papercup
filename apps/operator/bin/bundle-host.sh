@@ -87,9 +87,9 @@ FRESHNESS_HELPER="$SCRIPT_DIR/bundle-host-freshness.mjs"
 if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
   if [[ ! -f "$STALE_MARKER" ]] && node "$FRESHNESS_HELPER" check \
       --repo-root "$REPO_ROOT" \
-      --entry "$PWD/$ENTRY" \
-      --outfile "$PWD/$OUTFILE" \
-      --manifest "$PWD/$FRESH_MARKER" >/dev/null; then
+      --entry "$ENTRY" \
+      --outfile "$OUTFILE" \
+      --manifest "$FRESH_MARKER" >/dev/null; then
     echo "✓ reusing proof-bound fresh host bundle for $(git -C "$REPO_ROOT" rev-parse --short HEAD) — ExecStartPre has no build work"
     exit 0
   fi
@@ -503,9 +503,9 @@ bundle_host_workers "$REPO_ROOT" "$OUTDIR" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}" 
 if [[ "${PAPERCUSP_BUNDLE_REUSE_FRESH:-0}" == "1" ]]; then
   if fresh_head="$(node "$FRESHNESS_HELPER" stamp \
       --repo-root "$REPO_ROOT" \
-      --entry "$PWD/$ENTRY" \
-      --outfile "$PWD/$OUTFILE" \
-      --manifest "$PWD/$FRESH_MARKER")"; then
+      --entry "$ENTRY" \
+      --outfile "$OUTFILE" \
+      --manifest "$FRESH_MARKER")"; then
     echo "✓ stamped proof-bound host bundle freshness at ${fresh_head:0:10}"
   else
     rm -f "$FRESH_MARKER"

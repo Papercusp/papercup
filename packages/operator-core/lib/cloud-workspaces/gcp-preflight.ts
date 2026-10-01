@@ -616,6 +616,13 @@ const GCP_RATE_LIMIT_REASONS: ReadonlySet<string> = new Set([
   'rateLimitExceeded',
   'userRateLimitExceeded',
   'rateLimitExceededByUser',
+  // A dependency still being created ("The resource '…/networks/x' is not ready"), answered
+  // as HTTP 400. Measured P-318 r62b 2026-10-01: create-network's first wait was uncertain,
+  // reconcile adopted the network while Google was still creating it, and the subnetwork
+  // insert drew this 400. The status-only classifier called it `terminal` and halted the
+  // whole provision. Google lists `resourceNotReady` as a condition to retry with backoff,
+  // and it clears once the parent finishes.
+  'resourceNotReady',
 ]);
 
 /**

@@ -27,6 +27,7 @@ const record: DecisionCallRecord = {
   consumer: 'memory-injection',
   surface: 'turn-start',
   subjectIds: ['mem-1'],
+  hostLoad: { busyMs: 311, utilization: 0.78 },
 };
 
 function fakeSql(impl: () => Promise<unknown>) {
@@ -75,6 +76,20 @@ describe('recordDecisionModelCall failure contract', () => {
     expect(expectedHash).toMatch(/^[0-9a-f]{64}$/);
     expect(values[columns!.indexOf('state_sha256')]).toBe(expectedHash);
     expect(JSON.stringify(values)).not.toContain('turn text');
+  });
+
+  it('binds the host load to loop_busy_ms / loop_utilization (P-001)', async () => {
+    const tag = fakeSql(() => Promise.resolve([]));
+    h.sql = tag;
+    await expect(recordDecisionModelCall(record)).resolves.toBe(true);
+    const [strings, ...values] = (tag as unknown as { mock: { calls: unknown[][] } }).mock.calls[0] as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    const columns = strings.join('?').match(/\(([^)]*)\)\s*VALUES/s)?.[1].split(',').map((c) => c.trim());
+    expect(columns).toHaveLength(values.length);
+    expect(values[columns!.indexOf('loop_busy_ms')]).toBe(311);
+    expect(values[columns!.indexOf('loop_utilization')]).toBe(0.78);
   });
 
   it('a sql client that throws synchronously is still swallowed', async () => {

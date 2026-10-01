@@ -1467,6 +1467,22 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     errSpy.mockRestore();
   });
 
+  it('preserves the originating exception when admission fails before spawn', async () => {
+    const origin = new ReferenceError('pinModuleState is not defined');
+    origin.stack = 'ReferenceError: pinModuleState is not defined\n    at originalAdmission (/provider/execution.ts:12:3)';
+    const spawnImpl = vi.fn();
+    const result = await runCapturedTestProcess('node', ['--version'], {
+      cwd: REPO_ROOT,
+      spawnImpl,
+      governedProcessImpl: async () => { throw origin; },
+    });
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(result.governedAdmissionError).toBe(true);
+    expect(result.error.cause).toBe(origin);
+    expect(result.error.cause.stack).toContain('/provider/execution.ts:12:3');
+  });
+
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {
     const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
@@ -1483,7 +1499,11 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
             stdout: '',
             stderr: '',
             timedOut: false,
-            error: Object.assign(new Error('statement timeout'), { code: 'GOVERNED_ADMISSION_FAILED' }),
+            error: Object.assign(new Error('statement timeout', {
+              cause: Object.assign(new Error('statement timeout'), {
+                stack: 'Error: statement timeout\n    at origin (/provider/admission.ts:42:7)',
+              }),
+            }), { code: 'GOVERNED_ADMISSION_FAILED' }),
             governedAdmissionError: true,
             governedAdmissionFailureKind: failureKind,
           }),
@@ -1500,6 +1520,7 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     const output = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     expect(output).toContain(`TEST_FILE_NOT_MEASURED requested=1 executed=0 matched=1 measuredFiles=0 status=not-measured reason=${failureKind}`);
     expect(output).toContain(`TEST_FILE_ADMISSION_ERROR kind=${failureKind} detail="statement timeout"`);
+    expect(output).toContain('origin="Error: statement timeout\\n    at origin (/provider/admission.ts:42:7)"');
     expect(output).not.toContain('TEST_FILE_RESULT');
   });
 });

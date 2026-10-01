@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
@@ -20,6 +20,7 @@ vi.mock('./cell-registry', () => ({
 import {
   CONTINUITY_PROBE_MAX_PER_WAKE,
   CONTINUITY_PROBE_RESULT_MAX_BYTES,
+  CONTINUITY_PROBE_TIMEOUT_MS,
   collectContinuityProbeSources,
   continuityProbeRevision,
   continuityProbeSchema,
@@ -35,6 +36,7 @@ import {
 } from './continuity-probes';
 import { renderCarryNote } from './carry-note';
 import { LIMITS } from './agent-tools/limits';
+import { CRITERION_PROBE_TIMEOUT_MS, evaluateCriterionProbeChecks } from './rubrics-criterion-checks';
 
 const LONG_READ_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
 
@@ -337,6 +339,79 @@ describe('continuity probe wake replay', () => {
       { dispatchTool },
     );
     expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true, observed: false });
+  });
+});
+
+// EI-24809550207915153: the batch hard-coded the 2.5s wake budget for every caller, so a
+// scorecard criterion probe on dev:pipeline_position (measured p50 ~3s, p95 ~28s) was
+// refused unjudgeable on most emits and no independent acceptance card could be filed.
+describe('continuity probe dispatch budget', () => {
+  const SLOW_READ_MS = 3_000;
+  const slowDispatch = () =>
+    vi.fn(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ content: [{ type: 'text', text: '{"state":"green"}' }] }), SLOW_READ_MS),
+        ),
+    );
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps the wake budget by default and names it when a read overruns', async () => {
+    expect(SLOW_READ_MS).toBeGreaterThan(CONTINUITY_PROBE_TIMEOUT_MS);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = runContinuityProbeBatch([source(readProbe())], { dispatchTool: slowDispatch() });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const batch = await pending;
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`exceeded ${CONTINUITY_PROBE_TIMEOUT_MS}ms`));
+    warn.mockRestore();
+    expect(batch.limits.timeoutMs).toBe(CONTINUITY_PROBE_TIMEOUT_MS);
+    expect(batch.results[0]).toMatchObject({ status: 'error', executed: true, diagnostic: { code: 'timeout' } });
+    expect(batch.results[0].diagnostic?.message).toContain(`${CONTINUITY_PROBE_TIMEOUT_MS}ms budget`);
+  });
+
+  it('honours a caller budget, so the same slow read is judged instead of refused', async () => {
+    const pending = runContinuityProbeBatch([source(readProbe())], {
+      dispatchTool: slowDispatch(),
+      timeoutMs: 10_000,
+    });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const batch = await pending;
+    expect(batch.limits.timeoutMs).toBe(10_000);
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
+  });
+
+  it('grades a criterion probe slower than the wake budget by default', async () => {
+    expect(CRITERION_PROBE_TIMEOUT_MS).toBeGreaterThan(SLOW_READ_MS);
+    const pending = evaluateCriterionProbeChecks({
+      criteria: [{ key: 'r-9', check: { kind: 'probe', probe: readProbe() } as never }],
+      ratings: { 'r-9': { rating: 'pass' } },
+      dispatchTool: slowDispatch(),
+    });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const evaluation = await pending;
+    expect(evaluation).toMatchObject({ ok: true, checkRuns: { 'r-9': { verdict: 'pass', status: 'fresh' } } });
+  });
+
+  it('still fails a criterion probe closed when it overruns its grading budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = evaluateCriterionProbeChecks({
+      criteria: [{ key: 'r-9', check: { kind: 'probe', probe: readProbe() } as never }],
+      ratings: { 'r-9': { rating: 'pass' } },
+      dispatchTool: slowDispatch(),
+      probeTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const evaluation = await pending;
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 1000ms'));
+    warn.mockRestore();
+    expect(evaluation).toMatchObject({ ok: false, error: 'probe_run_failed', criterionKey: 'r-9' });
+    expect(evaluation.ok === false && 'detail' in evaluation ? evaluation.detail : '').toContain('1000ms budget');
   });
 });
 

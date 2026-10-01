@@ -115,6 +115,17 @@ describe('startRun', () => {
     expect(spawnMock).toHaveBeenCalledWith('npx', ['vitest', 'run'], expect.objectContaining({ cwd: '/tmp' }));
   });
 
+  it('preserves the exact requested Vitest file manifest in the snapshot and task detail', () => {
+    const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
+    const snap = store.startRun(req({ requestedFiles }));
+    requestedFiles.push('lib/late.test.ts');
+
+    expect(snap.requestedFiles).toEqual(['lib/first.test.ts', 'lib/second.test.ts']);
+    expect(taskManagerMocks.begin.mock.calls[0]?.[0].detail).toMatchObject({
+      requestedFiles: ['lib/first.test.ts', 'lib/second.test.ts'],
+    });
+  });
+
   it('merges caller environment into the child while preserving run-owned markers', () => {
     const snap = store.startRun(
       req({
@@ -593,6 +604,7 @@ describe('durable detached snapshot lifecycle', () => {
         args[0] === 'rev-parse' ? 'launch-sha\n' : '',
       );
       const { snapshot } = await store.startRunDurable(req({
+        requestedFiles: ['lib/saved.test.ts'],
         detachedReportArtifacts: [{
           reportPath, root: '/tmp', testNamePattern: 'saved assertion',
           scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
@@ -631,7 +643,7 @@ describe('durable detached snapshot lifecycle', () => {
           output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,
           task_state: taskState, task_exit_code: processExit,
           task_ended_at: taskState === 'running' ? null : snapshot.startedAt + 25,
-          task_detail: options.legacy ? {} : detail,
+          task_detail: options.legacy ? { requestedFiles: ['lib/saved.test.ts'] } : detail,
           task_cwd: '/tmp', task_harness_slug: options.legacy ? null : 'papercusp', task_workspace_id: 'papercusp-workspace',
           snapshot_missing: options.missing ?? false,
         }];
@@ -883,6 +895,13 @@ describe('durable detached snapshot lifecycle', () => {
     const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       const statement = strings.join(' ');
       if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) throw new Error('snapshot table unavailable');
+      if (statement.includes('FROM harness_shared.task_ledger')) {
+        return [{
+          state: 'exited',
+          exit_code: 0,
+          requested_files: ledgerRows.map((row) => row.file_path),
+        }];
+      }
       if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
       return [];
     }) as unknown as Sql;
@@ -920,7 +939,11 @@ describe('durable detached snapshot lifecycle', () => {
       const sql = vi.fn(async (strings: TemplateStringsArray) => {
         const statement = strings.join(' ');
         if (statement.includes('FROM harness_shared.task_ledger')) {
-          return [{ state: scenario.taskState, exit_code: scenario.exitCode }];
+          return [{
+            state: scenario.taskState,
+            exit_code: scenario.exitCode,
+            requested_files: ledgerRows.map((row) => row.file_path),
+          }];
         }
         if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
         return [];
@@ -938,6 +961,25 @@ describe('durable detached snapshot lifecycle', () => {
       expect(ledgerRead).toBe(scenario.taskState !== 'running');
     },
   );
+
+  it('does not recover an unmanifested all-pass detached ledger as a pass', async () => {
+    const ledgerRows = [{
+      file_path: 'lib/unmanifested.test.ts',
+      status: 'pass',
+      finished_at: new Date(1_700_000_001_000),
+      output_tail: null,
+    }];
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.task_ledger')) {
+        return [{ state: 'exited', exit_code: 0 }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getTestRunLedgerRecoveryAsync('unmanifested-ledger-run', sql)).resolves.toBeNull();
+  });
 
   it('does not recover a detached verdict from a partial or unreadable test_runs group', async () => {
     const partialSql = vi.fn(async (strings: TemplateStringsArray) => {
@@ -1007,7 +1049,7 @@ describe('durable detached snapshot lifecycle', () => {
     );
   });
 
-  it('recovers a stale snapshot from the terminal test_runs verdict when no task row exists', async () => {
+  it('does not recover a stale snapshot as pass when no task row can supply the manifest', async () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
@@ -1050,11 +1092,10 @@ describe('durable detached snapshot lifecycle', () => {
 
     await expect(store.getRunAsync('ledger-pass-run', sql)).resolves.toMatchObject({
       runId: 'ledger-pass-run',
-      status: 'pass',
-      exitCode: 0,
-      finishedAt: 1_700_000_001_000,
+      status: 'running',
+      finishedAt: null,
     });
-    expect(updates).toHaveLength(1);
+    expect(updates).toHaveLength(0);
     expect((sql as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => call[0].join(' ').includes('FROM harness_shared.test_runs'))).toBe(true);
   });
 
@@ -1109,7 +1150,7 @@ describe('durable detached snapshot lifecycle', () => {
 
   it.each([
     { name: 'while the linked router is still running', taskState: 'running', taskExitCode: null, expected: 'running' },
-    { name: 'after the linked router exits cleanly', taskState: 'exited', taskExitCode: 0, expected: 'pass' },
+    { name: 'after the linked router exits cleanly with one requested file missing', taskState: 'exited', taskExitCode: 0, expected: 'error' },
     { name: 'after the linked router exits unsuccessfully', taskState: 'exited', taskExitCode: 1, expected: 'error' },
   ] as const)(
     'does not finalize from an all-pass subset emitted by one workspace: $name',
@@ -1121,6 +1162,10 @@ describe('durable detached snapshot lifecycle', () => {
         finished_at: new Date(1_700_000_001_000 + index * 1_000),
         output_tail: null,
       }));
+      const requestedFiles = [
+        ...ledgerRows.map((row) => row.file_path),
+        'lib/workspace-two-1.test.ts',
+      ];
       const updates: unknown[][] = [];
       const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
         const statement = strings.join(' ');
@@ -1142,6 +1187,7 @@ describe('durable detached snapshot lifecycle', () => {
             task_deadline_at: null,
             task_exit_code: scenario.taskExitCode,
             task_ended_at: scenario.taskState === 'running' ? null : new Date(1_700_000_020_000),
+            task_detail: { requestedFiles },
           }];
         }
         if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
@@ -1176,6 +1222,155 @@ describe('durable detached snapshot lifecycle', () => {
       }
     },
   );
+
+  it.each([
+    {
+      name: 'exact coverage',
+      requestedFiles: ['lib/first.test.ts', 'lib/second.test.ts'],
+      rows: ['lib/first.test.ts', 'lib/second.test.ts'],
+      expected: 'pass',
+    },
+    {
+      name: 'partial coverage',
+      requestedFiles: ['lib/first.test.ts', 'lib/second.test.ts'],
+      rows: ['lib/first.test.ts'],
+      expected: 'error',
+    },
+    {
+      name: 'unknown coverage',
+      requestedFiles: null,
+      rows: ['lib/first.test.ts', 'lib/second.test.ts'],
+      expected: 'error',
+    },
+  ] as const)('enforces requested-file coverage on a persisted terminal PASS: $name', async (scenario) => {
+    const runId = `terminal-pass-${scenario.name.replaceAll(' ', '-')}`;
+    const requestedFiles = scenario.requestedFiles;
+    const ledgerRows = scenario.rows.map((file_path, index) => ({
+      file_path,
+      status: 'pass',
+      finished_at: new Date(1_700_000_001_000 + index * 1_000),
+      output_tail: null,
+    }));
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          run_id: runId,
+          task_id: 'task-terminal-pass',
+          kind: 'vitest',
+          label: 'terminal pass',
+          file_path: null,
+          command: ['node', 'scripts/test-files.mjs'],
+          status: 'pass',
+          exit_code: 0,
+          started_at: new Date(1_700_000_000_000),
+          finished_at: new Date(1_700_000_010_000),
+          output: '',
+          truncated: false,
+          task_state: 'exited',
+          task_exit_code: 0,
+          task_ended_at: new Date(1_700_000_010_000),
+          task_detail: requestedFiles ? { requestedFiles } : {},
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered?.status).toBe(scenario.expected);
+    if (scenario.expected === 'pass') {
+      expect(recovered?.requestedFiles).toEqual(requestedFiles);
+      expect(recovered?.output).not.toContain('[coverage-gate]');
+      expect(updates).toHaveLength(0);
+    } else {
+      expect(recovered?.output).toContain('[coverage-gate]');
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.[0]).toBe('error');
+    }
+  });
+
+  it('waits for local terminal finalization before returning testing:run status', async () => {
+    type Sql = Parameters<Store['persistRunSnapshot']>[1];
+    const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
+    // Close-time persistence dynamically imports the mocked DB module. Warm it
+    // first so this lifecycle assertion measures finalization, not cold import.
+    await import('@papercusp/db-org');
+    let releaseTerminalSnapshot!: () => void;
+    let markTerminalSnapshotStarted!: () => void;
+    const terminalSnapshotStarted = new Promise<void>((resolve) => {
+      markTerminalSnapshotStarted = resolve;
+    });
+    const terminalSnapshotGate = new Promise<void>((resolve) => {
+      releaseTerminalSnapshot = resolve;
+    });
+    persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'pass') {
+        markTerminalSnapshotStarted();
+        await terminalSnapshotGate;
+      }
+      return [];
+    });
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      if (strings.join(' ').includes('FROM harness_shared.test_runs')) {
+        return [{
+          file_path: 'lib/local-pass.test.ts',
+          status: 'pass',
+          finished_at: new Date(1_700_000_001_000),
+          output_tail: null,
+        }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    try {
+      const snapshot = store.startRun(req({ requestedFiles: ['lib/local-pass.test.ts'] }));
+      lastChild._emitClose(0);
+      let terminalStartTimer: ReturnType<typeof setTimeout> | undefined;
+      const terminalStartResult = await Promise.race([
+        terminalSnapshotStarted.then(() => 'started' as const),
+        new Promise<'timeout'>((resolve) => {
+          terminalStartTimer = setTimeout(() => resolve('timeout'), 1_500);
+        }),
+      ]);
+      if (terminalStartTimer) clearTimeout(terminalStartTimer);
+      expect(terminalStartResult, JSON.stringify({
+        local: store.getRun(snapshot.runId),
+        persistCalls: persistSqlMock.mock.calls.map((call) => ({
+          query: call[0]?.join(' ').trim().replace(/\\s+/g, ' ').slice(0, 90),
+          values: call.slice(1, 7),
+        })),
+      })).toBe('started');
+
+      let settled = false;
+      const statusRead = store.getRunAsync(snapshot.runId, sql).then((result) => {
+        settled = true;
+        return result;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      releaseTerminalSnapshot();
+      await expect(statusRead).resolves.toMatchObject({
+        runId: snapshot.runId,
+        status: 'pass',
+        requestedFiles: ['lib/local-pass.test.ts'],
+      });
+      expect(settled).toBe(true);
+    } finally {
+      releaseTerminalSnapshot();
+      if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+    }
+  });
 
   it('reconciles a stale running snapshot when its linked task deadline elapsed first', async () => {
     const updates: unknown[][] = [];

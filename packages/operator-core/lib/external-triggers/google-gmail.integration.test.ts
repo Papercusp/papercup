@@ -29,6 +29,8 @@ beforeAll(async () => {
     title: emailType.title,
     description: emailType.description,
     tier: emailType.tier,
+    nature: emailType.nature,
+    audience: emailType.audience,
     workItemKind: emailType.workItemKind,
     payloadSchema: emailType.payloadSchema,
     authoritativeWriter: emailType.authoritativeWriter,

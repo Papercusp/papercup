@@ -195,6 +195,14 @@ describe('resolveBarEvidenceRuntime', () => {
     expect(r.source).toBe('inferred');
   });
 
+  it('honors an explicit deployed :3070 requirement over an operator source-path inference', () => {
+    const r = resolveBarEvidenceRuntime({
+      evidencePlane: 'deployed',
+      method: `Compare bytes in the deployed :3070 release checkout for ${OPERATOR_PATH}`,
+    });
+    expect(r).toMatchObject({ runtime: 'release-operator', source: 'inferred', reviewFlag: true });
+  });
+
   it('with nothing to infer from it is unresolved + flagged, never silently :3070', () => {
     expect(resolveBarEvidenceRuntime({ evidencePlane: 'live', method: 'Check the dashboard looks right.' })).toEqual({
       runtime: null,

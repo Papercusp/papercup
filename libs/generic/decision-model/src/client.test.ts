@@ -448,6 +448,97 @@ describe('call observer', () => {
   });
 });
 
+// ── Host load (P-001: was a timeout the provider's fault or ours?) ──
+
+/** Burn the calling thread synchronously, like a spawn() or a sync file read does. */
+function blockThread(ms: number): void {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    // spin
+  }
+}
+
+describe('host load on the observed record', () => {
+  it('starts the meter before the request and ends it after the outcome, recording its value', async () => {
+    const order: string[] = [];
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const fn: FetchLike = (url, init) => {
+      order.push('fetch');
+      return inner(url, init);
+    };
+    await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => {
+        order.push('start');
+        return () => {
+          order.push('end');
+          return { busyMs: 42, utilization: 0.6 };
+        };
+      },
+    }).c.decide(choiceRequest);
+    expect(order).toEqual(['start', 'fetch', 'end']);
+    expect(records[0]?.hostLoad).toEqual({ busyMs: 42, utilization: 0.6 });
+  });
+
+  it('hostLoad: null turns the measurement off and records null', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    await client(fn, { hostLoad: null, onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    expect(records[0]?.hostLoad).toBeNull();
+  });
+
+  it('a meter that throws at start or at end never reaches the decision; it records null', async () => {
+    const { fn } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const records: DecisionCallRecord[] = [];
+    const atStart = await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => {
+        throw new Error('meter broke');
+      },
+    }).c.decide(choiceRequest);
+    const atEnd = await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => () => {
+        throw new Error('meter broke');
+      },
+    }).c.decide(choiceRequest);
+    expect([atStart.kind, atEnd.kind]).toEqual(['answered', 'answered']);
+    expect(records.map((r) => r.hostLoad)).toEqual([null, null]);
+  });
+
+  it('default meter: an answer held up by a busy thread records high utilization', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const busy: FetchLike = async (url, init) => {
+      const res = await inner(url, init);
+      blockThread(120); // the answer is here, but the thread is busy elsewhere
+      return res;
+    };
+    await client(busy, { onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    const load = records[0]?.hostLoad;
+    expect(load).not.toBeNull();
+    expect(load!.busyMs).toBeGreaterThanOrEqual(100);
+    expect(load!.utilization).toBeGreaterThan(0.5);
+  });
+
+  it('default meter: a call that waits idle on the network records low utilization', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const slowProvider: FetchLike = async (url, init) => {
+      await new Promise((r) => setTimeout(r, 200)); // the provider is slow; the thread is idle
+      return inner(url, init);
+    };
+    await client(slowProvider, { onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    const load = records[0]?.hostLoad;
+    expect(load).not.toBeNull();
+    // Positive control for the comparison: the call really did span the 200 ms wait.
+    expect(records[0]!.outcome.latencyMs).toBeGreaterThanOrEqual(190);
+    expect(load!.utilization).toBeLessThan(0.5);
+    expect(load!.busyMs).toBeLessThan(100);
+  });
+});
+
 // ── Host seam ──
 
 describe('configureDecisionModel seam', () => {

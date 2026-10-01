@@ -782,8 +782,8 @@ describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold"
     expect(describeRepairHeadRunnerFailure("plain string")).toBe("plain string");
   });
 
-  // Part (3): --ensure-ref now builds from the head's own lockfiles when install-equivalent,
-  // so a remaining miss means a real install is needed — the hold must say which package.
+  // Part (3): an exact-ref miss exhausts both live and cached compatible graphs.
+  // Preserve the mismatched package and a remedy that leaves the shared tree intact.
   it("carries dependency-generation's exact-ref refusal reason into the hold", () => {
     const raw =
       "[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint abcd1234; " +
@@ -791,7 +791,9 @@ describe("WI-10004151 verifyRepairHead carries a runner's failure into the hold"
       '[dependency-generation]   node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)';
     const described = describeRepairHeadRunnerFailure(new Error(raw));
     expect(described).toContain("fingerprint abcd1234");
-    expect(described).toContain('needs a real install: node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)');
+    expect(described).toContain("live tree or a validated cached generation");
+    expect(described).toContain('no compatible installed source was found: node_modules/pkg: version "1.0.0" (ref) vs "2.0.0" (live)');
+    expect(described).toContain("Install the head's lockfiles in an isolated source");
     expect(described).not.toContain("\n");
   });
 });

@@ -28,6 +28,8 @@ export {
   configureDecisionModel,
   getDecisionClient,
   decide,
+  eventLoopUtilizationMeter,
+  type HostLoadMeter,
   type DecisionClient,
   type DecisionClientOptions,
   type DecideOptions,

@@ -19,6 +19,7 @@ import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
 import { planItemLaneBlockReason, type PlanItemLaneBlock } from './plan-item-lane-guard';
+import { acceptanceReadinessHold } from './acceptance-readiness-hold';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
@@ -805,7 +806,17 @@ export async function getNextForBee(args: {
       continue;
     }
     claimStep('plan-lane-check');
-    const blocked = await planItemLaneBlockReason(result.workItem);
+    const laneBlock = await planItemLaneBlockReason(result.workItem);
+    // P-002(b) (feature-drain-delivery-readiness…-2026-10-01, D-008 §5 / D-011): the SECOND
+    // post-claim verdict — an item bound to an incomplete acceptance requirement (draft
+    // clause, no METHOD, no check) is not handed out. The hold routes it behind the plan's
+    // repair task via a `blocks` edge, so the claim floor excludes it from then on; the
+    // bounce → audit → release below is shared, and `reason` tells the two holds apart.
+    if (!laneBlock) claimStep('acceptance-readiness-check');
+    const acceptanceHold = laneBlock
+      ? null
+      : await acceptanceReadinessHold(result.workItem, { by: args.cupId, workspaceId: args.workspaceId });
+    const blocked = laneBlock ?? acceptanceHold;
     if (!blocked) {
       claimStep('claim-audit');
       await auditClaimAttempt({
@@ -874,7 +885,7 @@ export async function getNextForBee(args: {
       outcome: 'lost',
       detail: {
         source: record.source,
-        reason: 'plan-lane-blocked',
+        reason: acceptanceHold ? 'acceptance-readiness-held' : 'plan-lane-blocked',
         // The lane guard's own verdict — which plan item held the row, and why. Without
         // this the count says churn happened but not which of the guard's three distinct
         // jobs (blocked-by graph, terminal-lane residue, owner-gate prose) produced it,

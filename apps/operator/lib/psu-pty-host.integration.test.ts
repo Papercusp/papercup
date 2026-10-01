@@ -985,6 +985,9 @@ describe('session-port managed seed + native persistence helpers', () => {
       }, { timeout: 8000 });
       const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
       expect(frame?.msAfterTuiStart).toBeGreaterThanOrEqual(1_000);
+      // WI-10004943 control: this frame arrived on its own, before any machine
+      // write, so it must not be attributable to one.
+      expect(frame).toHaveProperty('msSinceMachineTurnWriteStarted', null);
       expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
       expect(written.msSinceBackendFirstFrame).toBeGreaterThanOrEqual(0);
       expect(Date.parse(written.ts)).toBeGreaterThanOrEqual(Date.parse(frame.ts));
@@ -1066,6 +1069,89 @@ describe('session-port managed seed + native persistence helpers', () => {
       await done;
     }
   }, 35_000);
+
+  // WI-10004943: in 4 of 4 production cases a Codex footer read `Starting` for
+  // 10-20 minutes and the session frame then appeared 6-18s before a `turn inject`
+  // was confirmed. Either Codex became ready on its own (hung MCP boot) or the
+  // typed input provoked the repaint (a stale footer). The host computed the facts
+  // that decide this but did not record them. This child repaints `Ready` ONLY
+  // when input arrives, so the record must show the write began before the frame,
+  // with the footer still reading `Starting`.
+  it('records the write-time footer and the write-to-frame gap for a Codex turn inject', async () => {
+    const ownerId = `su-codex-provoked-frame-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write('psu: launcher banner\\n');" +
+      "process.stdin.setEncoding('utf8');let ready=false;let b='';" +
+      "process.stdin.on('data',d=>{" +
+      "if(!ready&&String(d).includes('PROVOKE')){ready=true;" +
+      "process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');}" +
+      "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(!line)continue;if(line.includes('QUIT'))process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "setTimeout(()=>{process.stdout.write('\\x1b[6n');" +
+      "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+      "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);},100);" +
+      'setTimeout(()=>process.exit(0),20000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      onExit: () => undefined,
+    });
+    try {
+      const hostEvents = () =>
+        existsSync(eventLogPathForOwner(ownerId))
+          ? readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line))
+          : [];
+      await vi.waitFor(() => {
+        expect(existsSync(sock)).toBe(true);
+        expect(hostEvents().some((e) => e.kind === 'backend-tui-start-observed')).toBe(true);
+        expect(captured()).toContain('Starting');
+      }, { timeout: 8000 });
+      // Calibration: the footer alone is not a session frame.
+      expect(hostEvents().some((e) => e.kind === 'backend-session-frame-observed')).toBe(false);
+      await controlInject(sock, 'turn', 'PROVOKE-TURN');
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:PROVOKE-TURN'), { timeout: 8000 });
+      const delivered = await vi.waitFor(() => {
+        const row = hostEvents().find((e) => e.kind === 'turn-delivered' && e.label === 'turn inject');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      const frame = hostEvents().find((e) => e.kind === 'backend-session-frame-observed');
+      expect(frame).toBeDefined();
+      expect(delivered.write).toMatchObject({
+        codexFooterAtWrite: 'starting',
+        msSinceBackendFirstFrame: null,
+      });
+      const writeStartedAt = Date.parse(delivered.write.writeStartedAt);
+      expect(Number.isFinite(writeStartedAt)).toBe(true);
+      expect(writeStartedAt).toBeLessThanOrEqual(Date.parse(frame.ts));
+      expect(frame.msSinceMachineTurnWriteStarted).toBeGreaterThanOrEqual(0);
+      expect(frame.msSinceMachineTurnWriteStarted).toBeLessThan(5_000);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 30_000);
 
   it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
     const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());

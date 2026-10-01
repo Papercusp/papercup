@@ -47,7 +47,8 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     for (const [id, schema] of Object.entries(REASONING)) {
       await upsertDatatype(db.adminSql, {
         id, workspaceId: WS, title: id, description: `oddsmith ${id} reasoning datatype`,
-        tier: 'generic-kind', workItemKind: id, payloadSchema: schema, selfImprovement: SI,
+        tier: 'generic-kind', nature: 'record', // D-007: bet/wager/forecast/calibration-record are records
+        workItemKind: id, payloadSchema: schema, selfImprovement: SI,
         tags: id === 'bet' ? ['oddsmith', HIVE_PLACEMENT_TAG] : ['oddsmith'],
       });
     }
@@ -55,7 +56,8 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     for (const id of MONEY_TRUTH) {
       await upsertDatatype(db.adminSql, {
         id, workspaceId: WS, title: id, description: `oddsmith ${id} money-truth projection`,
-        tier: 'projection', authoritativeWriter: 'engine:oddsmith', workItemKind: id,
+        tier: 'projection', nature: id === 'fill' ? 'event' : 'record', // D-013 §4: a fill happened; the rest are state
+        authoritativeWriter: 'engine:oddsmith', workItemKind: id,
       });
     }
   }, 120_000);

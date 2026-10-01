@@ -16,9 +16,9 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, readlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, sep } from 'node:path';
 import { promisify } from 'node:util';
+import { moduleRepoRoot } from '../../module-repo-root';
 import { projectDirForSlug } from '../../operator-notes';
 import { listCommsTrust, type CommsTrustEntry } from '../../trust/comms-trust';
 import { listIntegrationRequests, type IntegrationRequest } from './integration-requests';
@@ -426,9 +426,12 @@ export async function observeIntegrationBaseline(deps: IntegrationBaselineDeps =
 }
 
 const execFileAsync = promisify(execFile);
-/** Read per call: the probe exports PAPERCUSP_REPO_DIR, and tests point it at a temp repo. */
-const repoRoot = () =>
-  process.env.PAPERCUSP_REPO_DIR || resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+/**
+ * Read per call: the probe exports PAPERCUSP_REPO_DIR, and tests point it at a temp repo.
+ * The fallback walks to `.git` instead of a fixed `..` climb, which is wrong inside the
+ * esbuild host bundle (P-016; see module-repo-root.ts).
+ */
+const repoRoot = () => process.env.PAPERCUSP_REPO_DIR || moduleRepoRoot(import.meta.url);
 
 async function git(args: readonly string[], maxBuffer = 16 * 1024 * 1024): Promise<string> {
   const { stdout } = await execFileAsync('git', ['-C', repoRoot(), ...args], { timeout: 20_000, maxBuffer });

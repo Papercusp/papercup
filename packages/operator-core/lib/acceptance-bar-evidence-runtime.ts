@@ -9,13 +9,15 @@
  *
  *  - DECLARED  — the criterion names `evidenceRuntime`; the ship door checks current
  *                evidence measured on exactly that runtime.
- *  - INFERRED  — no declaration, but the BAR's text names source paths whose runtime
- *                owners agree; reported and FLAGGED FOR REVIEW, never blocking.
+ *  - INFERRED  — no declaration, but the BAR's text explicitly names a runtime or names
+ *                source paths whose runtime owners agree; reported and FLAGGED FOR REVIEW,
+ *                never blocking.
  *  - UNRESOLVED — nothing to infer from; reported null + flagged. Never :3070 by default.
  *
- * For operator-served code the inferred runtime is the STAGING operator, not the release
+ * For operator-served code inferred from a source path alone, the runtime is the STAGING
  * operator: the current working build is the default acceptance plane, and green main is
- * only the final-promotion plane.
+ * only the final-promotion plane. An explicit :3070 / release-checkout requirement in the
+ * BAR text takes precedence over that source-owner inference.
  */
 import { classifyRuntimeOwners } from './git-pipeline-position';
 import {
@@ -41,6 +43,21 @@ export interface BarEvidenceRuntimeInput {
   method?: string | null;
   driftMarkers?: string | null;
   replication?: string | null;
+}
+
+const RELEASE_RUNTIME_MENTION = /\bport-3070\b|:3070\b|\brelease[- ]operator\b|\brelease\s+checkout\b|\bdeployed(?:\s+release)?\s+checkout\b|\bgreen[- ]main\b/gi;
+
+/** True when a BAR's free text positively ties its method to the deployed operator. */
+function explicitlyNamesReleaseRuntime(text: string): boolean {
+  for (const match of text.matchAll(RELEASE_RUNTIME_MENTION)) {
+    const start = match.index ?? 0;
+    const before = text.slice(Math.max(0, start - 80), start);
+    const after = text.slice(start + match[0].length, start + match[0].length + 48);
+    const negatedBefore = /\b(?:not|never|avoid|exclude|excluding|except|without|other than|instead of|do not|don't)\b[^.!?;\n]{0,64}$/i.test(before);
+    const negatedAfter = /^\s*(?:isn't required|is not required|not required|must not|should not)\b/i.test(after);
+    if (!negatedBefore && !negatedAfter) return true;
+  }
+  return false;
 }
 
 /** Repo-relative source paths named in free text (test files excluded: they are proof, not subject). */
@@ -74,6 +91,9 @@ export function resolveBarEvidenceRuntime(input: BarEvidenceRuntimeInput): BarEv
   }
   const text = [input.model, input.method, input.driftMarkers, input.replication].filter(Boolean).join('\n');
   const paths = sourcePathsIn(text);
+  if (explicitlyNamesReleaseRuntime(text)) {
+    return { runtime: 'release-operator', source: 'inferred', reviewFlag: true, inferredFrom: paths };
+  }
   const candidates = [...new Set(paths.map(acceptanceRuntimeFor).filter((r): r is ServingRuntimeId => r !== null))];
   if (candidates.length === 1) {
     return { runtime: candidates[0]!, source: 'inferred', reviewFlag: true, inferredFrom: paths };

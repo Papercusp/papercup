@@ -2557,7 +2557,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     signal: null,
     stdout: '',
     stderr: '',
-    error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
+    error: Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
       code: 'GOVERNED_ADMISSION_FAILED',
       governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
     }),
@@ -2825,7 +2825,7 @@ export async function main(
         signal: null,
         stdout: '',
         stderr: '',
-        error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
+        error: Object.assign(new Error(error instanceof Error ? error.message : String(error), { cause: error }), {
           code: 'GOVERNED_ADMISSION_FAILED',
           governedAdmissionFailureKind: classifyGovernedAdmissionFailure(error),
         }),
@@ -2836,7 +2836,7 @@ export async function main(
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) {
         if (result.governedAdmissionError) {
-          console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)}`);
+          console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)} origin=${JSON.stringify(result.error.cause?.stack ?? result.error.stack)}`);
         } else {
           console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Node:test: ${result.error.message}`));
         }
@@ -3063,7 +3063,7 @@ export async function main(
     }
     if (result.error) {
       if (result.governedAdmissionError) {
-        console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)}`);
+        console.error(`TEST_FILE_ADMISSION_ERROR kind=${result.governedAdmissionFailureKind ?? 'undetermined'} detail=${JSON.stringify(result.error.message)} origin=${JSON.stringify(result.error.cause?.stack ?? result.error.stack)}`);
       } else {
         console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
         if (looksLikeMidInstallCorruption(result.error.message)) {

@@ -14,8 +14,23 @@ import { failMeasurementCell, type PreparedMeasurement } from './measurement-man
 const input: PerformanceInput = { formatVersion: 1, seed: 'synthetic', blocks: 5, warmSamples: 3, rounds: 2,
   batches: [1, 2], concurrency: [1, 2], cachedSamples: 2, serverConcurrency: 2,
   requests: { query: [{ id: 'q', corpus: 'memory', text: 'query' }], document: [{ id: 'd', corpus: 'prose', text: 'document' }] } };
+async function productionNodeProbe(script: string) {
+  return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', PAPERCUSP_EMBED_DEVICE: 'cpu' };
+    delete env.VITEST;
+    delete env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
+    delete env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('idle-boundary child exceeded 25s')); }, 25000);
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+  });
+}
 describe('performance collector through real HTTP/client/sidecar queue', () => {
-  it('captures client sends and idle socket lifecycle across a response-completion pause without retry', async () => {
+  it.each(['sequential', 'concurrent-batch'] as const)('captures %s pool lifecycle across a response-completion pause without retry', async (poolShape) => {
     // The real warm128 probe failed on the first POST after a 10s gap. Run
     // the same server/client in a production Node child so pausing its loop
     // cannot stall Vitest or its other tests. Synthetic weights isolate the
@@ -36,20 +51,35 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
       const url = 'http://127.0.0.1:' + await sidecar.listening;
       const stopTrace = observeSidecarTransport(sidecar.server, url, event => events.push(event));
       const report = { keepAliveTimeout: sidecar.server.keepAliveTimeout,
-        headersTimeout: sidecar.server.headersTimeout, completed: 0, error: null, events };
+        headersTimeout: sidecar.server.headersTimeout, poolShape: ${JSON.stringify(poolShape)},
+        completed: 0, error: null, events };
+      const call = async (batchSize) => {
+        await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query',
+          texts: Array(batchSize).fill('frozen'), bypassCache: true });
+        report.completed++;
+      };
       try {
         for (let i = 0; i < 4; i++) {
-          await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
-          report.completed++;
+          await call(1);
           if (i < 3) await new Promise(resolve => setTimeout(resolve, 20));
         }
+        if (report.poolShape === 'concurrent-batch') {
+          // Preserve the failed v4 collector's pool topology before 16x1:
+          // four rounds at each preceding batch/concurrency combination.
+          for (const batchSize of [1, 4]) for (const concurrency of [1, 4]) {
+            for (let round = 0; round < 4; round++) {
+              await Promise.all(Array.from({ length: concurrency }, () => call(batchSize)));
+            }
+          }
+        }
+        report.completedBeforePause = report.completed;
+        report.lastResponseAt = events.filter(event => event.event === 'server-response').at(-1).at;
         report.pauseStartedAt = Date.now();
         // Stay in the response-completion microtask, as the collector's
         // synchronous sample append does; a timer-phase pause is different.
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10500);
         report.pauseEndedAt = Date.now();
-        await sidecarEmbedBatch(url, { model: 'harrier', kind: 'query', texts: ['frozen'], bypassCache: true });
-        report.completed++;
+        await call(report.poolShape === 'concurrent-batch' ? 16 : 1);
       } catch (error) {
         report.error = { message: error.message, code: error.cause?.code,
           cause: error.cause?.message };
@@ -60,29 +90,95 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
         process.exit(0);
       }
     `;
-    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-      const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', PAPERCUSP_EMBED_DEVICE: 'cpu' };
-      delete env.VITEST;
-      delete env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
-      delete env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;
-      const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env });
-      let stdout = '', stderr = '';
-      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('idle-boundary child exceeded 25s')); }, 25000);
-      child.stdout.on('data', (chunk) => { stdout += chunk; });
-      child.stderr.on('data', (chunk) => { stderr += chunk; });
-      child.once('error', (error) => { clearTimeout(timer); reject(error); });
-      child.once('exit', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
-    });
+    const result = await productionNodeProbe(script);
     expect(result.status, result.stderr).toBe(0);
     const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
-    expect(report.error, JSON.stringify(report)).toBeNull();
-    expect(report.completed).toBe(5);
+    const lastSend = report.events.filter((event: { event: string }) => event.event === 'client-send').at(-1);
+    const failureEvidence = { poolShape, completed: report.completed, error: report.error,
+      lastResponseAt: report.lastResponseAt, pauseStartedAt: report.pauseStartedAt, pauseEndedAt: report.pauseEndedAt,
+      // Put the causal tail first: bounded test ledgers otherwise retain the
+      // successful warm-up head and discard the closing actor's evidence.
+      tail: report.events.filter((event: { at: string; clientPort?: number }) =>
+        Date.parse(event.at) >= report.pauseStartedAt && event.clientPort === lastSend.clientPort)
+        .map((event: { at: string; event: string; clientPort?: number; code?: string }) =>
+        ({ at: event.at, event: event.event, port: event.clientPort, code: event.code })) };
+    if (report.error) {
+      // This direct synchronous control measures the runtime race. The
+      // collector guard below requires successful async retention instead.
+      expect(poolShape).toBe('concurrent-batch');
+      expect(report.error.code, JSON.stringify(failureEvidence)).toBe('ECONNRESET');
+      expect(failureEvidence.tail.map((event: { event: string }) => event.event), JSON.stringify(failureEvidence))
+        .toEqual(['client-send', 'server-idle-timeout', 'client-error']);
+    }
+    expect(report.completedBeforePause).toBe(poolShape === 'concurrent-batch' ? 44 : 4);
+    expect(report.completed).toBe(report.completedBeforePause + (report.error ? 0 : 1));
     expect(report.pauseEndedAt - report.pauseStartedAt).toBeGreaterThanOrEqual(10500);
-    expect(report.events.filter((event: { event: string }) => event.event === 'client-send')).toHaveLength(5);
+    expect(report.events.filter((event: { event: string }) => event.event === 'client-send')).toHaveLength(report.completedBeforePause + 1);
     expect(report.events.some((event: { event: string }) => event.event === 'server-idle-timeout')).toBe(true);
     expect(report.events.filter((event: { event: string; clientPort?: number }) => event.event === 'client-send')
       .every((event: { clientPort?: number }) => Number.isInteger(event.clientPort))).toBe(true);
+    const sends = report.events.filter((event: { event: string }) => event.event === 'client-send');
+    if (poolShape === 'concurrent-batch') {
+      expect(new Set(sends.slice(0, -1).map((event: { clientPort: number }) => event.clientPort)).size).toBeGreaterThanOrEqual(4);
+    }
+    expect(Date.parse(sends.at(-1).at) - Date.parse(report.lastResponseAt)).toBeGreaterThanOrEqual(10500);
+    expect(report.events.filter((event: { event: string }) => event.event === 'client-error')).toHaveLength(report.error ? 1 : 0);
+    expect(report.events.some((event: { event: string }) => event.event === 'server-error')).toBe(false);
     expect(JSON.stringify(report.events)).not.toContain('frozen');
+  }, 30000);
+  it('awaits asynchronous sample retention across the concurrent pool idle boundary', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-async-retention-'));
+    const serverModule = fileURLToPath(new URL('../embed-sidecar-server.ts', import.meta.url));
+    const collectorModule = fileURLToPath(new URL('./sidecar-performance.ts', import.meta.url));
+    const fixtureModule = fileURLToPath(new URL('./fixtures/measurement-manifest.ts', import.meta.url));
+    try {
+      const result = await productionNodeProbe(`
+        import fs from 'node:fs';
+        import { createEmbedSidecarServer } from ${JSON.stringify(serverModule)};
+        import { collectSidecarPerformance, observeSidecarTransport } from ${JSON.stringify(collectorModule)};
+        import { measurementManifestFixture } from ${JSON.stringify(fixtureModule)};
+        const sampleFile = ${JSON.stringify(path.join(dir, 'samples.jsonl'))};
+        const arm = measurementManifestFixture('/private').arms[0];
+        const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 4,
+          builders: { mdenseon: async () => async () => [1, ...Array(767).fill(0)] },
+          modelRevisions: { mdenseon: arm.modelRev }, log: () => {} });
+        sidecar.server.keepAliveTimeout = 5000;
+        const url = 'http://127.0.0.1:' + await sidecar.listening, events = [];
+        const stopTrace = observeSidecarTransport(sidecar.server, url, event => events.push(event));
+        const outcome = { error: null, paused: false, retained: 0, completed: 0 };
+        try {
+          const report = await collectSidecarPerformance(url, arm, ${JSON.stringify({ ...input, warmSamples: 4, rounds: 4, batches: [1, 4, 16], concurrency: [1, 4], serverConcurrency: 4 })}, {
+            processStartedAtMs: Date.now(),
+            onSample: async sample => {
+              if (sample.sequence === 45) {
+                outcome.paused = true;
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10500);
+              }
+              await fs.promises.appendFile(sampleFile, JSON.stringify(sample) + '\\n');
+              outcome.retained++;
+            }
+          });
+          outcome.completed = report.samples.length;
+        } catch (error) { outcome.error = { message: error.message, code: error.cause?.cause?.code }; }
+        finally {
+          await sidecar.close(); stopTrace();
+          outcome.idleTimeouts = events.filter(event => event.event === 'server-idle-timeout').length;
+          outcome.clientErrors = events.filter(event => event.event === 'client-error').length;
+          console.log(JSON.stringify(outcome)); process.exit(0);
+        }
+      `);
+      expect(result.status, result.stderr).toBe(0);
+      const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
+      expect(report.error, JSON.stringify(report)).toBeNull();
+      expect(report.paused).toBe(true);
+      expect(report.idleTimeouts).toBeGreaterThan(0);
+      expect(report.clientErrors).toBe(0);
+      const retained = fs.readFileSync(path.join(dir, 'samples.jsonl'), 'utf8').trim().split('\n').map((row) => JSON.parse(row));
+      expect(report.retained).toBe(report.completed);
+      expect(retained).toHaveLength(report.completed);
+      expect(new Set(retained.map((sample) => sample.sequence)).size).toBe(report.completed);
+      expect(retained.some((sample) => sample.kind === 'query' && sample.batchSize === 16 && sample.concurrency === 1)).toBe(true);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }, 30000);
   it('retains the actual socket failure cause and frozen request identity in its failure receipt', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-socket-failure-'));

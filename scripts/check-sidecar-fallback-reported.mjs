@@ -133,8 +133,13 @@ export function scanTree() {
   // The ENUMERATION is the collapse detector and must stay whole-tree: it is what proves
   // the guard is looking at a repository at all. It costs nothing — no file is read.
   // WI-10004176: drop index entries a peer's plain `rm` left until git-sync commits it.
+  // maxBuffer: the default 1 MiB is a hard ceiling on the listing, and the tracked *.ts list
+  // crossed it on 2026-10-01 (1,059,013 bytes). Past it execFileSync kills git (ENOBUFS) and the
+  // guard dies before checking anything. 128 MiB matches doc-claims/tracked-text-files.ts.
   const enumerated = presentOnDisk(
-    execFileSync('git', ['ls-files', '*.ts'], { cwd: ROOT, encoding: 'utf8' }).split('\n').filter(Boolean),
+    execFileSync('git', ['ls-files', '*.ts'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 })
+      .split('\n')
+      .filter(Boolean),
     ROOT,
   ).filter(eligible);
 

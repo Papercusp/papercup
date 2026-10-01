@@ -12,8 +12,8 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { moduleRepoRoot } from '../../module-repo-root';
 import {
   registerSystemAction,
   type SystemAction,
@@ -35,7 +35,9 @@ import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../super
 import { execFileViaSidecar } from '../../fleet/git-via-sidecar';
 
 const execFileP = promisify(execFile);
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+// Not a fixed `../` climb: inside the host bundle that lands outside the checkout and the
+// drop-in check reports `unavailable` on every run (P-016). See module-repo-root.ts.
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const DROP_IN_INSTALL_CHECK = resolve(REPO_ROOT, 'scripts/check-systemd-dropins-installed.mjs');
 
 /** Coord identity for the reconciler's own broadcasts (mirrors service-health.ts's HEALTH_IDENTITY

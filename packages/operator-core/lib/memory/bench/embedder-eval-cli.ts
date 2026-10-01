@@ -628,7 +628,7 @@ async function main(): Promise<void> {
     try {
       report = await collectSidecarPerformance(sidecarUrl, arm, performanceInput, { processStartedAtMs,
         onPhase: (phase) => console.log(`[performance] ${cell.id} ${phase}`),
-        onSample: (sample) => fs.appendFileSync(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
+        onSample: (sample) => fs.promises.appendFile(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
       });
     } finally { stopTrace?.(); if (traceFd !== undefined) fs.closeSync(traceFd); }
     assertMeasuredExecution(arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());

@@ -24,6 +24,36 @@ export const SESSION_READ_REFRESH_TIMEOUT_MS = 5_000;
 export const SESSION_TARGET_REFRESH_TIMEOUT_MS = SESSION_READ_REFRESH_TIMEOUT_MS;
 export type SessionSourceKind = (typeof SESSION_SOURCE_KINDS)[number];
 
+export type SessionRefreshFailureReason =
+  | 'owner_lookup_timeout'
+  | 'owner_lookup_aborted'
+  | 'owner_lookup_error'
+  | 'resolve_timeout'
+  | 'resolve_aborted'
+  | 'resolve_error'
+  | 'transcript_unavailable'
+  | 'ingest_timeout'
+  | 'ingest_aborted'
+  | 'ingest_error';
+
+export interface SessionRefreshReceipt {
+  attempted: number;
+  refreshed: number;
+  /** Aggregated, anonymized failure categories; never includes owner/session ids or raw errors. */
+  failureReasons?: Partial<Record<SessionRefreshFailureReason, number>>;
+}
+
+function failedSessionRefresh(reason: SessionRefreshFailureReason): SessionRefreshReceipt {
+  return { attempted: 1, refreshed: 0, failureReasons: { [reason]: 1 } };
+}
+
+function boundedFailureReason(
+  stage: 'owner_lookup' | 'resolve' | 'ingest',
+  reason: 'timeout' | 'aborted' | 'error' | undefined,
+): SessionRefreshFailureReason {
+  return `${stage}_${reason ?? 'error'}` as SessionRefreshFailureReason;
+}
+
 export interface SessionSelector {
   sessionId: string;
   sourceKind?: SessionSourceKind;
@@ -156,7 +186,7 @@ export async function refreshResolvedSessionBeforeRead(
   owner: string,
   deps: Pick<TargetRefreshDeps, 'ingest'> = {},
   label = 'sessions:live refresh',
-): Promise<{ attempted: number; refreshed: number }> {
+): Promise<SessionRefreshReceipt> {
   const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
   const refresh = await withBoundedTimeout(
     () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
@@ -166,7 +196,8 @@ export async function refreshResolvedSessionBeforeRead(
       label,
     },
   );
-  return { attempted: 1, refreshed: refresh.degraded ? 0 : 1 };
+  if (refresh.degraded) return failedSessionRefresh(boundedFailureReason('ingest', refresh.reason));
+  return { attempted: 1, refreshed: 1 };
 }
 
 async function resolveTargetSessionTranscript(
@@ -216,7 +247,7 @@ export async function refreshTargetSessionBeforeRead(
   sourceKind: string | null | undefined,
   sessionId: string,
   deps: TargetRefreshDeps = {},
-): Promise<{ attempted: number; refreshed: number }> {
+): Promise<SessionRefreshReceipt> {
   if (!sessionId || sourceKind === 'agent_chat') return { attempted: 0, refreshed: 0 };
 
   const rows = await sql<TargetSessionRow[]>`
@@ -244,8 +275,9 @@ export async function refreshTargetSessionBeforeRead(
       label: 'sessions:read target resolve',
     },
   );
+  if (resolved.degraded) return failedSessionRefresh(boundedFailureReason('resolve', resolved.reason));
   const target = resolved.value;
-  if (!target) return { attempted: 1, refreshed: 0 };
+  if (!target) return failedSessionRefresh('transcript_unavailable');
 
   return refreshResolvedSessionBeforeRead(
     target,
@@ -266,8 +298,9 @@ export async function refreshLiveSessionsBeforeRead(
   sql: Sql,
   owners?: readonly string[] | null,
   deps: LiveRefreshDeps = {},
-): Promise<{ attempted: number; refreshed: number }> {
+): Promise<SessionRefreshReceipt> {
   let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
+  let ownerLookupFailure: SessionRefreshFailureReason | undefined;
   if (ownerIds.length === 0) {
     const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
       sql<Array<{ owner: string }>>`
@@ -285,11 +318,18 @@ export async function refreshLiveSessionsBeforeRead(
       },
     );
     ownerIds = ownerRead.value.map((row) => row.owner);
+    if (ownerRead.degraded) {
+      ownerLookupFailure = boundedFailureReason('owner_lookup', ownerRead.reason);
+    }
   }
-  if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
+  if (ownerIds.length === 0) {
+    return ownerLookupFailure
+      ? { attempted: 0, refreshed: 0, failureReasons: { [ownerLookupFailure]: 1 } }
+      : { attempted: 0, refreshed: 0 };
+  }
 
   const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
-  const results = await Promise.all(ownerIds.map(async (owner) => {
+  const results = await Promise.all(ownerIds.map(async (owner): Promise<SessionRefreshReceipt> => {
     const resolved = await withBoundedTimeout(
       () => resolve(owner),
       {
@@ -298,16 +338,27 @@ export async function refreshLiveSessionsBeforeRead(
         label: 'sessions:live resolve',
       },
     );
-    if (!resolved.value) return false;
-    const refreshed = await refreshResolvedSessionBeforeRead(
+    if (resolved.degraded) return failedSessionRefresh(boundedFailureReason('resolve', resolved.reason));
+    if (!resolved.value) return failedSessionRefresh('transcript_unavailable');
+    return refreshResolvedSessionBeforeRead(
       resolved.value,
       owner,
       { ingest: deps.ingest },
       'sessions:live refresh',
     );
-    return refreshed.refreshed > 0;
   }));
-  return { attempted: ownerIds.length, refreshed: results.filter(Boolean).length };
+  const failureReasons: NonNullable<SessionRefreshReceipt['failureReasons']> = {};
+  for (const result of results) {
+    for (const [reason, count] of Object.entries(result.failureReasons ?? {})) {
+      const key = reason as SessionRefreshFailureReason;
+      failureReasons[key] = (failureReasons[key] ?? 0) + (count ?? 0);
+    }
+  }
+  return {
+    attempted: ownerIds.length,
+    refreshed: results.reduce((total, result) => total + result.refreshed, 0),
+    ...(Object.keys(failureReasons).length > 0 ? { failureReasons } : {}),
+  };
 }
 
 /** ±context turns around one hit (per-turn text bounded for token economy). */

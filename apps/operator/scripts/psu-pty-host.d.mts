@@ -384,16 +384,23 @@ export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): b
  *
  * A `started:true` answer does not advance the cursor, so repeated calls keep
  * answering true. Every unreadable or inconsistent case returns
- * `available:false`, which keeps the existing retry path. */
+ * `available:false`, which keeps the existing retry path.
+ *
+ * @typedef {{fileIdentity: string | null, markerStartOffset: number | null,
+ *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
+ * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
+ *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
+ *   home?: string, maxScanBytes?: number}} options
+ * @returns {{available: boolean, started: boolean}} */
 export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, }: {
-    agent: any;
-    env?: NodeJS.ProcessEnv | undefined;
-    transcriptPath: any;
-    marker: any;
-    markerLostChars?: number | undefined;
-    anchor?: null | undefined;
-    home?: string | undefined;
-    maxScanBytes?: number | undefined;
+    agent?: string;
+    env?: EnvironmentMap;
+    transcriptPath?: string | null;
+    marker?: string | null;
+    markerLostChars?: number;
+    anchor?: KickoffMarkerAnchor | null;
+    home?: string;
+    maxScanBytes?: number;
 }): {
     available: boolean;
     started: boolean;
@@ -2947,6 +2954,33 @@ export const BRACKETED_PASTE_TAIL_CHARS: 32;
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY: string;
+/**
+ * A plain launch's marker proves submission. A native task-start or assistant
+ * row AFTER that exact marker proves model activity, including a short turn
+ * that completed before the marker scan returned. PTY output is not used as
+ * execution proof when this isolated transcript is available.
+ *
+ * WI-10004982: this reads FORWARD from the prompt row. It used to read only
+ * the last 256 KiB, but a fresh Claude session writes rows far larger than
+ * that right after the reply (measured: `instructions` 276 KB, then
+ * `prompt_snapshot` rows of 168 KB and 258 KB). The window then started PAST
+ * the reply, bound to a later `last-prompt` copy of the marker, saw no
+ * assistant row, and the host re-sent the kickoff 40 s later as a duplicate
+ * turn. Now the first call scans from the file start to the first real prompt
+ * row and records it in `anchor`. Later calls re-check that exact row, then read
+ * only the bytes not yet scanned (`anchor.scannedEndOffset`), so the cost stays
+ * flat as the transcript grows.
+ *
+ * A `started:true` answer does not advance the cursor, so repeated calls keep
+ * answering true. Every unreadable or inconsistent case returns
+ * `available:false`, which keeps the existing retry path.
+ */
+export type KickoffMarkerAnchor = {
+    fileIdentity: string | null;
+    markerStartOffset: number | null;
+    markerEndOffset: number | null;
+    scannedEndOffset: number | null;
+};
 /**
  * Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.

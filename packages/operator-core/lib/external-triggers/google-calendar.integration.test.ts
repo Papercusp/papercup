@@ -29,6 +29,8 @@ beforeAll(async () => {
     title: calendarType.title,
     description: calendarType.description,
     tier: calendarType.tier,
+    nature: calendarType.nature,
+    audience: calendarType.audience,
     workItemKind: calendarType.workItemKind,
     payloadSchema: calendarType.payloadSchema,
     authoritativeWriter: calendarType.authoritativeWriter,

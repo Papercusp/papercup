@@ -13,16 +13,45 @@
  *    it fits the remaining budget); every other status is terminal on first sight.
  *  - The observer (the host's audit ledger) is fired AFTER the outcome is known
  *    and is never awaited: a slow or failing ledger cannot delay or break a decision.
+ *  - Every observed call carries `hostLoad`: how busy the calling thread was while
+ *    the call was open, so a timeout can be attributed to the provider or to the host.
  */
+import { performance } from 'node:perf_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type {
   DecisionCallRecord,
   DecisionOutcome,
   DecisionProvider,
   DecisionRequest,
+  HostLoad,
   InconclusiveReason,
   QuestionMap,
 } from './types.js';
+
+/**
+ * Starts a host-load measurement when a call begins and returns the function that
+ * ends it. The end function returns null when it cannot measure.
+ */
+export type HostLoadMeter = () => () => HostLoad | null;
+
+/**
+ * The default meter: Node's event-loop utilization of the calling thread over the
+ * call window. `active` is the time the loop spent outside its idle wait, i.e.
+ * running JavaScript or blocked in synchronous native work (a spawn, a sync file
+ * read) — exactly the time an arrived answer cannot be read.
+ */
+export const eventLoopUtilizationMeter: HostLoadMeter = () => {
+  const start = performance.eventLoopUtilization();
+  return () => {
+    const delta = performance.eventLoopUtilization(start);
+    const window = delta.active + delta.idle;
+    if (!Number.isFinite(delta.active) || delta.active < 0 || !(window > 0)) return null;
+    return {
+      busyMs: Math.round(delta.active),
+      utilization: Math.min(1, Math.max(0, delta.active / window)),
+    };
+  };
+};
 
 export type FetchLike = (
   url: string,
@@ -45,6 +74,12 @@ export interface DecisionClientOptions {
   readonly backoffBaseMs?: number;
   /** Observer for completed calls (the audit ledger). Fire-and-forget. */
   readonly onCall?: (record: DecisionCallRecord) => void | Promise<void>;
+  /**
+   * Measures how busy the calling thread was during each call, recorded on the
+   * observed record as `hostLoad`. Defaults to {@link eventLoopUtilizationMeter};
+   * pass null to turn the measurement off (records `hostLoad: null`).
+   */
+  readonly hostLoad?: HostLoadMeter | null;
   /** Injected for tests; defaults to global fetch. */
   readonly fetch?: FetchLike;
   /** Injected for tests; defaults to a timer that stops early on abort. */
@@ -147,6 +182,25 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
   const now = options.now ?? Date.now;
   const maxRetries = Math.max(0, options.maxRetries ?? DEFAULT_MAX_RETRIES);
   const backoffBase = Math.max(0, options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS);
+  const hostLoadMeter = options.hostLoad === undefined ? eventLoopUtilizationMeter : options.hostLoad;
+
+  /** Start the host-load measurement. A meter fault yields null, never a thrown decide. */
+  function startHostLoad(): () => HostLoad | null {
+    if (!hostLoadMeter) return () => null;
+    let end: () => HostLoad | null;
+    try {
+      end = hostLoadMeter();
+    } catch {
+      return () => null;
+    }
+    return () => {
+      try {
+        return end();
+      } catch {
+        return null;
+      }
+    };
+  }
 
   function observe(record: DecisionCallRecord): void {
     if (!options.onCall) return;
@@ -245,6 +299,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
     provider,
     async decide<QM extends QuestionMap>(request: DecisionRequest<QM>, decideOptions: DecideOptions = {}) {
       const startedAt = new Date(now());
+      const endHostLoad = startHostLoad();
       const timeoutMs = Math.max(1, decideOptions.timeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       let outcome: DecisionOutcome;
       try {
@@ -268,6 +323,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         consumer: decideOptions.consumer ?? null,
         surface: decideOptions.surface ?? null,
         subjectIds: decideOptions.subjectIds ? [...decideOptions.subjectIds] : [],
+        hostLoad: endHostLoad(),
       });
       return outcome as DecisionOutcome<QM>;
     },

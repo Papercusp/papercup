@@ -46,7 +46,12 @@ interface ParsedResult {
   total_hits: number;
   zeroHitCaveat?: string;
   hint?: string;
-  indexRefresh?: { attempted: number; refreshed: number; degraded: boolean };
+  indexRefresh?: {
+    attempted: number;
+    refreshed: number;
+    degraded: boolean;
+    failureReasons?: Record<string, number>;
+  };
 }
 
 function makeTx(results: unknown[][]) {
@@ -126,7 +131,11 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
   it('discloses a FAILED live-transcript refresh behind a zero', async () => {
     // The reported failure shape: the refresh was attempted for this session and
     // did not land, so the index cannot contain the caller's most recent turns.
-    refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 1, refreshed: 0 });
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 1,
+      refreshed: 0,
+      failureReasons: { ingest_timeout: 1 },
+    });
 
     const parsed = await run(
       { session: 'self', mode: 'verbatim', query: 'lane fix' },
@@ -134,7 +143,12 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
     );
 
     expect(parsed.total_hits).toBe(0);
-    expect(parsed.indexRefresh).toEqual({ attempted: 1, refreshed: 0, degraded: true });
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 1,
+      refreshed: 0,
+      degraded: true,
+      failureReasons: { ingest_timeout: 1 },
+    });
     expect(parsed.zeroHitCaveat).toBeDefined();
     // The claim that matters: this zero is UNVERIFIABLE, not evidence of absence.
     expect(parsed.zeroHitCaveat).toMatch(/UNVERIFIABLE, NOT ABSENT/);
@@ -163,9 +177,18 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
   it('reports the ATTEMPTED/REFRESHED counts, not just a boolean', async () => {
     // A caller auditing "was this answer trustworthy" needs the magnitude: 4 of 5
     // failing is a different situation from 1 of 5.
-    refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 5, refreshed: 1 });
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 5,
+      refreshed: 1,
+      failureReasons: { resolve_timeout: 2, ingest_timeout: 2 },
+    });
     const parsed = await run({ session: 'self', mode: 'verbatim', query: 'x' }, [[], []]);
-    expect(parsed.indexRefresh).toEqual({ attempted: 5, refreshed: 1, degraded: true });
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 5,
+      refreshed: 1,
+      degraded: true,
+      failureReasons: { resolve_timeout: 2, ingest_timeout: 2 },
+    });
     expect(parsed.zeroHitCaveat).toMatch(/4 of 5/);
   });
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # sync-staging-checkout.sh — isolated-staging-tier-2026-06-21 (su, session e24ec9b4).
 #
-# Auto-advances the ISOLATED staging checkout ($PAPERCUSP_STAGING_ROOT) to the
-# latest COMMITTED `staging` HEAD and restarts the :3170 operator — ONLY when the
-# branch actually moved. This is what makes :3170 a clean, always-current staging
-# tier (vs today's second-snapshot-of-the-live-working-tree behaviour).
+# Auto-advances the ISOLATED staging checkout to the latest COMMITTED `staging`
+# HEAD by preparing a unique immutable generation, building it completely, then
+# atomically publishing it through a stable sibling alias. The live :3170
+# process keeps its physical source root for its entire lifetime.
 #
 # Reuses the release system's standalone setup-release-checkout.sh (worktree +
 # git-archive submodules + hardlinked node_modules + SPA build) — no parallel
@@ -125,21 +125,31 @@ staging_alias_bootstrap() {
   fi
 }
 
-staging_candidate_bundle_ready() {
-  local candidate_root="$1" candidate_home="$2" expected_sha="$3"
+create_staging_candidate() {
+  local expected_sha="$1"
+  mkdir -p "$STAGING_GENERATIONS_ROOT" || return 1
+  STAGING_CANDIDATE_HOME="$(mktemp -d "$STAGING_GENERATIONS_ROOT/.candidate-${expected_sha:0:12}.XXXXXX")" || return 1
+  STAGING_CANDIDATE_ROOT="$STAGING_CANDIDATE_HOME/checkout"
+}
+
+staging_candidate_ready() {
+  local candidate_root="$1" candidate_home="$2" expected_sha="$3" require_host_bundle="${4:-1}"
   local ready_sha
   ready_sha="$(cat "$candidate_home/.ready" 2>/dev/null || true)"
   [[ "$ready_sha" == "$expected_sha" ]] &&
+    [[ -s "$candidate_root/apps/operator-vite/dist/index.html" ]] || return 1
+  if [[ "$require_host_bundle" == 1 ]]; then
     [[ -s "$candidate_root/apps/operator/dist-host/hono-host.mjs" ]] &&
-    [[ -s "$candidate_root/apps/operator/dist-host/.bundle-fresh.json" ]] &&
-    [[ ! -e "$candidate_root/apps/operator/dist-host/.bundle-stale.json" ]]
+      [[ -s "$candidate_root/apps/operator/dist-host/.bundle-fresh.json" ]] &&
+      [[ ! -e "$candidate_root/apps/operator/dist-host/.bundle-stale.json" ]]
+  fi
 }
 
 publish_staging_generation() {
-  local candidate_root="$1" candidate_home="$2" expected_sha="$3"
+  local candidate_root="$1" candidate_home="$2" expected_sha="$3" require_host_bundle="${4:-1}"
   local tmp="${STAGING_ROOT}.publish.$$"
-  if ! staging_candidate_bundle_ready "$candidate_root" "$candidate_home" "$expected_sha"; then
-    log "FATAL: refusing to publish an incomplete or unbundled staging generation"
+  if ! staging_candidate_ready "$candidate_root" "$candidate_home" "$expected_sha" "$require_host_bundle"; then
+    log "FATAL: refusing to publish an incomplete staging generation"
     return 1
   fi
   if [[ -e "$STAGING_ROOT" && ! -L "$STAGING_ROOT" ]]; then
@@ -202,6 +212,37 @@ cleanup_staging_candidate() {
     rm -rf -- "$STAGING_CANDIDATE_HOME"
   fi
 }
+
+prepare_staging_candidate() {
+  local target_sha="$1"
+  local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
+  local setup_script="$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"
+  create_staging_candidate "$target_sha" || return 1
+  log "preparing isolated staging candidate $STAGING_CANDIDATE_ROOT at ${target_sha:0:10}"
+  if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
+    bash "$snapshot_script" "$setup_script" \
+      --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto --build-spa; then
+    log "FATAL: candidate checkout preparation failed; the published staging alias is unchanged"
+    return 1
+  fi
+  if [[ -f "$STAGING_ROOT/apps/operator/.env.local" ]]; then
+    if ! cp -p -- "$STAGING_ROOT/apps/operator/.env.local" "$STAGING_CANDIDATE_ROOT/apps/operator/.env.local"; then
+      log "FATAL: could not copy the staging runtime environment into the candidate"
+      return 1
+    fi
+  fi
+}
+
+mark_staging_candidate_ready() {
+  local expected_sha="$1" ready_tmp
+  [[ -n "$STAGING_CANDIDATE_HOME" && -d "$STAGING_CANDIDATE_ROOT" ]] || return 1
+  ready_tmp="$STAGING_CANDIDATE_HOME/.ready.$$"
+  if ! printf '%s\n' "$expected_sha" > "$ready_tmp" || ! mv -f -- "$ready_tmp" "$STAGING_CANDIDATE_HOME/.ready"; then
+    rm -f -- "$ready_tmp"
+    return 1
+  fi
+}
+
 trap cleanup_staging_candidate EXIT
 
 # A sidecar's reviewBy is intentionally fail-closed in the restart preflight,
@@ -291,9 +332,11 @@ forward_compat_review_warnings() {
 # index change that the host's per-file preapply guard would otherwise discover
 # only after the coordinated restart stopped the old process.
 preflight_staging_migrations() {
+  local candidate_root="${1:-$STAGING_ROOT}"
   log "checking staging migration safety before restarting $UNIT"
   if ! (
-    cd "$STAGING_ROOT" &&
+    cd "$candidate_root" &&
+    export PAPERCUSP_INTEGRATION_ROOT="$candidate_root" &&
     node scripts/lint-migrations.mjs &&
     node scripts/check-migration-forward-compat.mjs
   ); then
@@ -308,11 +351,12 @@ preflight_staging_migrations() {
 # this returns is safe too: boot sees the applied target set and takes its
 # existing no-pending path without applying new files outside the rendezvous.
 prepare_staging_schema() {
+  local candidate_root="${1:-$STAGING_ROOT}"
   log "preparing the target schema while the current $UNIT process keeps serving"
   if ! (
-    cd "$STAGING_ROOT" &&
-    PAPERCUSP_INTEGRATION_ROOT="$STAGING_ROOT" \
-      TSX_TSCONFIG_PATH="$STAGING_ROOT/apps/operator/tsconfig.json" \
+    cd "$candidate_root" &&
+    PAPERCUSP_INTEGRATION_ROOT="$candidate_root" \
+      TSX_TSCONFIG_PATH="$candidate_root/apps/operator/tsconfig.json" \
       node --import tsx --input-type=module - <<'JS'
 import { resolve } from 'node:path';
 import { applyPendingMigrationsNow } from './packages/operator-core/lib/db-boot-migrate.ts';
@@ -376,6 +420,15 @@ staging_exec_forces_loopback() {
   [ "$last_bind" = "PAPERCUSP_BIND_HOST=127.0.0.1" ]
 }
 
+staging_exec_pins_integration_root() {
+  local exec_start="${1:-}" launch_tail="${1:-}"
+  if [[ "$exec_start" == *".env.local"* ]]; then
+    launch_tail="${exec_start##*.env.local}"
+  fi
+  [[ "$launch_tail" == *'PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"'* ||
+     "$launch_tail" == *'PAPERCUSP_INTEGRATION_ROOT=$(cd ../.. && pwd -P)'* ]]
+}
+
 assert_staging_unit_loopback() {
   local exec_start
   if ! exec_start="$(systemctl --user show -p ExecStart --value "$UNIT" 2>/dev/null)"; then
@@ -404,24 +457,34 @@ staging_exec_pre_uses_bundle() {
 }
 
 assert_staging_unit_checkout() {
-  local expected_root expected_workdir working_dir integration_env exec_pre reuse_env
-  expected_root="$(realpath -m "$STAGING_ROOT")"
+  local expected_root expected_workdir expected_spa_dist working_dir integration_env exec_pre exec_start reuse_env
+  expected_root="$STAGING_ROOT"
   expected_workdir="$expected_root/apps/operator"
+  expected_spa_dist="$expected_root/apps/operator-vite/dist"
   working_dir="$(systemctl --user show -p WorkingDirectory --value "$UNIT" 2>/dev/null || true)"
   working_dir="${working_dir#\!}"
   integration_env="$(systemctl --user show -p Environment --value "$UNIT" 2>/dev/null || true)"
   exec_pre="$(systemctl --user show -p ExecStartPre --value "$UNIT" 2>/dev/null || true)"
+  exec_start="$(systemctl --user show -p ExecStart --value "$UNIT" 2>/dev/null || true)"
   reuse_env="PAPERCUSP_BUNDLE_REUSE_FRESH=1"
-  if [[ -z "$working_dir" || "$(realpath -m "$working_dir")" != "$expected_workdir" ]]; then
-    log "FATAL: $UNIT WorkingDirectory does not resolve to $expected_workdir (got ${working_dir:-<empty>}); refusing to build one checkout and restart another"
+  if [[ "$working_dir" != "$expected_workdir" ]]; then
+    log "FATAL: $UNIT WorkingDirectory must follow the stable staging alias $expected_workdir (got ${working_dir:-<empty>}); refusing to build one checkout and restart another"
     return 1
   fi
   if [[ " $integration_env " != *" PAPERCUSP_INTEGRATION_ROOT=$expected_root "* ]]; then
     log "FATAL: $UNIT PAPERCUSP_INTEGRATION_ROOT does not name $expected_root; refusing cross-checkout staging sync"
     return 1
   fi
+  if [[ " $integration_env " != *" PAPERCUSP_SPA_DIST=$expected_spa_dist "* ]]; then
+    log "FATAL: $UNIT PAPERCUSP_SPA_DIST must follow the stable staging alias $expected_spa_dist so SPA-only advances remain visible without a restart"
+    return 1
+  fi
   if ! staging_exec_pre_uses_bundle "$exec_pre" "$expected_workdir"; then
     log "FATAL: $UNIT ExecStartPre must take the shared staging-sync lock and build from $expected_workdir/bin/bundle-host.sh"
+    return 1
+  fi
+  if ! staging_exec_pins_integration_root "$exec_start"; then
+    log "FATAL: $UNIT ExecStart must resolve PAPERCUSP_INTEGRATION_ROOT from its physical startup directory after sourcing .env.local"
     return 1
   fi
   if [[ " $integration_env " != *" $reuse_env "* ]]; then

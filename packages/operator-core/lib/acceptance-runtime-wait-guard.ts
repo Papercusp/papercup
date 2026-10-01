@@ -163,14 +163,17 @@ export interface HeldLiveBar {
 /** Non-null iff some held live/deployed bar is measured somewhere other than :3070. */
 export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): string | null {
   const elsewhere = bars.filter(
-    (b) => b.resolution.runtime !== null && b.resolution.runtime !== 'release-operator',
+    (b) => b.resolution.source === 'declared' && b.resolution.runtime !== null && b.resolution.runtime !== 'release-operator',
   );
-  if (elsewhere.length === 0) return null;
+  const inferredElsewhere = bars.filter(
+    (b) => b.resolution.source === 'inferred' && b.resolution.runtime !== null && b.resolution.runtime !== 'release-operator',
+  );
+  if (elsewhere.length === 0 && inferredElsewhere.length === 0) return null;
   const byRuntime = new Map<EvidenceRuntimeId, string[]>();
   for (const bar of elsewhere) {
     const runtime = bar.resolution.runtime!;
     const list = byRuntime.get(runtime) ?? [];
-    list.push(`${bar.planSlug}#${bar.barKey}${bar.resolution.source === 'inferred' ? ' (inferred)' : ''}`);
+    list.push(`${bar.planSlug}#${bar.barKey}`);
     byRuntime.set(runtime, list);
   }
   const where = [...byRuntime.entries()].map(([runtime, keys]) => `${runtime}: ${keys.join(', ')}`).join('; ');
@@ -181,11 +184,19 @@ export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): 
     ),
   );
   const releaseBars = bars.filter((b) => b.resolution.runtime === 'release-operator').map((b) => `${b.planSlug}#${b.barKey}`);
+  const unknownBars = [
+    ...inferredElsewhere.map((b) => `${b.planSlug}#${b.barKey}: runtime unknown (source-path inference only)`),
+  ];
   const vintageRuntimes = [...byRuntime.keys()].filter(isRuntimeVintageEvidenceRuntimeId);
   return (
     `ACCEPTANCE-PLANE ADVISORY: this wait is on the release operator (:3070 / green main), but the live/deployed ` +
-    `acceptance bars you hold are measured on other runtimes — ${where}. Measure those NOW on their runtime ` +
-    `(dev:pipeline_position { path } → servingRuntimes names each runtime's build and whether it runs your change); ` +
+    (elsewhere.length
+      ? `acceptance bars you hold with declared runtimes are measured elsewhere — ${where}. Measure those on their declared runtime ` +
+        `(dev:pipeline_position { path } → servingRuntimes names each runtime's build and whether it runs your change); `
+      : '') +
+    (unknownBars.length
+      ? `${unknownBars.join('; ')}; read the BAR method and confirm its required runtime before measuring. `
+      : '') +
     (routes.length ? `Current-build test route(s): ${routes.join('; ')}. ` : '') +
     (vintageRuntimes.length
       ? `External runtime(s): ${vintageRuntimes.join(', ')} — read deploys:vintage for the exact workspace/unit/host and build; if absent or unmeasured, keep acceptance unknown. An operator test route cannot substitute for it. `
@@ -193,7 +204,7 @@ export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): 
     `a :3070 deploy does not change code they execute. ` +
     (releaseBars.length
       ? `Only ${releaseBars.join(', ')} genuinely need the release operator. `
-      : 'None of your held bars needs the release operator. ') +
+      : unknownBars.length ? '' : 'None of your held bars needs the release operator. ') +
     'Registered anyway — this is advice, not a refusal.'
   );
 }

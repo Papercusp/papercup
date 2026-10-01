@@ -57,12 +57,18 @@ export function observeSidecarTransport(server: Server, url: string,
   server.on('connection', connection).on('request', request);
   type NativeMessage = { socket?: Socket; request?: { origin?: string | URL; method?: string; path?: string };
     error?: Error & { code?: string; cause?: { code?: string } } };
+  // request:error has no socket. Retain the send's ports by request identity
+  // so a reset can still be joined to the server's timeout/close events.
+  const requestPorts = new WeakMap<NonNullable<NativeMessage['request']>, { clientPort?: number; serverPort?: number }>();
   const listeners = [['undici:client:connected', 'client-connect'], ['undici:client:sendHeaders', 'client-send'],
     ['undici:request:error', 'client-error']].map(([name, event]) => {
     const listener = (message: unknown) => {
       const data = message as NativeMessage;
       if (data.socket ? data.socket.remotePort !== port : String(data.request?.origin ?? '').replace(/\/$/, '') !== origin) return;
-      emit(event, { clientPort: data.socket?.localPort, serverPort: data.socket?.remotePort,
+      const ports = data.socket ? { clientPort: data.socket.localPort, serverPort: data.socket.remotePort }
+        : data.request ? requestPorts.get(data.request) : undefined;
+      if (data.request && ports) requestPorts.set(data.request, ports);
+      emit(event, { ...ports,
         method: data.request?.method, path: data.request?.path?.split('?')[0],
         errorName: data.error?.name, code: data.error?.code, causeCode: data.error?.cause?.code });
     };
@@ -136,7 +142,7 @@ function validateResponse(arm: MeasurementArm, response: SidecarEmbedResponse, n
   } else assertMeasuredEmbedResponse(arm, response, n);
 }
 export async function collectSidecarPerformance(url: string, arm: MeasurementArm, input: PerformanceInput,
-  options: { processStartedAtMs: number; onSample?: (sample: PerformanceSample) => void;
+  options: { processStartedAtMs: number; onSample?: (sample: PerformanceSample) => void | Promise<void>;
     onPhase?: (phase: string) => void } = { processStartedAtMs: Date.now() }) {
   const samples: PerformanceSample[] = [];
   const rssSamples = [{ at: new Date().toISOString(), bytes: process.memoryUsage().rss }];
@@ -157,7 +163,9 @@ export async function collectSidecarPerformance(url: string, arm: MeasurementArm
     const sample: PerformanceSample = { phase, kind, sequence: seq, requestIds: rows.map((r) => r.id), batchSize, concurrency,
       startedAt, latencyMs, cache: response.cache!, runtime: response.runtime, modelRev: response.modelRev, dims: response.dims,
       vectorsSha256: hashJson(response.vectors) };
-    const index = samples.length; samples.push(sample); options.onSample?.(sample); return index;
+    // Retain each response before advancing. Async retention also lets native
+    // socket expiry/close callbacks run after slow collector bookkeeping.
+    const index = samples.length; samples.push(sample); await options.onSample?.(sample); return index;
   };
   try {
     options.onPhase?.('cold');

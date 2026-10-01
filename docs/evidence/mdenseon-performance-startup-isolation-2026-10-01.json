@@ -128,6 +128,7 @@
     "runId": "performance-transport-mdenseon-v1",
     "selectedCell": "performance-b0-mdenseon",
     "durableTaskId": "0mupz8qotdtt4lx1sre",
+    "status": "completed exit 0; transport cause unresolved",
     "manifest": {
       "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-transport-mdenseon-v1.json",
       "sha256": "9213b7f7919940e42b853f5b98e75649ed8ba6e6761ca612c672af9187120e64"
@@ -137,8 +138,49 @@
       "sha256": "3eacb124937ef409a79aa6dbdd6d99f2dff287fb8ea147b29c2243d8332db733"
     },
     "method": "Existing CLI --transport-trace observer joins client sends to server idle/close lifecycle by TCP ports; same source, model, requests, CPU and thread recipe as v4.",
+    "outcome": {
+      "samples": 412,
+      "gridGroups": 12,
+      "traceEvents": 1325,
+      "clientSends": 412,
+      "serverRequests": 412,
+      "serverResponses": 412,
+      "idleTimeoutOrErrorEvents": 0,
+      "maximumSequentialResponseGapMs": 67.9078441086458,
+      "receiptPath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v1/performance-b0-mdenseon.json",
+      "receiptSha256": "6ddcd922895ef9f91ce63a578e4f2341d7d1861d28a1a23dda66c0d70d189899",
+      "tracePath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v1/performance-b0-mdenseon.json.transport.jsonl",
+      "traceSha256": "847a0a9f595d0472cea2827f7d4d7310a3ac41462916fbfd09905ce0101fb399"
+    },
     "performanceComplete": false,
-    "limitation": "One diagnostic cell is not five-block performance evidence; a passing trace cannot prove the cause of a historical reset."
+    "limitation": "The diagnostic did not reproduce the original 9.03s response gap; it cannot prove the cause of that reset or fulfill the five-block performance bar."
+  },
+  "parentAdmissionRepair": {
+    "workItem": "WI-10005061",
+    "status": "locally verified and committed by automatic git-sync",
+    "source": "packages/operator-core/lib/memory/bench/sidecar-performance.ts",
+    "guard": "packages/operator-core/lib/memory/bench/sidecar-performance-admission.test.ts",
+    "mechanism": "Existing runGovernedOperation admits each serialized model child before spawn, retains its receipt until exit, forwards lineage to the PG-forbidden child, cancels failed starts and settles a bound successful receipt's measured peak RSS.",
+    "initialMemoryDemand": "Pinned artifact bytes, explicitly an estimate; measured peak RSS is recorded at settlement.",
+    "startupIsolation": "Governor setup is lazy and the admitting parent uses a dedicated client; model children keep PAPERCUSP_FORBID_REAL_PG=1.",
+    "committedSourceVerification": {
+      "observedHead": "ad184e821e67c905bc7976025833b62f2691daa1",
+      "guardCommit": "8505c109206b99249967b7cfa91a4adc00d19ccc",
+      "sourceSha256": "1a12b416ccaab95c9776885ccb24084d972eec26d10ed4a039f5ffd8543e40da",
+      "guardSha256": "c9b6902bd860e69a1d199e4df8293c95338e4aa2b74afb6922c590de3741d67f",
+      "verifiedHow": "Both HEAD blobs equal the local files and the source/guard SHA256 values retained with the passing focused verification; both paths have clean git status. This is current-build source evidence, not final-release evidence."
+    },
+    "focusedVerification": {
+      "recoveryRunId": "9bc8f169-0f4f-44c5-a78b-b46f30729763",
+      "ledgerRows": [20431735, 20431736, 20431737, 20431738, 20431741, 20431742],
+      "filesPassed": 6,
+      "skipCount": "not returned by router",
+      "provenance": "Local run overlapped HEAD 96a73d3d41 to 8a33b9bffc; both committed trees were identical. New regression was untracked during the run. Imported uncommitted source movement was not measured.",
+      "typecheckTask": "0muq00172edjitw1rci",
+      "typecheckErrors": 0,
+      "resourceGovernorBlockingCli": "passed"
+    },
+    "futureRecipeRequirement": "New full runs must pin the repaired source and permit the parent admission client to access Postgres. Historical v4 and diagnostic receipts keep their original source fingerprints."
   },
   "limitations": [
     "The precise promise that produced the original unhandled rejection was not reproduced",

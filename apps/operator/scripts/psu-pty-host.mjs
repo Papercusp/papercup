@@ -1202,7 +1202,14 @@ function kickoffModelActivityRow(agent, row) {
  *
  * A `started:true` answer does not advance the cursor, so repeated calls keep
  * answering true. Every unreadable or inconsistent case returns
- * `available:false`, which keeps the existing retry path. */
+ * `available:false`, which keeps the existing retry path.
+ *
+ * @typedef {{fileIdentity: string | null, markerStartOffset: number | null,
+ *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
+ * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
+ *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
+ *   home?: string, maxScanBytes?: number}} options
+ * @returns {{available: boolean, started: boolean}} */
 export function nativeKickoffTurnActivityAfterMarker({
   agent,
   env = process.env,
@@ -7664,6 +7671,28 @@ export function hostThroughPty(o) {
   // native-boundary probe rejects any older task_complete record, preventing a
   // previous turn from certifying a new turn that has only just been submitted.
   let lastMachineTurnSubmittedAtMs = 0;
+  // WI-10004943: when the first machine turn write into THIS child STARTED.
+  // backend-session-frame-observed reports the gap to it, which separates a
+  // Codex that became ready on its own (frame long after any write, or before
+  // one) from a frame that the typed input itself provoked (frame within
+  // moments of a write made while the footer still read `Starting`).
+  let lastMachineTurnWriteStartedAtMs = 0;
+  // WI-10004943: what the host could see at the instant a machine turn began
+  // writing. Without it, a turn that lands after a 20-minute `Starting` footer
+  // cannot tell "the write waited for readiness" from "the write caused it":
+  // the deciding facts are computed here and were previously discarded.
+  const turnWriteContext = (writeStartedAt) => {
+    const context = {
+      writeStartedAt: new Date(writeStartedAt).toISOString(),
+      msSinceBackendFirstFrame: childBackendFirstFrameAt > 0
+        ? writeStartedAt - childBackendFirstFrameAt
+        : null,
+    };
+    if (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex') {
+      context.codexFooterAtWrite = codexStatusFooterState(stripAnsi(childStartupOutput));
+    }
+    return context;
+  };
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
   // lastOutputAt the activity tracker records on every `child.onData` below, so a
@@ -7727,6 +7756,8 @@ export function hostThroughPty(o) {
       terminateOnExhaustion = submitExhaustionTerminatesHost(label),
       text = '',
       submittedAtMs = Date.now(),
+      // WI-10004943: turnWriteContext() captured when the write STARTED.
+      writeContext = null,
     } = {},
   ) => {
     const marker = leadingTurnOriginMarker(text);
@@ -7846,6 +7877,7 @@ export function hostThroughPty(o) {
         // R-1(c)'s attempts > 1 detector is otherwise vacuous for turn delivery.
         attempts: 1 + result.resubmits,
         ...(result.confirmed ? { confirmed: result.confirmed } : {}),
+        ...(writeContext ? { write: writeContext } : {}),
       });
     }
     return result;
@@ -8094,6 +8126,8 @@ export function hostThroughPty(o) {
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
           const turnWriteStartedAt = Date.now();
+          lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
+          const kickoffWriteContext = turnWriteContext(turnWriteStartedAt);
           const turnWriteAuthorizedBy = codexMarkerKickoffRequiresFrame()
             ? 'backend-session-frame'
             : childPromptReady
@@ -8220,6 +8254,9 @@ export function hostThroughPty(o) {
                 : null,
               promptReady: childPromptReady,
               startupReady: childStartupReady,
+              ...(kickoffWriteContext.codexFooterAtWrite !== undefined
+                ? { codexFooterAtWrite: kickoffWriteContext.codexFooterAtWrite }
+                : {}),
             });
           }
           if (child !== injectChild) {
@@ -8229,6 +8266,7 @@ export function hostThroughPty(o) {
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
             text,
             submittedAtMs: turnWriteStartedAt,
+            writeContext: kickoffWriteContext,
           });
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
@@ -8279,6 +8317,7 @@ export function hostThroughPty(o) {
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
               text,
               submittedAtMs: turnWriteStartedAt,
+              writeContext: kickoffWriteContext,
             });
           }
           if (child !== injectChild) {
@@ -9664,6 +9703,12 @@ export function hostThroughPty(o) {
         // and the human has to press Enter.
         let machineTurnSubmitted = false;
         const turnWriteStartedAt = Date.now();
+        // WI-10004943: snapshot BEFORE the first byte, so a frame the write
+        // provokes cannot be mistaken for readiness that preceded it.
+        const injectWriteContext = msg.mode === 'turn' || msg.mode === 'reset'
+          ? turnWriteContext(turnWriteStartedAt)
+          : null;
+        if (injectWriteContext) lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
         try {
           for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env, {
             bracketedPaste: childBracketedPaste,
@@ -9724,6 +9769,7 @@ export function hostThroughPty(o) {
           void verifySubmitted(`${msg.mode} inject`, {
             text: deliver.data,
             submittedAtMs: turnWriteStartedAt,
+            writeContext: injectWriteContext,
           })
             .catch(() => {})
             .finally(() => {
@@ -9992,6 +10038,12 @@ export function hostThroughPty(o) {
         appendHostEvent(ownerId, 'backend-session-frame-observed', {
           agent: 'codex',
           msAfterTuiStart: childBackendFirstFrameAt - childBackendTuiStartedAt,
+          // WI-10004943: null = no machine turn was ever written before the
+          // frame. A small value means the frame may have been PROVOKED by
+          // that write rather than signalling readiness on its own.
+          msSinceMachineTurnWriteStarted: lastMachineTurnWriteStartedAtMs > 0
+            ? childBackendFirstFrameAt - lastMachineTurnWriteStartedAtMs
+            : null,
         });
       }
       const onboarding = headlessClaudeOnboarding.observe(raw);
@@ -10848,6 +10900,7 @@ export function hostThroughPty(o) {
         childBracketedPasteTail = '';
         childBackendTuiStartedAt = 0;
         childBackendFirstFrameAt = 0;
+        lastMachineTurnWriteStartedAtMs = 0;
         // WI-1386682 (1): a fresh child has no screen history and cannot
         // inherit the old child's wall.
         quotaBlockDetector.reset();

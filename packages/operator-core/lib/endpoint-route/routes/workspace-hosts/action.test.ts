@@ -280,6 +280,47 @@ describe('POST /workspace-hosts/action destroy', () => {
     );
   });
 
+  // aws-byoc-gcp-parity-2026-10-01 P-003: lifecycle actions were refused 501 for every non-GCP host,
+  // so an AWS host could be provisioned but never torn down. The gate now follows the providers that
+  // have a controller-independent destroy census.
+  it('admits a destroy for an AWS host, which has a destroy census, and still refuses a provider without one', async () => {
+    type StoredTarget = NonNullable<Awaited<ReturnType<WorkspaceHostActionRouteDependencies['readTarget']>>>;
+    type StoredConnection = NonNullable<Awaited<ReturnType<WorkspaceHostActionRouteDependencies['readConnection']>>>;
+    const hostFor = (target: 'aws' | 'azure'): StoredTarget => ({
+      id: 'host-1',
+      name: `${target} host`,
+      connectionId: 'connection-1',
+      target,
+      observedState: 'running',
+      hostGeneration: 1,
+      desiredRevision: 1,
+      observedRevision: 1,
+      desired: { ...desired, target, scope: { kind: 'account', id: '413781344298' }, region: 'us-east-1' },
+      resources: [],
+    });
+    const connectionFor = (target: 'aws' | 'azure'): StoredConnection => ({
+      id: 'connection-1',
+      target,
+      status: 'connected',
+      connection: { target, cloudCredentialRef: { kind: 'cloud', ref: `${target}-role://papercusp-workspace-host` } },
+    });
+    const { canary: _canary, ...ordinaryDestroy } = destroyBody;
+
+    const aws = harness();
+    aws.readTarget.mockResolvedValue(hostFor('aws'));
+    aws.readConnection.mockResolvedValue(connectionFor('aws'));
+    const admitted = await post(aws.dependencies, ordinaryDestroy);
+    expect(admitted.status).toBe(200);
+    expect(aws.startDestroy).toHaveBeenCalledWith(expect.objectContaining({ hostId: 'host-1', disposition: 'discard' }));
+
+    const azure = harness();
+    azure.readTarget.mockResolvedValue(hostFor('azure'));
+    azure.readConnection.mockResolvedValue(connectionFor('azure'));
+    const refused = await post(azure.dependencies, ordinaryDestroy);
+    expect(refused.status).toBe(501);
+    expect(azure.startDestroy).not.toHaveBeenCalled();
+  });
+
   it('returns a terminal offboarding result when the host is already absent', async () => {
     const { dependencies, startDestroy } = harness();
     startDestroy.mockResolvedValueOnce({

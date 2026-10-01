@@ -660,6 +660,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'One bounded SELECT of the workspace’s queued/running workspace_host_operations plus recovery_state UPDATEs and a deduped intervention notice — no spawn/dispatch/wake. A notice can lead a HUMAN to act, but nothing this fire does bills a turn directly (same reading as worker-breaker-watch, which even broadcasts on coord, being none)',
   },
+  'system:hosted-public-ingress-probe': {
+    spend: 'none',
+    why: 'A read of the tunnel config plus ~36 unauthenticated GETs against the public hosted origin; a finding throws into the routine’s own last_error — no spawn/dispatch/wake',
+  },
   'system:readiness-drift-monitor': {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',

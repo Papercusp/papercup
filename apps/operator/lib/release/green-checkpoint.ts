@@ -5989,9 +5989,9 @@ export function describeRepairHeadRunnerFailure(error: unknown): string {
       raw,
     )?.[1];
   if (fingerprint) {
-    // WI-10004151: --ensure-ref now builds from the head's own lockfiles whenever they are
-    // install-equivalent to the live tree's (differing only by live-only workspace links), so
-    // reaching this message means the head's lock needs a REAL install; carry that reason.
+    // WI-10004151: --ensure-ref can use the live graph or a validated cached ancestor.
+    // A remaining miss means neither supplied compatible installed bytes; preserve
+    // the package mismatch and name the remedy without requiring a shared-tree install.
     const refusal = /not install-equivalent to the live tree's:?\s*([\s\S]*)$/.exec(raw)?.[1];
     const reason = refusal
       ? `: ${refusal.replace(/\[dependency-generation\]/g, "").replace(/\s+/g, " ").trim()}`
@@ -6003,9 +6003,11 @@ export function describeRepairHeadRunnerFailure(error: unknown): string {
     return (
       `no prewarmed dependency generation exists for the repair head's lockfile inputs ` +
       `(fingerprint ${fingerprint}); this does not clear on its own. dependency-generation.sh ` +
-      `--ensure-ref builds the head's generation from its own lockfiles only when they install ` +
-      `the same packages as the live tree's (modulo live-only workspace links); this head's ` +
-      `lock needs a real install${detail} (WI-10004151)`
+      `--ensure-ref builds the head's generation from its own lockfiles when they install ` +
+      `the same packages as the live tree or a validated cached generation ` +
+      `(modulo extra workspace links); no compatible installed source was found${detail}. ` +
+      `Install the head's lockfiles in an isolated source or prepare a matching generation ` +
+      `(WI-10004151)`
     );
   }
   const oneLine = raw.replace(/\s+/g, " ").trim() || "no error detail";

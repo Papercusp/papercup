@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   HOSTED_INGRESS_FAMILIES,
+  HOSTED_INGRESS_PROBE_CONCURRENCY,
   PORTAL_SESSION_GATE_ERROR,
   auditHostedIngressRules,
   familiesForMountedRouteKey,
@@ -147,24 +148,34 @@ describe('auditHostedIngressRules', () => {
 describe('probeHostedPublicIngress', () => {
   it('flags only paths the portal session gate answered, and sends nothing but GETs', async () => {
     const methods = new Set<string>();
+    let inFlight = 0;
+    let maxInFlight = 0;
     const result = await probeHostedPublicIngress({
       origin: 'https://app.papercusp.com/',
       workspaceId: 'ws-ingress-probe',
       fetch: async (url, init) => {
         methods.add(init?.method ?? 'GET');
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
         const path = new URL(String(url)).pathname;
         if (path === '/api/auth/workos/webhook') {
           return new Response(JSON.stringify({ ok: false, error: PORTAL_SESSION_GATE_ERROR }), { status: 401 });
         }
-        if (path.endsWith('/oauth/token')) throw new Error('connect ECONNREFUSED');
+        if (path.endsWith('/oauth/token')) {
+          throw new TypeError('fetch failed', { cause: Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }) });
+        }
         return new Response(JSON.stringify({ error: 'app_key_required' }), { status: 401 });
       },
     });
     expect([...methods]).toEqual(['GET']);
+    expect(maxInFlight).toBeLessThanOrEqual(HOSTED_INGRESS_PROBE_CONCURRENCY);
+    expect(maxInFlight).toBeGreaterThan(1);
     expect(result.checked).toBe(hostedIngressSamples().filter((sample) => sample.expect === 'control-plane').length);
     expect(result.findings).toEqual([
       expect.objectContaining({ family: 'workos-webhook', status: 401, problem: 'portal-session-gate' }),
-      expect.objectContaining({ family: 'mcp-oauth', status: null, problem: 'unreachable' }),
+      expect.objectContaining({ family: 'mcp-oauth', status: null, problem: 'unreachable', detail: 'fetch failed (ECONNREFUSED)' }),
     ]);
   });
 });

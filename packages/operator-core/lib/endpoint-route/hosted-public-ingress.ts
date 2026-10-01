@@ -332,36 +332,52 @@ export async function probeHostedPublicIngress(input: {
   const doFetch = input.fetch ?? fetch;
   const origin = input.origin.replace(/\/+$/, '');
   const samples = hostedIngressSamples(input.workspaceId).filter((sample) => sample.expect === 'control-plane');
-  const findings = await Promise.all(
-    samples.map(async (sample): Promise<HostedIngressProbeFinding | null> => {
-      try {
-        const response = await doFetch(`${origin}${sample.path}`, {
-          method: 'GET',
-          redirect: 'manual',
-          signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
-        });
-        const body = await response.text();
-        if (!body.includes(PORTAL_SESSION_GATE_ERROR)) return null;
-        return {
-          family: sample.family,
-          path: sample.path,
-          status: response.status,
-          problem: 'portal-session-gate',
-          detail: body.slice(0, 200),
-        };
-      } catch (error) {
-        return {
-          family: sample.family,
-          path: sample.path,
-          status: null,
-          problem: 'unreachable',
-          detail: error instanceof Error ? error.message : String(error),
-        };
-      }
-    }),
-  );
+  const probeOne = async (sample: HostedIngressSample): Promise<HostedIngressProbeFinding | null> => {
+    try {
+      const response = await doFetch(`${origin}${sample.path}`, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
+      });
+      const body = await response.text();
+      if (!body.includes(PORTAL_SESSION_GATE_ERROR)) return null;
+      return {
+        family: sample.family,
+        path: sample.path,
+        status: response.status,
+        problem: 'portal-session-gate',
+        detail: body.slice(0, 200),
+      };
+    } catch (error) {
+      // `fetch failed` alone hides the reason; the socket/DNS/TLS error rides on `cause`.
+      const cause = (error as { cause?: { code?: unknown; message?: unknown } } | null)?.cause;
+      const causeText = cause ? ` (${String(cause.code ?? cause.message ?? cause)})` : '';
+      return {
+        family: sample.family,
+        path: sample.path,
+        status: null,
+        problem: 'unreachable',
+        detail: `${error instanceof Error ? error.message : String(error)}${causeText}`,
+      };
+    }
+  };
+  // A bounded number of requests in flight: a burst of every sample at once is not what
+  // a real client does, and an origin or local agent that sheds the burst reads as a
+  // routing failure.
+  const findings: Array<HostedIngressProbeFinding | null> = new Array(samples.length).fill(null);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(HOSTED_INGRESS_PROBE_CONCURRENCY, samples.length) }, async () => {
+    while (next < samples.length) {
+      const index = next++;
+      findings[index] = await probeOne(samples[index]);
+    }
+  });
+  await Promise.all(workers);
   return {
     checked: samples.length,
     findings: findings.filter((finding): finding is HostedIngressProbeFinding => finding !== null),
   };
 }
+
+/** Requests the live probe keeps in flight at once. */
+export const HOSTED_INGRESS_PROBE_CONCURRENCY = 4;

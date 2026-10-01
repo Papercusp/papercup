@@ -86,7 +86,8 @@ describe('bg-host spawn sites route through the spawner sidecar seam (WI-1000497
       dir = mkdtempSync(join(tmpdir(), 'pc-keychain-routing-'));
       process.env.PAPERCUSP_IDENTITY_DIR = dir;
     });
-    afterEach(() => {
+    afterEach(async () => {
+      (await import('../identity/keychain')).configureKeychainSecretToolExec(null);
       if (prevDir === undefined) delete process.env.PAPERCUSP_IDENTITY_DIR;
       else process.env.PAPERCUSP_IDENTITY_DIR = prevDir;
       rmSync(dir, { recursive: true, force: true });
@@ -94,6 +95,9 @@ describe('bg-host spawn sites route through the spawner sidecar seam (WI-1000497
 
     it('routes the lookup through the seam and answers the probe once per TTL, re-probing after a delete', async () => {
       const kc = await import('../identity/keychain');
+      // keychain.ts never imports the sidecar module (it is inside a bundled runtime worker's
+      // graph); the host installs the route — exactly what hive-epoch-boot-deps does.
+      (await import('./keychain-sidecar-exec')).installKeychainSidecarExec();
       kc.resetKeychainProbeTiersCacheForTest();
       const lookups = () =>
         execFileViaSidecar.mock.calls.filter(([cmd, args]) => cmd === 'secret-tool' && (args as string[])[0] === 'lookup').length;
@@ -105,7 +109,6 @@ describe('bg-host spawn sites route through the spawner sidecar seam (WI-1000497
         'secret-tool',
         ['lookup', 'service', 'svc-routing', 'account', 'dev:routing'],
         { timeoutMs: 5000, subsystem: 'keychain-secret-tool', sidecarVar: kc.SECRET_TOOL_SIDECAR_VAR },
-        expect.objectContaining({ local: expect.any(Function) }),
       );
       expect(lookups()).toBe(1);
 
@@ -123,7 +126,6 @@ describe('bg-host spawn sites route through the spawner sidecar seam (WI-1000497
         'secret-tool',
         ['clear', 'service', 'svc-routing', 'account', 'dev:routing'],
         expect.objectContaining({ subsystem: 'keychain-secret-tool' }),
-        expect.anything(),
       );
       await kc.keychainProbeTiersCached('dev:routing', 'svc-routing', t0 + kc.PROBE_TIERS_TTL_MS);
       expect(lookups()).toBe(3);
