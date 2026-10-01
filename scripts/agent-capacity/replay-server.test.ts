@@ -7,8 +7,16 @@ import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedExchange } f
 import {
   execSessionRewriter,
   learnReplayIds,
+  learnReplayTasks,
+  namedTaskOutputs,
   newReplayState,
   pairFor,
+  pairTasks,
+  recordedTaskPrefix,
+  reportedTaskOutputs,
+  taskOutputRefs,
+  taskOutputRewriter,
+  type TaskOutputIds,
   recordedExecCalls,
   reportedExecSessionIds,
   type ExecSessionIds,
@@ -258,6 +266,81 @@ describe('exec-session ids', () => {
   });
 });
 
+// A Claude background task, as recorded on the tower (uid 1000) and as a replay on a VM sees it
+// (uid 1001, its own checkout, session uuid and task id). Shapes from P-005 claude-mea-typical-2.
+const REC_PROJECT = '-home-u--cache-agent-capacity-work-claude-mea-typical-2-20260930T203813';
+const REC_SESSION = '4685d102-bfcf-47d6-b575-ea90f1c31351';
+const REC_TASK_PATH = `/tmp/claude-1000/${REC_PROJECT}/${REC_SESSION}/tasks/bl4w01qwj.output`;
+const REP_PROJECT = '-home-v--cache-agent-capacity-replay-work-p005-n16-s11-i0';
+const REP_SESSION = '13c040f4-9316-4271-a506-f486ca49ebb8';
+const REP_TASK_PATH = `/tmp/claude-1001/${REP_PROJECT}/${REP_SESSION}/tasks/bofqc99b6.output`;
+const TAIL = `sleep 100; tail -5 ${REC_TASK_PATH}`;
+const GLOB = 'grep -E "passed|failed" /tmp/claude-1000/*/*/tasks/bl4w01qwj.output | tail -3';
+/** A tool_use whose command streams as two input_json_delta events, the path cut at `cut`. */
+const bashChunks = (command: string, cut: number) => {
+  const input = JSON.stringify({ command });
+  return [
+    encodeChunk(0, Buffer.from(sse({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 't1', name: 'Bash', input: {} } }, 'content_block_start'))),
+    encodeChunk(10, Buffer.from(jsonDelta(1, input.slice(0, cut)))),
+    encodeChunk(20, Buffer.from(jsonDelta(1, input.slice(cut)) + sse({ type: 'message_stop' }, 'message_stop'))),
+  ];
+};
+const backgrounded = (p: string) => `Command did not complete within its 120s timeout and was moved to the background (ID: x). Output is being written to: ${p}. You will be notified when it completes.`;
+
+describe('background-task output paths', () => {
+  it('parses literal paths with their prefix, and globbed ones with uid and task only', () => {
+    expect(taskOutputRefs(`${TAIL}; ${GLOB}`)).toEqual([
+      { uid: '1000', task: 'bl4w01qwj', project: REC_PROJECT, session: REC_SESSION },
+      { uid: '1000', task: 'bl4w01qwj' },
+    ]);
+    expect(taskOutputRefs('tail /tmp/claude-1000/tasks.output /tmp/other/tasks/x.output')).toEqual([]);
+  });
+
+  it('finds a recorded path the model streamed split across deltas', () => {
+    const e = ex(0, { chunks: bashChunks(TAIL, JSON.stringify({ command: TAIL }).indexOf('tasks/') - 9) });
+    expect(namedTaskOutputs(e)).toEqual([{ uid: '1000', task: 'bl4w01qwj', project: REC_PROJECT, session: REC_SESSION }]);
+    expect(recordedTaskPrefix([ex(1), e])?.session).toBe(REC_SESSION);
+    expect(namedTaskOutputs(ex(2))).toEqual([]);
+  });
+
+  it('reads reported paths only from user-role content, never from assistant turns or tool_use input', () => {
+    const body = {
+      messages: [
+        { role: 'user', content: 'fix the tests' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'Bash', input: { command: TAIL } }, { type: 'text', text: REC_TASK_PATH }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: [{ type: 'text', text: backgrounded(REP_TASK_PATH) }] }] },
+        { role: 'user', content: [{ type: 'tool_use', id: 'odd', input: { command: `tail ${REC_TASK_PATH}` } }] },
+      ],
+    };
+    expect(reportedTaskOutputs(Buffer.from(JSON.stringify(body)))).toEqual([{ uid: '1001', task: 'bofqc99b6', project: REP_PROJECT, session: REP_SESSION }]);
+    expect(reportedTaskOutputs(Buffer.from('not json /tmp/claude-1/a/b/tasks/x.output'))).toEqual([]);
+  });
+
+  it('never learns a recorded task id the replay quoted back in an error, and pairs ids in order of first appearance', () => {
+    const ids: TaskOutputIds = { recorded: [], replay: [] };
+    expect(pairTasks(ids, ['bl4w01qwj'])).toEqual({ map: new Map(), unmapped: ['bl4w01qwj'] }); // nothing reported yet
+    learnReplayTasks(ids, taskOutputRefs(`tail: cannot open '${REC_TASK_PATH}': No such file or directory`));
+    expect(ids.replay).toEqual([]);
+    learnReplayTasks(ids, taskOutputRefs(backgrounded(REP_TASK_PATH)));
+    learnReplayTasks(ids, taskOutputRefs(backgrounded(REP_TASK_PATH))); // the next request repeats the history
+    expect(ids.replay.map((r) => r.task)).toEqual(['bofqc99b6']);
+    expect(pairTasks(ids, ['bl4w01qwj', 'b2nd'])).toEqual({ map: new Map([['bl4w01qwj', 'bofqc99b6']]), unmapped: ['b2nd'] });
+  });
+
+  it('moves literal paths, globs and bare task ids onto the replay, across delta boundaries', () => {
+    const rw = taskOutputRewriter(taskOutputRefs(TAIL)[0], taskOutputRefs(REP_TASK_PATH)[0], new Map([['bl4w01qwj', 'bofqc99b6']]));
+    for (const command of [TAIL, GLOB]) {
+      const input = JSON.stringify({ command });
+      for (const cut of [input.indexOf('claude-') + 3, input.indexOf('bl4w') + 2, input.length - 20]) {
+        const out = rewriteExchange(ex(0, { chunks: bashChunks(command, cut) }), rw);
+        const want = command.replaceAll('/tmp/claude-1000/', '/tmp/claude-1001/').replace(REC_PROJECT, REP_PROJECT).replace(REC_SESSION, REP_SESSION).replace('bl4w01qwj', 'bofqc99b6');
+        expect(JSON.parse(reassemble(out).cb1).command).toBe(want);
+      }
+    }
+    expect(JSON.parse(reassemble(rewriteExchange(ex(0, { chunks: bashChunks(TAIL, 30) }), rw)).cb1).command).toBe(`sleep 100; tail -5 ${REP_TASK_PATH}`);
+  });
+});
+
 describe('startReplayServer', () => {
   let corpus: string;
   let srv: ReplayServer;
@@ -377,6 +460,36 @@ describe('startReplayServer', () => {
     expect(rec.tier).toBe('exact');
     expect(rec.execSessionIds).toEqual({ 64250: '7777' });
     expect(rec.execSessionPairing).toBe('call_id');
+  });
+
+  it('serves a Claude tail of a background task with the task path THIS instance reported, and logs a task it never reported', async () => {
+    const recorded = ex(0, { chunks: bashChunks(TAIL, JSON.stringify({ command: TAIL }).indexOf('tasks/') - 9), messages: 3, tools: 0 });
+    writeSession('s1', [recorded]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    const history = (result: string) => ({
+      model: 'm',
+      tools: [],
+      messages: [
+        { role: 'user', content: 'fix it' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'Bash', input: { command: 'uv run pytest' } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: result }] },
+      ],
+    });
+    const [a, b] = await Promise.all([
+      post(`${srv.baseUrl('s1', 'a')}${MSG}`, history(backgrounded(REP_TASK_PATH))),
+      post(`${srv.baseUrl('s1', 'b')}${MSG}`, history('42 passed')), // finished inside its timeout here
+    ]);
+    const command = (buf: Buffer) => JSON.parse(reassemble(ex(0, { chunks: [encodeChunk(0, buf)] })).cb1).command;
+    expect(command(a.body)).toBe(`sleep 100; tail -5 ${REP_TASK_PATH}`);
+    expect(command(b.body)).toBe(TAIL);
+    await srv.close();
+    const served = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    const by = Object.fromEntries(served.map((s) => [s.instance, s]));
+    expect(by.a.tier).toBe('exact');
+    expect(by.a.taskOutputIds).toEqual({ bl4w01qwj: 'bofqc99b6' });
+    expect(by.a.taskOutputUnmapped).toBeUndefined();
+    expect(by.b.taskOutputIds).toBeUndefined();
+    expect(by.b.taskOutputUnmapped).toEqual(['bl4w01qwj']);
   });
 
   it('honours recorded delays scaled by speed', async () => {

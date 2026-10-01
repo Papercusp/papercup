@@ -520,6 +520,156 @@ export function pairFor(
   return { map, unmapped, by: byOrder ? 'order' : 'call_id' };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Background-task output files (Claude Code).
+//
+// A Claude Bash command that outlives its timeout (or runs in the background) is moved to a
+// background task, and the tool result tells the model where its output is written:
+//   /tmp/claude-<uid>/<project>/<session uuid>/tasks/<task id>.output
+// <project> is the CLI's sanitized cwd. Every part differs in a replay: the uid of the VM's
+// account, the checkout (so the project), and the session uuid and task id (both random).
+// Served unchanged, the model's later `tail <path>` reads a file that does not exist, and the
+// replay's tool work stops following the recording while every request still matches `exact`
+// (measured 2026-10-01 on P-005: claude-mea-typical-2 TOOL_DIVERGED on every run, WI-10004641).
+//
+// The replay's own path is visible only in its requests (the tool result the CLI sends back),
+// and the recorded one only where the model names it (served responses). So each instance
+// pairs task ids in order of first appearance, like exec-session ORDER pairing above, and maps
+// the prefix (uid, project, session) to the first path the replay reported. A recorded task
+// whose command finished inside its timeout in the replay has no replay task: it stays
+// unmapped, and the served record logs it.
+// ---------------------------------------------------------------------------------------------
+
+/** A task-output path: uid and task always, project and session when written literally (not globbed). */
+export interface TaskOutputRef {
+  uid: string;
+  task: string;
+  project?: string;
+  session?: string;
+}
+
+const TASK_OUTPUT = /\/tmp\/claude-(\d+)\/((?:[^\s"'\\/]+\/)*?)tasks\/([A-Za-z0-9_-]+)\.output/g;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Every task-output path in `text`, in order, including globbed ones (`/tmp/claude-1000/*\/*\/tasks/x.output`). */
+export function taskOutputRefs(text: string): TaskOutputRef[] {
+  const out: TaskOutputRef[] = [];
+  for (const m of text.matchAll(TASK_OUTPUT)) {
+    const segs = m[2].split('/').filter(Boolean);
+    const literal = segs.length === 2 && UUID.test(segs[1]) && !/[*?[\]{}]/.test(segs[0]);
+    out.push(literal ? { uid: m[1], task: m[3], project: segs[0], session: segs[1] } : { uid: m[1], task: m[3] });
+  }
+  return out;
+}
+
+/** Distinct tasks (by id) the model names in this exchange's response, in order, with deltas reassembled. */
+export function namedTaskOutputs(ex: RecordedExchange): TaskOutputRef[] {
+  const out: TaskOutputRef[] = [];
+  const scan = (s: string) => {
+    for (const r of taskOutputRefs(s)) {
+      const seen = out.find((o) => o.task === r.task);
+      if (!seen) out.push(r);
+      else if (!seen.project && r.project) Object.assign(seen, r);
+    }
+  };
+  rewriteExchange(ex, (pieces) => {
+    scan(pieces.join(''));
+    return pieces;
+  });
+  return out;
+}
+
+/** The first literal task-output path any response of a recording names (its uid, project and session). */
+export function recordedTaskPrefix(exchanges: readonly RecordedExchange[]): TaskOutputRef | null {
+  for (const ex of exchanges) {
+    const hit = namedTaskOutputs(ex).find((r) => r.project);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * Literal task-output paths the CLI reported in the user-role content of an Anthropic Messages
+ * request (tool results and notifications), in conversation order. Assistant turns are skipped:
+ * they echo served responses, so they name recorded paths.
+ */
+export function reportedTaskOutputs(body: Buffer): TaskOutputRef[] {
+  if (!body.includes('/tmp/claude-')) return [];
+  let messages: unknown;
+  try {
+    messages = (JSON.parse(body.toString('utf8')) as { messages?: unknown }).messages;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(messages)) return [];
+  const out: TaskOutputRef[] = [];
+  const add = (s: string) => {
+    for (const r of taskOutputRefs(s)) if (r.project && !out.some((o) => o.task === r.task)) out.push(r);
+  };
+  const walk = (c: unknown): void => {
+    if (typeof c === 'string') return add(c);
+    if (Array.isArray(c)) return c.forEach(walk);
+    if (!c || typeof c !== 'object') return;
+    const b = c as Record<string, unknown>;
+    if (b.type === 'tool_use') return;
+    if (typeof b.text === 'string') add(b.text);
+    if (b.content !== undefined) walk(b.content);
+  };
+  for (const m of messages) if (m && typeof m === 'object' && (m as { role?: unknown }).role === 'user') walk((m as { content?: unknown }).content);
+  return out;
+}
+
+/** Per-instance pairing of recorded background-task ids with the replay's own. */
+export interface TaskOutputIds {
+  /** Recorded task ids in the order the served responses first named them. */
+  recorded: string[];
+  /** Replay task paths in the order the instance's requests first reported them. */
+  replay: TaskOutputRef[];
+}
+
+/**
+ * Register task paths newly reported by an incoming request. A recorded id is never learned as
+ * a replay task: a replay that runs `tail <recorded path>` gets an error quoting that path back.
+ */
+export function learnReplayTasks(ids: TaskOutputIds, reported: readonly TaskOutputRef[]): void {
+  for (const r of reported) {
+    if (!r.project || !r.session) continue;
+    if (ids.recorded.includes(r.task) || ids.replay.some((x) => x.task === r.task)) continue;
+    ids.replay.push(r);
+  }
+}
+
+/** recorded task id -> replay task id for the ids this response names (order pairing), plus the ones with no replay task yet. */
+export function pairTasks(ids: TaskOutputIds, named: readonly string[]): { map: Map<string, string>; unmapped: string[] } {
+  const map = new Map<string, string>();
+  const unmapped: string[] = [];
+  for (const id of named) {
+    if (!ids.recorded.includes(id)) ids.recorded.push(id);
+    const replay = ids.replay[ids.recorded.indexOf(id)];
+    if (replay) map.set(id, replay.task);
+    else unmapped.push(id);
+  }
+  return { map, unmapped };
+}
+
+/**
+ * A rewriter that moves recorded task-output paths onto the replay's: the `/tmp/claude-<uid>/`
+ * prefix, the project and session segments (from `recorded`, the recording's literal prefix, to
+ * `replay`, the first path the replay reported), and each mapped task id wherever it appears
+ * (paths, globs, and `task_id` arguments alike).
+ */
+export function taskOutputRewriter(recorded: TaskOutputRef, replay: TaskOutputRef, tasks: ReadonlyMap<string, string>): PieceRewriter {
+  const pairs: PathRewrite[] = [{ from: `/tmp/claude-${recorded.uid}/`, to: `/tmp/claude-${replay.uid}/` }];
+  if (recorded.project && replay.project) pairs.push({ from: recorded.project, to: replay.project });
+  if (recorded.session && replay.session) pairs.push({ from: recorded.session, to: replay.session });
+  for (const [from, to] of tasks) pairs.push({ from, to });
+  return (pieces) => {
+    let cur = pieces;
+    for (const p of pairs) for (const v of variants(p)) cur = replaceAcross(cur, v.from, v.to);
+    return cur;
+  };
+}
+
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 
 /** Split `/r/<sessionId>/<instance>/<rest>`; null for anything else (or an unsafe token). */
@@ -554,6 +704,10 @@ export interface ServedRecord {
   execSessionUnmapped?: string[];
   /** How the named ids were paired: through the recorded call_id (exact) or by order. */
   execSessionPairing?: 'call_id' | 'order';
+  /** Recorded->replay Claude background-task ids rewritten in this response. */
+  taskOutputIds?: Record<string, string>;
+  /** Background-task ids this response names that the replay never reported (no prefix rewrite either when none was reported). */
+  taskOutputUnmapped?: string[];
 }
 
 export interface ReplayServerOptions {
@@ -605,6 +759,24 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     let hit = named.get(ex);
     if (!hit) named.set(ex, (hit = namedExecSessionIds(ex)));
     return hit;
+  };
+  // Claude background-task output paths: same shape as the exec-session ids above.
+  const taskIds = new Map<string, TaskOutputIds>();
+  const tasksNamed = new WeakMap<RecordedExchange, TaskOutputRef[]>();
+  const tasksIn = (ex: RecordedExchange): TaskOutputRef[] => {
+    let hit = tasksNamed.get(ex);
+    if (!hit) tasksNamed.set(ex, (hit = namedTaskOutputs(ex)));
+    return hit;
+  };
+  const taskPrefixes = new WeakMap<readonly RecordedExchange[], TaskOutputRef | null>();
+  const taskPrefixOf = (exchanges: readonly RecordedExchange[]): TaskOutputRef | null => {
+    if (!taskPrefixes.has(exchanges)) taskPrefixes.set(exchanges, recordedTaskPrefix(exchanges));
+    return taskPrefixes.get(exchanges) ?? null;
+  };
+  const taskIdsOf = (key: string): TaskOutputIds => {
+    let ids = taskIds.get(key);
+    if (!ids) taskIds.set(key, (ids = { recorded: [], replay: [] }));
+    return ids;
   };
 
   const recording =(sessionId: string): RecordedExchange[] | null => {
@@ -660,6 +832,8 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           execIds.set(key, ids);
           learnReplayIds(ids, fp.execSessions);
         }
+        const reportedTasks = reportedTaskOutputs(body);
+        if (reportedTasks.length > 0) learnReplayTasks(taskIdsOf(key), reportedTasks);
         const method = req.method ?? 'GET';
         const t0 = performance.now();
         const picked = takeExchange(st, { method, path: parsed.rest, fp });
@@ -702,6 +876,21 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
             execSessionPairing: by,
           };
         }
+        let tasks: Pick<ServedRecord, 'taskOutputIds' | 'taskOutputUnmapped'> = {};
+        const namedTasks = tasksIn(picked.exchange);
+        if (namedTasks.length > 0) {
+          const ids = taskIdsOf(key);
+          const { map, unmapped } = pairTasks(
+            ids,
+            namedTasks.map((t) => t.task),
+          );
+          const recordedPrefix = taskPrefixOf(exchanges) ?? namedTasks[0];
+          if (ids.replay.length > 0) ex = rewriteExchange(ex, taskOutputRewriter(recordedPrefix, ids.replay[0], map));
+          tasks = {
+            ...(map.size > 0 ? { taskOutputIds: Object.fromEntries(map) } : {}),
+            ...(unmapped.length > 0 ? { taskOutputUnmapped: unmapped } : {}),
+          };
+        }
         void (async () => {
           let aborted = false;
           res.on('close', () => {
@@ -709,7 +898,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           });
           const first = ex.chunks[0];
           if (first) await sleep(delayOf(first.t));
-          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions });
+          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
           const headers: http.OutgoingHttpHeaders = {};
           if (ex.contentType) headers['content-type'] = ex.contentType;
           res.writeHead(ex.status, headers);
@@ -724,7 +913,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const tail = ex.totalMs - prevT;
           if (!aborted && tail > 0 && ex.chunks.length === 0) await sleep(delayOf(tail));
           res.end();
-          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions });
+          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions, ...tasks });
         })();
       });
     });
