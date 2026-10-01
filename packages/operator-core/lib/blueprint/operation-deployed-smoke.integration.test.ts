@@ -18,10 +18,12 @@
  *     the harness's Hive; then:
  *       – agent op: submit → replay → conflict → status → pending result →
  *         signal (+ replay) → events → cancel (a request: effected false) →
- *         the executor drops its item → cancel replay effected → terminal
- *         `cancelled`;
+ *         a non-worker drop is refused by the applied-worker guard → cancel
+ *         replay still not effected, result still pending (D-046);
  *       – program op: submit → terminal `ready` whose output validates against
  *         the declared resultSchema (the real program settlement shape);
+ *       – program op cancelled before launch: the program executor settles it
+ *         terminal `cancelled` and the cancel replay reports it effected;
  *       – plan-target op: submit → a plan run instance → cancel request
  *         reflected (D-045: a plan run has no cancellation fence).
  *
@@ -164,6 +166,11 @@ function decodeMcp(raw: string, id: number): unknown {
       if (env?.schemaVersion === 'papercusp.output-envelope/v1' && env.content?.some((c) => c.kind === 'reference')) {
         throw new Error(`result was spilled behind a reference envelope (${env.content.find((c) => c.kind === 'reference')?.uri}); the call must carry its own _meta.outputGroupId`);
       }
+      // A batch-shaped write (work_items:set_state and kin) reports a refusal IN BAND:
+      // isError stays false and the transport says ok, but the body reads ok:false with
+      // a per-result error. Returning it as a result let a refused executor drop pass
+      // as a success (2026-10-01 rehearsal), so an in-band refusal is a refusal here.
+      if ((parsed as { ok?: unknown })?.ok === false) throw new ToolRefusal('tool', parsed);
       return parsed;
     }
     if ('structuredContent' in result) return result.structuredContent;
@@ -318,23 +325,49 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     expect(await status(handle)).toMatchObject({ cancellationRequested: true });
     expect((await result(handle)).state).toBe('pending');
 
-    // The executor acknowledges the cancellation by dropping its item through the
-    // ordinary public door. The harness is a pot MEMBER, so the item is stored under
-    // the pot's home slug (WI-10004360), and that is the slug the door must address.
+    // Only the operation's applied worker may settle its pinned item (D-046). This client
+    // is not that worker, so the public door refuses its drop and the request stays a
+    // request. The harness is a pot MEMBER, so the item is stored under the pot's home
+    // slug (WI-10004360): address it there, so the refusal is the worker guard and not a
+    // missing row.
     const items = (await status(handle)).items;
     expect(items).toHaveLength(1);
-    await mcp('work_items:set_state', {
+    expect(await refusalOf(mcp('work_items:set_state', {
       id: items[0].id, harness: SMOKE_POT, state: 'dropped', assumptions: 'none',
-      completionRef: `P-015 deployed smoke: executor acknowledged cancellation ${cancel.eventId}`,
-    });
+      completionRef: `P-015 deployed smoke: non-worker drop after cancellation ${cancel.eventId}`,
+    }))).toMatch(/accepted operation item requires its applied worker/);
+
+    // The replayed request returns the same event and still reports it not effected.
+    const cancelReplay = BlueprintOperationCancelReceiptSchema.parse(await mcp(T.cancel, cancelArgs));
+    expect(cancelReplay).toMatchObject({ replayed: true, eventId: cancel.eventId, effected: false });
+    expect((await result(handle)).state).toBe('pending');
+  }, 180_000);
+
+  it('cancels a program operation before launch and its executor settles it cancelled', async () => {
+    // The program executor is the one executor a deployed client can rely on. A cancel
+    // sent straight after admission lands before the launch scan picks the root up, so
+    // the executor observes it at settlement and drops the root (D-046; the tree twin is
+    // coord-program-workflow.replay.integration.test.ts 'turns a pre-launch cancellation
+    // into canonical cancelled settlement').
+    const key = `p015-program-cancel-${run}`;
+    const handle = await submit('extract-program', key, { value: `deployed-cancel-${run}` });
+    const cancelArgs = { handle, requestKey: `${key}-cancel`, reason: 'P-015 deployed smoke: program cancellation' };
+    const cancel = BlueprintOperationCancelReceiptSchema.parse(await mcp(T.cancel, cancelArgs));
+    expect(cancel).toMatchObject({ accepted: true, replayed: false, effected: false });
+
+    const deadline = Date.now() + PROGRAM_SETTLE_MS;
+    let settled = await result(handle);
+    while (settled.state === 'pending' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2_000));
+      settled = await result(handle);
+    }
+    expect(settled.state, JSON.stringify(settled).slice(0, 1500)).toBe('cancelled');
+    expect(settled.status).toMatchObject({ phase: 'terminal', outcome: 'cancelled', cancellationRequested: true });
 
     // Now canonical state reads cancelled: the replayed request reports it effected.
     const cancelReplay = BlueprintOperationCancelReceiptSchema.parse(await mcp(T.cancel, cancelArgs));
     expect(cancelReplay).toMatchObject({ replayed: true, eventId: cancel.eventId, effected: true });
-    const settled = await result(handle);
-    expect(settled.state).toBe('cancelled');
-    expect(settled.status).toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
-  }, 180_000);
+  }, PROGRAM_SETTLE_MS + 60_000);
 
   it('settles the documented program operation ready with its declared result shape', async () => {
     const handle = await submit('extract-program', `p015-program-${run}`, { value: `deployed-${run}` });
