@@ -95,6 +95,16 @@ const setModeMock = vi.fn(async (opts: SetModeCall) => {
 });
 vi.mock('../../modes/store', () => ({ setMode: (o: SetModeCall) => setModeMock(o) }));
 
+const sourceWorkItemStamp = vi.hoisted(() => ({
+  stamp: vi.fn(),
+  clear: vi.fn(),
+}));
+vi.mock('../../work-items', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  stampWorkItemGoalAtStart: (...args: unknown[]) => sourceWorkItemStamp.stamp(...args),
+  clearWorkItemGoalAtStart: (...args: unknown[]) => sourceWorkItemStamp.clear(...args),
+}));
+
 // P-001 (goal-mode-design-intent-hardening-2026-08-16): the drain-fleet mint is
 // mocked as a seam — its OWN row-level behavior is pinned in
 // lib/goals/drain-fleet-mint.test.ts; what THIS file pins is the wiring: when it
@@ -239,6 +249,14 @@ beforeEach(() => {
     setModeCalls.push(opts);
     order.push(opts.enabled ? 'mode-set' : 'mode-clear');
     return { ok: true };
+  });
+  sourceWorkItemStamp.stamp.mockImplementation(async () => {
+    order.push('source-stamp');
+    return { ok: true, changed: true };
+  });
+  sourceWorkItemStamp.clear.mockImplementation(async () => {
+    order.push('source-clear');
+    return true;
   });
   applyBlockedByMock.mockImplementation(async () => ({ ok: true, blockers: [] }));
   readinessMock.mockImplementation(async () => ACTIONABLE);
@@ -558,6 +576,37 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     expect(args.agentOwnerId).toBe(dataOf(res).agent_owner_id);
   });
 
+  it('stamps an explicit source work item before minting the goal-fenced drain lane', async () => {
+    const sourceWorkItemId = 'EI-source';
+    const res = await call({ sourceWorkItemId });
+
+    expect(isError(res)).toBe(false);
+    const goalId = dataOf(res).id;
+    expect(sourceWorkItemStamp.stamp).toHaveBeenCalledWith(expect.any(Function), {
+      id: sourceWorkItemId,
+      workspaceId: 'ws-test',
+      harness: 'papercusp',
+      goalId,
+    });
+    expect(order.indexOf('source-stamp')).toBeGreaterThan(order.indexOf('insert'));
+    expect(order.indexOf('source-stamp')).toBeLessThan(order.indexOf('mode-set'));
+    expect(order.indexOf('source-stamp')).toBeLessThan(order.indexOf('drain-mint'));
+  });
+
+  it('refuses an un-attributable source item before mode, drain-fleet, or spawn side effects', async () => {
+    sourceWorkItemStamp.stamp.mockResolvedValueOnce({ ok: false, reason: 'already_attributed' });
+
+    const res = await call({ sourceWorkItemId: 'EI-owned-elsewhere' });
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('already_attributed');
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(mintMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(order).toContain('delete');
+  });
+
   it('opens and registers a delegated leader before the worker, without giving the worker the goal brief', async () => {
     await call(); // goal agent itself is NOT headless here
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
@@ -586,9 +635,17 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
       order.push('spawn');
       return { status: 'error', error: 'no display' } as unknown as SpawnConsoleResult;
     });
-    const res = await call();
+    const res = await call({ sourceWorkItemId: 'EI-source' });
     expect(isError(res)).toBe(true);
     expect(teardownMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', fleetSlug: 'goal-drain-test' });
+    const goalId = (sourceWorkItemStamp.stamp.mock.calls[0]?.[1] as { goalId: string } | undefined)?.goalId;
+    expect(sourceWorkItemStamp.clear).toHaveBeenCalledWith(expect.any(Function), {
+      id: 'EI-source',
+      workspaceId: 'ws-test',
+      harness: 'papercusp',
+      goalId,
+    });
+    expect(order.indexOf('source-clear')).toBeGreaterThan(order.indexOf('source-stamp'));
     // ...and no drain member is left behind either: the member spawns only
     // after the goal has definitely kept its agent.
     expect(spawnHeadlessMock).not.toHaveBeenCalled();

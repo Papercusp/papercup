@@ -372,6 +372,8 @@
     // the generated sibling declaration tracks the JSDoc surface instead of a TS7016.
     "scripts/verify-identities-r4.mjs",
     // P-015 R-7 live-switch verifier, imported by its contract test (same reason).
-    "scripts/verify-identities-r7.mjs"
+    "scripts/verify-identities-r7.mjs",
+    // EI-18750303030034478: imported by its TypeScript contract test (same reason).
+    "scripts/lib/mutation-probe-window.mjs"
   ]
 }

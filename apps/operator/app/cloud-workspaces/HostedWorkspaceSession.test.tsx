@@ -81,7 +81,9 @@ import {
   DESKTOP_START_TIMEOUT_MS,
   HostedWorkspaceSession,
 } from "./HostedWorkspaceSession";
+import { HostedDesktopConnection } from "./HostedDesktopConnection";
 import { HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES } from "./hosted-workspace-session-protocol";
+import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const TICKET = `ht_${"a".repeat(43)}`;
 
@@ -643,6 +645,66 @@ describe("HostedWorkspaceSession", () => {
         "start",
         "desktop_start_failed",
       ),
+    );
+  });
+
+  it("automatically starts an empty desktop after the session gains controller role", async () => {
+    const workspace: WorkspaceHostControlRow = {
+      kind: "workspace",
+      id: "host-1",
+      name: "research-control",
+      connectionId: "connection-1",
+      target: "workspace-target",
+      scopeLabel: "research-control",
+      region: "us-central1",
+      size: "e2-standard-4",
+      image: "papercusp",
+      diskGiB: 30,
+      network: "default",
+      desiredState: "running",
+      observedState: "running",
+      recoverability: { kind: "none", label: "No backup" },
+      capabilities: {},
+      tunnel: {
+        connector: { routeLabel: "workspace-relay", transport: "websocket" },
+      },
+    };
+    render(<HostedDesktopConnection workspace={workspace} />);
+    const socket = await connected();
+    const sentMessages = () =>
+      socket.send.mock.calls.map(
+        (call) => JSON.parse(String(call[0])) as { type: string; requestId?: string },
+      );
+
+    socket.emit("message", {
+      data: JSON.stringify({ type: "pty.ready", role: "observer", resumed: false }),
+    });
+    await waitFor(() =>
+      expect(sentMessages().some((message) => message.type === "desktop.roster")).toBe(true),
+    );
+    const rosterRequest = sentMessages().find(
+      (message) => message.type === "desktop.roster",
+    );
+    expect(rosterRequest?.requestId).toBeTruthy();
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "desktop.roster.result",
+        requestId: rosterRequest?.requestId,
+        desktops: [],
+      }),
+    });
+    await waitFor(() =>
+      expect(screen.getByText("No desktops are available yet")).toBeTruthy(),
+    );
+    expect(sentMessages().some((message) => message.type === "desktop.start")).toBe(false);
+
+    socket.emit("message", {
+      data: JSON.stringify({ type: "session.role", role: "controller" }),
+    });
+    await waitFor(() =>
+      expect(
+        sentMessages().filter((message) => message.type === "desktop.start"),
+      ).toHaveLength(1),
     );
   });
 

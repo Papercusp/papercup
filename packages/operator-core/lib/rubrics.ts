@@ -88,6 +88,7 @@ import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
   synchronizeAcceptanceBarRevision,
+  validateAcceptanceBarRevisionProjectionPreview,
   carryUnchangedBarEvidenceBindings,
   shouldCarryBarEvidence,
   partitionAmendmentProof,
@@ -4470,6 +4471,16 @@ async function amendAcceptanceBarRubric(
       };
 
       if (preview) {
+        if (changedBars.length > 0) {
+          await validateAcceptanceBarRevisionProjectionPreview(tx as never, {
+            workspaceId: subjectScope.workspaceId,
+            harnessSlug: subjectScope.harnessSlug,
+            rubricSlug: input.rubricId,
+            rubricRevision: nextRubricRevision,
+            templateData: guard.data,
+            previousTemplateData: rubricRow.template_data,
+          });
+        }
         const changes = diffAcceptanceBarContractSnapshots(snapshot, candidate, 'amend').changes;
         const open = changedBars.length
           ? await tx<Array<{ work_item_id: string }>>`

@@ -3,7 +3,7 @@
  *
  *   npx tsx scripts/agent-capacity/record-session.ts --cli claude|codex --tasks all|<id,id> \
  *     [--parallel 3] [--out ~/.cache/agent-capacity/corpus] [--upstream http://127.0.0.1:8788] \
- *     [--claude-model sonnet] [--keep-work]
+ *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -11,12 +11,27 @@
  * agent), and write <out>/<sessionId>/{meta.json, exchanges.jsonl, cli.jsonl, stderr.log,
  * diff.patch}. Prepared checkouts live at ~/.cache/agent-capacity/prepared/<repo> (see the
  * repo `setup` commands in corpus/tasks.json).
+ *
+ * With `--isolation systemd` (the default) each session runs as its own transient user unit in
+ * `caprec.slice`, and meta.json carries the session's `memPeakBytes` and `cpuUsec`, measured
+ * by the same wrapper the replay driver uses (session-process.ts). That is what lets P-004 set
+ * a real session's footprint beside its replay's. Sample `caprec.slice` with
+ * `vm/sample-footprint.py` for the concurrent time series.
+ *
+ * Nothing here blocks the event loop: the recording proxy for every parallel session shares
+ * it, so checkouts are copied with a spawned `cp` and git runs asynchronously.
  */
-import { spawn, execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, createWriteStream } from 'node:fs';
+import { spawn, execFile } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { startRecordProxy } from './record-proxy';
+import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
+
+const execFileAsync = promisify(execFile);
+/** The slice real (recorded) sessions run in, kept apart from replayed ones in capdrv.slice. */
+export const RECORD_SLICE = 'caprec.slice';
 
 export type Cli = 'claude' | 'codex';
 export type Profile = 'light' | 'typical' | 'heavy';
@@ -110,9 +125,9 @@ export function summarizeToolCalls(cli: Cli, jsonl: string): Record<string, numb
   return counts;
 }
 
-function cliVersion(cli: Cli): string {
+async function cliVersion(cli: Cli): Promise<string> {
   try {
-    return execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 }).trim();
+    return (await execFileAsync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 })).stdout.trim();
   } catch {
     return 'unknown';
   }
@@ -133,6 +148,12 @@ export interface SessionMeta {
   exchanges: number;
   toolCalls: Record<string, number>;
   diffBytes: number;
+  /** How the session ran; absent on recordings made before per-session accounting existed. */
+  isolation?: Isolation;
+  /** The session cgroup's memory.peak (CLI plus every tool it spawned); null without systemd isolation. */
+  memPeakBytes?: number | null;
+  /** The session cgroup's cpu.stat usage_usec; null without systemd isolation. */
+  cpuUsec?: number | null;
 }
 
 export async function recordSession(opts: {
@@ -143,8 +164,11 @@ export async function recordSession(opts: {
   upstream: string;
   claudeModel: string;
   keepWork: boolean;
+  /** Default `systemd`: per-session cgroup accounting in caprec.slice. */
+  isolation?: Isolation;
 }): Promise<SessionMeta> {
   const { corpus, task, cli } = opts;
+  const isolation = opts.isolation ?? 'systemd';
   const repo = corpus.repos[task.repo];
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
   const sessionId = `${cli}-${task.id}-${stamp}`;
@@ -152,10 +176,10 @@ export async function recordSession(opts: {
   const workDir = path.join(CACHE, 'work', sessionId);
   const prepared = path.join(CACHE, 'prepared', task.repo);
   if (!existsSync(prepared)) throw new Error(`prepared checkout missing: ${prepared}`);
-  const head = execFileSync('git', ['-C', prepared, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const head = (await execFileAsync('git', ['-C', prepared, 'rev-parse', 'HEAD'], { encoding: 'utf8' })).stdout.trim();
   if (head !== repo.sha) throw new Error(`prepared ${task.repo} is at ${head}, corpus pins ${repo.sha}`);
   mkdirSync(sessionDir, { recursive: true });
-  cpSync(prepared, workDir, { recursive: true, verbatimSymlinks: true });
+  await copyTree(prepared, workDir);
 
   const proxy = await startRecordProxy({ upstream: opts.upstream, outFile: path.join(sessionDir, 'exchanges.jsonl'), sessionId });
   const home = path.join(CACHE, 'cli-home', sessionId);
@@ -172,13 +196,17 @@ export async function recordSession(opts: {
   const t0 = Date.now();
   const cliOut = createWriteStream(path.join(sessionDir, 'cli.jsonl'));
   const cliErr = createWriteStream(path.join(sessionDir, 'stderr.log'));
+  const statsFile = path.join(sessionDir, 'cgroup.stats');
+  const argv = [cli, ...cliArgs(cli, prompt, workDir, opts.claudeModel)];
+  const s = sessionSpawn(isolation, `caprec-${sessionId}`, workDir, env, statsFile, argv, process.env, RECORD_SLICE);
   let timedOut = false;
   const exitCode = await new Promise<number | null>((resolve) => {
-    const child = spawn(cli, cliArgs(cli, prompt, workDir, opts.claudeModel), { cwd: workDir, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(s.cmd, s.args, { cwd: workDir, env: s.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(cliOut);
     child.stderr.pipe(cliErr);
     const timer = setTimeout(() => {
       timedOut = true;
+      if (s.killArgs) spawn('systemctl', s.killArgs, { stdio: 'ignore' });
       try {
         process.kill(-child.pid!, 'SIGTERM');
       } catch {}
@@ -200,16 +228,17 @@ export async function recordSession(opts: {
 
   let diff = '';
   try {
-    diff = execFileSync('git', ['-C', workDir, 'diff'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    diff = (await execFileAsync('git', ['-C', workDir, 'diff'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })).stdout;
   } catch {}
   writeFileSync(path.join(sessionDir, 'diff.patch'), diff);
+  const stats = existsSync(statsFile) ? parseCgroupStats(readFileSync(statsFile, 'utf8')) : { memPeakBytes: null, cpuUsec: null };
   const meta: SessionMeta = {
     sessionId,
     corpusVersion: corpus.version,
     task,
     repo: { name: task.repo, sha: repo.sha, kind: repo.kind },
     cli,
-    cliVersion: cliVersion(cli),
+    cliVersion: await cliVersion(cli),
     claudeModel: cli === 'claude' ? opts.claudeModel : null,
     startedAt,
     wallMs,
@@ -218,10 +247,12 @@ export async function recordSession(opts: {
     exchanges: proxy.count(),
     toolCalls: summarizeToolCalls(cli, readFileSync(path.join(sessionDir, 'cli.jsonl'), 'utf8')),
     diffBytes: Buffer.byteLength(diff),
+    isolation,
+    ...stats,
   };
   writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
-  if (!opts.keepWork) rmSync(workDir, { recursive: true, force: true });
-  rmSync(home, { recursive: true, force: true });
+  if (!opts.keepWork) await removeTree(workDir);
+  await removeTree(home);
   return meta;
 }
 
@@ -239,6 +270,8 @@ async function main(): Promise<void> {
   if (!tasks.length) throw new Error(`no tasks match ${sel}`);
   const outDir = arg('out', path.join(CACHE, 'corpus'))!;
   const parallel = Math.max(1, Number(arg('parallel', '1')));
+  const isolation = arg('isolation', 'systemd');
+  if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
   const queue = [...tasks];
   const worker = async () => {
     for (let task = queue.shift(); task; task = queue.shift()) {
@@ -251,8 +284,11 @@ async function main(): Promise<void> {
           upstream: arg('upstream', 'http://127.0.0.1:8788')!,
           claudeModel: arg('claude-model', 'sonnet')!,
           keepWork: process.argv.includes('--keep-work'),
+          isolation,
         });
-        console.log(`SESSION ${m.sessionId} exit=${m.exitCode} timedOut=${m.timedOut} wallMs=${m.wallMs} exchanges=${m.exchanges} tools=${JSON.stringify(m.toolCalls)}`);
+        const mib = m.memPeakBytes == null ? '?' : (m.memPeakBytes / 2 ** 20).toFixed(0);
+        const cpuS = m.cpuUsec == null ? '?' : (m.cpuUsec / 1e6).toFixed(1);
+        console.log(`SESSION ${m.sessionId} exit=${m.exitCode} timedOut=${m.timedOut} wallMs=${m.wallMs} exchanges=${m.exchanges} peakMiB=${mib} cpuS=${cpuS} tools=${JSON.stringify(m.toolCalls)}`);
       } catch (e) {
         console.log(`SESSION_FAILED ${cli} ${task.id}: ${(e as Error).message}`);
       }

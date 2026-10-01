@@ -30,6 +30,9 @@
 // Counterexample (mutation control, R-4-P-007 is mutation_required): duplicate-launch-in-refusal-window
 // re-times each killed goal's first real drain-fleet join to 1s after its kill — exactly the defect R-4 rules
 // out (blocked work triggering a launch). A sound instrument must report r4-no-duplicate-launch=fail.
+// Counterexample heartbeat-reset-age re-anchors the newest aged turn-end row at its holder's latest
+// heartbeat/read/launch call before it (age reset by a non-effect). A sound instrument must report
+// r4-no-progress-age=fail.
 // Only that one input changes; every read and every other sub-assertion is the same code.
 import { execFileSync } from 'node:child_process';
 
@@ -61,8 +64,9 @@ const P007_GOALS = [
 const GOAL_IDS = (process.env.R4_GOALS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const LINEAGE = GOAL_IDS.length > 0 ? GOAL_IDS : P007_GOALS;
 const COUNTEREXAMPLE = process.env.R4_COUNTEREXAMPLE ?? null;
-if (COUNTEREXAMPLE !== null && COUNTEREXAMPLE !== 'duplicate-launch-in-refusal-window') {
-  throw new Error(`unknown R4_COUNTEREXAMPLE=${COUNTEREXAMPLE}; the only counterexample is duplicate-launch-in-refusal-window`);
+const COUNTEREXAMPLES = ['duplicate-launch-in-refusal-window', 'heartbeat-reset-age'];
+if (COUNTEREXAMPLE !== null && !COUNTEREXAMPLES.includes(COUNTEREXAMPLE)) {
+  throw new Error(`unknown R4_COUNTEREXAMPLE=${COUNTEREXAMPLE}; known: ${COUNTEREXAMPLES.join(', ')}`);
 }
 // Calls that are transport wrappers or self-telemetry, never a substantive step (heartbeats/reads that R-4 says
 // must not count as progress are handled the same way: they do not count as a diagnosis either).
@@ -77,7 +81,12 @@ const goals = rows(`SELECT id, status, created_at, metadata->>'agentOwnerId' AS 
   FROM harness_shared.goals WHERE workspace_id = ${lit(WS)} AND id IN (${inList(LINEAGE)}) ORDER BY created_at`);
 const missing = LINEAGE.filter((g) => !goals.some((r) => r.id === g));
 if (missing.length) residualUnknowns.push(`goals not found in ledger: ${missing.join(', ')}`);
-const holders = [...new Set(goals.map((g) => g.holder).filter(Boolean))] as string[];
+// metadata.agentOwnerId names the holder that was launched; a carry-respawned or re-bound holder session keeps
+// writing turn-end rows under its own owner id, scoped to the goal, so those owners are holders too.
+const turnEndOwners = rows(`SELECT DISTINCT owner_id AS owner FROM harness_shared.agent_activity
+  WHERE workspace_id = ${lit(WS)} AND tool_use_id LIKE 'goal-placement-turn-end:%'
+    AND detail->'goalPlacementTurnEnd'->>'goalId' IN (${inList(LINEAGE)})`).map((r) => r.owner as string);
+const holders = [...new Set([...goals.map((g) => g.holder), ...turnEndOwners].filter(Boolean))] as string[];
 const fleets = [...new Set(goals.map((g) => g.fleet).filter(Boolean))] as string[];
 const membership = fleets.length === 0 ? [] : rows(`SELECT owner_id, fleet_slug, event, at FROM harness_shared.fleet_membership_events
   WHERE fleet_slug IN (${inList(fleets)}) ORDER BY at`);
@@ -95,23 +104,64 @@ observations.goals = goals.map((g) => ({ id: g.id, status: g.status, holder: g.h
 observations.ledgerCounts = { holderCalls: calls.length, membershipEvents: membership.length, turnEnds: turnEnds.length };
 
 // ── r4-no-progress-age ──
+// Oracle, independent of the provider that computed the age: a row's anchor (noProgressSince) must be the offeredAt
+// of a confirmed goalPlacementTurn receipt for the same owner+plan (the first completed eligible opportunity) or the
+// progress cursor's verified lastEffect.at; age must equal observedAt - anchor; the anchor never moves backwards.
+// An anchor sitting on a holder heartbeat/read/launch instant with neither canonical source is the R-4 defect.
 {
-  const teRows = turnEnds.flatMap((t) => ((t.te?.rows ?? []) as Row[]).map((r) => ({ owner: t.owner, at: t.at, ...r })));
-  const AGE_KEYS = ['noProgressAgeSec', 'noProgressAgeMs', 'ageSec', 'ageMs', 'noProgressSince', 'lastProgressAt'];
+  const teRows = turnEnds.flatMap((t) => ((t.te?.rows ?? []) as Row[]).map((r) => ({ owner: t.owner, at: t.at,
+    observedAt: t.te?.observedAt as string, ...r })));
   const withDemand = teRows.filter((r) => Number(r.applicableDemand ?? 0) > 0 || r.planSlug);
-  const withAge = withDemand.filter((r) => AGE_KEYS.some((k) => r[k] !== undefined && r[k] !== null));
-  observations.noProgressAge = { turnEndEvents: turnEnds.length, turnEndRows: teRows.length, rowsWithDemand: withDemand.length,
-    rowsWithAge: withAge.length, statuses: [...new Set(teRows.map((r) => r.status))] };
-  if (withAge.length === 0) {
-    assert('r4-no-progress-age', 'unknown', 0, `${teRows.length} goal-placement turn-end row(s) over ${turnEnds.length} turn-end(s); `
-      + `${withDemand.length} carry applicable demand or a plan, ${withAge.length} carry a derived no-progress age `
-      + `(${AGE_KEYS.join('/')}). No measured age exists, so whether heartbeats/reads/launches reset it cannot be observed `
-      + `(falsifier: a missing measurement stays unknown, never a zero-age success).`);
-  } else {
-    // A derived age that resets at a heartbeat/read/launch-only instant (no canonical effect) falsifies the clause.
-    assert('r4-no-progress-age', 'unknown', withAge.length, `${withAge.length} row(s) carry an age; reset-by-heartbeat check `
-      + `not yet implemented for this shape — extend the probe before binding.`);
+  let withAge = withDemand.filter((r) => typeof r.noProgressAgeMs === 'number' && typeof r.noProgressSince === 'string');
+  const receipts = holders.length === 0 ? [] : rows(`SELECT owner_id AS owner, detail->'goalPlacementTurn'->>'planRef' AS plan_ref,
+      detail->'goalPlacementTurn'->>'offeredAt' AS offered_at, detail->'goalPlacementTurn'->>'completedAt' AS completed_at
+    FROM harness_shared.agent_activity WHERE workspace_id = ${lit(WS)} AND detail ? 'goalPlacementTurn'
+      AND owner_id IN (${inList(holders)})`);
+  const cursors = holders.length === 0 ? [] : rows(`SELECT owner_id AS owner, committed FROM harness_shared.coord_read_cursors
+    WHERE workspace_id = ${lit(WS)} AND surface LIKE 'goal-placement-progress-v1:%' AND committed IS NOT NULL
+      AND owner_id IN (${inList(holders)})`);
+  const effectAt = new Map<string, string>();
+  for (const c of cursors) {
+    try {
+      const [, owner, , planRef] = JSON.parse(c.committed.scopeKey) as string[];
+      if (c.committed.lastEffect?.at) effectAt.set(`${owner}|${planRef}`, c.committed.lastEffect.at);
+    } catch { /* an unparsable scope key explains no anchor */ }
   }
+  const noise = calls.filter((c) => NON_SUBSTANTIVE.has(c.tool) || LAUNCH_TOOLS.includes(c.tool));
+  if (COUNTEREXAMPLE === 'heartbeat-reset-age' && withAge.length > 0) {
+    const last = withAge[withAge.length - 1];
+    const beat = noise.filter((c) => c.owner === last.owner && ms(c.at) <= ms(last.observedAt)).at(-1);
+    if (beat) {
+      const since = new Date(ms(beat.at)).toISOString();
+      withAge = [...withAge.slice(0, -1), { ...last, noProgressSince: since, noProgressAgeMs: ms(last.observedAt) - ms(since), injected: true }];
+    }
+  }
+  const judged = withAge.map((r) => {
+    const anchor = ms(r.noProgressSince);
+    const viaEffect = ms(effectAt.get(`${r.owner}|${r.planRef}`)) === anchor;
+    const viaOpportunity = receipts.some((x) => x.owner === r.owner && x.plan_ref === r.planRef
+      && ms(x.offered_at) === anchor && ms(x.completed_at) <= ms(r.observedAt));
+    return { owner: r.owner, planRef: r.planRef, observedAt: r.observedAt, noProgressSince: r.noProgressSince,
+      noProgressAgeMs: r.noProgressAgeMs, coherent: Math.abs(anchor + Number(r.noProgressAgeMs) - ms(r.observedAt)) <= 1,
+      source: viaEffect ? 'effect' : viaOpportunity ? 'first-eligible-opportunity' : null,
+      noiseAtAnchor: noise.some((c) => c.owner === r.owner && Math.abs(ms(c.at) - anchor) <= 1000),
+      ...(r.injected ? { injected: true } : {}) };
+  });
+  const backwards = judged.filter((j, i) => judged.slice(0, i).some((p) => p.owner === j.owner && p.planRef === j.planRef
+    && ms(p.observedAt) < ms(j.observedAt) && ms(p.noProgressSince) > ms(j.noProgressSince)));
+  const incoherent = judged.filter((j) => !j.coherent);
+  const noiseAnchored = judged.filter((j) => j.source === null && j.noiseAtAnchor);
+  const unexplained = judged.filter((j) => j.source === null);
+  observations.noProgressAge = { turnEndEvents: turnEnds.length, turnEndRows: teRows.length, rowsWithDemand: withDemand.length,
+    rowsWithAge: withAge.length, confirmedReceipts: receipts.length, progressCursors: cursors.length,
+    statuses: [...new Set(teRows.map((r) => r.status))], judged: judged.slice(-12) };
+  const failed = incoherent.length + backwards.length + noiseAnchored.length > 0;
+  assert('r4-no-progress-age', judged.length === 0 ? 'unknown' : failed ? 'fail' : unexplained.length === 0 ? 'pass' : 'unknown',
+    judged.length, `${judged.length} aged row(s) of ${withDemand.length} with demand over ${turnEnds.length} turn-end(s); `
+    + `anchors via effect ${judged.filter((j) => j.source === 'effect').length}, via first eligible opportunity `
+    + `${judged.filter((j) => j.source === 'first-eligible-opportunity').length}, unexplained ${unexplained.length} `
+    + `(on a heartbeat/read/launch instant: ${noiseAnchored.length}); incoherent age ${incoherent.length}; anchor moved `
+    + `backwards ${backwards.length}. A missing age stays unknown, never a zero-age success.`);
 }
 
 // ── r4-no-duplicate-launch ──
@@ -210,7 +260,11 @@ process.stdout.write(`${JSON.stringify({
     ...(GOAL_IDS.length ? ['env', `R4_GOALS=${GOAL_IDS.join(',')}`] : []),
     'npx', 'tsx', 'docs/evidence/goal-brief-r4-behavioral-probe-2026-09-29.mts'],
   ...(COUNTEREXAMPLE
-    ? { mode: 'counterexample', counterexample: { id: COUNTEREXAMPLE, targets: 'r4-no-duplicate-launch',
+    ? { mode: 'counterexample', counterexample: COUNTEREXAMPLE === 'heartbeat-reset-age'
+      ? { id: COUNTEREXAMPLE, targets: 'r4-no-progress-age',
+        fault: 'the newest aged turn-end row re-anchored at its holder\'s latest heartbeat/read/launch call',
+        expected: 'r4-no-progress-age=fail (caught)' }
+      : { id: COUNTEREXAMPLE, targets: 'r4-no-duplicate-launch',
         fault: 'each killed goal\'s first real drain-fleet join re-timed to 1s after its budget kill',
         expected: 'r4-no-duplicate-launch=fail (caught)' } }
     : {}),

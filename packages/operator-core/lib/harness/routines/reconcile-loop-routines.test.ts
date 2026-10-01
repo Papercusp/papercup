@@ -1670,8 +1670,11 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
   });
 
   it('includes the native Codex usage-limit code in the existing R4 pause alert', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
     const autoPauseLoopRoutine = vi.fn(async () => {});
+    const cancelInboxWake = vi.fn(async () => 1);
+    const escalateDeadLoop = vi.fn(async () => {});
     const error = {
       source: 'event_msg:error' as const,
       code: 'usage_limit_exceeded',
@@ -1698,6 +1701,8 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
         atThreshold: true,
       })),
       autoPauseLoopRoutine,
+      cancelInboxWake,
+      escalateDeadLoop,
       zeroToolThreshold: 3,
     });
 
@@ -1707,6 +1712,12 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
       expect.stringContaining('native Codex event_msg:error reported code=usage_limit_exceeded'),
       'loop-zero-tool-escalation',
     );
+    expect(cancelInboxWake).toHaveBeenCalledWith('su-zero-tool', 'ws-papercusp');
+    expect(escalateDeadLoop).toHaveBeenCalledWith(expect.objectContaining({
+      routineId: 'rt-zero-tool',
+      targetOwnerId: 'su-zero-tool',
+    }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('TERMINATED (auto-paused, not re-armed)'));
   });
 
   it('unavailable tool-call evidence fails open and preserves the existing re-arm', async () => {

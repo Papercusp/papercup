@@ -58,6 +58,7 @@ import { pgDate, pgDateOrNull, type PgTimestamp } from './pg-dates';
 import type { AppKeyScopes } from './store';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
+import { isSameOriginFormPost } from '../endpoint-route/same-origin-form-post';
 import type {
   AppRelayConnector,
   AppRelayPort,
@@ -604,7 +605,7 @@ const escapeHtml = (value: string): string =>
 
 function page(title: string, body: string, status = 200): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title>
+<title>${escapeHtml(title)}</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}input{width:100%;font:inherit}
 .row{display:flex;gap:.75rem;margin-top:1rem}button{font:inherit;padding:.4rem 1.2rem}</style></head>
 <body><h1>${escapeHtml(title)}</h1>${body}</body></html>`;
@@ -614,6 +615,10 @@ function page(title: string, body: string, status = 200): Response {
       'content-type': 'text/html; charset=utf-8',
       'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
       'x-frame-options': 'DENY',
+      // NOT 'no-referrer' (WI-10004462): under it a browser posts the consent form with
+      // `Origin: null` (see ../endpoint-route/same-origin-form-post.ts). 'same-origin' still keeps
+      // the request handle in this page's URL from the connector's callback origin.
+      'referrer-policy': 'same-origin',
       ...OAUTH_NO_STORE,
     },
   });
@@ -775,7 +780,7 @@ export async function handleHostedMcpOAuth(request: Request, deps: PortalMcpOAut
   if (verb === 'consent') {
     const fields: Record<string, unknown> =
       method === 'POST' ? (await readFormOrJson(request)) ?? {} : Object.fromEntries(url.searchParams);
-    if (method === 'POST' && request.headers.get('origin') !== origin) {
+    if (method === 'POST' && !isSameOriginFormPost(request.headers, origin)) {
       return page('Not allowed', '<p>Consent must be given on this page.</p>', 403);
     }
     if (method !== 'GET' && method !== 'POST') return page('Not allowed', '<p>Open this link in a browser.</p>', 405);

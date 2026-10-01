@@ -35,9 +35,11 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
+import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
 import { withCanonicalWorklistDeclaration } from '../../goals/package-property-datatypes';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
+import { clearWorkItemGoalAtStart, stampWorkItemGoalAtStart } from '../../work-items';
 import { STANDING_GOAL_KILL_POLARITY, killCriterionProblem } from '../../goals/kill-criterion';
 import { evaluateGoalStartInputs } from '../../goals/goal-io-validation';
 import { isCompilableSchema } from '../../json-schema-validation';
@@ -402,7 +404,7 @@ export default defineTool({
     notWhen:
       'Recording a goal with NO agent (a goal you or an existing session will own): goals:create. Proposing one for the owner to confirm: goals:propose. Launching an agent for a non-goal task: capability:launch-agent.',
     chaining:
-      'goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. Watch it on the Goals board, or coord:presence by the returned ownerId.',
+      'goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. For a goal explicitly resolving one existing work item, pass its exact id as sourceWorkItemId; prose in title/body is not used to infer a target. Watch it on the Goals board, or coord:presence by the returned ownerId.',
     seeAlso: ['goals:create (the goal row alone, no agent)', 'capability:launch-agent (an agent alone, no goal)'],
   },
   // Same gate as goals:create, deliberately, and NOT capability:terminal. The
@@ -485,6 +487,14 @@ export default defineTool({
       .optional()
       .describe('structured form of the kill criterion — renders as live bars instead of prose nobody re-checks'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
+    sourceWorkItemId: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'OPTIONAL — exact id of an existing same-harness work item this goal explicitly resolves. It is attributed to this goal before the goal-drain lane is minted; missing, cross-harness, or already-attributed items refuse the start. Do not infer this from title/body prose.',
+      ),
     blockedBy: z
       .array(z.string().min(1).max(200))
       .max(20)
@@ -780,6 +790,50 @@ export default defineTool({
       }
     }
 
+    // A goal-fenced drain fleet cannot claim the item this goal was started to
+    // resolve unless the relationship is explicit on the source row. Never
+    // extract an id from free-form title/body text: callers must name the exact
+    // source item, and the shared writer verifies same-harness + unowned.
+    let sourceWorkItemStampAttempted = false;
+    const clearSourceWorkItemStamp = async () => {
+      if (!args.sourceWorkItemId || !sourceWorkItemStampAttempted) return;
+      await clearWorkItemGoalAtStart(ctx.tx as unknown as GoalSqlTag, {
+        id: args.sourceWorkItemId,
+        workspaceId,
+        harness: installSlug,
+        goalId: id,
+      }).catch(() => false);
+    };
+    if (args.sourceWorkItemId) {
+      sourceWorkItemStampAttempted = true;
+      let sourceStamp: Awaited<ReturnType<typeof stampWorkItemGoalAtStart>>;
+      try {
+        sourceStamp = await stampWorkItemGoalAtStart(ctx.tx as unknown as GoalSqlTag, {
+          id: args.sourceWorkItemId,
+          workspaceId,
+          harness: installSlug,
+          goalId: id,
+        });
+      } catch (e) {
+        await clearSourceWorkItemStamp();
+        await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        return err(
+          `sourceWorkItemId ${args.sourceWorkItemId} could not be attributed (${(e as Error)?.message ?? e}); ` +
+            'nothing was spawned and the goal was rolled back.',
+        );
+      }
+      if (!sourceStamp.ok) {
+        await clearSourceWorkItemStamp();
+        await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        return err(
+          `sourceWorkItemId ${args.sourceWorkItemId} refused (${sourceStamp.reason}); ` +
+            'nothing was spawned and the goal was rolled back.',
+        );
+      }
+    }
+
     // ── 2. the join: this agent, in GOAL mode, on THIS goal ───────────────
     // Written BEFORE the spawn on purpose — see the header. `subject` is the
     // marker the sessions pane filters on and the Goals board pairs by
@@ -795,6 +849,7 @@ export default defineTool({
       subject: id,
     });
     if (!modeRes.ok) {
+      await clearSourceWorkItemStamp();
       // Edges before the row — same rule as the main rollback below: a deleted
       // goal must not leave dangling blocked-by edges (P-004 closes the gap
       // P-002 left on this early-failure path).
@@ -838,6 +893,10 @@ export default defineTool({
 
     // ── 3. the agent ──────────────────────────────────────────────────────
     const rollback = async () => {
+      // The source item must not retain a goal_id for a goal rolled back after
+      // launch preparation. The helper uses a compare-and-set so it cannot
+      // clear a later attribution written by another actor.
+      await clearSourceWorkItemStamp();
       // P-001: the drain-fleet mint is compensable rows (registry + claim spec) —
       // tear them down with the goal, or the fleet strands as a registry row whose
       // goal no longer exists. The metadata.drainFleet stamp dies with the goal row.

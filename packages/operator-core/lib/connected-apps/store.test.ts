@@ -17,13 +17,14 @@ import type { Sql } from 'postgres';
 
 const h = vi.hoisted(() => ({ rowsFor: (_query: string): Record<string, unknown>[] => [] }));
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
     return Promise.resolve(h.rowsFor(query));
   };
   const sql = Object.assign(tag, { unsafe: (text: string) => text }) as unknown as Sql;
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql }),
     withWorkspace: <T>(_ws: string, cb: (tx: Sql) => Promise<T>) => cb(sql),
   };

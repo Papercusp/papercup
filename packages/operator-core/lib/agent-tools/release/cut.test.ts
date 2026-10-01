@@ -74,6 +74,9 @@ const {
   resolveCutRoot,
   isAutoManagedCutWorktree,
   validateReleaseResumeResidue,
+  prepareSeedlessCutRoot,
+  RELEASE_SEEDLESS_PLACEHOLDER_NAME,
+  RELEASE_SEEDLESS_PLACEHOLDER_CONTENT,
 } = await import('./cut');
 
 // The real live operator runs from an auto-managed `papercup-release` checkout,
@@ -345,6 +348,54 @@ describe('release:cut — constrained root selector', () => {
       exists: () => false,
     }, { reuseSeedVersion: '0.0.18' });
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_seed_missing/) });
+  });
+
+  it('admits seedless only when the seed root contains the exact canonical placeholder', async () => {
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+      exists: () => true,
+      readDir: () => [RELEASE_SEEDLESS_PLACEHOLDER_NAME],
+      isRegularFile: () => true,
+      readFile: () => RELEASE_SEEDLESS_PLACEHOLDER_CONTENT,
+    }, { seedless: true });
+    expect(result).toMatchObject({ ok: true, desktopRoot });
+  });
+
+  it('rejects seedless when any payload accompanies the placeholder', async () => {
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+      exists: () => true,
+      readDir: () => [RELEASE_SEEDLESS_PLACEHOLDER_NAME, 'manifest.json'],
+      isRegularFile: () => true,
+      readFile: () => RELEASE_SEEDLESS_PLACEHOLDER_CONTENT,
+    }, { seedless: true });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_seedless_shape_invalid/) });
+  });
+
+  it('materializes the canonical placeholder only from an absent or empty seed root', () => {
+    let seedRootExists = false;
+    let entries: string[] = [];
+    let placeholderContent = '';
+    const result = prepareSeedlessCutRoot(desktopRoot, {
+      exists: () => seedRootExists,
+      makeDir: () => { seedRootExists = true; },
+      readDir: () => entries,
+      writeFile: (_absolutePath, content) => {
+        entries = [RELEASE_SEEDLESS_PLACEHOLDER_NAME];
+        placeholderContent = content;
+      },
+      isRegularFile: () => true,
+      readFile: () => placeholderContent,
+    });
+    expect(result).toBeNull();
+    expect(entries).toEqual([RELEASE_SEEDLESS_PLACEHOLDER_NAME]);
+    expect(placeholderContent).toBe(RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
   });
 
   it('accepts porcelain submodule residue only when its frozen gitlink is independently verified', () => {
@@ -752,6 +803,20 @@ describe('release:cut — run (operator-gated write)', () => {
     proofRef: 'WI-10003146#exact-source-pass',
     reason: 'Frozen source has the old aggregate Vitest deadline',
   };
+
+  it('publishes seedless as an explicit run argument', () => {
+    expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
+  });
+
+  it('refuses conflicting seed controls before resolving or launching a root', async () => {
+    const b = body(await tool.handler(
+      { ...runArgs, reuseSeed: true, seedless: true } as never,
+      { role: 'operator' } as never,
+    ));
+    expect(b).toMatchObject({ ok: false, refused: true });
+    expect(b.reason).toMatch(/seed_mode_conflict/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
 
   it('refuses mismatched proof before a launch or audit write', async () => {
     const b = body(await tool.handler({

@@ -731,6 +731,141 @@ export async function synchronizeAcceptanceBarRevision(
 }
 
 /**
+ * Check the deterministic projection refusals that a dry-run can know without
+ * taking the plan locks or writing clause revisions. The apply path still runs
+ * `synchronizeAcceptanceBarRevision` under its locks; this read-only preflight
+ * mirrors its projection identity and unmapped checks so a preview cannot say
+ * "ready" when apply will refuse a generated clause create at revision zero.
+ */
+export async function validateAcceptanceBarRevisionProjectionPreview(
+  sql: SpecClauseSql,
+  args: {
+    workspaceId: string;
+    harnessSlug: string;
+    rubricSlug: string;
+    rubricRevision: number;
+    templateData: unknown;
+    previousTemplateData?: unknown;
+  },
+): Promise<void> {
+  const parsed = rubricTemplateDataAuthoringSchema.safeParse(args.templateData);
+  if (!parsed.success || parsed.data.kind !== 'acceptance' || !parsed.data.barContract || !parsed.data.subjectPlan) {
+    return;
+  }
+  const data = parsed.data;
+  const previous = rubricTemplateDataAuthoringSchema.safeParse(args.previousTemplateData);
+  const previousByKey = new Map(previous.success && previous.data.subjectPlan === data.subjectPlan
+    ? previous.data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion])
+    : []);
+  const subjectPlan = data.subjectPlan;
+  const subjects = await sql<Array<{ plan_slug: string; content: string }>>`
+    SELECT plan_slug, content FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+       AND plan_slug = ${subjectPlan}`;
+  if (!subjects.length) throw new Error('acceptance_bar_revision_subject_missing');
+
+  const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const byKey = new Map(data.criteria.map((criterion) => [criterion.barKey ?? criterion.key, criterion]));
+  const requirements = parseRequirementBars(subjects[0]!.content);
+  if (!requirements.ok) {
+    throw new Error(
+      `acceptance_bar_revision_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
+    );
+  }
+  const mappings = parseBarMappings(subjects[0]!.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+  if (!mappings.ok) {
+    throw new Error(
+      `acceptance_bar_revision_mapping_invalid:${mappings.problems.map((problem) => problem.code).join(',')}`,
+    );
+  }
+
+  const barKeyBySpecId = new Map<string, string>();
+  for (const mapping of mappings.mappings) {
+    if (byKey.get(mapping.barKey)?.role === 'disclosure') continue;
+    for (const planItemId of mapping.planItemIds) {
+      barKeyBySpecId.set(`AUTO-BAR-${mapping.barKey}-${planItemId}`, mapping.barKey);
+    }
+  }
+  const generatedProjectionIdentity = (specId: string): { barKey: string; planItemId: string } | null => {
+    const match = specId.match(/^AUTO-BAR-(R-[0-9]+)-(P-[0-9]{3,})$/);
+    return match ? { barKey: match[1]!, planItemId: match[2]! } : null;
+  };
+  const projectionPairKey = (barKey: string, planItemId: string) => `${barKey}\0${planItemId}`;
+  const currentProjectionPairs = new Set(
+    mappings.mappings.flatMap((mapping) => {
+      if (byKey.get(mapping.barKey)?.role === 'disclosure') return [];
+      return mapping.planItemIds.map((planItemId) => projectionPairKey(mapping.barKey, planItemId));
+    }),
+  );
+  const ownedSpecIds = [...barKeyBySpecId.keys()];
+  type ProjectionClause = {
+    spec_id: string;
+    current_revision: number | string;
+    source_bar_key: string | null;
+    plan_item_id: string;
+    lifecycle_status: string;
+  };
+  const clauses = await sql<ProjectionClause[]>`
+    SELECT c.spec_id, c.current_revision, r.source_bar_key, r.plan_item_id, r.lifecycle_status
+      FROM harness_shared.plan_spec_clauses c
+      JOIN harness_shared.plan_spec_clause_revisions r
+        ON r.workspace_id = c.workspace_id AND r.harness_slug = c.harness_slug
+       AND r.plan_slug = c.plan_slug AND r.spec_id = c.spec_id AND r.revision = c.current_revision
+     WHERE c.workspace_id = ${args.workspaceId} AND c.harness_slug = ${args.harnessSlug}
+       AND c.plan_slug = ${subjectPlan}
+       AND (r.source_bar_key IS NOT NULL OR c.spec_id = ANY(${ownedSpecIds}::text[])
+            OR c.spec_id ~ '^AUTO-BAR-R-[0-9]+-P-[0-9]{3,}$')
+     ORDER BY c.spec_id LIMIT 1001`;
+  if (clauses.length > 1000) throw new Error('acceptance_bar_revision_projection_truncated');
+
+  const barKeyOf = (clause: ProjectionClause): string | null =>
+    clause.source_bar_key ?? barKeyBySpecId.get(clause.spec_id) ?? generatedProjectionIdentity(clause.spec_id)?.barKey ?? null;
+  const missingMappings = mappings.mappings.flatMap((mapping) => {
+    const criterion = byKey.get(mapping.barKey);
+    if (!criterion || criterion.role === 'disclosure') return [];
+    return mapping.planItemIds
+      .filter((planItemId) => !clauses.some(
+        (clause) => barKeyOf(clause) === mapping.barKey && clause.plan_item_id === planItemId,
+      ))
+      .map((planItemId) => ({ criterion, barKey: mapping.barKey, planItemId }));
+  });
+  for (const { criterion, barKey, planItemId } of missingMappings) {
+    if (!criterion.barHash || !criterion.evidencePlane || !data.barSetHash) {
+      throw new Error(`acceptance_bar_revision_mapping_missing:${barKey}`);
+    }
+    const specId = `AUTO-BAR-${barKey}-${planItemId}`;
+    const existing = clauses.find((clause) => clause.spec_id === specId);
+    if (existing) {
+      throw new Error(
+        `acceptance_bar_revision_projection_conflict:${specId}:conflict:expected=0:actual=${Number(existing.current_revision)}`,
+      );
+    }
+  }
+
+  for (const clause of clauses) {
+    const effectiveBarKey = barKeyOf(clause);
+    const criterion = effectiveBarKey ? byKey.get(effectiveBarKey) : undefined;
+    const generatedIdentity = generatedProjectionIdentity(clause.spec_id);
+    if (
+      generatedIdentity &&
+      (generatedIdentity.planItemId !== clause.plan_item_id ||
+        (clause.source_bar_key !== null && generatedIdentity.barKey !== clause.source_bar_key))
+    ) {
+      throw new Error(`acceptance_bar_revision_projection_identity_mismatch:${clause.spec_id}`);
+    }
+    const currentPair = effectiveBarKey !== null && currentProjectionPairs.has(
+      projectionPairKey(effectiveBarKey, clause.plan_item_id),
+    );
+    if ((clause.lifecycle_status === 'superseded' || clause.lifecycle_status === 'retired') && !currentPair) continue;
+    if (generatedIdentity && !currentPair && (!effectiveBarKey || !previousByKey.has(effectiveBarKey))) {
+      throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
+    }
+    if (!criterion && effectiveBarKey && previousByKey.has(effectiveBarKey)) continue;
+    if (!criterion) throw new Error(`acceptance_bar_revision_projection_unmapped:${clause.spec_id}`);
+  }
+}
+
+/**
  * Decide whether one re-projected clause may keep its existing proof (P-008).
  *
  * Extracted deliberately: the carry itself is inside the amendment transaction,

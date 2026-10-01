@@ -90,6 +90,45 @@ test("layout probe measures a later computed-style getter and preserves target, 
   }
 });
 
+test("layout probe observes native-style object properties when a prototype getter cannot be installed", () => {
+  const names = ['window', 'Element', 'HTMLElement', 'CSSStyleDeclaration', 'performance'] as const;
+  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let now = 0;
+  class Styles {
+    #brand = true;
+    getPropertyValue() {
+      assert.equal(this.#brand, true, 'native methods need their real receiver');
+      return 'none';
+    }
+  }
+  const styles = new Styles();
+  Object.defineProperty(styles, 'animationName', { configurable: false, get() { now += 40; return 'none'; } });
+  class FakeElement {}
+  const fakeWindow = { getComputedStyle: () => styles, setTimeout: () => 1 };
+  const globals = { window: fakeWindow, Element: FakeElement, HTMLElement: FakeElement, CSSStyleDeclaration: Styles, performance: { now: () => now } };
+  for (const name of names) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: globals[name] });
+  try {
+    const result = installPopupLayoutProbe();
+    assert.ok(result.observed.includes('animationName-proxy'));
+    const element = { tagName: 'DIV', id: '', classList: ['h-modal__content'], getAttribute: () => null } as unknown as Element;
+    const computed = window.getComputedStyle(element);
+    assert.equal(computed.animationName, 'none');
+    assert.equal(computed.getPropertyValue('animation-name'), 'none');
+    assert.equal(computed.getPropertyValue, computed.getPropertyValue, 'method identity remains stable');
+    const probe = (window as unknown as { __perfLayoutProbe: { records: Array<{ api: string; ms: number; target?: string }>; restore(): void } }).__perfLayoutProbe;
+    assert.deepEqual(probe.records.map(({ api, ms, target }) => ({ api, ms, target })), [
+      { api: 'animationName', ms: 40, target: 'div.h-modal__content' },
+    ]);
+    probe.restore();
+    assert.equal(fakeWindow.getComputedStyle(), styles);
+  } finally {
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
+
 test("native receipt publishing uses the selected operator credential", () => {
   const home = mkdtempSync(path.join(tmpdir(), "wdio-publisher-token-"));
   const scopedHome = path.join(home, "workspace", ".papercusp");

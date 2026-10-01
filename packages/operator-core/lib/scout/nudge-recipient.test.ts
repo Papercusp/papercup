@@ -41,7 +41,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   getFlag,
 }));
 
-import { resolveNudgeRecipient, deliverScoutNudge } from './nudge-recipient';
+import { resolveNudgeRecipient, deliverScoutNudge, shouldWakeSuRecipient, type NudgeRecipient } from './nudge-recipient';
 
 const WS = 'papercusp-workspace';
 
@@ -79,6 +79,28 @@ const modes = (m: Record<string, Array<{ mode: string; subject?: string | null }
   vi.fn(async () => new Map(Object.entries(m)));
 /** No modes for anyone — the pre-P-007 world, where rung 2 is pure recency. */
 const noModes = vi.fn(async () => new Map());
+
+describe('shouldWakeSuRecipient — the wake policy (WI-10004412)', () => {
+  const su = (tier: 0 | 1 | 2): NudgeRecipient => ({ kind: 'su', ownerId: 'su-x', ownerLabel: 'x', why: '', tier });
+
+  it("'grading-posture' wakes the steward (0) and a GRADE-mode su (1), never the recency fallback (2)", () => {
+    expect(shouldWakeSuRecipient(su(0), 'grading-posture')).toBe(true);
+    expect(shouldWakeSuRecipient(su(1), 'grading-posture')).toBe(true);
+    expect(shouldWakeSuRecipient(su(2), 'grading-posture')).toBe(false);
+  });
+
+  it('a true pager wakes any su; an absent/false policy wakes none', () => {
+    expect(shouldWakeSuRecipient(su(2), true)).toBe(true);
+    expect(shouldWakeSuRecipient(su(0), false)).toBe(false);
+    expect(shouldWakeSuRecipient(su(0), undefined)).toBe(false);
+  });
+
+  it('only an su verdict is ever woken by this leg', () => {
+    expect(shouldWakeSuRecipient({ kind: 'escalate', why: '' }, true)).toBe(false);
+    expect(shouldWakeSuRecipient({ kind: 'unresolved', why: '' }, 'grading-posture')).toBe(false);
+    expect(shouldWakeSuRecipient({ kind: 'mug', ownerId: 'm', why: '' }, true)).toBe(false);
+  });
+});
 
 describe('resolveNudgeRecipient — the ladder', () => {
   it('rung 1: a live Mug wins, and no su is consulted', async () => {
@@ -511,6 +533,51 @@ describe('deliverScoutNudge — the retirement gate, end to end (P-037)', () => 
   // positive control now runs on the surviving su rung. Both spies the assertions
   // above depend on must demonstrably FIRE here, or a `not.toHaveBeenCalled()`
   // up there would be silence rather than evidence.
+  /**
+   * WI-10004412 — the grading backstop delivered inject-only to a different
+   * recency-fallback su on every fire, so nothing ever started a turn. The policy wakes
+   * ONLY a recipient whose posture is grading; the fallback is told it is an FYI.
+   * The two cases below share one fixture and differ only in the recipient's modes, so
+   * each is the other's calibration: a policy that never wakes fails the second, and
+   * one that always wakes fails the first.
+   */
+  it("WI-10004412: 'grading-posture' does NOT wake a recency-fallback (tier 2) su, and says so", async () => {
+    const r = await deliverScoutNudge({
+      workspaceId: WS,
+      mugOwner: null,
+      summary: 'agent-review grading backstop',
+      source: 'su-ideate-ungraded',
+      wakeSu: 'grading-posture',
+      recipientSeams: { readAgentModesFn: noModes },
+    });
+
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-a', tier: 2 });
+    const sent = sendMessage.mock.calls.filter((c) => toOf(c).includes('su-a'));
+    expect(sent).toHaveLength(1);
+    expect((sent[0]?.[1] as { body: string }).body).toContain('un-woken FYI');
+    expect(wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it("WI-10004412: 'grading-posture' WAKES a GRADE-mode (tier 1) su after the durable write", async () => {
+    const r = await deliverScoutNudge({
+      workspaceId: WS,
+      mugOwner: null,
+      summary: 'agent-review grading backstop',
+      source: 'su-ideate-ungraded',
+      wakeSu: 'grading-posture',
+      recipientSeams: { readAgentModesFn: modes({ 'su-a': [{ mode: 'grade' }] }) },
+    });
+
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-a', tier: 1 });
+    const sent = sendMessage.mock.calls.filter((c) => toOf(c).includes('su-a'));
+    expect(sent).toHaveLength(1);
+    expect((sent[0]?.[1] as { body: string }).body).not.toContain('un-woken FYI');
+    expect(wakeRecipients).toHaveBeenCalledWith(['su-a'], expect.objectContaining({ source: 'su-ideate-ungraded' }));
+    expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      wakeRecipients.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
   it('CALIBRATION: the identical call still delivers — via the su rung, on the same spies', async () => {
     const r = await deliverScoutNudge({
       workspaceId: WS,

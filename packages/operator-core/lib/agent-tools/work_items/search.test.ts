@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../work-items', () => ({
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   searchWorkItems: vi.fn(),
 }));
 
 import { emptyLegs } from '@papercusp/search';
-import { searchWorkItems } from '../../work-items';
+import { getWorkItem, searchWorkItems } from '../../work-items';
 import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import search, { projectWorkItemSearchMatch, shapeWorkItemsSearch } from './search';
 
@@ -37,6 +38,10 @@ const workItem = (overrides: Record<string, unknown> = {}) =>
   }) as never;
 
 describe('work_items:search transaction scope', () => {
+  it('preserves work-items exports used by neighboring modules', () => {
+    expect(typeof getWorkItem).toBe('function');
+  });
+
   it('opts out of the ambient workspace transaction because search owns its DB scopes', () => {
     expect((search as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });

@@ -159,6 +159,10 @@ export interface CutRuntimeEnv {
   ownerEmail?: string;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
+  /** Explicit new-build path: package the validated placeholder-only seed directory
+   * without cutting or reusing a hive seed. Unlike reuseSeed, this does not restore
+   * retry-owned version residue before launch. */
+  seedless?: boolean;
   /** The CANONICAL papercusp-desktop checkout, so release-local.sh can write the
    *  version bump back to it (WI-10001570). The cutter derives its own ROOT from
    *  where the script lives, so a cut launched against an isolated worktree bumps
@@ -252,7 +256,10 @@ export function buildCutEnv(
   if (canonicalDesktopRoot) {
     env.PAPERCUSP_RELEASE_CANONICAL_DESKTOP_ROOT = canonicalDesktopRoot;
   }
-  if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.reuseSeed && runtime.seedless) {
+    throw new Error('seed_mode_conflict — reuseSeed and seedless are mutually exclusive');
+  }
+  if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
   // BOTH-OR-NEITHER, enforced HERE rather than discovered in the cut. release-local.sh's
   // release_task_journal_configure() hard-refuses a half-configured pair (`managed release
   // resume requires BOTH ...`, exit 2) — but that refusal happens inside the detached unit,

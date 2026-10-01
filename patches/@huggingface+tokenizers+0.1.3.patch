@@ -1,0 +1,44 @@
+diff --git a/node_modules/@huggingface/tokenizers/dist/tokenizers.cjs b/node_modules/@huggingface/tokenizers/dist/tokenizers.cjs
+index 414547f..913a488 100644
+--- a/node_modules/@huggingface/tokenizers/dist/tokenizers.cjs
++++ b/node_modules/@huggingface/tokenizers/dist/tokenizers.cjs
+@@ -2578,7 +2578,7 @@ var Tokenizer = class {
+       const subsections = this.splitter_normalized.split(processed_text);
+       subsections.forEach((subsection, j) => {
+         const added_token = this.added_tokens_map.get(subsection);
+-        if (added_token) {
++        if (added_token?.normalized) {
+           if (added_token.lstrip && j > 0) {
+             subsections[j - 1] = subsections[j - 1].trimEnd();
+           }
+@@ -2591,7 +2591,7 @@ var Tokenizer = class {
+         if (subsection.length === 0) {
+           return [];
+         }
+-        if (this.added_tokens_map.has(subsection)) {
++        if (this.added_tokens_map.get(subsection)?.normalized) {
+           return [subsection];
+         }
+         const section_tokens = this.pre_tokenizer !== null ? this.pre_tokenizer(subsection, {
+diff --git a/node_modules/@huggingface/tokenizers/dist/tokenizers.mjs b/node_modules/@huggingface/tokenizers/dist/tokenizers.mjs
+index 27c29d2..0d8ba4c 100644
+--- a/node_modules/@huggingface/tokenizers/dist/tokenizers.mjs
++++ b/node_modules/@huggingface/tokenizers/dist/tokenizers.mjs
+@@ -2505,7 +2505,7 @@ var Tokenizer = class {
+       const subsections = this.splitter_normalized.split(processed_text);
+       subsections.forEach((subsection, j) => {
+         const added_token = this.added_tokens_map.get(subsection);
+-        if (added_token) {
++        if (added_token?.normalized) {
+           if (added_token.lstrip && j > 0) {
+             subsections[j - 1] = subsections[j - 1].trimEnd();
+           }
+@@ -2518,7 +2518,7 @@ var Tokenizer = class {
+         if (subsection.length === 0) {
+           return [];
+         }
+-        if (this.added_tokens_map.has(subsection)) {
++        if (this.added_tokens_map.get(subsection)?.normalized) {
+           return [subsection];
+         }
+         const section_tokens = this.pre_tokenizer !== null ? this.pre_tokenizer(subsection, {

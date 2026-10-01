@@ -251,8 +251,42 @@ describe('portal MCP OAuth flow (P-325)', () => {
       body: new URLSearchParams({ request: handle, decision: 'approve', tools: 'plans:get' }).toString(),
     });
     expect(noOrigin.status).toBe(403);
+    // `Origin: null` from another site (or an opaque sandbox) is refused too.
+    expect(
+      (await consent(h, handle, { decision: 'approve', tools: 'plans:get' }, { origin: 'null', 'sec-fetch-site': 'cross-site' })).status,
+    ).toBe(403);
     // Still pending: the refused posts decided nothing.
     await approve(h, handle);
+  });
+
+  /**
+   * WI-10004462: a real browser posts this page's form with `Origin: null` whenever the page (or the
+   * user's privacy setting) runs under a no-referrer policy. The page sent `no-referrer`, so every
+   * browser's Allow was refused with 403 while the hand-set Origin above passed. The page now sends
+   * `same-origin`, and a same-origin post that still arrives with `Origin: null` is accepted on
+   * Fetch Metadata.
+   */
+  it('accepts the browser-shaped consent post: Origin null with Sec-Fetch-Site same-origin', async () => {
+    const h = harness();
+    const handle = await authorize(h, await register(h));
+    const form = await h.call(`/api/workspaces/${WS}/oauth/consent?request=${encodeURIComponent(handle)}`, {
+      headers: { cookie: 'session=me' },
+    });
+    expect(form.status).toBe(200);
+    expect(form.headers.get('referrer-policy')).toBe('same-origin');
+    expect(await form.text()).not.toMatch(/no-referrer/);
+
+    const response = await consent(
+      h,
+      handle,
+      { decision: 'approve', tools: 'plans:get', harnesses: 'papercusp' },
+      { origin: 'null', 'sec-fetch-site': 'same-origin' },
+    );
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get('location')!);
+    expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
+    expect(location.searchParams.get('code')).toBeTruthy();
+    expect(location.searchParams.get('state')).toBe('st-1');
   });
 
   it('lets the approver narrow the grant but never widen it, or empty a list the app restricted', async () => {

@@ -45,7 +45,7 @@
 
 import { z } from 'zod';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -120,6 +120,16 @@ const cutReuseSeedArg = z
   .boolean()
   .optional()
   .describe('Retry-only: reuse the already-completed seed in this isolated cut root (PAPERCUSP_SKIP_SEED_CUT=1).');
+const cutSeedlessArg = z
+  .boolean()
+  .optional()
+  .describe(
+    'Explicit seedless build: require src-tauri/seed to contain only the canonical placeholder, then skip the seed cut without enabling retry residue. Mutually exclusive with reuseSeed.',
+  );
+
+export const RELEASE_SEEDLESS_PLACEHOLDER_NAME = 'SEEDLESS_RELEASE.txt';
+export const RELEASE_SEEDLESS_PLACEHOLDER_CONTENT =
+  'Papercusp release seed intentionally omitted; first boot uses the cold-join path.\n';
 
 interface CutWorktree {
   path: string;
@@ -146,12 +156,19 @@ export interface CutRootResolutionDeps {
   headFile?: (desktopRoot: string, relativePath: string) => string;
   readFile?: (absolutePath: string) => string;
   exists?: (absolutePath: string) => boolean;
+  readDir?: (absolutePath: string) => string[];
+  isRegularFile?: (absolutePath: string) => boolean;
+  makeDir?: (absolutePath: string) => void;
+  writeFile?: (absolutePath: string, content: string) => void;
 }
 
 export interface CutRootResolutionOptions {
   /** A completed seed may be reused only when the remaining tracked edits are the
    * exact idempotent version bump written by release-local.sh for this version. */
   reuseSeedVersion?: string;
+  /** A new seedless cut keeps normal clean-root enforcement and accepts only the
+   * canonical placeholder under src-tauri/seed. It never admits retry residue. */
+  seedless?: boolean;
   /**
    * WI-10003598: a read-only op (handoff) inspects a finished cut, and a
    * finished cut always leaves its root dirty (the version bump, the moved gitlink and
@@ -302,6 +319,7 @@ function cutRuntimeEnv(
     ownerName: string;
     ownerEmail?: string;
     reuseSeed?: boolean;
+    seedless?: boolean;
     migrationBootSmokeOverride?: MigrationBootSmokeOverride;
   },
   operation?: BeginCutOperationResult | null,
@@ -310,6 +328,7 @@ function cutRuntimeEnv(
     ownerName: args.ownerName,
     ownerEmail: args.ownerEmail,
     reuseSeed: args.reuseSeed,
+    ...(args.seedless ? { seedless: true } : {}),
     ...(args.migrationBootSmokeOverride
       ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride }
       : {}),
@@ -456,6 +475,100 @@ export function isAutoManagedCutWorktree(worktreePath: string): boolean {
   ]).has(path.basename(path.resolve(worktreePath)));
 }
 
+function validateCutRootSeedMode(
+  desktop: string,
+  deps: CutRootResolutionDeps,
+  options: CutRootResolutionOptions,
+): string | null {
+  if (options.reuseSeedVersion && options.seedless) {
+    return 'root_seed_mode_conflict — reuseSeed and seedless are mutually exclusive';
+  }
+  if (options.reuseSeedVersion) {
+    const seedManifest = path.join(desktop, 'src-tauri', 'seed', 'manifest.json');
+    const exists = deps.exists ?? existsSync;
+    if (!exists(seedManifest)) {
+      return `root_resume_seed_missing — reuseSeed requires the completed seed manifest at '${seedManifest}'`;
+    }
+  }
+  if (options.seedless) {
+    const seedRoot = path.join(desktop, 'src-tauri', 'seed');
+    const placeholder = path.join(seedRoot, RELEASE_SEEDLESS_PLACEHOLDER_NAME);
+    const exists = deps.exists ?? existsSync;
+    if (!exists(seedRoot)) return null;
+    const readDir = deps.readDir ?? ((absolutePath: string) => readdirSync(absolutePath));
+    const isRegularFile = deps.isRegularFile ?? ((absolutePath: string) => lstatSync(absolutePath).isFile());
+    const readFile = deps.readFile ?? ((absolutePath: string) => readFileSync(absolutePath, 'utf8'));
+    try {
+      const entries = [...readDir(seedRoot)].sort();
+      if (entries.length === 0) return null;
+      if (entries.length !== 1 || entries[0] !== RELEASE_SEEDLESS_PLACEHOLDER_NAME) {
+        return (
+          `root_seedless_shape_invalid — '${seedRoot}' must contain exactly ` +
+          `${RELEASE_SEEDLESS_PLACEHOLDER_NAME}; found ${entries.length === 0 ? '<empty>' : entries.join(', ')}`
+        );
+      }
+      if (!isRegularFile(placeholder)) {
+        return `root_seedless_shape_invalid — '${placeholder}' must be a regular file (not a directory or symlink)`;
+      }
+      if (readFile(placeholder) !== RELEASE_SEEDLESS_PLACEHOLDER_CONTENT) {
+        return `root_seedless_shape_invalid — '${placeholder}' does not contain the canonical seedless marker`;
+      }
+    } catch (err) {
+      return (
+        `root_seedless_shape_unreadable — could not verify placeholder-only seed root '${seedRoot}': ` +
+        (err instanceof Error ? err.message : String(err))
+      );
+    }
+  }
+  return null;
+}
+
+export function prepareSeedlessCutRoot(
+  desktop: string,
+  deps: CutRootResolutionDeps = {},
+): string | null {
+  const seedRoot = path.join(desktop, 'src-tauri', 'seed');
+  const placeholder = path.join(seedRoot, RELEASE_SEEDLESS_PLACEHOLDER_NAME);
+  const exists = deps.exists ?? existsSync;
+  const readDir = deps.readDir ?? ((absolutePath: string) => readdirSync(absolutePath));
+  const makeDir = deps.makeDir ?? ((absolutePath: string) => mkdirSync(absolutePath, { recursive: true }));
+  const writeFile = deps.writeFile ?? ((absolutePath: string, content: string) => {
+    writeFileSync(absolutePath, content, { encoding: 'utf8', flag: 'wx' });
+  });
+  try {
+    if (!exists(seedRoot)) makeDir(seedRoot);
+    const entries = [...readDir(seedRoot)].sort();
+    if (entries.length === 0) writeFile(placeholder, RELEASE_SEEDLESS_PLACEHOLDER_CONTENT);
+  } catch (err) {
+    return (
+      `root_seedless_prepare_failed — could not materialize '${placeholder}': ` +
+      (err instanceof Error ? err.message : String(err))
+    );
+  }
+  return validateCutRootSeedMode(desktop, deps, { seedless: true });
+}
+
+type CutSeedModeResolution =
+  | { ok: true; mode: 'fresh' | 'reuse' | 'seedless'; rootOptions: CutRootResolutionOptions }
+  | { ok: false; reason: string };
+
+function resolveCutSeedMode(args: {
+  version: string;
+  reuseSeed?: boolean;
+  seedless?: boolean;
+}): CutSeedModeResolution {
+  if (args.reuseSeed && args.seedless) {
+    return { ok: false, reason: 'seed_mode_conflict — reuseSeed and seedless are mutually exclusive' };
+  }
+  if (args.reuseSeed) {
+    return { ok: true, mode: 'reuse', rootOptions: { reuseSeedVersion: args.version } };
+  }
+  if (args.seedless) {
+    return { ok: true, mode: 'seedless', rootOptions: { seedless: true } };
+  }
+  return { ok: true, mode: 'fresh', rootOptions: {} };
+}
+
 /**
  * Resolve the optional cut root without allowing an arbitrary filesystem path.
  * Explicit selectors must identify a non-prunable linked worktree belonging to a
@@ -467,6 +580,9 @@ export async function resolveCutRoot(
   deps: CutRootResolutionDeps = {},
   options: CutRootResolutionOptions = {},
 ): Promise<CutRootResolution> {
+  if (options.reuseSeedVersion && options.seedless) {
+    return { ok: false, reason: 'root_seed_mode_conflict — reuseSeed and seedless are mutually exclusive' };
+  }
   if (selector === undefined) {
     const implicitDesktopRoot = desktopRoot();
     const implicitWorktreeRoot = path.dirname(implicitDesktopRoot);
@@ -477,6 +593,10 @@ export async function resolveCutRoot(
           `root_not_isolated — default cut root '${implicitWorktreeRoot}' is auto-managed and can move during a build; ` +
           'prepare a dedicated exact-SHA worktree with setup-release-checkout.sh and pass it via root',
       };
+    }
+    if (options.seedless) {
+      const seedModeError = validateCutRootSeedMode(implicitDesktopRoot, deps, { seedless: true });
+      if (seedModeError) return { ok: false, reason: seedModeError };
     }
     return { ok: true, desktopRoot: implicitDesktopRoot };
   }
@@ -616,22 +736,15 @@ export async function resolveCutRoot(
     };
   }
 
-  if (options.reuseSeedVersion) {
-    const seedManifest = path.join(selected.path, 'papercusp-desktop', 'src-tauri', 'seed', 'manifest.json');
-    const exists = deps.exists ?? existsSync;
-    if (!exists(seedManifest)) {
-      return {
-        ok: false,
-        reason: `root_resume_seed_missing — reuseSeed requires the completed seed manifest at '${seedManifest}'`,
-      };
-    }
-  }
+  const selectedDesktopRoot = path.join(selected.path, 'papercusp-desktop');
+  const seedModeError = validateCutRootSeedMode(selectedDesktopRoot, deps, options);
+  if (seedModeError) return { ok: false, reason: seedModeError };
 
   return {
     ok: true,
     selector: requested,
     worktreeRoot: selected.path,
-    desktopRoot: path.join(selected.path, 'papercusp-desktop'),
+    desktopRoot: selectedDesktopRoot,
   };
 }
 
@@ -764,6 +877,7 @@ export default defineTool({
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
       reuseSeed: cutReuseSeedArg,
+      seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
       confirm: z
         .boolean()
@@ -795,6 +909,7 @@ export default defineTool({
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
       reuseSeed: cutReuseSeedArg,
+      seedless: cutSeedlessArg,
       migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
       confirm: z
         .boolean()
@@ -1184,10 +1299,12 @@ export default defineTool({
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
       const orchestratorRoot = desktopRoot();
+      const seedMode = resolveCutSeedMode(args);
+      if (!seedMode.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: seedMode.reason });
       const selected = await resolveCutRoot(
         args.root,
         undefined,
-        args.reuseSeed ? { reuseSeedVersion: args.version } : undefined,
+        seedMode.rootOptions,
       );
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
@@ -1229,6 +1346,7 @@ export default defineTool({
           version: args.version,
           channel,
           sourceSha: args.sourceSha,
+          seedMode: seedMode.mode,
           migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
           root: selected.desktopRoot,
           orchestratorRoot,
@@ -1251,6 +1369,10 @@ export default defineTool({
         workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
       });
       if (loopRefusal) return json({ ...loopRefusal, op: 'run-leg', refused: true });
+      if (seedMode.mode === 'seedless') {
+        const seedlessError = prepareSeedlessCutRoot(selected.desktopRoot);
+        if (seedlessError) return json({ ok: false, op: 'run-leg', refused: true, reason: seedlessError });
+      }
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
@@ -1291,6 +1413,7 @@ export default defineTool({
         root: selected.desktopRoot,
         orchestratorRoot,
         legs,
+        seedMode: seedMode.mode,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         launched: launch.launched,
@@ -1312,6 +1435,7 @@ export default defineTool({
         channel,
         sourceSha: args.sourceSha,
         legs,
+        seedMode: seedMode.mode,
         root: selected.desktopRoot,
         orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1361,10 +1485,12 @@ export default defineTool({
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
     const orchestratorRoot = desktopRoot();
+    const seedMode = resolveCutSeedMode(args);
+    if (!seedMode.ok) return json({ ok: false, op: 'run', refused: true, reason: seedMode.reason });
     const selected = await resolveCutRoot(
       args.root,
       undefined,
-      args.reuseSeed ? { reuseSeedVersion: args.version } : undefined,
+      seedMode.rootOptions,
     );
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
@@ -1402,6 +1528,7 @@ export default defineTool({
         version: args.version,
         channel,
         sourceSha: args.sourceSha,
+        seedMode: seedMode.mode,
         migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
         root: selected.desktopRoot,
         orchestratorRoot,
@@ -1422,6 +1549,10 @@ export default defineTool({
       workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
     });
     if (loopRefusal) return json({ ...loopRefusal, op: 'run', refused: true });
+    if (seedMode.mode === 'seedless') {
+      const seedlessError = prepareSeedlessCutRoot(selected.desktopRoot);
+      if (seedlessError) return json({ ok: false, op: 'run', refused: true, reason: seedlessError });
+    }
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
@@ -1460,6 +1591,7 @@ export default defineTool({
       root: selected.desktopRoot,
       orchestratorRoot,
       legs,
+      seedMode: seedMode.mode,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       launched: launch.launched,
@@ -1478,6 +1610,7 @@ export default defineTool({
       channel,
       sourceSha: args.sourceSha,
       legs,
+      seedMode: seedMode.mode,
       root: selected.desktopRoot,
       orchestratorRoot,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),

@@ -91,13 +91,35 @@ export function installPopupLayoutProbe() {
   for (const key of ['getBoundingClientRect', 'getClientRects', 'scrollIntoView', 'clientWidth', 'clientHeight', 'scrollHeight']) observe(Element.prototype, key);
   for (const key of ['offsetWidth', 'offsetHeight', 'focus', 'innerText']) observe(HTMLElement.prototype, key);
   observe(CSSStyleDeclaration.prototype, 'animationName');
+  const proxyAnimationName = !observed.includes('animationName');
+  if (proxyAnimationName) observed.push('animationName-proxy');
   const originalGetComputedStyle = window.getComputedStyle;
   window.getComputedStyle = ((element: Element, pseudoElt?: string | null) => {
     const at = performance.now();
     try {
       const styles = originalGetComputedStyle.call(window, element, pseudoElt);
       styleTargets.set(styles, targetName(element));
-      return styles;
+      // WebKit can expose CSS properties through its native style object
+      // without a configurable JavaScript prototype getter. Read with the
+      // original receiver so its brand checks and native methods still work.
+      if (!proxyAnimationName) return styles;
+      const methods = new Map<PropertyKey, Function>();
+      return new Proxy(styles, {
+        get(target, key) {
+          if (key === 'animationName') {
+            const at = performance.now();
+            try { return Reflect.get(target, key, target); }
+            finally {
+              const ms = performance.now() - at;
+              if (ms >= 10) records.push({ api: 'animationName', ms, at, target: styleTargets.get(target), stack: new Error().stack?.slice(0, 1600) });
+            }
+          }
+          const value = Reflect.get(target, key, target);
+          if (typeof value !== 'function') return value;
+          if (!methods.has(key)) methods.set(key, value.bind(target));
+          return methods.get(key);
+        },
+      });
     } finally {
       const ms = performance.now() - at;
       if (ms >= 10) records.push({ api: 'getComputedStyle', ms, at, target: targetName(element), stack: new Error().stack?.slice(0, 1600) });

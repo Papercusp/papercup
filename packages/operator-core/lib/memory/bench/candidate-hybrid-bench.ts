@@ -138,7 +138,11 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     const started = performance.now();
     for (const entry of entries) vectors.push(await doc(entry.text));
     const documentMs = performance.now() - started;
-    await store.insert(vectors, entries.map((e) => e.key), entries.map((e) => ({ data: e.text, name: e.description ?? e.key,
+    const ids = entries.map((e) => {
+      const hash = crypto.createHash('sha256').update(e.key).digest('hex').slice(0, 32);
+      return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`;
+    });
+    await store.insert(vectors, ids, entries.map((e) => ({ data: e.text, name: e.description ?? e.key,
       user_id: 'bench', metadata: { ...e.metadata, corpus_key: e.key }, createdAt: new Date().toISOString() })));
     const canonical = store;
     // The production precomputed-vector rung needs no extraction client or
@@ -179,7 +183,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     console.log(JSON.stringify({ model: opts.model, corpus: opts.corpus, docs: entries.length, heldout: rows.length, floor, out: opts.out }));
     return report;
   } finally {
-    await store?.close();
+    await store?.dispose();
     await releaseBenchSchema(db, schema);
     await db.end();
     await shutdownLocalEmbedder();

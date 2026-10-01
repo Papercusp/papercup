@@ -3002,6 +3002,8 @@ The file lock is the whole fence, in the superproject and in every submodule. Do
 
 `--accept-sweep-race` is only for a checkout known not to be swept or a consciously accepted risk. Prefer copy-out mode, which has no dirty window at all.
 
+⚠ **The dirty window is visible to PEERS, not only to you.** A peer's raw `test:file` / `test:affected` in this checkout can read the mutant and report a red with zero connection to their change (measured twice, EI-18750303030034478). While a probe's `original.manifest` exists, a failing raw run prints `TEST_FILE_MUTATION_PROBE_WINDOW` naming the subject: treat a red on that file (or one importing it) as probe evidence and re-run in isolation after the window closes; `testing:run` instead refuses tests that may observe it (`mutation_probe_active`). Copy-out mode has no such window.
+
 
 ⚠ **A `trap` alone does NOT restore promptly — bash will not run a trap handler while
 waiting on a FOREGROUND child.** Measured 2026-08-03: a SIGTERM during a 25s guard

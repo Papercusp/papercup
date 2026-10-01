@@ -29,6 +29,7 @@ import {
   type HostedWorkspaceConnectorGateway,
 } from '../../hosted-workspace-connector';
 import { PORTAL_RELAY_NOTICE } from '../../../remote-access/relay-notice';
+import { isSameOriginFormPost } from '../../same-origin-form-post';
 import { RELAY_INSTALL_ID_RE, type HostedCliStore, type HostedCliToken } from './store';
 import { parseHostedPsuCustomerArgv } from '../../../workspace-host/hosted-psu-session';
 
@@ -162,18 +163,6 @@ input{text-transform:uppercase;letter-spacing:.15em}
       'referrer-policy': 'same-origin',
     },
   });
-}
-
-/**
- * CSRF guard for the browser form post. The exact portal Origin is the normal case. A browser
- * whose own privacy setting forces a no-referrer policy still sends `Origin: null`; Fetch Metadata
- * (`Sec-Fetch-Site`, browser-set and not forgeable by a page) then proves the post came from a
- * same-origin document. A cross-site or sandboxed-opaque initiator reports `cross-site`.
- */
-function isSameOriginFormPost(headers: Headers, origin: string): boolean {
-  const requestOrigin = headers.get('origin');
-  if (requestOrigin === origin) return true;
-  return requestOrigin === 'null' && headers.get('sec-fetch-site') === 'same-origin';
 }
 
 function randomString(random: (size: number) => Uint8Array, size: number): string {

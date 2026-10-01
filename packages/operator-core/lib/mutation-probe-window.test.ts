@@ -115,24 +115,61 @@ describe('the marker contract is pinned to scripts/mutation-probe.sh (EI-1875030
   });
 });
 
+/**
+ * The wiring predicates are pure functions of the source TEXT so each can be proven falsifiable with an
+ * in-memory mutant (the "module/logic you import" tier of CLAUDE.md's falsifiability table): nothing
+ * here ever mutates the shared tree, and the real file must pass while each mutant must be caught.
+ */
+const FAILED_EMISSION = 'errSync(resultLine("failed"));';
+
+/** 1-based lines of a failing `AFFECTED_TESTS_RESULT` emission NOT immediately preceded by the annotation. */
+function unannotatedFailedEmissions(text: string): { count: number; unannotated: number[] } {
+  const lines = text.split('\n');
+  const sites = lines.flatMap((line, index) => (line.trim() === FAILED_EMISSION ? [index] : []));
+  return {
+    count: sites.length,
+    unannotated: sites.filter((index) => lines[index - 1]?.trim() !== 'emitMutationProbeWindow();').map((i) => i + 1),
+  };
+}
+
+/** How many pre/post-run reads + stderr prints the router carries (both must be present). */
+function routerWindowWiring(text: string): { reads: number; prints: number } {
+  return {
+    reads: text.match(/readMutationProbeWindow\(REPO_ROOT\)/g)?.length ?? 0,
+    prints: text.match(/console\.error\(formatMutationProbeWindow\(probeWindow(?:Before|After), REPO_ROOT\)\)/g)?.length ?? 0,
+  };
+}
+
 describe('every failing verdict path on the raw runners carries the annotation (EI-18750303030034478)', () => {
-  it('affected-tests.mjs emits the window immediately before EACH `AFFECTED_TESTS_RESULT status=failed` line', () => {
-    const text = readFileSync(join(REPO, 'scripts/affected-tests.mjs'), 'utf8');
-    const lines = text.split('\n');
-    const failedEmissions = lines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) => line.trim() === 'errSync(resultLine("failed"));');
-    // The two real failure exits (undetermined-only, and failed>0). A THIRD one added later without
-    // the annotation must fail here rather than silently re-open the unattributable-red class.
-    expect(failedEmissions.length).toBeGreaterThanOrEqual(2);
-    for (const { index } of failedEmissions) {
-      expect(lines[index - 1].trim(), `line ${index + 1}`).toBe('emitMutationProbeWindow();');
-    }
+  const affected = readFileSync(join(REPO, 'scripts/affected-tests.mjs'), 'utf8');
+  const router = readFileSync(join(REPO, 'scripts/test-files.mjs'), 'utf8');
+
+  it('affected-tests.mjs emits the window immediately before EACH failing `AFFECTED_TESTS_RESULT` line', () => {
+    const real = unannotatedFailedEmissions(affected);
+    // The two real failure exits (undetermined-only, and failed>0): a vacuous scan of zero sites must
+    // not read as "all annotated".
+    expect(real.count).toBeGreaterThanOrEqual(2);
+    expect(real.unannotated).toEqual([]);
   });
 
-  it('test-files.mjs reads the window both before and after the run, and prints it to stderr', () => {
-    const text = readFileSync(join(REPO, 'scripts/test-files.mjs'), 'utf8');
-    expect(text.match(/readMutationProbeWindow\(REPO_ROOT\)/g)?.length).toBe(2);
-    expect(text.match(/console\.error\(formatMutationProbeWindow\(probeWindow(Before|After), REPO_ROOT\)\)/g)?.length).toBe(2);
+  it('CONTROL: the predicate catches an annotation removed from a real failure site', () => {
+    const mutant = affected.replace('  emitMutationProbeWindow();\n  errSync(resultLine("failed"));', '  errSync(resultLine("failed"));');
+    expect(mutant).not.toBe(affected); // a no-op mutation would make any guard look weak
+    expect(unannotatedFailedEmissions(mutant).unannotated).toHaveLength(1);
+  });
+
+  it('CONTROL: the predicate catches a NEW failing verdict path added without the annotation', () => {
+    const mutant = `${affected}\n  ${FAILED_EMISSION}\n`;
+    expect(unannotatedFailedEmissions(mutant).unannotated).toHaveLength(1);
+  });
+
+  it('test-files.mjs reads the window both before and after the run, and prints each to stderr', () => {
+    expect(routerWindowWiring(router)).toEqual({ reads: 2, prints: 2 });
+  });
+
+  it('CONTROL: the router predicate catches a dropped pre-run or post-run read', () => {
+    const dropped = router.replace('const probeWindowAfter = readMutationProbeWindow(REPO_ROOT);', 'const probeWindowAfter = null;');
+    expect(dropped).not.toBe(router);
+    expect(routerWindowWiring(dropped)).not.toEqual({ reads: 2, prints: 2 });
   });
 });

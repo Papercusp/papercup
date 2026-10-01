@@ -30,7 +30,10 @@ case "$mode" in
       exit 2
     fi
     if probe_admission_owner_alive; then
-      exec bwrap --bind / / --ro-bind "${PROBE_ADMISSION_FIELDS[2]}" "${PROBE_ADMISSION_FIELDS[1]}" --proc /proc --dev /dev -- "$@"
+      # --dev /dev mounts an empty /dev/shm: re-bind the host's (TMPDIR may live there), then
+      # overlay the subject LAST so no later mount shadows it.
+      exec bwrap --bind / / --proc /proc --dev /dev --bind-try /dev/shm /dev/shm \
+        --ro-bind "${PROBE_ADMISSION_FIELDS[2]}" "${PROBE_ADMISSION_FIELDS[1]}" -- "$@"
     fi
     : > "$recovery_marker"
     exit 0

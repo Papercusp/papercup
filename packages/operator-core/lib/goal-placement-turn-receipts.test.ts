@@ -10,7 +10,7 @@ import {
   type GoalPlacementTurnReceiptDeps,
   recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
-  type GoalPlacementAdmissionObservation,
+  type GoalPlacementAdmissionObservation, noProgressAge,
 } from './goal-placement-turn-receipts';
 import type { GovernorStateSnapshot } from './resource-governor/state-snapshot';
 
@@ -244,6 +244,18 @@ describe('native turn-end policy observation', () => {
     expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEnd: expect.objectContaining({
       rows: [expect.objectContaining({ status: 'unknown', actionKind: 'inspect',
         measurementFailure: { code: 'exact-plan-admission-unavailable', detail: 'the exact-plan preflight was not measured' } })] }) } }));
+  });
+  it('projects the derived no-progress age and its anchor, and leaves an unmeasured age absent', async () => {
+    const f = endFixture();
+    const aged = { ...row, ageMs: 90_000 };
+    f.deps.agenda = vi.fn(async () => ({ goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
+      agenda: { evaluations: [aged] } }) as AgentObligationAgendaRead);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+    const rows = (f.deps.append as ReturnType<typeof vi.fn>).mock.calls[0][0].detail.goalPlacementTurnEnd.rows;
+    expect(rows[0]).toMatchObject({ noProgressAgeMs: 90_000, noProgressSince: new Date(at(4).getTime() - 90_000).toISOString() });
+    expect(noProgressAge(undefined, at(4).toISOString())).toEqual({});
+    expect(noProgressAge(-1, at(4).toISOString())).toEqual({});
+    expect(noProgressAge(5, 'not-a-time')).toEqual({});
   });
   it('binds admission evidence to the pending token without claiming it was delivered', async () => {
     const f = endFixture();

@@ -22,15 +22,35 @@ vi.mock('../pot/started', () => ({
 }));
 const { wakeMug } = vi.hoisted(() => ({ wakeMug: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
-vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
-// Only the coverage probe is faked; every other ungraded-scope export stays real, so a
-// default of 0 leaves the pre-existing suites reading exactly as they did before.
-const { outsideScopes } = vi.hoisted(() => ({
+const { claimWatchdogFire } = vi.hoisted(() => ({
+  claimWatchdogFire: vi.fn<(...args: never[]) => Promise<boolean>>(),
+}));
+vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn(), claimWatchdogFire }));
+// A call-through spy on the ladder: the REAL deliverScoutNudge still runs (the existing
+// wakeMug assertions depend on it), and the options the watchdog passes are observable.
+const { deliverSpy } = vi.hoisted(() => ({ deliverSpy: vi.fn() }));
+vi.mock('./nudge-recipient', async (orig) => {
+  const real = await orig<typeof import('./nudge-recipient')>();
+  deliverSpy.mockImplementation(real.deliverScoutNudge);
+  return { ...real, deliverScoutNudge: deliverSpy };
+});
+// The presence read inside the real nudge ladder would otherwise receive the shared
+// `sql` mock's filing rows as presence rows; an empty roster routes to escalate.
+vi.mock('../agent-tools/coordination/presence', async (orig) => ({
+  ...(await orig<typeof import('../agent-tools/coordination/presence')>()),
+  listPresence: vi.fn(async () => []),
+}));
+// Only the coverage probe and the arrival count are faked; every other ungraded-scope
+// export stays real. Defaults (0 uncovered, no arrivals) leave the pre-existing suites
+// reading exactly as they did before.
+const { outsideScopes, routedSince } = vi.hoisted(() => ({
   outsideScopes: vi.fn<(...args: never[]) => Promise<number>>(),
+  routedSince: vi.fn<(...args: never[]) => Promise<Map<string, number>>>(),
 }));
 vi.mock('./ungraded-scope', async (orig) => ({
   ...(await orig<typeof import('./ungraded-scope')>()),
   countActionableUngradedOutsideScopes: outsideScopes,
+  countRoutedByOriginSince: routedSince,
 }));
 
 import { listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds } from '../pot/started';
@@ -44,7 +64,9 @@ import {
   fireGradingNudge,
   SU_IDEATE_UNGRADED_EPOCH_MS,
   UNGRADED_BATCH_CAP,
+  UNGRADED_BATCH_MAX,
   UNGRADED_NUDGE_SOURCE,
+  ungradedBatchCapFor,
   type UngradedCandidate,
 } from './ungraded-filings-watchdog';
 import {
@@ -61,6 +83,8 @@ afterEach(() => {
   vi.mocked(listBlenderMaintenanceScopes).mockReset();
   vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReset().mockReturnValue([]);
   outsideScopes.mockReset().mockResolvedValue(0);
+  routedSince.mockReset().mockResolvedValue(new Map());
+  claimWatchdogFire.mockReset().mockResolvedValue(true);
 });
 
 function filing(ideaId: string, ageDays: number, origin = 'su-ideate'): UngradedCandidate {
@@ -144,6 +168,87 @@ describe('D-013 flood guards (the backfilled corpus must not flood triage)', () 
     expect(SU_IDEATE_UNGRADED_EPOCH_MS).toBe(Date.parse('2026-07-11T00:00:00Z'));
     const stale = { ...filing('backfill', 999), routedAtMs: SU_IDEATE_UNGRADED_EPOCH_MS - 1 };
     expect(selectUngradedFilings([stale], { now: Date.now(), thresholdMs: 7 * DAY })).toEqual([]);
+  });
+});
+
+/**
+ * WI-10004412 — the capacity model. A fixed 10 filings per 2-day window lost to its own
+ * inflow (agent-review: 78 arrivals in the last 2 days, 392 in 14, measured 2026-09-30),
+ * so the backlog could only grow even with every batch graded.
+ */
+describe('ungradedBatchCapFor (WI-10004412 capacity model)', () => {
+  it('tracks the arrival rate between the floor and the ceiling', () => {
+    expect(ungradedBatchCapFor(78)).toEqual({ cap: 78, shortfall: 0 });
+  });
+
+  it('a quiet producer still gets the floor batch of its oldest rows', () => {
+    expect(ungradedBatchCapFor(0)).toEqual({ cap: UNGRADED_BATCH_CAP, shortfall: 0 });
+    expect(ungradedBatchCapFor(3)).toEqual({ cap: UNGRADED_BATCH_CAP, shortfall: 0 });
+  });
+
+  it('caps at the ceiling and REPORTS the arrivals it cannot absorb', () => {
+    expect(ungradedBatchCapFor(UNGRADED_BATCH_MAX + 25)).toEqual({ cap: UNGRADED_BATCH_MAX, shortfall: 25 });
+  });
+
+  it('a failed measurement yields the floor, never a guess', () => {
+    expect(ungradedBatchCapFor(Number.NaN)).toEqual({ cap: UNGRADED_BATCH_CAP, shortfall: 0 });
+    expect(ungradedBatchCapFor(-1)).toEqual({ cap: UNGRADED_BATCH_CAP, shortfall: 0 });
+  });
+});
+
+describe('the sweep sizes each origin batch from its arrivals (WI-10004412)', () => {
+  const scope = [{ workspaceId: 'ws-1', installSlug: 'papercusp' }];
+  const at = DEFAULT_UNGRADED_EPOCH_POLICY.fallbackMs + 60 * DAY;
+  /** `n` stale agent-review rows in the shape readActionableUngradedFilings reads. */
+  const staleRows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      idea_id: `ar-${i}`,
+      origin: 'agent-review',
+      title: null,
+      routed_ref: `wi:ar-${i}`,
+      routed_at: DEFAULT_UNGRADED_EPOCH_POLICY.fallbackMs + DAY + i,
+    }));
+
+  it('REGRESSION: names as many filings as arrived in the window, not a fixed 10', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(scope);
+    dbRows.current = staleRows(80);
+    routedSince.mockResolvedValue(new Map([['agent-review', 60]]));
+    deliverSpy.mockClear();
+
+    const result = await ungradedFilingsSweep({ now: at });
+
+    expect(result).toEqual([
+      expect.objectContaining({ origin: 'agent-review', outcome: 'nudged', batchCap: 60, arrivalsInWindow: 60, staleCount: 60 }),
+    ]);
+    const payload = (deliverSpy.mock.calls[0]?.[0] as { payload: { ideaIds: string[]; arrivalsInWindow: number } }).payload;
+    expect(payload.ideaIds).toHaveLength(60);
+    expect(payload.arrivalsInWindow).toBe(60);
+  });
+
+  it('a failed arrival read falls back to the floor and still nudges', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce(scope);
+    dbRows.current = staleRows(30);
+    routedSince.mockRejectedValue(new Error('count exploded'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await ungradedFilingsSweep({ now: at });
+
+    expect(result).toEqual([
+      expect.objectContaining({ outcome: 'nudged', batchCap: UNGRADED_BATCH_CAP, arrivalsInWindow: null, staleCount: UNGRADED_BATCH_CAP }),
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('arrival read failed'));
+    warn.mockRestore();
+  });
+
+  it('surfaces a capacity shortfall in the nudge when arrivals exceed the ceiling', async () => {
+    deliverSpy.mockClear();
+    await fireGradingNudge('ws-1', null, [filing('ar-s', 10, 'agent-review')], 172_800, 'pot-1', 'agent-review', {
+      arrivalsInWindow: UNGRADED_BATCH_MAX + 40,
+      shortfall: 40,
+    });
+    const opts = deliverSpy.mock.calls[0]?.[0] as { summary: string; payload: { capacityShortfall: number } };
+    expect(opts.summary).toContain('CAPACITY SHORTFALL');
+    expect(opts.payload.capacityShortfall).toBe(40);
   });
 });
 
@@ -432,6 +537,13 @@ describe('per-origin behaviour (P-001)', () => {
     expect(UNGRADED_NUDGE_SOURCE).toBe('su-ideate-ungraded');
     expect(ungradedFireScopeKey('agent-review')).not.toBe(ungradedFireScopeKey('su-ideate'));
     expect(ungradedFireScopeKey('agent-review')).toContain('agent-review');
+  });
+
+  it('asks the ladder to wake only a grading-posture recipient', async () => {
+    // WI-10004412: inject-only delivery never started a turn for anyone. A recipient
+    // whose posture is grading must be woken; the policy keeps the recency fallback FYI.
+    await fireGradingNudge('ws-1', null, [filing('ar-w', 10, 'agent-review')], 604_800, 'pot-1');
+    expect(deliverSpy).toHaveBeenCalledWith(expect.objectContaining({ wakeSu: 'grading-posture' }));
   });
 
   it('names the actual origin in the nudge it fires', async () => {

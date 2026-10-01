@@ -326,8 +326,15 @@ export function HostedWorkspaceSession({
       requestThumbnail: requestDesktopThumbnail,
       requestStart: requestDesktopStart,
     }),
-    [requestDesktopRoster, requestDesktopThumbnail, requestDesktopStart],
+    [requestDesktopRoster, requestDesktopThumbnail, requestDesktopStart, role],
   );
+
+  useEffect(() => {
+    if (status !== "live") return;
+    // The parent auto-starts when the roster is empty. Publish a new bridge
+    // when the tab role changes so that effect can retry after control arrives.
+    callbackRefs.current.onDesktopBridgeChange?.(desktopBridge);
+  }, [desktopBridge, status]);
 
   const dispose = useCallback((notify = true) => {
     connectEpochRef.current += 1;
@@ -522,7 +529,6 @@ export function HostedWorkspaceSession({
         uploadLimitsRef.current = event.limits ?? null;
         setMeta((current) => ({ ...current, resumed: event.resumed }));
         setStatus("live");
-        callbackRefs.current.onDesktopBridgeChange?.(desktopBridge);
         setNotice(
           event.resumed ? "Detached session resumed." : "New session ready.",
         );

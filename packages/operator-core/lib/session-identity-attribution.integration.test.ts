@@ -15,6 +15,8 @@ import { recordCurrentSessionIdentityActivation } from './session-identity-attri
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
 const carryMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1177-identity-usage-carry-correlation.sql');
+// WI-10004451: the same attribution rule, evaluated without a per-row window recompute.
+const indexedSpansMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1275-identity-attribution-indexed-spans.sql');
 // The activation transaction fences the wearer's applied package installations
 // (control-anchor -> applySessionPackageResources), so it reads this table even
 // when the compiled artifact journals no package.
@@ -44,9 +46,17 @@ beforeAll(async () => {
       id bigint PRIMARY KEY, workspace_id text NOT NULL,
       coord_owner_id text, invoked_at timestamptz NOT NULL
     );
+    -- The real table's column prefix, in order: 1177 selected u.* and 1275
+    -- names these columns explicitly, so the two agree only on this shape.
     CREATE TABLE harness_shared.agent_usage_samples (
-      id bigint PRIMARY KEY, workspace_id text NOT NULL,
-      session_id text, ts bigint NOT NULL
+      id bigint PRIMARY KEY, workspace_id text NOT NULL, ts bigint NOT NULL,
+      bucket_key text, provider text, model_class text, source text,
+      input_tokens bigint, output_tokens bigint, cache_read_tokens bigint,
+      cost_usd double precision, rl_requests_limit bigint, rl_requests_remaining bigint,
+      rl_tokens_limit bigint, rl_tokens_remaining bigint, rl_reset_at bigint,
+      model text, cost_source text, harness_slug text, run_id text, role text,
+      cache_creation_tokens bigint, turn_count integer, session_id text,
+      tool_name text, turn_trigger text, account_id text, goal_id text
     );
     CREATE TABLE harness_shared.session_archives (
       adv_session_id bigint, session_id text NOT NULL
@@ -73,6 +83,7 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, migration);
   await applyMigrationForTest(db.sql, carryMigration);
+  await applyMigrationForTest(db.sql, indexedSpansMigration);
   await db.sql.unsafe(`
     DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
     DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
@@ -132,7 +143,7 @@ describe('P-009 activation span views', () => {
       (11,${WS},${OWNER},'2026-09-09T00:03:30Z'),
       (12,${WS},${OWNER},'2026-09-09T00:04:30Z'),
       (13,${WS},${OWNER},'2026-09-09T00:05:30Z')`;
-    await db.sql`INSERT INTO harness_shared.agent_usage_samples VALUES
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts) VALUES
       (21,${WS},'native-old',${ms('2026-09-09T00:03:30Z')}),
       (22,${WS},'native-a',${ms('2026-09-09T00:06:30Z')}),
       (23,${WS},'native-carry-successor',${ms('2026-09-09T00:03:45Z')})`;
@@ -205,7 +216,7 @@ describe('P-009 activation span views', () => {
       ('default','agent_chat','carry-chat',${owner}),
       ('default','codex','carry-ambiguous',${owner}),
       ('default','codex','carry-ambiguous','another-owner')`;
-    await db.sql`INSERT INTO harness_shared.agent_usage_samples VALUES
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts) VALUES
       (901,${WS},'carry-middle',${ms('2026-09-10T00:03:00Z')}),
       (902,${WS},'carry-middle',${ms('2026-09-10T00:00:30Z')}),
       (903,${WS},'carry-middle',${ms('2026-09-10T00:04:00Z')}),
@@ -247,10 +258,92 @@ describe('P-009 activation span views', () => {
       expect(positiveControl).toEqual({ identity_transition_id: 'carry-applied' });
     } finally {
       await applyMigrationForTest(db.sql, carryMigration);
+      await applyMigrationForTest(db.sql, indexedSpansMigration);
     }
     // The repaired view restores the historical sample without weakening the
     // pending/revocation, workspace, source-kind, or ambiguous-owner exclusions.
     expect(await read()).toEqual(expected);
+  });
+
+  // WI-10004451: 1177 re-derived the windowed spans view once per sample row, so one
+  // hour of production samples exceeded 30s. 1275 evaluates the same rule as two
+  // indexed candidate sets. This pins it to the rule it replaced: the rows are read
+  // under 1275, then under the real 1149+1177 definitions, and must match on the
+  // shapes the carry fixture lacks (two span partitions for one owner, an
+  // equal-timestamp tie, a span cut by its session's end, keyless samples, and a
+  // session key reached while a different single owner holds the transcript).
+  it('evaluates the 1177 attribution rule without a per-row window (WI-10004451)', async () => {
+    const owner = 'su-indexed-spans';
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (70,${WS},${owner},'idx-native-1','2026-09-11T00:00:00Z','2026-09-11T00:30:00Z'),
+      (71,${WS},${owner},'idx-native-2','2026-09-11T00:10:00Z',NULL)`;
+    const applied = (row: { gen: number; session: string; adv: number; native: string; transition: string; at: string }) => db.sql`
+      INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      VALUES (${WS},${owner},${owner},'principal-idx',${row.session},${row.adv},${row.native},
+        ${row.transition},${row.gen},'applied','control',${SPEC_A},${`state-${row.transition}`},'[]',${row.at}::timestamptz)`;
+    await applied({ gen: 1, session: 'idx-p1', adv: 70, native: 'idx-native-1', transition: 'idx-1', at: '2026-09-11T00:01:00Z' });
+    await applied({ gen: 2, session: 'idx-p2', adv: 71, native: 'idx-native-2', transition: 'idx-2', at: '2026-09-11T00:10:00Z' });
+    await applied({ gen: 3, session: 'idx-p2', adv: 71, native: 'idx-native-2', transition: 'idx-3', at: '2026-09-11T00:20:00Z' });
+    await applied({ gen: 4, session: 'idx-p2', adv: 71, native: 'idx-native-2', transition: 'idx-4', at: '2026-09-11T00:20:00Z' });
+    await applied({ gen: 5, session: 'idx-p1', adv: 70, native: 'idx-native-1', transition: 'idx-5', at: '2026-09-11T00:40:00Z' });
+    // idx-native-1 has one transcript owner (the owner path); idx-native-2 has none
+    // (keys only); idx-two-owners has two owners and no keys. idx-archived-cross is
+    // archived under adv 71 while ANOTHER single owner holds its transcript: the owner
+    // veto guards only the owner path, so 1177 still attributes it through the key.
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES
+      ('default','claude','idx-native-1',${owner}),
+      ('default','claude','idx-two-owners',${owner}),
+      ('default','claude','idx-two-owners','another-owner'),
+      ('default','claude','idx-archived-cross','another-owner')`;
+    await db.sql`INSERT INTO harness_shared.session_archives VALUES (71,'idx-archived-cross')`;
+    let id = 800;
+    const samples: Array<[number, string | null, number]> = [];
+    for (const session of ['idx-native-1', 'idx-native-2', 'idx-two-owners', null, 'idx-archived-cross']) {
+      for (const at of ['00:00:30', '00:05:00', '00:15:00', '00:20:00', '00:25:00', '00:35:00', '00:45:00']) {
+        samples.push([id++, session, ms(`2026-09-11T${at}Z`)]);
+      }
+    }
+    for (const [sampleId, session, ts] of samples) {
+      await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts)
+        VALUES (${sampleId},${WS},${session},${ts})`;
+    }
+    const read = () => db.sql<Array<Record<string, unknown>>>`
+      SELECT id::text, identity_activation_event_id::text, identity_owner_id, identity_session_id,
+             identity_transition_id, identity_state_revision, identity_stack_refs
+        FROM harness_shared.agent_usage_samples_identity_attribution
+       WHERE id BETWEEN 800 AND ${id - 1} ORDER BY id`;
+    const planOf = async () => JSON.stringify(await db.sql.unsafe(
+      'EXPLAIN (FORMAT JSON) SELECT * FROM harness_shared.agent_usage_samples_identity_attribution WHERE id = 815'));
+
+    const indexed = await read();
+    expect(await planOf()).not.toContain('WindowAgg');
+    // Non-vacuous: owner path, key path, the tie's later event, both partitions,
+    // and the cross-owner key the owner veto must not block.
+    const transitionAt = (sampleId: number) => indexed.find((row) => row.id === String(sampleId))?.identity_transition_id;
+    expect(transitionAt(802)).toBe('idx-2');   // idx-native-1 00:15: latest-started X span
+    expect(transitionAt(803)).toBe('idx-4');   // tie at 00:20: the later id wins
+    expect(transitionAt(805)).toBe('idx-4');   // 00:35: p1 ended with adv 70, p2 still open
+    expect(transitionAt(806)).toBe('idx-4');   // 00:45: idx-5 opened after its session ended
+    expect(transitionAt(809)).toBe('idx-2');   // idx-native-2 (keys only) 00:15
+    expect(transitionAt(801)).toBe('idx-1');   // idx-native-1 00:05: owner path reaches p1
+    expect(transitionAt(808)).toBeNull();      // idx-native-2 00:05: its keys reach only p2
+    expect(indexed.filter((row) => Number(row.id) >= 814 && Number(row.id) <= 827)
+      .every((row) => row.identity_transition_id === null)).toBe(true);
+    expect(transitionAt(828)).toBeNull();      // idx-archived-cross 00:00:30: before p2
+    expect(transitionAt(830)).toBe('idx-2');   // 00:15: archive key, despite another owner
+    expect(transitionAt(831)).toBe('idx-4');   // 00:20
+
+    await applyMigrationForTest(db.sql, migration);
+    await applyMigrationForTest(db.sql, carryMigration);
+    try {
+      // Positive control for the plan assertion: the predecessor does window per row.
+      expect(await planOf()).toContain('WindowAgg');
+      expect(await read()).toEqual(indexed);
+    } finally {
+      await applyMigrationForTest(db.sql, indexedSpansMigration);
+    }
   });
 
   // EI-23703586803892464, the measured shape: a sibling launch record minted

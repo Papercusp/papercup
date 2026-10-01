@@ -109,6 +109,10 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       PAPERCUSP_SKIP_SEED_CUT: '1',
       PAPERCUSP_SKIP_MOBILE: '1',
     });
+    expect(buildCutEnv({}, sourceSha, { ownerName: 'Avi', seedless: true }))
+      .toHaveProperty('PAPERCUSP_SKIP_SEED_CUT', '1');
+    expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', reuseSeed: true, seedless: true }))
+      .toThrow(/seed_mode_conflict/);
   });
 
   // EI-23917342543376581. The env below is an explicit ALLOWLIST rendered onto a
@@ -200,6 +204,20 @@ describe('buildCutArgv', () => {
     expect(inner).not.toMatch(/gh release/);
     expect(inner).not.toMatch(/push origin/);
     expect(inner).not.toContain('PAPERCUSP_PUBLISH_GITHUB=1');
+  });
+  it('seedless skips seed cutting without applying retry-only version restoration', () => {
+    const seedlessArgv = buildCutArgv(
+      '/root/papercusp-desktop',
+      '0.0.8',
+      'alpha',
+      {},
+      sourceSha,
+      '/usr/bin:/bin',
+      { ownerName: 'Avi', seedless: true },
+    );
+    const seedlessInner = seedlessArgv[seedlessArgv.length - 1];
+    expect(seedlessInner).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
+    expect(seedlessInner).not.toContain('git restore -- package.json');
   });
 });
 

@@ -30,33 +30,15 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, createWriteStream } from 'node:fs';
-// Copy/remove checkouts with a SPAWNED native cp/rm: the replay server shares this event loop,
-// so a synchronous copy of a 1.2 GB checkout starves every running agent's model replies
-// (first smoke run: zero requests served while a second slot copied), and fs.promises.cp
-// walks the ~300k-file node_modules in JS at ~1.5 MB/s under load (second smoke run).
-function run(cmd: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let err = '';
-    p.stderr.on('data', (d: Buffer) => (err += d.toString()));
-    p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${err.slice(0, 500)}`))));
-  });
-}
-const cp = async (src: string, dst: string) => {
-  mkdirSync(path.dirname(dst), { recursive: true });
-  await run('cp', ['-a', '--reflink=auto', src, dst]);
-};
-const rm = (p: string) => run('rm', ['-rf', '--', p]);
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, type Corpus, type SessionMeta } from './record-session';
+// Checkouts are copied/removed with SPAWNED native cp/rm (see session-process.ts): the replay
+// server shares this event loop with every running agent's model replies.
+import { copyTree as cp, parseCgroupStats, removeTree as rm, sessionSpawn, type Isolation } from './session-process';
 
 const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
-export const STATS_MARKER = 'CAPDRV_CGROUP';
-
-export type Isolation = 'systemd' | 'none';
 
 export interface AgentRun {
   runId: string;
@@ -107,38 +89,6 @@ export function sessionFor(sessions: SessionMeta[], slot: number, iteration: num
   return sessions[(slot + iteration) % sessions.length];
 }
 
-/** Parse the epilogue line the wrapper appends: `CAPDRV_CGROUP peak=<bytes> usage_usec=<n>`. */
-export function parseCgroupStats(text: string): { memPeakBytes: number | null; cpuUsec: number | null } {
-  const line = text.split('\n').reverse().find((l) => l.startsWith(STATS_MARKER));
-  if (!line) return { memPeakBytes: null, cpuUsec: null };
-  const num = (k: string) => {
-    const m = new RegExp(`\\b${k}=(\\d+)`).exec(line);
-    return m ? Number(m[1]) : null;
-  };
-  return { memPeakBytes: num('peak'), cpuUsec: num('usage_usec') };
-}
-
-/**
- * Wrap the CLI so the unit reports its own cgroup's peak memory and CPU before exiting, then
- * exits with the CLI's status. Runs inside `systemd-run`, so `/proc/self/cgroup` is the unit's.
- */
-export function wrapperScript(statsFile: string): string {
-  return [
-    '"$@"',
-    'rc=$?',
-    'cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)',
-    `printf '${STATS_MARKER} peak=%s usage_usec=%s\\n' "$(cat "$cg/memory.peak" 2>/dev/null)" "$(awk '/^usage_usec/{print $2}' "$cg/cpu.stat" 2>/dev/null)" >> "${statsFile}"`,
-    'exit $rc',
-  ].join('\n');
-}
-
-export function systemdRunArgs(unit: string, workDir: string, env: Record<string, string>, statsFile: string, argv: string[]): string[] {
-  const out = ['--user', '--wait', '--pipe', '--collect', '--quiet', `--unit=${unit}`, '--slice=capdrv.slice', `--working-directory=${workDir}`];
-  // A multi-line value (an exported shell function, a pasted key) cannot pass through --setenv.
-  for (const [k, v] of Object.entries(env)) if (!/[\n\r]/.test(v) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) out.push(`--setenv=${k}=${v}`);
-  out.push('bash', '-c', wrapperScript(statsFile), 'capdrv', ...argv);
-  return out;
-}
 
 export function loadMetas(corpusDir: string): SessionMeta[] {
   const out: SessionMeta[] = [];
@@ -193,15 +143,14 @@ async function runOne(o: {
   const t0 = Date.now();
   let timedOut = false;
   const exitCode = await new Promise<number | null>((resolve) => {
-    const [cmd, args] =
-      o.isolation === 'systemd' ? ['systemd-run', systemdRunArgs(`capdrv-${instance}`, workDir, env, statsFile, argv)] : [argv[0], argv.slice(1)];
-    const child = spawn(cmd, args, { cwd: workDir, env: o.isolation === 'systemd' ? process.env : env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const s = sessionSpawn(o.isolation, `capdrv-${instance}`, workDir, env, statsFile, argv, process.env);
+    const child = spawn(s.cmd, s.args, { cwd: workDir, env: s.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(createWriteStream(`${logBase}.cli.jsonl`));
     child.stderr.pipe(createWriteStream(`${logBase}.stderr.log`));
     const limitMs = o.corpus.timeoutSec[meta.task.profile] * 1000;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (o.isolation === 'systemd') spawn('systemctl', ['--user', 'kill', '--signal=SIGTERM', `capdrv-${instance}.service`], { stdio: 'ignore' });
+      if (s.killArgs) spawn('systemctl', s.killArgs, { stdio: 'ignore' });
       try {
         process.kill(-child.pid!, 'SIGTERM');
       } catch {}

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { drive, parseCgroupStats, selectSessions, sessionFor, summarize, systemdRunArgs, wrapperScript, STATS_MARKER } from './load-driver';
+import { drive, selectSessions, sessionFor, summarize } from './load-driver';
 
 function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
   const repo = over.repo ?? 'r';
@@ -55,49 +55,7 @@ describe('selection and scheduling', () => {
   });
 });
 
-describe('cgroup accounting', () => {
-  it('parses the last epilogue line and tolerates a missing value', () => {
-    expect(parseCgroupStats(`noise\n${STATS_MARKER} peak=1048576 usage_usec=2500000\n`)).toEqual({ memPeakBytes: 1048576, cpuUsec: 2500000 });
-    expect(parseCgroupStats(`${STATS_MARKER} peak= usage_usec=7\n`)).toEqual({ memPeakBytes: null, cpuUsec: 7 });
-    expect(parseCgroupStats('')).toEqual({ memPeakBytes: null, cpuUsec: null });
-  });
-
-  it('the wrapper preserves the CLI exit status and appends one epilogue line', () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'capdrv-wrap-'));
-    try {
-      const stats = path.join(dir, 'stats');
-      let status = 0;
-      try {
-        execFileSync('bash', ['-c', wrapperScript(stats), 'capdrv', 'bash', '-c', 'exit 3'], { stdio: 'ignore' });
-      } catch (e) {
-        status = (e as { status: number }).status;
-      }
-      expect(status).toBe(3);
-      const text = readFileSync(stats, 'utf8');
-      expect(text.trim().split('\n')).toHaveLength(1);
-      expect(text.startsWith(`${STATS_MARKER} peak=`)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('systemd-run args put the unit in capdrv.slice and skip env values setenv cannot carry', () => {
-    const args = systemdRunArgs('capdrv-x', '/w', { A: '1', BASH_FUNC_f: '() {\n}', 'bad-key': 'v' }, '/s', ['claude', '-p', 'hi']);
-    expect(args).toContain('--slice=capdrv.slice');
-    expect(args).toContain('--setenv=A=1');
-    expect(args.some((a) => a.startsWith('--setenv=BASH_FUNC') || a.startsWith('--setenv=bad-key'))).toBe(false);
-    expect(args.slice(-3)).toEqual(['claude', '-p', 'hi']);
-  });
-});
-
-describe('event-loop hygiene', () => {
-  it('never copies, removes or spawns synchronously (the replay server shares the event loop)', () => {
-    // A synchronous 1.2 GB checkout copy starved every running agent's replies in the first
-    // real smoke run; the same class once hung the recording proxy behind spawnSync.
-    const src = readFileSync(path.join(__dirname, 'load-driver.ts'), 'utf8');
-    expect(src).not.toMatch(/\b(cpSync|rmSync|spawnSync)\s*\(/);
-  });
-});
+// cgroup accounting and event-loop hygiene: session-process.test.ts (shared with record-session).
 
 describe('drive (end to end with a fake CLI)', () => {
   let root: string;
