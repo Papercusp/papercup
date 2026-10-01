@@ -78,7 +78,12 @@
  *       `--run` found no failures
  *   1 — `--run` confirmed failing tests among the named blast radius
  *   2 — EXIT_NOT_CHECKED: nothing was compared (empty diff, or every declared file was
- *       byte-identical to its base), so this run proved nothing
+ *       byte-identical to its base), so this run proved nothing; OR a `--files=` path names
+ *       nothing in the working tree or at the base, so the verdict cannot cover it
+ *
+ * Declared mode names every `--files=` path it did not examine, with the reason (not
+ * source, a test, a declaration, a generated path, new since the base, deleted, not found).
+ * JS (.js/.jsx/.mjs/.cjs) is examined like TS (WI-10004906).
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -93,11 +98,78 @@ import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Repo-relative prefixes whose changes can strand another workspace's fixtures. */
-const SOURCE_RE = /\.(?:ts|tsx|mts|cts)$/;
-const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|mjs|js|jsx)$/;
+/**
+ * Source files whose changes can strand another workspace's fixtures: TypeScript AND
+ * JavaScript. JS was missing until WI-10004906 (2026-10-01): `scripts/*.mjs` and the hook
+ * layer hold injected-collaborator seams that TS tests in other workspaces assert on, and
+ * `--files=a.mjs,b.ts` dropped the .mjs without a word, so a clean verdict could cover a
+ * file that was never read. Every analyser here parses with `ScriptKind.TSX`, which accepts
+ * JS as-is.
+ */
+const SOURCE_RE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+/** Type declarations (.d.ts / .d.mts / .d.cts) have no call sites, so no seam to count. */
+const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const EXCLUDED_DIR_RE = /(?:^|\/)(?:dist|build|node_modules|coverage|\.next|\.papercusp)\//;
 const EXCLUDED_ROOT_RE = /^(?:papercup-release|papercup-checkpoint)\//;
+
+/**
+ * Why a repo-relative path is NOT a candidate for this guard, or `null` when it is.
+ *
+ * The ONE definition of the candidate set. The CLI's declared mode and its tree-diff mode
+ * both use it, and the PostToolUse nudge hook mirrors it (the hook is installed detached
+ * from the repo and must decide before it loads TypeScript). The hook's test asserts the two
+ * agree path by path, so a widening made here and not there fails a test instead of
+ * silently narrowing the nudge.
+ *
+ * @param {string} file repo-relative POSIX path
+ * @returns {null | 'not-source' | 'declaration' | 'test-file' | 'excluded-path'}
+ */
+export function candidateSkipReason(file) {
+  if (!SOURCE_RE.test(file)) return 'not-source';
+  if (DECLARATION_RE.test(file)) return 'declaration';
+  if (TEST_RE.test(file)) return 'test-file';
+  if (!keepPath(file)) return 'excluded-path';
+  return null;
+}
+
+/** Human text for each reason a declared file was not examined. */
+const SKIP_REASON_TEXT = {
+  'not-source': 'not JS/TS source — no call sites to compare',
+  declaration: 'type declaration — no runtime call sites',
+  'test-file': 'test file — a consumer of seams, not a shared seam',
+  'excluded-path': 'generated/vendored path (dist, build, node_modules, .papercusp, …)',
+  'new-file': 'no version at the base — a new file cannot strand an existing assertion',
+  deleted: 'deleted since the base — nothing left to compare',
+  'not-found': 'NOT FOUND in the working tree or at the base — check the path',
+};
+
+/**
+ * Skip reasons that mean "this declared file may hold a changed seam, and it was not read".
+ * Any one of them makes the run NOT CHECKED: the caller named the file, so a verdict that
+ * covered the rest of the set while quietly omitting it would be the false clean bill this
+ * guard exists to prevent. The other reasons are outside the guard's domain by design, and
+ * are disclosed rather than counted against the run.
+ */
+const UNEXAMINED_REASONS = new Set(['not-found']);
+
+/**
+ * Exit status for a no-findings run, given the declared files that were not examined.
+ * Pure, so it is unit-testable without a git fixture.
+ *
+ * @param {{ examinedFiles?: string[], identicalFiles?: string[], declared?: boolean,
+ *           skipped?: Array<{ file: string, reason: string }> }} [opts]
+ * @returns {0 | 2}
+ */
+export function exitForDeclaredRun({ examinedFiles = [], identicalFiles = [], declared = false, skipped = [] } = {}) {
+  if (declared && skipped.some((s) => UNEXAMINED_REASONS.has(s.reason))) return EXIT_NOT_CHECKED;
+  return exitForNoFindings({ examinedFiles, identicalFiles, declared });
+}
+
+/** One line per skipped declared file, for the text report. */
+export function formatSkipped(skipped) {
+  return skipped.map((s) => `  - ${s.file}: ${SKIP_REASON_TEXT[s.reason] ?? s.reason}`);
+}
 /** Anything whose import specifiers are worth indexing. */
 const IMPORTABLE_RE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** A file bigger than this is a generated bundle, not a hand-written importer. */
@@ -1555,9 +1627,17 @@ function main() {
   }
 
   // Which files to examine. Declared mode fixes WHICH files, never WHETHER they differ.
+  // Every declared file that is not examined is recorded with its reason — never dropped
+  // silently (WI-10004906) — and an unexamined in-domain file makes the run NOT CHECKED.
   let candidates;
+  const skipped = [];
   if (declared) {
-    candidates = declaredFiles.filter((f) => SOURCE_RE.test(f) && !TEST_RE.test(f) && keepPath(f));
+    candidates = [];
+    for (const f of declaredFiles) {
+      const reason = candidateSkipReason(f);
+      if (reason === null) candidates.push(f);
+      else skipped.push({ file: f, reason });
+    }
   } else {
     const changed = new Set();
     const superDiff = git(['diff', '--name-only', requestedBase], { allowFail: true }) ?? '';
@@ -1567,7 +1647,7 @@ function main() {
       const out = git(['diff', '--name-only', 'HEAD'], { cwd, allowFail: true }) ?? '';
       for (const f of out.split('\n')) if (f) changed.add(`${sub}/${f}`);
     }
-    candidates = [...changed].filter((f) => SOURCE_RE.test(f) && !TEST_RE.test(f) && keepPath(f));
+    candidates = [...changed].filter((f) => candidateSkipReason(f) === null);
   }
 
   // Compare each candidate against its OWNING repo's base.
@@ -1587,9 +1667,17 @@ function main() {
       if (requestedBase !== 'HEAD') usedSubmoduleHead.add(submodule);
     }
     const beforeText = git(['show', `${base}:${relPath}`], { cwd, allowFail: true });
-    if (beforeText === null) continue; // new file: it can strand nothing that already exists
     const abs = resolve(ROOT, file);
-    if (!existsSync(abs)) continue;
+    const present = existsSync(abs);
+    if (beforeText === null || !present) {
+      // No base version: a new file can strand nothing that already exists. No working copy:
+      // a deletion. Neither at all: a path that names nothing — most often a typo, which in
+      // declared mode must not pass as part of a clean verdict.
+      if (declared) {
+        skipped.push({ file, reason: beforeText === null ? (present ? 'new-file' : 'not-found') : 'deleted' });
+      }
+      continue;
+    }
     const afterText = readFileSync(abs, 'utf8');
     examined.push(file);
     if (afterText === beforeText) {
@@ -1609,25 +1697,36 @@ function main() {
       ? `ⓘ base: superproject compared against '${requestedBase}'; submodule(s) ${[...usedSubmoduleHead].join(', ')} compared against their own HEAD (a superproject revision does not name submodule content).`
       : '';
 
+  const unexamined = skipped.filter((s) => UNEXAMINED_REASONS.has(s.reason));
+  const skippedNote =
+    skipped.length > 0
+      ? [`ⓘ ${skipped.length} declared file(s) not examined:`, ...formatSkipped(skipped)].join('\n')
+      : '';
+
   if (triggers.length === 0) {
-    const exit = exitForNoFindings({ examinedFiles: examined, identicalFiles: identical, declared });
+    const exit = exitForDeclaredRun({ examinedFiles: examined, identicalFiles: identical, declared, skipped });
     const notChecked = exit === EXIT_NOT_CHECKED;
-    const text = notChecked
-      ? `⚠ NOT CHECKED — nothing was compared against '${requestedBase}' (${examined.length} file(s) examined, ${identical.length} identical).\n` +
-        '  On this tree git-sync commits the working tree on a schedule, so a few minutes after an\n' +
-        '  edit the default --base HEAD diff is EMPTY. Pin the pre-edit sha: --base "$C".\n' +
-        '  This is NOT a clean bill.'
-      : `✓ no behavioural seam or output value changed (${examined.length} changed source file(s) examined vs '${requestedBase}')`;
+    const text = !notChecked
+      ? `✓ no behavioural seam or output value changed (${examined.length} changed source file(s) examined vs '${requestedBase}')`
+      : unexamined.length > 0
+        ? `⚠ NOT CHECKED — ${unexamined.length} declared file(s) could not be examined: ${unexamined.map((s) => s.file).join(', ')}.\n` +
+          `  ${examined.length} other file(s) examined vs '${requestedBase}', ${identical.length} identical. A verdict that\n` +
+          '  silently omits a file you named is not a verdict on that file. This is NOT a clean bill.'
+        : `⚠ NOT CHECKED — nothing was compared against '${requestedBase}' (${examined.length} file(s) examined, ${identical.length} identical).\n` +
+          '  On this tree git-sync commits the working tree on a schedule, so a few minutes after an\n' +
+          '  edit the default --base HEAD diff is EMPTY. Pin the pre-edit sha: --base "$C".\n' +
+          '  This is NOT a clean bill.';
     if (wantJson) {
       console.log(
         JSON.stringify(
-          { ok: true, notChecked, base: requestedBase, examined, identical, triggers: [], tests: [] },
+          { ok: true, notChecked, base: requestedBase, examined, identical, skipped, triggers: [], tests: [] },
           null,
           2,
         ),
       );
     } else {
       console.log(text);
+      if (skippedNote) console.log(skippedNote);
       if (baseNote) console.log(baseNote);
     }
     return exit;
@@ -1688,16 +1787,20 @@ function main() {
     runResult = { status: proc.status ?? null };
     if (proc.status !== 0) exit = 1;
   }
+  // Findings for the files that WERE read do not cover a declared file that was not: a 0
+  // here would vouch for it. Real failures (1) still outrank it.
+  if (exit === 0 && unexamined.length > 0) exit = EXIT_NOT_CHECKED;
 
   if (wantJson) {
     console.log(
       JSON.stringify(
         {
           ok: true,
-          notChecked: false,
+          notChecked: exit === EXIT_NOT_CHECKED,
           base: requestedBase,
           examined,
           identical,
+          skipped,
           triggers,
           seamMembers: members,
           outputProperties: valueProperties,
@@ -1723,10 +1826,15 @@ function main() {
         valueProperties,
         usedWide,
         clipped: !wantAll,
-        baseNote,
+        baseNote: [skippedNote, baseNote].filter(Boolean).join('\n'),
         ran,
       }),
     );
+    if (exit === EXIT_NOT_CHECKED) {
+      console.log(
+        `⚠ NOT CHECKED — declared file(s) could not be examined: ${unexamined.map((s) => s.file).join(', ')}. The findings above do not cover them.`,
+      );
+    }
   }
   return exit;
 }

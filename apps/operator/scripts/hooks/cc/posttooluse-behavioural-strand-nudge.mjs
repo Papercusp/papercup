@@ -95,9 +95,15 @@ const DETECTOR_REL = join('scripts', 'check-behavioural-strands.mjs');
 /** Two full TS parses per fire; a file bigger than this is a bundle, not a hand-written seam. */
 const MAX_BYTES = 400_000;
 
-/** Mirrors the CLI's SOURCE_RE / TEST_RE / EXCLUDED_* — see isCandidateFile. */
-const SOURCE_RE = /\.(?:ts|tsx|mts|cts)$/;
-const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|mjs|js|jsx)$/;
+/**
+ * Mirrors the CLI's `candidateSkipReason` (SOURCE_RE / DECLARATION_RE / TEST_RE / EXCLUDED_*).
+ * A copy, because this hook decides BEFORE it loads the detector (which loads TypeScript) on
+ * every edit. The hook's test checks isCandidateFile against the detector's function path by
+ * path, so a widening on one side only fails there (WI-10004906 added JS to both).
+ */
+const SOURCE_RE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const DECLARATION_RE = /\.d\.[cm]?ts$/;
+const TEST_RE = /\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const EXCLUDED_DIR_RE = /(?:^|\/)(?:dist|build|node_modules|coverage|\.next|\.papercusp)\//;
 const EXCLUDED_ROOT_RE = /^(?:papercup-release|papercup-checkpoint)\//;
 
@@ -153,7 +159,7 @@ async function main() {
 export function isCandidateFile(filePath) {
   const posix = String(filePath).split(sep).join('/');
   if (!SOURCE_RE.test(posix)) return false;
-  if (posix.endsWith('.d.ts')) return false;
+  if (DECLARATION_RE.test(posix)) return false;
   if (TEST_RE.test(posix)) return false;
   if (EXCLUDED_DIR_RE.test(posix) || EXCLUDED_ROOT_RE.test(posix)) return false;
   return true;

@@ -4320,6 +4320,60 @@ Scoped diff checking passed. The larger fixture strengthens current private
 repair coverage; executed live-plan attribution, sustained wait mechanism,
 historical app impact, R-8 acceptance and shipment remain open.
 
+### Natural owner-UPDATE completion and exact input count — October 1, 18:40Z
+
+Recovered the fire-99 work after the stale 17:40Z carry. Its saved
+[same-query receipt](p008-owner-update-same-query-2026-10-01-fire99.json)
+checks backend **3565425**, query start **17:48:12.265015Z**, hash
+`30af7b390b49a1d85cdb105be9582eb2` before and after the
+18:06:46.461–18:06:49.462Z process interval. The interval recorded
+**180 ms CPU**, **21,954,560 read bytes**, **24,576 written bytes** and
+zero major faults; both PG endpoints report DataFileRead and no blockers.
+Task `0mupuixby128r2up8co` exited 0. The initial unprivileged read
+failed before collecting counters; the authorized read-only retry succeeded.
+
+The bounded completion reducer, task `0mupvijir1678503b4d`, exit 0,
+assembled multiline PG log records and normalized SQL whitespace. It
+verified the UPDATE/UNNEST and all workspace/source/session/owner guards.
+The statement completed **18:06:55.893Z** in **1,123,628.046 ms**.
+Full statement-record SHA-256 is
+`55b90249e5549c87323aea49a897fe61748fa457f6a123df8a31319b369315bf`;
+the paired parameter record is `de2f1f2ff7f963d61f6601a15031d9132e97448c01981eb0ebef76b0f856cd23`.
+It names Claude. Both array values stop at 1,027 characters without a
+closing array; their complete values remain unrecovered. The earlier
+line-only reducer's false guard flags were formatting artifacts, not
+evidence of another query.
+
+The fixed 18:06:50–18:21:00Z journal reducer, task
+`0mupvnhf91aigkttkil`, exit 0, retained one ingestion receipt from
+PID **3240705**, invocation **916091e2a71d4170bf73a5bad0e4e6c3**,
+at timestamp `1790878462064784`. The DB application-name writer binds
+`pcusp:org-admin:p3240705` to that process. Its Claude sessionOwners
+operation requested **2,985 sessions**, updated **3,873 turns**, began
+at `1790876892252` and lasted **1,123,667.8 ms**. The current
+`measureMetadataBackfill` writer defines requested as map size and
+updated as the returned UPDATE count; these are different populations.
+The aggregate metadataBackfill wall bucket is **1,126,606.3 ms**.
+The whole sweep reports 340 inserted turns, 3,118 parts, 8,221 scanned
+files and 1,615,397 ms. Receipt SHA-256 is
+`07f7979eb51279af9a5523114ac6f6b2232c68e2628d304e72f0508027aa1515`.
+
+The [completion receipt](p008-owner-update-completion-2026-10-01-fire100.json)
+preserves sanitized records and exact task references. A current catalogue
+read reports only pg_stat_statements among plan/stat extensions, a
+7,000 ms slow-log floor and 1,024-character parameter logging limit;
+it does not recover historical settings or an executed plan. Live
+metadataBackfills fields are now observed, without an immutable loaded-source
+claim. Source `81276d34…` and fixture `9f477fd7…` remain unchanged, so
+the saved private two-test pass was retained.
+
+This binds a long natural UPDATE, its input count and one valid I/O interval.
+The complete input map, matching-turn distribution, executed access plan,
+whole-query wait decomposition and app impact remain unresolved. The private
+179-session control does not reproduce the observed 2,985-session input scope.
+P-008/R-8 and shipment remain open. Next use a bounded current plan-only
+control at the newly observed cardinality, preserving D-006's runtime route.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

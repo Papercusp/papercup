@@ -1247,6 +1247,9 @@ import './work_items/redundancy_status';
 // work_items:completion_stats — the genuine-completions-vs-dedup metric
 // (work-item-completion-integrity-2026-07-01 WI-1405, contract C-1 consumer).
 import './work_items/completion_stats';
+// work_items:acceptance_adoption — legacy acceptance cohorts + current-build canary
+// (observation-candidate-acceptance-promotion-2026-09-30 P-011, WI-10004574).
+import './work_items/acceptance_adoption';
 
 // Fleet — structured concurrency / supervision over the spawn tree
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive

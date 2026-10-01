@@ -724,6 +724,87 @@ describe('resolveTypecheckCwd — absolute external projects use their package-l
   });
 });
 
+describe('an include-glob file that vanishes mid-run is churn, not "checked nothing" (EI-24801454238382823)', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'ei2480-vanish-'));
+    mkdirSync(join(root, 'lib', 'probe'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+    writeFileSync(join(root, 'lib', 'probe', 'back.ts'), 'export {};\n');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  // tsc's verbatim wording for a glob-listed file it could not read (TypeScript 6.0.3).
+  const vanishedLines = (abs: string) => [
+    `error TS6053: File '${abs}' not found.`,
+    '  The file is in the program because:',
+    `    Matched by include pattern 'lib/**/*.ts' in '${join(root, 'tsconfig.json')}'`,
+  ];
+
+  async function runWith(lines: string[]) {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout?.emit('data', Buffer.from(`${lines.join('\n')}\n`));
+        child.emit('close', 2);
+      });
+      return child;
+    });
+    try {
+      return await (
+        buildTypecheck as unknown as {
+          handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+        }
+      ).handler({ project: '.' }, { projectDir: root });
+    } finally {
+      spawnMock.mockReset();
+    }
+  }
+
+  it('judges the checked program and names the vanished file when it is gone for good', async () => {
+    const raw = await runWith(vanishedLines(join(root, 'lib', 'probe', 'gone.ts')));
+    expect(raw.data.error).toBeUndefined();
+    expect(raw.data).toMatchObject({
+      ok: true,
+      errorCount: 0,
+      vanishedDuringRun: ['lib/probe/gone.ts'],
+      inputRaceIncomplete: false,
+    });
+    expect(raw.data.parseWarning).toBeUndefined();
+  });
+
+  it('stays NOT ok when a vanished file exists again — tsc never checked it', async () => {
+    const raw = await runWith(vanishedLines(join(root, 'lib', 'probe', 'back.ts')));
+    expect(raw.data.error).toBeUndefined();
+    expect(raw.data).toMatchObject({
+      ok: false,
+      inputRaceIncomplete: true,
+      vanishedStillPresent: ['lib/probe/back.ts'],
+    });
+  });
+
+  it('still reports every real error beside a vanished file, and only those', async () => {
+    const raw = await runWith([
+      ...vanishedLines(join(root, 'lib', 'probe', 'gone.ts')),
+      "lib/a.ts(3,7): error TS2322: Type 'string' is not assignable to type 'number'.",
+    ]);
+    expect(raw.data).toMatchObject({ ok: false, errorCount: 1, vanishedDuringRun: ['lib/probe/gone.ts'] });
+    expect((raw.data.errors as { code: string }[]).map((e) => e.code)).toEqual(['TS2322']);
+  });
+
+  it('keeps refusing a genuinely missing operand as nothing_typechecked', async () => {
+    const raw = await runWith([
+      `error TS6053: File '${join(root, 'nope.ts')}' not found.`,
+      '  The file is in the program because:',
+      '    Root file specified for compilation',
+    ]);
+    expect(raw.data).toMatchObject({ ok: false, error: 'nothing_typechecked', code: 'TS6053' });
+  });
+});
+
 describe('dirs — the directory-attribution question `files` (suffix match) cannot express (EI-22050606808498557)', () => {
   let root: string;
 

@@ -32,12 +32,31 @@ async function setupJourney(page: Page, existing: boolean) {
   const writes: Array<{ path: string; body: Record<string, any> }> = [];
   const socketMessages: Record<string, unknown>[] = [];
   const apiHits: string[] = [];
+  const browserErrors: string[] = [];
+  page.on('pageerror', error => browserErrors.push(error.message));
   await page.addInitScript(() => {
     window.__PAPERCUSP_HOSTED_BROWSER__ = {
       version: 1, controlPlaneWorkspaceId: 'tutorial-control', restEndpoint: '/api/hosted/browser', sseEndpoint: '/api/hosted/browser/sse',
       workspaceHostEndpoints: { connection: '/api/hosted/browser/workspace-hosts/connection', provision: '/api/hosted/browser/workspace-hosts/provision', action: '/api/hosted/browser/workspace-hosts/action' },
     };
     localStorage.clear();
+    const resizeCalls: Array<{ at: number; stack: string; targets: string[] }> = [];
+    const NativeObserver = window.ResizeObserver;
+    window.ResizeObserver = class extends NativeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        const stack = new Error().stack ?? '';
+        super((entries, observer) => {
+          resizeCalls.push({ at: performance.now(), stack, targets: entries.map(entry => entry.target.className) });
+          if (resizeCalls.length > 12) resizeCalls.shift();
+          callback(entries, observer);
+        });
+      }
+    };
+    const resizeErrors: Array<{ at: number; message: string; calls: typeof resizeCalls }> = [];
+    Object.defineProperty(window, '__tutorialResizeErrors', { value: resizeErrors });
+    window.addEventListener('error', event => {
+      if (event.message.includes('ResizeObserver loop')) resizeErrors.push({ at: performance.now(), message: event.message, calls: [...resizeCalls] });
+    });
   });
   // Fail closed for unmodelled API traffic; no test writes reach the real
   // control plane. The shared sync stub, registered after this handler, models
@@ -106,7 +125,7 @@ async function setupJourney(page: Page, existing: boolean) {
     setTimeout(() => socket.send(JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace.v1', channelId: 'tutorial-channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'tutorial-session' } })), 20);
     socket.onMessage(raw => { socketMessages.push(JSON.parse(String(raw))); });
   });
-  return { writes, socketMessages, apiHits, sync, get prompt() { return sentPrompt; } };
+  return { writes, socketMessages, apiHits, browserErrors, sync, get prompt() { return sentPrompt; } };
 }
 
 for (const existing of [false, true]) {
@@ -169,6 +188,9 @@ for (const existing of [false, true]) {
     await expect(guide).toContainText('Your first agent lesson is complete.');
     await expect(guide).toContainText('6 of 6 steps confirmed');
     expect(fixture.writes.filter(write => write.path.endsWith('/coord/send'))).toHaveLength(1);
+    const resizeErrors = await page.evaluate(() => (window as unknown as { __tutorialResizeErrors: unknown[] }).__tutorialResizeErrors);
+    await test.info().attach('browser-resize-errors', { body: JSON.stringify(resizeErrors), contentType: 'application/json' });
+    expect(resizeErrors).toEqual([]);
     fixture.sync.assertServed('workspaceHosts.control');
   });
 }

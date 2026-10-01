@@ -78,7 +78,10 @@ export function CloudTutorialHighlight({
     {active && element && portal && <Joyride key={`${contextKey}:${target}`} run stepIndex={0}
       portalElement={portal} tooltipComponent={PanelOwnedTooltip}
       steps={[{ target: element, content: "", skipBeacon: true, disableFocusTrap: true,
-        blockTargetInteraction: false, skipScroll: true, targetWaitTimeout: 1500 }]}
+        blockTargetInteraction: false, skipScroll: true, targetWaitTimeout: 1500,
+        // Position the maintained floater outside ResizeObserver delivery.
+        // Frame tracking also covers targets that move without resizing.
+        floatingOptions: { autoUpdate: { elementResize: false, animationFrame: true } } }]}
       options={{ dismissKeyAction: false, overlayClickAction: false, scrollDuration: 0,
         overlayColor: "rgba(0, 0, 0, 0.12)", spotlightRadius: 8 }} />}
   </div>;
