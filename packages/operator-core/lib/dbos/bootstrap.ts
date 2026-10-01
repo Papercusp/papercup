@@ -301,10 +301,8 @@ async function startDbosOnce(): Promise<void> {
   // BYOC P-046 / D-100: every workspace-host provision enters this host-scoped
   // dedup workflow. It is always registered because the route is flag-ON and a
   // recovered in-flight host operation must bind even before a new request arrives.
-  const { registerWorkspaceHostProviderFactory } = await import('@papercusp/deployment-driver');
-  const { createConfiguredGcpWorkspaceHostProvider } = await import('../workspace-host/gcp-provider');
+  const { registerWorkspaceHostProviderFactories } = await import('../workspace-host/provider-factories');
   const { resolveHostedGcpAuth } = await import('../workspace-host/hosted-gcp-auth');
-  const { createConfiguredAwsWorkspaceHostProvider } = await import('../workspace-host/aws-configured-provider');
   // WI-10001672: bind the teardown-obligation ledger's PRODUCING half here. Without this the
   // sweep in periodic-workflows runs over a table nothing writes to and reports "no outstanding
   // obligations" for a project full of live metered resources — absence that reads as an
@@ -350,19 +348,10 @@ async function startDbosOnce(): Promise<void> {
       },
     };
   };
-  registerWorkspaceHostProviderFactory('gcp', (connection) =>
-    createConfiguredGcpWorkspaceHostProvider(connection, {
-      resolveHostedAuth: resolveHostedGcpAuth,
-      ...obligationObservers('gcp'),
-    }),
-  );
-  // aws-byoc-gcp-parity-2026-10-01 P-003: the AWS twin, with the same obligation observers so an
-  // EC2 instance or EBS volume is tracked from creation to provider-confirmed absence. Hosted
-  // ExternalId / OIDC resolvers are not bound yet, so the factory refuses a hosted AWS connection
-  // with a named error instead of failing mid-operation; local profile / assume-role sources work.
-  registerWorkspaceHostProviderFactory('aws', (connection) =>
-    createConfiguredAwsWorkspaceHostProvider(connection, obligationObservers('aws')),
-  );
+  // aws-byoc-gcp-parity-2026-10-01 P-003: 'gcp' and 'aws' register through ONE exported function
+  // with the same obligation observers, so an EC2 instance or EBS volume is tracked from creation
+  // to provider-confirmed absence exactly like a GCP disk, and the registration is unit-testable.
+  registerWorkspaceHostProviderFactories({ resolveHostedGcpAuth, obligationObservers });
   await import('./workspace-host-provision-workflow');
   // D-391: the day-long workspace-host soak runs on its OWN queue (the provisioning queue's
   // host-scoped dedup would lock lifecycle actions out for the whole soak). Registered before
