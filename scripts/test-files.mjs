@@ -85,6 +85,7 @@ import {
   TEST_FILE_EXIT_TEMPFAIL,
 } from './lib/test-file-exit-codes.mjs';
 import { peekFsMutexSync } from './lib/fs-mutex.mjs';
+import { formatMutationProbeWindow, readMutationProbeWindow } from './lib/mutation-probe-window.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 
@@ -2767,6 +2768,11 @@ export async function main(
   // to say which state it was describing — that partial log is exactly the one that gets pasted.
   const provenanceBefore = snapshotProvenance(routes.map((route) => route.absolute));
   console.log(formatProvenanceBanner(provenanceBefore, 'pre-run'));
+  // EI-18750303030034478: an in-tree mutation probe deliberately breaks a tracked file for the length
+  // of its guard run, and a red read from that mutant looks exactly like a regression in YOUR change.
+  // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
+  const probeWindowBefore = readMutationProbeWindow(REPO_ROOT);
+  if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, REPO_ROOT));
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -3257,6 +3263,9 @@ export async function main(
   const driftMarker = formatProvenanceDrift(provenanceDiff);
   if (driftMarker) console.error(driftMarker);
   console.log(formatProvenanceBanner(provenanceAfter, 'post-run'));
+  // Re-read AFTER the run: a probe that opened its window mid-run is the case the pre-run read missed.
+  const probeWindowAfter = readMutationProbeWindow(REPO_ROOT);
+  if (probeWindowAfter) console.error(formatMutationProbeWindow(probeWindowAfter, REPO_ROOT));
 
   // The invariant the line below now carries. Unreachable today — a zero/partial match is refused
   // per-group above, and `executed` is derived from that matched set — which is precisely why it

@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildTestEvidenceRemeasure,
   planTestEvidenceRemeasure,
+  remeasureJudgmentLossWarning,
   retireRemeasuredPredecessors,
 } from './evidence';
 
@@ -224,5 +225,83 @@ describe('retireRemeasuredPredecessors', () => {
     const retract = vi.fn();
     await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
     expect(retract).not.toHaveBeenCalled();
+  });
+});
+
+describe('re-measure names the reviewer judgment it cannot carry (WI-10004452)', () => {
+  // Observed 2026-09-30 on plan jev-performance-improvements-2026-09-30: remeasure retired
+  // hand-bound binding 17183 (adequacy.pathReachable/oracleIndependent/falsifiable plus
+  // details.pathReachability and details.observations) for a thin replacement, and the BAR
+  // moved from pass to unknown on correct-layer + oracle-independence with no word in the
+  // response. The recipe still must NOT replay the judgment; the retirement must SAY it dropped it.
+  const scope = { workspaceId: 'ws', harnessSlug: 'h', actorId: 'su-x', root: '/r' };
+  const prepared = [{ input: { planSlug: 'p', workItemId: 'WI-1', evidenceRef: 'test-run-group:new:0' } }] as never;
+  const judged = (id: number) => {
+    const bound = row(id, {
+      handBound: true, currentness: sourceStale,
+      adequacy: { falsifiable: true, pathReachable: true, oracleIndependent: true },
+    }) as unknown as { details: Record<string, unknown> };
+    bound.details.pathReachability = 'drives createJevConflictJudge through checkConflicts';
+    bound.details.observations = 'expected labels are hand-written, not derived from the judge';
+    return bound as never;
+  };
+
+  it('records which judgment fields the superseded rows carried, without putting them in the recipe', () => {
+    const [entry] = planTestEvidenceRemeasure([judged(17183)]).selected;
+    expect(entry!.judgment).toEqual({
+      fields: ['adequacy.falsifiable', 'adequacy.oracleIndependent', 'adequacy.pathReachable', 'observations', 'pathReachability'],
+      bindingIds: [17183],
+    });
+    expect(JSON.stringify(entry!.binding)).not.toMatch(/falsifiable|pathReachable|oracleIndependent|observations/);
+  });
+
+  it('reports the judgment a thin replacement lacks when it retires the richer predecessor, and warns at the top', async () => {
+    const selected = planTestEvidenceRemeasure([judged(17183)]).selected;
+    const list = vi.fn().mockResolvedValue([row(17303, { evidenceRef: 'test-run-group:new:0' })]);
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract });
+    expect(retract.mock.calls.map(([call]) => call.bindingId)).toEqual([17183]);
+    expect(outcome[0]).toMatchObject({
+      replacementId: 17303, retired: [17183],
+      judgmentNotCarried: {
+        fields: ['adequacy.falsifiable', 'adequacy.oracleIndependent', 'adequacy.pathReachable', 'observations', 'pathReachability'],
+        fromBindingIds: [17183],
+      },
+    });
+    const warning = remeasureJudgmentLossWarning(outcome);
+    expect(warning).toContain('S-1');
+    expect(warning).toContain('17183');
+    expect(warning).toContain('plans:bind-spec-evidence');
+  });
+
+  it('says nothing when the predecessor carried no judgment, or the replacement carries it all', async () => {
+    const plain = planTestEvidenceRemeasure([row(10, { handBound: true, currentness: sourceStale })]).selected;
+    expect(plain[0]!.judgment).toBeUndefined();
+    const retract = vi.fn().mockResolvedValue({ status: 'retracted' });
+    const thin = vi.fn().mockResolvedValue([row(20, { evidenceRef: 'test-run-group:new:0' })]);
+    const quiet = await retireRemeasuredPredecessors(plain, prepared, 'new', scope, { list: thin, retract });
+    expect(quiet[0]).not.toHaveProperty('judgmentNotCarried');
+    expect(remeasureJudgmentLossWarning(quiet)).toBeNull();
+
+    // A fresh, current, passing replacement that was re-bound WITH the same judgment.
+    const rich = row(21, {
+      evidenceRef: 'test-run-group:new:0',
+      adequacy: { falsifiable: true, pathReachable: true, oracleIndependent: true },
+    }) as unknown as { details: Record<string, unknown> };
+    rich.details.pathReachability = 're-verified';
+    rich.details.observations = 're-verified';
+    const carried = await retireRemeasuredPredecessors(
+      planTestEvidenceRemeasure([judged(17183)]).selected, prepared, 'new', scope,
+      { list: vi.fn().mockResolvedValue([rich]), retract });
+    expect(carried[0]).toMatchObject({ replacementId: 21, retired: [17183] });
+    expect(carried[0]).not.toHaveProperty('judgmentNotCarried');
+  });
+
+  it('keeps silent about judgment when the fresh run did not pass, because nothing was retired', async () => {
+    const selected = planTestEvidenceRemeasure([judged(17183)]).selected;
+    const list = vi.fn().mockResolvedValue([row(17303, { evidenceRef: 'test-run-group:new:0', outcome: 'fail' })]);
+    const outcome = await retireRemeasuredPredecessors(selected, prepared, 'new', scope, { list, retract: vi.fn() });
+    expect(outcome[0]).toMatchObject({ retired: [], kept: [17183] });
+    expect(remeasureJudgmentLossWarning(outcome)).toBeNull();
   });
 });

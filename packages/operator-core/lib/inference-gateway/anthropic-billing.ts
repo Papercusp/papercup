@@ -175,3 +175,25 @@ export function classifyClaudeCreditWall(input: ClaudeHttpFailure): ClaudeCredit
   const resetAt = regainAccessAt(message);
   return { cause: 'api-usage-limit', ...(resetAt !== undefined ? { resetAt } : {}) };
 }
+
+/** The Claude adapter's classification of a credit wall (structurally a `ClaudeResponseClassification`). */
+export interface ClaudeCreditWallClassification {
+  kind: 'credit-wall';
+  /** When the walled account may serve again: the upstream's named reset, else now + the default pause. */
+  resetAt: number;
+  detail: ClaudeCreditWall;
+}
+
+/**
+ * The adapter-facing verdict for an upstream failure that is a credit wall, or null when it is not one.
+ * gateway.ts's Claude classifier returns this FIRST, before any rate-limit shape, so a 429
+ * enforced-spend-limit or a 400 API-usage-limit is never read as a rate window or a forwardable 400.
+ */
+export function classifyClaudeCreditWallResponse(
+  input: ClaudeHttpFailure,
+  now: number = Date.now(),
+): ClaudeCreditWallClassification | null {
+  const wall = classifyClaudeCreditWall(input);
+  if (!wall) return null;
+  return { kind: 'credit-wall', resetAt: wall.resetAt ?? now + CREDIT_WALL_DEFAULT_PAUSE_MS, detail: wall };
+}

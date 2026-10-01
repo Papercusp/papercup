@@ -1622,6 +1622,7 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
   });
 
   it('preserves a native Codex usage-limit cause and routes the fire through lifecycle recovery', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
     const recordFire = vi.fn(async () => {});
     const escalateLifecycleDeath = vi.fn(async () => {});
@@ -1665,6 +1666,7 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
         evidence: expect.stringContaining('usage_limit_exceeded'),
       }),
     }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("provider kill ('usage_limit')"));
   });
 
   it('includes the native Codex usage-limit code in the existing R4 pause alert', async () => {

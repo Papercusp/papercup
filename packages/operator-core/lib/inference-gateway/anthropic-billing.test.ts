@@ -6,8 +6,23 @@ import { describe, expect, it } from 'vitest';
 import {
   CREDIT_WALL_DEFAULT_PAUSE_MS,
   classifyClaudeCreditWall,
+  classifyClaudeCreditWallResponse,
   parseClaudeBillingState,
 } from './anthropic-billing';
+import {
+  createClaudeKernelAdapter,
+  type ClaudeChunk,
+  type ClaudeClassifyInput,
+  type ClaudeFetchResponse,
+  type ClaudePreparedAttempt,
+  type ClaudeResponseClassification,
+  type ClaudeResponseMetadata,
+  type ClaudeRouteValue,
+} from './claude-kernel-adapter';
+import { makeGatewayLaneRegistry } from './provider-adapters';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
+import { executeGatewayRequestKernel, type ExecuteGatewayRequestKernelOptions } from './request-kernel';
+import { GatewayRequestTelemetry } from './request-stage-telemetry';
 
 const errBody = (type: string, message: string, extra: Record<string, unknown> = {}) =>
   JSON.stringify({ type: 'error', error: { type, message, ...extra } });
@@ -137,5 +152,181 @@ describe('P-007 — API-key credit walls', () => {
       expect(classifyClaudeCreditWall({ status, headers: {}, body: errBody('billing_error', 'x') })).toBeNull();
     }
     expect(CREDIT_WALL_DEFAULT_PAUSE_MS).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * R-23 — the real Claude kernel adapter, a two-account pool, and the SAME credit-wall classification
+ * gateway.ts returns (`classifyClaudeCreditWallResponse`); every other failure is forwarded, which is
+ * what makes the plain-400 case below a matched control.
+ */
+describe('R-23 — a credit wall makes the Claude adapter fail over to another pool account', () => {
+  const NOW = Date.UTC(2026, 8, 30, 12, 0, 0);
+  const lane = makeGatewayLaneRegistry({
+    claudePool: {
+      active: () => {
+        throw new Error('unused pool');
+      },
+      onExhausted: () => null,
+      select: () => null,
+    },
+    codexPool: null,
+    codexCliAccountCount: () => 1,
+    anthropicUpstreamBase: 'https://anthropic.test',
+    openaiUpstreamBase: 'https://openai.test',
+  }).anthropicMessages;
+  const acct = (accountId: string): ActiveAccount =>
+    ({ accountId, token: async () => `${accountId}-tok` }) as ActiveAccount;
+  const upstream = (status: number, body: string): ClaudeFetchResponse => ({
+    status,
+    headers: { forEach: () => undefined },
+    body: (async function* () {
+      yield Buffer.from(body);
+    })(),
+  });
+  const classify = (input: ClaudeClassifyInput): ClaudeResponseClassification =>
+    classifyClaudeCreditWallResponse(input, NOW) ?? { kind: 'forward' };
+
+  /** Account A answers `first`; every later attempt is served 200 by whichever account it lands on. */
+  async function drive(first: ClaudeFetchResponse) {
+    const parked: { id: string; resetAt: number }[] = [];
+    const pool: AccountPool = {
+      active: () => {
+        throw new Error('adapter called pool.active()');
+      },
+      select: () => null,
+      onExhausted: (id: string, resetAt: number) => {
+        parked.push({ id, resetAt });
+        return (id === 'A' ? acct('B') : null) as ReturnType<AccountPool['onExhausted']>;
+      },
+    };
+    const attempts: string[] = [];
+    const classifications: (ClaudeResponseClassification | null)[] = [];
+    const forwarded: Buffer[] = [];
+    let n = 0;
+    let fetches = 0;
+    const adapter = createClaudeKernelAdapter({
+      initialAccount: acct('A'),
+      pool,
+      upstreamUrl: 'https://anthropic.test/v1/messages',
+      method: 'POST',
+      baseHeaders: { 'content-type': 'application/json' },
+      body: null,
+      streaming: true,
+      tokenTimeoutMs: 1_000,
+      failoverBackoffMs: 5_000,
+      overloadBackoffMs: 30,
+      transientBackoffMs: 20,
+      pickEgress: (account) => ({ entry: undefined, key: `${account.accountId}:ip${++n}` }),
+      // TRUE on purpose: a credit wall is an ACCOUNT wall, so a same-account retry on a fresh IP is wrong.
+      siblingEgressAvailable: () => true,
+      dispatcherFor: () => undefined,
+      fetch: async () => (++fetches === 1 ? first : upstream(200, '{"ok":true}')),
+      rateReset: () => ({ resetAt: null, retryAfterMs: null }),
+      classifyResponse: classify,
+      peekBytes: 4096,
+      peekTimeoutMs: 1_000,
+    });
+    const options: ExecuteGatewayRequestKernelOptions<
+      ClaudeRouteValue,
+      ClaudePreparedAttempt,
+      ClaudeChunk,
+      ClaudeResponseMetadata
+    > = {
+      request: {
+        lane,
+        body: (async function* () {
+          yield Buffer.from('{"model":"claude-opus-4"}');
+        })(),
+        ownerId: 'su-r23',
+        correlationId: 'r23',
+        pin: null,
+      },
+      policy: {
+        maxBodyBytes: 4096,
+        bodyReadTimeoutMs: 2_000,
+        requestCeilingMs: 10_000,
+        ttfbTimeoutMs: 2_000,
+        bodyIdleTimeoutMs: 2_000,
+        downstreamIdleTimeoutMs: 2_000,
+        maxAttempts: 4,
+      },
+      telemetry: new GatewayRequestTelemetry(),
+      admission: {
+        run: async (_context, task) => task(),
+        observeAttempt: ({ response }) => {
+          classifications.push(response?.metadata?.classification ?? null);
+        },
+      },
+      adapter: {
+        ...adapter,
+        async prepareAttempt(context) {
+          const prepared = await adapter.prepareAttempt(context);
+          attempts.push(prepared.accountId);
+          return prepared;
+        },
+      },
+      downstream: {
+        start: () => undefined,
+        write: (chunk) => {
+          forwarded.push(Buffer.from(chunk));
+        },
+        end: () => undefined,
+      },
+      inFlight: { register: () => ({ unregister: () => undefined }) },
+    };
+    await executeGatewayRequestKernel(options);
+    return { attempts, parked, classifications, forwardedBody: Buffer.concat(forwarded).toString('utf8') };
+  }
+
+  const REGAIN_AT = Date.UTC(2026, 9, 1, 0, 0, 0);
+  const walls: { name: string; response: () => ClaudeFetchResponse; resetAt: number }[] = [
+    {
+      name: '402 billing_error (empty Console balance)',
+      response: () => upstream(402, errBody('billing_error', 'Your credit balance is too low to access the Anthropic API.')),
+      resetAt: NOW + CREDIT_WALL_DEFAULT_PAUSE_MS,
+    },
+    {
+      name: '429 enforced_spend_limit_reached',
+      response: () =>
+        upstream(
+          429,
+          errBody('rate_limit_error', 'You have reached your spend limit.', {
+            details: { error_code: 'enforced_spend_limit_reached' },
+          }),
+        ),
+      resetAt: NOW + CREDIT_WALL_DEFAULT_PAUSE_MS,
+    },
+    {
+      name: '400 specified API usage limits (named reset)',
+      response: () =>
+        upstream(
+          400,
+          errBody(
+            'invalid_request_error',
+            'You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC.',
+          ),
+        ),
+      resetAt: REGAIN_AT,
+    },
+  ];
+
+  for (const wall of walls) {
+    it(`R-23: ${wall.name} on account A is served by account B, and A is parked until its reset`, async () => {
+      const { attempts, parked, classifications, forwardedBody } = await drive(wall.response());
+      expect(attempts, 'the walled account must be left, not retried (even on a fresh egress IP)').toEqual(['A', 'B']);
+      expect(classifications[0]?.kind).toBe('credit-wall');
+      expect(parked, 'the pool parks A exactly once, until the wall resets').toEqual([{ id: 'A', resetAt: wall.resetAt }]);
+      expect(forwardedBody, 'the caller gets B’s answer, never the wall').toBe('{"ok":true}');
+    });
+  }
+
+  it('R-23 control: a plain 400 on the same pool is forwarded on account A, with no failover', async () => {
+    const { attempts, parked, forwardedBody } = await drive(
+      upstream(400, errBody('invalid_request_error', 'max_tokens: must be positive')),
+    );
+    expect(attempts).toEqual(['A']);
+    expect(parked).toEqual([]);
+    expect(forwardedBody).toContain('max_tokens: must be positive');
   });
 });

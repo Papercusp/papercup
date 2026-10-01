@@ -143,6 +143,7 @@ import {
   remeasureTestEvidenceSchema,
   buildTestEvidenceRemeasure,
   retireRemeasuredPredecessors,
+  remeasureJudgmentLossWarning,
   retractRefusedTestEvidence,
   RECOVERY_WAIT_DEFAULT_MS,
 } from './evidence';
@@ -3512,20 +3513,24 @@ export default defineTool({
     };
     // Retire a replaced stale predecessor only once its fresh run has a known outcome; a
     // detached/timed-out run is recovered later through the ordinary recovery path.
+    const remeasureRetired: unknown[] =
+      remeasure && prepared && evidenceScope && result.error === undefined
+        ? await retireRemeasuredPredecessors(remeasure.plan.selected, prepared, runId, evidenceScope).catch(
+            (error) => [{ error: String(error) }],
+          )
+        : [];
+    // WI-10004452: surfaced beside the summary so it survives a truncated result.
+    const remeasureJudgmentWarning = remeasureJudgmentLossWarning(remeasureRetired);
     const remeasureReport =
       remeasure && prepared && evidenceScope
         ? {
             summary: remeasure.summary,
+            ...(remeasureJudgmentWarning ? { warning: remeasureJudgmentWarning } : {}),
             selected: remeasure.plan.selected
               .map(({ binding: _binding, supersedes: _supersedes, ...entry }) => entry)
               .slice(0, 20),
             skipped: remeasure.plan.skipped.slice(0, 20),
-            retired:
-              result.error === undefined
-                ? await retireRemeasuredPredecessors(remeasure.plan.selected, prepared, runId, evidenceScope).catch(
-                    (error) => [{ error: String(error) }],
-                  )
-                : [],
+            retired: remeasureRetired,
           }
         : undefined;
     const finalResult = remeasureReport ? { ...surfacedResult, remeasure: remeasureReport } : surfacedResult;

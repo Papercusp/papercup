@@ -59,7 +59,7 @@ import {
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
-import { classifyClaudeCreditWall, CREDIT_WALL_DEFAULT_PAUSE_MS, type ClaudeCreditWall } from './anthropic-billing';
+import { classifyClaudeCreditWallResponse, CREDIT_WALL_DEFAULT_PAUSE_MS, type ClaudeCreditWall } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
@@ -5920,14 +5920,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const classifyClaudeResponse = (input: ClaudeClassifyInput): ClaudeResponseClassification => {
         // Credit exhaustion is checked FIRST: a 429 enforced-spend-limit or a 400
         // API-usage-limit would otherwise read as a rate 429 / a forwardable 400.
-        const wall = classifyClaudeCreditWall(input);
-        if (wall) {
-          return {
-            kind: 'credit-wall',
-            resetAt: wall.resetAt ?? Date.now() + CREDIT_WALL_DEFAULT_PAUSE_MS,
-            detail: wall,
-          };
-        }
+        const creditWall = classifyClaudeCreditWallResponse(input);
+        if (creditWall) return creditWall;
         if (input.status === 529) return { kind: 'overload' };
         if (input.status === 429) {
           // A 429 may be a hard usage/session CAP, which ONLY the body names —

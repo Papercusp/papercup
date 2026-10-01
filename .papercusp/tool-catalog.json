@@ -14145,7 +14145,7 @@
       "guidance": {
         "when": "Starting a NEW outcome that needs an agent to own it end-to-end — the \"+ Start a goal\" path. One call: goal + its agent + the join between them.",
         "notWhen": "Recording a goal with NO agent (a goal you or an existing session will own): goals:create. Proposing one for the owner to confirm: goals:propose. Launching an agent for a non-goal task: capability:launch-agent.",
-        "chaining": "goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. Watch it on the Goals board, or coord:presence by the returned ownerId."
+        "chaining": "goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. For a goal explicitly resolving one existing work item, pass its exact id as sourceWorkItemId; prose in title/body is not used to infer a target. Watch it on the Goals board, or coord:presence by the returned ownerId."
       }
     },
     {

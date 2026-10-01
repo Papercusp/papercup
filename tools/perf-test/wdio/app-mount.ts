@@ -50,6 +50,89 @@ export function readPlanPopupCandidates({ maxRows, requestedSlug }: {
     }));
 }
 
+/** Runs inside the webview. Computed styles are live: a later property read
+ * can force style calculation even when getComputedStyle itself was fast. */
+export function installPopupLayoutProbe() {
+  const records: Array<{
+    api: string;
+    ms: number;
+    at: number;
+    target?: string;
+    stack?: string;
+    waitMs?: number;
+    firedAt?: number;
+  }> = [];
+  const restores: Array<() => void> = [];
+  const observed: string[] = [];
+  const styleTargets = new WeakMap<object, string>();
+  const targetName = (element: Element) => {
+    const testId = element.getAttribute('data-testid');
+    const id = element.id ? `#${element.id}` : '';
+    const classes = Array.from(element.classList).slice(0, 4);
+    return `${element.tagName.toLowerCase()}${id}${testId ? `[data-testid="${testId}"]` : ''}${classes.length ? `.${classes.join('.')}` : ''}`.slice(0, 240);
+  };
+  const observe = (proto: object, key: string) => {
+    const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+    if (!descriptor?.configurable) return;
+    const fn = descriptor.get ?? descriptor.value;
+    if (typeof fn !== 'function') return;
+    const wrapped = function (this: object, ...args: unknown[]) {
+      const at = performance.now();
+      try { return fn.apply(this, args); }
+      finally {
+        const ms = performance.now() - at;
+        if (ms >= 10) records.push({ api: key, ms, at, target: styleTargets.get(this), stack: new Error().stack?.slice(0, 1600) });
+      }
+    };
+    Object.defineProperty(proto, key, descriptor.get ? { ...descriptor, get: wrapped } : { ...descriptor, value: wrapped });
+    restores.push(() => Object.defineProperty(proto, key, descriptor));
+    observed.push(key);
+  };
+  for (const key of ['getBoundingClientRect', 'getClientRects', 'scrollIntoView', 'clientWidth', 'clientHeight', 'scrollHeight']) observe(Element.prototype, key);
+  for (const key of ['offsetWidth', 'offsetHeight', 'focus', 'innerText']) observe(HTMLElement.prototype, key);
+  observe(CSSStyleDeclaration.prototype, 'animationName');
+  const originalGetComputedStyle = window.getComputedStyle;
+  window.getComputedStyle = ((element: Element, pseudoElt?: string | null) => {
+    const at = performance.now();
+    try {
+      const styles = originalGetComputedStyle.call(window, element, pseudoElt);
+      styleTargets.set(styles, targetName(element));
+      return styles;
+    } finally {
+      const ms = performance.now() - at;
+      if (ms >= 10) records.push({ api: 'getComputedStyle', ms, at, target: targetName(element), stack: new Error().stack?.slice(0, 1600) });
+    }
+  }) as typeof window.getComputedStyle;
+  observed.push('getComputedStyle');
+  restores.push(() => { window.getComputedStyle = originalGetComputedStyle; });
+
+  // Timer elapsed time is scheduling evidence, not synchronous layout cost.
+  // Preserve the requested delay and actual fire to distinguish React's
+  // Suspense retry throttle from work that occupied the main thread.
+  // This function executes in WebKit. WDIO also includes Node's ambient timer
+  // overload, whose Timeout return type does not describe this browser API.
+  const originalSetTimeout = window.setTimeout;
+  const browserSetTimeout: (handler: TimerHandler, delay?: number, ...args: unknown[]) => number = originalSetTimeout;
+  window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    if (typeof handler !== 'function' || (delay ?? 0) < 50) {
+      return browserSetTimeout.call(window, handler, delay, ...args);
+    }
+    const record = { api: 'setTimeout', ms: 0, at: performance.now(), waitMs: delay, firedAt: undefined as number | undefined, stack: new Error().stack?.slice(0, 1600) };
+    records.push(record);
+    return browserSetTimeout.call(window, function (this: unknown, ...callbackArgs: unknown[]) {
+      record.firedAt = performance.now();
+      record.ms = record.firedAt - record.at;
+      return handler.apply(this, callbackArgs);
+    }, delay, ...args);
+  }) as typeof window.setTimeout;
+  restores.push(() => { window.setTimeout = originalSetTimeout; });
+  observed.push('setTimeout');
+  (window as unknown as { __perfLayoutProbe: { records: typeof records; restore(): void } }).__perfLayoutProbe = {
+    records, restore: () => restores.splice(0).reverse().forEach((restore) => restore()),
+  };
+  return { installed: true, observed };
+}
+
 /**
  * WebdriverIO's `waitUntil` retries rejected predicates until its timeout.
  * That's useful for transient DOM/protocol errors, but an invalid session or a

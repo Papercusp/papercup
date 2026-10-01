@@ -40,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { loadavg, availableParallelism, tmpdir, homedir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { parseQuarantineWorkspaces } from "./lib/quarantine.mjs";
+import { formatMutationProbeWindow, readMutationProbeWindow } from "./lib/mutation-probe-window.mjs";
 import {
   parseSummaryFailedCounts,
   parseFailedTestFiles,
@@ -843,6 +844,14 @@ const TASK_DURATION_HISTORY_PATH =
   );
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// EI-18750303030034478: a peer's in-tree mutation probe deliberately breaks a tracked file for the
+// length of its guard run, and a red read from that mutant is indistinguishable from a regression in
+// the caller's own change (a two-markdown-file prompt edit once got a cpu-task-worker red this way).
+// Diagnostic only — one stderr line on a FAILING run, never a verdict input, never throws.
+function emitMutationProbeWindow() {
+  const window = readMutationProbeWindow(ROOT);
+  if (window) errSync(formatMutationProbeWindow(window, ROOT));
+}
 // Accept the conventional `--flag=value` spelling for value-taking flags before
 // the small parser below examines argv. Keeping one canonical [flag, value]
 // representation means equals-form callers get the same positional-argument
@@ -8125,6 +8134,7 @@ if (undeterminedTasks) {
   for (const name of undeterminedTaskNames) errSync(`  - ${name}`);
 }
 if (!failed && undeterminedTasks) {
+  emitMutationProbeWindow();
   errSync(resultLine("failed"));
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
@@ -8254,6 +8264,7 @@ if (failed) {
       }),
     );
   }
+  emitMutationProbeWindow();
   errSync(resultLine("failed"));
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);

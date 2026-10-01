@@ -8,11 +8,87 @@ import type { Browser } from "webdriverio";
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
+  installPopupLayoutProbe,
   isTerminalWebDriverSessionError,
   readPlanPopupCandidates,
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+
+test("layout probe measures a later computed-style getter and preserves target, errors and cleanup", () => {
+  const names = ['window', 'Element', 'HTMLElement', 'CSSStyleDeclaration', 'performance'] as const;
+  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let now = 0;
+  let getterMs = 25;
+  let getterError: Error | null = null;
+  class Styles {
+    get animationName() {
+      now += getterMs;
+      if (getterError) throw getterError;
+      return 'none';
+    }
+  }
+  class FakeElement {}
+  const styles = new Styles();
+  const timers: Array<() => void> = [];
+  const fakeWindow = {
+    getComputedStyle: () => styles,
+    setTimeout(handler: Function, _delay: number, ...args: unknown[]) {
+      timers.push(() => handler.apply(fakeWindow, args));
+      return timers.length;
+    },
+  };
+  const originalStyleGetter = Object.getOwnPropertyDescriptor(Styles.prototype, 'animationName');
+  const originalComputedStyle = fakeWindow.getComputedStyle;
+  const originalTimer = fakeWindow.setTimeout;
+  const globals = { window: fakeWindow, Element: FakeElement, HTMLElement: FakeElement, CSSStyleDeclaration: Styles, performance: { now: () => now } };
+  for (const name of names) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: globals[name] });
+  try {
+    const result = installPopupLayoutProbe();
+    assert.ok(result.observed.includes('animationName'));
+    const element = { tagName: 'DIV', id: 'plan', classList: ['plan-popup'], getAttribute: () => 'popup' } as unknown as Element;
+    const computed = window.getComputedStyle(element);
+    type Record = { api: string; ms: number; at: number; target?: string; waitMs?: number; firedAt?: number };
+    const probe = (window as unknown as { __perfLayoutProbe: { records: Record[]; restore(): void } }).__perfLayoutProbe;
+    assert.equal(probe.records.length, 0, 'a fast getComputedStyle is not the delayed read');
+    assert.equal(computed.animationName, 'none');
+    assert.deepEqual(probe.records.map(({ api, ms, target }) => ({ api, ms, target })), [
+      { api: 'animationName', ms: 25, target: 'div#plan[data-testid="popup"].plan-popup' },
+    ]);
+    getterMs = 2;
+    void computed.animationName;
+    assert.equal(probe.records.length, 1, 'fast reads stay below the diagnostic threshold');
+    getterMs = 30;
+    getterError = new Error('native style failure');
+    assert.throws(() => computed.animationName, /native style failure/);
+    assert.equal(probe.records[1].ms, 30);
+
+    let received: unknown[] | null = null;
+    let receiver: unknown;
+    const timerId = window.setTimeout(function (this: unknown, ...args: unknown[]) { receiver = this; received = args; }, 300, 'original-argument');
+    assert.equal(timerId, 1);
+    const timer = probe.records[2];
+    assert.equal(timer.waitMs, 300);
+    assert.equal(timer.firedAt, undefined);
+    now += 320;
+    timers[0]();
+    assert.deepEqual(received, ['original-argument']);
+    assert.equal(receiver, fakeWindow);
+    assert.equal(timer.ms, 320);
+    assert.equal(timer.firedAt, now);
+    probe.restore();
+    probe.restore();
+    assert.deepEqual(Object.getOwnPropertyDescriptor(Styles.prototype, 'animationName'), originalStyleGetter);
+    assert.equal(fakeWindow.getComputedStyle, originalComputedStyle);
+    assert.equal(fakeWindow.setTimeout, originalTimer);
+  } finally {
+    if (originalStyleGetter) Object.defineProperty(Styles.prototype, 'animationName', originalStyleGetter);
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
 
 test("native receipt publishing uses the selected operator credential", () => {
   const home = mkdtempSync(path.join(tmpdir(), "wdio-publisher-token-"));
