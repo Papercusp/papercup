@@ -25,6 +25,10 @@ import {
   hasStrictOwnerAction,
   readAgentReviewState,
   implementationReadinessProjectedFloorSql,
+  implementationReadinessValidFromJsonSql,
+  implementationAcceptanceStateFromReadinessSql,
+  acceptanceSourceRevisionFromFragmentsSql,
+  workItemPresentationStageFromSignalsSql,
   implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
@@ -837,6 +841,17 @@ export type WorkItemReadinessHeadline = (typeof WORK_ITEM_READINESS_HEADLINE_PRE
 export interface WorkItemReadinessProjection {
   schemaVersion: 'work-item-readiness-projection-v1';
   measuredAt: string;
+  /** Same root issue-family population as headline; legacy claimability is a separate axis. */
+  presentation?: {
+    population: number;
+    counts: Record<import('./work-item-presentation-contract').WorkItemPresentationStage, number>;
+    remainingBugs: number;
+    verifiedCompletions: number;
+    unit: 'work-item rows';
+    writer: 'readWorkItemReadinessProjection';
+    classifier: 'deriveWorkItemPresentationStage';
+    mutuallyExclusive: true;
+  };
   scope: {
     workspaceId: string;
     harnessSlug: string | null;
@@ -2628,7 +2643,9 @@ export async function readWorkItemReadinessProjection(opts: {
   const terminalStates = [...ALL_TERMINAL_STATUSES];
   const successfulStates = [...ALL_SUCCESSFUL_STATUSES];
 
-  type ProjectionRow = Record<string, number | string | null>;
+  type ProjectionRow = Record<string, number | string | null> & {
+    presentation_counts?: NonNullable<WorkItemReadinessProjection['presentation']>['counts'];
+  };
   const rows = await sql<ProjectionRow[]>`
       WITH occurrence_counts AS MATERIALIZED (
         -- GROUP BY hashes the clusters; count(DISTINCT (slug, id)) sorted ~180k row
@@ -2692,6 +2709,11 @@ export async function readWorkItemReadinessProjection(opts: {
            AND wi.lane IS DISTINCT FROM 'observation'
       ), scoped AS MATERIALIZED (
         SELECT p.*,
+               ${implementationReadinessValidFromJsonSql(sql, sql`p.implementation_readiness`)} AS presentation_readiness_valid,
+               CASE WHEN p.implementation_readiness -> 'evidence' -> 'acceptance' IS NOT NULL THEN
+                 ${implementationAcceptanceStateFromReadinessSql(sql, sql`p.implementation_readiness`,
+                   acceptanceSourceRevisionFromFragmentsSql(sql, sql`p.item_kind`, sql`p.title`, sql`p.summary`))}
+                 ELSE 'absent' END AS acceptance_state,
                (p.agent_review ->> 'status' = 'pending') AS review_pending,
                (
                  p.agent_review ->> 'status' = 'revision-requested'
@@ -2770,6 +2792,14 @@ export async function readWorkItemReadinessProjection(opts: {
             ON dependency.blocked_ref = s.feature_id
       ), classified AS (
         SELECT signals.*,
+               ${workItemPresentationStageFromSignalsSql(sql, {
+                 observation: sql`FALSE`, terminal: sql`is_terminal`,
+                 readinessValid: sql`presentation_readiness_valid`, readinessEnrolled: sql`readiness_enrolled`,
+                 readiness: sql`implementation_readiness`, acceptanceState: sql`acceptance_state`,
+                 status: sql`status`, assigned: sql`has_active_claim`,
+                 blocked: sql`(claim_hold OR owner_action OR external_blocker OR active_dependency)`,
+                 authority: sql`authority`,
+               })} AS presentation_stage,
                CASE
                  WHEN is_terminal THEN 'terminal'
                  WHEN has_active_claim THEN 'active'
@@ -2793,6 +2823,17 @@ export async function readWorkItemReadinessProjection(opts: {
           ) event
       )
       SELECT count(*)::int AS population,
+             jsonb_build_object(
+               'observation', 0,
+               'candidate', count(*) FILTER (WHERE presentation_stage = 'candidate'),
+               'unknown', count(*) FILTER (WHERE presentation_stage = 'unknown'),
+               'accepted-ready', count(*) FILTER (WHERE presentation_stage = 'accepted-ready'),
+               'accepted-active', count(*) FILTER (WHERE presentation_stage = 'accepted-active'),
+               'accepted-blocked', count(*) FILTER (WHERE presentation_stage = 'accepted-blocked'),
+               'verified-completion', count(*) FILTER (WHERE presentation_stage = 'verified-completion'),
+               'terminal-other', count(*) FILTER (WHERE presentation_stage = 'terminal-other')
+             ) AS presentation_counts,
+             (count(*) FILTER (WHERE item_kind = 'bug' AND presentation_stage LIKE 'accepted-%'))::int AS remaining_bugs,
              (count(*) FILTER (WHERE NOT is_terminal))::int AS non_terminal,
              (count(*) FILTER (WHERE headline = 'terminal'))::int AS terminal,
              (count(*) FILTER (WHERE headline = 'active'))::int AS active,
@@ -2850,7 +2891,7 @@ export async function readWorkItemReadinessProjection(opts: {
                WHERE is_terminal AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
              ))::int AS terminal_in_window,
              (count(*) FILTER (
-               WHERE is_terminal AND authority = 'committed'
+               WHERE presentation_stage = 'verified-completion'
                  AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
              ))::int AS verified_in_window,
              (SELECT count(*)::int FROM reopen_events WHERE reopened_at >= ${since}) AS reopen_events_in_window,
@@ -2901,6 +2942,19 @@ export async function readWorkItemReadinessProjection(opts: {
   return {
     schemaVersion: 'work-item-readiness-projection-v1',
     measuredAt,
+    presentation: {
+      population: n('population'),
+      counts: row.presentation_counts ?? {
+        observation: 0, candidate: 0, unknown: 0, 'accepted-ready': 0, 'accepted-active': 0,
+        'accepted-blocked': 0, 'verified-completion': 0, 'terminal-other': 0,
+      },
+      remainingBugs: n('remaining_bugs'),
+      verifiedCompletions: Number((row.presentation_counts as Record<string, number> | undefined)?.['verified-completion'] ?? 0),
+      unit: 'work-item rows',
+      writer: 'readWorkItemReadinessProjection',
+      classifier: 'deriveWorkItemPresentationStage',
+      mutuallyExclusive: true,
+    },
     scope: {
       workspaceId: opts.workspaceId,
       harnessSlug,
