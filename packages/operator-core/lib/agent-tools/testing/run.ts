@@ -249,6 +249,12 @@ export function detachedTestTimeoutHint(files: string[]): string {
   return hasIntegrationFile ? DETACHED_ROUTER_TEST_HINT : DETACHED_INSPECT_TEST_HINT;
 }
 
+/** Match the admin reporter's worktree-relative POSIX file_path values. */
+function requestedLedgerFilePaths(root: string, files: string[]): string[] {
+  const checkoutRoot = resolve(root);
+  return files.map((file) => relative(checkoutRoot, resolve(checkoutRoot, file)).split(sep).join('/'));
+}
+
 /**
  * Disclose the effective foreground clamp only when the caller supplied a budget.
  * The default budget is an implementation choice, not a caller-authored deadline,
@@ -309,6 +315,7 @@ export function buildDetachedTestRunRequest(opts: {
     kind: 'vitest',
     label: `testing:run timeout recovery (${opts.files.join(', ')})`,
     filePath: opts.files.length === 1 ? opts.files[0] : undefined,
+    requestedFiles: requestedLedgerFilePaths(opts.root, opts.files),
     command: process.execPath,
     args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
     cwd: opts.root,
@@ -434,6 +441,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
   return {
     kind: 'vitest',
     label: 'testing:run mixed-root timeout recovery (' + opts.groups.flatMap((group) => group.files).join(', ') + ')',
+    requestedFiles: opts.groups.flatMap((group) => requestedLedgerFilePaths(group.root, group.files)),
     command: process.execPath,
     args: ['-e', script],
     cwd: root,
