@@ -165,6 +165,7 @@ vi.mock('./config', () => ({
 
 import {
   allocateDumpTempPath,
+  createGuardLogForwarder,
   requiredFreeBytes,
   resolveKopiaBackupGuard,
   runPreSnapshotHook,
@@ -303,6 +304,53 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
       h.holdGuardOpen = false;
       timeoutSpy.mockRestore();
     }
+  });
+
+  // WI-10004871: the guard's waiting/started/finished lines for this producer
+  // were captured into the failure-only stderr buffer and never reached the
+  // journal, so a sweep preempted by a deploy/migration dump had no attributable
+  // waiter. They must now be re-emitted on the host's stderr as they arrive.
+  it('re-emits the wait-mode guard decision lines on the host stderr while the dump waits', async () => {
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    h.holdGuardOpen = true;
+    try {
+      const pending = runPreSnapshotHook(ctx);
+      for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+      expect(h.pendingGuard).not.toBeNull();
+      const guardStderr = (h.pendingGuard as unknown as { stderr: EventEmitter }).stderr;
+
+      const waiting = 'KOPIA_BACKUP_GUARD timestamp=2026-10-01T12:00:00-04:00 '
+        + `label=${WORKSPACE_BACKUP_GUARD_LABEL} result=waiting reason=lock-held`;
+      // Split mid-line: the forwarder must reassemble before matching.
+      guardStderr.emit('data', Buffer.from(waiting.slice(0, 25)));
+      guardStderr.emit('data', Buffer.from(`${waiting.slice(25)}\npg_dump: warning: not a guard line\n`));
+      const forwarded = () => writeSpy.mock.calls.map(([chunk]) => String(chunk));
+      expect(forwarded()).toEqual([`${waiting}\n`]);
+
+      h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      h.pendingGuard!.emit('close', 0);
+      h.pendingGuard = null;
+      await expect(pending).resolves.toMatchObject({ ok: true });
+    } finally {
+      h.pendingGuard?.emit('close', 1);
+      h.pendingGuard = null;
+      h.holdGuardOpen = false;
+      writeSpy.mockRestore();
+    }
+  });
+
+  it('forwards only complete guard lines and drops an unterminated runaway buffer', () => {
+    const lines: string[] = [];
+    const forward = createGuardLogForwarder((line) => lines.push(line));
+
+    forward('KOPIA_BACKUP_GUARD a=1\nnoise\nKOPIA_BACKUP_GUARD_READY\nKOPIA_BACKUP_GUARD b=');
+    expect(lines).toEqual(['KOPIA_BACKUP_GUARD a=1']);
+    forward('2\n');
+    expect(lines).toEqual(['KOPIA_BACKUP_GUARD a=1', 'KOPIA_BACKUP_GUARD b=2']);
+
+    forward(`KOPIA_BACKUP_GUARD ${'x'.repeat(9_000)}`);
+    forward('\nKOPIA_BACKUP_GUARD c=3\n');
+    expect(lines).toEqual(['KOPIA_BACKUP_GUARD a=1', 'KOPIA_BACKUP_GUARD b=2', 'KOPIA_BACKUP_GUARD c=3']);
   });
 
   it('targets the isolated dump process group, not only the guard shell', () => {

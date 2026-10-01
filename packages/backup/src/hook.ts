@@ -162,6 +162,40 @@ export function resolveKopiaBackupGuard(): string | null {
     || (process.platform === 'linux' ? DEFAULT_BACKUP_GUARD_PATH : null);
 }
 
+const GUARD_LOG_LINE_PREFIX = 'KOPIA_BACKUP_GUARD ';
+const MAX_PENDING_GUARD_LOG_CHARS = 8_192;
+
+/**
+ * Re-emit the guard's own decision lines from the captured stderr stream.
+ *
+ * The wait-mode guard writes its `KOPIA_BACKUP_GUARD ... label=workspace-db-dump`
+ * lines to stderr so they cannot corrupt the SQL dump on stdout, and this hook
+ * captures that stderr only to quote it on failure. That left every waiting /
+ * started / finished line for this producer out of the journal, so a hot sweep
+ * preempted by a deploy- or migration-triggered dump could not be attributed
+ * to its caller (WI-10004871: two of fourteen preemptions on 2026-10-01 had no
+ * identifiable waiter). Forwarding to the host process's stderr lands them in
+ * the journal of whichever unit ran the hook. pg_dump's own stderr is not
+ * forwarded: it is already quoted in the failure result.
+ */
+export function createGuardLogForwarder(
+  write: (line: string) => void = (line) => { process.stderr.write(`${line}\n`); },
+): (chunk: Buffer | string) => void {
+  let pending = '';
+  return (chunk) => {
+    pending += chunk.toString();
+    let newline = pending.indexOf('\n');
+    while (newline !== -1) {
+      const line = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      if (line.startsWith(GUARD_LOG_LINE_PREFIX)) write(line);
+      newline = pending.indexOf('\n');
+    }
+    // A producer that never ends its line must not grow this buffer unbounded.
+    if (pending.length > MAX_PENDING_GUARD_LOG_CHARS) pending = '';
+  };
+}
+
 /**
  * Terminate one spawned command and every descendant that remains in its
  * isolated POSIX process group.
@@ -568,6 +602,7 @@ async function dumpPg(opts: {
     gz.stdout.pipe(out);
     let stderr = '';
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
+    if (guard) dump.stderr.on('data', createGuardLogForwarder());
     gz.stderr.on('data', (d) => { stderr += d.toString(); });
 
     const killDumpTree = () => terminateSpawnTree(dump, dumpDetached);

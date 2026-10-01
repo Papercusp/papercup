@@ -293,6 +293,14 @@ take_handoff_note() {
 # The .due is written BEFORE the .wait marker, so a holder never sees a marker
 # without its deadline. A marker with no .due -- a wait-mode producer, an
 # unknown baseline, or a guard from before this change -- counts as due now.
+# Wait-mode stays due-now on purpose (WI-10004871): its callers are the workspace
+# dumps taken before a deploy, a boot migration or db:migrate (plus the workspace
+# backup scheduler), and they give up
+# after KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC (900s in packages/backup's hook),
+# which then abandons the dump (resolves ok:false). Holding an overdue sweep against
+# one for up to the EDF extension would cost that safety dump for sweep progress.
+# Its guard lines reach the host's journal via the hook's stderr forwarder, so
+# each such preemption is attributable.
 register_priority_request() {
   local base due
   priority_request_path="${lock_path}.${state_key}.$$.wait"
