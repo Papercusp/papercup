@@ -49,6 +49,7 @@ function enrichedRow(over: Record<string, unknown> = {}): Record<string, unknown
     planItemIds: ['P-001'],
     spineRole: 'worker',
     spineStatus: 'running',
+    presentation: { stage: 'candidate', reason: 'awaiting-qualifying-acceptance', evidenceRefs: ['WI-2'], completionRef: null },
     ...over,
   };
 }
@@ -78,6 +79,7 @@ describe('projectWorkItemsListForUi', () => {
     expect(row.spineStatus).toBe('running');
     expect(row.updatedAt).toBe('2026-08-02T00:00:00.000Z');
     expect(row.origin).toBe('local');
+    expect(row.presentation).toEqual({ stage: 'candidate', reason: 'awaiting-qualifying-acceptance', evidenceRefs: ['WI-2'], completionRef: null });
   });
 
   it('drops the fields no workItems.byHarness consumer reads', () => {

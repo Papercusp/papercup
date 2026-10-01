@@ -37,6 +37,20 @@ describe('WI-37533 host performance assets', () => {
     expect(unit).toContain('ProtectKernelTunables=no');
   });
 
+  it('cannot be manually stopped or restarted, because that would bounce the Postgres that Requires it (WI-10004865)', () => {
+    const unit = readFileSync(UNIT, 'utf8');
+    const directives = unit.split('\n').filter((line) => !line.trimStart().startsWith('#'));
+    // RequiredBy= makes postgresql@18-main Requires= this unit: stop/restart propagates.
+    expect(directives).toContain('RequiredBy=postgresql@18-main.service');
+    expect(directives).toContain('RefuseManualStop=yes');
+    // Re-application goes through reload, which Requires= does not propagate.
+    expect(directives).toContain('ExecReload=/etc/systemd/system/papercusp-host-performance.sh');
+    // No stronger coupling that would also propagate a stop/restart to Postgres.
+    for (const coupling of ['BindsTo=', 'PartOf=', 'PropagatesStopTo=', 'PropagatesReloadTo=']) {
+      expect(directives.some((line) => line.startsWith(coupling))).toBe(false);
+    }
+  });
+
   it('sets and verifies the root disk scheduler, governor, EPP and 18,000-page default in fake sysfs', () => {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-cpufreq-'));
     const fakeRootDisk = createFakeRootDisk(root);

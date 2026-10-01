@@ -2,6 +2,7 @@ import {
   checkScript,
   ensureParseCheckReady,
   extractPayloadTier,
+  prepareToolArgsForSchema,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { prepareNestedProjection } from '../../result-projection';
@@ -162,7 +163,12 @@ export async function validateRecipeScriptAgainstCatalog(
     // `projection` is a host-owned dispatch control, just like payloadTier. The
     // direct transport peels it before the target schema; recipe preflight must
     // validate the same schema-visible argument shape or it rejects valid calls.
-    const { args: schemaArgs } = prepareNestedProjection(tierlessArgs);
+    const { args: nestedArgs } = prepareNestedProjection(tierlessArgs);
+    const schemaArgs = prepareToolArgsForSchema(
+      name,
+      tool.inputSchema as Record<string, unknown>,
+      nestedArgs,
+    );
     for (const detail of validateValue(schemaArgs, tool.inputSchema as JsonSchema, 'args')) {
       issues.push({ tool: name, path: 'args', message: detail.message, kind: detail.kind });
     }

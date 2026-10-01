@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
-import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
+import { buildPersonalAmbientContextBlock, disclosePersonalAmbientResults, type PersonalAmbientDeps } from './ambient';
 import { parsePersonalArchive } from './archive-import';
 import { authorizePersonalAccess } from './authorization';
 import {
@@ -220,6 +220,7 @@ describe('Personal Vault core', () => {
         authorize: authorizePersonalAccess,
         embedQuery: async () => null,
         search: searchPersonalDocuments,
+        disclose: disclosePersonalAmbientResults,
       } satisfies PersonalAmbientDeps,
     );
 

@@ -167,7 +167,7 @@ describe('canonical delegated-member claim receipt', () => {
     expect((await setMode({ workspaceId: WS, ownerId: LEADER, modeId: activity,
       subject: GOAL, enabled: true, reason: 'Isolated exclusion proof', setBy: LEADER, sql: fx.admin })).ok).toBe(true);
     await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
-      config: { goalId: GOAL, harness: HARNESS, activity }, sql: fx.admin });
+      config: { plan: `${PLAN}-${activity}`, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
     expect((await setClaimSpec({ workspaceId: WS, cupId: `fleet:${FLEET}`, updatedBy: LEADER,
       spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}`,
         view: { filter: { field: 'goal', op: '=', value: GOAL } } },
@@ -178,7 +178,7 @@ describe('canonical delegated-member claim receipt', () => {
       // Wrong adapter: promote goal activity into the reader's actual plan
       // scope inputs. Keep the literal oracle below and all liveness intact.
       await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
-        config: { goalId: GOAL, plan: PLAN, harness: HARNESS, activity }, sql: fx.admin });
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
       expect((await setClaimSpec({ workspaceId: WS, cupId: `fleet:${FLEET}`, updatedBy: LEADER,
         spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}-wrong-plan-scope`,
           view: { filter: { field: 'plan', op: '=', value: PLAN } } },

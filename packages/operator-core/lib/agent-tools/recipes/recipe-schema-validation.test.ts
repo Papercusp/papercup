@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
+import '../pre-prompt-registry-config';
 
 const tool = (name: string, inputSchema: Record<string, unknown>): ProjectedTool => ({
   pluginName: 'test',
@@ -36,6 +37,26 @@ describe('validateRecipeScriptAgainstCatalog', () => {
       })],
     );
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:deploy'] });
+  });
+
+  it('normalizes a registered positional write row before checking the target schema', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'return await tools.workItems.claim({ row: "EI-24779677812251161,,papercusp" });',
+      [tool('work_items:claim', {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          assignee: { type: 'string' },
+          harness: { type: 'string' },
+          force: { type: 'boolean' },
+          reason: { type: 'string' },
+        },
+        required: ['id'],
+        additionalProperties: false,
+      })],
+    );
+
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['work_items:claim'] });
   });
 
   it('accepts framework-reserved payloadTier even though it is absent from the published schema', async () => {

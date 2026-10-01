@@ -9,11 +9,13 @@ import { knownQueryNamesV2 } from './index';
 const {
   readWorkItemsPageFromStoreMock,
   readWorkItemsSummaryFromStoreMock,
+  readWorkItemPresentationsMock,
   getEnrichedWorkItemMock,
   activeWorkspaceIdMock,
 } = vi.hoisted(() => ({
   readWorkItemsPageFromStoreMock: vi.fn(),
   readWorkItemsSummaryFromStoreMock: vi.fn(),
+  readWorkItemPresentationsMock: vi.fn(async () => new Map()),
   getEnrichedWorkItemMock: vi.fn(async (_h: string, _id: string) => null as unknown),
   activeWorkspaceIdMock: vi.fn(() => 'workspace-test'),
 }));
@@ -33,6 +35,7 @@ vi.mock('./work-items-list-query', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./work-items-list-query')>()),
   readWorkItemsPageFromStore: readWorkItemsPageFromStoreMock,
   readWorkItemsSummaryFromStore: readWorkItemsSummaryFromStoreMock,
+  readWorkItemPresentations: readWorkItemPresentationsMock,
 }));
 
 describe('workItems P-006 (byHarness slim + detail)', () => {

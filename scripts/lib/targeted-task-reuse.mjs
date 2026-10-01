@@ -137,8 +137,9 @@ function defaultGit(root, args) {
 /**
  * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
  * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
+ * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
  */
-function defaultRunnerIdentity(root, env) {
+export function defaultRunnerIdentity(root, env) {
   try {
     return reuseRunnerIdentity(
       execFileSync("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {

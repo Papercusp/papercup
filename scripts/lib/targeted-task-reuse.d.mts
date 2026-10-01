@@ -19,6 +19,12 @@ export function resolveWorkspacePackage(root: string, workspace: string): {
     scripts: Record<string, string>;
 } | null;
 /**
+ * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
+ * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
+ * Also used by pure-lane-proof-capture.mjs, which records proofs under the same identity.
+ */
+export function defaultRunnerIdentity(root: any, env: any): string | null;
+/**
  * Arm pass reuse and proof recording for ONE unit vitest task about to run at `expectedSha` in the
  * clean checkout `root`. Returns a NEW env (the input is not mutated) plus the log lines that say
  * what was armed; call `finish()` after the task exits to read the recorder's outcome and remove
@@ -75,10 +81,5 @@ export const TARGETED_REUSE_LINE_PREFIX: "TARGETED_";
 /** How long the proof read may take before the task simply runs everything. */
 export const TARGETED_REUSE_PROOF_READ_TIMEOUT_MS: 15000;
 declare function defaultGit(root: any, args: any): string | null;
-/**
- * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
- * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
- */
-declare function defaultRunnerIdentity(root: any, env: any): string | null;
 import { loadReuseProofs } from "./executed-source-map.mjs";
 export {};

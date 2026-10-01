@@ -17,6 +17,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { ackDelivery, cancelAwaitDetailed, retireAnnouncement } from '../../events/await/store';
 import { cancelComposedTree } from '../../events/await/compose-store';
+import { rebaseLoopAfterAwaitCancellation } from '../../harness/routines/loop-fire';
 import { bulkContent, runBulk } from '../_bulk';
 
 const cancelItemSchema = z
@@ -130,9 +131,25 @@ export default defineTool({
           if (cancellation.cancelled) {
             out.dropped_deliveries = cancellation.droppedDeliveries;
             out.in_flight_deliveries = cancellation.inFlightDeliveries;
+            if (cancellation.eventKey != null) {
+              try {
+                const recheckScheduled = await rebaseLoopAfterAwaitCancellation({
+                  workspaceId: identity.workspaceId,
+                  targetOwnerId: identity.ownerId,
+                  eventKey: cancellation.eventKey,
+                });
+                if (recheckScheduled > 0) out.loop_recheck_scheduled = recheckScheduled;
+              } catch (error) {
+                const warning =
+                  `Await cancelled, but the loop recheck could not be scheduled: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`;
+                out.warning = out.warning ? `${out.warning} ${warning}` : warning;
+              }
+            }
             if (cancellation.inFlightDeliveries > 0) {
-              out.warning =
-                'The await was canceled, but one or more deliveries were already in flight and cannot be recalled.';
+              const warning = 'One or more deliveries were already in flight and cannot be recalled.';
+              out.warning = out.warning ? `${out.warning} ${warning}` : warning;
             }
           } else {
             out.ok = false;

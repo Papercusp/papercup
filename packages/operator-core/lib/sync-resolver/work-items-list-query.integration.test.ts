@@ -9,7 +9,8 @@ import {
   type FacetSelection,
 } from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { sealImplementationAcceptance } from '../harness/improvements/agent-review-policy';
 import {
   assertCompanionPredicateParity,
 } from './count-contract-testkit';
@@ -151,6 +152,7 @@ beforeAll(async () => {
   sql = db.sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await sql.unsafe(WORK_ITEM_DEPS_DDL);
   await sql.unsafe(SPAWNED_AGENTS_DDL);
   await sql.unsafe(WORK_ITEMS_UPDATED_INDEX_DDL);
   await sql`
@@ -190,6 +192,35 @@ afterAll(async () => {
 });
 
 describe('workItems.byHarness + workItems.summary real-PG contract', () => {
+  it('carries current acceptance, stale reasons and evidence on a bounded row without leaking payload or body', async () => {
+    const id = rowFor(DEEP).id;
+    const source = { kind: rowFor(DEEP).kind, title: 'deep-only-match', summary: 'source content' };
+    const sealed = sealImplementationAcceptance({ proposal: {
+      problem: 'A measured queue defect', evidence: ['WI-10004573'], outcome: 'Queue explains acceptance',
+      scope: 'selected harness', completionCheck: 'Read the selected row',
+    }, source, authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-filer', round: 1 },
+      reason: 'Reviewed the source evidence', acceptedAt: '2026-10-01T00:00:00.000Z' });
+    expect(sealed.ok).toBe(true);
+    if (!sealed.ok) throw new Error('fixture acceptance must seal');
+    const payload = { implementationReadiness: { schemaVersion: 'implementation-readiness-v1',
+      status: 'ready', source: 'agent-review', reason: 'Evidence reviewed', updatedAt: '2026-10-01T00:00:00.000Z',
+      evidence: { acceptance: sealed.contract } } };
+    const previous = await sql`SELECT summary, payload FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+    try {
+      await sql`UPDATE harness_shared.work_items SET summary = ${source.summary}, payload = ${sql.json(JSON.parse(JSON.stringify(payload)))} WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      const read = () => readWorkItemsPageFromStore(sql, workspaceId, buildWorkItemsPredicate(normalizeWorkItemsListArgs({ harnessSlug, filters: { id }, limit: 1 })));
+      const accepted = (await read()).rows[0]!;
+      expect(accepted.presentation).toMatchObject({ stage: 'accepted-blocked', evidenceRefs: ['WI-10004573'] });
+      expect(accepted).not.toHaveProperty('payload');
+      expect(accepted.summary).toBe('');
+      await sql`UPDATE harness_shared.work_items SET summary = 'changed source' WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+      const stale = (await read()).rows[0]!;
+      expect(stale.presentation).toMatchObject({ stage: 'candidate' });
+      expect(stale.presentation?.reason).toContain('acceptance-revision-stale');
+    } finally {
+      await sql`UPDATE harness_shared.work_items SET summary = ${previous[0]!.summary}, payload = ${sql.json(previous[0]!.payload)} WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${id}`;
+    }
+  });
   it('proves OR-within/AND-across parity, beyond-page reachability, exact zero, and cursor termination', async () => {
     const args: WorkItemsListWireArgs = {
       harnessSlug,

@@ -19,6 +19,13 @@ describe('shared work-item column definitions', () => {
   const full = buildWorkItemColumns({ isTrusted: () => false });
   const forFilters = workItemFilterColumns();
 
+  it('distinguishes acceptance from spine and lifecycle; copy includes the decision reason', () => {
+    const column = full.find(c => c.key === 'acceptance')!;
+    const row = { presentation: { stage: 'candidate', reason: 'acceptance-revision-stale' }, spineRole: 'worker', state: 'wip' };
+    expect(column.toCopyText?.(row as never)).toContain('Candidates awaiting decision or revision');
+    expect(column.toCopyText?.(row as never)).toContain('acceptance-revision-stale');
+  });
+
   it('exposes the SAME filterable columns to both panes, in the same order', () => {
     const filterable = (cols: typeof full) =>
       cols.filter((c) => c.filter != null).map((c) => c.key);

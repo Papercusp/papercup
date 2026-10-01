@@ -133,6 +133,138 @@ describe('current-build execution route contract', () => {
     expect(keys[0]).not.toBe(keys[1]);
   }, 245_000);
 
+  it('preflights a private request-only API profile and reaps its real embedding sidecar', () => {
+    const probe = `
+      import { loadHarnessRegistry } from './packages/operator-core/lib/harness-registry.ts';
+      const e = process.env;
+      const registry = await loadHarnessRegistry(e.PAPERCUSP_WORKSPACE_ID, { fresh: true });
+      const health = await (await fetch(e.PAPERCUSP_EMBED_SIDECAR_URL + '/healthz')).json();
+      console.log('API_PROFILE_PROBE ' + JSON.stringify({
+        requestOnly: e.PAPERCUSP_BACKGROUND_WORKERS === '0',
+        dbosDisabled: e.PAPERCUSP_DBOS_ENABLE === '0' && e.PAPERCUSP_DBOS_ORCHESTRATOR === '0',
+        homeRegistered: registry.projects.some(p => p.slug === e.PAPERCUSP_POT_HOME_SLUG && p.path.startsWith(e.PAPERCUSP_WORKSPACES_ROOT + '/')),
+        privateSidecar: e.PAPERCUSP_EMBED_SIDECAR_URL !== 'http://127.0.0.1:3384' && health.capabilities.includes('POST /embed'),
+        watchdogUnmodified: !e.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB && !e.PAPERCUSP_MEMORY_WATCHDOG,
+        noLiveIdentity: !e.PAPERCUSP_SID,
+        home: e.HOME, sidecarPid: health.pid, sidecarUrl: e.PAPERCUSP_EMBED_SIDECAR_URL
+      }));
+      process.exit(0);
+    `;
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root, encoding: 'utf8', timeout: 120_000,
+      env: { ...process.env, PAPERCUSP_SID: 'live-agent', PAPERCUSP_EMBED_SIDECAR_URL: 'http://127.0.0.1:3384',
+        PAPERCUSP_MEMORY_WATCHDOG: '0', PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '99999' },
+    });
+    expect(result.status, `${result.stdout.slice(-2000)}\n${result.stderr.slice(-3000)}`).toBe(0);
+    const payload = result.stdout.match(/^API_PROFILE_PROBE (.+)$/m)?.[1];
+    expect(payload).toBeTruthy();
+    const { home, sidecarPid, sidecarUrl, ...checks } = JSON.parse(payload!);
+    for (const [key, value] of Object.entries(checks)) expect(value, key).toBe(true);
+    expect(existsSync(home)).toBe(false);
+    expect(() => process.kill(sidecarPid, 0)).toThrow();
+    expect(sidecarUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  }, 125_000);
+
+  it('cleans the operator-api profile when the command fails', () => {
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '-e',
+      "console.log('FAILED_API_HOME ' + process.env.HOME); process.exit(7)"], {
+      cwd: root, encoding: 'utf8', timeout: 120_000,
+    });
+    expect(result.status, `${result.stdout.slice(-2000)}\n${result.stderr.slice(-3000)}`).toBe(7);
+    const home = result.stdout.match(/^FAILED_API_HOME (.+)$/m)?.[1];
+    expect(home).toBeTruthy();
+    expect(existsSync(home!)).toBe(false);
+  }, 125_000);
+
+  it('serves the real paired device API in the preflighted operator-api profile', () => {
+    const bundleRoot = mkdtempSync(join(tmpdir(), 'papercusp-paired-api-test-'));
+    const bundle = join(bundleRoot, 'host/hono-host.mjs');
+    symlinkSync(resolve(root, 'node_modules'), join(bundleRoot, 'node_modules'), 'dir');
+    const probe = `
+      const { spawn } = require('node:child_process');
+      const path = require('node:path');
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const base = process.env.PAPERCUSP_OPERATOR_URL;
+      const host = spawn(process.execPath, [process.env.TEST_BUNDLE_PATH], {
+        cwd: path.join(process.cwd(), 'apps/operator'), env: process.env, stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let head = '', tail = '', lastHttp = 'unreachable', paired = null;
+      for (const stream of [host.stdout, host.stderr]) stream.on('data', chunk => {
+        const text = chunk.toString(); head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
+      });
+      const call = async (route, method = 'GET', body, token) => {
+        const response = await fetch(base + route, {
+          method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000)
+        });
+        const json = await response.json();
+        if (response.status !== 200) throw new Error(route + ' returned ' + response.status + ': ' + (json.error?.code ?? json.error ?? 'unknown'));
+        return json;
+      };
+      (async () => {
+        const deadline = Date.now() + 150000;
+        let ready = false;
+        while (Date.now() < deadline) {
+          if (host.exitCode !== null || host.signalCode !== null) throw new Error('host exited ' + host.exitCode + '/' + host.signalCode);
+          try {
+            const r = await fetch(base + '/api/health/ready', { signal: AbortSignal.timeout(1500) });
+            const json = await r.json(); lastHttp = r.status + ' ' + JSON.stringify(json);
+            if (r.status === 200 && json.ready) { ready = true; break; }
+          } catch (error) { lastHttp = String(error); }
+          await wait(500);
+        }
+        if (!ready) throw new Error('request host did not become ready');
+        const mint = await call('/api/device/desktop/mint-pair-token', 'POST', { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID });
+        paired = await call('/api/device/pair', 'POST', { pairToken: mint.qrPayload.pairToken });
+        if (!paired.deviceId || !paired.deviceToken || paired.workspaceId !== process.env.PAPERCUSP_WORKSPACE_ID) throw new Error('pair identity mismatch');
+        const paths = ['/api/device/runtime-config', '/api/device/attention', '/api/device/plans', '/api/device/monitoring', '/api/device/devices'];
+        for (const route of paths) await call(route, 'GET', undefined, paired.deviceToken);
+        for (const name of ['toastLog.recent', 'auditLog.recent', 'operatorScans.running', 'harnessStatus.list', 'standingCandidates.list']) {
+          const json = await call('/api/device/rest-query?name=' + name + '&args=%7B%7D', 'GET', undefined, paired.deviceToken);
+          if (!Array.isArray(json.rows)) throw new Error('rest-query ' + name + ' did not return rows');
+        }
+        console.log('PAIRED_API_PROBE ' + JSON.stringify({ paired: true, deviceReads: paths.length, restQueries: 5, home: process.env.HOME }));
+      })().catch(error => {
+        console.error('PAIRED_API_FAILURE ' + JSON.stringify({ message: String(error), lastHttp, exitCode: host.exitCode, signalCode: host.signalCode, head, tail }));
+        process.exitCode = 1;
+      }).finally(async () => {
+        if (paired?.deviceId) {
+          try { await call('/api/device/devices/' + paired.deviceId, 'DELETE', undefined, paired.deviceToken); }
+          catch (error) { console.error('PAIR_REVOKE_FAILURE ' + String(error)); process.exitCode = 1; }
+        }
+        if (host.exitCode === null && host.signalCode === null) {
+          const exited = new Promise(resolve => host.once('exit', resolve));
+          host.kill('SIGTERM'); await Promise.race([exited, wait(5000)]);
+          if (host.exitCode === null && host.signalCode === null) { host.kill('SIGKILL'); await exited; }
+        }
+        host.stdout.destroy(); host.stderr.destroy();
+      });
+    `;
+    try {
+      const build = spawnSync('bash', [resolve(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle], {
+        cwd: resolve(root, 'apps/operator'), encoding: 'utf8', timeout: 120_000,
+      });
+      expect(build.status, `${build.stdout.slice(-2000)}\n${build.stderr.slice(-2000)}`).toBe(0);
+      const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+        '--isolated-runtime=operator-api', '--', process.execPath, '-e', probe], {
+        cwd: root, encoding: 'utf8', timeout: 210_000, env: { ...process.env, TEST_BUNDLE_PATH: bundle },
+      });
+      const failure = result.stderr.match(/^PAIRED_API_FAILURE (.+)$/m)?.[1];
+      expect(result.status, failure ?? `${result.stdout.slice(-1000)}\n${result.stderr.slice(-2000)}`).toBe(0);
+      const payload = result.stdout.match(/^PAIRED_API_PROBE (.+)$/m)?.[1];
+      expect(payload).toBeTruthy();
+      const measured = JSON.parse(payload!);
+      expect(measured.paired).toBe(true);
+      expect(measured.deviceReads).toBe(5);
+      expect(measured.restQueries).toBe(5);
+      expect(existsSync(measured.home)).toBe(false);
+    } finally {
+      rmSync(bundleRoot, { recursive: true, force: true });
+    }
+  }, 335_000);
+
   it('boots the real background host with private DBOS readiness and reaps it', () => {
     const wrapper = resolve(root, 'scripts/with-test-pg.mjs');
     const bundleRoot = mkdtempSync(join(tmpdir(), 'papercusp-current-host-test-'));

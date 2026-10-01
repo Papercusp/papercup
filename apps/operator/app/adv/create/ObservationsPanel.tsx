@@ -531,7 +531,7 @@ export default function ObservationsPanel({
             title={
               isFiltered
                 ? "Observations matching the current filter / search, out of the total"
-                : "Observations available"
+                : "Retained observation evidence, including pending and processed rows; not an awaiting-triage or delivered-work count"
             }
             style={{
               color: "var(--fg-mute)",
@@ -542,6 +542,9 @@ export default function ObservationsPanel({
             {counts.title}
           </span>
         ) : null}
+        <span style={{ color: 'var(--fg-mute)', fontSize: 11 }}>
+          Retained evidence · pending triage is tracked in the <a href="/inbox">bulk report</a>
+        </span>
         <div
           className="pc-observations__viewtoggle"
           role="group"

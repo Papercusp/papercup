@@ -10,6 +10,18 @@ huge pages before PostgreSQL starts. The unit is a
 `RequiredBy` dependency of `postgresql@18-main.service`: if Linux cannot reserve
 all pages, it fails loud and PostgreSQL does not start with a silent
 `huge_pages=try` fallback.
+
+⚠ Because PostgreSQL `Requires=` this unit, stopping or restarting it stops or
+restarts the shared PostgreSQL too (WI-10004865: one `systemctl restart` caused a
+3.5-minute fleet-wide DB outage). The unit therefore sets `RefuseManualStop=yes`,
+so `systemctl stop|restart` is refused. To re-apply the policy after editing the
+script, re-install it and RELOAD — never restart:
+
+```bash
+sudo install -o root -g root -m 0755 papercusp-host-performance.sh \
+  /etc/systemd/system/papercusp-host-performance.sh
+sudo systemctl reload papercusp-host-performance.service
+```
 The shared development host has no battery and runs latency-sensitive PostgreSQL,
 Node, TypeScript and git work continuously; the stock `powersave` governor kept
 all 128 logical CPUs near base clock even though hardware boost was enabled.
@@ -51,9 +63,10 @@ happens before PostgreSQL consumes ~32 GiB, then run
 `npx tsx scripts/pg-autotune.ts --apply` through the normal DB-resource drain.
 
 Record each root disk's previous scheduler before a manual update. Roll back with
-`sudo systemctl disable --now papercusp-host-performance.service`, remove the two
-installed files, daemon-reload, and write the prior CPU/EPP, huge-page and root
-scheduler settings back through sysfs.
+`sudo systemctl disable papercusp-host-performance.service` (no `--now`: the stop is
+refused, and would stop PostgreSQL), remove the two installed files, daemon-reload,
+and write the prior CPU/EPP, huge-page and root scheduler settings back through
+sysfs. The oneshot stays nominally active until the next reboot, which is harmless.
 
 ---
 

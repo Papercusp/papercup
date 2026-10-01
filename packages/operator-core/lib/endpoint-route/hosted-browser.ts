@@ -48,6 +48,7 @@ import {
 } from '../dbos/workspace-host-provision-workflow';
 import { dbosStarted } from '../dbos/bootstrap';
 import type { HostedFirstWorkspace } from '../auth/hosted/first-workspace';
+import { readTutorialProgress, updateTutorialProgress, tutorialProgressUpdateSchema, TutorialProgressConflict } from '../onboarding/cloud-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
 export const HOSTED_BROWSER_SSE_PATH = '/hosted/browser/sse' as const;
@@ -58,6 +59,7 @@ export const HOSTED_BROWSER_ACTION_PATH = '/hosted/browser/workspace-hosts/actio
 export const HOSTED_BROWSER_FIRST_WORKSPACE_PATH = '/hosted/browser/onboarding/first-workspace' as const;
 /** Selects the organization's existing workspace for a session that holds none. */
 export const HOSTED_BROWSER_SELECT_WORKSPACE_PATH = '/hosted/browser/onboarding/select-workspace' as const;
+export const HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH = '/hosted/browser/onboarding/tutorial-progress' as const;
 
 export const HOSTED_BROWSER_QUERY_NAME = 'workspaceHosts.control' as const;
 
@@ -70,6 +72,8 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_ACTION_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_FIRST_WORKSPACE_PATH, access: 'authenticated' },
   { method: 'POST', path: HOSTED_BROWSER_SELECT_WORKSPACE_PATH, access: 'authenticated' },
+  { method: 'GET', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
+  { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'authenticated' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {
@@ -685,8 +689,35 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
     },
   });
 
+  const tutorialProgress = (['GET', 'POST'] as const).map(method => defineTool({
+    method, path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, auth: HOSTED_VIEW_AUTH,
+    cors: { origins: [origin] }, sampleRate: 0,
+    async handler(request, ctx) {
+      const selection = selectedHostedPrincipal(ctx, controlPlaneWorkspaceId);
+      if (!selection.ok) return selection.response;
+      const { principal } = selection;
+      if (!principal.capabilities.has('workspace:view')) return jsonError('permission_missing', 403);
+      const headerError = workspaceHeaderMismatch(request, principal, controlPlaneWorkspaceId);
+      if (headerError) return headerError;
+      if (method === 'POST') {
+        const csrf = exactOriginOr403(request, origin);
+        if (csrf) return csrf;
+      }
+      const scope = { tenantId: principal.activeOrganizationId, userId: principal.userId, workspaceId: principal.selectedWorkspaceId! };
+      const parsed = method === 'POST' ? tutorialProgressUpdateSchema.safeParse(await request.json().catch(() => null)) : null;
+      if (parsed && !parsed.success) return jsonError('invalid_tutorial_progress', 400);
+      try {
+        const record = await wrapTenantRead(principal, runTenant, tx => parsed?.success
+          ? updateTutorialProgress(tx, scope, parsed.data) : readTutorialProgress(tx, scope));
+        return Response.json({ record }, { headers: { 'cache-control': 'no-store' } });
+      } catch (error) {
+        if (error instanceof TutorialProgressConflict) return Response.json({ error: 'tutorial_progress_conflict', record: error.current }, { status: 409, headers: { 'cache-control': 'no-store' } });
+        return jsonError('tutorial_progress_unavailable', 503);
+      }
+    },
+  }));
   return {
-    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace],
+    routes: [query, sse, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }

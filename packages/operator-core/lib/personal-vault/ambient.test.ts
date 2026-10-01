@@ -58,6 +58,11 @@ function deps(overrides: Partial<PersonalAmbientDeps> = {}): PersonalAmbientDeps
     }),
     embedQuery: vi.fn().mockResolvedValue([0.1, 0.2]),
     search: vi.fn().mockResolvedValue([result()]),
+    disclose: vi.fn(async (_sql: Sql, params: { documents: PersonalSearchResult[] }) => ({
+      documents: params.documents.map((doc) => ({ ...doc, privacy: null })),
+      withheld: 0,
+      disclosed: 0,
+    })),
     ...overrides,
   };
 }
@@ -171,6 +176,33 @@ describe('buildPersonalAmbientContextBlock', () => {
     const d = deps({
       resolveContext: vi.fn().mockRejectedValue(new Error('database unavailable')),
     });
+    await expect(buildPersonalAmbientContextBlock(input, d)).resolves.toBeNull();
+  });
+
+  it('records a disclosure against the session identity and renders the restriction', async () => {
+    const disclose = vi.fn(async (_sql: Sql, params: { documents: PersonalSearchResult[] }) => ({
+      documents: params.documents.map((doc) => ({
+        ...doc,
+        privacy: { level: 'sender-only' as const, readerSet: ['alex@example.com'] },
+      })),
+      withheld: 0,
+      disclosed: params.documents.length,
+    }));
+    const d = deps({ disclose });
+
+    const block = await buildPersonalAmbientContextBlock(input, d);
+
+    expect(disclose).toHaveBeenCalledWith(d.sql, {
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      agentOwnerId: 'meeting-prep-run-1',
+      documents: [result()],
+    });
+    expect(block).toContain('(restricted sender-only: send only to alex@example.com or the owner)');
+  });
+
+  it('withholds the whole block when the disclosure cannot be recorded', async () => {
+    const d = deps({ disclose: vi.fn().mockRejectedValue(new Error('ledger unavailable')) });
     await expect(buildPersonalAmbientContextBlock(input, d)).resolves.toBeNull();
   });
 });

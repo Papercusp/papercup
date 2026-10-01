@@ -15,6 +15,10 @@ import {
   observationLaneExclusionSql,
   type OrgSql,
 } from '../work-items';
+import { deriveWorkItemPresentationStage, readImplementationReadiness } from '../harness/improvements/agent-review-policy';
+import type { WorkItemPresentation } from '../work-item-presentation-contract';
+import { activeWorkItemDependencyRefsSql } from '../dbos/work-item-deps-store';
+import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 
 export const WORK_ITEMS_CURSOR_PAGE_LIMIT = 500;
 export const WORK_ITEMS_FAIR_STATE_LIMIT = 200;
@@ -103,6 +107,7 @@ export interface WorkItemsListRow {
   origin: string | null;
   auditVerdict: string | null;
   verifiedAuthorGithubUserId: number | null;
+  presentation?: WorkItemPresentation;
 }
 
 const uniq = (values: readonly string[] | undefined): string[] =>
@@ -280,6 +285,7 @@ function scopedCtes(
     ),
     scoped AS (
       SELECT wi.feature_id AS id,
+             wi.harness_slug,
              wi.item_kind AS kind,
              CASE WHEN wi.item_kind = ANY(ARRAY['bug','change','task']::text[])
                   THEN 'issue' ELSE 'feature' END AS family,
@@ -310,6 +316,7 @@ function scopedCtes(
 
 interface WorkItemsDbRow {
   id: string;
+  harnessSlug: string;
   kind: string;
   family: 'feature' | 'issue';
   title: string;
@@ -361,6 +368,7 @@ function mapWorkItemsRow(row: WorkItemsDbRow): WorkItemsListRow & { updatedTs: n
 
 const selectListColumns = (sql: OrgSql) => sql`
   id,
+  harness_slug AS "harnessSlug",
   kind,
   family,
   title,
@@ -377,6 +385,58 @@ const selectListColumns = (sql: OrgSql) => sql`
   origin,
   audit_verdict AS "auditVerdict",
   verified_author_github_user_id AS "verifiedAuthorGithubUserId"`;
+
+/** Reuse the acceptance classifier only for the bounded page (or one detail row).
+ * Full payloads and source bodies never enter the list wire or summary census.
+ */
+export async function readWorkItemPresentations(
+  sql: OrgSql,
+  workspaceId: string,
+  selected: readonly { id: string; harnessSlug: string }[],
+): Promise<Map<string, WorkItemPresentation>> {
+  if (selected.length === 0) return new Map();
+  const rows = await sql<{
+    id: string; harnessSlug: string; kind: string; status: string;
+    title: string; summary: string | null; payload: unknown;
+    assignee: string | null; terminalOwner: string | null;
+    terminalCompletionRef: string | null; completionAuthority: string | null; blocked: boolean;
+  }[]>`
+    WITH active_dependencies AS (${activeWorkItemDependencyRefsSql(sql, {
+      itemWorkspaceId: workspaceId,
+      successfulStates: [...ALL_SUCCESSFUL_STATUSES], terminalStates: [...ALL_TERMINAL_STATUSES],
+    })})
+    SELECT wi.feature_id AS id, wi.harness_slug AS "harnessSlug",
+           wi.item_kind AS kind, wi.status, wi.title, wi.summary,
+           -- Preserve absent versus enrolled-null readiness. Only narrow fields
+           -- needed by the shared classifier leave this bounded SQL read.
+           (CASE WHEN wi.payload ? 'implementationReadiness'
+             THEN jsonb_build_object('implementationReadiness', wi.payload->'implementationReadiness')
+             ELSE '{}'::jsonb END) || jsonb_build_object(
+             'lane', wi.payload->'lane', '_claimHold', wi.payload->'_claimHold',
+             'needsOwnerAction', wi.payload->'needsOwnerAction',
+             'humanCapability', wi.payload->'humanCapability',
+             'externalBlockers', wi.payload->'externalBlockers') AS payload,
+           wi.taken_by AS assignee, wi.terminal_owner AS "terminalOwner",
+           wi.terminal_completion_ref AS "terminalCompletionRef", wi.authority AS "completionAuthority",
+           EXISTS (SELECT 1 FROM active_dependencies d
+             WHERE d.blocked_ref IN (wi.feature_id, wi.harness_slug || '#' || wi.feature_id)) AS blocked
+      FROM harness_shared.work_items wi
+      JOIN unnest(${selected.map(r => r.id)}::text[], ${selected.map(r => r.harnessSlug)}::text[])
+        AS requested(id, harness) ON wi.feature_id = requested.id AND wi.harness_slug = requested.harness
+     WHERE wi.workspace_id = ${workspaceId} AND wi.item_kind = ANY(ARRAY['bug','change','task']::text[])`;
+  return new Map(rows.map((row): [string, WorkItemPresentation] => {
+    const decision = deriveWorkItemPresentationStage(row);
+    const readiness = readImplementationReadiness(row.payload);
+    const refs = readiness?.evidence?.acceptance?.evidence;
+    const evidenceRefs = Array.isArray(refs) ? refs : [];
+    return [`${row.harnessSlug}#${row.id}`, {
+      stage: decision.stage,
+      reason: decision.reason + (readiness?.reason ? `: ${readiness.reason.slice(0, 500)}` : ''),
+      evidenceRefs: evidenceRefs.filter((ref): ref is string => typeof ref === 'string').slice(0, 8).map(ref => ref.slice(0, 500)),
+      completionRef: row.terminalCompletionRef?.slice(0, 500) ?? null,
+    }];
+  }));
+}
 
 export async function readWorkItemsPageFromStore(
   sql: OrgSql,
@@ -401,7 +461,8 @@ export async function readWorkItemsPageFromStore(
         FROM ranked
        WHERE state_rank <= ${args.perState}
        ORDER BY updated_ts DESC, id DESC`;
-    return { rows: rows.map(mapWorkItemsRow), nextCursor: null, hasMore: false };
+    const presentations = await readWorkItemPresentations(sql, workspaceId, rows);
+    return { rows: rows.map(row => ({ ...mapWorkItemsRow(row), presentation: presentations.get(`${row.harnessSlug}#${row.id}`) })), nextCursor: null, hasMore: false };
   }
 
   const rows = await sql<WorkItemsDbRow[]>`
@@ -418,7 +479,8 @@ export async function readWorkItemsPageFromStore(
      LIMIT ${args.limit + 1}`;
   const hasMore = rows.length > args.limit;
   const pageRows = hasMore ? rows.slice(0, args.limit) : rows;
-  const mapped = pageRows.map(mapWorkItemsRow);
+  const presentations = await readWorkItemPresentations(sql, workspaceId, pageRows);
+  const mapped = pageRows.map(row => ({ ...mapWorkItemsRow(row), presentation: presentations.get(`${row.harnessSlug}#${row.id}`) }));
   const tail = mapped[mapped.length - 1];
   return {
     rows: mapped.map(({ updatedTs: _updatedTs, ...row }) => row),

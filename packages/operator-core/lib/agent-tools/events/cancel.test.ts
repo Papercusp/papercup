@@ -21,9 +21,13 @@ vi.mock('../../events/await/store', () => ({
   ackDelivery: vi.fn(),
   retireAnnouncement: vi.fn(),
 }));
+vi.mock('../../harness/routines/loop-fire', () => ({
+  rebaseLoopAfterAwaitCancellation: vi.fn(),
+}));
 
 import cancel from './cancel';
 import { cancelAwaitDetailed, ackDelivery, retireAnnouncement } from '../../events/await/store';
+import { rebaseLoopAfterAwaitCancellation } from '../../harness/routines/loop-fire';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof cancel.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -31,7 +35,10 @@ const call = async (args: Record<string, unknown>) => {
   return res.data ?? JSON.parse(res.content![0].text);
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(rebaseLoopAfterAwaitCancellation).mockResolvedValue(0);
+});
 
 const cancelledAwait = (overrides: Record<string, unknown> = {}) => ({
   awaitId: 7,
@@ -74,6 +81,20 @@ describe('events:cancel dual-path result', () => {
     expect(out.results[0].error).toBeUndefined();
   });
 
+  it('rechecks the owner loop cadence after a successful await cancellation', async () => {
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
+    vi.mocked(rebaseLoopAfterAwaitCancellation).mockResolvedValue(1);
+
+    const out = await call({ await_id: 7 });
+
+    expect(rebaseLoopAfterAwaitCancellation).toHaveBeenCalledWith({
+      workspaceId: 'ws-x',
+      targetOwnerId: 'su-canceller',
+      eventKey: 'work-item:claimable',
+    });
+    expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, loop_recheck_scheduled: 1 });
+  });
+
   it('cancel-only miss → ok:false + the not_found reason', async () => {
     vi.mocked(cancelAwaitDetailed).mockResolvedValue({
       awaitId: 7,
@@ -83,6 +104,7 @@ describe('events:cancel dual-path result', () => {
     });
     const out = await call({ await_id: 7 });
     expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 }, results: [{ ok: false, await_id: 7, cancelled: false, error: 'not_found_or_not_yours_or_already_settled' }] });
+    expect(rebaseLoopAfterAwaitCancellation).not.toHaveBeenCalled();
   });
 
   it('ack-only success → ok:true, acked:true', async () => {

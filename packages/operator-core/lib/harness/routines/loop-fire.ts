@@ -431,6 +431,67 @@ export async function rescheduleLoopAfterAwaitSuppression(input: SuppressedLoopR
   return rows.length > 0;
 }
 
+/**
+ * Revisit an active work loop after its owner explicitly cancels an await. Await suppression
+ * schedules a finite loop at the await's next resume threshold; if the owner clears that await
+ * early, leaving that deadline installed silently extends the loop's idle period. Pull only
+ * delayed pure interval loops back to one configured interval from now. An in-flight loop is
+ * parked at infinity and is deliberately left for its normal completion rebase.
+ */
+export async function rebaseLoopAfterAwaitCancellation(input: {
+  workspaceId: string;
+  targetOwnerId: string;
+  eventKey: string;
+  sql?: Sql;
+}): Promise<number> {
+  const db = input.sql ?? getOrgPg().sql;
+  const workspaceId = resolveConcreteWorkspaceId(input.workspaceId);
+  const rows = await db<{
+    id: string;
+    workspace_id: string;
+    install_slug: string;
+    name: string;
+    target_owner_id: string;
+    reschedule_interval_sec: number | string;
+    next_fire_at: Date | string;
+  }[]>`
+    UPDATE harness_shared.routines
+       SET next_fire_at = now() + (reschedule_interval_sec * interval '1 second'),
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND target_owner_id = ${input.targetOwnerId}
+       AND active = TRUE
+       AND reschedule_interval_sec IS NOT NULL
+       AND reschedule_interval_sec > 0
+       AND next_fire_at <> 'infinity'::timestamptz
+       AND next_fire_at > now() + (reschedule_interval_sec * interval '1 second')
+       AND COALESCE(payload_template->>'mode', 'work') <> 'monitor'
+       AND NOT jsonb_exists(trigger_config, 'cron')
+       AND NOT jsonb_exists(trigger_config, 'rrule')
+     RETURNING id, workspace_id, install_slug, name, target_owner_id,
+               reschedule_interval_sec, next_fire_at
+  `;
+
+  for (const row of rows) {
+    const nextFireAt =
+      row.next_fire_at instanceof Date ? row.next_fire_at.toISOString() : new Date(String(row.next_fire_at)).toISOString();
+    void recordLoopTransition(db, {
+      workspaceId: row.workspace_id,
+      installSlug: row.install_slug,
+      routineId: row.id,
+      routineName: row.name,
+      targetOwnerId: row.target_owner_id,
+      event: 'rearmed',
+      actor: 'await-cancel-recheck',
+      newNextFireAt: nextFireAt,
+      intervalSec: Number(row.reschedule_interval_sec),
+      detail: { via: 'await-cancel-recheck', canceledEventKey: input.eventKey },
+    });
+  }
+
+  return rows.length;
+}
+
 /** Read the loop kickoff (wake-turn text) from the routine's payload_template, if any. */
 export function readLoopKickoff(payloadTemplate: Record<string, unknown> | null): string | undefined {
   const k = payloadTemplate?.kickoff;

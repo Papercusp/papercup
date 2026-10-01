@@ -11,6 +11,7 @@ import {
   loopCheckpointStaleMs,
   decideLoopAwaitSuppression,
   rescheduleLoopAfterAwaitSuppression,
+  rebaseLoopAfterAwaitCancellation,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
   LOOP_WAKE_CHECKPOINT_MAX_CHARS,
   LOOP_WAKE_EXPANDED_VERIFIED_CHECKS,
@@ -154,6 +155,77 @@ describe('rescheduleLoopAfterAwaitSuppression — parked-loop CAS (EI-2135060992
         JSON.stringify({ via: 'await-suppression', drivingEventKey: 'work-item:claimable' }),
       ]),
     );
+  });
+});
+
+describe('rebaseLoopAfterAwaitCancellation — clear a deferred deadline (EI-24186993763548105)', () => {
+  it('moves a finite delayed pure-loop wake back to one configured interval after cancellation', async () => {
+    const statements: string[] = [];
+    const values: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+      statements.push(strings.join(' ? '));
+      values.push(args);
+      if (statements.length === 1) {
+        return Promise.resolve([{
+          id: 'rt-delayed',
+          workspace_id: 'papercusp-workspace',
+          install_slug: 'papercusp',
+          name: 'loop-su-pinned',
+          target_owner_id: 'su-pinned',
+          reschedule_interval_sec: 60,
+          next_fire_at: '2026-10-01T14:05:00.000Z',
+        }]);
+      }
+      return Promise.resolve([]);
+    }) as never;
+
+    await expect(rebaseLoopAfterAwaitCancellation({
+      sql,
+      workspaceId: 'papercusp-workspace',
+      targetOwnerId: 'su-pinned',
+      eventKey: 'session:compacted:su-pinned',
+    })).resolves.toBe(1);
+
+    expect(statements[0]).toContain("SET next_fire_at = now() + (reschedule_interval_sec * interval '1 second')");
+    expect(statements[0]).toContain("next_fire_at <> 'infinity'::timestamptz");
+    expect(statements[0]).toContain("next_fire_at > now() + (reschedule_interval_sec * interval '1 second')");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'cron')");
+    expect(statements[0]).toContain("NOT jsonb_exists(trigger_config, 'rrule')");
+    expect(values[0]).toEqual(expect.arrayContaining(['papercusp-workspace', 'su-pinned']));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    const insertIndex = statements.findIndex((statement) =>
+      statement.includes('INSERT INTO harness_shared.routine_loop_transitions'),
+    );
+    expect(insertIndex).toBeGreaterThan(0);
+    expect(values[insertIndex]).toEqual(expect.arrayContaining([
+      'papercusp-workspace',
+      'papercusp',
+      'rt-delayed',
+      'loop-su-pinned',
+      'su-pinned',
+      'rearmed',
+      'await-cancel-recheck',
+      '2026-10-01T14:05:00.000Z',
+      60,
+      JSON.stringify({ via: 'await-cancel-recheck', canceledEventKey: 'session:compacted:su-pinned' }),
+    ]));
+  });
+
+  it('does not record a re-arm when no loop schedule is moved', async () => {
+    const statements: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      statements.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    }) as never;
+
+    await expect(rebaseLoopAfterAwaitCancellation({
+      sql,
+      workspaceId: 'papercusp-workspace',
+      targetOwnerId: 'su-pinned',
+      eventKey: 'work-item:claimable',
+    })).resolves.toBe(0);
+    expect(statements).toHaveLength(1);
   });
 });
 

@@ -361,8 +361,12 @@ export interface GateCollisionProbeDeps {
  * harness, and every harness's row carries the same `:15` schedule), so an under-scoped read
  * returns some other harness's row — well-formed, confident, wrong. A zero-row result fails
  * open, which is the safe direction here.
+ *
+ * Also read by the green checkpoint's post-verdict pure-lane proof capture
+ * (scripts/lib/pure-lane-proof-capture.mjs), which stops before a slice that would run into
+ * the next fire.
  */
-async function defaultReadNextFireInSec(): Promise<number | null> {
+export async function readGreenCheckpointNextFireInSec(): Promise<number | null> {
   const [{ operatorHomeHarnessSlug }, { getOrgPg }, { activeWorkspaceId }] = await Promise.all([
     import('../harness/operator-home-harness'),
     import('@papercusp/db-org'),
@@ -395,7 +399,7 @@ async function defaultDeps(): Promise<GateCollisionProbeDeps> {
     readRunLock: () => isCheckpointRunLockHeldCheap(integrationRoot()),
     readRunLockCgroup: defaultReadProcessCgroup,
     readTargetCgroup: defaultReadTargetCgroup,
-    readNextFireInSec: defaultReadNextFireInSec,
+    readNextFireInSec: readGreenCheckpointNextFireInSec,
     readRefire: () => readInFlightRetriage(),
   };
 }

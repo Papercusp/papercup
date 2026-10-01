@@ -106,6 +106,10 @@
     // Imported by apps/operator/lib/release/green-checkpoint.ts (runGateAtRef) and directly by
     // targeted-task-reuse.test.ts.
     "scripts/lib/targeted-task-reuse.mjs",
+    // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1) — post-verdict pure-lane proof capture.
+    // Imported by apps/operator/lib/release/green-checkpoint.ts (runPostVerdictPureProofCapture)
+    // and directly by pure-lane-proof-capture.test.ts.
+    "scripts/lib/pure-lane-proof-capture.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure

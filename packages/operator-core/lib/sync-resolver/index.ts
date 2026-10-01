@@ -61,6 +61,7 @@ import {
   buildWorkItemsPredicate,
   normalizeWorkItemsListArgs,
   readWorkItemsPageFromStore,
+  readWorkItemPresentations,
   readWorkItemsSummaryFromStore,
   workItemsSummarySelection,
   type WorkItemsListWireArgs,
@@ -2939,7 +2940,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { harnessSlug, id } = args as { harnessSlug: string; id: string };
       const { getEnrichedWorkItem } = await import('../endpoint-route/routes/harness/work-items');
       const item = await getEnrichedWorkItem(harnessSlug, id);
-      return item ? [item] : [];
+      if (!item) return [];
+      const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+        import('@papercusp/db-org'), import('../workspace-registry'),
+      ]);
+      const presentations = await readWorkItemPresentations(getOrgPg().sql, activeWorkspaceId(), [{ id, harnessSlug }]);
+      return [{ ...item, presentation: presentations.get(`${harnessSlug}#${id}`) }];
     },
   },
 

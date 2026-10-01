@@ -30,7 +30,9 @@ import WorkItemDiscussion, {
 import {
   decodeScopedRef,
   encodeScopedRef,
+  CHAT_PLAN_POPUP_PARAM,
 } from '../../_components/chat/chat-ref-popup-params';
+import { WORK_ITEM_PRESENTATION_LABELS, WORK_ITEM_PRESENTATION_REASONS } from '@papercusp/operator-core/lib/work-item-presentation-contract';
 
 // work-item-status-full-unify P-007: the settable feature statuses are the UNIFIED
 // lifecycle tokens (feature `todo`→`open`, `passed`→`done`, `deprecated`→`dropped`;
@@ -488,6 +490,7 @@ export function WorkItemDetail({
   showDiscussionAction?: boolean;
 }) {
   const [openingChat, setOpeningChat] = useState(false);
+  const [, setAcceptancePlan] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
   const openChat = async () => {
     setOpeningChat(true);
     try {
@@ -525,6 +528,11 @@ export function WorkItemDetail({
         <StatusPill status={workItem.state as HarnessStatus} size="xs" />
       ),
     ],
+    ['Acceptance', workItem.presentation ? WORK_ITEM_PRESENTATION_LABELS[workItem.presentation.stage] : '—'],
+    ['Reason', workItem.presentation ? (() => {
+      const [reason, ...detail] = workItem.presentation.reason.split(': ');
+      return `${WORK_ITEM_PRESENTATION_REASONS[reason] ?? reason}${detail.length ? `: ${detail.join(': ')}` : ''}`;
+    })() : '—'],
     ['Severity', workItem.severity ? <SeverityPill severity={workItem.severity} size="xs" /> : '—'],
     [
       'Assignee',
@@ -567,10 +575,27 @@ export function WorkItemDetail({
           {workItem.planSlug ? (
             <div className="pc-adv-detail__field-row">
               <span className="pc-adv-detail__field-label">Plan</span>
-              <code className="pc-adv-detail__pointer">{workItem.planSlug}</code>
+              <button type="button" className="pc-adv-detail__link pc-adv-detail__link-btn"
+                onClick={() => void setAcceptancePlan(encodeScopedRef(slug, workItem.planSlug!))}>
+                {workItem.planSlug} · decisions
+              </button>
             </div>
           ) : null}
         </div>
+        {workItem.presentation && (workItem.presentation.evidenceRefs.length > 0 || workItem.presentation.completionRef) ? (
+          <div className="pc-adv-detail__section" aria-label="Acceptance evidence">
+            <h3>Acceptance evidence and completion</h3>
+            {[...workItem.presentation.evidenceRefs, ...(workItem.presentation.completionRef ? [workItem.presentation.completionRef] : [])].map((ref, index) => (
+              <div key={`${ref}-${index}`}>
+                {/^(WI|EI|F|I|BA)-\d+$/.test(ref) ? (
+                  <button type="button" className="pc-adv-detail__link pc-adv-detail__link-btn" onClick={() => onSelect(ref)}>{ref}</button>
+                ) : /^https?:\/\//.test(ref) ? (
+                  <a className="pc-adv-detail__link" href={ref} target="_blank" rel="noreferrer">{ref}</a>
+                ) : <code className="pc-adv-detail__pointer">{ref}</code>}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {workItem.summary ? (
           <div className="pc-adv-detail__section">
             <div className="pc-adv-detail__prose">{workItem.summary}</div>

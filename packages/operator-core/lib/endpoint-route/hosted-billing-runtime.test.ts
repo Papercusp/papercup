@@ -23,11 +23,13 @@ import type {
 import type { HostedSubscriptionSnapshot } from '../auth/hosted/billing/entitlement-seam';
 import type { HostedBillingEvent } from '../auth/hosted/billing/stripe-billing-events';
 import { computeStripeSignature } from '../cupboard/payment-adapters/stripe';
+import type { CustomerReceiptEntry } from '../cupboard/payment-receipt-store';
 import { webhookBodyDigest } from '../cupboard/webhook-inbox';
 import {
   HOSTED_BILLING_RUNTIME_MOUNTED_ROUTE_KEYS,
   createHostedBillingRuntime,
   parseHostedBillingPlans,
+  parseReceiptsWorkspaceId,
   parseStripePortalConfigurationId,
   readHostedBillingRuntimeConfiguration,
   type HostedBillingRuntimeConfiguration,
@@ -254,7 +256,20 @@ describe('hosted billing configuration parsing', () => {
       stripeWebhookSecretRef: null,
       plans: [{ planKey: 'team', priceId: 'price_1', label: 'Team', description: null }],
       stripePortalConfigurationId: 'bpc_9',
+      receiptsWorkspaceId: null,
     });
+    expect(readHostedBillingRuntimeConfiguration({
+      PAPERCUSP_HOSTED_PUBLIC_ORIGIN: ORIGIN,
+      PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID: ' papercusp-workspace ',
+    }).receiptsWorkspaceId).toBe('papercusp-workspace');
+  });
+
+  it('accepts an absent or valid receipts workspace id and refuses a malformed one', () => {
+    expect(parseReceiptsWorkspaceId(undefined)).toBeNull();
+    expect(parseReceiptsWorkspaceId('  ')).toBeNull();
+    expect(parseReceiptsWorkspaceId('ws_platform-1.prod')).toBe('ws_platform-1.prod');
+    expect(() => parseReceiptsWorkspaceId('ws;drop')).toThrow('PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID');
+    expect(() => parseReceiptsWorkspaceId('-leading-dash')).toThrow('PAPERCUSP_HOSTED_BILLING_RECEIPTS_WORKSPACE_ID');
   });
 });
 
@@ -516,6 +531,117 @@ describe('POST /hosted/billing/portal', () => {
     store.customers.set(ORG, { organizationId: ORG, stripeCustomerId: 'cus_A', livemode: false });
     await app.request('/api/hosted/billing/portal', post({ cookie: 'owner' }));
     expect(stripe.calls[0]!.form.has('configuration')).toBe(false);
+  });
+});
+
+// ── payment receipts (P-046, WI-10004802) ───────────────────────────────────
+
+const RECEIPT_CREATED = 1_790_000_000;
+const anchoredEntry = (id: string): CustomerReceiptEntry => ({
+  balanceTransactionId: id,
+  created: RECEIPT_CREATED + 60,
+  amount: 2500,
+  currency: 'usd',
+  result: { ok: true, receipt: { format: 'papercusp.payment-receipt', transaction: { id } } as never },
+});
+const pendingEntry = (id: string): CustomerReceiptEntry => ({
+  balanceTransactionId: id,
+  created: RECEIPT_CREATED,
+  amount: 1000,
+  currency: 'usd',
+  result: { ok: false, error: 'not-in-log' },
+});
+
+describe('GET /hosted/billing/receipts', () => {
+  it('answers 503 receipts_unavailable when no receipts source is configured', async () => {
+    const { app } = await runtime();
+    const response = await app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, error: { code: 'receipts_unavailable' } });
+  });
+
+  it('refuses a member who cannot manage billing before the receipts source is asked', async () => {
+    const receipts = vi.fn(async () => [anchoredEntry('txn_a')]);
+    const { app, store } = await runtime({ deps: { receipts } });
+    store.customers.set(ORG, { organizationId: ORG, stripeCustomerId: 'cus_A', livemode: false });
+    const member = await app.request('/api/hosted/billing/receipts', get('member'));
+    expect(member.status).toBe(403);
+    expect(await member.json()).toMatchObject({ error: { code: 'forbidden', message: 'permission_missing' } });
+    const anonymous = await app.request('/api/hosted/billing/receipts', get());
+    expect(anonymous.status).toBe(401);
+    expect(receipts).not.toHaveBeenCalled();
+  });
+
+  it('an organization with no billing customer has an empty list and the source is never asked', async () => {
+    const receipts = vi.fn(async () => [anchoredEntry('txn_a')]);
+    const { app } = await runtime({ deps: { receipts } });
+    const response = await app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, receipts: [] });
+    expect(receipts).not.toHaveBeenCalled();
+  });
+
+  it("asks the source for the org's own customer only, and reports anchored and pending receipts in its order", async () => {
+    const receipts = vi.fn(async () => [anchoredEntry('txn_b'), pendingEntry('txn_a')]);
+    const { app, store } = await runtime({ deps: { receipts } });
+    store.customers.set(ORG, { organizationId: ORG, stripeCustomerId: 'cus_A', livemode: false });
+    store.customers.set('other-org', { organizationId: 'other-org', stripeCustomerId: 'cus_OTHER', livemode: false });
+    const response = await app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(receipts.mock.calls).toEqual([['cus_A']]);
+    expect(await response.json()).toEqual({
+      ok: true,
+      receipts: [
+        {
+          balanceTransactionId: 'txn_b',
+          created: new Date((RECEIPT_CREATED + 60) * 1000).toISOString(),
+          amount: 2500,
+          currency: 'usd',
+          status: 'anchored',
+          pendingReason: null,
+          receipt: { format: 'papercusp.payment-receipt', transaction: { id: 'txn_b' } },
+        },
+        {
+          balanceTransactionId: 'txn_a',
+          created: new Date(RECEIPT_CREATED * 1000).toISOString(),
+          amount: 1000,
+          currency: 'usd',
+          status: 'not-yet-anchored',
+          pendingReason: 'not-in-log',
+          receipt: null,
+        },
+      ],
+    });
+  });
+
+  it('a billing-store or receipts-source outage is 503, never an empty list', async () => {
+    const failing = await runtime({ deps: { receipts: async () => { throw new Error('ledger down'); } } });
+    failing.store.customers.set(ORG, { organizationId: ORG, stripeCustomerId: 'cus_A', livemode: false });
+    const sourceDown = await failing.app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(sourceDown.status).toBe(503);
+    expect(await sourceDown.json()).toMatchObject({ error: { code: 'receipts_unavailable' } });
+
+    const storeDown = await runtime({ deps: { receipts: async () => [] } });
+    storeDown.store.failReads = true;
+    const response = await storeDown.app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: 'billing_store_unavailable' } });
+  });
+
+  it('a configured receipts workspace reads inside that workspace context', async () => {
+    const seen: string[] = [];
+    const { app, store } = await runtime({
+      config: { receiptsWorkspaceId: 'ws-platform' },
+      deps: {
+        runWorkspace: async <T,>(workspaceId: string) => {
+          seen.push(workspaceId);
+          return [] as unknown as T;
+        },
+      },
+    });
+    store.customers.set(ORG, { organizationId: ORG, stripeCustomerId: 'cus_A', livemode: false });
+    const response = await app.request('/api/hosted/billing/receipts', get('owner'));
+    expect(await response.json()).toEqual({ ok: true, receipts: [] });
+    expect(seen).toEqual(['ws-platform']);
   });
 });
 
