@@ -281,8 +281,11 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     writeFileSync(join(repo, 'guard.cjs'), "if (require('./subject.cjs') !== 1) process.exit(1);\n");
     // The mirror symlinks guard.cjs to the real tree. Node (like Vite) resolves
     // that symlink before loading its relative import, bypassing the mutant.
+    // Pinned to the mirror: that is the relocation this control guards. The
+    // overlay has no such route (see the EI-24799401310241778 block below).
     const { code, out } = runProbeIO([
       '--file', modulePath,
+      '--relocation', 'mirror',
       '--mutate', 's/module.exports = 1;/module.exports = 2;/',
       '--test', 'node "$(dirname {})/guard.cjs"',
     ]);
@@ -546,6 +549,8 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     const { code, out } = runProbeIO([
       '--file',
       relocSubject,
+      // Flat relocation is the subject here; the overlay never relocates.
+      '--relocation', 'mirror',
       // Any non-no-op mutation: copy-baseline runs BEFORE this is applied, so
       // the exact mutation text is irrelevant to what this test proves — the
       // refusal must fire before the mutant guard, let alone the mutation
@@ -602,6 +607,8 @@ describe('mutation-probe.sh — copy-out relocation is proven sound before scori
     const code = runProbe([
       '--file',
       relocSubject,
+      // Flat relocation is the subject here; the overlay never relocates.
+      '--relocation', 'mirror',
       '--mutate',
       's/helperValue;/helperValue + 1;/',
       '--test',
@@ -684,6 +691,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
       .toBe(superproject);
     const { code, out } = runProbeIO([
       '--file', file,
+      '--relocation', 'mirror',
       '--mutate', "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
       '--test', "node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'",
     ]);
@@ -698,6 +706,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       subject,
+      '--relocation', 'mirror',
       '--mutate',
       "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
       '--test',
@@ -722,6 +731,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       subject,
+      '--relocation', 'mirror',
       '--mutate',
       "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
       '--test',
@@ -759,6 +769,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       gitSubject,
+      '--relocation', 'mirror',
       '--mutate',
       's/echo MARK/echo MUTATED/',
       '--test',
@@ -785,6 +796,7 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     const { code, out } = runProbeIO([
       '--file',
       orphan,
+      '--relocation', 'mirror',
       '--mutate',
       's/export const value = v;/export const value = v + 1;/',
       '--test',
@@ -793,6 +805,131 @@ describe('mutation-probe.sh — copy-out relocates into a mirror of the subject 
     expect(out).not.toMatch(/relocating into a repo mirror/);
     expect(out).toMatch(/COPY-BASELINE FAILED/);
     expect(code).toBe(2);
+  });
+});
+
+/**
+ * EI-24799401310241778 (measured 2026-10-01): the mirror symlinks every sibling
+ * back to the origin, and Node/Vite REALPATH a module before resolving its
+ * relative imports. A test that imports {} directly (so the module-load control
+ * passes) but asserts through a SIBLING that imports `./subject` therefore
+ * exercises the ORIGINAL: a false SURVIVED. Measured on credential-store.ts via
+ * request-kernel.ts: copy-out SURVIVED, in-tree CAUGHT.
+ *
+ * The overlay binds the mutant over the subject's own path inside a private
+ * mount namespace, so every route reaches it. The mirror runs below are the
+ * calibration: they prove this fixture really exercises the defect, so the
+ * overlay's CAUGHT is the fix and not a fixture that could never survive.
+ */
+const overlayWorks = (() => {
+  const probeDir = mkdtempSync(join(tmpdir(), 'mutation-probe-overlay-check-'));
+  try {
+    const src = join(probeDir, 'src');
+    const dst = join(probeDir, 'dst');
+    writeFileSync(src, 'overlay\n');
+    writeFileSync(dst, 'original\n');
+    const r = spawnSync('bwrap', ['--dev-bind', '/', '/', '--bind', src, dst, '--', 'cat', dst], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    return r.status === 0 && r.stdout === 'overlay\n';
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
+
+function makeSiblingRouteRepo(): { repo: string; subject: string } {
+  const repo = join(dir, 'sibling-route-repo');
+  mkdirSync(repo);
+  git(repo, ['init', '-q']);
+  const subjectPath = join(repo, 'subject.cjs');
+  writeFileSync(subjectPath, 'module.exports = 1;\n');
+  // The sibling reaches the subject by a RELATIVE import — the route the mirror loses.
+  writeFileSync(join(repo, 'sib.cjs'), "module.exports = () => require('./subject.cjs');\n");
+  return { repo, subject: subjectPath };
+}
+
+/** Loads {} directly (module-load control passes) but ASSERTS only through the sibling. */
+const SIBLING_ROUTE_GUARD =
+  'node -e "const p = process.argv[1]; require(p); if (require(require(\'path\').dirname(p) + \'/sib.cjs\')() !== 1) process.exit(1)" {}';
+
+describe('mutation-probe.sh — copy-out overlay reaches the mutant through every route (EI-24799401310241778)', () => {
+  it('calibration: the MIRROR false-SURVIVES when the test reaches the subject only through a sibling', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--relocation', 'mirror',
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', SIBLING_ROUTE_GUARD,
+    ]);
+    expect(out).toMatch(/verdict=survived/);
+    expect(out).toMatch(/relocation=mirror/);
+    // A mirror survival now carries its own caveat instead of reading as a weak guard.
+    expect(out).toMatch(/SIBLING module.*ORIGINAL file/);
+    expect(code).toBe(1);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('CATCHES the same mutant under the overlay, without touching the tracked file', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const { code, out } = runProbeIO([
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', SIBLING_ROUTE_GUARD,
+    ]);
+    expect(out).toMatch(/overlay relocation/);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(code).toBe(0);
+    expect(readFileSync(s, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('a symlinked-path test that the mirror could not load reaches the mutant under the overlay', () => {
+    // The mirror's module-load control refuses this fixture (see the copy-out
+    // block above). Under the overlay the realpath IS the mutant, so it scores.
+    const repo = join(dir, 'overlay-symlink-test-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    writeFileSync(join(repo, 'guard.cjs'), "if (require('./subject.cjs') !== 1) process.exit(1);\n");
+    const { code, out } = runProbeIO([
+      '--file', modulePath,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node "$(dirname {})/guard.cjs"',
+    ]);
+    expect(out).toMatch(/verdict=caught/);
+    expect(out).toMatch(/relocation=overlay/);
+    expect(code).toBe(0);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it.skipIf(!overlayWorks)('keeps the baseline OUTSIDE the overlay and exempts the subject for the reporter only inside it', () => {
+    const { subject: s } = makeSiblingRouteRepo();
+    const log = join(dir, 'overlay-env.log');
+    const { code } = runProbeIO([
+      '--file', s,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "\${PAPERCUSP_MUTATION_PROBE_SUBJECT:-unset}" >> ${JSON.stringify(log)}; ${SIBLING_ROUTE_GUARD}`,
+    ]);
+    expect(code).toBe(0);
+    const lines = readFileSync(log, 'utf8').trim().split('\n');
+    expect(lines).toContain('baseline=unset');
+    expect(lines).toContain(`copy-baseline=${s}`);
+    expect(lines).toContain(`mutant=${s}`);
+  });
+
+  it('refuses --relocation under --in-tree, and an unknown relocation value', () => {
+    const inTree = runProbeIO([
+      '--file', subject, '--in-tree', '--accept-sweep-race', '--relocation', 'overlay',
+      '--mutate', 's/gamma/GAMMA/', '--test', 'grep -q "^gamma$" {}',
+    ]);
+    expect(inTree.code).toBe(2);
+    expect(inTree.out).toMatch(/--relocation only applies to copy-out/);
+    const bogus = runProbeIO(['--file', subject, '--relocation', 'sideways', '--mutate', 's/gamma/GAMMA/', '--test', 'grep -q "^gamma$" {}']);
+    expect(bogus.code).toBe(2);
+    expect(bogus.out).toMatch(/--relocation must be/);
+    expect(read()).toBe(ORIGINAL);
   });
 });
 
