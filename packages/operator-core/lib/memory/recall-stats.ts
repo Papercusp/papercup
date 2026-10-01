@@ -374,6 +374,16 @@ export interface JevFunnelEntry {
   readonly reason?: string;
   /** The answer was reused from an earlier identical call; no request went out. */
   readonly cached?: true;
+  /**
+   * Whether a caller still waited on the build when Jev's time was set. False: a
+   * background (stale-while-revalidate) rebuild or an already-answered caller, so
+   * the client wall did not bound Jev. Absent: the caller did not say.
+   */
+  readonly callerWaiting?: boolean;
+  /** What was left of the client wall, ms, whether or not it applied (negative: already past). Absent: no wall. */
+  readonly wallLeftMs?: number;
+  /** What was left of the build's own deadline, ms. Absent: unbounded. */
+  readonly deadlineLeftMs?: number;
 }
 
 export type CorpusAdmissionDropReason =

@@ -167,6 +167,17 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"unrelated_refusal"}')).toBe('structural');
   });
 
+  it('classifies the nested tools:invoke compaction flush gate refusal as caller', () => {
+    // Compaction intentionally refuses until held work is checkpointed. The
+    // nested handler_error wrapper must not send this expected precondition to
+    // the structural auto-implement lane.
+    const nestedRefusal =
+      '{"ok":false,"requested":false,"error":"flush-required","tripwires":[{"kind":"missing-checkpoint","subject":"WI-10004595"}]}';
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(classifyToolError('flush-required', 'error', null)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"flush-required-ish"}')).toBe('structural');
+  });
+
   it('classifies an expected missing rubric reference as caller input, not a tool bug', () => {
     expect(classifyToolError('rubric-not-found', 'error', 'rubric not found')).toBe('caller');
     // The classification is code-specific; an unrelated tool failure with the

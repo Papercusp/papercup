@@ -59,7 +59,7 @@ import { describeFetchError, loopbackFetch } from '../../loopback-fetch';
 import { resolveLaunchTargetForEvent } from '../../blueprint/launch-blueprint';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
-import { registerSystemAction, type SystemActionCtx } from '../routines/system-actions';
+import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from '../routines/system-actions';
 import { getBuildInfo } from '../../build-info';
 import { stripNulBytesDeep } from '../../coord-lifecycle/records';
 import { requestOnlyHost } from '../../background-workers';
@@ -708,6 +708,8 @@ export type GitSyncFireOutcome =
       reason: string;
       blockedOn?: string;
       holders?: GitSyncLockHolderSnapshot[];
+      /** WI-10004472: a DBOS recovery replay refused its locks and ended without diverging. */
+      replayAbandoned?: true;
     };
 
 /**
@@ -7257,6 +7259,18 @@ export async function fireGitSyncNow(
   return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null }, repoPath);
 }
 
+/**
+ * The scheduled (cron) entry point. The only engine-facing signal it forwards is
+ * WI-10004472's `replayAbandoned`: the routine engine must end an abandoned
+ * recovery replay without issuing its settle step.
+ */
+export async function gitSyncCronAction(ctx: SystemActionCtx): Promise<SystemActionResult | void> {
+  const outcome = await handleGitSync(ctx);
+  if (outcome.status === 'skipped' && 'replayAbandoned' in outcome && outcome.replayAbandoned) {
+    return { replayAbandoned: { reason: outcome.reason } };
+  }
+}
+
 // WI-1416: ownSteps — the handler checkpoints its OWN DBOS sub-steps, so the routine
 // engine must run it at the WORKFLOW layer (nested inside the engine's single step,
 // DBOS.runStep silently degrades to a plain call and nothing checkpoints).
@@ -7267,9 +7281,7 @@ export async function fireGitSyncNow(
 // result through the generic registry type.
 registerSystemAction(
   'git-sync',
-  async (ctx: SystemActionCtx): Promise<void> => {
-    await handleGitSync(ctx);
-  },
+  gitSyncCronAction,
   // `scheduling: 'on-demand'` (EI-18752496371939475): one row per HARNESS, ensured by
   // `git-sync-routine.ts` as harnesses are registered — not a standing workspace-wide row a
   // seed script creates. A workspace with no harnesses yet legitimately has zero rows.

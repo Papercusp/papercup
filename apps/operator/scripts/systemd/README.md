@@ -317,8 +317,14 @@ that pin, a bg-host boot while the dedicated unit is absent can spawn the
 cross-platform fallback first; the later systemd start then crash-loops on
 `EADDRINUSE` even though the fallback gateway is serving. Packaged
 macOS/Windows hosts do not load this drop-in and retain the fallback supervisor.
+The 98-dependency-generation-root.conf drop-in directs the immutable dependency
+generation store to /mnt/data/papercusp-dependency-generations, on the
+dedicated data mount rather than Docker's root filesystem. This reduces the
+measured bg-host generation writer's overlap with Docker's root device; a
+post-change Docker remeasurement is still needed to establish whether that
+overlap caused the container-start stall.
 
-Both drop-ins must be installed as symlinks so the checked-in contracts remain
+All three drop-ins must be installed as symlinks so the checked-in contracts remain
 the source of truth.
 
 ## Install (one-time, on the shared development host)
@@ -326,10 +332,12 @@ the source of truth.
 ```bash
 cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 mkdir -p ~/.config/systemd/user/papercup-bg-host.service.d
+sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" /mnt/data/papercusp-dependency-generations
 ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/95-bundled-entry.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/97-gateway-systemd-authority.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/97-gateway-systemd-authority.conf
+ln -sfn "$(pwd)/papercup-bg-host.service.d/98-dependency-generation-root.conf" ~/.config/systemd/user/papercup-bg-host.service.d/98-dependency-generation-root.conf
 systemctl --user daemon-reload
 ```
 

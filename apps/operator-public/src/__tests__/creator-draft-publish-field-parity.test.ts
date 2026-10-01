@@ -78,6 +78,15 @@ const DRAFTS_DO_NOT_CARRY: Record<string, string> = {
   // approved_at are deliberately NOT listed: they are written ONLY by the
   // operator review approve path, so NEITHER publish path's INSERT names them
   // — the class guard below flags a name here the direct publish never writes.)
+  // Worker-computed recipe authority (migration 039 / P-007): derived by the
+  // Worker's static analysis of the PINNED repo content (the recipe script
+  // inside the resolved commit tree) at direct-publish time. A draft publishes
+  // an uploaded artifact whose identity is its content hash and which has no
+  // repo tree to analyse, so the honest value is NULL = "not analyzed by the
+  // Worker" — never a fabricated verdict. A draft's authority claim (if any)
+  // stays the publisher's own and is NOT upgraded to a Worker-verified one.
+  authority_unresolved: 'Worker-computed from the pinned repo tree; a draft has no repo pin, NULL = not analyzed',
+  authority_unresolved_cause: 'Worker-computed from the pinned repo tree; a draft has no repo pin, NULL = not analyzed',
   // Identity facet (migration 035 / portable-identity-packages P-016): the
   // declared surface is DERIVED from the signed release closure at direct
   // publish. A draft has no signed closure, so creator-drafts refuses

@@ -181,6 +181,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'nested tools:invoke wrapper preserves a deliberate checkpoint safety refusal in JSON error_message; it is caller-directed, not structural',
   },
   {
+    n: 14, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"requested":false,"error":"flush-required","tripwires":[{"kind":"missing-checkpoint","subject":"WI-10004595"}]}',
+    expectedClass: 'caller',
+    note: 'nested tools:invoke wrapper preserves the intentional compaction flush-gate refusal; missing checkpoints are an actionable caller precondition, not a structural tool defect',
+  },
+  {
     n: 1, errorCode: 'rubric-not-found', status: 'error',
     message: 'rubric not found',
     expectedClass: 'caller',

@@ -11,6 +11,12 @@ const GATEWAY_AUTHORITY_DROP_IN = join(
   'papercup-bg-host.service.d',
   '97-gateway-systemd-authority.conf',
 );
+const DEPENDENCY_GENERATION_DROP_IN = join(
+  SCRIPTS_DIR,
+  'systemd',
+  'papercup-bg-host.service.d',
+  '98-dependency-generation-root.conf',
+);
 const README = join(SCRIPTS_DIR, 'systemd', 'README.md');
 
 /**
@@ -41,7 +47,16 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
   const gatewayAuthorityDropIn = readFileSync(GATEWAY_AUTHORITY_DROP_IN, 'utf8');
+  const dependencyGenerationDropIn = readFileSync(DEPENDENCY_GENERATION_DROP_IN, 'utf8');
   const readme = readFileSync(README, 'utf8');
+
+  it('pins dependency-generation writes to the dedicated data mount (WI-10003403)', () => {
+    expect(dependencyGenerationDropIn).toContain('[Service]');
+    expect(dependencyGenerationDropIn).toContain(
+      'Environment=PAPERCUSP_DEPENDENCY_GENERATION_ROOT=/mnt/data/papercusp-dependency-generations',
+    );
+    expect(readme).toContain('/mnt/data/papercusp-dependency-generations');
+  });
 
   it('keeps the bundle-host consumer map aligned with the tracked bg-host drop-in', () => {
     expect(bundleHost).toContain(':3271 bg-host');
@@ -139,6 +154,8 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
 
   it('documents the canonical symlink installation without restarting bg-host', () => {
     expect(readme).toContain('papercup-bg-host.service.d/95-bundled-entry.conf');
+    expect(readme).toContain('papercup-bg-host.service.d/98-dependency-generation-root.conf');
+    expect(readme).toContain('sudo install -d -m 0750');
     expect(readme).toMatch(/mkdir -p ~\/\.config\/systemd\/user\/papercup-bg-host\.service\.d/);
     expect(readme).toMatch(/ln -sfn "\$\(pwd\)\/papercup-bg-host\.service\.d\/95-bundled-entry\.conf"/);
     expect(readme).toContain('systemctl --user daemon-reload');

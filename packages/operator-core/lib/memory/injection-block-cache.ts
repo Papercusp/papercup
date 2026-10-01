@@ -48,6 +48,17 @@ export const MEMORY_BLOCK_CACHE_TAG = 'memory-inject-block';
 /** Base-table tag the generic cache-ECA bumps after a canonical memory write. */
 export const MEMORY_CANONICAL_CACHE_TAG = 'memory_canonical';
 
+/** What a block build can ask about the call that started it. */
+export interface MemoryBlockBuildContext {
+  /**
+   * True while the caller still waits on this build: a cold miss, until the
+   * caller's wait cap. False once the caller has been answered, which is from the
+   * start for a stale-while-revalidate rebuild. A client wall bounds a step only
+   * while this is true; after that nobody is left for it to protect.
+   */
+  readonly callerWaiting: () => boolean;
+}
+
 export interface MemoryBlockBoundedOpts {
   /** Override the cold-miss wait cap (sentinel_scan turns have no human waiting). */
   deadlineMs?: number;
@@ -72,11 +83,17 @@ export type MemoryBlockBoundedResult =
 export async function getMemoryBlockBoundedResult(
   workspaceId: string,
   scopeKey: string,
-  build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
+  build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<MemoryBlockBoundedResult> {
   const cache = opts.cache ?? getOperatorCache();
   const deadlineMs = opts.deadlineMs ?? MEMORY_BLOCK_COLD_DEADLINE_MS;
+  // Flips once this call has returned: after a stale serve (the build is then a
+  // background revalidate) or after the caller's wait cap. Read lazily, at the
+  // moment a build step sizes a wait, never captured at build start: a stale hit
+  // can start the revalidate before this call has returned.
+  let callerAnswered = false;
+  const ctx: MemoryBlockBuildContext = { callerWaiting: () => !callerAnswered };
 
   const res = await getOrSetBounded<string | null>(
     cache,
@@ -86,7 +103,7 @@ export async function getMemoryBlockBoundedResult(
       // Created only for an actual single-flight build, never for a cache hit
       // or a coalesced waiter. SWR and the caller's wait retain their semantics.
       const deadline = createMemoryWorkDeadline(deadlineMs);
-      try { return await build(deadline); }
+      try { return await build(deadline, ctx); }
       finally { deadline.close(); }
     },
     {
@@ -103,6 +120,7 @@ export async function getMemoryBlockBoundedResult(
       cacheEmpty: true,
     },
   );
+  callerAnswered = true;
   if (res.ok) return { status: 'ready', block: res.value };
   if (res.reason === 'deadline') {
     // The single-flight build keeps running and will serve the NEXT turn;
@@ -129,7 +147,7 @@ export async function getMemoryBlockBoundedResult(
 export async function getMemoryBlockBounded(
   workspaceId: string,
   scopeKey: string,
-  build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
+  build: (deadline: MemoryWorkDeadline, ctx: MemoryBlockBuildContext) => Promise<string | null>,
   opts: MemoryBlockBoundedOpts = {},
 ): Promise<string | null> {
   return (await getMemoryBlockBoundedResult(workspaceId, scopeKey, build, opts)).block;

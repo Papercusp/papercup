@@ -11,6 +11,7 @@ import {
   getMemoryBlockBounded,
   getMemoryBlockBoundedResult,
   MEMORY_CANONICAL_CACHE_TAG,
+  type MemoryBlockBuildContext,
 } from './injection-block-cache';
 
 /** A controllable build: counts calls, resolves/rejects on demand. */
@@ -140,6 +141,51 @@ describe('getMemoryBlockBounded', () => {
     await expect(
       getMemoryBlockBounded('ws', 'papercup:u1:c1', turn3.build, { cache, deadlineMs: 2000 }),
     ).resolves.toBe('V2');
+  });
+
+  // WI-10004485 step D: a client wall must bound a build step only while someone
+  // still waits on the build. The build learns that from callerWaiting().
+  it('tells the build whether its caller still waits: yes on a cold miss, no once a stale serve answered it', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const seen: Array<() => boolean> = [];
+    let release: ((v: string | null) => void) | undefined;
+    const build = (_deadline: unknown, ctx: MemoryBlockBuildContext): Promise<string | null> => {
+      seen.push(ctx.callerWaiting);
+      return new Promise<string | null>((resolve) => { release = resolve; });
+    };
+    // Turn 1, cold: the caller waits while the build runs, and stops once answered.
+    const p1 = getMemoryBlockBoundedResult('ws', 'turn-start:o1', build, { cache, deadlineMs: 2000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!()).toBe(true);
+    release!('V1');
+    await expect(p1).resolves.toEqual({ status: 'ready', block: 'V1' });
+    expect(seen[0]!()).toBe(false);
+    // Turn 2: the stale V1 answers at once, so the revalidate waits on nobody.
+    await expect(getMemoryBlockBoundedResult('ws', 'turn-start:o1', build, { cache, deadlineMs: 2000 }))
+      .resolves.toEqual({ status: 'ready', block: 'V1' });
+    expect(seen).toHaveLength(2);
+    expect(seen[1]!()).toBe(false);
+    release!('V2');
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it('a cold build past the caller wait cap no longer has a caller waiting', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cache = createCache({ clock: () => Date.now() });
+    let waiting: (() => boolean) | undefined;
+    let release: ((v: string | null) => void) | undefined;
+    const p = getMemoryBlockBoundedResult('ws', 'turn-start:o2', (_d: unknown, ctx: MemoryBlockBuildContext) => {
+      waiting = ctx.callerWaiting;
+      return new Promise<string | null>((resolve) => { release = resolve; });
+    }, { cache, deadlineMs: 2000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waiting!()).toBe(true);
+    await vi.advanceTimersByTimeAsync(2001);
+    await expect(p).resolves.toEqual({ status: 'deadline', block: null });
+    expect(waiting!()).toBe(false);
+    release!(null);
+    await vi.advanceTimersByTimeAsync(0);
   });
 
   it('a build failure resolves null (section omitted) and never rejects', async () => {

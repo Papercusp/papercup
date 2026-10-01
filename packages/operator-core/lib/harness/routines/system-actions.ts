@@ -60,6 +60,18 @@ export interface SystemActionResult {
    * clock) so a recovery replay dedups rather than double-fires.
    */
   durableSpawns?: DurableSpawnFireInput[];
+  /**
+   * WI-10004472: set ONLY by an `ownSteps` action whose DBOS recovery replay
+   * cannot reproduce the step sequence its original execution recorded (git-sync:
+   * the original fire held its locks and recorded post-lock sub-steps, but the
+   * replay's live re-acquire was refused). The engine then ends the fire at once
+   * and issues NO further DBOS operation: no `system:<action>:settle`, no
+   * `clear-reaper-last-error`, no durable spawns. Any later step would land on a
+   * function id the original run recorded under a different name, and DBOS fails
+   * the whole workflow with DBOSUnexpectedStepError ("… was recorded when … was
+   * expected"). The next scheduled tick redoes the work.
+   */
+  replayAbandoned?: { reason: string };
 }
 
 export type SystemAction = (ctx: SystemActionCtx) => Promise<void | SystemActionResult>;
