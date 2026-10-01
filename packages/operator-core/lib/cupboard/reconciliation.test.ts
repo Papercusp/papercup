@@ -230,6 +230,20 @@ describe('reconciliation (R-31)', () => {
     expect(run.gate.open).toBe(false);
   });
 
+  it('a break whose opening run died before filing its item is filed by the next run, once', async () => {
+    const h = harness();
+    const fixture = BREAKS[2]!;
+    await h.store.openBreak(WS, { invariant: fixture.invariant, workItemId: null, openedAtMs: NOW, openedByRunId: 'run-dead' }, 'opener died');
+    const run = await h.run(fixture.sources());
+    expect(run.opened).toEqual([]);
+    expect(h.filed).toEqual([{ invariant: fixture.invariant, id: 'WI-1' }]);
+    expect((await h.store.listOpenBreaks(WS))[0]?.workItemId).toBe('WI-1');
+    expect(run.gate.open).toBe(false);
+    h.tick();
+    await h.run(fixture.sources());
+    expect(h.filed).toHaveLength(1);
+  });
+
   it('periods: provisional covers the open month to now; final covers the month that just closed', () => {
     expect(reconciliationPeriod('provisional', NOW)).toEqual({ mode: 'provisional', fromMs: Date.UTC(2026, 9, 1), untilMs: NOW, month: '2026-10' });
     expect(reconciliationPeriod('final', Date.UTC(2026, 0, 1, 1))).toEqual({

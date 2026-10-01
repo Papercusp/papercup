@@ -435,6 +435,12 @@ export async function runReconciliation(
       await deps.store.setBreakWorkItem(input.workspaceId, invariant, workItemId);
     } else if (action.kind === 'keep') {
       await deps.store.touchBreak(input.workspaceId, invariant, runId, action.verdict.detail);
+      // The opening run inserted the row but failed before its item was filed (the
+      // filer threw, or the process died): file it now, or the break stays invisible.
+      if (!action.open.workItemId) {
+        const workItemId = await deps.filer.fileBreak({ workspaceId: input.workspaceId, verdict: action.verdict, period, runId });
+        await deps.store.setBreakWorkItem(input.workspaceId, invariant, workItemId);
+      }
     } else {
       await deps.store.resolveBreak(input.workspaceId, invariant, runId, startedAtMs);
       stillOpen.delete(invariant);
