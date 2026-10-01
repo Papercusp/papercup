@@ -13,6 +13,7 @@
  */
 import path from 'node:path';
 
+import { writeStdoutSync } from '../../../../../scripts/lib/write-stdout-sync.mjs';
 import { llmCall } from '../../llm-testing/llm-client';
 import { collectIndependentCohort, runJudgedTier, writeJudgedReport } from './judged';
 import type { BenchBackendName } from './run-bench';
@@ -38,7 +39,9 @@ if (process.argv.includes('--label-cohort')) {
     ...(argValue('--reuse-authors-from') ? { reuseAuthorsFrom: argValue('--reuse-authors-from') } : {}),
     ...(argValue('--targets-per-partition') ? { targetsPerPartition: Number(argValue('--targets-per-partition')) } : {}),
     log: (message) => console.log(new Date().toISOString(), message) });
-  console.log(JSON.stringify(receipt)); process.exit(0);
+  // The receipt is a data-derived JSON dump that gets piped; process.exit() does not drain an
+  // async pipe write, so write it synchronously first (EI-20055889379250637).
+  writeStdoutSync(JSON.stringify(receipt)); process.exit(0);
 }
 
 const report = await runJudgedTier({
