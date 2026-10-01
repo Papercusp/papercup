@@ -194,7 +194,11 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     expect((await cursor()).pending).toBeNull();
     const crowded = await deliver(200);
     expect(crowded.length).toBeLessThanOrEqual(200);
-    expect(crowded).toContain(brief.detailRef);
+    // The crowded delivery must still route to the complete agenda: either the
+    // obligations row's own detailRef, or (D-027) the omission marker naming it.
+    const recoveryPointer = crowded.includes(brief.detailRef)
+      || /^- \+\d+ orientation rows omitted \([^)]*\bobligations\b[^)]*\) — coord:orient$/m.test(crowded);
+    expect(recoveryPointer, crowded).toBe(true);
     expect(actionLines.some((line) => !crowded.includes(line))).toBe(true);
     expect((await cursor()).pending.obligations).not.toBe(brief.sourceGeneration);
 
@@ -262,6 +266,43 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
       expect(obligations.evaluations.some((entry) => entry.status === 'unknown')).toBe(true);
     }
   }, 90_000);
+
+  it.each(['brief-only', 'baseline'] as const)(
+    'withholds the agenda from orient under the %s experiment arm, as the turn-start surface does (R-4 / D-047)',
+    async (arm) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const read = vi.spyOn(obligationReader, 'readAgentObligationAgenda');
+      const [original] = await fx.admin`
+        SELECT launch_settings FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}
+      `;
+      await fx.admin`
+        UPDATE harness_shared.goals
+           SET launch_settings = COALESCE(launch_settings, '{}'::jsonb) || ${fx.admin.json({ behaviorArm: arm })}
+        WHERE workspace_id = ${WS} AND id = ${GOAL}
+      `;
+      try {
+        const data = (await readOrientation()) as Awaited<ReturnType<typeof readOrientation>> & {
+          obligationsWithheldBy?: string;
+        };
+        expect(data.obligations).toBeNull();
+        expect(data.obligationsWithheldBy).toBe('experiment-arm');
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        await fx.admin`
+          UPDATE harness_shared.goals
+             SET launch_settings = ${original?.launch_settings == null ? null : fx.admin.json(original.launch_settings)}
+          WHERE workspace_id = ${WS} AND id = ${GOAL}
+        `;
+      }
+      // Calibration: the same holder on the default (full) arm gets the agenda back.
+      const restored = (await readOrientation()) as Awaited<ReturnType<typeof readOrientation>> & {
+        obligationsWithheldBy?: string;
+      };
+      expect(restored.obligations).toBeTruthy();
+      expect(restored.obligationsWithheldBy).toBeUndefined();
+      expect(read).toHaveBeenCalledTimes(1);
+    }, 90_000,
+  );
 
   it('preserves a failed portfolio read as unknown and recovers through the same scoped tool', async () => {
     const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});

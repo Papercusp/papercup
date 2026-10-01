@@ -30,8 +30,7 @@
  * architecture reflect-rules.ts already established.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
+import { PLAN_ITEM_KIND, planItemRef, implementsLinkScopes } from '../issue-blocks-merge';
 import { IMPLEMENTS_REL } from './convert';
 import {
   getWorkItem,
@@ -214,10 +213,15 @@ export async function findAllLinkedWorkItems(planSlug: string, itemId: string): 
   // can, in principle, have accumulated more than one if a duplicate mint ever
   // slipped through; reconciling all of them is strictly safer than only the
   // newest).
+  //
+  // WI-10004553: read BOTH tenants of the split link plane. This lookup was pinned to
+  // DEFAULT_COORD_WORKSPACE, but every edge written since 2026-08-27 lives under
+  // coordScopeWorkspace(), so each post-cutover promoted ISSUE read as stamp-only and
+  // was left open forever by the unproven-link guard below (~190 rows measured).
   const linkRows = await sql<{ src_kind: string; src_ref: string }[]>`
     SELECT DISTINCT src_kind, src_ref
       FROM harness_shared.coord_links
-     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+     WHERE workspace_id = ANY(${implementsLinkScopes()})
        AND rel = ${IMPLEMENTS_REL}
        AND dst_kind = ${PLAN_ITEM_KIND}
        AND dst_ref = ${planItemRef(planSlug, itemId)}`;

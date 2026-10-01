@@ -732,7 +732,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             const modelClass = modelClassForModel(model);
             const provider = providerForModel(model);
             // Price the row from exactly the values stored below, through the same function the
-            // repricer uses, so a stored estimate is always re-derivable (WI-10004517 / D-017).
+            // repricer uses, so a stored estimate is always re-derivable (WI-10004517 / D-018).
             const stored = {
               source: 'interactive', provider, model: model === 'unknown-openai' ? null : model,
               input_tokens: inputKnown ? d.inputTokens : null, output_tokens: d.outputTokens,
@@ -751,6 +751,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               parserStateSource: fileState.bootstrapSource ?? 'incremental',
               turnId: event.turnId ?? null,
               cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
+              // 'lower' = cache writes with no TTL split, priced at the 5-minute floor; always
+              // written (null included) so the ON CONFLICT `||` merge cannot keep a stale bound.
+              costBound: price.costBound,
               uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
               inputTotalTokens: event.inputTotalTokens ?? null,
               accountSource: 'unavailable', triggerSource: 'unavailable',

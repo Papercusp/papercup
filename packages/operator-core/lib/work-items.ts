@@ -57,7 +57,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { canonicalizeAssigneeOwnerId } from './work-item-holder-identity';
 import { checkAndEscalateSteeringChurn } from './steering-churn';
 import { checkSteeringLease, recordSteeringProposal } from './steering-lease';
-import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from './issue-blocks-merge';
+import { featureRef, FEATURE_KIND, isQualifiedFeatureRef, implementsLinkScopes } from './issue-blocks-merge';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
@@ -5197,7 +5197,7 @@ export async function mergeWorkItemPayload(
         if (refs.size > 0) {
           await tx`
             DELETE FROM harness_shared.coord_links
-             WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+             WHERE workspace_id = ANY(${implementsLinkScopes()})
                AND src_kind = ${FEATURE_KIND}
                AND src_ref = ${featureRef(featureHarness, id)}
                AND dst_kind = 'plan_item'

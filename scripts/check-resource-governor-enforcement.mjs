@@ -481,7 +481,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "upstream",
     reason:
-      "P-016 reviewed upstream disposition for scripts/agent-capacity/record-session.ts: the capacity corpus recorder, which runs one real Claude or Codex session at a time through a recording proxy and starts it as a detached transient user service so its memory.peak and cpu.stat can be read. The same assertHostAdmission check as load-driver runs first: inside the Papercusp tree it refuses to start without a scripts/pc-heavy.sh slot (PC_HEAVY_BYPASS=1); on a ramp VM, which has no operator, it runs as the measured machine. Its other starts are an awaited `--version` probe under a 20 s timeout, awaited git reads, and a `systemctl kill` of its own session unit on timeout (WI-10004522).",
+      "P-016 reviewed upstream disposition for scripts/agent-capacity/record-session.ts: the capacity corpus recorder, which runs one real Claude or Codex session at a time through a recording proxy and starts it as a detached transient user service so its memory.peak and cpu.stat can be read. The same assertHostAdmission check as load-driver runs first: inside the Papercusp tree it refuses to start without a scripts/pc-heavy.sh slot (PC_HEAVY_BYPASS=1); on a ramp VM, which has no operator, it runs as the measured machine. Its other starts are awaited `--version` probes (the CLI's and node's, on the session PATH) under a 20 s timeout, awaited git reads, and a `systemctl kill` of its own session unit on timeout (WI-10004522).",
   },
   {
     path: "scripts/agent-capacity/session-process.ts",
@@ -1766,13 +1766,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for verify-identities-r7.mjs: this operator-invoked acceptance journey awaits each Tauri command before the next UI step, bounds UI/poll commands to 45 seconds, liveness to 15 seconds, and its Git identity read to 5 seconds. It neither detaches children nor retains a resident queue after the journey ends.",
   },
   {
-    path: "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for mutation-probe-fence.ts: committedUnchanged runs awaited `git ls-tree -z HEAD` and `git hash-object` metadata reads over the probe's finite path list via promisified execFile, each bounded by a 5-second timeout and 1 MiB output, with an outer 10-second deadline that keeps the fence in force on a stall. It detaches nothing and creates no resident queue.",
-  },
-  {
     path: "packages/operator-core/lib/search/bench/near-duplicate-guard-compare-cli.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1803,6 +1796,17 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  // Outside every P-016 inventory row's paths (agent-tools/testing/), so it is
+  // dispositioned here beside its sibling affected-plan.ts rather than in
+  // P016_REVIEWED_DISPOSITIONS, whose census covers only P-016 paths.
+  [
+    "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for mutation-probe-fence.ts: committedUnchanged runs awaited `git ls-tree -z HEAD` and `git hash-object` metadata reads over the probe's finite path list via promisified execFile, each bounded by a 5-second timeout and 1 MiB output, with an outer 10-second deadline that keeps the fence in force on a stall. It detaches nothing and creates no resident queue.",
+    },
+  ],
   [
     "packages/operator-core/lib/agent-identities/sink-evaluator.ts::hidden-or-static-capacity",
     {

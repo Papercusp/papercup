@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout, type HeldoutQuery } from './candidate-hybrid-bench';
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES } from '@papercusp/memory';
+import { measurementManifestFixture, independentCohortFixture } from './fixtures/measurement-manifest';
+import { validateMeasurementManifest, validateIndependentCohort, validateMeasurementCoverage,
+  assertMeasuredEmbedResponse, assertMeasuredExecution, assertMeasurementArm, hashJson, type CellOutcome } from './measurement-manifest';
 
 const entries = [{ key: 'a', text: 'frozen a', kind: 'fact' }, { key: 'b', text: 'frozen b', kind: 'fact' }];
 const queries: HeldoutQuery[] = [
@@ -42,5 +45,62 @@ describe('candidate hybrid fairness guards', () => {
     expect(validateMemoryStorageCompatibility(profile, MEMORY_VECTOR_STORAGE_PROFILES.gemma)).not.toEqual([]);
     expect(validateMemoryStorageCompatibility(profile, { ...MEMORY_VECTOR_STORAGE_PROFILES.gemma,
       acceptedProfileIds: [profile.profileId] })).toEqual([]);
+  });
+});
+
+describe('frozen seven-bar measurement contracts (P-001)', () => {
+  it('accepts a complete declared harness while refusing threshold relaxation and absent cells', () => {
+    const manifest = measurementManifestFixture('/private');
+    expect(validateMeasurementManifest(manifest).cells).toHaveLength(7);
+    expect(() => validateMeasurementManifest({ ...manifest, contracts: { ...manifest.contracts, cosineMin: 0.99 } })).toThrow();
+    expect(() => validateMeasurementManifest({ ...manifest, contracts: { ...manifest.contracts, freshProcessBlocks: 3 } })).toThrow();
+    expect(() => validateMeasurementManifest({ ...manifest, cells: [...manifest.cells.slice(1), { ...manifest.cells[1], id: 'extra', output: 'extra' }] })).toThrow('missing promised bar');
+    expect(() => validateMeasurementManifest({ ...manifest, cells: manifest.cells.map((c) => ({ ...c, output: 'same' })) })).toThrow('duplicate output');
+  });
+  it('rejects source leakage even when the query author forges different group strings', () => {
+    const { entries, queries, proof } = independentCohortFixture();
+    const check = (qs = queries, receipt: unknown = proof) => validateIndependentCohort(entries, qs, receipt,
+      proof.snapshotSha256, proof.labelsSha256, '2026-01-02T00:00:00.000Z');
+    expect(() => check()).not.toThrow();
+    expect(() => check(queries.map((q) => q.partition === 'test' && q.expected.length ? { ...q, group: 'forged-test', expected: ['a'] } : q))).toThrow('actual source target leaks');
+    expect(() => check(queries, { ...proof, authority: 'agent-authored' })).toThrow();
+    expect(() => check(queries, { ...proof, candidateRankingsExposed: true })).toThrow();
+    expect(() => check(queries, { ...proof, queryIds: [...proof.queryIds].reverse() })).toThrow('order');
+    expect(() => check(queries.slice(1), { ...proof, queryIds: proof.queryIds.slice(1) })).toThrow('unbalanced');
+    expect(() => check(queries, { ...proof, frozenAt: '2026-01-03T00:00:00.000Z' })).toThrow('time');
+  });
+  it('binds arm recipes independent of object key order and refuses equal-width space substitution', () => {
+    const arm = measurementManifestFixture('/private').arms[0];
+    const actual = { profile: arm.profile, prompts: arm.prompts, execution: arm.execution, tokenizer: arm.tokenizer };
+    expect(() => assertMeasurementArm(arm, actual)).not.toThrow();
+    expect(hashJson({ a: 1, b: 2 })).toBe(hashJson({ b: 2, a: 1 }));
+    expect(() => assertMeasurementArm(arm, { ...actual, profile: candidateProfile('gemma') })).toThrow('profile identity');
+    expect(() => assertMeasurementArm(arm, { ...actual, tokenizer: { ...arm.tokenizer, version: 'different' } })).toThrow('tokenizer identity');
+    expect(() => assertMeasurementArm(arm, { ...actual, execution: { ...arm.execution, device: 'cuda' } })).toThrow('execution identity');
+  });
+  it('refuses wrong HTTP revisions, cache/coalescing, malformed vectors and unverified GPU/worker fallback', () => {
+    const arm = measurementManifestFixture('/private').arms[0];
+    const unit = [1, ...new Array(767).fill(0)];
+    const response = { vectors: [unit], dims: 768, modelRev: arm.modelRev, runtime: 'fixture', cache: { hits: 0, coalesced: 0, inferred: 1 } };
+    expect(() => assertMeasuredEmbedResponse(arm, response, 1)).not.toThrow();
+    expect(() => assertMeasuredEmbedResponse(arm, { ...response, modelRev: 'wrong' }, 1)).toThrow('identity');
+    expect(() => assertMeasuredEmbedResponse(arm, { ...response, cache: { hits: 1, coalesced: 0, inferred: 0 } }, 1)).toThrow('accounting');
+    expect(() => assertMeasuredEmbedResponse(arm, { ...response, vectors: [[NaN, ...unit.slice(1)]] }, 1)).toThrow('unit vector');
+    const threads = { intraOpNumThreads: 4, interOpNumThreads: 1 }, worker = { alive: true, disabled: false };
+    expect(() => assertMeasuredExecution(arm, { device: 'cpu', dtype: null, verified: true }, threads, worker)).not.toThrow();
+    expect(() => assertMeasuredExecution({ ...arm, execution: { ...arm.execution, device: 'cuda' } }, { device: 'cpu', dtype: null, verified: true }, threads, worker)).toThrow('fallback');
+    expect(() => assertMeasuredExecution(arm, { device: 'cpu', dtype: null, verified: false }, threads, worker)).toThrow('unverified');
+    expect(() => assertMeasuredExecution(arm, { device: 'cpu', dtype: null, verified: true }, threads, { ...worker, disabled: true })).toThrow('fallback');
+  });
+  it('requires every promised cell exactly once, and an owned diagnosis/guard for exercised incompatibilities', () => {
+    const manifest = measurementManifestFixture('/private'), hash = 'a'.repeat(64);
+    const outcomes: CellOutcome[] = manifest.cells.map((c) => ({ cellId: c.id, manifestSha256: hash, status: 'measured',
+      artifacts: [{ path: `/private/${c.id}.json`, sha256: hash, bytes: 1 }] }));
+    expect(() => validateMeasurementCoverage(manifest, hash, outcomes)).not.toThrow();
+    expect(() => validateMeasurementCoverage(manifest, hash, outcomes.slice(1))).toThrow('unfinished');
+    expect(() => validateMeasurementCoverage(manifest, hash, [...outcomes, outcomes[0]])).toThrow('duplicate');
+    expect(() => validateMeasurementCoverage(manifest, hash, [{ ...outcomes[0], status: 'incompatible' }, ...outcomes.slice(1)])).toThrow('owned root');
+    expect(() => validateMeasurementCoverage(manifest, hash, [{ ...outcomes[0], status: 'incompatible', defect: {
+      owner: 'fixture-owner', item: 'EI-1234', rootCause: 'exercised fixture incompatibility', guard: 'conventional regression fixture' } }, ...outcomes.slice(1)])).not.toThrow();
   });
 });

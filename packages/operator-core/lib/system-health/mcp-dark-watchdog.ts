@@ -357,8 +357,7 @@ export interface InteractiveDarkSnapshot {
   hostLastActivityMs: number | null;
   /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (epoch ms). */
   presenceHeartbeatMs: number | null;
-  /** Positive proof that this IS a Papercusp agent whose MCP surface loaded
-   * empty: context-epoch anchor + hook-origin calls + zero agent-origin calls. */
+  /** Observed hook/agent activity gap; ambiguous for idle and parked sessions. */
   toolSurface?: OrientationToolSurface | null;
   /** An ACTIVE loop routine (harness_shared.routines loop-<owner>) + its interval. */
   loopActive: boolean;
@@ -409,19 +408,9 @@ export function evaluateInteractiveMcpDark(
   // has ≥1 beat (the loop:arm call itself is an MCP call), so the original
   // transport-death target — a session that WAS calling and then froze — is
   // unchanged.
-  // EI-21552041967359872 / D-004: the call-origin split is the strongest signal.
-  // Hook-origin dispatches also beat coord_presence, so a fresh presence row is
-  // not proof that agent-issued MCP tools are flowing. Evaluate this proof before
-  // the presence/loop cadence branches, including when presence is non-null.
-  if (s.toolSurface) {
-    return {
-      dark: true,
-      reason:
-        `interactive Papercusp session is taking turns (${s.toolSurface.hookCalls} hook-origin calls over ` +
-        `${s.toolSurface.windowMinutes}m) but has completed zero agent-origin MCP calls since its context epoch — ` +
-        `the initial tool surface loaded empty (dark from birth).`,
-    };
-  }
+  // A hook/agent activity gap cannot distinguish a missing client tool list
+  // from a parked session. It is not enough evidence for a dark verdict or an
+  // automatic /mcp heal; the live cadence checks below remain actionable.
   // Null presence remains non-actionable BY ITSELF: there is no positive evidence
   // that this session is a Papercusp agent whose transport died.
   if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };

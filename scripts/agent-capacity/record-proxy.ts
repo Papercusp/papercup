@@ -36,6 +36,59 @@ export interface RequestFingerprint {
   /** `messages.length` (Anthropic) or `input.length` (OpenAI Responses); null if neither. */
   messages: number | null;
   tools: number | null;
+  /**
+   * Exec-session ids the CLI reported as still running in this request's tool outputs, with
+   * the `call_id` each output answers (OpenAI Responses only; omitted when there are none).
+   * The body itself is not stored, so this is the only record of which call started which
+   * recorded process. Replay uses it to pair a recorded id with the replay's own id through
+   * the shared call_id instead of by order of appearance.
+   */
+  execSessions?: ExecSessionReport[];
+}
+
+/** One exec session a CLI reported running: the tool call it answered and its process id. */
+export interface ExecSessionReport {
+  callId: string;
+  id: string;
+}
+
+// The CLI's own report of a still-running process: an unescaped JSON `"session_id": <n>`
+// (Codex code mode returns the tool result as JSON text) or the plain-text "session ID <n>".
+// An escaped `\"session_id\"` is command OUTPUT quoted inside that JSON, not the CLI's report.
+const REPORTED_SESSION_ID = [/(?<!\\)"session_id"\s*:\s*(\d+)/g, /\bsession ID (\d+)/g];
+
+/**
+ * Exec sessions reported in an OpenAI Responses `input[]`: for each tool-output item (type
+ * ending in `_output`), the ids its output reports, in conversation order, each id once (at
+ * its first report). Model-written items are skipped, so an id the model merely names is
+ * never mistaken for one the CLI reported. An output without a string `call_id` contributes
+ * `callId: ''`.
+ */
+export function reportedExecSessions(input: unknown): ExecSessionReport[] {
+  if (!Array.isArray(input)) return [];
+  const out: ExecSessionReport[] = [];
+  const seen = new Set<string>();
+  for (const item of input) {
+    if (!item || typeof item !== 'object') continue;
+    const { type, call_id: callId, output } = item as { type?: unknown; call_id?: unknown; output?: unknown };
+    if (typeof type !== 'string' || !type.endsWith('_output')) continue;
+    const found: { at: number; id: string }[] = [];
+    let base = 0;
+    const scan = (v: unknown): void => {
+      if (typeof v === 'string') {
+        for (const re of REPORTED_SESSION_ID) for (const m of v.matchAll(re)) found.push({ at: base + m.index, id: m[1] });
+        base += v.length + 1;
+      } else if (Array.isArray(v)) v.forEach(scan);
+      else if (v && typeof v === 'object') Object.values(v).forEach(scan);
+    };
+    scan(output);
+    for (const f of found.sort((a, b) => a.at - b.at)) {
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      out.push({ callId: typeof callId === 'string' ? callId : '', id: f.id });
+    }
+  }
+  return out;
 }
 
 export interface RecordedExchange {
@@ -82,7 +135,11 @@ export function fingerprintRequest(body: Buffer): RequestFingerprint {
     if (typeof j.model === 'string') fp.model = j.model;
     fp.stream = j.stream === true;
     if (Array.isArray(j.messages)) fp.messages = j.messages.length;
-    else if (Array.isArray(j.input)) fp.messages = j.input.length;
+    else if (Array.isArray(j.input)) {
+      fp.messages = j.input.length;
+      const execSessions = reportedExecSessions(j.input);
+      if (execSessions.length > 0) fp.execSessions = execSessions;
+    }
     if (Array.isArray(j.tools)) fp.tools = j.tools.length;
   } catch {
     // Non-JSON body: bytes + sha256 are still a usable fingerprint.

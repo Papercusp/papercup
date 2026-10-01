@@ -60,6 +60,10 @@ import {
   settleAcceptanceReviewReservationsForPlan,
   type AcceptanceReviewReservationSettlement,
 } from '../../coord/condition-upsert';
+import {
+  reconcileActivationAuditRepairFilingForTerminalPlan,
+  type ActivationAuditRepairReconciliation,
+} from './activation-audit-repair';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
 import { PLAN_STATUSES } from './parser';
@@ -287,6 +291,90 @@ export function applyPlanStatusBody(
  */
 export function shouldEvaluateAcceptanceGate(status: string, expectedCurrent?: string): boolean {
   return status === 'shipped' && expectedCurrent !== 'shipped';
+}
+
+export interface TerminalPlanTidyDeps {
+  retire: typeof retireAcceptanceRubricForPlan;
+  settle: typeof settleAcceptanceReviewReservationsForPlan;
+  reconcileActivationRepair: typeof reconcileActivationAuditRepairFilingForTerminalPlan;
+}
+
+export interface TerminalPlanTidyResult {
+  /** Id of the acceptance rubric this call retired; absent when none was live. */
+  acceptanceRubricRetired?: string;
+  /** Present only when a reservation was settled or failed, or the settle itself threw. */
+  acceptanceReviewReservations?: AcceptanceReviewReservationSettlement | { error: string };
+  /** Present only when an open activation-repair filing was closed or the close failed. */
+  activationAuditRepair?: ActivationAuditRepairReconciliation;
+}
+
+/**
+ * Lifecycle tidy-up for a plan that just reached a terminal status. Every artifact
+ * here was FILED for the plan's pre-terminal lifecycle and has no other close once
+ * the plan is terminal, so the filer side owns closing it (EI-24746042684666503):
+ *
+ *  - the acceptance rubric archives WITH its subject plan
+ *    (acceptance-rubrics-on-every-plan-2026-08-11 P-005); best-effort, a busy lock is
+ *    skipped and the rubric remains resolvable by id;
+ *  - the recruiter's review-target reservations are settled (EI-24654801606034099):
+ *    condition-upsert filings have no auto-settle, so a grader who graded through their
+ *    own item otherwise leaves one open forever;
+ *  - an activation-audit repair filing is closed: its own reconcile fires only on a
+ *    clean audit, which a plan that ships without one never records.
+ *
+ * Runs on `superseded` even when unchanged (a repeat write repairs older terminal rows),
+ * and on `shipped` only when the status changed. Failures are reported on the result,
+ * never thrown. Exported with injectable deps so the wiring is unit-tested (WI-10004531).
+ */
+export async function tidyFilingsForTerminalPlan(
+  input: {
+    slug: string;
+    status: string;
+    changed: boolean;
+    ownerId: () => string;
+    scope: { workspaceId: string; harnessSlug?: string | null };
+  },
+  deps: TerminalPlanTidyDeps = {
+    retire: retireAcceptanceRubricForPlan,
+    settle: settleAcceptanceReviewReservationsForPlan,
+    reconcileActivationRepair: reconcileActivationAuditRepairFilingForTerminalPlan,
+  },
+): Promise<TerminalPlanTidyResult> {
+  const { slug, status, changed, scope } = input;
+  if (!(status === 'superseded' || (status === 'shipped' && changed))) return {};
+  const terminalStatus: 'shipped' | 'superseded' = status;
+  const harnessSlug = scope.harnessSlug ?? null;
+
+  const retired = await deps.retire(slug, input.ownerId(), {
+    ...(harnessSlug ? { harnessSlug } : {}),
+    terminalStatus,
+  });
+
+  let reservations: AcceptanceReviewReservationSettlement | { error: string };
+  try {
+    reservations = await deps.settle(slug, { workspaceId: scope.workspaceId, harnessSlug, terminalStatus });
+  } catch (err) {
+    reservations = { error: err instanceof Error ? err.message : String(err) };
+  }
+  const reportReservations =
+    'error' in reservations || reservations.settled.length > 0 || reservations.failed.length > 0;
+
+  // The activation-repair condition key is harness-qualified; without a harness there
+  // is no key to reconcile.
+  const activation = harnessSlug
+    ? await deps.reconcileActivationRepair({
+        workspaceId: scope.workspaceId,
+        harnessSlug,
+        planSlug: slug,
+        terminalStatus,
+      })
+    : null;
+
+  return {
+    ...(retired ? { acceptanceRubricRetired: retired } : {}),
+    ...(reportReservations ? { acceptanceReviewReservations: reservations } : {}),
+    ...(activation && (activation.closed || activation.error) ? { activationAuditRepair: activation } : {}),
+  };
 }
 
 /**
@@ -724,9 +812,9 @@ export default defineTool({
                       jsonb_build_object(
                         'schemaVersion', 1,
                         'transactionId', txid_current()::text,
-                        'workspaceId', ${scope.workspaceId},
-                        'harnessSlug', ${scope.harnessSlug},
-                        'planSlug', ${slug}
+                        'workspaceId', ${scope.workspaceId}::text,
+                        'harnessSlug', ${scope.harnessSlug}::text,
+                        'planSlug', ${slug}::text
                       )::text,
                       true
                     )
@@ -858,33 +946,15 @@ export default defineTool({
           );
         }
 
-        // Lifecycle tidy-up (acceptance-rubrics-on-every-plan-2026-08-11 P-005): an
-        // acceptance rubric archives WITH its terminal subject plan, shipped or superseded.
-        // Repeat on superseded no-ops too, repairing older terminal rows with live rubrics.
-        // Best-effort: a busy lock is skipped and the rubric remains resolvable by id.
-        let acceptanceRubricRetired: string | null = null;
-        let acceptanceReviewReservations: AcceptanceReviewReservationSettlement | { error: string } | undefined;
-        if (status === 'superseded' || (status === 'shipped' && result.value.changed)) {
-          const id = resolveAgentIdentity(ctx);
-          acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId, {
-            harnessSlug: result.scope.harnessSlug,
-            terminalStatus: status,
-          });
-          // EI-24654801606034099: the recruiter FILED a review-target reservation for this
-          // plan, and condition-upsert filings have no auto-settle. With the target terminal,
-          // close any still-open one here; otherwise a grader who graded through their own
-          // item leaves it open forever. Best-effort like the retire above, but a failure is
-          // surfaced on the response rather than swallowed.
-          try {
-            acceptanceReviewReservations = await settleAcceptanceReviewReservationsForPlan(slug, {
-              workspaceId: result.scope.workspaceId,
-              harnessSlug: result.scope.harnessSlug ?? null,
-              terminalStatus: status,
-            });
-          } catch (err) {
-            acceptanceReviewReservations = { error: err instanceof Error ? err.message : String(err) };
-          }
-        }
+        // Terminal tidy-up: retire the acceptance rubric, settle review-target
+        // reservations, close an activation-repair filing (see tidyFilingsForTerminalPlan).
+        const terminalTidy = await tidyFilingsForTerminalPlan({
+          slug,
+          status,
+          changed: result.value.changed,
+          ownerId: () => resolveAgentIdentity(ctx).ownerId,
+          scope: { workspaceId: result.scope.workspaceId, harnessSlug: result.scope.harnessSlug },
+        });
 
         let learningsObservation:
           | { emitted: true; created: boolean; issueId?: string }
@@ -922,13 +992,7 @@ export default defineTool({
           filePath: result.filePath,
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
-          ...(acceptanceRubricRetired ? { acceptanceRubricRetired } : {}),
-          ...(acceptanceReviewReservations &&
-          ('error' in acceptanceReviewReservations ||
-            acceptanceReviewReservations.settled.length > 0 ||
-            acceptanceReviewReservations.failed.length > 0)
-            ? { acceptanceReviewReservations }
-            : {}),
+          ...terminalTidy,
           ...(scopeCascade ? { scopeCascade } : {}),
           // A forced ship is loud in the RESPONSE too, not only in the plan
           // file: the caller who waived the gate should not have to re-read the

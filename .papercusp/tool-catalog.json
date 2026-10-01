@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 926,
+  "count": 927,
   "tools": [
     {
       "name": "ablation:report",
@@ -18455,6 +18455,24 @@
         "when": "When the user explicitly says \"forget X\" / \"don't remember that anymore\" / \"that's wrong, drop it\". Pass every id to drop at once via `ids`. Use soft:true when the fact STOPPED BEING TRUE but its history has value (\"we no longer use gemma\") — hard-delete (the default) when the user wants it GONE (privacy). Always inform the user out loud (\"Removed that from memory\").",
         "notWhen": "To CORRECT the SAME memory in place, use memory:update. When a NEW fact replaces an old one, use memory:remember { supersede:<old-id> } (or memory:update { id:<new-id>, supersedes:<old-id> } if both rows already exist) so the replacement link is recorded. Only use forget for removal.",
         "chaining": "memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
+      }
+    },
+    {
+      "name": "memory:get",
+      "http": {
+        "path": "/api/agent-tools/memory/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read one or more memories by id (1–50). Returns each memory with its metadata; ids that do not exist (or are not yours) come back in `missing`.",
+      "capabilities": [
+        "memory:read"
+      ],
+      "guidance": {
+        "when": "You hold a memory id — from a `(id=…)` injection, memory:search/list output, or a work-item — and need its FULL text or metadata (injections truncate bodies). Superseded and soft-forgotten rows are returned too, with `metadata.validity`.",
+        "notWhen": "You do not have an id — use memory:search (semantic) or memory:list (filter-only).",
+        "chaining": "memory:search → memory:get { id } for the full body → memory:update / memory:remember { supersede:<id> } / memory:forget."
       }
     },
     {

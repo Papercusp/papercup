@@ -760,6 +760,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "dev:build_status",
   "dev:migrations",
   "dev:rate_governor_status",
+  // Journal reads have no application side effects; a bounded replay recovers a lost log response.
+  "logs:read",
   // bounded activity ledger reads are safe to replay after a stale socket;
   // admission still reserves only the explicitly scoped form below.
   "activity:tool-log",
@@ -845,6 +847,7 @@ const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
 
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 const CAPABILITY_BASH_NAME = normalizeMcpName("capability:bash");
+const RELEASE_CUT_NAME = normalizeMcpName("release:cut");
 
 function forwardedToolName(m: unknown): string | null {
   if (!m || typeof m !== "object") return null;
@@ -899,6 +902,17 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
   if (name === null) return false;
   if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  // release:cut is a mixed-effect tool. Only its status operation reads local
+  // markers/logs and systemd state; every other operation must keep the keyed path.
+  if (name === RELEASE_CUT_NAME) {
+    const args = forwardedToolArgs(m);
+    return (
+      !!args &&
+      typeof args === "object" &&
+      !Array.isArray(args) &&
+      (args as { op?: unknown }).op === "status"
+    );
+  }
   return (
     name === CAPABILITY_BASH_NAME &&
     classifyCapabilityBashEffect(forwardedToolArgs(m)) === "read"

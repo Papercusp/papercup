@@ -325,6 +325,7 @@ import './chat/post';
 import './memory/remember';
 import './memory/search';
 import './memory/list';
+import './memory/get';
 // queen-memory-hybrid-2026-07-02 L1b — the generalized standing-facts ledger
 // (deterministic scoped conclusions folded verbatim into briefs/dossiers/orients)
 import './facts/assert';

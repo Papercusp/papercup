@@ -174,7 +174,7 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     expect(evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW).dark).toBe(false);
   });
 
-  it('dark-from-birth: null presence IS dark when the call-origin split proves an empty Papercusp tool surface', () => {
+  it('a hook/agent activity gap with null presence does not prove a dark transport', () => {
     const v = evaluateInteractiveMcpDark(
       interactiveDark({
         loopActive: false,
@@ -184,9 +184,7 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
       }),
       INOW,
     );
-    expect(v.dark).toBe(true);
-    expect(v.reason).toContain('dark from birth');
-    expect(v.reason).toContain('20 hook-origin calls');
+    expect(v.dark).toBe(false);
   });
 });
 
@@ -440,7 +438,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.useRealTimers();
   });
 
-  it('a live zero-presence host with call-origin proof enters the existing /mcp heal ladder', async () => {
+  it('hook activity with zero agent calls does not trigger the /mcp heal ladder', async () => {
     const owner = 'su-dark-from-birth';
     const { tag } = fakeSql({
       openPhases: [],
@@ -455,13 +453,13 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
     });
 
-    expect(out.darkOwners).toContain(owner);
-    expect(out.healSent).toContain(owner);
-    expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    expect(out.darkOwners).not.toContain(owner);
+    expect(out.healSent).not.toContain(owner);
+    expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
-  it('fresh hook-origin presence does not mask the empty tool-surface proof or count as recovery', async () => {
+  it('fresh hook-origin presence is neither a dark verdict nor positive recovery evidence', async () => {
     const owner = 'su-dark-from-birth-hook-beat';
     const { tag } = fakeSql({
       openPhases: [],
@@ -479,18 +477,18 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
     });
 
-    expect(out.darkOwners).toContain(owner);
-    expect(out.healSent).toContain(owner);
+    expect(out.darkOwners).not.toContain(owner);
+    expect(out.healSent).not.toContain(owner);
     expect(out.recovered).not.toContain(owner);
-    expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
-  it('a correlated dark-from-birth burst obeys the shared budget and reports every deferred owner', async () => {
+  it('a correlated stale-presence burst obeys the shared budget and reports every deferred owner', async () => {
     const owners = ['su-burst-a', 'su-burst-b', 'su-burst-c'];
     const { tag } = fakeSql({
       openPhases: [],
-      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+      presenceByOwner: Object.fromEntries(owners.map((owner) => [owner, INOW - 45 * M])),
     });
     listLiveHostsMock.mockReturnValue(
       owners.map((ownerId) => ({
@@ -544,7 +542,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     const budget = { attemptsMs: [] as number[], maxAttempts: 2, windowMs: 10 * M };
     const { tag } = fakeSql({
       openPhases: [],
-      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+      presenceByOwner: Object.fromEntries(owners.map((owner) => [owner, INOW - 45 * M])),
     });
     listLiveHostsMock.mockReturnValue(
       owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),
@@ -580,7 +578,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     const JITTER_MAX = 400;
     const { tag } = fakeSql({
       openPhases: [],
-      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+      presenceByOwner: Object.fromEntries(owners.map((owner) => [owner, INOW - 45 * M])),
     });
     listLiveHostsMock.mockReturnValue(
       owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),

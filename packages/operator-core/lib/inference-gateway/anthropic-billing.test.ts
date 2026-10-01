@@ -85,6 +85,7 @@ describe('P-007 — subscription billing state from unified headers', () => {
   });
 
   it('a response with no unified-status header has no billing state (unknown is not included)', () => {
+    expect(parseClaudeBillingState({})).toBeNull();
     expect(parseClaudeBillingState({ 'retry-after': '5' })).toBeNull();
     expect(parseClaudeBillingState({ 'anthropic-ratelimit-unified-status': '  ' })).toBeNull();
   });

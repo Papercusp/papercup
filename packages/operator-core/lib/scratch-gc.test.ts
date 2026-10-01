@@ -23,6 +23,7 @@ import {
   utimesSync,
   readdirSync,
   statSync,
+  readFileSync,
 } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,9 @@ import {
   _setScratchUsageForTests,
   _resetScratchUsageForTests,
   WORKSPACE_QUOTA_BYTES,
+  SCRATCH_GC_CRONTAB,
+  SCRATCH_GC_SWEEP_PERIOD_MS,
+  SCRATCH_RUN_DIR_MAX_AGE_MS,
 } from './scratch-gc';
 
 // Tests run against a sandbox scratch root so they don't touch the
@@ -90,6 +94,59 @@ describe('runScratchGc — retention', () => {
     const r = runScratchGc({ workspaceRegistry: ['ws-A'] });
     expect(r.retentionEvictions).toBeGreaterThanOrEqual(1);
     expect(existsSync(before)).toBe(false);
+  });
+});
+
+/**
+ * WI-10004532: the sweep schedule used to be described by a hand-maintained
+ * `GC_INTERVAL_MS = 1h` that nothing read, while the real DBOS crontab was daily. That
+ * mismatch made a working GC look broken ("thousands of run dirs older than 24h"). These pin
+ * the schedule to ONE source and pin the max-age bound an investigator should check against.
+ */
+describe('scratch GC schedule — single source + max-age bound (WI-10004532)', () => {
+  /** Period of a 6-field (seconds-first) crontab, for the two shapes we use. */
+  function crontabPeriodMs(crontab: string): number {
+    const f = crontab.trim().split(/\s+/);
+    if (f.length !== 6) throw new Error(`expected a 6-field crontab, got: ${crontab}`);
+    const fixed = (s: string) => /^\d+$/.test(s);
+    const [sec, min, hour, dom, mon, dow] = f;
+    if (dom === '*' && mon === '*' && dow === '*') {
+      if (fixed(sec) && fixed(min) && fixed(hour)) return 24 * 60 * 60 * 1000;
+      if (fixed(sec) && fixed(min) && hour === '*') return 60 * 60 * 1000;
+    }
+    throw new Error(`crontabPeriodMs does not understand ${crontab}; extend it with the new shape`);
+  }
+
+  it('SCRATCH_GC_SWEEP_PERIOD_MS matches SCRATCH_GC_CRONTAB', () => {
+    expect(crontabPeriodMs(SCRATCH_GC_CRONTAB)).toBe(SCRATCH_GC_SWEEP_PERIOD_MS);
+  });
+
+  it('calibration: the period parser distinguishes daily from hourly', () => {
+    expect(crontabPeriodMs('0 0 3 * * *')).toBe(24 * 60 * 60 * 1000);
+    expect(crontabPeriodMs('0 0 * * * *')).toBe(60 * 60 * 1000);
+  });
+
+  it('the DBOS registration uses SCRATCH_GC_CRONTAB, not a literal crontab', () => {
+    const src = readFileSync(new URL('./dbos/periodic-workflows.ts', import.meta.url), 'utf8');
+    const call = src.match(/registerScheduled\(\s*scratchGcWorkflow\s*,\s*\{[^}]*\}/);
+    expect(call, 'scratchGc registration not found in periodic-workflows.ts').not.toBeNull();
+    expect(call![0]).toMatch(/crontab:\s*SCRATCH_GC_CRONTAB\b/);
+  });
+
+  it('a run-dir that just escapes one sweep is evicted by the next, before SCRATCH_RUN_DIR_MAX_AGE_MS', () => {
+    const ageAtFirstSweep = RETENTION_MS - 60_000;
+    const dir = makeRunDir('ws-A', 'demo:tool', UUID(7), 100, ageAtFirstSweep);
+    const t0 = Date.now();
+
+    const first = runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 });
+    expect(first.retentionEvictions).toBe(0);
+    expect(existsSync(dir)).toBe(true);
+
+    const second = runScratchGc({ workspaceRegistry: ['ws-A'], now: t0 + SCRATCH_GC_SWEEP_PERIOD_MS });
+    expect(second.retentionEvictions).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+    // Its age when the second sweep removed it stays inside the documented bound.
+    expect(ageAtFirstSweep + SCRATCH_GC_SWEEP_PERIOD_MS).toBeLessThan(SCRATCH_RUN_DIR_MAX_AGE_MS);
   });
 });
 

@@ -1,6 +1,6 @@
 /**
  * Re-price stored usage estimates under the running price table (WI-10004517;
- * agent-economy-flywheel-2026-08-30 D-017).
+ * agent-economy-flywheel-2026-08-30 D-018).
  *
  * `agent_usage_samples.cost_usd` with `cost_source='estimated'` is a list-price computation from
  * `@papercusp/model-pricing`. Before this, it was computed once at write time and never revisited:
@@ -50,6 +50,14 @@ export interface StoredUsageSample {
 export interface StoredUsagePrice {
   costUsd: number | null;
   costSource: 'estimated' | null;
+  /**
+   * `'lower'` when the row's cache writes have no TTL split: `costFromTokens` refuses to guess a
+   * tier, so the cost is the 5-minute-rate floor (the true cost lies between it and the 1-hour
+   * rate). Persisted as `usage_provenance.costBound`. Measured 2026-10-01: every sampled
+   * tier-unknown row written before the split existed (opus-4-7/4-8, sonnet-4-6) had been stored
+   * at exactly this floor, so re-deriving it keeps that history instead of nulling it.
+   */
+  costBound: 'lower' | null;
 }
 
 const count = (v: Count): number | null => {
@@ -106,9 +114,18 @@ export function priceStoredUsageSample(
   price: (model: string, usage: TokenUsage) => CostEstimate = costFromTokens,
 ): StoredUsagePrice {
   const usage = storedSampleTokenUsage(row);
-  if (!usage || !row.model) return { costUsd: null, costSource: null };
+  if (!usage || !row.model) return { costUsd: null, costSource: null, costBound: null };
   const est = price(row.model, usage);
-  return est.priced ? { costUsd: est.usd, costSource: 'estimated' } : { costUsd: null, costSource: null };
+  if (est.priced) return { costUsd: est.usd, costSource: 'estimated', costBound: null };
+  if (usage.cacheCreationTierUnknown) {
+    // Every write at the cheaper 5-minute tier is the floor of the cost, not a guess at it.
+    const writes = usage.cacheCreationTokens ?? 0;
+    const floor = price(row.model, {
+      ...usage, cacheCreationTierUnknown: undefined, cacheCreation5mTokens: writes, cacheCreation1hTokens: 0,
+    });
+    if (floor.priced) return { costUsd: floor.usd, costSource: 'estimated', costBound: 'lower' };
+  }
+  return { costUsd: null, costSource: null, costBound: null };
 }
 
 export interface RepriceUsageOptions {
@@ -146,6 +163,7 @@ interface StaleRow extends StoredUsageSample {
   row_xmin: string;
   cost_usd: number | null;
   cost_source: string | null;
+  cost_bound: string | null;
 }
 
 /**
@@ -170,7 +188,8 @@ export async function repriceUsageSamples(sql: Sql, opts: RepriceUsageOptions = 
       SELECT id::text AS id, xmin::text AS row_xmin, source, provider, model,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
              cache_creation_5m_tokens, cache_creation_1h_tokens,
-             usage_provenance->>'grain' AS grain, cost_usd, cost_source
+             usage_provenance->>'grain' AS grain, cost_usd, cost_source,
+             usage_provenance->>'costBound' AS cost_bound
         FROM harness_shared.agent_usage_samples
        WHERE cost_source IS DISTINCT FROM 'provider'
          AND (price_table_version IS NULL OR price_table_version < ${version} OR price_table_version > ${version})
@@ -188,16 +207,24 @@ export async function repriceUsageSamples(sql: Sql, opts: RepriceUsageOptions = 
       const next = priceStoredUsageSample(row, opts.price);
       const before = row.cost_usd === null ? null : Number(row.cost_usd);
       const changed = next.costSource !== row.cost_source ||
+        next.costBound !== (row.cost_bound ?? null) ||
         (next.costUsd === null) !== (before === null) ||
         (next.costUsd !== null && before !== null && Math.abs(next.costUsd - before) > 1e-12);
       return { row, next, before, changed };
     });
+    // usage_provenance is rewritten only when the bound changes, so a jsonl/headers row whose
+    // provenance is NULL stays NULL.
     const written = await sql<Array<{ id: string }>>`
       UPDATE harness_shared.agent_usage_samples s
-         SET cost_usd = v.cost_usd, cost_source = v.cost_source, price_table_version = ${version}
+         SET cost_usd = v.cost_usd, cost_source = v.cost_source, price_table_version = ${version},
+             usage_provenance = CASE
+               WHEN v.cost_bound IS NOT DISTINCT FROM (s.usage_provenance->>'costBound') THEN s.usage_provenance
+               ELSE COALESCE(s.usage_provenance, '{}'::jsonb) || jsonb_build_object('costBound', v.cost_bound)
+             END
         FROM jsonb_to_recordset(${JSON.stringify(updates.map(({ row, next }) => ({
           id: row.id, row_xmin: row.row_xmin, cost_usd: next.costUsd, cost_source: next.costSource,
-        })))}::jsonb) AS v(id bigint, row_xmin text, cost_usd double precision, cost_source text)
+          cost_bound: next.costBound,
+        })))}::jsonb) AS v(id bigint, row_xmin text, cost_usd double precision, cost_source text, cost_bound text)
        WHERE s.id = v.id AND s.xmin::text = v.row_xmin
        RETURNING s.id::text AS id`;
     const writtenIds = new Set(written.map((w) => w.id));

@@ -128,7 +128,7 @@ describe('plans:set-plan-status — database acceptance receipt', () => {
   it('commits a ship through the real handler after its acceptance gate passes', async () => {
     const { data, isError } = await runStatus();
 
-    expect(isError).toBe(false);
+    expect(isError, JSON.stringify({ data })).toBe(false);
     expect(data).toMatchObject({ ok: true, changed: true, newStatus: 'shipped' });
     await expect(storedPlan()).resolves.toMatchObject({
       status: 'shipped',

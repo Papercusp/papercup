@@ -7,17 +7,21 @@ import { pathToFileURL } from 'node:url';
 import { Client } from 'pg';
 import {
   CanonicalVectorStore, HybridBackend, LexicalLegBackend,
-  EMBEDDER_DIM_SPECS, CANDIDATE_DIM_SPECS, MEMORY_VECTOR_STORAGE_PROFILES,
+  MEMORY_VECTOR_STORAGE_PROFILES,
   buildMdenseOnEmbedder, buildGemmaEmbedder, buildHarrierEmbedder,
   shutdownLocalEmbedder, getWorkerState,
+  embedExecutionTarget,
   type EmbedderProfileSpec, type MemoryVectorStorageProfile, type MemoryBackend, type MemoryEntry,
 } from '@papercusp/memory';
 import { reciprocalRank, type CorpusEntry } from '@papercusp/memory/bench';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { ensureBenchSchema, releaseBenchSchema } from './bench-host';
 import { pickClusters } from './prose-corpus';
-import { MDENSEON_REVISION } from '../../../../../libs/generic/memory/src/mdenseon-embedder';
 import { applyScoreFloor } from '../../../../../libs/generic/memory/src/score-floor';
+import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { assertCandidateArm, candidateProfile, assertMeasuredExecution,
+  prepareMeasurementCell, writeMeasurementCell, failMeasurementCell } from './measurement-manifest';
+export { candidateProfile } from './measurement-manifest';
 
 export interface HeldoutQuery {
   id: string; class: string; query: string; expected: string[];
@@ -99,15 +103,6 @@ export async function takeCandidateSnapshot(file: string): Promise<Snapshot> {
   } finally { await db.end(); }
 }
 
-export function candidateProfile(model: 'mdenseon' | 'gemma' | 'harrier'): EmbedderProfileSpec {
-  if (model !== 'mdenseon') return EMBEDDER_DIM_SPECS[model];
-  return { ...CANDIDATE_DIM_SPECS.mdenseon,
-    profileId: 'mdenseon-a5fdb000-768@v1', modelRevision: MDENSEON_REVISION,
-    revisionPolicy: 'immutable-artifact', distanceMetric: 'cosine',
-    pooling: 'cls', normalization: { kind: 'l2', timing: 'pipeline' }, outputDtype: 'float32',
-    documentRecipe: 'mdenseon-document-prefix@v1', queryRecipe: 'mdenseon-query-prefix@v1' };
-}
-
 /** Adapt the actual SQL store to its neutral retrieval seam. The benchmark
  * supplies vectors explicitly, so extraction-client availability cannot turn
  * a successfully seeded canonical store into an unrelated mem0 outage. */
@@ -133,7 +128,19 @@ export function canonicalCandidateBackend(store: Pick<CanonicalVectorStore, 'sea
 }
 
 export async function runCandidateHybrid(opts: { snapshot: string; gold: string; model: 'mdenseon' | 'gemma' | 'harrier';
-  modelDirectory?: string; corpus: 'memory' | 'prose'; out: string }) {
+  modelDirectory?: string; corpus: 'memory' | 'prose'; out: string;
+  manifest?: string; manifestSha256?: string; cell?: string }) {
+  const prepared = opts.manifest ? await prepareMeasurementCell(opts.manifest, opts.manifestSha256 ?? '', opts.cell ?? '') : undefined;
+  if (prepared) {
+    if (prepared.cell.bar !== 'hybrid' || prepared.cell.corpus !== opts.corpus
+      || prepared.cell.parameters.route !== 'canonical-lexical-hybrid') throw new Error('runner/cell retrieval route mismatch (entity/decay complete route is a separate measurement)');
+    const dataset = prepared.manifest.datasets.find((d) => d.corpus === opts.corpus)!;
+    if (path.resolve(opts.snapshot) !== path.resolve(prepared.manifest.inputs[dataset.snapshot].path)
+      || path.resolve(opts.gold) !== path.resolve(prepared.manifest.inputs[dataset.labels].path)
+      || path.resolve(opts.out) !== prepared.rawOutput) throw new Error('runner input/output differs from declared cell');
+    await assertCandidateArm(prepared.arm, opts.model, 'worker');
+    if (opts.model === 'mdenseon' && path.resolve(opts.modelDirectory ?? '', 'onnx/model.onnx') !== path.resolve(prepared.arm.artifacts.graph.path)) throw new Error('runner graph directory identity mismatch');
+  }
   const snapshot = JSON.parse(fs.readFileSync(opts.snapshot, 'utf8')) as Snapshot;
   const labels = JSON.parse(fs.readFileSync(opts.gold, 'utf8')) as Record<'memory' | 'prose', HeldoutQuery[]>;
   const entries = snapshot.suites[opts.corpus].entries;
@@ -181,6 +188,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
       const raw = await store.search(vector, 10, { user_id: 'bench' });
       embedded.push({ ...q, vector, embeddingMs, topScore: raw[0]?.score ?? 0 });
     }
+    if (prepared) assertMeasuredExecution(prepared.arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
     const floor = calibratedFloor(embedded);
     const rows = [];
     for (const q of embedded.filter((q) => q.partition === 'test')) {
@@ -203,11 +211,15 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
       limitations: ['small structurally sampled corpus', 'agent-authored labels frozen before inference',
         'calibration and test split by source target', 'SQL timing uses precomputed vectors and averages two fusion calls',
         'neutral adapter excludes extraction, entity graph and decay; production canonical SQL, lexical and hybrid fusion retained'] };
-    fs.mkdirSync(path.dirname(opts.out), { recursive: true });
-    fs.writeFileSync(opts.out, JSON.stringify(report, null, 2));
+    if (prepared) writeMeasurementCell(prepared, report);
+    else {
+      fs.mkdirSync(path.dirname(opts.out), { recursive: true });
+      fs.writeFileSync(opts.out, JSON.stringify(report, null, 2));
+    }
     console.log(JSON.stringify({ model: opts.model, corpus: opts.corpus, docs: entries.length, heldout: rows.length, floor, out: opts.out }));
     return report;
   } finally {
+    if (prepared) failMeasurementCell(prepared, new Error('candidate cell exited without a successful receipt'));
     await store?.dispose();
     await releaseBenchSchema(db, schema);
     await db.end();
@@ -219,7 +231,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];
   const run = process.argv.includes('--snapshot-out') ? takeCandidateSnapshot(arg('--snapshot-out'))
     : runCandidateHybrid({ snapshot: arg('--snapshot'), gold: arg('--gold'), model: arg('--model') as 'mdenseon',
-      modelDirectory: arg('--mdenseon-model'), corpus: arg('--corpus') as 'memory', out: arg('--out') });
+      modelDirectory: arg('--mdenseon-model'), corpus: arg('--corpus') as 'memory', out: arg('--out'),
+      manifest: process.argv.includes('--manifest') ? arg('--manifest') : undefined,
+      manifestSha256: process.argv.includes('--manifest-sha256') ? arg('--manifest-sha256') : undefined,
+      cell: process.argv.includes('--cell') ? arg('--cell') : undefined });
   void run.then(() => process.exit(0)).catch((e) => {
     console.error(e instanceof Error ? e.message : e); process.exit(1);
   });

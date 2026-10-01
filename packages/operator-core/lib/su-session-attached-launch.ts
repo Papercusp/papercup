@@ -162,25 +162,42 @@ export interface LaunchStageTracer {
 }
 
 /**
+ * `warn` = the launch is stuck (nothing has finished it). `info` = a step that
+ * DID finish was slow: a timing note, not a fault.
+ */
+export type LaunchTraceLevel = 'info' | 'warn';
+
+/** The default sink: a stall is a warning, a slow finished step is information. */
+export function logLaunchTrace(line: string, level: LaunchTraceLevel): void {
+  if (level === 'warn') console.warn(line);
+  else console.info(line);
+}
+
+/**
  * A PUI launch that never finishes must say WHICH step it stalled in. The PUI
  * only sees "SU launch did not finish", and without this the stall left no
  * server-side evidence at all (pui-chat-first-ux P-007, 2026-09-30).
+ *
+ * The slow-step line is `info`, not `warn`: the step completed, so it is a
+ * timing note. As a warning it failed the in-process PTY e2e suite under
+ * vitest-fail-on-console whenever host load stretched bootstrap past 5s
+ * (rehearsal run 15, 2026-10-01, WI-10004247), a launch that worked.
  */
 export function launchStageTracer(
   key: string,
-  log: (line: string) => void = (line) => console.warn(line),
+  log: (line: string, level: LaunchTraceLevel) => void = logLaunchTrace,
   now: () => number = Date.now,
 ): LaunchStageTracer {
   const startedAt = now();
   let stage = 'read-chat';
   let stageAt = startedAt;
   const stall = setTimeout(() => {
-    log(`[su-launch] ${key} not finished after ${now() - startedAt}ms; stalled in stage=${stage} for ${now() - stageAt}ms`);
+    log(`[su-launch] ${key} not finished after ${now() - startedAt}ms; stalled in stage=${stage} for ${now() - stageAt}ms`, 'warn');
   }, LAUNCH_STALL_REPORT_MS);
   stall.unref?.();
   const close = (next: string | null) => {
     const at = now();
-    if (at - stageAt >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${at - stageAt}ms`);
+    if (at - stageAt >= SLOW_LAUNCH_STAGE_MS) log(`[su-launch] ${key} stage=${stage} took ${at - stageAt}ms`, 'info');
     if (next !== null) { stage = next; stageAt = at; }
   };
   return { stage: (next) => close(next), end: () => { close(null); clearTimeout(stall); } };

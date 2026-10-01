@@ -443,6 +443,61 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each([
+    ["direct", { name: "release:cut", arguments: { op: "status" } }],
+    [
+      "tools:invoke with object args",
+      {
+        name: "tools:invoke",
+        arguments: { name: "release:cut", args: { op: "status" } },
+      },
+    ],
+    [
+      "tools:invoke with ptool-stringified args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "release:cut",
+          args: JSON.stringify({ op: "status" }),
+        },
+      },
+    ],
+  ])("%s release:cut status is readonly", (_label, params) => {
+    const body = Buffer.from(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
+  it.each(["run", "prepare-tag", "handoff", "run-leg", "abort-leg", "reclaim"])(
+    "tools:invoke wrapping release:cut %s remains keyed",
+    (op) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "tools:invoke",
+            arguments: { name: "release:cut", args: { op } },
+          },
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("keyed");
+      expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+        "KEY123",
+      );
+    },
+  );
   it("tools:invoke wrapping coord:whoami is classified readonly", () => {
     const body = Buffer.from(
       JSON.stringify({
@@ -2146,6 +2201,83 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toBe('{"result":{"output":"needle"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-24734741850141953: tools:invoke-wrapped logs:read retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"entries":[{"unit":"papercup-staging-sync.service","message":"sync completed"}],"matched":1}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "logs:read",
+            args: JSON.stringify({
+              unit: "papercup-staging-sync.service",
+              since: "-30 min",
+              grep: "restart|sync",
+              limit: 20,
+            }),
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toContain("sync completed");
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-24736474511290409: tools:invoke-wrapped release:cut status retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"op":"status","state":"running"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "release:cut",
+            args: JSON.stringify({ op: "status" }),
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toContain('"state":"running"');
     expect(upstream.hits()).toBe(2);
   });
 

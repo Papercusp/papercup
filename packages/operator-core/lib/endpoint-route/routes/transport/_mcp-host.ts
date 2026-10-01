@@ -87,7 +87,7 @@ import {
 } from '@papercusp/tooldef-mcp';
 import { mcpDataPlaneDegradedAtFromExtra, mcpTraceIdFromExtra } from '../../../mcp-request-trace';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
-import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
+import { applyResultDoorAsync, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
   MAX_PICK_PATHS,
@@ -4087,7 +4087,7 @@ export function registerMcpHost(server: McpServer): void {
               // retry fan-out can bypass the one-budget invariant entirely.
               const replayedResult = projected.skipResultDoor
                 ? storedResult
-                : applyResultDoor(storedResult, {
+                : await applyResultDoorAsync(storedResult, {
                     toolName,
                     workspaceId: dispatchSpawnCtx.workspaceId,
                     runId: dispatchSpawnCtx.runId ?? null,
@@ -4281,7 +4281,7 @@ export function registerMcpHost(server: McpServer): void {
                 : (projected.skipResultDoor ?? nestedResultDoorSkipReason(doorInput));
             const doored = resultDoorSkipReason
               ? doorInput
-              : applyResultDoor(doorInput, {
+              : await applyResultDoorAsync(doorInput, {
                   toolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   runId: dispatchSpawnCtx.runId ?? null,

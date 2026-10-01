@@ -1,7 +1,8 @@
 /**
  * Scratch storage garbage collection + quota — Phase 4 T2.3.
  *
- * Sweep policy:
+ * Sweep policy (runs on SCRATCH_GC_CRONTAB — daily — so a run-dir lives up to
+ * SCRATCH_RUN_DIR_MAX_AGE_MS = RETENTION_MS + one sweep period, i.e. 24–48h):
  *   1. Walk ~/.papercusp/scratch/<workspace>/<toolName>/<runId>/ dirs;
  *      delete any older than RETENTION_MS (24h default).
  *   2. List ~/.papercusp/scratch/<workspace>/ dirs; if a workspace
@@ -43,8 +44,26 @@ export const RETENTION_MS = 24 * 60 * 60 * 1000;
 /** Per-workspace quota. 5 GB default. */
 export const WORKSPACE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
 
-/** GC sweep cadence: 1h default. */
-export const GC_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * GC sweep schedule — the ONE source for it. `dbos/periodic-workflows.ts` registers the
+ * `scratchGc` DBOS workflow with exactly this crontab (6-field, seconds first: daily 03:00
+ * host-local). It replaces a hand-maintained `GC_INTERVAL_MS = 1h` that nothing read: the
+ * sweep had been daily all along, and that constant led an investigation (WI-10004532) to
+ * report retention as unenforced when the GC was working.
+ */
+export const SCRATCH_GC_CRONTAB = '0 0 3 * * *';
+
+/** Interval between sweeps implied by SCRATCH_GC_CRONTAB (daily). */
+export const SCRATCH_GC_SWEEP_PERIOD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The oldest a run-dir can legitimately get. The sweep only removes dirs already past
+ * RETENTION_MS at the moment it runs, so a dir that crosses RETENTION_MS just after a sweep
+ * survives one more full period. Counting "run dirs older than RETENTION_MS" therefore
+ * measures the sweep cadence, not a GC failure. A dir older than THIS bound means the GC is
+ * not running or not deleting.
+ */
+export const SCRATCH_RUN_DIR_MAX_AGE_MS = RETENTION_MS + SCRATCH_GC_SWEEP_PERIOD_MS;
 
 export class ScratchQuotaError extends Error {
   constructor(message: string) {

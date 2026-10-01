@@ -32,7 +32,7 @@ vi.mock('./su-session-client-lease', () => ({
   superviseSuClientLease: vi.fn(() => () => undefined),
 }));
 import { LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
-  launchStageTracer } from './su-session-attached-launch';
+  launchStageTracer, logLaunchTrace, type LaunchTraceLevel } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
 const input = { agent: 'claude', agent_chat_id: 'chat', harness_slug: 'project', account: 'default', carry: 'warm' as const };
@@ -124,14 +124,15 @@ describe('attached launch authority', () => {
   it('does not conceal a lost executor by creating another session', async () => {
     mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18 });
     mocks.host.mockReturnValue({ snapshot: () => ({ executorAttached: false, streamReady: true, terminal: false, descriptor: { lifecycle: 'ready' } }) });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const response = await launchAttachedSuSession(request(), input);
     expect(response.status).toBe(503);
     expect((await response.json()).error).toMatch(/Reconnect|reconnect/);
     // The bounded wait for the previous engine's exit is slow on purpose; the
-    // launch tracer names it rather than leaving the delay unexplained.
-    expect(warn.mock.calls.flat().join('\n')).toMatch(/\[su-launch\] .* stage=read-durable-session took \d+ms/);
-    warn.mockRestore();
+    // launch tracer names it rather than leaving the delay unexplained. It is a
+    // finished step, so the note is info-level (WI-10004247).
+    expect(info.mock.calls.flat().join('\n')).toMatch(/\[su-launch\] .* stage=read-durable-session took \d+ms/);
+    info.mockRestore();
     expect(mocks.bootstrap).not.toHaveBeenCalled();
     expect(mocks.engine).not.toHaveBeenCalled();
   });
@@ -396,5 +397,40 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     // The stall report never fires after end(), however long the process lives.
     vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS * 2);
     expect(lines).toEqual([`[su-launch] ws:h:chat stage=bootstrap took ${SLOW_LAUNCH_STAGE_MS}ms`]);
+  });
+
+  it('marks a stall as warn and a slow finished step as info', () => {
+    vi.useFakeTimers();
+    const seen: Array<[string, LaunchTraceLevel]> = [];
+    const trace = launchStageTracer('ws:h:chat', (line, level) => seen.push([line, level]));
+    trace.stage('bootstrap');
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+    trace.stage('engine-start');
+    trace.end();
+    expect(seen.map(([line, level]) => [line.includes('not finished') ? 'stall' : 'slow-step', level]))
+      .toEqual([['stall', 'warn'], ['slow-step', 'info']]);
+  });
+
+  // WI-10004247 (rehearsal run 15): the slow-step line went to console.warn, so
+  // a launch that WORKED failed the in-process PTY suite under fail-on-console
+  // whenever load stretched bootstrap past SLOW_LAUNCH_STAGE_MS.
+  it('default sink never sends a completed slow step to console.warn', () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const trace = launchStageTracer('ws:h:chat');
+      trace.stage('bootstrap');
+      vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS + 450);
+      trace.stage('engine-start');
+      trace.end();
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(`[su-launch] ws:h:chat stage=bootstrap took ${SLOW_LAUNCH_STAGE_MS + 450}ms`);
+      logLaunchTrace('stuck', 'warn');
+      expect(warn).toHaveBeenCalledWith('stuck');
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
   });
 });

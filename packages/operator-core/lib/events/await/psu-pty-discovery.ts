@@ -30,6 +30,7 @@ import {
   readSync,
   closeSync,
   appendFileSync,
+  promises as fsp,
 } from 'node:fs';
 import net from 'node:net';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -259,6 +260,10 @@ export function readHostEventTail(
   } catch {
     return [];
   }
+  return parseHostEventTail(text);
+}
+
+function parseHostEventTail(text: string): PtyHostEvent[] {
   const out: PtyHostEvent[] = [];
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
@@ -270,6 +275,42 @@ export function readHostEventTail(
     }
   }
   return out;
+}
+
+/**
+ * {@link readHostEventTail} without blocking the event loop (WI-10004559).
+ *
+ * The psu-pty directory is shared by every psu host on the box and holds thousands of
+ * ledgers. When the ext4 journal stalls, a host creating or renaming a file there holds
+ * the directory's inode lock, and any thread that opens or stats a path in it waits in
+ * D-state behind that lock. A synchronous read on the operator's main thread therefore
+ * freezes the whole process, and the event-loop sentinel kills it 20s later, dropping
+ * every in-flight MCP request. Periodic sweeps must use this variant: the wait lands on
+ * a libuv worker thread and the event loop keeps serving.
+ *
+ * Same contract as the sync form: a missing or unreadable ledger yields `[]`.
+ */
+export async function readHostEventTailAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  maxBytes: number = RESPAWN_SCAN_TAIL_BYTES,
+): Promise<PtyHostEvent[]> {
+  let text: string;
+  try {
+    const fh = await fsp.open(join(dir, `${sanitizeKey(ownerId)}.events.jsonl`), 'r');
+    try {
+      const { size } = await fh.stat();
+      const start = Math.max(0, size - maxBytes);
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return [];
+  }
+  return parseHostEventTail(text);
 }
 
 /**
@@ -572,6 +613,48 @@ export function listLiveHosts(
   return out;
 }
 
+async function pathExistsAsync(p: string): Promise<boolean> {
+  try {
+    await fsp.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * {@link listLiveHosts} without blocking the event loop (WI-10004559). Same
+ * self-validation, same best-effort contract. The directory scan, the per-host meta
+ * read and the socket check all touch the shared psu-pty directory, which can hold a
+ * thread in D-state for 20s+ during a journal stall (see {@link readHostEventTailAsync}).
+ * Every PERIODIC caller on the operator main thread must use this form.
+ */
+export async function listLiveHostsAsync(
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<PsuPtyHost[]> {
+  startJanitor();
+  const verify = opts.verifyIdentity ?? pidIsPsuHost;
+  let files: string[];
+  try {
+    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+  } catch {
+    return [];
+  }
+  const out: PsuPtyHost[] = [];
+  for (const f of files) {
+    try {
+      const h = JSON.parse(await fsp.readFile(join(dir, f), 'utf8')) as PsuPtyHost;
+      if (h && h.ownerId && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid)) {
+        out.push(h);
+      }
+    } catch {
+      /* unreadable / partial write — skip this host */
+    }
+  }
+  return out;
+}
+
 function safeUnlink(p: string): void {
   try {
     if (existsSync(p)) unlinkSync(p);
@@ -624,6 +707,49 @@ export function pruneDeadDiscoveryFiles(
   return pruned;
 }
 
+async function safeUnlinkAsync(p: string): Promise<void> {
+  try {
+    await fsp.unlink(p);
+  } catch {
+    /* best-effort — already gone, or a concurrent host cleaned it up */
+  }
+}
+
+/**
+ * {@link pruneDeadDiscoveryFiles} without blocking the event loop (WI-10004559) —
+ * the form the standing janitor runs. Same liveness test, same count semantics.
+ */
+export async function pruneDeadDiscoveryFilesAsync(
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<number> {
+  const verify = opts.verifyIdentity ?? pidIsPsuHost;
+  let files: string[];
+  try {
+    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+  } catch {
+    return 0; // no discovery dir yet — nothing to prune
+  }
+  let pruned = 0;
+  for (const f of files) {
+    const metaPath = join(dir, f);
+    let h: PsuPtyHost | null = null;
+    try {
+      h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
+    } catch {
+      await safeUnlinkAsync(metaPath); // corrupt/partial write — can never resolve to a live host
+      pruned += 1;
+      continue;
+    }
+    const alive = !!(h && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && verify(h.pid));
+    if (alive) continue;
+    await safeUnlinkAsync(metaPath);
+    if (h?.sock) await safeUnlinkAsync(h.sock);
+    pruned += 1;
+  }
+  return pruned;
+}
+
 const JANITOR_INTERVAL_MS = 30 * 60 * 1000; // hygiene only, no urgency (WI-2510)
 
 type JanitorGlobals = typeof globalThis & { __papercuspPsuPtyJanitorStarted?: boolean };
@@ -644,7 +770,8 @@ function startJanitor(): void {
     'psu-pty-discovery-janitor',
     JANITOR_INTERVAL_MS,
     () => {
-      pruneDeadDiscoveryFiles();
+      // Async (WI-10004559): this runs on the operator's main thread.
+      void pruneDeadDiscoveryFilesAsync().catch(() => {});
     },
     { category: 'global-sweep' },
   );

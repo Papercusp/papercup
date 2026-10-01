@@ -2771,3 +2771,86 @@ No production request replay, service restart, or account-refresh code change
 was performed. P-008 remains open; the next independent step is a maintained
 test of unrelated SSE invalidation versus account-specific invalidation before
 changing refresh behavior.
+
+### PUI account-refresh reproduction and source fix — 04:02Z
+
+The maintained Cargo test
+`tests::account_refetch_reads_only_for_account_updates_and_full_refresh`
+reproduced an unconditional account read in the full PUI refetch path. It
+drives the real `refetch_all` and `OperatorClient` over a private Unix socket,
+counts actual `accounts:status` run-tool requests, and checks `AccountRows`
+events. Before the fix, startup produced one request, then an
+`activity.recent` invalidation produced a second: expected 1, observed 2.
+That one selected test failed with exit 101; 1281 other tests were filtered
+out. `/tmp/p008-pui-account-red-20261001.log` preserves the assertion.
+
+Root cause: `RefetchSignal` scoped only plan reads; `refetch_all` always called
+`accounts_status()` even for a non-account invalidation. An account-only
+trigger would have left the request counter at 1, so the wire-level counter
+distinguishes the two explanations. Existing plan-filter tests did not cover
+account requests, which is why they missed this class.
+
+The fix extends that existing signal with an independent account-read bit.
+Debounce merges both bits with OR. Account query names and the raw pool/override
+table invalidations retain account reads. Unrelated activity, inbox, plan and
+tool-ledger invalidations skip them. Startup, malformed/nameless frames, and
+the existing 60-second safety refresh still request full hydration; the
+separate session-setup account fetch remains unchanged. No new timer, service,
+configuration key or refresh system was added.
+
+Verification:
+
+- `cargo test --manifest-path apps/tui/Cargo.toml --bin pui refetch -- --nocapture`
+  passed 4 tests, no failures or ignored tests, 1279 filtered out. The new
+  wire test checks 13 sequential refreshes, including unrelated events after
+  an account update; the new merge test preserves account and plan reads in
+  mixed bursts. Log: `/tmp/p008-pui-account-green-20261001.log`.
+- The final default `cargo test --manifest-path apps/tui/Cargo.toml` exited 0:
+  PUI 1266 passed/17 ignored; audio helper 11 passed/3 ignored; CLI help 3,
+  install contract 6, network read-model 3 and testing contract 4 passed.
+  Total: 1293 passed, 20 ignored, no failures. The ignored live/hardware
+  smokes were not exercised. Log: `/tmp/p008-pui-crate-final-20261001.log`.
+- `rustfmt --check --edition 2021 --config skip_children=true
+  apps/tui/src/main.rs` and the scoped `git diff --check` passed. Formatting
+  edits were applied only to the changed main-file regions.
+
+Final checkout identity: `2a027eae5c14556dde0c44aba1eeecdfa662c88b` plus
+the shared working tree. SHA-256: `main.rs` =
+`6825987e72d0e8ef2f9463e222dca8f86ca18c14c46336ea75c7ecfdfda801b5`;
+`client.rs` = `96471030a05791427337feb37133ff5d00ef3eb3e10f29d05e8245c2e2d53e18`;
+`Cargo.lock` = `1e05518fe723b494efacf5b6079ff244ca931904d21cef4ee44b9616a70ed3c2`.
+Final Cargo-log SHA-256:
+`7c4ad644817434ad68ffcc8153737793bf9819763f86d8c45caef80e36b3d25f`.
+
+This confirms and removes source-level unrelated-event amplification. It
+does not identify the trigger for every historical request or prove a
+historical latency cause, current installed-PUI adoption, CPU savings or
+final R-8 acceptance. Account-pool updates themselves may still be frequent.
+The generic heavy-command wrapper initially queued this focused Rust test;
+only that owned queued wrapper was terminated, then the documented Cargo
+runner was used. Native MCP transport failure was handled by the sanctioned
+attributed CLI; no write outcome was left unknown. No service restart,
+production request replay, install, live-gate, Portal or federation action
+was performed. P-008 remains open under the existing scope and D-006.
+
+### Embedding fallback warning guard — 04:07Z
+
+The current writer is `memory/embed-sidecar-spawn.ts:ensureEmbedSidecar`.
+Its disabled branch returns null and logs the no-config fallback once per
+process; under Vitest it logs only when the owning suite explicitly opts in.
+`embedSidecarEnabled` requires `PAPERCUSP_EMBED_SIDECAR=1` and forbids recursive
+spawning from a sidecar process. The existing canonical command
+`PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file --
+packages/operator-core/lib/memory/embed-sidecar-spawn.test.ts` passed 6/6,
+no skips, exit 0, at checkout `2a027eae5c`. It checks enable/recursion
+classification, null fallback, the actionable warning, once-per-process
+logging, and reset behavior. Log:
+`/tmp/p008-embedding-fallback-20261001.log`.
+
+SHA-256: source `28d01d6798cb21c8b008715403ed6d9661358b439a63a40cee7920cafe3f04f7`;
+test `8f28972fbd27350f5cac98cdb3594406d64e8dd4842e31ff4dc8500c8e2ca107`;
+log `e90f3fb8d44ecb7eac5880542a3aa310df44e83681e6f033c83e906de46adc17`.
+This verifies the intended disabled-path warning contract. It does not run
+an embedding model, prove historical process configuration, quantify memory
+or CPU cost, or settle the historical app-latency lead. No embedding source
+change or shared-host operation was made; the historical impact remains open.

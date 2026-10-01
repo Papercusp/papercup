@@ -5,7 +5,22 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { drive, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+import { drive, replayPath, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+
+describe('replayPath', () => {
+  const recorded = { sessionId: 'codex-x', env: { path: '/rec/bin:/usr/bin', node: 'v22.1.0' } };
+  it('keeps the driver PATH by default and uses the recorded one only when asked', () => {
+    expect(replayPath('inherit', '/vm/bin:/usr/bin', recorded)).toBe('/vm/bin:/usr/bin');
+    expect(replayPath('recorded', '/vm/bin:/usr/bin', recorded)).toBe('/rec/bin:/usr/bin');
+  });
+  it('puts a pinned build first in either mode', () => {
+    expect(replayPath('recorded', '/vm/bin', recorded, '/pin/codex-0.159.2')).toBe(`/pin/codex-0.159.2${path.delimiter}/rec/bin:/usr/bin`);
+    expect(replayPath('inherit', undefined, recorded, '/pin')).toBe('/pin');
+  });
+  it('refuses recorded mode for a recording made before PATH capture, instead of silently inheriting', () => {
+    expect(() => replayPath('recorded', '/vm/bin', { sessionId: 'old' })).toThrow(/no recorded PATH/);
+  });
+});
 
 function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
   const repo = over.repo ?? 'r';

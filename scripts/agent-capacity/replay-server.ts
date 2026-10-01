@@ -34,7 +34,16 @@ import http from 'node:http';
 import { createWriteStream, existsSync, readFileSync, type WriteStream } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedChunk, type RecordedExchange, type RequestFingerprint } from './record-proxy';
+import {
+  decodeChunk,
+  encodeChunk,
+  fingerprintRequest,
+  reportedExecSessions,
+  type ExecSessionReport,
+  type RecordedChunk,
+  type RecordedExchange,
+  type RequestFingerprint,
+} from './record-proxy';
 
 export type MatchTier = 'exact' | 'shape' | 'path';
 
@@ -384,15 +393,21 @@ export function rewriteExchange(ex: RecordedExchange, rewrite: PathRewrite | Pie
 // or interrupted, and the replay's tool work (and its CPU and memory) stops following the
 // recording while every request still matches `exact`.
 //
-// Request bodies were not recorded, so a recorded id is visible only where the model names
-// it (served responses), and a replay id only where the CLI reports it (tool outputs in the
-// incoming requests). Each instance pairs them in order of first appearance: the i-th
-// distinct recorded id the model names maps to the i-th distinct id the replay's tool outputs
-// reported. That is exact when the model first polls its processes in the order it started
-// them. It drifts when the model first polls a later process, or when a command still running
-// in the replay had already finished in the recording. (In the 2026-09-30 corpus, 11 Codex
-// recordings poll processes and 4 of them alternate between several.) Each served record
-// logs the map it applied and any named id left unmapped, so a drifted replay is visible.
+// EXACT pairing (recordings whose request fingerprints carry `execSessions`): the recording
+// says which call_id reported each recorded id, and the replay's own tool output for that same
+// call_id (served from the recording, so the call_ids agree) reports the replay id. A recorded
+// id whose call has not reported a replay process stays UNMAPPED rather than borrowing one, so
+// a command that finished inside its yield in the replay is never paired with another process.
+//
+// ORDER pairing (the 2026-09-30 corpus, recorded before fingerprints kept `execSessions`): a
+// recorded id is visible only where the model names it (served responses), and a replay id
+// only where the CLI reports it. Each instance pairs them in order of first appearance: the
+// i-th distinct recorded id the model names maps to the i-th distinct id the replay reported.
+// That is exact when the model first polls its processes in the order it started them. It
+// drifts when the model first polls a later process, or when a command still running in the
+// replay had already finished in the recording. (In that corpus, 11 Codex recordings poll
+// processes and 4 of them alternate between several.) Each served record logs the map it
+// applied, the mode, and any named id left unmapped, so a drifted replay is visible.
 // ---------------------------------------------------------------------------------------------
 
 /** The id in a model-written `session_id:<n>` (JS argument or JSON, raw or JSON-escaped). */
@@ -422,11 +437,6 @@ export function execSessionRewriter(map: ReadonlyMap<string, string>): PieceRewr
   };
 }
 
-// The CLI's own report of a still-running process: an unescaped JSON `"session_id": <n>`
-// (Codex code mode returns the tool result as JSON text) or the plain-text "session ID <n>".
-// An escaped `\"session_id\"` is command OUTPUT quoted inside that JSON, not the CLI's report.
-const REPORTED_SESSION_ID = [/(?<!\\)"session_id"\s*:\s*(\d+)/g, /\bsession ID (\d+)/g];
-
 /**
  * Distinct exec-session ids the CLI reported in the tool outputs of an OpenAI Responses
  * request (`input[]` items whose type ends in `_output`), in conversation order. Model-written
@@ -439,21 +449,24 @@ export function reportedExecSessionIds(body: Buffer): string[] {
   } catch {
     return [];
   }
-  if (!Array.isArray(input)) return [];
-  const out: string[] = [];
-  const scan = (v: unknown): void => {
-    if (typeof v === 'string') {
-      const found: { at: number; id: string }[] = [];
-      for (const re of REPORTED_SESSION_ID) for (const m of v.matchAll(re)) found.push({ at: m.index, id: m[1] });
-      for (const f of found.sort((a, b) => a.at - b.at)) if (!out.includes(f.id)) out.push(f.id);
-    } else if (Array.isArray(v)) v.forEach(scan);
-    else if (v && typeof v === 'object') Object.values(v).forEach(scan);
-  };
-  for (const item of input) {
-    const type = item && typeof item === 'object' ? (item as { type?: unknown }).type : undefined;
-    if (typeof type === 'string' && type.endsWith('_output')) scan((item as { output?: unknown }).output);
+  return reportedExecSessions(input).map((r) => r.id);
+}
+
+/**
+ * Recorded exec-session id -> the call_id whose output first reported it, from the request
+ * fingerprints of a recording. Null when the recording predates `execSessions` (no exchange
+ * carries the field), which selects order pairing.
+ */
+export function recordedExecCalls(exchanges: readonly RecordedExchange[]): Map<string, string> | null {
+  let any = false;
+  const out = new Map<string, string>();
+  for (const ex of exchanges) {
+    const reports = ex.req.execSessions;
+    if (!reports) continue;
+    any = true;
+    for (const r of reports) if (r.callId && !out.has(r.id)) out.set(r.id, r.callId);
   }
-  return out;
+  return any ? out : null;
 }
 
 /** Per-instance pairing of recorded exec-session ids with the replay's own. */
@@ -462,27 +475,49 @@ export interface ExecSessionIds {
   recorded: string[];
   /** Replay ids in the order the instance's tool outputs first reported them. */
   replay: string[];
+  /** call_id -> the replay id its output reported (exact pairing). */
+  replayByCall?: Map<string, string>;
 }
 
-/** Record ids newly reported by an incoming request. */
-export function learnReplayIds(ids: ExecSessionIds, reported: readonly string[]): void {
-  for (const id of reported) if (!ids.replay.includes(id)) ids.replay.push(id);
+/** Record ids (and, when known, the call_id each answered) newly reported by an incoming request. */
+export function learnReplayIds(ids: ExecSessionIds, reported: readonly (string | ExecSessionReport)[]): void {
+  for (const r of reported) {
+    const { id, callId } = typeof r === 'string' ? { id: r, callId: '' } : r;
+    if (!ids.replay.includes(id)) ids.replay.push(id);
+    if (callId) {
+      ids.replayByCall ??= new Map();
+      if (!ids.replayByCall.has(callId)) ids.replayByCall.set(callId, id);
+    }
+  }
 }
 
 /**
  * The recorded->replay map for the ids this response names, registering ids named for the
- * first time, plus the named ids that have no replay id yet.
+ * first time, plus the named ids that have no replay id yet. With `recordedCalls` (the
+ * recording's id -> call_id map) an id the recording attributes to a call is paired through
+ * that call only; an id it does not attribute falls back to order pairing.
  */
-export function pairFor(ids: ExecSessionIds, named: readonly string[]): { map: Map<string, string>; unmapped: string[] } {
+export function pairFor(
+  ids: ExecSessionIds,
+  named: readonly string[],
+  recordedCalls?: ReadonlyMap<string, string> | null,
+): { map: Map<string, string>; unmapped: string[]; by: 'call_id' | 'order' } {
   const map = new Map<string, string>();
   const unmapped: string[] = [];
+  let byOrder = false;
   for (const id of named) {
     if (!ids.recorded.includes(id)) ids.recorded.push(id);
-    const replay = ids.replay[ids.recorded.indexOf(id)];
+    const callId = recordedCalls?.get(id);
+    let replay: string | undefined;
+    if (callId !== undefined) replay = ids.replayByCall?.get(callId);
+    else {
+      byOrder = true;
+      replay = ids.replay[ids.recorded.indexOf(id)];
+    }
     if (replay === undefined) unmapped.push(id);
     else map.set(id, replay);
   }
-  return { map, unmapped };
+  return { map, unmapped, by: byOrder ? 'order' : 'call_id' };
 }
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
@@ -517,6 +552,8 @@ export interface ServedRecord {
   execSessionIds?: Record<string, string>;
   /** Exec-session ids this response names that the replay never reported (served unchanged). */
   execSessionUnmapped?: string[];
+  /** How the named ids were paired: through the recorded call_id (exact) or by order. */
+  execSessionPairing?: 'call_id' | 'order';
 }
 
 export interface ReplayServerOptions {
@@ -558,6 +595,11 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     return out;
   };
   const execIds = new Map<string, ExecSessionIds>();
+  const execCalls = new WeakMap<readonly RecordedExchange[], Map<string, string> | null>();
+  const execCallsOf = (exchanges: readonly RecordedExchange[]): Map<string, string> | null => {
+    if (!execCalls.has(exchanges)) execCalls.set(exchanges, recordedExecCalls(exchanges));
+    return execCalls.get(exchanges) ?? null;
+  };
   const named = new WeakMap<RecordedExchange, string[]>();
   const namedIn = (ex: RecordedExchange): string[] => {
     let hit = named.get(ex);
@@ -610,16 +652,13 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     const done = new Promise<void>((resolve) => {
       req.on('end', () => {
         const body = Buffer.concat(parts);
+        // The fingerprint parses the body once and lifts the CLI's exec-session reports (with
+        // the call_id each answered) out of an OpenAI Responses request.
         const fp = fingerprintRequest(body);
-        // Only OpenAI Responses requests carry exec-session reports; skip re-parsing the
-        // (often larger) Anthropic bodies.
-        if (parsed.rest.includes('/responses') && body.length > 0) {
-          const reported = reportedExecSessionIds(body);
-          if (reported.length > 0) {
-            const ids = execIds.get(key) ?? { recorded: [], replay: [] };
-            execIds.set(key, ids);
-            learnReplayIds(ids, reported);
-          }
+        if (fp.execSessions && fp.execSessions.length > 0) {
+          const ids = execIds.get(key) ?? { recorded: [], replay: [] };
+          execIds.set(key, ids);
+          learnReplayIds(ids, fp.execSessions);
         }
         const method = req.method ?? 'GET';
         const t0 = performance.now();
@@ -650,16 +689,17 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
         const { tier } = picked;
         let ex = served(picked.exchange, rewrites.get(key));
         const rewritten = ex !== picked.exchange;
-        let sessions: Pick<ServedRecord, 'execSessionIds' | 'execSessionUnmapped'> = {};
+        let sessions: Pick<ServedRecord, 'execSessionIds' | 'execSessionUnmapped' | 'execSessionPairing'> = {};
         const names = namedIn(picked.exchange);
         if (names.length > 0) {
           const ids = execIds.get(key) ?? { recorded: [], replay: [] };
           execIds.set(key, ids);
-          const { map, unmapped } = pairFor(ids, names);
+          const { map, unmapped, by } = pairFor(ids, names, execCallsOf(exchanges));
           if (map.size > 0) ex = rewriteExchange(ex, execSessionRewriter(map));
           sessions = {
             ...(map.size > 0 ? { execSessionIds: Object.fromEntries(map) } : {}),
             ...(unmapped.length > 0 ? { execSessionUnmapped: unmapped } : {}),
+            execSessionPairing: by,
           };
         }
         void (async () => {

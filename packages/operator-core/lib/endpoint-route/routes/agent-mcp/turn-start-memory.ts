@@ -87,8 +87,11 @@ type PackageSinkDelivery = {
  * a live 7-day window (D-033), 70.0% of ALL turn-start queries were truncated
  * exactly here, 251 of those 254 rows machine-injected — so the clamp was
  * reliably keeping a wake's opening boilerplate and discarding the task content
- * behind it. Post-strip a typical wake is ~240 chars and never reaches it. */
-const PROMPT_QUERY_CLAMP = 1_000;
+ * behind it. Post-strip a typical wake is ~240 chars and never reaches it.
+ *
+ * Exported for the Jev live-drop bench (memory/bench/jev-live-drop-quality.ts),
+ * which rebuilds this exact query to match the decision ledger's state hash. */
+export const PROMPT_QUERY_CLAMP = 1_000;
 
 /** D-004 small budget for the mid-epoch delta (chars). */
 const TURN_START_BUDGET_CHARS = (() => {

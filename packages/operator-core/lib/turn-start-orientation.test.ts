@@ -987,15 +987,17 @@ describe('turn-start-orientation — what it says', () => {
     });
   });
 
-  it('re-emits the toolless warning while hook evidence keeps increasing', () => {
+  it('reports the activity gap without asserting registration, and re-emits as hooks increase', () => {
     const first: OrientationState = {
       ...base,
       unansweredDirected: 1,
       toolSurface: { hookCalls: 20, windowMinutes: 3 },
     };
     const firstBlock = composeOrientationBlock({ state: first, committed: null, epoch: EPOCH });
-    expect(firstBlock).toContain('MCP TOOLS NOT REGISTERED');
-    expect(firstBlock).toContain('20 harness beats OK');
+    expect(firstBlock).toContain('No agent-origin MCP calls recorded in 3m');
+    expect(firstBlock).toContain('20 harness beats');
+    expect(firstBlock).toContain('Tool-list registration is unknown');
+    expect(firstBlock).not.toContain('RESTART THE SESSION');
 
     const committed = fingerprintOrientation(first, EPOCH);
     const second: OrientationState = {
@@ -1004,9 +1006,10 @@ describe('turn-start-orientation — what it says', () => {
     };
     const secondBlock = composeOrientationBlock({ state: second, committed, epoch: EPOCH });
     expect(orientationUnchanged(committed, fingerprintOrientation(second, EPOCH))).toBe(false);
-    expect(secondBlock).toContain('MCP TOOLS NOT REGISTERED');
-    expect(secondBlock).toContain('21 harness beats OK');
-    expect(secondBlock.indexOf('MCP TOOLS NOT REGISTERED')).toBeLessThan(
+    expect(secondBlock).toContain('No agent-origin MCP calls recorded in 3m');
+    expect(secondBlock).toContain('21 harness beats');
+    expect(secondBlock).not.toContain('Tool list loaded EMPTY');
+    expect(secondBlock.indexOf('No agent-origin MCP calls recorded')).toBeLessThan(
       secondBlock.indexOf('directed msg(s) awaiting YOUR reply'),
     );
   });

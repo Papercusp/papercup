@@ -14,6 +14,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ClaudeAccount } from '../deployment/account-pool';
+import { classifyClaudeCreditWallResponse } from './anthropic-billing';
 import { probeAccountCapacity } from './capacity-probe';
 import {
   createClaudeKernelAdapter,
@@ -77,8 +78,13 @@ function res(status: number, body = '{"ok":true}'): ClaudeFetchResponse {
   };
 }
 
-/** Mirrors gateway.ts's usage-cap predicate for the one shape these tests need. */
+/**
+ * Mirrors gateway.ts's Claude classifier order for the shapes these tests need: the REAL credit-wall
+ * classifier first (an API-key account's way out of the pool), then the subscription usage-cap shape.
+ */
 function classifier(input: { status: number; headers: Record<string, string>; body: string }) {
+  const creditWall = classifyClaudeCreditWallResponse(input);
+  if (creditWall) return creditWall;
   if (input.status === 429 && /session limit/i.test(input.body))
     return { kind: 'usage-cap' as const, resetAt: 4_000_000_000_000 };
   return { kind: 'forward' as const };
@@ -175,9 +181,12 @@ describe('P-006 — Claude credential shape per attempt', () => {
     expect(lower(sent[0]!)['x-api-key']).toBe(API_KEY);
   });
 
-  it('R-8: an attempt on an api-key account sends no Authorization header', async () => {
+  it('R-8: an attempt on an api-key account sends no Authorization header, yet still carries its credential', async () => {
     const { sent } = await runAttempts({ initial: apiKeyAccount() });
-    expect(Object.keys(lower(sent[0]!))).not.toContain('authorization');
+    const h = lower(sent[0]!);
+    expect(Object.keys(h)).not.toContain('authorization');
+    // Dropping the Bearer must not leave the attempt credential-less (vetting E3).
+    expect(h['x-api-key']).toBe(API_KEY);
   });
 
   it('R-9: an attempt on an api-key account omits the oauth-2025-04-20 beta flag', async () => {
@@ -246,6 +255,24 @@ describe('P-006 — Claude credential shape per attempt', () => {
     expect(second['x-api-key']).toBe(API_KEY);
     expect(Object.keys(second)).not.toContain('authorization');
     expect(betas(sent[1]!)).toEqual([CLAUDE_CONTEXT_1M_BETA]);
+  });
+
+  it('R-13 (reverse): a credit wall on the api-key account rotates to the oauth account, whose attempt carries subscription headers', async () => {
+    const { sent, accountIds } = await runAttempts({
+      initial: apiKeyAccount('console'),
+      rotation: [oauthAccount('sub')],
+      baseHeaders: { 'content-type': 'application/json', 'anthropic-beta': CLAUDE_CONTEXT_1M_BETA },
+      responses: [res(402, '{"type":"error","error":{"type":"billing_error","message":"credit balance too low"}}'), res(200)],
+    });
+    expect(accountIds).toEqual(['console', 'sub']);
+    expect(sent).toHaveLength(2);
+    // First attempt: api-key shape.
+    expect(lower(sent[0]!)['x-api-key']).toBe(API_KEY);
+    // Second attempt, same request: subscription shape, nothing of the api-key credential left over.
+    const second = lower(sent[1]!);
+    expect(second.authorization).toBe(`Bearer ${OAUTH_TOKEN}`);
+    expect(Object.keys(second)).not.toContain('x-api-key');
+    expect(betas(sent[1]!)).toEqual(expect.arrayContaining([CLAUDE_OAUTH_BETA, CLAUDE_CONTEXT_1M_BETA]));
   });
 
   it('R-14: a caller-supplied x-api-key header is never forwarded on an oauth attempt', async () => {

@@ -50,6 +50,8 @@ const INCLUDED = (): Reply => ({
   status: 200,
   headers: { 'anthropic-ratelimit-unified-status': 'allowed', 'anthropic-ratelimit-unified-reset': resetIn1h() },
 });
+/** A served response carrying no billing headers at all (degraded upstream, or a hop that stripped them). */
+const NO_BILLING_HEADERS = (): Reply => ({ status: 200, headers: {} });
 /** Past the allowance, served from usage credits (status rejected, overage allowed + in use). */
 const OVERAGE = (): Reply => ({
   status: 200,
@@ -135,13 +137,19 @@ afterEach(async () => {
   pool = undefined;
 });
 
-async function boot(accounts: ActiveAccount[], replyFor: (cred: string) => Reply): Promise<number> {
+type GatewayLog = NonNullable<Parameters<typeof createInferenceGateway>[0]['log']>;
+
+async function boot(
+  accounts: ActiveAccount[],
+  replyFor: (cred: string) => Reply,
+  log?: GatewayLog,
+): Promise<number> {
   upstream = await startUpstream(replyFor);
   // Per-account governors live in a PROCESS-GLOBAL registry (governorForBackend), so a wall
   // recorded on 'incA' in one test would otherwise pause 'incA' in the next. Start clean.
   resetGovernorRegistry();
   pool = createFailoverPool(accounts);
-  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200, ...(log ? { log } : {}) });
   return gw.listen(0);
 }
 
@@ -169,6 +177,41 @@ async function fireUntilServed(port: number, max = 3): Promise<{ status: number;
   for (let i = 1; i < max && last.status !== 200; i++) last = await fire(port);
   return last;
 }
+
+describe('P-005 R-5 — an API key never leaves the gateway in a log line or an error body', () => {
+  // Built at runtime, low-entropy, so no key-shaped literal sits in the tree. scrubSecrets keeps the
+  // 12-char `sk-ant-api03` prefix for identification; everything after it is the part that must not leak.
+  const KEY_TAIL = 'fixture'.repeat(4);
+  const KEY = ['sk', 'ant', 'api03', KEY_TAIL].join('-');
+
+  for (const upstreamFailure of [
+    { name: '401 authentication_error', status: 401, type: 'authentication_error' },
+    { name: '500 api_error', status: 500, type: 'api_error' },
+  ]) {
+    it(`R-5: an upstream ${upstreamFailure.name} that echoes the key reaches neither the caller nor the logs`, async () => {
+      const lines: string[] = [];
+      const port = await boot(
+        [apiKey('console', KEY)],
+        () => ({
+          status: upstreamFailure.status,
+          headers: {},
+          body: JSON.stringify({ type: 'error', error: { type: upstreamFailure.type, message: `rejected credential ${KEY}` } }),
+        }),
+        (level, msg) => lines.push(`${level} ${msg}`),
+      );
+      const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-opus-4-99', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      const body = await res.text();
+      expect(res.status, 'the failure reaches the caller as an error').toBeGreaterThanOrEqual(400);
+      expect(upstream!.seen, 'the request really went upstream on the api-key account').toContain(KEY);
+      expect(body).not.toContain(KEY_TAIL);
+      for (const line of lines) expect(line).not.toContain(KEY_TAIL);
+    });
+  }
+});
 
 describe('metered selection — included allowance first, metered as overflow (P-008)', () => {
   it('R-24: auto selection picks an included-allowance account over an idle api-key account', async () => {
@@ -206,6 +249,21 @@ describe('metered selection — included allowance first, metered as overflow (P
     // Overflow: with incA walled, incB keeps serving from usage credits instead of being parked.
     incAWalled = true;
     expect(await fireUntilServed(port)).toEqual({ status: 200, routed: 'incB' });
+  });
+
+  it('R-15 (selection): a response with no billing headers never ranks an overage account ahead of an included one', async () => {
+    let incBHeaderless = false;
+    const port = await boot([oauth('incB', 'tokB'), oauth('incA', 'tokA')], (c) =>
+      c === 'tokB' ? (incBHeaderless ? NO_BILLING_HEADERS() : OVERAGE()) : INCLUDED(),
+    );
+    // Observe incB serving from usage credits.
+    expect(await fire(port, { [ACCOUNT_HEADER]: 'incB' })).toEqual({ status: 200, routed: 'incB' });
+    // incB then answers with no billing headers at all: that reading is unknown, never included,
+    // so it must not wipe the overage state and promote incB into the included tier (vetting E5).
+    incBHeaderless = true;
+    expect(await fire(port, { [ACCOUNT_HEADER]: 'incB' })).toEqual({ status: 200, routed: 'incB' });
+    // incB is first in pool order, so a promotion would route unpinned traffic to it.
+    for (let i = 0; i < 3; i++) expect(await fire(port)).toEqual({ status: 200, routed: 'incA' });
   });
 
   it('R-27: an account with metered policy never is unselectable while its billing state is usage-credits', async () => {

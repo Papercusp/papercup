@@ -109,6 +109,13 @@ export interface ResultDoorOpts {
    * infer the canonical envelope from the returned body.
    */
   bulkEnvelope?: BulkEnvelopeProjectionOpts | boolean;
+  /**
+   * Collector for spill writes deferred off the main thread (WI-10004533). When given,
+   * every spill file is written with fs.promises and its promise lands here; the result
+   * names files that are NOT on disk yet. Use applyResultDoorAsync rather than passing
+   * this by hand — it awaits the writes and never returns a dangling cursor.
+   */
+  deferredScratchWrites?: Promise<void>[];
 }
 
 export interface ResultDoorAggregateScope {
@@ -830,6 +837,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       mediaType: 'application/json',
       content: contentMetadata(input.result.content),
       evidence,
+      deferredWrites: input.opts.deferredScratchWrites,
     });
   } catch (err) {
     spillError = err instanceof Error ? err.message : String(err);
@@ -920,6 +928,26 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     },
   } as T;
+}
+
+/**
+ * applyResultDoor for request handlers: identical output, but any spill file is written
+ * with fs.promises instead of blocking the event loop, and awaited before this resolves —
+ * so a returned cursor always names a file that exists (WI-10004533). If a deferred write
+ * fails, the result is re-doored synchronously so it carries the honest spill-failure
+ * shape (WI-36047) rather than a reference to a file that was never written. That rare
+ * retry reserves the aggregate cohort a second time; it can only tighten the budget.
+ */
+export async function applyResultDoorAsync<T extends DoorableResult>(
+  result: T,
+  opts: ResultDoorOpts,
+): Promise<T> {
+  const deferred: Promise<void>[] = [];
+  const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
+  if (deferred.length === 0) return doored;
+  const settled = await Promise.allSettled(deferred);
+  if (settled.every((s) => s.status === 'fulfilled')) return doored;
+  return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined });
 }
 
 /**
@@ -1238,6 +1266,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           mediaType: 'text/plain',
           content: contentMetadata(items),
           evidence: spillEvidence,
+          deferredWrites: opts.deferredScratchWrites,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same
           // consumer — one holding the path and nothing else — and every guess that

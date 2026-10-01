@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,8 @@ import {
   flipPlanFrontmatterStatus,
   launchAcceptanceGraderForGate,
   shouldEvaluateAcceptanceGate,
+  tidyFilingsForTerminalPlan,
+  type TerminalPlanTidyDeps,
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
 import { ACCEPTANCE_GRADING_SWEEP_ACTOR } from '../../acceptance-grader';
@@ -266,5 +268,157 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     );
     expect(result).toBeUndefined();
     expect(launch).not.toHaveBeenCalled();
+  });
+});
+
+describe('tidyFilingsForTerminalPlan — the terminal-plan tidy-up wiring (WI-10004531)', () => {
+  type MockedDeps = { [K in keyof TerminalPlanTidyDeps]: Mock<TerminalPlanTidyDeps[K]> };
+  function makeDeps(overrides: Partial<MockedDeps> = {}): MockedDeps {
+    const deps: MockedDeps = {
+      retire: vi.fn<TerminalPlanTidyDeps['retire']>(async () => 'acceptance-plan-a'),
+      settle: vi.fn<TerminalPlanTidyDeps['settle']>(async () => ({ settled: ['WI-R1'], failed: [] })),
+      reconcileActivationRepair: vi.fn<TerminalPlanTidyDeps['reconcileActivationRepair']>(async () => ({
+        conditionKey: 'activation-audit:papercusp/plan-a',
+        closed: 'WI-A1',
+      })),
+      ...overrides,
+    };
+    return deps;
+  }
+  const base = {
+    slug: 'plan-a',
+    ownerId: () => 'su-shipper',
+    scope: { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+  };
+
+  it('a changed ship retires the rubric, settles reservations and closes the activation filing', async () => {
+    const deps = makeDeps();
+
+    const out = await tidyFilingsForTerminalPlan({ ...base, status: 'shipped', changed: true }, deps);
+
+    expect(deps.retire).toHaveBeenCalledWith('plan-a', 'su-shipper', {
+      harnessSlug: 'papercusp',
+      terminalStatus: 'shipped',
+    });
+    expect(deps.settle).toHaveBeenCalledWith('plan-a', {
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      terminalStatus: 'shipped',
+    });
+    expect(deps.reconcileActivationRepair).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      terminalStatus: 'shipped',
+    });
+    expect(out).toEqual({
+      acceptanceRubricRetired: 'acceptance-plan-a',
+      acceptanceReviewReservations: { settled: ['WI-R1'], failed: [] },
+      activationAuditRepair: { conditionKey: 'activation-audit:papercusp/plan-a', closed: 'WI-A1' },
+    });
+  });
+
+  it('a repeat (unchanged) ship touches nothing and never resolves the caller identity', async () => {
+    const deps = makeDeps();
+    const ownerId = vi.fn(() => 'su-shipper');
+
+    const out = await tidyFilingsForTerminalPlan({ ...base, ownerId, status: 'shipped', changed: false }, deps);
+
+    expect(out).toEqual({});
+    expect(ownerId).not.toHaveBeenCalled();
+    expect(deps.retire).not.toHaveBeenCalled();
+    expect(deps.settle).not.toHaveBeenCalled();
+    expect(deps.reconcileActivationRepair).not.toHaveBeenCalled();
+  });
+
+  it('superseded tidies even when unchanged, repairing older terminal rows', async () => {
+    const deps = makeDeps();
+
+    await tidyFilingsForTerminalPlan({ ...base, status: 'superseded', changed: false }, deps);
+
+    expect(deps.retire).toHaveBeenCalledTimes(1);
+    expect(deps.settle.mock.calls[0]?.[1]).toMatchObject({ terminalStatus: 'superseded' });
+    expect(deps.reconcileActivationRepair.mock.calls[0]?.[0]).toMatchObject({ terminalStatus: 'superseded' });
+  });
+
+  it.each(['active', 'ready', 'awaiting-acceptance', 'draft'])('non-terminal status %s is a no-op', async (status) => {
+    const deps = makeDeps();
+
+    await expect(tidyFilingsForTerminalPlan({ ...base, status, changed: true }, deps)).resolves.toEqual({});
+    expect(deps.retire).not.toHaveBeenCalled();
+    expect(deps.settle).not.toHaveBeenCalled();
+    expect(deps.reconcileActivationRepair).not.toHaveBeenCalled();
+  });
+
+  it('a throwing settle is reported on the result and does not stop the activation close', async () => {
+    const deps = makeDeps({
+      settle: vi.fn<TerminalPlanTidyDeps['settle']>(async () => {
+        throw new Error('pg down');
+      }),
+    });
+
+    const out = await tidyFilingsForTerminalPlan({ ...base, status: 'shipped', changed: true }, deps);
+
+    expect(out.acceptanceReviewReservations).toEqual({ error: 'pg down' });
+    expect(out.activationAuditRepair).toMatchObject({ closed: 'WI-A1' });
+  });
+
+  it('omits keys with nothing to report: no live rubric, empty settlement, no open activation filing', async () => {
+    const deps = makeDeps({
+      retire: vi.fn<TerminalPlanTidyDeps['retire']>(async () => null),
+      settle: vi.fn<TerminalPlanTidyDeps['settle']>(async () => ({ settled: [], failed: [] })),
+      reconcileActivationRepair: vi.fn<TerminalPlanTidyDeps['reconcileActivationRepair']>(async () => ({
+        conditionKey: 'activation-audit:papercusp/plan-a',
+        closed: null,
+      })),
+    });
+
+    await expect(tidyFilingsForTerminalPlan({ ...base, status: 'shipped', changed: true }, deps)).resolves.toEqual({});
+  });
+
+  it('surfaces a failed settlement row and a failed activation close', async () => {
+    const deps = makeDeps({
+      settle: vi.fn<TerminalPlanTidyDeps['settle']>(async () => ({
+        settled: [],
+        failed: [{ id: 'WI-R2', error: 'gate refused' }],
+      })),
+      reconcileActivationRepair: vi.fn<TerminalPlanTidyDeps['reconcileActivationRepair']>(async () => ({
+        conditionKey: 'activation-audit:papercusp/plan-a',
+        closed: null,
+        error: 'writer unavailable',
+      })),
+    });
+
+    const out = await tidyFilingsForTerminalPlan({ ...base, status: 'shipped', changed: true }, deps);
+
+    expect(out.acceptanceReviewReservations).toEqual({ settled: [], failed: [{ id: 'WI-R2', error: 'gate refused' }] });
+    expect(out.activationAuditRepair).toEqual({
+      conditionKey: 'activation-audit:papercusp/plan-a',
+      closed: null,
+      error: 'writer unavailable',
+    });
+  });
+
+  it('without a harness: skips the harness-keyed activation close and passes null to the settle', async () => {
+    const deps = makeDeps();
+
+    await tidyFilingsForTerminalPlan(
+      { ...base, scope: { workspaceId: 'ws-1', harnessSlug: null }, status: 'shipped', changed: true },
+      deps,
+    );
+
+    expect(deps.retire.mock.calls[0]?.[2]).toEqual({ terminalStatus: 'shipped' });
+    expect(deps.settle.mock.calls[0]?.[1]).toMatchObject({ harnessSlug: null });
+    expect(deps.reconcileActivationRepair).not.toHaveBeenCalled();
+  });
+
+  it('the handler routes its terminal tidy-up through this helper (no inline copy)', () => {
+    const source = readFileSync(resolve(ROOT, 'packages/operator-core/lib/agent-tools/plans/set-plan-status.ts'), 'utf8');
+    const handlerCalls = source.match(/await tidyFilingsForTerminalPlan\(\{/g) ?? [];
+    expect(handlerCalls).toHaveLength(1);
+    expect(source).toContain('...terminalTidy,');
+    // The helper is the only caller of each dependency inside this module.
+    expect(source.match(/await settleAcceptanceReviewReservationsForPlan\(/g) ?? []).toHaveLength(0);
+    expect(source.match(/await retireAcceptanceRubricForPlan\(/g) ?? []).toHaveLength(0);
   });
 });

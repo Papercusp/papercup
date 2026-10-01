@@ -163,11 +163,17 @@ export function recordedWorkDir(sessionId: string, cacheDir = CACHE): string {
   return path.join(cacheDir, 'work', sessionId);
 }
 
-async function cliVersion(cli: Cli): Promise<string> {
+/**
+ * `<command> --version` resolved on `PATH` — the PATH the session itself ran under, so the
+ * recorded version is the build the session used (the parent's PATH can resolve a different
+ * one: measured 2026-10-01, the systemd user PATH found codex 0.157.1 before the pinned 0.159.2).
+ */
+async function versionOn(command: string, PATH: string | undefined, onError: string): Promise<string> {
   try {
-    return (await execFileAsync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 })).stdout.trim();
+    const env = PATH === undefined ? process.env : { ...process.env, PATH };
+    return (await execFileAsync(command, ['--version'], { encoding: 'utf8', timeout: 20_000, env })).stdout.trim();
   } catch {
-    return 'unknown';
+    return onError;
   }
 }
 
@@ -198,6 +204,13 @@ export interface SessionMeta {
   memPeakBytes?: number | null;
   /** The session cgroup's cpu.stat usage_usec; null without systemd isolation. */
   cpuUsec?: number | null;
+  /**
+   * The command environment the session resolved tools on: its PATH, and `node --version` on
+   * that PATH (null when no node was found). Which tools a PATH exposes changes what a
+   * recorded `which`/`npx`/`corepack` call returns, so a replay that resolves on a different
+   * PATH can take another branch. Absent on recordings made before it was stored.
+   */
+  env?: { path: string | null; node: string | null };
 }
 
 export async function recordSession(opts: {
@@ -282,7 +295,7 @@ export async function recordSession(opts: {
     task,
     repo: { name: task.repo, sha: repo.sha, kind: repo.kind },
     cli,
-    cliVersion: await cliVersion(cli),
+    cliVersion: await versionOn(cli, env.PATH, 'unknown'),
     claudeModel: cli === 'claude' ? opts.claudeModel : null,
     startedAt,
     wallMs,
@@ -294,6 +307,7 @@ export async function recordSession(opts: {
     workDir,
     isolation,
     ...stats,
+    env: { path: env.PATH ?? null, node: (await versionOn('node', env.PATH, '')) || null },
   };
   writeFileSync(path.join(sessionDir, 'meta.json'), JSON.stringify(meta, null, 2) + '\n');
   if (!opts.keepWork) await removeTree(workDir);

@@ -48,6 +48,9 @@ describe('local physical rename contract', () => {
     const files = globSync([
       'apps/operator/scripts/psu-launcher.mjs',
       'apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs',
+      'apps/operator/app/admin/tasks/TasksClient.tsx',
+      'apps/operator/prompts/pot-instances/papercup-pot.su.md',
+      'papercusp-desktop/bin/lib/resolve-dev-operator-port.sh',
       'packages/operator-core/lib/agent-tools/plans/rubric-template.ts',
       'packages/operator-core/lib/release-checkpoint-launch.ts',
       'packages/operator-core/lib/admin-commands.ts',
@@ -66,6 +69,9 @@ describe('local physical rename contract', () => {
     expect(files).toContain('packages/operator-core/lib/scout/generation-watermark.ts');
     expect(files).toContain('packages/operator-core/lib/pot/soak-report.ts');
     expect(files).toContain('packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts');
+    expect(files).toContain('apps/operator/app/admin/tasks/TasksClient.tsx');
+    expect(files).toContain('apps/operator/prompts/pot-instances/papercup-pot.su.md');
+    expect(files).toContain('papercusp-desktop/bin/lib/resolve-dev-operator-port.sh');
     const offenders = files.filter((file) =>
       /\bpapercup-(?:dev-api|staging-api|bg-host)\b/.test(
         stripCommentsOnly(readFileSync(join(ROOT, file), 'utf8'), file),

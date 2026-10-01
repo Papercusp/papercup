@@ -2384,6 +2384,34 @@ const modUrl = pathToFileURL(
 ).href;
 const { startEmbeddedPostgresServer } = await import(modUrl);
 
+// WI-10004558: give this throwaway server the SAME connection ceiling the shipped
+// desktop gives its embedded Postgres (apps/operator/bin/serve.ts passes the
+// resource-profile derivation as extraPostgresSettings). The operator sizes its
+// org pools from that same derivation (connection.ts boundedOrgPoolMax), so a rig
+// left on stock max_connections=100 is exhausted by one operator restart with
+// background workers on (106/100 conns, every blueprint call -32603), a failure
+// the product cannot have. Only the CONNECTION knobs are mirrored: the memory
+// knobs (shared_buffers etc.) scale to the whole host and several rigs share it.
+const RIG_MIRRORED_PG_SETTINGS = ['max_connections', 'superuser_reserved_connections'];
+const profile = await import(
+  pathToFileURL(`${repoDir}/libs/generic/resource-profile/src/index.ts`).href
+);
+const productSettings = profile.databaseTuningToSettings(
+  profile.deriveDatabaseTuning(profile.detectResourceSignals({ embeddedPg: true })),
+);
+const extraPostgresSettings = Object.fromEntries(
+  RIG_MIRRORED_PG_SETTINGS.map((k) => [k, productSettings[k]]),
+);
+for (const k of RIG_MIRRORED_PG_SETTINGS) {
+  if (!extraPostgresSettings[k]) {
+    console.error(`PG_FAILED resource-profile derived no ${k} for the isolated server`);
+    process.exit(1);
+  }
+}
+console.log(
+  `PG_TUNING ${RIG_MIRRORED_PG_SETTINGS.map((k) => `${k}=${extraPostgresSettings[k]}`).join(' ')}`,
+);
+
 let pg = null;
 async function shutdown() {
   try {
@@ -2398,7 +2426,13 @@ process.on('SIGINT', shutdown);
 
 try {
   const port = await freePort();
-  pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir, onLog: () => {} });
+  pg = await startEmbeddedPostgresServer({
+    dataDir,
+    port,
+    dbSqlDir: sqlDir,
+    extraPostgresSettings,
+    onLog: () => {},
+  });
   // Deliberately NOT flushed through `log()` — one grep-able line for the shell.
   console.log(`PG_READY port=${port} admin=${pg.urls.admin} app=${pg.urls.app}`);
 } catch (e) {

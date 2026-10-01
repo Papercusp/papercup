@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   recentWatchdogFires: vi.fn().mockResolvedValue(0),
   claimWatchdogFire: vi.fn().mockResolvedValue(true),
   resolveMugOwner: vi.fn().mockResolvedValue(null),
+  scoutConfigDelta: vi.fn().mockResolvedValue(null),
   deliverScoutNudge: vi.fn().mockResolvedValue({
     kind: 'su',
     ownerId: 'su-a',
@@ -37,6 +38,7 @@ vi.mock('../pot/watchdog', () => ({
   resolveMugOwner: h.resolveMugOwner,
 }));
 vi.mock('./nudge-recipient', () => ({ deliverScoutNudge: h.deliverScoutNudge }));
+vi.mock('../learning/pot-gate/gates', () => ({ scoutConfigDelta: h.scoutConfigDelta }));
 
 import {
   isErrorStreak,
@@ -45,6 +47,9 @@ import {
   scoutErrorStreakThreshold,
   scoutErrorStreakDebounceHours,
   checkAndFireErrorStreakAlarm,
+  describeScoutModelPins,
+  composeErrorStreakSummary,
+  SCOUT_MODEL_PIN_SETTING_KEY,
 } from './error-streak-alarm';
 
 beforeEach(() => {
@@ -56,6 +61,8 @@ beforeEach(() => {
   h.claimWatchdogFire.mockResolvedValue(true);
   h.resolveMugOwner.mockClear();
   h.resolveMugOwner.mockResolvedValue(null);
+  h.scoutConfigDelta.mockReset();
+  h.scoutConfigDelta.mockResolvedValue(null);
   h.deliverScoutNudge.mockClear();
   h.deliverScoutNudge.mockResolvedValue({
     kind: 'su',
@@ -229,5 +236,91 @@ describe('checkAndFireErrorStreakAlarm — fail-soft shell', () => {
     expect(h.deliverScoutNudge).toHaveBeenCalledWith(
       expect.objectContaining({ harnessSlug: null }),
     );
+  });
+});
+
+// WI-10004548: a stale runtime model pin (localBlueprint.scout = gpt-5.4:medium,
+// written 2026-07-01) kept the Scout down for hours while the page said only
+// "investigate the transport". These pin the page to NAMING the runtime pin.
+describe('runtime model pins are named on the page (WI-10004548)', () => {
+  const STALE_PIN = {
+    scout: {
+      models: {
+        ideator: 'gpt-5.4:medium',
+        critic: 'gpt-5.4:medium',
+        recombine: 'gpt-5.4:medium',
+        revision: 'gpt-5.4:medium',
+        experiment: 'gpt-5.4:medium',
+      },
+    },
+  };
+  const REFUSED = "{\"detail\":\"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.\"}";
+
+  it('describeScoutModelPins lists every string model in scout.models, and nothing else', () => {
+    expect(describeScoutModelPins(null)).toEqual([]);
+    expect(describeScoutModelPins(undefined)).toEqual([]);
+    expect(describeScoutModelPins({ budget: { maxCostUsd: 1 } })).toEqual([]);
+    expect(describeScoutModelPins({ scout: { lenses: ['x'] } })).toEqual([]);
+    expect(describeScoutModelPins({ scout: { models: ['gpt-5.4'] } })).toEqual([]);
+    expect(
+      describeScoutModelPins({ scout: { models: { ideator: ' gpt-5.4:medium ', critic: '', revision: 7 } } }),
+    ).toEqual(['ideator=gpt-5.4:medium']);
+    expect(describeScoutModelPins(STALE_PIN)).toHaveLength(5);
+  });
+
+  it('composeErrorStreakSummary names the pin setting and its models BEFORE the transport advice', () => {
+    const text = composeErrorStreakSummary({
+      threshold: 3,
+      errors: [REFUSED],
+      modelPins: describeScoutModelPins(STALE_PIN),
+    });
+    expect(text).toContain(SCOUT_MODEL_PIN_SETTING_KEY);
+    expect(text).toContain('ideator=gpt-5.4:medium');
+    expect(text).toContain("name:'scout', value:null");
+    expect(text.indexOf(SCOUT_MODEL_PIN_SETTING_KEY)).toBeLessThan(text.indexOf('investigate the transport'));
+  });
+
+  it('without a pin the page keeps the transport advice and says nothing about pins', () => {
+    const text = composeErrorStreakSummary({ threshold: 3, errors: ['transport dead'], modelPins: [] });
+    expect(text).toContain('Investigate the transport');
+    expect(text).not.toContain(SCOUT_MODEL_PIN_SETTING_KEY);
+  });
+
+  it('the fired page reads the pin through scoutConfigDelta and names it, in summary AND payload', async () => {
+    h.rows = [
+      { status: 'error', detail: { error: REFUSED } },
+      { status: 'error', detail: { error: REFUSED } },
+      { status: 'error', detail: { error: REFUSED } },
+    ];
+    h.scoutConfigDelta.mockResolvedValue(STALE_PIN);
+
+    await checkAndFireErrorStreakAlarm({ workspaceId: 'papercusp-workspace', installSlug: 'papercusp-workspace' });
+
+    expect(h.scoutConfigDelta).toHaveBeenCalledWith({
+      workspaceId: 'papercusp-workspace',
+      installSlug: 'papercusp-workspace',
+    });
+    const sent = h.deliverScoutNudge.mock.calls[0]?.[0] as {
+      summary: string;
+      payload: { modelPins: string[] };
+    };
+    expect(sent.summary).toContain(`${SCOUT_MODEL_PIN_SETTING_KEY} pins ideator=gpt-5.4:medium`);
+    expect(sent.payload.modelPins).toContain('ideator=gpt-5.4:medium');
+  });
+
+  it('an unreadable pin delta never silences the pager', async () => {
+    h.rows = [
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+    ];
+    h.scoutConfigDelta.mockRejectedValue(new Error('pot_settings unreachable'));
+
+    await checkAndFireErrorStreakAlarm({ workspaceId: 'w', installSlug: 'papercusp' });
+
+    expect(h.deliverScoutNudge).toHaveBeenCalledTimes(1);
+    const sent = h.deliverScoutNudge.mock.calls[0]?.[0] as { summary: string; payload: { modelPins: string[] } };
+    expect(sent.summary).toContain('Investigate the transport');
+    expect(sent.payload.modelPins).toEqual([]);
   });
 });

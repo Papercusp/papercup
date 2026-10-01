@@ -261,6 +261,36 @@ test('startGatewayService seeds every provider lane identically, whatever the ac
   assert.equal(seeded.codexAimd.cap, 12);
 });
 
+test('R-37: a gateway launched for one workspace selects only from that workspace’s pool (D-001)', async () => {
+  const up = await startUpstream();
+  const pools: Record<string, Array<{ accountId: string; credentialRef: string; source: 'pool' }>> = {
+    'ws-a': [{ accountId: 'a-sub', credentialRef: 'token:/a-sub', source: 'pool' }],
+    'ws-b': [{ accountId: 'b-key', credentialRef: 'apikey:env:WS_B_KEY', source: 'pool' }],
+  };
+  const askedFor: Array<string | undefined> = [];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    workspace: 'ws-a',
+    log: () => {},
+    resolveAccounts: async (ws, provider = 'claude') => {
+      askedFor.push(ws);
+      return provider === 'claude' ? (pools[ws ?? ''] ?? []) : [];
+    },
+    makeResolver: (_ref, id) => ({ kind: 'token', authMode: 'oauth', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  assert.ok(askedFor.length > 0, 'the gateway resolved its pool');
+  assert.deepEqual([...new Set(askedFor)], ['ws-a'], 'every pool resolution named the launch workspace');
+  const stats = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    billing?: { byAccount: Record<string, unknown> };
+  };
+  const ids = Object.keys(stats.billing?.byAccount ?? {});
+  assert.ok(ids.includes('a-sub'), 'the launch workspace account is in the pool');
+  assert.ok(!ids.includes('b-key'), 'an account registered in another workspace is never selectable here');
+});
+
 test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no restart (B-HOT-1)', async () => {
   const up = await startUpstream();
   // The "DB" the gateway re-resolves on reload: starts [a, b], later flips to [a, c, d].

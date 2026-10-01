@@ -6,7 +6,17 @@ import { stateSha256 } from '@papercusp/decision-model';
 // @ts-expect-error -- plain .mjs hook module, no declaration file
 import { buildDigest } from '../../../../../apps/operator/scripts/hooks/inject/core.mjs';
 import { deriveBatchQuery, splitLegQueries, type BatchCall } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
-import { dropQuality, gateStateSha, midTurnQueryOf, pYesByIndex, transcriptBatches } from './jev-live-drop-quality';
+import { PROMPT_QUERY_CLAMP } from '../../endpoint-route/routes/agent-mcp/turn-start-memory';
+import { stripInjectedChrome } from '../../turn-provenance/turn-provenance';
+import {
+  dropQuality,
+  gateStateSha,
+  midTurnQueryOf,
+  pYesByIndex,
+  transcriptBatches,
+  transcriptPrompts,
+  turnStartQueryOf,
+} from './jev-live-drop-quality';
 
 const digest = buildDigest as (calls: BatchCall[]) => BatchCall[];
 
@@ -97,6 +107,35 @@ describe('dropQuality', () => {
     expect(q.dropPrecision).toBeNull();
     expect(q.relevantLossRate).toBeNull();
     expect(dropQuality([], 0.35).dropRate).toBeNull();
+  });
+});
+
+describe('transcriptPrompts', () => {
+  it('returns string and text-block prompts, and skips tool replies and empty lines', () => {
+    const prompts = transcriptPrompts([
+      { type: 'user', timestamp: '2026-10-01T02:00:00Z', message: { content: 'Can we improve our jev integration any more?' } },
+      result('t1', { stdout: 'ok' }),
+      { type: 'user', timestamp: '2026-10-01T02:05:00Z', message: { content: [{ type: 'text', text: 'line one' }, { type: 'image' }, { type: 'text', text: 'line two' }] } },
+      { type: 'user', timestamp: '2026-10-01T02:06:00Z', message: { content: '   ' } },
+      assistant('msg_C', '2026-10-01T02:07:00Z', [{ id: 't9', name: 'Read', input: {} }]),
+    ]);
+    expect(prompts).toEqual([
+      { at: '2026-10-01T02:00:00Z', text: 'Can we improve our jev integration any more?' },
+      { at: '2026-10-01T02:05:00Z', text: 'line one\nline two' },
+    ]);
+  });
+});
+
+describe('turnStartQueryOf', () => {
+  it('is the endpoint query: trimmed, chrome-stripped by production, then clamped', () => {
+    const prompt = '  please look at the jev memory gate  \n';
+    expect(turnStartQueryOf(prompt)).toBe(stripInjectedChrome(prompt.trim()).slice(0, PROMPT_QUERY_CLAMP));
+    expect(gateStateSha(turnStartQueryOf(prompt))).toBe(stateSha256({ message: 'please look at the jev memory gate' }));
+  });
+
+  it('clamps a long prompt to the endpoint clamp', () => {
+    const long = 'word '.repeat(1_000);
+    expect(turnStartQueryOf(long).length).toBe(PROMPT_QUERY_CLAMP);
   });
 });
 

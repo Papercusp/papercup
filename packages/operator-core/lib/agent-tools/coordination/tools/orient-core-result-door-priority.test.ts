@@ -244,6 +244,8 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
         projection: { receipt: { entriesAvailable: 1, entriesDelivered: 1, entriesOmitted: 0 } },
         detailRef: 'coord:orient for the complete obligation agenda',
       },
+      // Key-order fixture only: in production this accompanies obligations:null.
+      obligationsWithheldBy: 'experiment-arm',
       ...tier4,
     };
     const out = assembleOrientOutput({

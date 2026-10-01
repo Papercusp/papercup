@@ -45,7 +45,7 @@
  *    reader demotes them to the alert tier and the reconcile sweep TTL-reaps
  *    them — noise-bounded by construction.
  */
-import { readdirSync, statSync } from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import { join } from 'node:path';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
@@ -59,7 +59,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import {
   PSU_PTY_DIR,
   findLiveHost,
-  readHostEventTail,
+  readHostEventTailAsync,
   type PtyHostEvent,
 } from '../events/await/psu-pty-discovery';
 import {
@@ -214,34 +214,55 @@ export function summarizeProductionCarryDelivery(
  * 256 KiB cap. The shared drill ledger is excluded: some production drop rows
  * are mirrored there for drill-report compatibility and would be double-counted.
  */
-export function readRecentProductionCarryEvents(
+export async function readRecentProductionCarryEvents(
   dir: string = PSU_PTY_DIR,
   now: number = Date.now(),
   windowMs: number = PRODUCTION_CARRY_WINDOW_MS,
   maxBytes: number = PRODUCTION_CARRY_SCAN_TAIL_BYTES,
-): PtyHostEvent[] {
-  const cutoff = now - windowMs;
+): Promise<PtyHostEvent[]> {
+  const events: PtyHostEvent[] = [];
+  for (const ownerId of await listRecentHostEventOwners(dir, now - windowMs)) {
+    events.push(...(await readHostEventTailAsync(ownerId, dir, maxBytes)));
+  }
+  return events;
+}
+
+/**
+ * Owners whose per-owner event ledger was modified at or after `cutoff` (mtime).
+ *
+ * ASYNC ON PURPOSE, and this is the load-bearing property (WI-10004559). The watchdog
+ * calls this twice a minute on the operator's main thread, against a directory that
+ * holds thousands of ledgers and is written by every psu host on the box. When the
+ * ext4 journal stalls, a host creating a file there holds the directory's inode lock,
+ * and a reader waits in D-state behind it. Done synchronously, that wait froze the
+ * whole operator; the event-loop sentinel then killed it, dropping every in-flight MCP
+ * request (46 of 66 :3070 kills in 24h were blocked in `iterate_dir` on this
+ * directory). Async moves the wait onto one libuv worker thread.
+ *
+ * The stats run ONE AT A TIME rather than in parallel: under a stall each pending stat
+ * pins a worker thread, and the pool (4 by default) is shared with every other async
+ * fs call in the process. Sequential holds at most one.
+ */
+async function listRecentHostEventOwners(dir: string, cutoff: number): Promise<string[]> {
   let entries;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    entries = await fsp.readdir(dir, { withFileTypes: true });
   } catch {
     return [];
   }
-
-  const events: PtyHostEvent[] = [];
+  const owners: string[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(HOST_EVENT_SUFFIX) || entry.name === SHARED_DRILL_LEDGER) {
       continue;
     }
     try {
-      if (statSync(join(dir, entry.name)).mtimeMs < cutoff) continue;
+      if ((await fsp.stat(join(dir, entry.name))).mtimeMs < cutoff) continue;
     } catch {
       continue;
     }
-    const ownerId = entry.name.slice(0, -HOST_EVENT_SUFFIX.length);
-    events.push(...readHostEventTail(ownerId, dir, maxBytes));
+    owners.push(entry.name.slice(0, -HOST_EVENT_SUFFIX.length));
   }
-  return events;
+  return owners;
 }
 
 /**

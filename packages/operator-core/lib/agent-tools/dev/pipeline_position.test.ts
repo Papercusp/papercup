@@ -47,6 +47,26 @@ describe('dev:pipeline_position transaction boundary', () => {
   });
 });
 
+/**
+ * WI-10004551: a completed-late read must surface its result, not a false `timeout`. The dispatch
+ * ok-on-abort exemption (libs/generic/tooldef dispatch-stack.ts) only covers tools whose every
+ * capability is tier 'low' OR that declare `idempotent:true`. This tool's capability `intel:read` is
+ * tier 'high' by design (it also gates the prompt/activity-exposing intel panels), so without the
+ * flag 23 of 25 slow calls over 72h were reported `timeout` with their valid result discarded.
+ * The abort-race branch itself is exercised in dispatch-projected.test.ts; this pins the link that
+ * is easy to lose — that THIS read still declares the opt-in, and that the capability stays 'high'
+ * (so the flag, not a tier change, remains the reason it qualifies).
+ */
+describe('dev:pipeline_position late-completion opt-in (WI-10004551)', () => {
+  it('declares idempotent:true so a completed-but-slow read surfaces its result past the deadline', () => {
+    expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+
+  it('stays on the high-tier intel:read capability (the reason the flag is needed at all)', () => {
+    expect((tool as { capability?: string }).capability).toBe('intel:read');
+  });
+});
+
 describe('dev:pipeline_position current-build test route selection', () => {
   const PATH = 'packages/operator-core/lib/serving-runtimes.ts';
   const running = {

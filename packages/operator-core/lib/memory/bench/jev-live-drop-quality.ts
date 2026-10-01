@@ -30,6 +30,8 @@ import {
   splitLegQueries,
   type BatchCall,
 } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
+import { PROMPT_QUERY_CLAMP } from '../../endpoint-route/routes/agent-mcp/turn-start-memory';
+import { stripInjectedChrome } from '../../turn-provenance/turn-provenance';
 
 /** One tool batch as the PostToolBatch hook would have shipped it, before the digest clamp. */
 export interface TranscriptBatch {
@@ -97,6 +99,51 @@ export function transcriptBatches(entries: readonly unknown[]): TranscriptBatch[
 export function midTurnQueryOf(calls: readonly BatchCall[], digest: (calls: BatchCall[]) => BatchCall[]): string {
   const derived = deriveBatchQuery(digest([...calls])).slice(0, QUERY_CLAMP);
   return derived ? splitLegQueries(derived).cosine : '';
+}
+
+/** One prompt as the UserPromptSubmit hook would have received it. */
+export interface TranscriptPrompt {
+  readonly at: string;
+  readonly text: string;
+}
+
+/**
+ * The user prompts in a Claude transcript (parsed JSONL entries, file order).
+ * A user line carrying a tool_result is a tool reply, not a prompt; a prompt is
+ * either a string or text blocks (joined with newlines).
+ */
+export function transcriptPrompts(entries: readonly unknown[]): TranscriptPrompt[] {
+  const out: TranscriptPrompt[] = [];
+  for (const raw of entries) {
+    if (!raw || typeof raw !== 'object') continue;
+    const e = raw as TranscriptEntry;
+    if (e.type !== 'user') continue;
+    const content = e.message?.content;
+    let text = '';
+    if (typeof content === 'string') {
+      text = content;
+    } else if (Array.isArray(content)) {
+      const blocks = content as Record<string, unknown>[];
+      if (blocks.some((b) => b?.type === 'tool_result')) continue;
+      text = blocks
+        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text as string)
+        .join('\n');
+    }
+    if (!text.trim()) continue;
+    out.push({ at: typeof e.timestamp === 'string' ? e.timestamp : '', text });
+  }
+  return out;
+}
+
+/**
+ * The turn-start recall query production builds for a prompt, which is also the
+ * Jev gate's message there: the endpoint trims the prompt, strips injected
+ * chrome, and clamps (turn-start-memory.ts); `retrievalQueryText` then returns
+ * that `userText` unchanged.
+ */
+export function turnStartQueryOf(prompt: string): string {
+  return stripInjectedChrome(prompt.trim()).slice(0, PROMPT_QUERY_CLAMP);
 }
 
 /** The ledger's `state_sha256` for a gate request with this message (instructions encoding). */

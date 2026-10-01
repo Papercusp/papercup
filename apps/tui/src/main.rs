@@ -1637,7 +1637,7 @@ async fn run<B: Backend>(
             *selected = app.tab;
         }
         if app.tab != prior_tab && app.tab == app::Tab::Overview {
-            let _ = sync_refetch.send(RefetchSignal::SkipPlanReads);
+            let _ = sync_refetch.send(RefetchSignal::GENERAL);
         }
         // A saved Network view bypasses the normal tab-entry action.
         if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
@@ -6905,9 +6905,9 @@ fn spawn_sync(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefetchSignal {
-    IncludePlanReads,
-    SkipPlanReads,
+struct RefetchSignal {
+    include_plan_reads: bool,
+    include_account_reads: bool,
 }
 
 /// Keep background reads aligned with the pane the workbench currently shows.
@@ -6934,19 +6934,23 @@ impl PaneFetchScope {
 }
 
 impl RefetchSignal {
-    fn include_plan_reads(self) -> bool {
-        matches!(self, RefetchSignal::IncludePlanReads)
-    }
-}
+    const FULL: Self = Self {
+        include_plan_reads: true,
+        include_account_reads: true,
+    };
+    const GENERAL: Self = Self {
+        include_plan_reads: false,
+        include_account_reads: false,
+    };
 
-fn sync_payload_fetches_plans(data: &str) -> bool {
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(data) else {
-        return true;
-    };
-    let Some(name) = payload.get("name").and_then(|v| v.as_str()) else {
-        return true;
-    };
-    sync_name_fetches_plans(name)
+    fn include_plan_reads(self) -> bool {
+        self.include_plan_reads
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.include_plan_reads |= other.include_plan_reads;
+        self.include_account_reads |= other.include_account_reads;
+    }
 }
 
 fn sync_name_fetches_plans(name: &str) -> bool {
@@ -6958,10 +6962,17 @@ fn sync_name_fetches_plans(name: &str) -> bool {
 }
 
 fn refetch_signal_for_frame_data(data: &str) -> RefetchSignal {
-    if sync_payload_fetches_plans(data) {
-        RefetchSignal::IncludePlanReads
-    } else {
-        RefetchSignal::SkipPlanReads
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(data) else {
+        return RefetchSignal::FULL;
+    };
+    let Some(name) = payload.get("name").and_then(|v| v.as_str()) else {
+        return RefetchSignal::FULL;
+    };
+    RefetchSignal {
+        include_plan_reads: sync_name_fetches_plans(name),
+        include_account_reads: name.starts_with("accounts.")
+            || name == "harness_shared.operator_account_pool.changed"
+            || name == "harness_shared.operator_account_override.changed",
     }
 }
 
@@ -7140,7 +7151,7 @@ async fn refetch_loop(
         &active_doc,
         &active_plan,
         &pane,
-        true,
+        RefetchSignal::FULL,
     )
     .await;
     if let Some(key) = &network_focus {
@@ -7184,9 +7195,9 @@ async fn refetch_loop(
                 };
                 // Debounce a burst of invalidations into one refetch.
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                let mut include_plan_reads = first_sig.include_plan_reads();
+                let mut signal = first_sig;
                 while let Ok(next_sig) = sig_rx.try_recv() {
-                    include_plan_reads |= next_sig.include_plan_reads();
+                    signal.merge(next_sig);
                 }
                 refetch_all(
                     &client,
@@ -7195,7 +7206,7 @@ async fn refetch_loop(
                     &active_doc,
                     &active_plan,
                     &pane,
-                    include_plan_reads,
+                    signal,
                 )
                 .await;
         if let Some(key) = &network_focus {
@@ -7211,7 +7222,7 @@ async fn refetch_loop(
                     &active_doc,
                     &active_plan,
                     &pane,
-                    true,
+                    RefetchSignal::FULL,
                 )
                 .await;
         if let Some(key) = &network_focus {
@@ -7560,9 +7571,9 @@ fn spawn_first_paint_work_items<S: FirstPaintWorkItems>(
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
 /// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
 /// scopes the fat plans/attention reads to panes that actually render them
-/// (see `pane_fetches_plans` / `pane_fetches_attention`). `include_plan_reads`
-/// is false for non-plan SSE invalidations; the 60s safety tick still includes
-/// them, so a missed/unknown plan signal self-heals without a tight poll.
+/// (see `pane_fetches_plans` / `pane_fetches_attention`). `signal` skips plan
+/// and account reads on unrelated SSE invalidations. Startup and the 60s safety
+/// tick include both, so missed signals self-heal without a tight poll.
 async fn refetch_all(
     client: &OperatorClient,
     tx: &UnboundedSender<Event>,
@@ -7570,8 +7581,9 @@ async fn refetch_all(
     active_doc: &Arc<Mutex<Option<String>>>,
     active_plan: &Arc<Mutex<Option<(String, String)>>>,
     pane: &PaneFetchScope,
-    include_plan_reads: bool,
+    signal: RefetchSignal,
 ) {
+    let include_plan_reads = signal.include_plan_reads();
     let pinned = pane.pinned;
     if let Some(pinned) = pinned {
         match pinned_hydration_plan(Some(pinned)) {
@@ -7767,13 +7779,15 @@ async fn refetch_all(
     }
     // Agent Chat account-route picker. The generic run-tool bridge returns
     // live pool rows; an empty pool still leaves the Auto row available.
-    match client.accounts_status().await {
-        Ok(status) => {
-            let _ = tx.send(Event::AccountRows(status.accounts));
-            let _ = tx.send(Event::AccountPoolVerdicts(status.pool_verdict));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("accounts-status: {e}")));
+    if signal.include_account_reads {
+        match client.accounts_status().await {
+            Ok(status) => {
+                let _ = tx.send(Event::AccountRows(status.accounts));
+                let _ = tx.send(Event::AccountPoolVerdicts(status.pool_verdict));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Error(format!("accounts-status: {e}")));
+            }
         }
     }
     // Plan-item assignment/claim/liveness for the SELECTED plan (P-005a). A per-plan
@@ -8496,9 +8510,9 @@ mod tests {
             "harness_shared.plan_runs.changed",
         ] {
             assert!(sync_name_fetches_plans(name), "{name} should refresh plans");
-            assert_eq!(
-                refetch_signal_for_frame_data(&format!(r#"{{"name":"{name}"}}"#)),
-                RefetchSignal::IncludePlanReads
+            assert!(
+                refetch_signal_for_frame_data(&format!(r#"{{"name":"{name}"}}"#))
+                    .include_plan_reads()
             );
         }
 
@@ -8512,7 +8526,7 @@ mod tests {
             assert!(!sync_name_fetches_plans(name), "{name} should skip plans");
             assert_eq!(
                 refetch_signal_for_frame_data(&format!(r#"{{"name":"{name}"}}"#)),
-                RefetchSignal::SkipPlanReads
+                RefetchSignal::GENERAL
             );
         }
 
@@ -8520,12 +8534,166 @@ mod tests {
         // rather than risking a stale Create/Plans pane.
         assert_eq!(
             refetch_signal_for_frame_data("not json"),
-            RefetchSignal::IncludePlanReads
+            RefetchSignal::FULL
         );
         assert_eq!(
             refetch_signal_for_frame_data(r#"{"args":{"x":1}}"#),
-            RefetchSignal::IncludePlanReads
+            RefetchSignal::FULL
         );
+    }
+
+    #[test]
+    fn sync_refetch_signal_keeps_both_scopes_when_debouncing() {
+        let plan = refetch_signal_for_frame_data(r#"{"name":"plans.list"}"#);
+        let account = refetch_signal_for_frame_data(r#"{"name":"accounts.pool"}"#);
+        let unrelated = refetch_signal_for_frame_data(r#"{"name":"activity.recent"}"#);
+        assert!(!plan.include_account_reads);
+        assert!(!account.include_plan_reads);
+        assert!(account.include_account_reads);
+        for signals in [
+            [plan, account, unrelated],
+            [account, unrelated, plan],
+            [unrelated, plan, account],
+        ] {
+            let mut merged = RefetchSignal::GENERAL;
+            for signal in signals {
+                merged.merge(signal);
+            }
+            assert_eq!(merged, RefetchSignal::FULL);
+        }
+    }
+
+    /// Exercise the real refetch fan-out and run-tool wire, not just the
+    /// signal predicate. Unrelated SSE frames must not re-read the account
+    /// pool; startup, account updates, unknown payloads and safety refresh do.
+    #[tokio::test]
+    async fn account_refetch_reads_only_for_account_updates_and_full_refresh() {
+        use crate::framing::{encode_frame, FrameType};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("account-refetch.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let recorded_reads = reads.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = stream.into_split();
+            loop {
+                let mut header = [0; 5];
+                if reader.read_exact(&mut header).await.is_err() {
+                    break;
+                }
+                assert_eq!(header[4], FrameType::Request as u8);
+                let len = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+                let mut payload = vec![0; len];
+                reader.read_exact(&mut payload).await.unwrap();
+                let request: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+                let id = request["id"].as_u64().unwrap();
+                let tool_body = request["input"]["body"]
+                    .as_str()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
+                let is_accounts = request["input"]["path"] == "/api/agent-mcp/run-tool"
+                    && tool_body.as_ref().and_then(|body| body["name"].as_str())
+                        == Some("accounts:status");
+                let response = if is_accounts {
+                    recorded_reads.fetch_add(1, Ordering::SeqCst);
+                    serde_json::json!({"ok":true,"result":{"content":[{
+                        "type":"text", "text":r#"{"accounts":[],"poolVerdict":[]}"#
+                    }]}})
+                } else {
+                    // Other panels are outside this assertion. Their parse
+                    // failures are normal per-query events and never sink it.
+                    serde_json::json!({})
+                };
+                let head = serde_json::json!({
+                    "id":id,"name":"head","data":{"status":200,"headers":{}}
+                });
+                writer
+                    .write_all(
+                        &encode_frame(FrameType::EventJson, head.to_string().as_bytes()).unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let mut body = Vec::from(id.to_be_bytes());
+                body.extend_from_slice(&4u32.to_be_bytes());
+                body.extend_from_slice(b"body");
+                body.extend_from_slice(response.to_string().as_bytes());
+                writer
+                    .write_all(&encode_frame(FrameType::EventBin, &body).unwrap())
+                    .await
+                    .unwrap();
+                let done = serde_json::json!({"id":id,"result":{"content":[]}});
+                writer
+                    .write_all(&encode_frame(FrameType::Done, done.to_string().as_bytes()).unwrap())
+                    .await
+                    .unwrap();
+            }
+        });
+        let client = OperatorClient::new(Arc::new(ipc::IpcClient::connect(&socket).await.unwrap()));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let active_harness = Arc::new(Mutex::new("fixture".into()));
+        let active_doc = Arc::new(Mutex::new(None));
+        let active_plan = Arc::new(Mutex::new(None));
+        let pane = PaneFetchScope {
+            pinned: None,
+            selected: Arc::new(Mutex::new(app::Tab::Operator)),
+        };
+        for (frame, expected_reads) in [
+            (None, 1), // startup
+            (Some(r#"{"name":"activity.recent"}"#), 1),
+            (Some(r#"{"name":"coord.inbox"}"#), 1),
+            (Some(r#"{"name":"plans.list"}"#), 1),
+            (
+                Some(r#"{"name":"harness_shared.tool_invocations.changed"}"#),
+                1,
+            ),
+            (Some(r#"{"name":"accounts.pool"}"#), 2),
+            (
+                Some(r#"{"name":"harness_shared.operator_account_override.changed"}"#),
+                3,
+            ),
+            (Some(r#"{"name":"activity.recent"}"#), 3),
+            (
+                Some(r#"{"name":"harness_shared.operator_account_pool.changed"}"#),
+                4,
+            ),
+            (Some(r#"{"name":"accounts.sessionOverride"}"#), 5),
+            (Some("not json"), 6),
+            (Some(r#"{"args":{"x":1}}"#), 7),
+            (None, 8), // the same full refresh used by the 60s safety tick
+        ] {
+            let previous_reads = reads.load(Ordering::SeqCst);
+            let signal = frame
+                .map(refetch_signal_for_frame_data)
+                .unwrap_or(RefetchSignal::FULL);
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                refetch_all(
+                    &client,
+                    &tx,
+                    &active_harness,
+                    &active_doc,
+                    &active_plan,
+                    &pane,
+                    signal,
+                ),
+            )
+            .await
+            .expect("fixture refetch completed");
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                expected_reads,
+                "frame={frame:?}"
+            );
+            let account_events = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|event| matches!(event, Event::AccountRows(_)))
+                .count();
+            assert_eq!(account_events, expected_reads - previous_reads);
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
     }
 
     #[test]

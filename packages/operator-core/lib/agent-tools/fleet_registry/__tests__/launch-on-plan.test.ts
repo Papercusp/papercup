@@ -48,6 +48,10 @@ const goalLaunchReadMock = vi.hoisted(() => vi.fn());
 const goalPotPlacementAuthorityMock = vi.hoisted(() => vi.fn());
 const goalModeSubjectMock = vi.hoisted(() => vi.fn());
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
+// WI-10004545: the plan-goal attribution write is isolated from the live database; the
+// real helper's identity-derived resolution + `WHERE goal_id IS NULL` is pinned in
+// modes/goal-context.test.ts, so this file only pins WHEN launch-on-plan calls it.
+const stampPlanGoalProvenanceMock = vi.hoisted(() => vi.fn());
 const obligationAgendaReadMock = vi.hoisted(() => vi.fn());
 // WI-10004401: fleetSlugFromName is stubbed below WITHOUT the real 60-char clamp, which is
 // fine for every test that only needs a kebab-cased name — but the placement-boundary
@@ -61,6 +65,11 @@ const fleetSlugImpl = vi.hoisted(() => ({
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
   getModeSubject: (...args: unknown[]) => goalModeSubjectMock(...args),
+}));
+
+vi.mock('../../../modes/goal-context', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../modes/goal-context')>()),
+  stampPlanGoalProvenance: (...args: unknown[]) => stampPlanGoalProvenanceMock(...args),
 }));
 
 vi.mock('../../../console-launcher', () => ({
@@ -205,7 +214,7 @@ vi.mock('../../plans/source', async (importOriginal) => ({
   getPlanRow: async () => (await readPlanBySlugMock.mock.results.at(-1)?.value)?.row ?? null,
 }));
 
-const acceptanceBarLifecycleMock = vi.hoisted(() => vi.fn(async () => ({ satisfied: true })));
+const acceptanceBarLifecycleMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ satisfied: true })));
 
 vi.mock('../../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../acceptance-bar-lifecycle-evaluator')>()),
@@ -599,6 +608,8 @@ beforeEach(() => {
   goalLaunchReadMock.mockReset();
   goalModeSubjectMock.mockReset();
   goalModeSubjectMock.mockResolvedValue(null);
+  stampPlanGoalProvenanceMock.mockReset();
+  stampPlanGoalProvenanceMock.mockResolvedValue(null);
   goalLaunchResolveMock.mockReset();
   goalLaunchResolveMock.mockResolvedValue({
     goalId: null, effective: {}, refusal: null, settings: null,
@@ -857,6 +868,97 @@ describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)',
       }),
     );
     expect(createFleetIfAbsentMock).toHaveBeenCalled();
+  });
+
+  // WI-10004545: plans:new and plans:launch attribute a plan to the goal its LAUNCHER works
+  // under; this door did not, so a goal's own plan fleet left `harness_plans.goal_id` NULL and
+  // the goal portfolio never saw the plan (rem-dream-recombination + session-transcript-exact-
+  // fuzzy-search, measured 2026-10-01). These tests pin WHEN the attribution is attempted; the
+  // helper's identity-derived resolution and `WHERE goal_id IS NULL` live in goal-context.test.ts.
+  describe('plan goal attribution (WI-10004545)', () => {
+    const stampablePlan = () => ({
+      slug: 'my-plan',
+      parsed: { items: [] },
+      archived: false,
+      row: {
+        planSlug: 'my-plan',
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        template: null,
+        inputSchema: null,
+        templateData: null,
+      },
+    });
+    const launchGoalPlan = () =>
+      invokeLaunchHandler(
+        { name: 'my-plan', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
+        {} as never,
+        null,
+      );
+
+    it("attributes the launched plan to the launcher's goal from the plan row's own scope", async () => {
+      readPlanBySlugMock.mockResolvedValueOnce(stampablePlan());
+      stampPlanGoalProvenanceMock.mockResolvedValueOnce('goal-1');
+
+      const payload = parseHandlerPayload(await launchGoalPlan());
+
+      expect(payload.ok).toBe(true);
+      // The row's OWN workspace/harness pair — the identity harness_plans was written with —
+      // and the LAUNCHER as the owner the goal is resolved from. No goal id is ever passed in.
+      expect(stampPlanGoalProvenanceMock).toHaveBeenCalledTimes(1);
+      expect(stampPlanGoalProvenanceMock).toHaveBeenCalledWith({
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        planSlug: 'my-plan',
+        ownerId: 'owner-1',
+      });
+      expect(payload.planGoalAttribution).toEqual({ goalId: 'goal-1', error: null });
+    });
+
+    it('records a failed attribution on the result and still returns the launched fleet', async () => {
+      readPlanBySlugMock.mockResolvedValueOnce(stampablePlan());
+      stampPlanGoalProvenanceMock.mockRejectedValueOnce(new Error('goal authority fenced'));
+
+      const payload = parseHandlerPayload(await launchGoalPlan());
+
+      expect(payload.ok).toBe(true);
+      expect(payload.planGoalAttribution).toEqual({ goalId: null, error: 'goal authority fenced' });
+    });
+
+    it('does not attribute anything for a launcher that works under no goal', async () => {
+      goalLaunchReadMock.mockResolvedValue({
+        goalId: null,
+        settings: null,
+        drainFleetSlug: null,
+        degraded: false,
+        degradedReasons: [],
+      });
+      goalModeSubjectMock.mockResolvedValue(null);
+      readPlanBySlugMock.mockResolvedValueOnce(stampablePlan());
+
+      const payload = parseHandlerPayload(await launchGoalPlan());
+
+      expect(payload.ok).toBe(true);
+      expect(stampPlanGoalProvenanceMock).not.toHaveBeenCalled();
+      expect(payload.planGoalAttribution).toBeNull();
+    });
+
+    it('does not attribute a plan whose launch was refused before any fleet write', async () => {
+      goalPotPlacementAuthorityMock.mockResolvedValueOnce({
+        allowed: false,
+        reason: 'different-active-goal-owns-pot',
+        ownerGoalId: 'goal-other-owner',
+        ownerGoalTitle: 'Other goal',
+      });
+      readPlanBySlugMock.mockResolvedValueOnce(stampablePlan());
+
+      const res = await launchGoalPlan();
+
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect((res as { content: { text: string }[] }).content[0].text).toContain('goal_placement_sovereignty_refusal');
+      expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+      expect(stampPlanGoalProvenanceMock).not.toHaveBeenCalled();
+    });
   });
 
   // WI-10004401: the provider authors its recovery `name` from the RAW
@@ -1275,7 +1377,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       name: 'Steward Self Lead', plan: 'my-plan', harness: 'papercusp',
       count: 1, leader: 'caller', headless: true,
     } as never, {} as never, null);
-    expect(res.isError).toBe(true);
+    expect((res as { isError?: boolean }).isError).toBe(true);
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     expect(declareCouplingMock).not.toHaveBeenCalled();

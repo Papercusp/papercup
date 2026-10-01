@@ -108,6 +108,9 @@ import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-co
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
+import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
+  assertCandidateArm, failMeasurementCell, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
+import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
@@ -134,6 +137,7 @@ const K_VALUES = [1, 3, 5] as const;
 const MRR_CUTOFF = 10;
 const ANSWERABLE = new Set(['lexical-gap', 'exact-identifier', 'session-start-intent']);
 let isolatedSidecar: EmbedSidecarHandle | undefined;
+let preparedMeasurement: PreparedMeasurement | undefined;
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -164,7 +168,7 @@ function dot(a: number[], b: number[]): number {
  * honest: ask for the model explicitly, and refuse to time a response that says
  * it came from somewhere else.
  */
-function sidecarLeg(url: string, model: string): Leg {
+function sidecarLeg(url: string, model: string, arm?: MeasurementArm): Leg {
   const call = (kind: 'document' | 'query'): EmbedFn => async (text: string) => {
     const j = await sidecarEmbedBatch(url, { model, kind, texts: [text], bypassCache: true,
       // Cold model construction is recorded by this evaluation too.
@@ -178,6 +182,7 @@ function sidecarLeg(url: string, model: string): Leg {
         `sidecar_embed_not_measured: ${measured.reason} — the timings from this leg would be a throughput figure for the cache, so the run is stopped instead of reported.`,
       );
     }
+    if (arm) assertMeasuredEmbedResponse(arm, j, 1);
     return j.vectors[0];
   };
   return { name: `sidecar:${model}`, doc: call('document'), query: call('query') };
@@ -333,7 +338,7 @@ async function buildLegs(
       } else if (name.startsWith('sidecar')) {
         if (!sidecarUrl) out.push({ name, error: 'pass --sidecar <url>' });
         else {
-          const leg = sidecarLeg(sidecarUrl, name.includes(':') ? name.split(':')[1] : 'gemma');
+          const leg = sidecarLeg(sidecarUrl, name.includes(':') ? name.split(':')[1] : 'gemma', preparedMeasurement?.arm);
           if (name === 'sidecar:mdenseon' && mdenseonModel) {
             const manifest = readMdenseOnExport(mdenseonModel);
             leg.metadata = { model: MDENSEON_MODEL, revision: MDENSEON_REVISION,
@@ -533,6 +538,14 @@ async function main(): Promise<void> {
   const legNames = legsArg === 'none' ? [] : (legsArg?.split(',').filter(Boolean) ?? ['gemma', 'local']);
   let sidecarUrl = argValue('--sidecar');
   const mdenseonModel = argValue('--mdenseon-model');
+  if (argValue('--manifest')) {
+    preparedMeasurement = await prepareMeasurementCell(argValue('--manifest')!, argValue('--manifest-sha256') ?? '', argValue('--cell') ?? '');
+    if (preparedMeasurement.cell.bar !== 'performance' || legNames.length !== 1 || !process.argv.includes('--isolated-sidecar')
+      || legNames[0] !== `sidecar:${preparedMeasurement.arm.model}` || argValue('--vectors') || argValue('--limit')) {
+      throw new Error('manifest performance requires one fresh isolated matching HTTP arm and complete declared inputs');
+    }
+    await assertCandidateArm(preparedMeasurement.arm, preparedMeasurement.arm.model as 'mdenseon' | 'gemma' | 'harrier', 'local-http-client-worker');
+  }
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
   const timingOnly = process.argv.includes('--timing-only');
@@ -558,6 +571,7 @@ async function main(): Promise<void> {
       'bench-reports',
       `embedder-eval-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`,
     );
+  if (preparedMeasurement && path.resolve(outPath) !== preparedMeasurement.rawOutput) throw new Error('runner output differs from declared cell');
 
   // Which corpus/gold-set pair to score against. 'memory' (default) keeps the
   // original memory-bench behaviour; 'prose' scores the prose surfaces, whose
@@ -606,6 +620,15 @@ async function main(): Promise<void> {
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
+  if (preparedMeasurement) {
+    // Fixture files/order are input identities too; versions alone do not pin bytes.
+    const declared = preparedMeasurement.cell.inputIds.map((id) => preparedMeasurement!.manifest.inputs[id]);
+    const fixtureRoot = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
+    const prefix = corpusChoice === 'prose' ? 'prose-' : '';
+    for (const name of [`${prefix}corpus.v1.json`, `${prefix}gold-set.v1.json`]) {
+      if (!declared.some((f) => path.resolve(f.path) === path.join(fixtureRoot, name))) throw new Error('fixture absent from frozen cell inputs');
+    }
+  }
   const vectorsPath = argValue('--vectors');
   const fixturesDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
   const fixturePrefix = corpusChoice === 'prose' ? 'prose-' : '';
@@ -837,11 +860,7 @@ async function main(): Promise<void> {
     console.log(`\n(no paired comparison: --baseline '${baselineName}' did not match a scored leg)`);
   }
 
-  fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  fs.writeFileSync(
-    outPath,
-    JSON.stringify(
-      {
+  const report = {
         generatedAt: new Date().toISOString(),
         corpus: corpusChoice,
         corpusVersion,
@@ -850,11 +869,15 @@ async function main(): Promise<void> {
         baseline: baselineName,
         results,
         comparisons,
-      },
-      null,
-      2,
-    ),
-  );
+      };
+  if (preparedMeasurement) {
+    assertMeasuredExecution(preparedMeasurement.arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
+    if (Object.values(results).some((r) => (r as { blocked?: string }).blocked)) throw new Error('failed arm cannot produce an accepted measured receipt');
+    writeMeasurementCell(preparedMeasurement, report);
+  } else {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify(report, null, 2));
+  }
   console.log('\nwrote', outPath);
   const vectorsOut = argValue('--vectors-out');
   if (vectorsOut) {
@@ -869,6 +892,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch(async (e) => {
+  if (preparedMeasurement) failMeasurementCell(preparedMeasurement, e);
   console.error('embedder-eval failed:', e instanceof Error ? e.message : e);
   await isolatedSidecar?.close();
   await shutdownLocalEmbedder();

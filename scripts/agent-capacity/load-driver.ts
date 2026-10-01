@@ -136,12 +136,40 @@ export function versionMismatches(
   return out;
 }
 
-function installedVersion(cli: string): string {
+/** `<cli> --version` resolved on `PATH` (the driver's own when undefined). */
+function installedVersion(cli: string, PATH?: string): string {
   try {
-    return execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 }).trim();
+    const env = PATH === undefined ? process.env : { ...process.env, PATH };
+    return execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000, env }).trim();
   } catch {
     return 'missing';
   }
+}
+
+/** How a replayed session's PATH is chosen (`--path`). */
+export type PathMode = 'inherit' | 'recorded';
+
+/**
+ * The PATH a replayed session runs under. `inherit` keeps the driver's own: right on a ramp
+ * VM, whose bootstrap PATH holds the pinned tools, because the corpus was recorded on another
+ * machine whose paths need not exist there. `recorded` reuses the PATH the recording resolved
+ * tools on, for a replay on the recording host, where a different PATH (a systemd user
+ * manager's, say) can expose tools the recording never saw and send a `which`/`npx` call down
+ * another branch. `prepend` puts a pinned build first in either mode.
+ */
+export function replayPath(
+  mode: PathMode,
+  inherited: string | undefined,
+  meta: Pick<SessionMeta, 'sessionId' | 'env'>,
+  prepend?: string,
+): string | undefined {
+  let base = inherited;
+  if (mode === 'recorded') {
+    base = meta.env?.path ?? undefined;
+    if (!base) throw new Error(`${meta.sessionId} has no recorded PATH (recorded before env capture); use --path inherit`);
+  }
+  if (!prepend) return base;
+  return base ? `${prepend}${path.delimiter}${base}` : prepend;
 }
 
 async function runOne(o: {
@@ -156,6 +184,8 @@ async function runOne(o: {
   server: ReplayServer;
   isolation: Isolation;
   keepWork: boolean;
+  pathMode: PathMode;
+  pathPrepend?: string;
 }): Promise<AgentRun> {
   const { meta, slot, iteration, runId } = o;
   const instance = `${runId}-s${slot}-i${iteration}`;
@@ -174,6 +204,8 @@ async function runOne(o: {
     writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
+  const PATH = replayPath(o.pathMode, env.PATH, meta, o.pathPrepend);
+  if (PATH !== undefined) env.PATH = PATH;
   const argv = [meta.cli, ...cliArgs(meta.cli, promptFor(o.corpus, meta.task), workDir, meta.claudeModel ?? 'sonnet')];
   const logBase = path.join(o.outDir, 'sessions', instance);
   mkdirSync(path.dirname(logBase), { recursive: true });
@@ -256,6 +288,10 @@ export interface DriverOptions {
   keepWork: boolean;
   /** Run every selected session exactly once across the slots (ignores durationSec). */
   sweep?: boolean;
+  /** Default `inherit`; see replayPath. */
+  pathMode?: PathMode;
+  /** A directory put first on every session's PATH (a pinned CLI build). */
+  pathPrepend?: string;
   onRun?: (r: AgentRun) => void;
 }
 
@@ -276,7 +312,7 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
     for (let it = 0; ; it++) {
       const meta = pick(s, it);
       if (!meta) break;
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork });
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
@@ -325,7 +361,16 @@ async function main(): Promise<void> {
   const metas = loadMetas(corpusDir);
   const sessions = selectSessions(metas, arg('select'), arg('sessions')?.split(',').filter(Boolean));
   for (const m of sessions) if (m.corpusVersion !== corpus.version) throw new Error(`${m.sessionId} recorded with corpus v${m.corpusVersion}, tasks.json is v${corpus.version}`);
-  const mismatch = versionMismatches(sessions, installedVersion);
+  const pathMode = arg('path', 'inherit');
+  if (pathMode !== 'inherit' && pathMode !== 'recorded') throw new Error('--path inherit|recorded');
+  const pathPrepend = arg('path-prepend');
+  // Check versions on the PATH each session will actually run under, not the driver's own.
+  const byPath = new Map<string, SessionMeta[]>();
+  for (const m of sessions) {
+    const p = replayPath(pathMode, process.env.PATH, m, pathPrepend) ?? '';
+    byPath.set(p, [...(byPath.get(p) ?? []), m]);
+  }
+  const mismatch = [...byPath].flatMap(([p, group]) => versionMismatches(group, (cli) => installedVersion(cli, p || undefined)));
   if (mismatch.length) {
     // A different CLI build sends different requests, so the replay would diverge and read as a
     // fidelity failure. Refuse unless explicitly allowed (measured 2026-10-01: the systemd user
@@ -353,6 +398,8 @@ async function main(): Promise<void> {
     isolation,
     keepWork: process.argv.includes('--keep-work'),
     sweep: process.argv.includes('--sweep'),
+    pathMode,
+    pathPrepend,
     onRun: (r) =>
       console.log(
         `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)} tools=${r.toolOutcomes.replayed.results}/${r.toolOutcomes.recorded?.results ?? '?'} toolErrors=${r.toolOutcomes.replayed.errors}/${r.toolOutcomes.recorded?.errors ?? '?'}${r.diverged ? ' DIVERGED' : ''}${r.toolDiverged ? ' TOOL_DIVERGED' : ''}`,

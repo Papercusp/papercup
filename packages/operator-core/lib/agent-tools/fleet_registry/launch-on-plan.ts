@@ -143,6 +143,7 @@ import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cach
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import { listFacts } from '../../agent-facts/store';
 import { getModes, getModeSubject } from '../../modes/store';
+import { stampPlanGoalProvenance } from '../../modes/goal-context';
 import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
@@ -5717,11 +5718,46 @@ export default defineTool({
       if (briefReadError) lines.push(briefReadError);
     }
 
+    // WI-10004545: a plan fleet launched (or topped up) by a GOAL agent attributes the
+    // PLAN to that goal. plans:new and plans:launch already do; this door did not, so a
+    // goal could run a plan fleet for days while `harness_plans.goal_id` stayed NULL and the
+    // goal portfolio / drain-fleet fence never saw the plan (rem-dream-recombination and
+    // session-transcript-exact-fuzzy-search, measured 2026-10-01). Same rule as the other
+    // two doors: the goal comes from the LAUNCHER's resolved identity, never an argument,
+    // and the write is `WHERE goal_id IS NULL` so the first attribution wins and a launch
+    // can never re-parent a plan another goal already owns. Only after a verified launch —
+    // a refused or zero-member launch attributes nothing — and best-effort: the fleet
+    // already exists, so a stamp failure is RECORDED on the result, never raised.
+    let planGoalAttribution: { goalId: string | null; error: string | null } | null = null;
+    if (
+      goalSettings.goalId &&
+      planSlug &&
+      planRow &&
+      (launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true)
+    ) {
+      try {
+        planGoalAttribution = {
+          goalId: await stampPlanGoalProvenance({
+            workspaceId: planRow.workspaceId,
+            harnessSlug: planRow.harnessSlug,
+            planSlug,
+            ownerId,
+          }),
+          error: null,
+        };
+      } catch (e) {
+        planGoalAttribution = { goalId: null, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
     stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
     return json(
       {
         ok: launchTransaction.verifiedMemberIds.length > 0 || spawnedLeader?.registered === true,
         fleet: fleetSlug,
+        // WI-10004545: which goal the launching agent attributed the plan to (null = not a
+        // goal launch / nothing attributed); `error` is set when the best-effort stamp threw.
+        planGoalAttribution,
         leaderRole,
         callerMembership,
         // Machine-readable fact about the ACTUAL registered leader, never inferred from

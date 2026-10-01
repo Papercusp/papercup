@@ -6,8 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { decodeChunk, encodeChunk, fingerprintRequest, type RecordedExchange } from './record-proxy';
 import {
   execSessionRewriter,
+  learnReplayIds,
   newReplayState,
+  pairFor,
+  recordedExecCalls,
   reportedExecSessionIds,
+  type ExecSessionIds,
   parseExchanges,
   parseReplayUrl,
   replaceAcross,
@@ -222,6 +226,35 @@ describe('exec-session ids', () => {
     };
     expect(reportedExecSessionIds(Buffer.from(JSON.stringify(body)))).toEqual(['52575', '4111']);
     expect(reportedExecSessionIds(Buffer.from('not json'))).toEqual([]);
+    // The recording keeps the same reports WITH the call_id each answered (bodies are not stored).
+    expect(fingerprintRequest(Buffer.from(JSON.stringify(body))).execSessions).toEqual([
+      { callId: 'c1', id: '52575' },
+      { callId: 'c3', id: '4111' },
+    ]);
+    expect(fingerprintRequest(Buffer.from(JSON.stringify({ input: [] }))).execSessions).toBeUndefined();
+  });
+
+  it('pairs through the recorded call_id when the model polls a later process first (order pairing drifts)', () => {
+    // Recording: call c1 started process 111, call c2 started 222. The replay reports them in
+    // the same call order but the model's first poll names 222.
+    const recordedCalls = recordedExecCalls([
+      { ...ex(0), req: { ...ex(0).req, execSessions: [{ callId: 'c1', id: '111' }, { callId: 'c2', id: '222' }] } },
+    ]);
+    const exact: ExecSessionIds = { recorded: [], replay: [] };
+    const byOrder: ExecSessionIds = { recorded: [], replay: [] };
+    for (const ids of [exact, byOrder]) learnReplayIds(ids, [{ callId: 'c1', id: '9001' }, { callId: 'c2', id: '9002' }]);
+    expect(pairFor(exact, ['222'], recordedCalls)).toEqual({ map: new Map([['222', '9002']]), unmapped: [], by: 'call_id' });
+    expect(pairFor(byOrder, ['222'], null).map.get('222')).toBe('9001'); // the drift exact pairing removes
+  });
+
+  it('leaves a recorded id unmapped when its call reported no replay process, instead of borrowing another', () => {
+    const recordedCalls = recordedExecCalls([
+      { ...ex(0), req: { ...ex(0).req, execSessions: [{ callId: 'c1', id: '111' }, { callId: 'c2', id: '222' }] } },
+    ]);
+    const ids: ExecSessionIds = { recorded: [], replay: [] };
+    learnReplayIds(ids, [{ callId: 'c2', id: '9002' }]); // c1 finished inside its yield in the replay
+    expect(pairFor(ids, ['111', '222'], recordedCalls)).toEqual({ map: new Map([['222', '9002']]), unmapped: ['111'], by: 'call_id' });
+    expect(recordedExecCalls([ex(0)])).toBeNull(); // a pre-execSessions recording selects order pairing
   });
 });
 
@@ -325,6 +358,25 @@ describe('startReplayServer', () => {
     expect(by.a.execSessionUnmapped).toBeUndefined();
     expect(by.b.execSessionIds).toBeUndefined();
     expect(by.b.execSessionUnmapped).toEqual(['64250']);
+    expect(by.a.execSessionPairing).toBe('order'); // this recording predates execSessions
+  });
+
+  it('serves a poll of the SECOND recorded process with the replay id that same call reported', async () => {
+    const RESP = '/v1/responses';
+    const recorded = ex(0, { path: RESP, chunks: pollChunks(30), messages: 4, tools: 0 });
+    recorded.req = { ...recorded.req, execSessions: [{ callId: 'c1', id: '11111' }, { callId: 'c2', id: '64250' }] };
+    writeSession('s1', [recorded]);
+    srv = await startReplayServer({ corpusDir: corpus, speed: 0, logFile: logFile() });
+    const out = (callId: string, id: number) => ({ type: 'custom_tool_call_output', call_id: callId, output: JSON.stringify({ output: '', session_id: id }) });
+    const call = (callId: string) => ({ type: 'custom_tool_call', call_id: callId, input: 'text(await tools.exec_command({cmd:"x"}))' });
+    const body = { model: 'm', tools: [], input: [call('c1'), out('c1', 52575), call('c2'), out('c2', 7777)] };
+    const r = await post(`${srv.baseUrl('s1', 'a')}${RESP}`, body);
+    expect(doneInput(ex(0, { chunks: [encodeChunk(0, r.body)] }))).toBe(POLL.replace('64250', '7777'));
+    await srv.close();
+    const [rec] = readFileSync(logFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as ServedRecord);
+    expect(rec.tier).toBe('exact');
+    expect(rec.execSessionIds).toEqual({ 64250: '7777' });
+    expect(rec.execSessionPairing).toBe('call_id');
   });
 
   it('honours recorded delays scaled by speed', async () => {

@@ -24,7 +24,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
 import { flushTelemetry } from '../telemetry-flush';
-import { runScratchGc } from '../scratch-gc';
+import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
@@ -120,7 +120,8 @@ const telemetryFlushWorkflow = idempotentRegisterWorkflow('telemetryFlush', () =
 );
 DBOS.registerScheduled(telemetryFlushWorkflow, { name: 'telemetryFlush', crontab: '0 0 * * * *' });
 
-// Daily 03:00: scratch-storage GC sweep (retention + dead-workspace + quota).
+// Daily 03:00 (SCRATCH_GC_CRONTAB — the schedule's single source, in scratch-gc.ts):
+// scratch-storage GC sweep (retention + dead-workspace + quota).
 async function scratchGcTick(): Promise<void> {
   if (!(await retentionEnabled(FLAGS.STORAGE_RETAIN_SCRATCH))) return;
   await DBOS.runStep(
@@ -137,7 +138,7 @@ const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>
     maxRecoveryAttempts: 5,
   }),
 );
-DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: '0 0 3 * * *' });
+DBOS.registerScheduled(scratchGcWorkflow, { name: 'scratchGc', crontab: SCRATCH_GC_CRONTAB });
 
 // (The 6-hourly mem0 ephemeral-TTL sweep was removed — the `ephemeral` kind is
 // retired, so nothing carries expires_at; ephemeral state lives in coord now.

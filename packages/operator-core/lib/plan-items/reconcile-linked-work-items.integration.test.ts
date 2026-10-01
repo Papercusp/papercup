@@ -141,6 +141,17 @@ vi.mock('../agent-tools/plans/source', async () => {
   return { ...actual, getPlanRow: h3.getPlanRow };
 });
 
+// WI-10004553: pin the per-workspace coord scope to a tenant DISTINCT from the default,
+// as on the live box, so the split implements-link plane is actually split here. With
+// both resolving to 'default' a reader pinned to one tenant passes vacuously.
+const { COORD_SCOPE_WS } = vi.hoisted(() => ({ COORD_SCOPE_WS: 'tenant-coord-scope' }));
+vi.mock('../agent-tools/coordination/log', async () => {
+  const actual = await vi.importActual<typeof import('../agent-tools/coordination/log')>(
+    '../agent-tools/coordination/log',
+  );
+  return { ...actual, coordScopeWorkspace: () => COORD_SCOPE_WS };
+});
+
 const {
   reconcileLinkedWorkItemsForPlanItem,
   reconcileOrphanedPlanItemWorkItems,
@@ -201,10 +212,10 @@ beforeEach(async () => {
   h3.getPlanRow.mockResolvedValue(null);
 });
 
-async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string }) {
+async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string; workspace?: string }) {
   await rootSql`
     INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
-    VALUES (${WS}, ${o.srcKind ?? 'issue'}, ${o.srcRef}, ${PLAN_ITEM_KIND},
+    VALUES (${o.workspace ?? WS}, ${o.srcKind ?? 'issue'}, ${o.srcRef}, ${PLAN_ITEM_KIND},
             ${planItemRef(o.plan, o.item)}, ${IMPLEMENTS_REL})`;
 }
 
@@ -534,6 +545,26 @@ describe('reconcileLinkedWorkItemsForPlanItem — stamp is not implementation (E
     // Found by BOTH truth sources — the edge proves implementation, and the
     // later stamp pass must not downgrade it (viaImplementsEdge is sticky-true).
     expect(result.reconciled).toEqual(['WI-implements']);
+    expect(result.skippedUnprovenLink).toEqual([]);
+  });
+
+  it('WI-10004553: an implements edge under the PER-WORKSPACE coord scope still proves the link (post-2026-08-27 writers)', async () => {
+    stub({ id: 'WI-scoped-edge', state: 'open', family: 'issue', lastProgressAt: null });
+    await insertWorkItemRow({
+      id: 'WI-scoped-edge',
+      kind: 'bug',
+      status: 'open',
+      planSlug: 'p1',
+      itemId: 'P-024',
+    });
+    // Written where every promotion since 2026-08-27 writes it — NOT the default tenant.
+    await edge({ plan: 'p1', item: 'P-024', srcRef: 'WI-scoped-edge', workspace: COORD_SCOPE_WS });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-024' });
+
+    // Pinned to the default tenant this read the edge as absent → skippedUnprovenLink, and
+    // the promoted issue stayed open on a terminal plan item forever (~190 live rows).
+    expect(result.reconciled).toEqual(['WI-scoped-edge']);
     expect(result.skippedUnprovenLink).toEqual([]);
   });
 

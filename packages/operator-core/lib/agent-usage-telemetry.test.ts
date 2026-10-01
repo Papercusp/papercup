@@ -20,7 +20,9 @@ const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
   sqlShouldThrow: { value: false },
 }));
 
-vi.mock('@papercusp/model-pricing', () => ({ costFromTokens }));
+// PRICE_TABLE_VERSION must be on the mock: a missing export THROWS on read, and the writer's
+// best-effort try/catch would swallow it and skip the INSERT entirely (WI-10004517).
+vi.mock('@papercusp/model-pricing', () => ({ costFromTokens, PRICE_TABLE_VERSION: 'pt-test' }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   // `sql` is used two ways: as a tagged template (the INSERT) and as a plain
@@ -82,6 +84,7 @@ const COLS = [
   'tool_name',
   'turn_trigger',
   'account_id',
+  'price_table_version',
 ] as const;
 
 type Col = (typeof COLS)[number];
@@ -353,6 +356,24 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     const row = lastInsert();
     expect(row.cost_usd).toBe(0.0123);
     expect(row.cost_source).toBe('estimated');
+    // WI-10004517 / D-018: an estimate records the price table it was derived from, so the
+    // repricer can find it when the table changes.
+    expect(row.price_table_version).toBe('pt-test');
+    // The estimate prices exactly the four stored counters — the shape the repricer rebuilds.
+    expect(costFromTokens).toHaveBeenCalledWith('claude-opus-4', {
+      inputTokens: 1000, outputTokens: 500, cacheReadTokens: undefined, cacheCreationTokens: undefined,
+    });
+  });
+
+  it('stamps the price table version on an unpriced row so a later table can price it', async () => {
+    costFromTokens.mockReturnValue({ usd: 0, priced: false });
+    await recordUsageSample({
+      bucketKey: 'b', provider: 'openai', modelClass: 'gpt', source: 'jsonl',
+      inputTokens: 10, model: 'not-yet-priced',
+    });
+    const row = lastInsert();
+    expect(row.cost_usd).toBeNull();
+    expect(row.price_table_version).toBe('pt-test');
   });
 
   it('does NOT estimate when costUsd is already provider-reported, even with a model set', async () => {
@@ -368,6 +389,8 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     const row = lastInsert();
     expect(row.cost_usd).toBe(0.5);
     expect(row.cost_source).toBe('provider');
+    // Provider cost is an observation, not a derivation: no table version, never repriced.
+    expect(row.price_table_version).toBeNull();
     expect(costFromTokens).not.toHaveBeenCalled();
   });
 });
