@@ -2,7 +2,7 @@
  * schedstat counters are ns, not ticks; the main task is sampled explicitly.
  * https://docs.kernel.org/scheduler/sched-stats.html#proc-pid-schedstat
  * This identifies CPU/runqueue/sleep intervals, never JavaScript call stacks. */
-import { fork, type ChildProcess } from 'node:child_process';
+import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import { appendFileSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -25,6 +25,7 @@ export interface NativeProbeOptions {
   driverPid: number;
   driverIdentity: string;
   appPath: string;
+  stacks?: boolean;
 }
 export function parseSchedstat(value: string) {
   const fields = value.trim().split(/\s+/);
@@ -123,6 +124,53 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
     runqueueMeasured, processes, unavailable };
 }
 
+type NativeTarget = ReturnType<typeof collectOwnedWebKitSample>['processes'][number];
+/** Explicit diagnostic only: ptrace stops the target, so these runs cannot certify
+ * latency. Validate the whole owned ancestry immediately before and after attach.
+ * Never enable downloads, user init files, or an unbounded debugger session. */
+export function captureOwnedNativeStacks(options: NativeProbeOptions, target: NativeTarget,
+  proc: ProcReader = liveProc,
+  run: (pid: number) => string = (pid) => execFileSync('sudo', ['-n', 'timeout',
+    '--signal=TERM', '--kill-after=1s', '2s', 'gdb', '--batch', '--nx', '--nh',
+    '-iex', 'set debuginfod enabled off', '-iex', 'set auto-load off',
+    '-ex', 'set pagination off', '-ex', `attach ${pid}`,
+    '-ex', 'thread apply all bt 16', '-ex', 'detach', '-ex', 'quit'], {
+    encoding: 'utf8', timeout: 4_000, maxBuffer: 256 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })) {
+  const startedEpochMs = Date.now();
+  const started = performance.now();
+  const validate = () => {
+    const current = collectOwnedWebKitSample(options, proc).processes.find(({ pid }) => pid === target.pid);
+    if (!current || current.kind !== 'webkit' || current.identity !== target.identity ||
+        current.appIdentity !== target.appIdentity ||
+        JSON.stringify(current.ancestry) !== JSON.stringify(target.ancestry)) {
+      throw new Error('Native stack target identity/owned ancestry changed');
+    }
+    return current;
+  };
+  try {
+    validate();
+    const output = run(target.pid);
+    if (Buffer.byteLength(output) > 256 * 1024) throw new Error('Native stack output exceeds byte bound');
+    const after = validate();
+    if (after.state === 'T' || after.state === 't') throw new Error('Native stack target remained stopped');
+    // GDB can exit zero after a refused attach; exit status alone is not proof.
+    if (!/\[Inferior .* detached\]/.test(output) || !/^#0\s+/m.test(output)) {
+      throw new Error('Native stack capture has no frame/detach proof');
+    }
+    return { kind: 'native-stack' as const, status: 'captured' as const,
+      startedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
+      pid: target.pid, identity: target.identity, ancestry: target.ancestry,
+      observerEffect: 'debugger attachment stops target; diagnostic, not latency acceptance', output };
+  } catch (error) {
+    return { kind: 'native-stack' as const, status: 'unavailable' as const,
+      startedEpochMs, completedEpochMs: Date.now(), durationMs: performance.now() - started,
+      pid: target.pid, identity: target.identity, ancestry: target.ancestry,
+      error: String(error).slice(0, 500) };
+  }
+}
+
 const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const MAX_SAMPLES = 1200;
 
@@ -169,15 +217,18 @@ export class NativeSampleBuffer {
 }
 
 /** A separate Node process continues sampling while WebKit's main task stalls. */
-export function startNativeProcessProbe(driverPid: number, appPath: string, file: string): ChildProcess {
+export function startNativeProcessProbe(driverPid: number, appPath: string, file: string,
+  stacks = false): ChildProcess {
   if (process.platform !== 'linux') throw new Error('Native CPU diagnostic requires Linux /proc');
   const driverIdentity = readProcessIdentity(driverPid);
   if (!driverIdentity) throw new Error('Native CPU diagnostic cannot identify its driver');
-  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath) };
+  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
   writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v2',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
-    persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES })}\n`, { flag: 'wx', mode: 0o600 });
+    persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
+    stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
+      maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
     execArgv: ['--import', 'tsx'], stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
@@ -185,7 +236,8 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
 export async function stopNativeProcessProbe(child: ChildProcess | null): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 2_000);
+    // Allow the bounded debugger to detach and the child to flush its evidence.
+    const timeout = setTimeout(() => { child.kill('SIGTERM'); resolve(); }, 6_000);
     child.once('exit', () => { clearTimeout(timeout); resolve(); });
     if (child.connected) child.send('stop');
     else child.kill('SIGTERM');
@@ -199,13 +251,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const buffer = new NativeSampleBuffer();
   let samples = 0;
   let finished = false;
+  const stackRows: ReturnType<typeof captureOwnedNativeStacks>[] = [];
+  let lastStackEpochMs = 0;
   let timer: NodeJS.Timeout;
   const finish = (reason: string) => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
     // One append after sampling has stopped; no per-tick file writes.
-    appendFileSync(file, buffer.finish(reason, performance.now() - started)!);
+    appendFileSync(file, buffer.finish(reason, performance.now() - started)! +
+      stackRows.map((row) => `${JSON.stringify(row)}\n`).join(''));
     process.disconnect?.();
   };
   const tick = () => {
@@ -216,6 +271,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
       if (!buffer.add(sample)) return finish('buffer-bound');
       samples++;
       if (samples === 1 && process.connected) process.send?.({ kind: 'sampling-started' });
+      const target = sample.processes.find(({ kind }) => kind === 'webkit');
+      if (options.stacks && target && stackRows.length < 3 && Date.now() - lastStackEpochMs >= 1_000) {
+        stackRows.push(captureOwnedNativeStacks(options, target));
+        lastStackEpochMs = Date.now();
+      }
       timer = setTimeout(tick, 100);
     } catch (error) { finish(`unavailable: ${String(error).slice(0, 300)}`); }
   };

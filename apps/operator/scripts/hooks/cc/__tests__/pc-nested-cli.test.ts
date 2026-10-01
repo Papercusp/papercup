@@ -186,17 +186,23 @@ describe("pc_nested_cli.nested_cli_reason — decision table (fake /proc)", () =
 // ── End-to-end: the real hook under a real process tree ─────────────────────────
 let home: string;
 let fixtures: string;
+let nestedCache: string;
 
 beforeAll(() => {
   home = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-home-"));
   fs.mkdirSync(join(home, ".papercusp"), { recursive: true });
   fs.writeFileSync(join(home, ".papercusp", "superuser-token"), "test-token\n");
   fixtures = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-fx-"));
+  // ONE verdict cache shared by every run below, on purpose: the managed and nested shapes
+  // alternate through it, so a cache keyed on the wrong process would hand one shape the
+  // other's verdict and a case below would fail.
+  nestedCache = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-cache-"));
   // The fake agent CLI: a bash whose argv[0] is `claude` (set via `exec -a`), running the
-  // hook as a CHILD so the hook's /proc ancestry really passes through a "claude".
+  // hook as a CHILD so the hook's /proc ancestry really passes through a "claude". Two
+  // commands, so bash cannot exec the hook in place of the fake CLI.
   fs.writeFileSync(
     join(fixtures, "fake-claude-body.sh"),
-    'bash "$LIFECYCLE_HOOK"\nexit $?\n',
+    '${HOOK_RUNNER:-bash} "$LIFECYCLE_HOOK"\nexit $?\n',
   );
   // The fake launcher: argv = [node, …/psu-launcher.mjs], parent of the fake claude.
   fs.writeFileSync(
@@ -205,7 +211,7 @@ beforeAll(() => {
   );
 });
 afterAll(() => {
-  for (const d of [home, fixtures]) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of [home, fixtures, nestedCache]) fs.rmSync(d, { recursive: true, force: true });
 });
 
 async function runHookUnder(
@@ -213,6 +219,7 @@ async function runHookUnder(
   event: string,
   hookPath: string = LIFECYCLE_HOOK,
   extraPayload: Record<string, unknown> = {},
+  opts: { runner?: string; env?: Record<string, string> } = {},
 ) {
   const requests: string[] = [];
   const server = createServer((req, res) => {
@@ -259,10 +266,18 @@ async function runHookUnder(
       // psu parentage outranks it.
       PAPERCUSP_CAPABILITY_BASH_FOREGROUND: "1",
       PAPERCUSP_JOURNAL_SYNC: "1",
+      PC_NESTED_CLI_CACHE_DIR: nestedCache,
       LIFECYCLE_HOOK: hookPath,
+      HOOK_RUNNER: opts.runner ?? "bash",
       FAKE_CLAUDE_BODY: body,
+      ...opts.env,
     },
     stdio: ["pipe", "pipe", "pipe"],
+  });
+  // A guarded hook exits BEFORE reading stdin, so this write can land on a closed pipe.
+  // That EPIPE is expected (see spawn-hook.ts); anything else still surfaces.
+  child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EPIPE") throw error;
   });
   let stdout = "";
   child.stdout.on("data", (c) => (stdout += c));
@@ -379,5 +394,256 @@ describe("per-turn owner-mutating hooks skip a nested CLI (WI-10004863)", () => 
     });
     expect(r.exitCode).toBe(0);
     expect(r.requests).toHaveLength(1);
+  });
+});
+
+// ── WI-10004945: the per-TOOL-CALL hooks, through the CACHED verdict ─────────────
+// These fire on every tool call, so they read pc_nested_cli.sh's verdict cached per CLI
+// process instead of starting pc_nested_cli.py each time. Same observable as above: a
+// nested CLI must send nothing as the su; a managed one must still act.
+const PRE_ACTIVITY_HOOK = join(GUARDED_DIR, "pretooluse-activity-report.sh");
+const POST_ACTIVITY_HOOK = join(GUARDED_DIR, "posttooluse-activity-report.sh");
+const ASK_GATE_HOOK = join(GUARDED_DIR, "ask-gate-mirror.sh");
+const VERIFY_NUDGE_HOOK = join(GUARDED_DIR, "workitem-verify-nudge.sh");
+const STOP_DIRECTIVE_HOOK = join(GUARDED_DIR, "stop-owner-directive-check.mjs");
+
+const ASK_PAYLOAD = {
+  tool_name: "AskUserQuestion",
+  tool_use_id: "tu-nested-1",
+  tool_input: {
+    questions: [{ question: "Which route?", header: "Route", multiSelect: false, options: [{ label: "A" }] }],
+  },
+};
+
+describe("per-tool-call hooks skip a nested CLI via the cached verdict (WI-10004945)", () => {
+  for (const shape of ["nested-cli", "psu-managed"] as const) {
+    const expectation = shape === "nested-cli" ? "sends nothing" : "still reports (calibration)";
+
+    it(`pretooluse-activity-report: a ${shape} CLI ${expectation}`, async () => {
+      const r = await runHookUnder(shape, "PreToolUse", PRE_ACTIVITY_HOOK, {
+        tool_name: "Bash",
+        tool_use_id: "tu-pre",
+        tool_input: { command: "ls" },
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.requests).toHaveLength(shape === "nested-cli" ? 0 : 1);
+      if (shape === "nested-cli") {
+        // The miss went through python --cache, which recorded this CLI's verdict. (Each
+        // run mints a new fake CLI, so every run here is a miss; a reader keyed on a
+        // process ABOVE the CLI would instead HIT the previous shape's entry, which is
+        // what the managed/nested alternation in this block is there to catch.)
+        const verdicts = fs
+          .readdirSync(nestedCache)
+          .map((n) => fs.readFileSync(join(nestedCache, n), "utf8").split(" ")[0].trim());
+        expect(verdicts).toContain("nested");
+      }
+    });
+
+    it(`posttooluse-activity-report (with the coord fold): a ${shape} CLI ${expectation}`, async () => {
+      const r = await runHookUnder(
+        shape,
+        "PostToolUse",
+        POST_ACTIVITY_HOOK,
+        { tool_name: "Bash", tool_use_id: "tu-post", tool_input: { command: "ls" }, tool_response: {} },
+        { env: { PAPERCUSP_LOCKS_CACHE_DIR: join(home, `locks-cache-${shape}`) } },
+      );
+      expect(r.exitCode).toBe(0);
+      if (shape === "nested-cli") {
+        expect(r.requests).toEqual([]);
+        expect(r.stdout).toBe("");
+        // The fold cursor is the su's: a nested CLI must not advance it.
+        expect(fs.existsSync(join(home, "locks-cache-nested-cli"))).toBe(false);
+      } else {
+        expect(r.requests.length).toBeGreaterThanOrEqual(1);
+      }
+    });
+
+    it(`ask-gate-mirror PreToolUse AskUserQuestion: a ${shape} CLI ${expectation}`, async () => {
+      const r = await runHookUnder(shape, "PreToolUse", ASK_GATE_HOOK, ASK_PAYLOAD);
+      expect(r.exitCode).toBe(0);
+      expect(r.requests).toHaveLength(shape === "nested-cli" ? 0 : 1);
+    });
+
+    it(`workitem-verify-nudge PostToolUse Edit: a ${shape} CLI ${shape === "nested-cli" ? "marks nothing" : "marks the edit (calibration)"}`, async () => {
+      const ws = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-ws-"));
+      const cache = join(home, `nudge-cache-${shape}`);
+      try {
+        const r = await runHookUnder(
+          shape,
+          "PostToolUse",
+          VERIFY_NUDGE_HOOK,
+          { tool_name: "Edit", tool_input: { file_path: join(ws, "repo", "a.ts") }, cwd: join(ws, "repo") },
+          {
+            env: {
+              PAPERCUSP_LOCKS_CACHE_DIR: cache,
+              PAPERCUSP_WORKSPACE_ROOT: ws,
+              PAPERCUSP_WORKITEM_NUDGE_SYNC: "1",
+            },
+          },
+        );
+        expect(r.exitCode).toBe(0);
+        expect(fs.existsSync(join(cache, "wi-nudge-su-nested-guard-test.edited"))).toBe(
+          shape === "psu-managed",
+        );
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+      }
+    });
+
+    it(`stop-owner-directive-check (Stop, node hook): a ${shape} CLI ${expectation}`, async () => {
+      const r = await runHookUnder(shape, "Stop", STOP_DIRECTIVE_HOOK, {}, { runner: "node" });
+      expect(r.exitCode).toBe(0);
+      expect(r.requests).toHaveLength(shape === "nested-cli" ? 0 : 1);
+      if (shape === "psu-managed") expect(r.requests[0]).toMatch(/turn-end-directive-check/);
+    });
+  }
+});
+
+// ── The bash cache reader itself: hit, miss, recycled pid ──────────────────────
+// A real long-lived process whose argv[0] is `claude` stands in for the CLI. PATH holds
+// NO python3, so a hit must be answered by bash builtins alone, and a miss is visible as
+// python's command-not-found status (127), never as a guessed verdict.
+describe("pc_nested_cli.sh — the per-CLI verdict cache (WI-10004945)", () => {
+  const BASH = execFileSync("bash", ["-c", "command -v bash"], { encoding: "utf8" }).trim();
+  const READER = join(HOOK_DIR, "pc_nested_cli.sh");
+
+  function withFakeCli(body: (pid: number, start: string, cache: string) => void) {
+    const cli = spawn("bash", ["-c", "exec -a claude sleep 30"], { stdio: "ignore" });
+    const cache = fs.mkdtempSync(join(os.tmpdir(), "pc-nested-reader-"));
+    try {
+      const pid = cli.pid as number;
+      // exec -a lands asynchronously; wait until /proc shows argv[0] === "claude".
+      const deadline = Date.now() + 5_000;
+      while (!fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").startsWith("claude\0")) {
+        if (Date.now() > deadline) throw new Error("fake CLI never exec'd");
+      }
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+      body(pid, start, cache);
+    } finally {
+      cli.kill("SIGKILL");
+      fs.rmSync(cache, { recursive: true, force: true });
+    }
+  }
+
+  function readVerdict(pid: number, cache: string): number | null {
+    try {
+      execFileSync(BASH, [READER], {
+        env: { PATH: "/nonexistent", HOME: home, PC_NESTED_CLI_START_PID: String(pid), PC_NESTED_CLI_CACHE_DIR: cache },
+        stdio: "ignore",
+      });
+      return 0;
+    } catch (error) {
+      return (error as { status: number | null }).status;
+    }
+  }
+
+  it("a cached 'nested' verdict is answered without starting python", () => {
+    withFakeCli((pid, start, cache) => {
+      fs.writeFileSync(join(cache, `${pid}-${start}`), "nested nested under agent CLI pid 7\n");
+      expect(readVerdict(pid, cache)).toBe(0);
+    });
+  });
+
+  it("a cached 'managed' verdict is answered without starting python", () => {
+    withFakeCli((pid, start, cache) => {
+      fs.writeFileSync(join(cache, `${pid}-${start}`), "managed\n");
+      expect(readVerdict(pid, cache)).toBe(1);
+    });
+  });
+
+  it("a verdict recorded for a RECYCLED pid (other start time) is a miss, not a hit", () => {
+    withFakeCli((pid, start, cache) => {
+      fs.writeFileSync(join(cache, `${pid}-${Number(start) + 1}`), "nested stale\n");
+      expect(readVerdict(pid, cache)).toBe(127);
+    });
+  });
+
+  it("no cached verdict falls through to the python decision (127 here: python is absent)", () => {
+    withFakeCli((pid, _start, cache) => {
+      expect(readVerdict(pid, cache)).toBe(127);
+    });
+  });
+});
+
+// ── Census: every hook that reads the inherited SID has a nested-CLI policy ──────
+// The bug class is "a hook keyed on PAPERCUSP_SID acts as the su for whatever CLI
+// inherited it". A NEW hook that reads the SID fails here until someone decides what it
+// should do for a nested CLI; that decision must be made, not inherited by default.
+type NestedPolicy = "skip-per-turn" | "skip-cached" | "as-owner" | "helper" | "unreviewed";
+const NESTED_CLI_POLICY: Record<string, NestedPolicy> = {
+  // Skip a nested CLI, uncached (fires once per turn or session): pc_nested_cli.py.
+  "lifecycle-report.sh": "skip-per-turn",
+  "userpromptsubmit-provenance.sh": "skip-per-turn",
+  "stop-turn-journal.sh": "skip-per-turn",
+  // Skip a nested CLI through the per-CLI cache: pc_nested_cli.sh.
+  "pretooluse-activity-report.sh": "skip-cached",
+  "posttooluse-activity-report.sh": "skip-cached",
+  "ask-gate-mirror.sh": "skip-cached",
+  "workitem-verify-nudge.sh": "skip-cached",
+  "stop-owner-directive-check.mjs": "skip-cached",
+  // Act AS the su on purpose: a nested CLI's edits land in the shared tree on the su's
+  // behalf, and skipping would take the lock rail off them (see pretooluse-locks-acquire.sh).
+  "pretooluse-locks-acquire.sh": "as-owner",
+  "posttooluse-locks-release.sh": "as-owner",
+  "posttoolbatch-locks-release.sh": "as-owner",
+  "pc_nested_cli.sh": "helper",
+  // Not yet reviewed for a nested CLI (WI-10004945 residue). Shrink this list; never
+  // add a new hook to it to get past the census.
+  "posttooluse-objective-title.sh": "unreviewed",
+  "posttoolbatch-midturn-context.sh": "unreviewed",
+  "pretooluse-bash-resource-gate.sh": "unreviewed",
+  "statusline-fleet.sh": "unreviewed",
+  "userpromptsubmit-memory.sh": "unreviewed",
+  "posttooluse-frozen-candidate-edit-nudge.mjs": "unreviewed",
+  "posttooluse-proof-stale-nudge.mjs": "unreviewed",
+  "posttooluse-tsc-verdict-stale-nudge.mjs": "unreviewed",
+  "precompact-managed-carry.mjs": "unreviewed",
+  "pretooluse-schedule-wakeup-provenance.mjs": "unreviewed",
+};
+const UNREVIEWED_CEILING = 10;
+
+describe("census: every SID-reading hook has a nested-CLI policy (WI-10004945)", () => {
+  const readsSid = (name: string) =>
+    /PAPERCUSP_SID|\bsessionId\(/.test(fs.readFileSync(join(HOOK_DIR, name), "utf8"));
+  const population = fs
+    .readdirSync(HOOK_DIR, { withFileTypes: true })
+    .filter((e) => e.isFile() && /\.(sh|mjs)$/.test(e.name) && readsSid(e.name))
+    .map((e) => e.name)
+    .sort();
+
+  it("the census instrument finds the known SID readers (positive control)", () => {
+    expect(population).toContain("lifecycle-report.sh");
+    expect(population).toContain("stop-owner-directive-check.mjs");
+  });
+
+  it("classifies exactly the hooks that read PAPERCUSP_SID", () => {
+    expect(population).toEqual(Object.keys(NESTED_CLI_POLICY).sort());
+  });
+
+  it("the unreviewed list only shrinks", () => {
+    const unreviewed = Object.values(NESTED_CLI_POLICY).filter((p) => p === "unreviewed");
+    expect(unreviewed.length).toBeLessThanOrEqual(UNREVIEWED_CEILING);
+  });
+
+  it("each skip-cached hook consults the cached guard BEFORE it first acts as the su", () => {
+    for (const [name, policy] of Object.entries(NESTED_CLI_POLICY)) {
+      if (policy !== "skip-cached") continue;
+      const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
+      if (name.endsWith(".mjs")) {
+        const guard = src.indexOf("if (isNested()) return null;");
+        const work = src.indexOf("await fetchImpl(");
+        expect(guard, `${name}: no isNested() guard`).toBeGreaterThan(-1);
+        expect(work, `${name}: operator call not found (instrument broken)`).toBeGreaterThan(-1);
+        expect(guard, `${name}: guard must run before the operator call`).toBeLessThan(work);
+        continue;
+      }
+      const guard = src.indexOf('pc_nested_cli.sh" 2>/dev/null && pc_nested_cli_cached');
+      // The first place the hook hands the inherited SID to code that acts on it.
+      const work = src.indexOf('"$PAPERCUSP_SID"');
+      expect(guard, `${name}: no cached pc_nested_cli.sh guard`).toBeGreaterThan(-1);
+      expect(work, `${name}: no SID use found (instrument broken)`).toBeGreaterThan(-1);
+      expect(guard, `${name}: guard must run before the SID is used`).toBeLessThan(work);
+    }
   });
 });

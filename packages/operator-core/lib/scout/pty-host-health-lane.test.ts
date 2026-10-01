@@ -109,6 +109,11 @@ describe('PTY host event classification for Blender', () => {
     expect(patterns[0]?.detail).toContain('Failure signal');
   });
 
+  it('keeps an extended startup-frame wait routine until its terminal timeout', () => {
+    expect(classifyPtyHostEvent('launch-kickoff-backend-frame-wait-extended')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-backend-frame-timeout')).toBe('failure');
+  });
+
   it('keeps failed role MCP readiness while omitting a ready connection', () => {
     const patterns = buildPtyHostHealthPatterns([
       row('launch-role-mcp-ready', 20),

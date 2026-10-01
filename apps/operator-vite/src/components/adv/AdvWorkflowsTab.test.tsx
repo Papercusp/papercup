@@ -27,6 +27,10 @@ const H = vi.hoisted(() => ({
   loadingData: false,
   /** Swap the connected-source fixture to Gmail for direct Email-target coverage. */
   gmailSource: false,
+  /** The catalog carries the `external-trigger-dispatch` routine, inactive (WI-10004922). */
+  dispatcherPaused: false,
+  /** Every external binding in the admin snapshot is disarmed. */
+  externalDisarmed: false,
 }));
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
@@ -154,6 +158,10 @@ vi.mock('@papercusp/sync', () => ({
     if (enabled === false) return { data: [], loading: false, invalidate };
     if (H.loadingData) return { data: [], loading: true, invalidate };
     if (H.emptyData) return { data: [], loading: false, invalidate };
+    if (queryName === 'automation.catalog' && H.dispatcherPaused) {
+      const dispatcher = { ...routine(), name: 'external-trigger-dispatch', group: 'external-triggers', active: false };
+      return { data: [{ ...catalog, routines: [...catalog.routines, dispatcher] }], loading: false, invalidate };
+    }
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
     if (queryName === 'plans.list' && H.manyPlans) return { data: BULK_PLANS, loading: false, invalidate };
@@ -243,6 +251,8 @@ beforeEach(() => {
   H.noRollup = false;
   H.loadingData = false;
   H.gmailSource = false;
+  H.dispatcherPaused = false;
+  H.externalDisarmed = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
@@ -280,6 +290,10 @@ beforeEach(() => {
         triggeredAt: new Date(Date.parse('2026-08-22T19:00:00.000Z') - i * 60_000).toISOString(),
       }));
       return new Response(JSON.stringify({ ...external, recentRuns }), { status: 200 });
+    }
+    if (H.externalDisarmed) {
+      const bindings = external.bindings.map((binding) => ({ ...binding, armed: false }));
+      return new Response(JSON.stringify({ ...external, bindings }), { status: 200 });
     }
     return new Response(JSON.stringify(external), { status: 200 });
   }));
@@ -337,6 +351,31 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     await screen.findByRole('heading', { name: 'Workflows', level: 1 });
     // The rule this preserves: no "all clear" card, no empty frame — absence IS the state.
     expect(screen.queryByTestId('workflows-needs-you')).toBeNull();
+  });
+
+  /**
+   * WI-10004922: the trigger dispatcher was paused for two weeks while an armed workflow
+   * looked ready. The catalog's routine row is the only input that can say so.
+   */
+  it('leads the needs-you strip when the trigger dispatcher is paused under an armed event workflow', async () => {
+    H.dispatcherPaused = true;
+    renderTab();
+    const strip = await screen.findByTestId('workflows-needs-you');
+    expect(
+      await within(strip).findByText(/Event triggers are paused: 1 armed workflow is queuing runs/),
+    ).toBeTruthy();
+  });
+
+  it('raises no dispatcher alarm when only schedules are armed, because schedules keep firing', async () => {
+    // customer-digest keeps an ARMED schedule; only its event binding is disarmed. Counting
+    // every un-paused triggered row (the first cut) raised the alarm here falsely.
+    H.dispatcherPaused = true;
+    H.externalDisarmed = true;
+    renderTab();
+    // Not vacuous: the armed-schedule workflow has rendered, and the snapshot has been read.
+    expect((await screen.findAllByText('Customer feedback digest')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
+    expect(screen.queryByText(/Event triggers are paused/)).toBeNull();
   });
 
   /**

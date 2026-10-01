@@ -103,7 +103,7 @@ describe('rendered SU persona — owner-directive capture and resolution (WI-100
 
       // The live prompt and the registered tools must describe the same lifecycle.
       expect(ordersList.name).toBe('orders:list');
-      expect(Object.keys(ordersList.args.shape)).toEqual(['open', 'state', 'limit']);
+      expect(Object.keys(ordersList.args.shape)).toEqual(['open', 'state', 'mine', 'limit']);
       expect(ordersList.args.shape.state.safeParse('open').success).toBe(true);
       expect(ordersList.args.shape.state.safeParse('pending').success).toBe(false);
 

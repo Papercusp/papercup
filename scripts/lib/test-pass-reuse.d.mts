@@ -87,6 +87,51 @@ export function isRunnerAffectingScript(name: string): boolean;
  */
 export function rootPackageJsonChangeIsInert(beforeText: string, afterText: string): boolean;
 /**
+ * The script names a package.json change added, removed or changed, when that is ALL it changed
+ * (key order ignored). Null when anything else changed, or when either side is not a JSON object
+ * with an object (or absent) `scripts` (fail closed). An empty array means a reorder only.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {string[] | null}
+ */
+export function scriptsOnlyChangedNames(beforeText: string, afterText: string): string[] | null;
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009 rule 3: the "can any script invoke this name?" judge
+ * over every script command in a tree (`commands`: superproject and submodules, see
+ * treeScriptCommands in executed-source-map.mjs). The returned judge answers true when `name`
+ * occurs as a substring of any command other than its own definition (`definedIn` + `name`),
+ * and true for EVERY name when any command runs scripts by pattern. Substring matching
+ * over-approximates (`lint` matches `lint:tsc`), which only costs narrowings, never soundness.
+ *
+ * @param {ReadonlyArray<{ rel: string, name: string, command: string }>} commands
+ * @returns {(name: string, definedIn: string) => boolean}
+ */
+export function scriptInvocationJudge(commands: ReadonlyArray<{
+    rel: string;
+    name: string;
+    command: string;
+}>): (name: string, definedIn: string) => boolean;
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009: is a change to a WORKSPACE (non-root) package.json
+ * inert for the proofs beneath its directory? True only when it changed nothing but `scripts`
+ * (scriptsOnlyChangedNames), no changed name is runner-affecting (isRunnerAffectingScript), and
+ * no changed name can be invoked by another script: `invokable(name)` must answer exactly
+ * `false` for the name and, for a `pre<x>` / `post<x>` name, for `<x>` (npm runs the hook around
+ * every `npm run <x>`). Any other answer, or a throw, keeps the change a config change.
+ *
+ * Why invocation matters here and not at the root (P-002): a task script can call a sibling
+ * (papercusp-desktop `test` runs `test:config`), or reach another package's scripts
+ * (`npm run test --workspaces`). A test that READS the package.json still records it in
+ * readPaths and is invalidated directly; one that spawns npm is opaque and never reused.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @param {(name: string) => boolean} invokable
+ * @returns {boolean}
+ */
+export function workspacePackageJsonChangeIsInert(beforeText: string, afterText: string, invokable: (name: string) => boolean): boolean;
+/**
  * The part of a package-lock.json that decides what `npm ci` puts on disk, as one canonical
  * string (gate-test-reuse-yield-2026-10-01 P-005), or null when the text is not a lockfile this
  * can judge (fail closed). Kept: every top-level field except `packages`; every `packages` entry
@@ -156,8 +201,10 @@ export function tsconfigUnreadByToolchain(rel: string, toolchainTsconfigs: Reado
  *        gate-test-reuse-yield-2026-10-01 P-002: asked for each GLOBAL drift path; returning
  *        exactly `true` says that change touches nothing a proof cannot see, so it is not global
  *        and does not reach proofs through the ancestor-config rule (a proof that read the path
- *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
- *        every global path stays global. Implemented over git by gitInertGlobalChange
+ *        itself is still invalidated). Any other result, or a throw, keeps it global. D-009: also
+ *        asked for each WORKSPACE (non-root) package.json drift path; `true` there means it does
+ *        not configure the proofs beneath its directory (summary.inertWorkspaceConfig). Omitted =
+ *        nothing is narrowed. Implemented over git by gitInertGlobalChange
  *        (scripts/lib/executed-source-map.mjs).
  * @param {ReadonlySet<string> | null} [o.testConfigMainProcess] P-003: the test-config source
  *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to

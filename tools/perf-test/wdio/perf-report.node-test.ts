@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { buildStartupStorageProbeScript, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, writeStartupStorageDiagnosticIndex, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
-import { collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
+import { captureOwnedNativeStacks, collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
@@ -127,6 +127,54 @@ test('native sampling marks disabled scheduler-wait accounting and missing count
   const sample = collectOwnedWebKitSample(f.options, f.proc);
   assert(!sample.processes.some(({ pid }) => pid === 30));
   assert.match(sample.unavailable.join(' '), /schedstat/);
+});
+
+test('native stack capture requires owned identity, real frames, detach and resumed target', () => {
+  const f = nativeProcFixture();
+  const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
+  const result = captureOwnedNativeStacks(f.options, target, f.proc, (pid) => {
+    assert.equal(pid, 30);
+    return '#0  0x123 in poll ()\n[Inferior 1 (process 30) detached]\n';
+  });
+  assert.equal(result.status, 'captured');
+  assert.equal(result.identity, 'linux:boot-A:100');
+  for (const output of ['', '#0 poll\n', 'ptrace: Operation not permitted.\n']) {
+    assert.equal(captureOwnedNativeStacks(f.options, target, f.proc, () => output).status, 'unavailable');
+  }
+  const stopped = captureOwnedNativeStacks(f.options, target, f.proc, () => {
+    f.files.set('/proc/30/task/30/stat', f.stat(30, 25).replace(') S ', ') T '));
+    return '#0 poll\n[Inferior 1 (process 30) detached]\n';
+  });
+  assert.equal(stopped.status, 'unavailable');
+});
+
+test('native stack attach refuses stale/peer targets and discards post-attach identity races', () => {
+  const f = nativeProcFixture();
+  const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
+  let attaches = 0;
+  const run = () => { attaches++; return '#0 poll\n[Inferior 1 (process 30) detached]\n'; };
+  assert.equal(captureOwnedNativeStacks(f.options, { ...target, pid: 90 }, f.proc, run).status, 'unavailable');
+  f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
+  assert.equal(captureOwnedNativeStacks(f.options, target, f.proc, run).status, 'unavailable');
+  assert.equal(attaches, 0);
+  f.files.set('/proc/30/stat', f.stat(30, 25));
+  const raced = captureOwnedNativeStacks(f.options, target, f.proc, () => {
+    f.files.set('/proc/30/stat', f.stat(30, 1));
+    return run();
+  });
+  assert.equal(raced.status, 'unavailable');
+  assert.equal(attaches, 1);
+});
+
+test('native stack capture bounds output and reports debugger failures as unavailable', () => {
+  const f = nativeProcFixture();
+  const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
+  const oversized = captureOwnedNativeStacks(f.options, target, f.proc, () => '🎯'.repeat(65537));
+  assert(oversized.status === 'unavailable');
+  assert.match(oversized.error, /byte bound/);
+  const failed = captureOwnedNativeStacks(f.options, target, f.proc, () => { throw new Error('attach deadline'); });
+  assert(failed.status === 'unavailable');
+  assert.match(failed.error, /attach deadline/);
 });
 
 test('native sample memory has exact byte/sample bounds and reports work including serialization', () => {

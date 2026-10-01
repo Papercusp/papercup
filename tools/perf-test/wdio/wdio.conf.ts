@@ -673,7 +673,8 @@ export const config: WebdriverIO.Config = {
     const nativeTraceFile = process.env.PAPERCUSP_PERF_NATIVE_TRACE_FILE;
     if (nativeTraceFile) {
       if (!tauriDriver.pid) throw new Error('Native diagnostic driver did not start');
-      nativeProcessProbe = startNativeProcessProbe(tauriDriver.pid, TAURI_APP_PATH, nativeTraceFile);
+      nativeProcessProbe = startNativeProcessProbe(tauriDriver.pid, TAURI_APP_PATH, nativeTraceFile,
+        process.env.PAPERCUSP_PERF_NATIVE_STACKS === '1');
     }
   },
   // Publish BEFORE killing the driver so a publish hang can't leave tauri-driver

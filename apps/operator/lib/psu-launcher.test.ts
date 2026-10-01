@@ -13740,7 +13740,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   });
 
   it("returns the async respawn report so the PTY host can enforce ordering", () => {
-    const onRespawn = src.indexOf("onRespawn: (freshId) => {");
+    // Keep this source-wiring guard independent of the callback's option
+    // parameters; the durable retry path may pass an onConfirmed callback.
+    const onRespawn = src.indexOf("onRespawn:");
     // WI-10004917: the durable form, so a report lost to an operator restart is retried.
     const report = src.indexOf("return reportSessionRespawnedDurably(", onRespawn);
     const callbackEnd = src.indexOf("        },", report);

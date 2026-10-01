@@ -62,7 +62,10 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // A slow Codex composer paste still inside the kickoff delivery deadline.
     // Its terminal outcome is recorded separately as `-confirmed` (routine) or
     // `-unconfirmed` (failure), so counting this as a failure double-counts.
-    kind === 'launch-kickoff-marker-echo-pending'
+    kind === 'launch-kickoff-marker-echo-pending' ||
+    // An explicitly Starting Codex footer extends the early frame wait only
+    // within the kickoff deadline; the terminal timeout is recorded separately.
+    kind === 'launch-kickoff-backend-frame-wait-extended'
   ) return 'routine';
 
   if (

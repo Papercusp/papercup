@@ -437,7 +437,7 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
   },
   toolSurface: {
     patch: { toolSurface: { hookCalls: 24, windowMinutes: 31 } },
-    marker: /MCP TOOLS NOT REGISTERED/,
+    marker: /No agent-origin MCP calls recorded in 31m/,
   },
   carryBlindWindow: {
     patch: {
