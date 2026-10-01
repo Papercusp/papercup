@@ -9,7 +9,7 @@
  *   R-3 — a seed from another embedding space writes nothing.
  * Every row lives under a per-run source_key and is deleted afterwards.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, truncate } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
@@ -19,6 +19,7 @@ import {
   applyDocVectorSeed,
   applyShippedDocVectorSeed,
   countUnembeddedDocSections,
+  DOC_VECTOR_SEED_VECTORS,
   exportDocVectorSeed,
   writeDocVectorSeed,
   type ActiveProseSpace,
@@ -220,6 +221,41 @@ describe('doc vector seed (live SQL)', () => {
     expect(await applyShippedDocVectorSeed(sql, { ...deps, resolveSpace: async () => null })).toEqual({
       skipped: 'nothing-to-fill',
     });
+  });
+
+  it('boot step: a truncated, unknown-format, or missing seed is refused before any row is written', async () => {
+    await insertNullRows(ROWS);
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'doc-vector-seed-it-'));
+    dirs.push(dir);
+    const good = seedOf(ROWS.map((r, i) => ({ ...r, vec: vectorFor(i) })));
+    const lines: string[] = [];
+    const deps = { resolveSpace: async () => GEMMA, sourceKeys: [SOURCE_KEY], log: (l: string) => lines.push(l) };
+    const noRowWritten = async () => {
+      expect((await stored()).every((x) => x.vec === null && x.mode === null)).toBe(true);
+      expect(await countUnembeddedDocSections(sql, [SOURCE_KEY])).toBe(ROWS.length);
+    };
+
+    // Truncated vectors file: one float short of rows × dims.
+    await writeDocVectorSeed(dir, good);
+    await truncate(path.join(dir, DOC_VECTOR_SEED_VECTORS), ROWS.length * DIMS * 4 - 4);
+    const truncated = await applyShippedDocVectorSeed(sql, { ...deps, seedDir: () => dir });
+    expect(truncated).toMatchObject({ skipped: 'invalid-seed' });
+    expect('detail' in truncated && truncated.detail).toMatch(/vectors\.f32 is \d+ bytes, expected \d+/);
+    await noRowWritten();
+
+    // Unknown format version.
+    await writeDocVectorSeed(dir, { ...good, manifest: { ...good.manifest, version: 99 as 1 } });
+    expect(await applyShippedDocVectorSeed(sql, { ...deps, seedDir: () => dir })).toMatchObject({
+      skipped: 'invalid-seed',
+    });
+    await noRowWritten();
+
+    // Seed directory named by the build but absent on disk.
+    expect(await applyShippedDocVectorSeed(sql, { ...deps, seedDir: () => path.join(dir, 'absent') })).toMatchObject({
+      skipped: 'invalid-seed',
+    });
+    await noRowWritten();
+    expect(lines.filter((l) => l.includes('seed refused'))).toHaveLength(3);
   });
 
   it('boot step: a disabled embedder skips the seed and leaves rows for the sweep', async () => {

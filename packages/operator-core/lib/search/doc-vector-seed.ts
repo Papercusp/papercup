@@ -187,7 +187,7 @@ export async function countUnembeddedDocSections(sql: Sql, sourceKeys: readonly 
 
 export type DocVectorSeedApply =
   | { applied: number; seedRows: number }
-  | { skipped: 'space-mismatch'; detail: string }
+  | { skipped: 'space-mismatch' | 'invalid-seed'; detail: string }
   | { skipped: 'no-seed' | 'nothing-to-fill' | 'embedder-disabled' };
 
 /**
@@ -255,7 +255,13 @@ export interface ShippedSeedDeps {
 }
 
 /** Boot step: apply the release's shipped seed, if there is one and anything
- * is left to fill. Called by doc-embed-sync right after its sync. */
+ * is left to fill. Called by doc-embed-sync right after its sync.
+ *
+ * A seed that cannot be read or fails validation (missing files, truncated
+ * vectors, unknown format) is refused BEFORE any row is written and reported
+ * as `invalid-seed`: the rows stay NULL and the backfill sweep embeds them as
+ * it would with no seed at all. A broken seed costs the saving, never the
+ * docs. */
 export async function applyShippedDocVectorSeed(sql: Sql, deps: ShippedSeedDeps = {}): Promise<DocVectorSeedApply> {
   const dir = deps.seedDir ? deps.seedDir() : process.env[DOC_VECTOR_SEED_DIR_ENV]?.trim() || null;
   if (!dir) return { skipped: 'no-seed' };
@@ -263,9 +269,16 @@ export async function applyShippedDocVectorSeed(sql: Sql, deps: ShippedSeedDeps 
   if (pending === 0) return { skipped: 'nothing-to-fill' };
   const space = await (deps.resolveSpace ?? resolveActiveProseSpace)();
   if (!space) return { skipped: 'embedder-disabled' };
-  const seed = await readDocVectorSeed(dir);
-  const result = await applyDocVectorSeed(sql, seed, space);
   const log = deps.log ?? ((line: string) => console.log(line));
+  let seed: DocVectorSeed;
+  try {
+    seed = await readDocVectorSeed(dir);
+  } catch (err) {
+    const detail = `${dir}: ${(err as Error).message}`;
+    log(`[doc-vector-seed] seed refused, leaving ${pending} sections for the sweep: ${detail}`);
+    return { skipped: 'invalid-seed', detail };
+  }
+  const result = await applyDocVectorSeed(sql, seed, space);
   if ('applied' in result) {
     log(`[doc-vector-seed] filled ${result.applied}/${pending} unembedded doc sections from ${dir}`);
   } else if (result.skipped === 'space-mismatch') {
