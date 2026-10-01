@@ -16,7 +16,7 @@
  * pattern (no PG needed).
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import type { PlanItemCoverage } from '../../plan-item-coverage';
+import { getAllPlanItemCoverage, type PlanItemCoverage } from '../../plan-item-coverage';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -163,5 +163,6 @@ describe('fleet:assignments — EI-6176 harness-scoped coverage regression', () 
     const plans = (res.data.coverage ?? []).map((c) => c.plan);
     expect(plans).toContain('papercusp-plan');
     expect(plans).not.toContain('oddsmith-plan');
+    expect(getAllPlanItemCoverage).toHaveBeenCalledWith({ planSlug: 'papercusp-plan' });
   });
 });

@@ -1133,7 +1133,7 @@ export default defineTool({
     );
     const coveragePromise = boundedRead(
       'coverage',
-      () => getAllPlanItemCoverage(),
+      () => getAllPlanItemCoverage(args.plan ? { planSlug: args.plan } : {}),
       new Map<string, PlanItemCoverage>(),
     );
     const harnessPlansPromise =

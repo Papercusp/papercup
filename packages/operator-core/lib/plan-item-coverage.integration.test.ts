@@ -321,6 +321,33 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     });
   });
 
+  it('a plan-scoped read preserves full coverage for linked and stamp-only items without leaking a similarly named plan', async () => {
+    await insertIssue({ id: 'WI-linked', state: 'open', plan: 'p1', item: 'P-101' });
+    await edge({ plan: 'p1', item: 'P-101', srcRef: 'WI-linked' });
+    await insertFeature({ id: 'F-done', status: 'passed', plan: 'p1', item: 'P-102' });
+    await insertIssue({ id: 'WI-unrelated', state: 'open', plan: 'p11', item: 'P-101' });
+    await edge({ plan: 'p11', item: 'P-101', srcRef: 'WI-unrelated' });
+
+    const full = await getAllPlanItemCoverage();
+    const scoped = await getAllPlanItemCoverage({ planSlug: 'p1' });
+    expect([...scoped]).toEqual([...full].filter(([ref]) => ref.startsWith('p1#')));
+    expect(scoped.size).toBe(2);
+    expect(scoped.get('p1#P-101')?.links).toHaveLength(1);
+    expect(scoped.get('p1#P-102')?.level).toBe('complete');
+    expect(scoped.has('p11#P-101')).toBe(false);
+  });
+
+  it('intersects a plan scope with requested item refs and treats an empty plan as an empty read', async () => {
+    await insertIssue({ id: 'WI-target', state: 'open', plan: 'p1', item: 'P-101' });
+    await insertIssue({ id: 'WI-other-item', state: 'open', plan: 'p1', item: 'P-102' });
+    await insertIssue({ id: 'WI-other-plan', state: 'open', plan: 'p2', item: 'P-101' });
+    const scoped = await getAllPlanItemCoverage({ planSlug: 'p1', planItemRefs: ['p1#P-101', 'p2#P-101'] });
+    expect([...scoped.keys()]).toEqual(['p1#P-101']);
+    vi.mocked(listFleetAssignments).mockClear();
+    expect(await getAllPlanItemCoverage({ planSlug: '' })).toEqual(new Map());
+    expect(listFleetAssignments).not.toHaveBeenCalled();
+  });
+
   it('keeps a live holder with stale progress out of held-not-live (EI-20125544311539993)', async () => {
     await insertIssue({ id: 'WI-live-stalled', state: 'open', plan: 'p1', item: 'P-009' });
     h2.rows = [
