@@ -390,7 +390,7 @@ describe('trigger dispatcher pause (WI-10004922)', () => {
 
     // The false alarm this guards: an armed schedule is a `triggered` ledger row, but a
     // dispatcher pause does not stop it.
-    expect(buildLedgerRows([scheduleOnly], NOW)[0]).toMatchObject({ kind: 'triggered', paused: false });
+    expect(buildLedgerRows([scheduleOnly], { nowMs: NOW })[0]).toMatchObject({ kind: 'triggered', paused: false });
     expect(dispatcherDependentWorkflows([scheduleOnly])).toBe(0);
     expect(dispatcherDependentWorkflows([armedEvent, mixed])).toBe(2);
     // Disarmed or unknown-armed event triggers are not counted as held.

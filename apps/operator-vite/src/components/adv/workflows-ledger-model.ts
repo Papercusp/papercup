@@ -136,7 +136,7 @@ export function triggerDispatcherState(
  */
 export function dispatcherDependentWorkflows(items: readonly AutomationItem[]): number {
   return items.filter((item) =>
-    item.triggers.some((trigger) => trigger.kind === 'external' && trigger.armed === true),
+    item.triggers.some((trigger) => isEventTrigger(trigger) && trigger.armed === true),
   ).length;
 }
 
