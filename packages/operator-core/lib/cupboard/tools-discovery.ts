@@ -503,16 +503,26 @@ export function renderSchemaBounds(nodes: readonly unknown[]): string {
 
   const lower = findBound('minimum', 'exclusiveMinimum', ['minLength', 'minItems']);
   const upper = findBound('maximum', 'exclusiveMaximum', ['maxLength', 'maxItems']);
+  // Soft text caps are advisory metadata, not validation bounds. Keep them
+  // distinct from the hard JSON Schema limit so discovery does not imply that
+  // the larger backstop is the intended carry-row size.
+  const softMaxLength =
+    records
+      .map((node) => numberValue(node['x-soft-maxLength']))
+      .find((value): value is number => value !== null) ?? null;
   const lowerText = lower ? `${lower.exclusive ? '>' : ''}${lower.value}` : '';
   const upperText = upper ? `${upper.exclusive ? '<' : ''}${upper.value}` : '';
 
-  return lower && upper
+  const rendered = lower && upper
     ? `${lowerText}-${upperText}`
     : upper
       ? `${upper.exclusive ? '<' : '≤'}${upper.value}`
       : lower
         ? `${lower.exclusive ? '>' : '≥'}${lower.value}`
         : '';
+  if (softMaxLength === null) return rendered;
+  const softText = `soft cap ≤${softMaxLength}`;
+  return rendered ? `${rendered} (${softText})` : softText;
 }
 
 function scalarSchemaValues(raw: unknown): Array<string | number | boolean | null> | null {

@@ -19,7 +19,10 @@
  * is healthy. Only a HANG (deadline) or an unexpected throw counts as `down` —
  * which is exactly how the outage manifested (available() never resolved).
  */
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { defineTool } from '@papercusp/agent-mcp';
+import { BWRAP_BIN, BWRAP_USERNS_PROBE_ARGS } from '@papercusp/deployment-driver';
 import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { getMemoryBackend } from '../../../memory/backend';
@@ -343,6 +346,91 @@ export async function readMcpPlane(): Promise<McpPlaneReading> {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Agent sandbox (WI-10004649). Codex runs every sandboxed command under bwrap with a new user,
+// pid and net namespace. Where the kernel refuses an unprivileged user namespace (stock Ubuntu
+// 24.04 without the AppArmor bwrap grant, or a foreign profile overriding it) every such
+// command fails, and nothing else on the host reports it: the Server .deb postinst only WARNs
+// when the grant does not load. This leg runs the SAME probe the hosted bootstrap dies on
+// (`BWRAP_USERNS_PROBE_ARGS`, @papercusp/deployment-driver), as the account this process runs
+// agents under.
+//
+// Report-only, like the loop-lag / cpu-worker / MCP-plane legs: a missing sandbox degrades
+// agents but the server still serves, and a 503 here would make deploy health checks roll back
+// or restart a host for an OS setting no restart can fix. `status: 'down'` IS the alert.
+// ---------------------------------------------------------------------------------------------
+
+export interface AgentSandboxReading {
+  /** ok = the namespaces were created; disabled = not Linux (no bwrap sandbox); down = it cannot sandbox. */
+  status: ProbeStatus;
+  /** Why it is down (bwrap's own first stderr line, a missing binary, or a timeout); null when ok. */
+  detail: string | null;
+  checkedAt: string;
+}
+
+/** The probe spawns a process, so its answer is reused for this long. */
+export const AGENT_SANDBOX_PROBE_TTL_MS = 10 * 60_000;
+export const AGENT_SANDBOX_PROBE_TIMEOUT_MS = 5_000;
+
+export interface AgentSandboxProbeDeps {
+  platform: () => NodeJS.Platform;
+  exists: (file: string) => boolean;
+  run: (bin: string, args: readonly string[], timeoutMs: number) => Promise<{ code: number | null; stderr: string; error?: string }>;
+  now: () => number;
+}
+
+const defaultAgentSandboxDeps: AgentSandboxProbeDeps = {
+  platform: () => process.platform,
+  exists: (file) => existsSync(file),
+  run: (bin, args, timeoutMs) =>
+    new Promise((resolve) => {
+      execFile(bin, [...args], { timeout: timeoutMs, encoding: 'utf8' }, (err, _stdout, stderr) => {
+        if (!err) return resolve({ code: 0, stderr });
+        const code = typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : null;
+        resolve({ code, stderr, error: err.killed ? `timeout after ${timeoutMs}ms` : err.message });
+      });
+    }),
+  now: Date.now,
+};
+
+/** One probe run. Never throws. */
+export async function probeAgentSandbox(deps: AgentSandboxProbeDeps = defaultAgentSandboxDeps): Promise<AgentSandboxReading> {
+  const checkedAt = new Date(deps.now()).toISOString();
+  if (deps.platform() !== 'linux') return { status: 'disabled', detail: null, checkedAt };
+  if (!deps.exists(BWRAP_BIN)) return { status: 'down', detail: `bwrap is not installed (${BWRAP_BIN})`, checkedAt };
+  try {
+    const r = await deps.run(BWRAP_BIN, BWRAP_USERNS_PROBE_ARGS, AGENT_SANDBOX_PROBE_TIMEOUT_MS);
+    if (r.code === 0) return { status: 'ok', detail: null, checkedAt };
+    const first = r.stderr.split('\n').map((l) => l.trim()).find(Boolean);
+    return { status: 'down', detail: (first ?? r.error ?? `bwrap exited ${r.code}`).slice(0, 300), checkedAt };
+  } catch (err) {
+    return { status: 'down', detail: err instanceof Error ? err.message : String(err), checkedAt };
+  }
+}
+
+let agentSandboxCache: { at: number; reading: AgentSandboxReading } | null = null;
+let agentSandboxInflight: Promise<AgentSandboxReading> | null = null;
+
+/** The cached probe answer, re-probed after `AGENT_SANDBOX_PROBE_TTL_MS`; concurrent readers share one run. */
+export async function readAgentSandbox(deps: AgentSandboxProbeDeps = defaultAgentSandboxDeps): Promise<AgentSandboxReading> {
+  if (agentSandboxCache && deps.now() - agentSandboxCache.at < AGENT_SANDBOX_PROBE_TTL_MS) return agentSandboxCache.reading;
+  agentSandboxInflight ??= probeAgentSandbox(deps)
+    .then((reading) => {
+      agentSandboxCache = { at: deps.now(), reading };
+      return reading;
+    })
+    .finally(() => {
+      agentSandboxInflight = null;
+    });
+  return agentSandboxInflight;
+}
+
+/** Test-only. */
+export function __resetAgentSandboxCache(): void {
+  agentSandboxCache = null;
+  agentSandboxInflight = null;
+}
+
 export default defineTool({
   method: 'GET',
   path: '/health/deep',
@@ -355,7 +443,7 @@ export default defineTool({
     const dbosEnabled = dbosLaunchesHere();
     const dbos = dbosStarted();
 
-    const [pg, memory, mcpPlane] = await Promise.all([
+    const [pg, memory, mcpPlane, agentSandbox] = await Promise.all([
       probeSubsystem(async () => {
         const { getOrgPg } = await import('@papercusp/db-org');
         await getOrgPg().sql`SELECT 1`;
@@ -370,6 +458,8 @@ export default defineTool({
       // Carries its own deadline + never throws, so it needs no probeSubsystem race:
       // an unreachable proxy IS the reading, not a failed probe.
       readMcpPlane(),
+      // Cached, never throws, report-only (see the Agent sandbox section above).
+      readAgentSandbox(),
     ]);
     // Synchronous, cheap (a native histogram read) — no deadline race needed.
     const loopLag = readLoopLag();
@@ -384,7 +474,7 @@ export default defineTool({
     });
 
     return Response.json(
-      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, cpuWorker, mcpPlane, ts: new Date().toISOString() },
+      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, cpuWorker, mcpPlane, agentSandbox, ts: new Date().toISOString() },
       { status: ready ? 200 : 503 },
     );
   },

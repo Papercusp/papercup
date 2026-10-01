@@ -760,6 +760,21 @@ describe('selectSilentlyStoppedRoles (EI-19281872822982156)', () => {
     ).toEqual([]);
   });
 
+  it('a stale gym-cycle watermark is not a silent stop without a matching eligible gym autoloop', () => {
+    expect(
+      selectSilentlyStoppedRoles([row({ role: 'gym-cycle', gym_cycle_eligible: false })], 6, {
+        now: NOW,
+        silentStopMs: 24 * HOUR_MS,
+      }),
+    ).toEqual([]);
+    expect(
+      selectSilentlyStoppedRoles([row({ role: 'gym-cycle', gym_cycle_eligible: true })], 6, {
+        now: NOW,
+        silentStopMs: 24 * HOUR_MS,
+      }).map((r) => r.role),
+    ).toEqual(['gym-cycle']);
+  });
+
   it('EI-19908775413647773 — a breaching row the chronic sweep SUPPRESSES as a frozen watermark IS caught here', () => {
     // 9 errors + 7d silent: over threshold, but far past the 6h chronic staleness
     // window, so selectChronicFailures drops it as `skipped-stale`. Deferring on
@@ -1010,6 +1025,29 @@ describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-ind
     expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
   });
 
+  it('a scheduled gym-cycle tick with no eligible budgeted config does not escalate its stale per-harness watermark', async () => {
+    mockRows([
+      {
+        harness_slug: 'papercusp',
+        role: 'gym-cycle',
+        consecutive_errors: 1,
+        last_status: 'gym-cycle:dispatch',
+        routine_active: true,
+        last_fired_at: new Date(Date.now() - 943 * 60 * 60 * 1000).toISOString(),
+        gym_autoloop_enabled: true,
+        gym_autoloop_status: 'idle',
+        gym_autoloop_budget_usd: null,
+        gym_autoloop_spent_usd: 0,
+      },
+    ]);
+
+    const results = await autoloopSilentStopSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(requestOverwatchWake).not.toHaveBeenCalled();
+  });
+
   it('a row the chronic sweep WILL ACTUALLY escalate (breaching AND not yet frozen) never double-escalates here', async () => {
     // Discriminating ONLY when silentStopMs < staleWindowMs() (6h): at 2h silent
     // the row is past a 1h silent-stop window but is NOT yet a frozen watermark,
@@ -1068,6 +1106,10 @@ describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-ind
         last_status: 'x',
         routine_active: true,
         last_fired_at: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+        gym_autoloop_enabled: true,
+        gym_autoloop_status: 'idle',
+        gym_autoloop_budget_usd: 50,
+        gym_autoloop_spent_usd: 0,
       },
     ]);
 

@@ -41,6 +41,23 @@ export interface Env {
    *  the mirror repo is public by construction (its whole purpose is public
    *  availability), so its name confers nothing. */
   GITHUB_RELEASE_MIRROR_REPO?: string;
+  /** Numeric id of the "Papercusp Cupboard" GitHub App (P-006), installed via
+   *  `wrangler secret put GITHUB_APP_ID`. OPTIONAL and fail-closed like the Stripe
+   *  secrets: if any of the three `GITHUB_APP_*` values is absent the
+   *  `/github/webhook` route answers 503 `app_not_configured` rather than
+   *  accepting a delivery it cannot authenticate. Registering the App and
+   *  installing these three secrets is an OWNER credential action (P-005),
+   *  deliberately outside any agent's scope. */
+  GITHUB_APP_ID?: string;
+  /** The App's RSA private key as a PEM (PKCS#8 `PRIVATE KEY` or GitHub's PKCS#1
+   *  `RSA PRIVATE KEY`; literal `\n` escapes tolerated). Used ONLY to sign the
+   *  short-lived App JWT that mints an installation token for fetching the pushed
+   *  tree and posting the Check Run. */
+  GITHUB_APP_PRIVATE_KEY?: string;
+  /** Secret the App's webhook is configured with. `X-Hub-Signature-256` over the
+   *  RAW body is verified against it (constant-time) before any listing is read
+   *  or mutated. */
+  GITHUB_APP_WEBHOOK_SECRET?: string;
   /** Base-compatible RPC URL for the buyer-side P-032 payment-channel rail. */
   PAYMENT_CHANNEL_RPC_URL?: string;
   /** 32-byte EVM private key. The bound-wallet funding path additionally

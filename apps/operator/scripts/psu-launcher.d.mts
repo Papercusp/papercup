@@ -723,7 +723,7 @@ export function findUntrackedSession(id: any, { home, cwd }?: {
     sessionId: any;
     cwd: any;
     untracked: boolean;
-    configDir: string;
+    configDir: any;
     psuTracked: boolean;
     id?: undefined;
     codexHome?: undefined;

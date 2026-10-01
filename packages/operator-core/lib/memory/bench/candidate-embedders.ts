@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import os from 'node:os';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
   shutdownLocalEmbedder, getWorkerState } from '@papercusp/memory';
@@ -11,7 +12,7 @@ import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequested
 export function benchmarkMaskedMean(hidden: ArrayLike<number>, mask: number[], dims: number): number[] {
   if (!Number.isInteger(dims) || dims < 1 || hidden.length !== mask.length * dims
     || !mask.every((x) => x === 0 || x === 1) || !mask.some(Boolean)) throw new Error('invalid masked hidden state');
-  const sum = new Array<number>(dims).fill(0), count = mask.reduce((a, b) => a + b, 0);
+  const sum = new Array<number>(dims).fill(0), count = mask.reduce<number>((a, b) => a + b, 0);
   for (let token = 0; token < mask.length; token++) if (mask[token]) {
     for (let d = 0; d < dims; d++) {
       const value = Number(hidden[token * dims + d]);
@@ -29,6 +30,15 @@ export const INCUMBENT_REFERENCE_CASES = [
   ['special-token', '<image> <bos> <eos>'], ['empty', ''],
 ] as const;
 
+/** Portable dossier locators resolve only in the declared local caches. */
+export function referenceAssetPath(locator: string, repo: string, home = os.homedir()): string {
+  const match = /^cache:(validation|transformers)\/(.+)$/.exec(locator);
+  if (!match || match[2].split('/').some((part) => !part || part === '.' || part === '..') || match[2].includes('\\')) throw new Error('invalid portable reference asset locator');
+  const root = match[1] === 'validation' ? path.join(home, '.cache/papercusp/model-validation')
+    : path.join(repo, 'node_modules/@huggingface/transformers/.cache');
+  return path.join(root, match[2]);
+}
+
 /** Freeze requests/assets before any forward pass, then qualify shipped worker
  * vectors and a distinct corrected Gemma arm. Consumed by the maintained Python
  * ONNX/tokenizer reference mode in mdenseon-vectors.py. No production registration. */
@@ -43,9 +53,10 @@ export async function qualifyIncumbentReferences(protocolFile: string, expectedS
   const identities = ['gemma', 'harrier'].map((model) => {
     const arm = protocol.modelIdentities.find((a: any) => a.model === model);
     if (!arm || arm.profile.nativeDims !== (model === 'gemma' ? 768 : 1024)) throw new Error('reference native profile mismatch');
-    for (const asset of arm.files) if (hash(asset.path) !== asset.sha256 || fs.statSync(asset.path).size !== asset.bytes) throw new Error('reference asset fingerprint mismatch');
-    const directory = path.dirname(arm.files.find((a: any) => path.basename(a.path) === 'config.json').path);
-    return { ...arm, directory };
+    const files = arm.files.map((asset: any) => ({ ...asset, locator: asset.path, path: referenceAssetPath(asset.path, repo) }));
+    for (const asset of files) if (hash(asset.path) !== asset.sha256 || fs.statSync(asset.path).size !== asset.bytes) throw new Error('reference asset fingerprint mismatch');
+    const directory = path.dirname(files.find((a: any) => path.basename(a.path) === 'config.json').path);
+    return { ...arm, files, directory };
   });
   const cases = INCUMBENT_REFERENCE_CASES.flatMap(([id, text]) => ['query', 'document'].map((kind) => ({ id: `${kind}-${id}`, kind, text })));
   fs.mkdirSync(path.dirname(output), { recursive: true });

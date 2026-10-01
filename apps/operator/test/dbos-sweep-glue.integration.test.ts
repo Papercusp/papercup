@@ -224,6 +224,10 @@ beforeAll(async () => {
       attempts             BIGINT DEFAULT 0,
       needs_human_review   BOOLEAN DEFAULT false,
       updated_ts           BIGINT,
+      -- WI-10004634: P-002 born-pending — readFrontierFeatures filters
+      -- admission IS DISTINCT FROM 'pending' (since a113627d85, 2026-08-25).
+      -- Without it every frontier read errors and dispatchOneHarness returns [].
+      admission            TEXT,
       PRIMARY KEY (workspace_id, harness_slug, feature_id)
     );
     -- Plans are PG-canonical (plans-pg-canonical-migration-2026-06-03): the

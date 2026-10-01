@@ -291,12 +291,28 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
 }) {
   const metrics = (window as unknown as {
     __sync_metrics__?: {
-      snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null };
-      queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string }>;
+      snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
+        stages?: { recent: Array<{ stage: string; unit: 'ms'; durationMs: number; measuredAtMs: number;
+          queryName?: string; traceId?: string }> } };
+      queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string;
+        traceId?: string; stages?: Record<string, number> }>;
     };
   }).__sync_metrics__;
   const snapshot = metrics?.snapshot();
   const queries = metrics?.queries() ?? [];
+  // These existing writers use performance.now() for page-local instants.
+  // Capture before yielding to IPC, like the LCP subject. The request ring
+  // alone cannot distinguish resolver/transfer work from a later React frame.
+  const compact = (query: typeof queries[number]) => ({
+    name: query.name, startMs: Math.round(query.startedAtMs), waitMs: Math.round(query.waitMs),
+    requestMs: Math.round(query.requestMs), endMs: Math.round(query.startedAtMs + query.waitMs + query.requestMs),
+    outcome: query.outcome, traceId: query.traceId ?? null, stages: query.stages ?? null,
+  });
+  const startupQueries = queries.slice().sort((a, b) => a.startedAtMs - b.startedAtMs).slice(0, 12).map(compact);
+  const planQueries = queries.filter((query) => query.name === 'plans.list' || query.name === 'advRoster.list').slice(-12);
+  const planTraceIds = new Set(planQueries.map((query) => query.traceId).filter(Boolean));
+  const planStages = (snapshot?.stages?.recent ?? []).filter((sample) =>
+    sample.traceId && planTraceIds.has(sample.traceId)).slice(-64);
   const capturedAttribution = attribution ?? {
     lcp: (window as unknown as { __wv_lcp?: unknown }).__wv_lcp ?? null,
     lcpAttributionError: (window as unknown as { __wv_lcp_error?: string }).__wv_lcp_error ?? null,
@@ -318,10 +334,6 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     // contributes no evidence of a blocking pre-paint request interval.
     const started = queries.filter((query) => paintMs !== null && query.startedAtMs <= paintMs);
     const completed = started.filter((query) => query.startedAtMs + query.waitMs + query.requestMs <= paintMs!);
-    const compact = (query: typeof queries[number]) => ({
-      name: query.name, startMs: Math.round(query.startedAtMs), waitMs: Math.round(query.waitMs),
-      requestMs: Math.round(query.requestMs), endMs: Math.round(query.startedAtMs + query.waitMs + query.requestMs), outcome: query.outcome,
-    });
     return {
       paintMs, queryCountCompleted: completed.length, startedCompletedLater: started.length - completed.length,
       longestWaits: completed.slice().sort((a, b) => b.waitMs - a.waitMs).slice(0, 10).map(compact),
@@ -336,6 +348,8 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
       durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
   return {
     readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
+      planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,
     ipc: { client: ipcClient, assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null, assertionLastClient: snapshot?.ipcAssertLastClient ?? null },
     queryCountCompletedBeforeFcp: fcp.queryCountCompleted,

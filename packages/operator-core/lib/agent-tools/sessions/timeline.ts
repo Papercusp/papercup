@@ -747,8 +747,12 @@ export default defineTool({
       const automaticToolPredicate = automaticToolInvocationPredicate(tx);
       const agentToolPredicate = agentToolInvocationPredicate(tx);
 
+      // Each branch renders ts as TEXT, so the merge must order by the instant
+      // (u.ts::timestamptz), not the text: text carries the session's UTC offset and
+      // misorders across a DST fall-back hour (WI-10004628). A set-operation ORDER BY
+      // accepts only output names, hence the derived table.
       const rows = await tx<TimelineEntry[]>`
-      (
+      SELECT * FROM ((
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
                CONCAT(${SESSION_TURN_REF_PREFIX}::text, source_kind, ':', session_id, ':', turn_idx) AS ref,
                '[' || speaker || '] ' || left(text, 300) AS text,
@@ -803,9 +807,9 @@ export default defineTool({
            AND ${args.status ?? null}::text IS NULL
            AND ${args.goalRef ?? null}::text IS NULL
            AND (${includeAuto} OR COALESCE(body->>'auto', 'false') <> 'true')
-         ORDER BY ts DESC LIMIT ${fetchLimit}
-      )
-      ORDER BY ts DESC
+         ORDER BY coord_event_log.ts DESC LIMIT ${fetchLimit}
+      )) u
+      ORDER BY u.ts::timestamptz DESC
       LIMIT ${fetchLimit}
     `;
 

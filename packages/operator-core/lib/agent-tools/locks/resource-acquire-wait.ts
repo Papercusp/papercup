@@ -33,7 +33,7 @@ import {
   type ResourceHolder,
 } from './su-lock-store';
 import { inWorkspaceTxn, type WorkspaceTxnOptions } from './in-workspace-txn';
-import { acquireWithContentionRetry } from './contention-retry';
+import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { subscribeWorkspace } from './workspace-listener';
 
 /** Per-iteration ceiling: re-poll status at least this often even if the
@@ -420,7 +420,15 @@ export async function acquireResourceExclusiveWithWait(
       }
 
       // Nudge: a TTL-lapsed shared holder fires no cascade on its own.
-      await inWorkspaceTxn(cd, owner, (tx) => pokeResource(tx, cd));
+      // WI-10004638: a transient contention timeout here (the sweep runs under a 500ms
+      // statement_timeout and loses to an autovacuum truncate or a busy advisory lock)
+      // only skips one nudge — the next tick repeats it. Letting it escape aborted the
+      // whole drain on 2026-10-01 and orphaned the queued exclusive (see the catch below).
+      try {
+        await inWorkspaceTxn(cd, owner, (tx) => pokeResource(tx, cd));
+      } catch (e) {
+        if (!isWorkspaceContended(e)) throw e;
+      }
 
       const st = await readResourceLockStatus(getTxPool(), lockId);
       if (st.status === 'held') {
@@ -436,6 +444,28 @@ export async function acquireResourceExclusiveWithWait(
 
     const q = await readResourceQueue(getTxPool(), { coordinationDomain: cd, resource });
     return { ok: false, reason: 'drain_timeout', lock_id: lockId, holders: q.holders, waited_sec: elapsedSec(startedAt) };
+  } catch (error) {
+    // WI-10004638: once queued, our exclusive is a live row the caller never learns the
+    // lock_id of when we throw — so nobody else can release it. A draining exclusive
+    // refuses every new shared acquire (writer preference), so an orphan stalls the
+    // resource for its whole TTL; worse, callers wrap this in acquireWithContentionRetry
+    // and re-queue under a FRESH owner, leaving the orphan ahead of their own row.
+    // Measured 2026-10-01: two dev:restart git-sync barriers orphaned this way blocked
+    // every pot's git-sync for ~3 min each. Release it before rethrowing.
+    if (lockId) {
+      const queued = lockId;
+      await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(cd, owner, (tx) => tryReleaseResource(tx, { coordinationDomain: cd, owner, lockId: queued })),
+      ).catch((releaseError: unknown) => {
+        // The TTL is the backstop; say so rather than swallow it, so the next stall is attributable.
+        console.warn(
+          `[resource-acquire-wait] could not release queued exclusive ${queued} on ${resource} ` +
+            `after the drain wait threw; it now lives until its TTL`,
+          releaseError,
+        );
+      });
+    }
+    throw error;
   } finally {
     if (unsubscribe) await unsubscribe().catch(() => undefined);
   }

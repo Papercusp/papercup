@@ -770,7 +770,7 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
  * missing snapshot or a failed read stops at once: waiting cannot make an unknown or
  * evicted run appear, and a read error is reported in-band rather than retried blind.
  */
-async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: Deps): Promise<{
+async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: Deps, scope: Scope): Promise<{
   snapshot: RunSnapshot | null; error?: string; waitedMs: number;
 }> {
   const sleep = deps.sleep ?? defaults.sleep!;
@@ -779,7 +779,7 @@ async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: De
   for (;;) {
     let snapshot: RunSnapshot | null;
     try {
-      snapshot = await deps.runStatus?.(runId) ?? null;
+      snapshot = await deps.runStatus?.(runId, undefined, scope) ?? null;
     } catch (error) {
       return { snapshot: null, error: String(error).slice(0, 300), waitedMs: now() - started };
     }
@@ -833,7 +833,7 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   const recoveredRunId = [...recoveredRunIds][0]!;
   const waitLimitMs = Math.min(recovery.waitMs ?? RECOVERY_WAIT_DEFAULT_MS, RECOVERY_WAIT_CEILING_MS);
   const { snapshot: runSnapshot, error: runStatusError, waitedMs } =
-    await awaitTerminalRunSnapshot(recoveredRunId, waitLimitMs, deps);
+    await awaitTerminalRunSnapshot(recoveredRunId, waitLimitMs, deps, scope);
   const terminalRun = isTerminalRunSnapshot(runSnapshot) ? runSnapshot : undefined;
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
   const stillRunning = runSnapshot !== null && !terminalRun;

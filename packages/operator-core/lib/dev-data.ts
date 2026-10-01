@@ -1450,7 +1450,7 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
         FROM harness_shared.tool_invocations
         WHERE coord_owner_id = ${advSession.coord_owner_id}
           AND invoked_at >= ${advSession.started_at}
-          AND (${advSession.ended_at} IS NULL OR invoked_at <= ${advSession.ended_at})
+          AND invoked_at <= COALESCE(${advSession.ended_at}, 'infinity'::timestamptz)
         ORDER BY invoked_at ASC
         LIMIT 500
       `

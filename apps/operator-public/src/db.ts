@@ -662,6 +662,46 @@ export async function getHarnessesByGithubRepoIds(
   return res.results ?? [];
 }
 
+/**
+ * Every ACTIVE (not unlisted) listing of the given kinds that a GitHub repo
+ * holds (cupboard-release-pipeline-content-trust-2026-09-16 P-006). A repo can
+ * host several — one per `(listing_kind, listing_ref)` — so the push webhook
+ * walks all of them. The caller passes the kinds (the self-describing set from
+ * `content-pin.ts`) rather than this module importing it, which would close an
+ * import cycle (`content-pin.ts` already imports types from here).
+ */
+export async function listActiveListingsByGithubRepoId(
+  db: D1Database,
+  github_repository_id: number,
+  kinds: readonly ListingKind[],
+): Promise<HarnessRow[]> {
+  if (kinds.length === 0) return [];
+  const placeholders = kinds.map(() => '?').join(',');
+  const stmt = db.prepare(
+    `SELECT * FROM harnesses
+       WHERE github_repository_id = ? AND unlisted_at IS NULL
+         AND listing_kind IN (${placeholders})
+       ORDER BY listing_kind ASC, listing_ref ASC`,
+  );
+  const bound = (stmt as unknown as { bind: (...vs: unknown[]) => D1PreparedStatement }).bind(
+    github_repository_id,
+    ...kinds,
+  );
+  const res = await bound.all<HarnessRow>();
+  return res.results ?? [];
+}
+
+/**
+ * Record whether a listing's repo head has moved past the commit review pinned.
+ * This is the ONLY listing write the GitHub push webhook performs, and it
+ * deliberately touches `drift` alone: the `pinned_*` columns are the reviewed
+ * identity and move only through the admin approve path (P-008), so a push can
+ * flag a newer unverified version but can never advance what install serves.
+ */
+export async function setListingDrift(db: D1Database, id: string, drift: boolean): Promise<void> {
+  await db.prepare('UPDATE harnesses SET drift = ? WHERE id = ?').bind(drift ? 1 : 0, id).run();
+}
+
 export interface ListOpts {
   limit?: number;
   cursor?: number | null;          // legacy/internal timestamp pagination

@@ -4,11 +4,12 @@
  * the `ToolErrorClass` it must classify as
  * (watchdog-and-exposed-systems-improvement-2026-06-18 P-011).
  *
- * Sampled 2026-06-18 from the dev workspace over a 14-day window
+ * Most rows were sampled 2026-06-18 from the dev workspace over a 14-day window
  * (≈298k error/timeout rows). `n` is the bucket's occurrence count at capture —
  * it ranks "how much a misclassification would FLOOD a lane", not a live value;
  * it's here for legibility, not asserted. The shapes (error_code / status /
  * message-prefix) are the load-bearing part and rarely change.
+ * The nested checkpoint-refusal row was added 2026-10-01 from a 24h sample (n=15).
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -172,6 +173,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'capability:computer — no sandbox desktop is leased to this agent. A desktop must be provisioned first',
     expectedClass: 'caller',
     note: 'desktop-only capability used before provisioning its required lease — caller precondition, not a structural tool defect',
+  },
+  {
+    n: 15, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"error":"checkpoint_replace_would_drop_rows","errorCode":"checkpoint_replace_would_drop_rows","retryable":true}',
+    expectedClass: 'caller',
+    note: 'nested tools:invoke wrapper preserves a deliberate checkpoint safety refusal in JSON error_message; it is caller-directed, not structural',
   },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────

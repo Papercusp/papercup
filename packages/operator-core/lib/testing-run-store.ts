@@ -23,7 +23,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
-import { isAbsolute, relative as pathRelative, posix } from 'node:path';
+import { basename, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -41,6 +41,7 @@ import {
 } from './task-manager/enroll-sync';
 import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/types';
 import { boundedPgReadTxn } from './pg-read-query';
+import { boundedOrgTxn } from './pg-bounded-txn';
 
 export { captureWorktreeSnapshot, computeWorktreeDirty };
 export type { WorktreeGitSnapshot };
@@ -176,6 +177,12 @@ interface DurableRunSnapshotRow {
   task_state?: TaskState | string | null;
   /** Durable task deadline used when the task row has not reached a terminal state yet. */
   task_deadline_at?: Date | string | number | null;
+  task_exit_code?: number | null;
+  task_ended_at?: Date | string | number | null;
+  task_detail?: unknown;
+  task_cwd?: string | null;
+  task_harness_slug?: string | null;
+  task_workspace_id?: string | null;
 }
 
 function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
@@ -394,7 +401,9 @@ async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> 
   `);
 }
 
-async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
+type DetachedReportRecoveryScope = { workspaceId: string; harnessSlug: string; root: string };
+
+async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) throw new TestingRunSnapshotUnavailableError();
   let query: PromiseLike<unknown>;
@@ -405,7 +414,13 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
              snapshot.started_at, snapshot.finished_at, snapshot.output,
              snapshot.truncated, snapshot.task_id,
              task_ledger.state AS task_state,
-             task_ledger.deadline_at AS task_deadline_at
+             task_ledger.deadline_at AS task_deadline_at,
+             task_ledger.exit_code AS task_exit_code,
+             task_ledger.ended_at AS task_ended_at,
+             task_ledger.detail AS task_detail,
+             task_ledger.cwd AS task_cwd,
+             task_ledger.harness_slug AS task_harness_slug,
+             task_ledger.workspace_id AS task_workspace_id
         FROM harness_shared.testing_run_snapshots AS snapshot
         LEFT JOIN harness_shared.task_ledger AS task_ledger
           ON task_ledger.task_id = snapshot.task_id
@@ -420,6 +435,10 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   if (rows === null) throw new TestingRunSnapshotUnavailableError();
   const row = rows[0];
   if (!row) return null;
+  // Exact evidence mappings supply the missing harness on older enrolments.
+  // Their durable workspace and execution root must still agree.
+  if (!row.task_harness_slug && recoveryScope && row.task_workspace_id === recoveryScope.workspaceId
+    && row.task_cwd === recoveryScope.root) row.task_harness_slug = recoveryScope.harnessSlug;
   const snapshot = snapshotFromRow(row);
   if (!snapshot) throw new TestingRunSnapshotUnavailableError();
   return reconcilePersistedOrphan(snapshot, row, sql);
@@ -428,8 +447,9 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
 async function readPersistedRunSnapshotWithRetry(
   runId: string,
   sqlOverride?: SqlLike,
+  recoveryScope?: DetachedReportRecoveryScope,
 ): Promise<RunSnapshot | null> {
-  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride);
+  let snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope);
   if (snapshot) return snapshot;
 
   // `testing:run` waits for the initial upsert before it marks detachedDurable
@@ -439,7 +459,7 @@ async function readPersistedRunSnapshotWithRetry(
   // absent; read errors remain snapshot_unavailable and are never retried here.
   for (const delayMs of DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS) {
     await waitForSnapshotRetry(delayMs);
-    snapshot = await readPersistedRunSnapshot(runId, sqlOverride);
+    snapshot = await readPersistedRunSnapshot(runId, sqlOverride, recoveryScope);
     if (snapshot) return snapshot;
   }
   return null;
@@ -611,7 +631,9 @@ async function persistReconciledSnapshot(
              truncated = ${reconciled.truncated},
              updated_at = now()
        WHERE run_id = ${original.runId}
-         AND status = 'running'
+         AND status = ${original.status}
+         AND exit_code IS NOT DISTINCT FROM ${original.exitCode}
+         AND finished_at IS NOT DISTINCT FROM ${original.finishedAt === null ? null : new Date(original.finishedAt).toISOString()}::timestamptz
        RETURNING run_id
     `;
   } catch {
@@ -637,6 +659,8 @@ async function reconcilePersistedOrphan(
   row: DurableRunSnapshotRow,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
+  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
+  if (fromReport !== snapshot) return fromReport;
   const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, sql);
   if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
 
@@ -749,6 +773,119 @@ interface PreparedDetachedReportArtifact extends DetachedReportArtifact {
   worktreeBefore: WorktreeGitSnapshot;
 }
 
+function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshotRow): PreparedDetachedReportArtifact[] {
+  let detail = row.task_detail;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { return []; }
+  }
+  const metadata = (detail as { detachedReportArtifacts?: { schemaVersion?: unknown; artifacts?: unknown } } | null)?.detachedReportArtifacts;
+  if (metadata?.schemaVersion === 1 && Array.isArray(metadata.artifacts)) {
+    const artifacts = metadata.artifacts as PreparedDetachedReportArtifact[];
+    return artifacts.every(a => a && typeof a.reportPath === 'string' && isAbsolute(a.reportPath)
+      && typeof a.root === 'string' && isAbsolute(a.root)
+      && a.scope && typeof a.scope.harnessSlug === 'string' && a.scope.harnessSlug.length > 0
+      && typeof a.scope.workspaceId === 'string' && a.scope.workspaceId.length > 0
+      && a.worktreeBefore && (a.worktreeBefore.commit === null || typeof a.worktreeBefore.commit === 'string'))
+      ? artifacts : [];
+  }
+  // Compatibility for already-launched, single-root reporter-less commands.
+  // Only their exact generated output argument is trusted; never guess a file
+  // by scanning tmp, and never reconstruct launch-time provenance from HEAD.
+  const reports = snapshot.command.filter(arg => arg.startsWith('--outputFile=')).map(arg => arg.slice('--outputFile='.length));
+  if (reports.length !== 1 || !isAbsolute(reports[0]!) || !/^papercusp-testing-run-detached-[\w-]+\.json$/.test(basename(reports[0]!))
+    || !row.task_cwd || !isAbsolute(row.task_cwd) || !row.task_harness_slug || !row.task_workspace_id) return [];
+  const selectorIndex = snapshot.command.findIndex(arg => arg === '-t' || arg === '--testNamePattern');
+  return [{
+    reportPath: reports[0]!, root: row.task_cwd,
+    testNamePattern: selectorIndex < 0 ? null : snapshot.command[selectorIndex + 1] ?? null,
+    scope: { harnessSlug: row.task_harness_slug, workspaceId: row.task_workspace_id },
+    worktreeBefore: { commit: null, porcelain: null },
+  }];
+}
+
+/** A recovery verdict needs the complete JSON reporter, not a partially flushed file. */
+function completedDetachedReport(text: string, root: string): HarnessTestFileRow[] | null {
+  try {
+    const report = JSON.parse(text);
+    if (typeof report.success !== 'boolean' || !Array.isArray(report.testResults)
+      || report.testResults.length === 0 || report.testResults.some((file: VitestJsonFile) =>
+        !file || !Number.isFinite(file.startTime) || !Number.isFinite(file.endTime)
+        || file.endTime! < file.startTime! || !Array.isArray(file.assertionResults))) return null;
+    const rows = parseVitestJsonForHarnessRows(text, root);
+    if (rows.length !== report.testResults.length || rows.some(r => !r.execution)
+      || new Set(rows.map(r => r.filePath)).size !== rows.length) return null;
+    const counts = rows.reduce((sum, r) => ({
+      passed: sum.passed + r.execution!.passed,
+      failed: sum.failed + r.execution!.failed,
+      skipped: sum.skipped + r.execution!.skipped,
+    }), { passed: 0, failed: 0, skipped: 0 });
+    if (report.numPassedTests !== counts.passed || report.numFailedTests !== counts.failed
+      || report.numPendingTests + report.numTodoTests !== counts.skipped
+      || report.numTotalTests !== counts.passed + counts.failed + counts.skipped
+      || report.success !== !rows.some(r => r.status === 'fail' || r.status === 'error')) return null;
+    return rows;
+  } catch { return null; }
+}
+
+async function reconcilePersistedReportArtifact(
+  snapshot: RunSnapshot, row: DurableRunSnapshotRow, sql: SqlLike,
+): Promise<RunSnapshot> {
+  const noVerdict = snapshot.status === 'error' && snapshot.exitCode === null
+    && snapshot.output.includes('[detached-recovery]') && snapshot.output.includes('no test verdict was observed');
+  const closed = snapshot.status === 'pass' || snapshot.status === 'fail';
+  if ((snapshot.status !== 'running' && !noVerdict && !closed) || row.task_state !== 'exited'
+    || typeof row.task_exit_code !== 'number' || epochMs(row.task_ended_at ?? null) === null) return snapshot;
+  const artifacts = detachedArtifactsFromRow(snapshot, row);
+  if (artifacts.length === 0) return snapshot;
+  try {
+    const reports = await Promise.all(artifacts.map(async artifact => ({
+      artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
+    })));
+    if (reports.some(report => report.rows === null)) return snapshot;
+    const recovered = await boundedOrgTxn(async tx => {
+      const scopedSql = tx as unknown as SqlLike;
+      // Sibling recovery readers share one transaction lock. Ingestion and the
+      // lifecycle CAS commit together; a crash cannot leave half a report.
+      await scopedSql`SELECT pg_advisory_xact_lock(hashtextextended(${`testing-run-report:${snapshot.runId}`}, 0))`;
+      const existing = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
+      if (existing === null) throw new Error('detached_report_ledger_unavailable');
+      for (const { artifact, rows } of reports) {
+        const missing = rows!.filter(r => !existing.some(e => e.file_path === r.filePath));
+        if (missing.length === 0) continue;
+        const result = await persistHarnessTestRunsWithIds({
+          harnessSlug: artifact.scope!.harnessSlug, workspaceId: artifact.scope!.workspaceId,
+          rows: missing, runGroupId: snapshot.runId, source: 'local',
+          commit: artifact.worktreeBefore.commit, worktreeDirty: true,
+          root: artifact.root, testNamePattern: artifact.testNamePattern ?? null, sql: scopedSql,
+        });
+        if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
+      }
+      const ledger = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
+      const verdict = ledger && deriveDetachedRunLedgerRecovery(snapshot.runId, ledger);
+      if (!verdict) throw new Error('detached_report_no_verdict');
+      if ((verdict.status !== 'pass' && verdict.status !== 'fail') || verdict.exitCode !== row.task_exit_code) {
+        throw new Error('detached_report_process_verdict_mismatch');
+      }
+      const reconciled = await persistReconciledSnapshot(snapshot, {
+        ...snapshot, status: verdict.status, exitCode: verdict.exitCode, finishedAt: verdict.finishedAt,
+        output: snapshot.output + '\n[detached-recovery] recovered completed saved Vitest report.\n',
+      }, scopedSql);
+      if (reconciled === snapshot) throw new Error('detached_report_snapshot_race');
+      return reconciled;
+    }, { client: sql as unknown as NonNullable<Parameters<typeof boundedOrgTxn>[1]>['client'],
+      statementTimeoutMs: 3_000, lockTimeoutMs: 1_000 });
+    await Promise.all(artifacts.map(async artifact => {
+      await rm(artifact.reportPath, { force: true }).catch(() => undefined);
+      if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
+    }));
+    return recovered;
+  } catch {
+    // Retain the report for a later read; ingestion failure must not destroy
+    // the only durable assertion evidence or manufacture a passing verdict.
+    return snapshot;
+  }
+}
+
 /**
  * Signal a run's process group when the child was started detached. A detached
  * runner can synchronously spawn a router, which can synchronously spawn
@@ -836,7 +973,9 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     runtimeMaxSec: req.runtimeMaxSec,
     launchedBy: 'testing-run-store',
     workItemId: req.workItemId ?? null,
-    detail: { runId, kind: req.kind },
+    detail: { runId, kind: req.kind, ...(detachedReportArtifacts.length > 0 ? {
+      detachedReportArtifacts: { schemaVersion: 1, artifacts: detachedReportArtifacts },
+    } : {}) },
   };
   // task-manager P-008: mint the task id + confinement decision before the
   // fork. Ledger writes remain fire-and-forget so the synchronous startRun API
@@ -872,6 +1011,7 @@ async function persistDetachedReportArtifacts(
 ): Promise<void> {
   await Promise.all(
     artifacts.map(async (artifact) => {
+      let consumed = false;
       try {
         const reportText = await readFile(artifact.reportPath, 'utf8');
         let failureDetails: TestFailureDetail[] = [];
@@ -905,25 +1045,40 @@ async function persistDetachedReportArtifacts(
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
         if (rows.length > 0 && artifact.scope) {
           const after = captureWorktreeSnapshot(artifact.root);
-          await persistHarnessTestRuns({
-            harnessSlug: artifact.scope.harnessSlug,
-            workspaceId: artifact.scope.workspaceId,
-            rows,
-            runGroupId: snapshot.runId,
-            source: 'local',
-            commit: after.commit,
-            worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
-            root: artifact.root,
-            testNamePattern: artifact.testNamePattern ?? null,
+          await boundedOrgTxn(async tx => {
+            const scopedSql = tx as unknown as SqlLike;
+            // A task can finish before its local close callback ingests the
+            // report. Share the restart-reader's lock so that race cannot
+            // duplicate the same file's assertion evidence.
+            await scopedSql`SELECT pg_advisory_xact_lock(hashtextextended(${`testing-run-report:${snapshot.runId}`}, 0))`;
+            const existing = await readPersistedTestRunLedgerRows(snapshot.runId, scopedSql);
+            if (existing === null) throw new Error('detached_report_ledger_unavailable');
+            const missing = rows.filter(r => !existing.some(e => e.file_path === r.filePath));
+            const result = await persistHarnessTestRunsWithIds({
+              harnessSlug: artifact.scope!.harnessSlug,
+              workspaceId: artifact.scope!.workspaceId,
+              rows: missing,
+              runGroupId: snapshot.runId,
+              source: 'local',
+              commit: after.commit,
+              worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
+              root: artifact.root,
+              testNamePattern: artifact.testNamePattern ?? null,
+              sql: scopedSql,
+            });
+            if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
           });
+          consumed = true;
+        } else {
+          consumed = rows.length > 0;
         }
       } catch {
         /* swallow — D-007 */
       } finally {
-        await rm(artifact.reportPath, { force: true }).catch(() => {
+        if (consumed) await rm(artifact.reportPath, { force: true }).catch(() => {
           /* swallow — report cleanup is best-effort */
         });
-        if (artifact.failureDetailsPath && artifact.failureDetailsPath !== artifact.reportPath) {
+        if (consumed && artifact.failureDetailsPath && artifact.failureDetailsPath !== artifact.reportPath) {
           await rm(artifact.failureDetailsPath, { force: true }).catch(() => {
             /* swallow — sidecar cleanup is best-effort */
           });
@@ -1162,11 +1317,11 @@ export function getRun(runId: string): RunSnapshot | null {
  * returns immediately from `_runs`; a sibling worker falls through to the
  * shared snapshot ledger. Missing/expired/unreadable rows remain `null`.
  */
-export async function getRunAsync(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
+export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   evictOldRuns();
   const local = getRun(runId);
   if (local) return local;
-  return readPersistedRunSnapshotWithRetry(runId, sqlOverride);
+  return readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
 }
 
 export function cancelRun(runId: string): boolean {

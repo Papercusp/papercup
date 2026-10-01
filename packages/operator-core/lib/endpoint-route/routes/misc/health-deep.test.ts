@@ -10,7 +10,13 @@ import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BWRAP_BIN, BWRAP_USERNS_PROBE_ARGS } from '@papercusp/deployment-driver';
 import {
+  AGENT_SANDBOX_PROBE_TTL_MS,
+  __resetAgentSandboxCache,
+  probeAgentSandbox,
+  readAgentSandbox,
+  type AgentSandboxProbeDeps,
   classifyMcpPressure,
   computeDeepReadiness,
   probeSubsystem,
@@ -243,6 +249,67 @@ describe('readCpuWorker', () => {
         /^(serving|idle-unproven|silently-falling-back|disabled)$/,
       ),
     });
+  }, 30000);
+});
+
+/**
+ * WI-10004649 — the agent-sandbox leg. A Server whose kernel refuses bwrap a user namespace
+ * runs every Codex sandboxed command into a failure while every other leg reads green; this
+ * leg is the only place that reports it.
+ */
+describe('agent sandbox leg', () => {
+  afterEach(() => __resetAgentSandboxCache());
+
+  const fake = (over: Partial<AgentSandboxProbeDeps> = {}) => {
+    const calls: Array<{ bin: string; args: readonly string[] }> = [];
+    const deps: AgentSandboxProbeDeps = {
+      platform: () => 'linux',
+      exists: () => true,
+      run: async (bin, args) => {
+        calls.push({ bin, args });
+        return { code: 0, stderr: '' };
+      },
+      now: () => 1_000,
+      ...over,
+    };
+    return { deps, calls };
+  };
+
+  it('runs the hosted bootstrap probe (user+pid+net namespaces) and reports ok when bwrap creates them', async () => {
+    const { deps, calls } = fake();
+    expect(await probeAgentSandbox(deps)).toMatchObject({ status: 'ok', detail: null });
+    expect(calls).toEqual([{ bin: BWRAP_BIN, args: BWRAP_USERNS_PROBE_ARGS }]);
+  });
+
+  it('reports down with bwrap’s own error when it cannot create the namespaces (a fake bwrap exiting 1)', async () => {
+    const { deps } = fake({ run: async () => ({ code: 1, stderr: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n' }) });
+    expect(await probeAgentSandbox(deps)).toMatchObject({ status: 'down', detail: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' });
+    const silent = fake({ run: async () => ({ code: null, stderr: '', error: 'timeout after 5000ms' }) });
+    expect((await probeAgentSandbox(silent.deps)).detail).toBe('timeout after 5000ms');
+  });
+
+  it('reports down when bwrap is missing on Linux, and disabled off Linux (never a fake ok)', async () => {
+    expect(await probeAgentSandbox(fake({ exists: () => false }).deps)).toMatchObject({ status: 'down', detail: expect.stringContaining('not installed') });
+    const mac = fake({ platform: () => 'darwin' });
+    expect(await probeAgentSandbox(mac.deps)).toMatchObject({ status: 'disabled' });
+    expect(mac.calls).toEqual([]);
+  });
+
+  it('reuses one probe for the TTL, shares a concurrent probe, and re-probes after the TTL', async () => {
+    let t = 1_000;
+    const { deps, calls } = fake({ now: () => t });
+    await Promise.all([readAgentSandbox(deps), readAgentSandbox(deps)]);
+    await readAgentSandbox(deps);
+    expect(calls).toHaveLength(1);
+    t += AGENT_SANDBOX_PROBE_TTL_MS;
+    await readAgentSandbox(deps);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('is served in the /health/deep payload without gating readiness', async () => {
+    const res = await (route as unknown as { handler: (...a: unknown[]) => Promise<Response> }).handler({}, {});
+    const body = (await res.json()) as { agentSandbox?: Record<string, unknown> };
+    expect(body.agentSandbox).toMatchObject({ status: expect.stringMatching(/^(ok|disabled|down)$/), checkedAt: expect.any(String) });
   }, 30000);
 });
 

@@ -22,11 +22,17 @@ test("startup trace separates completed-before-paint requests from later complet
   const originals = globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const lcp = { tag: 'DIV', className: 'plans-list', text: 'Plan title', startMs: 200 };
   const values = {
-    window: { __wv_lcp: lcp, __sync_metrics__: { snapshot: () => ({}), queries: () => [
+    window: { __wv_lcp: lcp, __sync_metrics__: { snapshot: () => ({ stages: { recent: [
+      { stage: 'reactCommit', unit: 'ms', durationMs: 15, measuredAtMs: 185, queryName: 'plans.list', traceId: 'query-plan' },
+      { stage: 'updateToScreen', unit: 'ms', durationMs: 25, measuredAtMs: 195, queryName: 'plans.list', traceId: 'query-plan' },
+      { stage: 'reactCommit', unit: 'ms', durationMs: 999, measuredAtMs: 999, queryName: 'unrelated', traceId: 'other' },
+    ] } }), queries: () => [
       { name: 'finished-before-fcp', startedAtMs: 10, waitMs: 20, requestMs: 30, outcome: 'ok' },
       { name: 'finished-before-lcp', startedAtMs: 40, waitMs: 10, requestMs: 120, outcome: 'ok' },
       { name: 'finished-after-lcp', startedAtMs: 50, waitMs: 200, requestMs: 30, outcome: 'timeout' },
       { name: 'started-after-lcp', startedAtMs: 210, waitMs: 0, requestMs: 10, outcome: 'ok' },
+      { name: 'plans.list', startedAtMs: 100, waitMs: 10, requestMs: 60, outcome: 'ok', traceId: 'query-plan',
+        stages: { schedulerWaitMs: 10, resolverMs: 12, transferMs: 20, parseCacheMs: 3 } },
     ] } },
     document: { readyState: 'complete' },
     performance: { getEntriesByType: () => [{ name: 'papercusp://localhost/assets/main.js', startTime: 5, duration: 30, initiatorType: 'script' }] },
@@ -37,11 +43,18 @@ test("startup trace separates completed-before-paint requests from later complet
     const trace = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200 });
     assert.equal(trace.lcp, lcp);
     assert.equal(trace.queryCountCompletedBeforeFcp, 1);
-    assert.equal(trace.startedBeforeFcpCompletedLater, 2);
+    assert.equal(trace.startedBeforeFcpCompletedLater, 3);
     assert.deepEqual(trace.longestRequestsCompletedBeforeFcp.map((query) => query.name), ['finished-before-fcp']);
-    assert.equal(trace.beforeLcp.queryCountCompleted, 2);
+    assert.equal(trace.beforeLcp.queryCountCompleted, 3);
     assert.equal(trace.beforeLcp.startedCompletedLater, 1);
-    assert.deepEqual(trace.beforeLcp.longestRequests.map((query) => query.name), ['finished-before-lcp', 'finished-before-fcp']);
+    assert.deepEqual(trace.beforeLcp.longestRequests.map((query) => query.name), ['finished-before-lcp', 'plans.list', 'finished-before-fcp']);
+    assert.equal(trace.syncTrace.clock, 'performance.now');
+    assert.equal(trace.syncTrace.unit, 'ms');
+    assert.equal(trace.syncTrace.startupQueries[0].name, 'finished-before-fcp');
+    assert.deepEqual(trace.syncTrace.planQueries[0].stages,
+      { schedulerWaitMs: 10, resolverMs: 12, transferMs: 20, parseCacheMs: 3 });
+    assert.deepEqual(trace.syncTrace.planStages.map(({ stage, measuredAtMs }) => ({ stage, measuredAtMs })),
+      [{ stage: 'reactCommit', measuredAtMs: 185 }, { stage: 'updateToScreen', measuredAtMs: 195 }]);
     assert.equal(trace.resources[0].endMs, 35);
     assert.equal(trace.ipc.client.kind, 'unavailable');
     const missing = await readPageStartupTrace({ fcpMs: null, lcpMs: null });

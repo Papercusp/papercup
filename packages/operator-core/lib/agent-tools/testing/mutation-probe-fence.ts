@@ -315,32 +315,55 @@ async function committedUnchanged(realRoot: string, paths: string[]): Promise<Se
   return unchanged;
 }
 
-/** A literal contains a path segment only at a path boundary, not as part of an identifier or prose. */
-function hasPathSegment(value: string, segment: string): boolean {
-  if (!segment) return false;
+/** A literal names a complete filename at a path boundary, including its extension. */
+function hasPathSegment(value: string, filename: string): boolean {
+  if (!filename) return false;
   let from = 0;
-  while (from <= value.length - segment.length) {
-    const at = value.indexOf(segment, from);
+  while (from <= value.length - filename.length) {
+    const at = value.indexOf(filename, from);
     if (at < 0) return false;
     const before = value[at - 1];
-    const after = value[at + segment.length];
+    const after = value[at + filename.length];
     const beginsSegment = at === 0 || before === '/' || before === '\\';
-    const endsSegment = after === undefined || after === '/' || after === '\\' || after === '.';
+    const endsSegment = after === undefined || after === '/' || after === '\\';
     if (beginsSegment && endsSegment) return true;
     from = at + 1;
   }
   return false;
 }
 
-/** Return a probed stem named by a string literal as a complete path segment, if any. */
-function namedPathLiteral(file: string, text: string, names: string[]): string | null {
-  if (names.length === 0) return null;
+/** Evaluate only literal strings and statically concatenated literal strings. */
+function staticStringValue(node: ts.Expression): string | null {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+  if (ts.isParenthesizedExpression(node)) return staticStringValue(node.expression);
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticStringValue(node.left);
+    const right = staticStringValue(node.right);
+    return left === null || right === null ? null : left + right;
+  }
+  if (ts.isTemplateExpression(node)) {
+    let value = node.head.text;
+    for (const span of node.templateSpans) {
+      const expression = staticStringValue(span.expression);
+      if (expression === null) return null;
+      value += expression + span.literal.text;
+    }
+    return value;
+  }
+  return null;
+}
+
+/** Return a probed filename named by a literal or static string concatenation, if any. */
+function namedPathLiteral(file: string, text: string, filenames: string[]): string | null {
+  if (filenames.length === 0) return null;
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   let found: string | null = null;
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-      && (found = names.find((name) => hasPathSegment(node.text, name)) ?? null)) return;
+    if (ts.isExpression(node)) {
+      const value = staticStringValue(node);
+      if (value !== null && (found = filenames.find((name) => hasPathSegment(value, name)) ?? null)) return;
+    }
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -356,14 +379,14 @@ async function reachReason(
   for (const [file, why] of unfollowable) {
     if (closure.has(file)) return `${file} ${why}`;
   }
-  // The extension-less stem also catches a path assembled at runtime (`'name' + '.ts'`),
-  // but only when a string literal contains it as a complete path segment.
-  const names = probes.map((probe) => basename(probe, extname(probe)));
+  // Match the full probed filename so generic path segments such as "sessions" do not collide.
+  // Static string concatenations still catch paths assembled at runtime ("sessions" + ".ts").
+  const filenames = probes.map((probe) => basename(probe));
   for (const file of closure) {
     if (!CODE_EXTENSIONS.has(extname(file))) continue;
     const text = await readFile(file, 'utf8').catch(() => null);
     if (text === null) return `could not read ${file}`;
-    const named = namedPathLiteral(file, text, names);
+    const named = namedPathLiteral(file, text, filenames);
     if (named) return `${file} names ${named}`;
     if ((file === test || TEST_SIDE_FILE.test(file)) && OUT_OF_GRAPH_ACCESS.test(text)) {
       return `${file} reads the filesystem or spawns a process`;

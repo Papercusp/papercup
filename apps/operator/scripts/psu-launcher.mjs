@@ -2953,7 +2953,19 @@ export function findUntrackedSession(
     // "isn't linked to a tracked psu launch" warning was actively misleading
     // for that (very common) case and is exactly what the owner-reported
     // repro saw.
+    //
+    // WI-10004654: the SAME transcript can sit under several owner dirs. A
+    // managed fork seeds its own config dir with a copy of the source's
+    // `<id>.jsonl` (same native id) before `--fork-session` mints the fork's
+    // id, and that seed stays. Returning the first hit in readdir order then
+    // names the FORK as the transcript's owner, and the exact recovery below
+    // (correctly) refuses the owner mismatch — so one consult fork made its
+    // source unforkable for every later out-of-window fork/convert (measured
+    // 2026-10-01, conv-mup68u8r). The first-write-wins owner index records the
+    // owner the session was born with: when it names one of the hits, that dir
+    // is the real one. Otherwise keep the old first-hit behaviour.
     const isoRoot = sessionClaudeRoot(home);
+    const isoHits = [];
     for (const owner of safeReaddir(isoRoot)) {
       if (!owner.isDirectory()) continue;
       const configDir = join(isoRoot, owner.name);
@@ -2962,16 +2974,27 @@ export function findUntrackedSession(
         if (!d.isDirectory()) continue;
         const f = join(projects, d.name, `${id}.jsonl`);
         if (existsSync(f)) {
-          return {
-            agent: "claude",
-            sessionId: id,
-            cwd: cwdFromSessionFile(f) || cwd,
-            untracked: true,
-            configDir,
-            psuTracked: true,
-          };
+          isoHits.push({ owner: owner.name, configDir, file: f });
+          break;
         }
       }
+    }
+    if (isoHits.length) {
+      const bornOwner =
+        isoHits.length > 1
+          ? recoverSessionIdentity(id, { home })?.ownerId ?? null
+          : null;
+      const hit =
+        (bornOwner && isoHits.find((h) => h.owner === bornOwner)) ||
+        isoHits[0];
+      return {
+        agent: "claude",
+        sessionId: id,
+        cwd: cwdFromSessionFile(hit.file) || cwd,
+        untracked: true,
+        configDir: hit.configDir,
+        psuTracked: true,
+      };
     }
     const codexRollout = findCodexRollout(join(home, ".codex", "sessions"), id);
     if (codexRollout)

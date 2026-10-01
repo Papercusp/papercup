@@ -8713,6 +8713,88 @@ describe("findUntrackedSession (resume a non-psu session by searching the agent 
     });
   });
 
+  describe("WI-10004654: a fork's seed copy never displaces the born-with owner's transcript", () => {
+    // A managed fork seeds its own config dir with a copy of the source's
+    // `<id>.jsonl` (same native id). The index records who the session was born
+    // with; that owner's dir must win whichever order readdir returns them in.
+    const seedIn = (base: string, owner: string, cwd: string) => {
+      const configDir = join(base, ".papercusp", "session-claude", owner);
+      const projDir = join(configDir, "projects", "-iso-dir");
+      mkdirSync(projDir, { recursive: true });
+      writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}","cwd":"${cwd}"}\n`);
+      return configDir;
+    };
+    const seed = (owner: string, cwd: string) => seedIn(home, owner, cwd);
+    /** Lay out one case: the born owner's transcript plus a fork's seed copy. */
+    const layout = (base: string, born: string, fork: string, forkFirst: boolean) => {
+      if (forkFirst) seedIn(base, fork, "/home/me/fork-repo");
+      const bornDir = seedIn(base, born, "/home/me/born-repo");
+      if (!forkFirst) seedIn(base, fork, "/home/me/fork-repo");
+      return bornDir;
+    };
+
+    // readdir order differs by filesystem (XFS: creation order; tmpfs: newest
+    // first; others: name or hash). Crossing creation order with name order puts
+    // the fork seed first under every one of them, so a first-hit scan fails here.
+    const CASES = [
+      ["su-aaa-born", "su-zzz-fork", false],
+      ["su-aaa-born", "su-zzz-fork", true],
+      ["su-zzz-born", "su-aaa-fork", false],
+      ["su-zzz-born", "su-aaa-fork", true],
+    ] as const;
+
+    it("control: the pre-fix first-hit scan picks the fork seed in at least one case on this filesystem", () => {
+      // The pre-WI-10004654 scan, verbatim in shape: first owner dir (readdir
+      // order) whose projects/ holds the transcript. If this never picked the fork,
+      // the born-wins cases below would pass against the defect and prove nothing.
+      const firstHitOwner = (base: string) => {
+        const root = join(base, ".papercusp", "session-claude");
+        for (const owner of readdirSync(root, { withFileTypes: true })) {
+          if (!owner.isDirectory()) continue;
+          const projects = join(root, owner.name, "projects");
+          for (const d of readdirSync(projects, { withFileTypes: true }))
+            if (d.isDirectory() && existsSync(join(projects, d.name, `${UUID}.jsonl`))) return owner.name;
+        }
+        return null;
+      };
+      const picks = CASES.map(([born, fork, forkFirst], i) => {
+        const base = join(home, `case-${i}`);
+        layout(base, born, fork, forkFirst);
+        return firstHitOwner(base) === fork;
+      });
+      expect(picks).toContain(true);
+    });
+
+    for (const [born, fork, forkFirst] of CASES) {
+      it(`born ${born} wins over fork seed ${fork} (fork created ${forkFirst ? "first" : "second"})`, () => {
+        const bornDir = layout(home, born, fork, forkFirst);
+        expect(recordSessionOwner(UUID, born, { home, advSessionId: 32370 })).toBe(true);
+        expect(findUntrackedSession(UUID, { home })).toEqual({
+          agent: "claude",
+          sessionId: UUID,
+          cwd: "/home/me/born-repo",
+          untracked: true,
+          configDir: bornDir,
+          psuTracked: true,
+        });
+      });
+    }
+
+    it("with no owner index entry it still resolves to one of the hits (pre-fix behaviour)", () => {
+      const a = seed("su-aaa-one", "/home/me/a");
+      const b = seed("su-zzz-two", "/home/me/b");
+      const hit = findUntrackedSession(UUID, { home });
+      expect(hit?.psuTracked).toBe(true);
+      expect([a, b]).toContain(hit?.configDir);
+    });
+
+    it("an index naming an owner with no copy on disk falls back to a real hit", () => {
+      const a = seed("su-aaa-one", "/home/me/a");
+      expect(recordSessionOwner(UUID, "su-elsewhere", { home })).toBe(true);
+      expect(findUntrackedSession(UUID, { home })?.configDir).toBe(a);
+    });
+  });
+
   it("a non-UUID id → an omp thread name, resumed in the current dir", () => {
     expect(findUntrackedSession("my-thread", { home, cwd: "/here" })).toEqual({
       agent: "omp",

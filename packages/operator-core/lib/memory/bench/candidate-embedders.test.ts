@@ -9,9 +9,16 @@ vi.mock('@huggingface/transformers', () => ({
   AutoTokenizer: { from_pretrained: mocks.loadTokenizer },
   PreTrainedModel: { from_pretrained: mocks.loadModel },
 }));
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, qualifyIncumbentReferences, type CandidateVectors } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_OUTPUT, PPLX_REVISION, benchmarkMaskedMean, referenceAssetPath, qualifyIncumbentReferences, type CandidateVectors } from './candidate-embedders';
 
 describe('incumbent reference qualification', () => {
+  it('resolves published locators locally and refuses machine-specific or escaping paths', () => {
+    expect(referenceAssetPath('cache:validation/model/config.json', '/repo', '/person')).toBe('/person/.cache/papercusp/model-validation/model/config.json');
+    expect(referenceAssetPath('cache:transformers/model/onnx/model.onnx', '/repo', '/person')).toBe('/repo/node_modules/@huggingface/transformers/.cache/model/onnx/model.onnx');
+    for (const bad of ['/machine/private/config.json', 'cache:validation/../config.json', 'cache:unknown/config.json', 'cache:validation//config.json']) {
+      expect(() => referenceAssetPath(bad, '/repo', '/person')).toThrow('invalid portable');
+    }
+  });
   it('uses only attended tokens for the independent mean and rejects invalid model output', () => {
     expect(benchmarkMaskedMean([2, 4, 4, 8, 999, 999], [1, 1, 0], 2)).toEqual([3, 6]);
     expect(() => benchmarkMaskedMean([1, 2], [0], 2)).toThrow('invalid');

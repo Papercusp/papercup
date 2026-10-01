@@ -3235,3 +3235,62 @@ The leader's current reply explicitly retains loaded-fix adoption as unknown
 Historical triggering frames, actual producer mix, installed-PUI adoption and
 application latency impact remain unresolved. No source behavior, shared
 service, account credential, federation, Portal or live-gate action changed.
+
+### Historical diagnostic DO snapshot recovered — 2026-10-01 06:52Z
+
+**P-008 remains open.** The original F11 observation is now recoverable from
+the permanent archive of audit session
+`01a0cf17-6a94-7bf1-a42b-bef1c9d8a9a3`, rather than an inferred current
+activity scan. The maintained archive reader returned one 6,809,735-byte
+transcript, verified against SHA-256
+`4f36c216c7a52f572c3c0f95a7eb83fe2842d6554da6b4da89e889941fb0938e`.
+No transcript was restored and no live activity census was performed.
+
+At archive line 351, timestamp `2026-09-23T22:12:21.302Z`, call
+`call_ETbQ2bxDMYRv7gJPeCo5SYK4` requested a bounded `dev:pg_query` read of
+active queries older than 30 seconds in the current database, ordered by
+query start, with `maxRows:12` and `timeoutMs:4000`. Its age expression is
+`round(extract(epoch from now()-query_start))`; its SQL deliberately returns
+only `left(query,320)`. Line 354, completed at `22:12:23.068Z`, retains this
+row:
+
+| Field | Observed value |
+|---|---|
+| Backend PID | `3962125` |
+| Application label | `psql` |
+| State | `active` |
+| Statement age, rounded seconds | `3527` |
+| Wait type / event | `null` / `null` |
+| Blocking PIDs | `[]` |
+
+The retained prefix begins `DO $$`, declares a record and bigint, visits
+`information_schema.columns` where the schema is `harness_shared` and the
+type is `text`, excludes table names matching `bak_%`, then constructs
+dynamic `SELECT count(*) ... WHERE ... LIKE ...` statements. The original
+pattern, remainder of the block, launch command, timeout configuration and
+agent identity are absent from this 320-character observation. An active
+backend with no sampled wait is not proof of CPU consumption or its effect
+on application latency.
+
+The observation command read the pre-existing backend; it did not launch
+that DO block. Both the audit source snapshot `509f7b0b56` and current
+`assertSingleReadStatement` accept only leading SELECT/WITH, while the
+current read seam installs READ ONLY and a bounded statement timeout. Thus
+this DO shape is outside that maintained read contract. The `psql` label
+suggests a native SQL caller, but neither the label nor source validation
+identifies its original launch route or proves what the historical serving
+process loaded. The prior query-deadline fix is a separate confirmed defect.
+
+Receipt: completed task `0mup6bvr9150ptqk1j6`, exit 0, reduced log
+`.papercusp/scratch/bash-676d045f-949.log`, SHA-256
+`a3f7c38e4b60c357df1bd59ebf3fccbdc18c3aa0c1c0ee8a9adbdc0b839acfc7`.
+Current read source/test hashes still match the 05:40Z five-file proof, so
+that test matrix was not repeated. The source and archived-call readback
+verify this investigation; no runtime performance or shipment claim follows.
+
+The 13 legacy EIs inspected this turn are all `change/open/unassigned` with
+`lane:observation`, `origin:checkpoint-harvest`, and
+`harvestSource:loop-checkpoint`. They were harvested from proof notes. The
+fleet leader acknowledged ownership of their routing in
+`mup656x1-0000-619b1db28fbd460c977cc3910f91759e`; no member-side claim or
+terminal disposition was made. Their full inventory remains on WI-10002830.

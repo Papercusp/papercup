@@ -29,9 +29,11 @@ vi.mock('./workspace-listener', () => ({
 import {
   readResourceLockStatus,
   tryAcquireResource,
+  tryReleaseResource,
   type ResourceAcquireResult,
+  type ResourceHolder,
 } from './su-lock-store';
-import { mockResolvedTyped } from '../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { subscribeWorkspace } from './workspace-listener';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
@@ -40,6 +42,7 @@ const txnM = vi.mocked(inWorkspaceTxn);
 const subscribeM = vi.mocked(subscribeWorkspace);
 const acquireM = vi.mocked(tryAcquireResource);
 const statusM = vi.mocked(readResourceLockStatus);
+const releaseM = vi.mocked(tryReleaseResource);
 
 const held: Extract<ResourceAcquireResult, { ok: true }> = {
   ok: true,
@@ -107,5 +110,96 @@ describe('acquireResourceExclusiveWithWait contention retry', () => {
     });
     expect(acquireM).toHaveBeenCalledTimes(1);
     expect(subscribeM).toHaveBeenCalledTimes(1);
+  });
+});
+
+// WI-10004638: a throw from inside the drain loop used to escape with our exclusive still
+// queued. The caller never learned its lock_id, so it lived to its TTL and (under writer
+// preference) refused every new shared acquire on the resource — measured as two
+// dev:restart git-sync barriers that stalled every pot's git-sync for ~3 min each.
+describe('acquireResourceExclusiveWithWait mid-drain failure', () => {
+  const sharedFire: ResourceHolder = {
+    resource: 'git-sync',
+    owner: 'git-sync-fire',
+    owner_label: null,
+    mode: 'shared',
+    status: 'held',
+    lock_id: 'shared-fire',
+    reason: 'git-sync fire',
+    acquired_ts: new Date('2026-10-01T06:00:00.000Z'),
+    expires_ts: new Date('2026-10-01T06:10:00.000Z'),
+    fence_seq: 0,
+  };
+  const queued: Extract<ResourceAcquireResult, { ok: true }> = {
+    ...held,
+    lock_id: 'queued-exclusive',
+    status: 'draining',
+    shared_holders: [sharedFire],
+    fence_seq: 0,
+  };
+  const passThrough: typeof inWorkspaceTxn = async (_domain, _owner, fn) => fn({} as never);
+  const drain = () =>
+    acquireResourceExclusiveWithWait({
+      coordinationDomain: 'workspace-domain',
+      owner: 'barrier-owner',
+      ownerLabel: 'barrier',
+      resource: 'git-sync',
+      reason: 'restart',
+      ttlSec: 180,
+      maxWaitSec: 120,
+    });
+
+  beforeEach(() => {
+    acquireM.mockReset();
+    mockResolvedTyped(acquireM, queued);
+    releaseM.mockReset();
+    mockResolvedTyped(releaseM, { released: 1, releasedModes: ['exclusive'], exclusiveResources: ['git-sync'], expired: [], waiters: {} });
+  });
+
+  it('skips one nudge on a transient poke timeout instead of abandoning the drain', async () => {
+    // acquire passes, the first poke loses to contention, the second poke passes.
+    txnM.mockImplementationOnce(passThrough).mockRejectedValueOnce(contention());
+    mockResolvedOnceTyped(statusM, { status: 'draining' }); // recheck right after queuing
+    mockResolvedOnceTyped(statusM, { status: 'draining' }); // tick 1 (its poke failed)
+    mockResolvedOnceTyped(statusM, { status: 'held', fence_seq: 11 }); // tick 2
+
+    const pending = drain();
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toMatchObject({ ok: true, status: 'held', lock_id: 'queued-exclusive', fence_seq: 11 });
+    expect(releaseM).not.toHaveBeenCalled();
+  });
+
+  it('releases the queued exclusive before rethrowing a non-transient failure', async () => {
+    mockResolvedOnceTyped(statusM, { status: 'draining' });
+    statusM.mockRejectedValueOnce(new Error('connection reset'));
+
+    const pending = drain();
+    const settled = expect(pending).rejects.toThrow('connection reset');
+    await vi.runAllTimersAsync();
+    await settled;
+
+    expect(releaseM).toHaveBeenCalledTimes(1);
+    expect(releaseM.mock.calls[0]?.[1]).toEqual({
+      coordinationDomain: 'workspace-domain',
+      owner: 'barrier-owner',
+      lockId: 'queued-exclusive',
+    });
+  });
+
+  it('still rethrows the original failure when the release itself fails', async () => {
+    mockResolvedOnceTyped(statusM, { status: 'draining' });
+    statusM.mockRejectedValueOnce(new Error('connection reset'));
+    releaseM.mockReset();
+    releaseM.mockRejectedValue(new Error('release lost'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const pending = drain();
+    const settled = expect(pending).rejects.toThrow('connection reset');
+    await vi.runAllTimersAsync();
+    await settled;
+
+    expect(releaseM).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('queued-exclusive'), expect.any(Error));
+    warn.mockRestore();
   });
 });

@@ -88,6 +88,7 @@ beforeEach(async () => {
   spawnMock.mockClear();
   execFileSyncMock.mockReset();
   persistSqlMock.mockReset();
+  Object.assign(persistSqlMock, { begin: (run: (tx: typeof persistSqlMock) => Promise<unknown>) => run(persistSqlMock) });
   taskManagerMocks.begin.mockReset();
   taskManagerMocks.complete.mockReset();
   taskManagerMocks.finish.mockReset();
@@ -219,6 +220,37 @@ describe('startRun', () => {
 });
 
 describe('task lifecycle handlers', () => {
+  it('retains a saved report when close-time ledger ingestion fails', async () => {
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-retain-');
+    const reportPath = join(reportDir, 'report.json');
+    const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
+    try {
+      await writeFile(reportPath, JSON.stringify({ testResults: [{
+        name: '/tmp/lib/saved.test.ts', status: 'passed',
+        assertionResults: [{ status: 'passed' }],
+      }] }));
+      let finalized!: () => void;
+      const done = new Promise<void>(resolve => { finalized = resolve; });
+      persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('INSERT INTO harness_shared.test_runs')) throw new Error('ledger unavailable');
+        if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'pass') finalized();
+        return [];
+      });
+      store.startRun(req({ detachedReportArtifacts: [{ reportPath, root: '/tmp',
+        scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+      }] }));
+      lastChild._emitClose(0);
+      await done;
+      await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+      expect(persistSqlMock.mock.calls.some(call => call[0].join(' ').includes('pg_advisory_xact_lock'))).toBe(true);
+    } finally {
+      if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
   it('finishes once on child error even when the child subsequently closes', () => {
     const snap = store.startRun(req());
     const enrolment = taskManagerMocks.begin.mock.results[0]?.value;
@@ -507,6 +539,112 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
 
 describe('durable detached snapshot lifecycle', () => {
   type Sql = Parameters<Store['persistRunSnapshot']>[1];
+
+  it.each([
+    { name: 'running snapshot', status: 'running', expected: 'pass' },
+    { name: 'prior no-verdict error', status: 'error', expected: 'pass' },
+    { name: 'closed snapshot missing ledger', status: 'pass', expected: 'pass' },
+    { name: 'failing assertions', status: 'running', expected: 'fail', failure: true },
+    { name: 'cancelled task', status: 'cancelled', expected: 'cancelled', cancelled: true },
+    { name: 'partial report', status: 'running', expected: 'error', partial: true },
+    { name: 'failed ledger insert', status: 'running', expected: 'error', writeFailure: true },
+    { name: 'lost snapshot CAS', status: 'running', expected: 'running', casLost: true },
+    { name: 'legacy command metadata', status: 'running', expected: 'pass', legacy: true },
+    { name: 'legacy wrong tenant', status: 'running', expected: 'error', legacy: true, wrongScope: true },
+    { name: 'expired legacy snapshot', status: 'error', expected: 'pass', legacy: true, expired: true },
+    { name: 'pruned legacy snapshot', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true },
+    { name: 'pruned snapshot wrong tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, wrongScope: true },
+  ] as const)('saved report recovery after worker disappearance: $name', async (scenario) => {
+    const options = scenario as {
+      status: string; expected: string | null; failure?: boolean; cancelled?: boolean;
+      partial?: boolean; writeFailure?: boolean; casLost?: boolean; legacy?: boolean; wrongScope?: boolean;
+      expired?: boolean; missing?: boolean;
+    };
+    const { status } = options;
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-recovery-');
+    const reportPath = join(reportDir, 'papercusp-testing-run-detached-fixture.json');
+    try {
+      execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
+        args[0] === 'rev-parse' ? 'launch-sha\n' : '',
+      );
+      const { snapshot } = await store.startRunDurable(req({
+        detachedReportArtifacts: [{
+          reportPath, root: '/tmp', testNamePattern: 'saved assertion',
+          scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+        }],
+      }), vi.fn(async () => []) as unknown as Sql);
+      const detail = taskManagerMocks.begin.mock.calls[0]![0].detail;
+      store._resetTestingRunStore();
+      await writeFile(reportPath, JSON.stringify({
+        success: !options.failure, numTotalTests: options.partial ? 3 : 2,
+        numPassedTests: options.failure ? 0 : 1, numFailedTests: options.failure ? 1 : 0,
+        numPendingTests: 1, numTodoTests: 0,
+        testResults: [{
+          name: '/tmp/lib/saved.test.ts', status: options.failure ? 'failed' : 'passed',
+          startTime: snapshot.startedAt, endTime: snapshot.startedAt + 25,
+          assertionResults: [{ status: options.failure ? 'failed' : 'passed', fullName: 'saved assertion' }, { status: 'pending' }],
+        }],
+      }));
+      const ledger: Record<string, unknown>[] = [];
+      const writes: unknown[][] = [];
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        const snapshotRead = statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot');
+        const taskRead = statement.includes('FROM harness_shared.task_ledger AS task_ledger');
+        if (snapshotRead && options.expired) return [];
+        if (taskRead && options.wrongScope) return [];
+        if (snapshotRead || taskRead) return [{
+          run_id: snapshot.runId, task_id: snapshot.taskId, kind: 'vitest', label: 'saved',
+          file_path: null, command: options.legacy ? [
+            'node', 'scripts/test-files.mjs', `--outputFile=${reportPath}`, '-t', 'saved assertion',
+          ] : snapshot.command, status, exit_code: status === 'pass' ? 0 : null,
+          started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
+          output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,
+          task_state: options.cancelled ? 'killed' : 'exited', task_exit_code: options.failure ? 1 : 0,
+          task_ended_at: snapshot.startedAt + 25,
+          task_detail: options.legacy ? {} : detail,
+          task_cwd: '/tmp', task_harness_slug: options.legacy ? null : 'papercusp', task_workspace_id: 'papercusp-workspace',
+          snapshot_missing: options.missing ?? false,
+        }];
+        if (statement.includes('FROM harness_shared.test_runs')) return ledger;
+        if (statement.includes('INSERT INTO harness_shared.test_runs')) {
+          if (options.writeFailure) throw new Error('ledger unavailable');
+          writes.push(values);
+          ledger.push({ file_path: values[0], status: values[2], finished_at: values[5], output_tail: values[6] });
+          return [{ id: 42 }];
+        }
+        if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) return options.casLost ? [] : [{ run_id: snapshot.runId }];
+        return [];
+      });
+      Object.assign(sql, { begin: (run: (tx: typeof sql) => Promise<unknown>) => run(sql) });
+
+      const recovered = await store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy ? {
+        root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
+      } : undefined);
+      if (options.expected === null) expect(recovered).toBeNull();
+      else expect(recovered?.status).toBe(options.expected);
+      if (options.expired) {
+        const taskQuery = sql.mock.calls.find(([strings]) => strings.join(' ').includes('FROM harness_shared.task_ledger AS task_ledger'));
+        expect(taskQuery).toBeDefined();
+        expect(taskQuery!.slice(1)).toEqual(expect.arrayContaining([snapshot.runId, 'papercusp-workspace', '/tmp', 'papercusp']));
+      }
+      if (options.expected !== 'pass' && options.expected !== 'fail') {
+        await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        return;
+      }
+      expect(recovered).toMatchObject({ exitCode: options.failure ? 1 : 0, finishedAt: snapshot.startedAt + 25 });
+      expect(writes).toHaveLength(1);
+      expect(writes[0]![7]).toBe(snapshot.runId);
+      expect(writes[0]![10]).toBe(options.legacy ? null : 'launch-sha');
+      expect(writes[0]![15]).toBe(true);
+      expect(JSON.parse(String(writes[0]!.at(-1)))).toMatchObject({
+        root: '/tmp', passed: options.failure ? 0 : 1, skipped: 1, testNamePattern: 'saved assertion', worktreeDirty: true,
+      });
+      await expect(readFile(reportPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
 
   it('spawns the detached child before waiting for the running snapshot persistence', async () => {
     const events: string[] = [];

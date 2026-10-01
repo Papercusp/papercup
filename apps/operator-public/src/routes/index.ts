@@ -7,6 +7,7 @@ import { adminRoute } from './admin.ts';
 import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
 import { releaseMirrorRoute } from './release-mirror.ts';
+import { githubWebhookRoute } from './github-webhook.ts';
 import { commerceRoute } from './commerce.ts';
 import { walletBindingRoute } from './wallet-binding.ts';
 import { prepaidCreditsRoute } from './prepaid-credits.ts';
@@ -54,6 +55,10 @@ export function buildApi(
   // route for the same reason: its only outbound call is to a third party, and
   // an unexercised credential path is the one that rots.
   api.route('/', releaseMirrorRoute({ fetchImpl: options.fetchImpl }));
+  // The "Papercusp Cupboard" GitHub App's push receiver (P-006). Fails closed
+  // (503) until the three GITHUB_APP_* secrets exist — registering the App is
+  // the owner-only P-005, so until then this route is inert by construction.
+  api.route('/', githubWebhookRoute({ fetchImpl: options.fetchImpl }));
   // The top-up SKU is a fixed idempotent catalog fact. Install it immediately
   // before the existing Checkout handler reads the commerce ledger, without
   // modifying that shared route while parallel commerce work is in flight.

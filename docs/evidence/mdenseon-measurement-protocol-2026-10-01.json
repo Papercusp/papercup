@@ -1,0 +1,417 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004535",
+  "spec": "MDENSE-manifest-identity@1",
+  "ownerId": "su-5dfd8e29-6241-44cf-8982-2cc0fa4ddb50",
+  "frozenAt": "2026-10-01T04:37:36.279Z",
+  "sourceCommit": "0f943d68e5c9115dc86168910c08b13ddccee9f1",
+  "status": "protocol-frozen; real measurement cells remain assigned to P-002 through P-008",
+  "contracts": {
+    "labels": "independent-blind-before-inference",
+    "sourceSplit": "source-target",
+    "classes": [
+      "exact-identifier",
+      "lexical-gap",
+      "session-start-intent",
+      "hard-negative"
+    ],
+    "mrrMargin": 0.03,
+    "stop": "margin-resolved-or-censused-population-exhausted",
+    "cosineMin": 0.99999,
+    "maxAbs": 0.00003,
+    "freshProcessBlocks": 5
+  },
+  "modelIdentities": [
+    {
+      "model": "mdenseon",
+      "profile": {
+        "model": "lightonai/mDenseOn",
+        "nativeDims": 768,
+        "targetDims": 768,
+        "mrl": "none",
+        "trainedDims": [
+          768
+        ],
+        "profileId": "mdenseon-a5fdb000-768@v1",
+        "modelRevision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
+        "revisionPolicy": "immutable-artifact",
+        "distanceMetric": "cosine",
+        "pooling": "cls",
+        "normalization": {
+          "kind": "l2",
+          "timing": "pipeline"
+        },
+        "outputDtype": "float32",
+        "documentRecipe": "mdenseon-document-prefix@v1",
+        "queryRecipe": "mdenseon-query-prefix@v1"
+      },
+      "weightLayout": "inline",
+      "prompts": {
+        "query": "query: ",
+        "document": "document: "
+      },
+      "files": [
+        {
+          "path": "cache:validation/mdenseon-a5fdb000-rope-EI24726559745089713/config.json",
+          "sha256": "ed7ceeb59efefedd44bbd6041445da8ee773f510ffe831e19af80de62839d925",
+          "bytes": 3458
+        },
+        {
+          "path": "cache:validation/mdenseon-a5fdb000-rope-EI24726559745089713/tokenizer.json",
+          "sha256": "a086e6a7efb90bbab8e379a63f3463fb13e6256ebec3343c1f1612cab693935b",
+          "bytes": 34363287
+        },
+        {
+          "path": "cache:validation/mdenseon-a5fdb000-rope-EI24726559745089713/tokenizer_config.json",
+          "sha256": "95f21653c4f5eb19b777fb72592b5c4481c968b4f79b5fcafddbe3a9f9d398ed",
+          "bytes": 667
+        },
+        {
+          "path": "cache:validation/mdenseon-a5fdb000-rope-EI24726559745089713/onnx/model.onnx",
+          "sha256": "be2564c47c9284a69599e56a1848242f9d06ed3e749b1c24282b1fe8fc250d2e",
+          "bytes": 1228244114
+        }
+      ]
+    },
+    {
+      "model": "gemma",
+      "profile": {
+        "profileId": "gemma-embeddinggemma-300m-768@v1",
+        "model": "onnx-community/embeddinggemma-300m-ONNX",
+        "modelRevision": "onnx-community/embeddinggemma-300m-ONNX",
+        "revisionPolicy": "profile-versioned-provider-model-id",
+        "nativeDims": 768,
+        "mrl": "discrete",
+        "trainedDims": [
+          768,
+          512,
+          256,
+          128
+        ],
+        "targetDims": 768,
+        "distanceMetric": "cosine",
+        "normalization": {
+          "kind": "l2",
+          "timing": "after-truncation"
+        },
+        "pooling": "mean",
+        "outputDtype": "float32",
+        "documentRecipe": "embeddinggemma-search-document@v1",
+        "queryRecipe": "embeddinggemma-search-query@v1"
+      },
+      "weightLayout": "external",
+      "prompts": {
+        "query": "task: search result | query: ",
+        "document": "title: none | text: "
+      },
+      "files": [
+        {
+          "path": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/config.json",
+          "sha256": "6e1f06404b7163e0325ed2ea3e6781cde50f4a50b31780a95ad0d30e8404d77b",
+          "bytes": 1765
+        },
+        {
+          "path": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/tokenizer.json",
+          "sha256": "4dda02faaf32bc91031dc8c88457ac272b00c1016cc679757d1c441b248b9c47",
+          "bytes": 20323312
+        },
+        {
+          "path": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/tokenizer_config.json",
+          "sha256": "3ca953eea6c3c9fcda9cf3df22949ff18b216f7c74bd6459230f3f1013953f3a",
+          "bytes": 1156830
+        },
+        {
+          "path": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/onnx/model.onnx",
+          "sha256": "ea91fd315a7c152d427d231746f0f811a1ac93beaba656abfdf2b24e091265e4",
+          "bytes": 479932
+        },
+        {
+          "path": "cache:transformers/onnx-community/embeddinggemma-300m-ONNX/onnx/model.onnx_data",
+          "sha256": "ef835ae565d8695236652475903078e8ed794c7c35faf1164d78ec3238e8a88d",
+          "bytes": 1234521088
+        }
+      ]
+    },
+    {
+      "model": "harrier",
+      "profile": {
+        "profileId": "harrier-oss-v1-0.6b-1024@v1",
+        "model": "microsoft/harrier-oss-v1-0.6b",
+        "modelRevision": "onnx-community/harrier-oss-v1-0.6b-ONNX",
+        "revisionPolicy": "profile-versioned-provider-model-id",
+        "nativeDims": 1024,
+        "mrl": "none",
+        "trainedDims": [
+          1024
+        ],
+        "targetDims": 1024,
+        "distanceMetric": "cosine",
+        "normalization": {
+          "kind": "l2",
+          "timing": "model-graph"
+        },
+        "pooling": "model-graph",
+        "outputDtype": "float32",
+        "documentRecipe": "harrier-raw-document@v1",
+        "queryRecipe": "harrier-web-search-query@v1"
+      },
+      "weightLayout": "external",
+      "prompts": {
+        "query": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+        "document": ""
+      },
+      "files": [
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/config.json",
+          "sha256": "c55e075ac57223f7442ef1755051e9bd212e0d4ff2ed68694037f5a21dba7eeb",
+          "bytes": 1530
+        },
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/tokenizer.json",
+          "sha256": "2320ebaed2032c36f5c539cb8531d0642a10024e164f1d81ebbe163b259e3ba5",
+          "bytes": 9117473
+        },
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/tokenizer_config.json",
+          "sha256": "e1c8a5341a350885510d652a3a303beabf3a76ef745af6c6b4c3f0d815ccfb5c",
+          "bytes": 4650
+        },
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx",
+          "sha256": "46e6d18455f25b2ebe9bccdc0fe3bf2a36442796ecc0991141c12c1f098f27b9",
+          "bytes": 299981
+        },
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx_data",
+          "sha256": "1f936ece1604ac0117e808f9db9959e3e8b6b860d44d1a6ecf55a5353ee2d55c",
+          "bytes": 2094723072
+        },
+        {
+          "path": "cache:transformers/onnx-community/harrier-oss-v1-0.6b-ONNX/onnx/model.onnx_data_1",
+          "sha256": "5b2a43d2df8ba4706d44769c023f2627309a8e48ec0fea70e92afc1a974e169f",
+          "bytes": 306225152
+        }
+      ]
+    }
+  ],
+  "fixtureIdentities": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/corpus.v1.json",
+      "sha256": "e69beb1048e80e946ae9f96a594364627aae852dcb61adbf5390f0b0c9c473eb",
+      "bytes": 221869
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/gold-set.v1.json",
+      "sha256": "43c82de8da06ff131e093d6e2b42d88d1bbb38b6160c291e7a0f9df9d983d465",
+      "bytes": 49606
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json",
+      "sha256": "973b110e79f4e954672029c0d9313e26957167d271744d88f3e67536baaf8c5b",
+      "bytes": 2943969
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/prose-gold-set.v1.json",
+      "sha256": "5c47fdada3fd43cf9d87ee08a1188c1f7a98125a0870335700374329a6457b1f",
+      "bytes": 53154
+    }
+  ],
+  "fixtureAuthority": "agent-authored pilot controls; ineligible as independent relevance judgments",
+  "versions": {
+    "transformers": "4.2.0",
+    "jsTokenizers": "0.1.3",
+    "rustTokenizers": "0.23.2"
+  },
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "sha256": "b68a280d28ff1f646c83a6c866cfc09f134b7ff74c0870ec675e02b6a0271de3",
+      "bytes": 25059
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+      "sha256": "4b534bd2a0693e6bbb6e01c4c090948ac01cec2bf253ec8edc907b3551776157",
+      "bytes": 15829
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+      "sha256": "9655ea0171dcd55178846d474c569852a8fb70cf21f75c33bc3defdc0b9f7cfc",
+      "bytes": 43096
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+      "sha256": "e633764c812e89aed4213556336edced367ac980ac002bfa3192c8bbbab0081d",
+      "bytes": 11585
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.integration.test.ts",
+      "sha256": "40462eaa109adba1342060d88ec5f013afaac9a33e92d610e06585ab2ba6a4ba",
+      "bytes": 10905
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/fixtures/measurement-manifest.ts",
+      "sha256": "369117bf9cee900bee25b415ae2f229bf3a10fe930a943bee8c20c4cdf4e8e6e",
+      "bytes": 3465
+    }
+  ],
+  "phases": [
+    {
+      "bar": "reference",
+      "item": "P-002",
+      "population": [
+        "shipped-gemma",
+        "corrected-isolated-gemma",
+        "shipped-harrier",
+        "pinned-maintained-reference"
+      ],
+      "gate": "same pinned assets, tokenizer/prompt/pooling/native-width fingerprints; separate corrected Gemma profile"
+    },
+    {
+      "bar": "relevance",
+      "item": "P-003",
+      "population": [
+        "memory",
+        "prose"
+      ],
+      "classes": [
+        "exact-identifier",
+        "lexical-gap",
+        "session-start-intent",
+        "hard-negative"
+      ],
+      "gate": "two independently transported blind judges; balanced source-separated calibration/test; source-target paired margin or censused population exhaustion"
+    },
+    {
+      "bar": "hybrid",
+      "item": "P-004",
+      "population": [
+        "memory",
+        "prose"
+      ],
+      "models": [
+        "mdenseon",
+        "gemma",
+        "harrier"
+      ],
+      "gate": "actual canonical/mem0/lexical/fusion/filters/entity/decay routes; model-owned schemas; precision, negatives and paired source uncertainty"
+    },
+    {
+      "bar": "performance",
+      "item": "P-005",
+      "models": [
+        "mdenseon",
+        "gemma",
+        "harrier"
+      ],
+      "blocks": 5,
+      "gate": "fresh-process randomized matching HTTP/client/worker device/thread route; raw cold/warm p50/p95/p99, batches/concurrency/throughput/cache/RSS/VRAM/artifact cost"
+    },
+    {
+      "bar": "boundaries",
+      "item": "P-006",
+      "devices": [
+        "cpu",
+        "cuda"
+      ],
+      "population": [
+        "single",
+        "padded",
+        "mixed-length",
+        "unicode",
+        "code",
+        "whitespace",
+        "empty",
+        "over-limit",
+        "8192-token-inference"
+      ],
+      "gate": "fixed cosine>=0.99999/maxabs<=3e-5 plus token/rank comparison; actual constructed device; no hidden fallback"
+    },
+    {
+      "bar": "reliability",
+      "item": "P-007",
+      "population": [
+        "concurrency",
+        "saturation",
+        "coalescing",
+        "bypass",
+        "timeout",
+        "cancellation",
+        "worker-crash",
+        "restart",
+        "bounded-soak",
+        "event-loop",
+        "resource-cleanup"
+      ],
+      "gate": "real loaded weights and immutable per-phase raw logs"
+    },
+    {
+      "bar": "answers",
+      "item": "P-008",
+      "population": [
+        "grounded-correctness",
+        "citation-correctness",
+        "unsupported-answer",
+        "judge-agreement",
+        "paired-uncertainty",
+        "cost"
+      ],
+      "gate": "same fixed answer model/prompts/context budget; independently transported identity-blind frozen rubric"
+    }
+  ],
+  "harnessProof": {
+    "scope": "guard qualification only; synthetic vectors and synthetic label transport in protocol fixtures",
+    "latestVerifiedBeforeExternalWeightGuard": {
+      "runId": "6e2f0a2a-1b55-4bde-a2dd-cdf2a4fcebdf",
+      "testRunIds": [
+        20349675,
+        20349737
+      ],
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "latestSourceVerification": {
+      "originRunId": "50c9be02-556b-4816-bd17-2cb4acc20b5e",
+      "detachedRunId": "ac144ec3-8578-4660-9f59-8e2248eaa057",
+      "testRunIds": [20364580, 20356843],
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "verifiedHow": "Exact requested unit and integration ledger rows both passed; recovery settled both evidence bindings. Coarse detached status alone is insufficient.",
+      "integrationRuntime": "Owned dedicated native PostgreSQL18 with real migrations, actual HTTP client and canonical vector SQL; synthetic embeddings qualify protocol guards only.",
+      "unitSourceUpdate": "The canonical unit suite now explicitly loads a copy-out mutation subject. Fresh canonical baseline20364580 and relocated baseline20364581 both pass10 tests, with no skips.",
+      "mutationProof": {
+        "baselineTestRunIds": [20364580, 20364581],
+        "mutantTestRunId": 20364582,
+        "mutation": "freshProcessBlocks minimum5 replaced with minimum1 in a private copy",
+        "outcome": "caught: threshold-relaxation assertion fails;9 other tests pass; shared source remains byte-identical",
+        "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/mutation-probe.sh --file packages/operator-core/lib/memory/bench/measurement-manifest.ts --mutate 's/freshProcessBlocks: z.number\\(\\).int\\(\\).min\\(5\\)/freshProcessBlocks: z.number().int().min(1)/' --test 'PAPERCUSP_MUTATION_PROBE_SOURCE={} npm run test:file -- packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts' --expect caught"
+      },
+      "adequacyCard": "EI-24757699238117356; MDENSE-manifest-identity@1 governing evaluator passes; independent card audit required before close"
+    },
+    "typecheck": {
+      "sourceStamp": "2026-10-01T05:57:00.932Z",
+      "sourceCommit": "6563e1ea76b224ccc050a5a6e0cf65a74d8e1abc",
+      "namedFiles": 2,
+      "result": "0 errors; shared typecheck service checked named files, exported-type users and direct importers"
+    },
+    "cliAnalysisSmoke": {
+      "command": "node --import tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --legs none --out /tmp/mdenseon-p001-cli-analysis.json",
+      "result": "exit0; no inference"
+    }
+  },
+  "execution": {
+    "schema": "measurementManifestSchema in measurement-manifest.ts",
+    "freeze": "materialize per-attempt MeasurementManifest with exact phase input hashes after its source/label/reference prerequisites are complete; freeze before inference; supply external frozen SHA via --manifest-sha256",
+    "candidate": "node --import tsx packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts --manifest <file> --manifest-sha256 <sha256> --cell <id> --snapshot <declared-snapshot> --gold <declared-labels> --model <model> --corpus <memory|prose> --out <declared-private-output>",
+    "performance": "node --import tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <file> --manifest-sha256 <sha256> --cell <id> --legs sidecar:<model> --isolated-sidecar --mdenseon-model <validated-directory> --warm-trials <declared-trials> --out <declared-private-output>",
+    "harness": "testing:run files=[candidate-hybrid-bench.test.ts,candidate-hybrid-bench.integration.test.ts] harness=papercusp"
+  },
+  "limitations": [
+    "This protocol receipt is not a completed real-model seven-bar run manifest or a measurement verdict.",
+    "Full hybrid integration remains P-004; the pilot neutral adapter is explicitly rejected as a complete-route substitute.",
+    "Raw corpora, prompts, requests, vectors and model files remain private.",
+    "No production model/index switch, global re-embedding or live gate operation is authorized."
+  ]
+}

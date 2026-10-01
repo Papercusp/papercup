@@ -200,9 +200,16 @@ const _origPaperSidForSuite = process.env.PAPERCUSP_SID;
 // throughout the suite see isAgentSession()===false; tests that want the omp
 // signal set it explicitly within their own body.
 const _origPaperAgentForSuite = process.env.PAPERCUSP_AGENT;
+// WI-10004632 (same class as WI-10003698): psu sessions export
+// PAPERCUSP_CANONICAL_TREE=<the real staging checkout>. Inherited, it makes the
+// hook's worktree guard (canonicalTreeRoot) refuse every fixture workspace the
+// suite builds under a temp dir — 12 false reds in an agent shell, 0 with it
+// unset. Default it to unset (=> <ws>/papercusp); a test that needs it sets it.
+const _origCanonicalTreeForSuite = process.env.PAPERCUSP_CANONICAL_TREE;
 beforeEach(() => {
   delete process.env.PAPERCUSP_SID;
   delete process.env.PAPERCUSP_AGENT;
+  delete process.env.PAPERCUSP_CANONICAL_TREE;
   clearAdvisoryStash();
 });
 afterEach(() => {
@@ -210,6 +217,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_SID = _origPaperSidForSuite;
   if (_origPaperAgentForSuite === undefined) delete process.env.PAPERCUSP_AGENT;
   else process.env.PAPERCUSP_AGENT = _origPaperAgentForSuite;
+  if (_origCanonicalTreeForSuite === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+  else process.env.PAPERCUSP_CANONICAL_TREE = _origCanonicalTreeForSuite;
 });
 
 describe('bare Vertex shared-capacity retry smoothing (WI-38388)', () => {

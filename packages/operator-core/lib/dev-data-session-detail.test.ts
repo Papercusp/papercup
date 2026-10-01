@@ -128,7 +128,7 @@ describe('getSessionDetail related_chats', () => {
           omp_thread_id: null,
           coord_owner_id: 'su-owner-1',
           started_at: '2026-09-13T00:00:00.000Z',
-          ended_at: '2026-09-13T01:00:00.000Z',
+          ended_at: null,
         },
       ])
       .mockResolvedValueOnce([
@@ -155,7 +155,18 @@ describe('getSessionDetail related_chats', () => {
     });
     expect(detail?.invocations).toHaveLength(1);
     expect(detail?.invocations[0]?.tool_name).toBe('coord:orient');
-    expect(dbMocks.orgSql.mock.calls[2]?.slice(1)).toContain('su-owner-1');
+    const invocationCall = dbMocks.orgSql.mock.calls[2];
+    const invocationTemplate = invocationCall?.[0] as TemplateStringsArray | undefined;
+    const invocationSql = invocationTemplate
+      ?.reduce((query, part, index) => `${query}${index ? `$${index}` : ''}${part}`, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(invocationSql).toContain("invoked_at <= COALESCE($3, 'infinity'::timestamptz)");
+    expect(invocationCall?.slice(1)).toEqual([
+      'su-owner-1',
+      '2026-09-13T00:00:00.000Z',
+      null,
+    ]);
   });
 
   it('resolves a headless native session id to its canonical spawn id', async () => {

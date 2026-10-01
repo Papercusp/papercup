@@ -279,7 +279,35 @@ describe('mutationProbeRefusal narrowing', () => {
       'tests/loader.test.ts': "import { target } from '../src/loader';\nexport default target;\n" });
     const refusal = await mutationProbeRefusal(dir, ['tests/loader.test.ts'], probe('plans/new.ts'));
     expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
-    expect(refusal!.hint).toContain('loader.ts names new');
+    expect(refusal!.hint).toContain('loader.ts names new.ts');
+  });
+
+  it('does not treat a generic path segment as a reference to a probed source filename', async () => {
+    const dir = checkout({ ...base,
+      'src/loader.ts': "export const route = '/api/sessions/active';\n",
+      'tests/loader.test.ts': "import { route } from '../src/loader';\nexport default route;\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/loader.test.ts'],
+      probe('packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts'))).resolves.toBeNull();
+  });
+
+  it('still fences a statically concatenated complete probed filename', async () => {
+    const dir = checkout({ ...base,
+      'src/loader.ts': "export const target = 'routes/adv/' + 'sessions' + '.ts';\n",
+      'tests/loader.test.ts': "import { target } from '../src/loader';\nexport default target;\n" });
+    const refusal = await mutationProbeRefusal(dir, ['tests/loader.test.ts'],
+      probe('packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts'));
+    expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+    expect(refusal!.hint).toContain('loader.ts names sessions.ts');
+  });
+
+  it('still fences a complete probed filename in a statically interpolated template', async () => {
+    const dir = checkout({ ...base,
+      'src/loader.ts': "export const target = `routes/adv/${'sessions'}.ts`;\n",
+      'tests/loader.test.ts': "import { target } from '../src/loader';\nexport default target;\n" });
+    const refusal = await mutationProbeRefusal(dir, ['tests/loader.test.ts'],
+      probe('packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts'));
+    expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+    expect(refusal!.hint).toContain('loader.ts names sessions.ts');
   });
 
   it('refuses a test that imports the probed source, directly or transitively', async () => {
