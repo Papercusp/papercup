@@ -212,6 +212,54 @@ describe('routeConsult — routing + blend', () => {
     expect(ids).not.toContain('agent-looponly');
   });
 
+  it('does not route an amendment review using a high-similarity fork that reviewed a different rubric', async () => {
+    const targetRef = 'acceptance-pui-first-party-public-release-2026-09-07';
+    const differentRef = 'acceptance-pui-chat-first-ux-2026-09-28';
+    const question =
+      `Outside-lineage review of a started acceptance-BAR amendment to ${targetRef}. ` +
+      'The relevance router picked you and screened you with rubrics:check-approver.';
+    const vectorAt = (theta: number) => {
+      const vector = new Array<number>(768).fill(0);
+      vector[100] = Math.cos(theta);
+      vector[101] = Math.sin(theta);
+      return vector;
+    };
+    const insertReviewTurn = async (owner: string, text: string, theta: number) => {
+      turnSeq += 1;
+      await rootSql`
+        INSERT INTO harness_shared.session_turns
+          (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text,
+           text_embedding, text_embedding_mode, text_embedding_profile)
+        VALUES ('default', 'claude', ${'sess-subject-' + owner}, ${turnSeq}, ${NOW.toISOString()}::timestamptz,
+                ${owner}, 'user', ${text}, ${JSON.stringify(vectorAt(theta))}::vector,
+                'gemma', ${EMBEDDER_DIM_SPECS.gemma.profileId})`;
+    };
+    await insertReviewTurn(
+      'fork-reviewing-different-rubric',
+      `Outside-lineage review of a started acceptance-BAR amendment to ${differentRef}. ` +
+        'The relevance router picked you and screened you with rubrics:check-approver.',
+      0,
+    );
+    await insertReviewTurn(
+      'reviewer-on-target-rubric',
+      `Detailed review notes for rubric ${targetRef}: the amendment changes the acceptance bar and its falsifier.`,
+      0.15,
+    );
+
+    const routeDeps = { ...deps(0), embed: async () => vectorAt(0) };
+    const unscoped = await routeConsult(
+      { workspaceId: WS, requesterId: 'review-requester', question },
+      routeDeps,
+    );
+    expect(unscoped.qualified[0]?.ownerId).toBe('fork-reviewing-different-rubric');
+
+    const scoped = await routeConsult(
+      { workspaceId: WS, requesterId: 'review-requester', question, subjectRef: targetRef },
+      routeDeps,
+    );
+    expect(scoped.qualified.map((candidate) => candidate.ownerId)).toEqual(['reviewer-on-target-rubric']);
+  });
+
   it('R-13/D-001: 40 days of idleness does NOT disqualify — beta still clears the floor, it just ranks last', async () => {
     // The pre-D-001 router scored beta 0.55×0.660 + 0.15×recency(40d) ≈ 0.38
     // against a 0.5 blended floor and dropped it. That was the vacation defect:

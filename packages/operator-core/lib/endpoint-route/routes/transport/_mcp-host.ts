@@ -146,7 +146,7 @@ import {
   type AdmissionAuthorityContext,
   type AdmissionRecoveryAuthority,
 } from '../../../work-item-admission-authority';
-import { workspaceForCoordOwner } from '../../../adv-sessions';
+import { classifyOwnerNativeSession, workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { isReservedHarnesslessRoutineHost } from '../../../harness/routines/routine-host';
@@ -1576,6 +1576,28 @@ export async function tryBuildSpawnContext(
     const headerClient = (headers.get('x-papercusp-client') ?? '').trim();
     const mcpSessionId = (headers.get('mcp-session-id') ?? '').trim();
     const suIdentity = headerClient || clientParam || mcpSessionId;
+    // The owner SID is inherited by child processes. Keep it as the coordination
+    // identity (hooks and MCP calls must share lock ownership), but independently
+    // verify the CLI's native incarnation before allowing it to act as that owner.
+    // Claude carries its session id in the URL; Codex supplies it dynamically in
+    // this header. No native id means a legacy/non-CLI caller and retains the
+    // established identity path.
+    const nativeSessionId =
+      (headers.get('x-papercusp-native-session') ?? '').trim() ||
+      (url.searchParams.get('native_session') ?? '').trim();
+    if (suIdentity && nativeSessionId) {
+      try {
+        const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
+        if (binding.binding === 'foreign') {
+          return { kind: 'failed', reason: 'superuser_foreign_native_session' };
+        }
+      } catch {
+        // A supplied native-session claim is meaningful only when the binding
+        // check succeeds. Failing open here would restore the inherited-SID bug
+        // exactly when its verifier is unavailable.
+        return { kind: 'failed', reason: 'superuser_native_session_unverified' };
+      }
+    }
     // Workspace, in precedence order (psu-workspace-scoping fix — without
     // this, every claude/omp SU session ran as '*' and workspace-scoped
     // tools failed "no workspace transaction" regardless of the psu picker):

@@ -175,7 +175,7 @@ const post = (init: { cookie?: string; origin?: string | null; body?: unknown } 
   return { method: 'POST', headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) };
 };
 
-const get = (cookie?: string) => ({ headers: cookie ? { cookie: `session=${cookie}` } : {} });
+const get = (cookie?: string): RequestInit => ({ headers: cookie ? { cookie: `session=${cookie}` } : {} });
 
 function signedWebhook(rawBody: string, secret = WEBHOOK_SECRET, at = NOW) {
   const t = Math.floor(at.getTime() / 1000);

@@ -11,8 +11,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Override only the two fs calls loadToken() makes; keep the rest of node:fs
-// real so the vitest harness (reporters, shims) is unaffected.
+// Mock token reads and controllable metadata; keep the rest of node:fs real
+// so the Vitest harness (reporters, shims) is unaffected. The fixed-mtime
+// rotation case guards against reintroducing an mtime-only token cache.
 vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
   return { ...actual, readFileSync: vi.fn(), statSync: vi.fn() };
@@ -59,8 +60,8 @@ describe('isValidSuperuserBearer', () => {
   let mtime = 0;
 
   beforeEach(() => {
-    // Fresh mtime each call defeats loadToken's mtime cache so each test's
-    // readFileSync stub is honored.
+    // Distinct defaults isolate tests from an mtime-only cache; the rotation
+    // regression below overrides this with a constant mtime.
     vi.mocked(statSync).mockImplementation(() => ({ mtimeMs: ++mtime }) as ReturnType<typeof statSync>);
   });
 
@@ -77,7 +78,7 @@ describe('isValidSuperuserBearer', () => {
   });
 
   it('rejects when no token file is installed', () => {
-    vi.mocked(statSync).mockImplementation(() => {
+    vi.mocked(readFileSync).mockImplementation(() => {
       throw new Error('ENOENT');
     });
     expect(isValidSuperuserBearer('a-valid-superuser-token-1234')).toBe(false);
@@ -98,7 +99,6 @@ describe('isValidSuperuserBearer', () => {
     vi.mocked(readFileSync).mockReturnValue('disposable-superuser-token-1234');
     expect(isValidSuperuserBearer('real-user-superuser-token-1234')).toBe(false);
     expect(isValidSuperuserBearer('disposable-superuser-token-1234')).toBe(true);
-    expect(statSync).toHaveBeenCalledWith('/tmp/isolated-operator-home/superuser-token');
     expect(readFileSync).toHaveBeenCalledWith('/tmp/isolated-operator-home/superuser-token', 'utf8');
   });
 
@@ -110,6 +110,18 @@ describe('isValidSuperuserBearer', () => {
     vi.mocked(readFileSync).mockReturnValue('second-operator-token-1234567');
     expect(isValidSuperuserBearer('first-operator-token-12345678')).toBe(false);
     expect(isValidSuperuserBearer('second-operator-token-1234567')).toBe(true);
+  });
+
+  it('accepts a replaced token at the same path when its mtime is unchanged', () => {
+    vi.stubEnv('PAPERCUSP_HOME', '/tmp/operator-rotated');
+    vi.mocked(statSync).mockReturnValue({ mtimeMs: 42 } as ReturnType<typeof statSync>);
+    vi.mocked(readFileSync)
+      .mockReturnValueOnce('first-operator-token-12345678')
+      .mockReturnValueOnce('second-operator-token-1234567');
+
+    expect(isValidSuperuserBearer('first-operator-token-12345678')).toBe(true);
+    expect(isValidSuperuserBearer('second-operator-token-1234567')).toBe(true);
+    expect(readFileSync).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a same-length but non-matching bearer (constant-time compare)', () => {

@@ -238,6 +238,18 @@ describe('expandTestRunBinding: harness attribution', () => {
     });
   });
 
+  it('reports a local run source restriction instead of claiming its matching canonical path mismatches', async () => {
+    const { d } = deps(run({ root, file_path: path.join(root, TEST) }));
+    const out = await expandTestRunBinding(input({ canonicalTestPath: TEST }), SCOPE, d);
+    expect(out).toMatchObject({ ok: false, error: 'test_run_canonical_path_source_unsupported' });
+    if (!out.ok) {
+      expect(out.message).toContain('only supported for mutation-probe copy-out runs');
+      expect(out.message).toContain('source "local"');
+      expect(out.message).toContain('Omit canonicalTestPath');
+      expect(out.message).not.toContain('does not match');
+    }
+  });
+
   it('binds a copy-out mutation row through an explicit canonical test path after its mirror is removed', async () => {
     const mirror = path.join(tmpdir(), 'mutation-probe-removed', 'mirror');
     const canonical = `libs/generic/tooldef/${TEST}`;
@@ -263,11 +275,11 @@ describe('expandTestRunBinding: harness attribution', () => {
   it('rejects a copy-out override that changes the recorded relative test or names a missing file', async () => {
     const { d } = deps(run({ root: '/tmp/mutation-probe-removed/mirror', source: 'mutation-probe' }));
     expect(await expandTestRunBinding(input({ canonicalTestPath: 'pkg/lib/other.test.ts' }), SCOPE, d))
-      .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
+      .toMatchObject({ ok: false, error: 'test_run_canonical_path_mismatch' });
     expect(await expandTestRunBinding(input({ canonicalTestPath: `missing/${TEST}` }), SCOPE, d))
       .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
     expect(await expandTestRunBinding(input({ canonicalTestPath: TEST }), SCOPE, deps(run({ root: '/tmp/other/mirror' })).d))
-      .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
+      .toMatchObject({ ok: false, error: 'test_run_canonical_path_source_unsupported' });
   });
 
   it.each(['ci', 'admin-ui'])('never adopts a %s row (harness-NULL by design)', async (source) => {

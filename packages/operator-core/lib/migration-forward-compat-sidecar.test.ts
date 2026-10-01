@@ -41,6 +41,7 @@ import {
   forwardCompatReviewWarnings,
   makeAncestorResolver,
   migrationSha256,
+  parseFrozenCandidateOpenedAtMs,
   sidecarNameFor,
 } from '../../../scripts/check-migration-forward-compat.mjs';
 
@@ -67,7 +68,7 @@ const VALID = {
 
 function evaluate(
   overrides: Record<string, unknown> = {},
-  options: { artifactFile?: string; sidecarText?: string | null; isAncestorOfHead?: (sha: string) => boolean | null } = {},
+  options: { artifactFile?: string; sidecarText?: string | null; isAncestorOfHead?: (sha: string) => boolean | null; now?: Date } = {},
 ) {
   return evaluateForwardCompatSidecar({
     artifactFile: options.artifactFile ?? ARTIFACT,
@@ -75,7 +76,7 @@ function evaluate(
       options.sidecarText !== undefined ? options.sidecarText : JSON.stringify({ ...VALID, ...overrides }),
     migrationSha: migrationSha256(MIGRATION_SQL),
     isAncestorOfHead: options.isAncestorOfHead ?? (() => true),
-    now: NOW,
+    now: options.now ?? NOW,
   });
 }
 
@@ -92,6 +93,33 @@ describe('forward-compat sidecar — calibration', () => {
   it('treats a MISSING sidecar as an absence, not a refusal', () => {
     const verdict = evaluate({}, { sidecarText: null });
     expect(verdict).toEqual({ present: false, honored: false, refusals: [] });
+  });
+});
+
+describe('forward-compat sidecar — frozen candidate review clock', () => {
+  it('keeps reviewBy valid for the original freeze date after a later rerun', () => {
+    const openedAtMs = Date.parse('2026-09-27T13:00:00.000Z');
+    const frozenAt = parseFrozenCandidateOpenedAtMs(String(openedAtMs));
+    expect(frozenAt).toEqual(new Date(openedAtMs));
+    expect(parseFrozenCandidateOpenedAtMs(undefined)).toBeUndefined();
+
+    expect(
+      evaluate({ reviewBy: '2026-09-27' }, { now: frozenAt }).honored,
+    ).toBe(true);
+    const afterExpiry = evaluate(
+      { reviewBy: '2026-09-27' },
+      { now: new Date('2026-09-28T00:00:00.000Z') },
+    );
+    expect(afterExpiry.honored).toBe(false);
+    expect(afterExpiry.refusals).toContain(
+      'sidecar is stale — reviewBy 2026-09-27 has passed; renew or remove it',
+    );
+  });
+
+  it('refuses malformed persisted timestamps instead of reverting to wall time', () => {
+    expect(() => parseFrozenCandidateOpenedAtMs('not-a-timestamp')).toThrow(
+      'frozen candidate openedAtMs must be a positive integer',
+    );
   });
 });
 

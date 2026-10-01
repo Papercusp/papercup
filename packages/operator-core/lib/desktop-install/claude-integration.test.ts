@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,7 +40,8 @@ describe('buildClaudeMcpEntry', () => {
     expect(e.type).toBe('http');
     expect(e.url).toBe(
       '${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}/api/mcp?superuser=1' +
-        '&client=${PAPERCUSP_SID:-agent-1}&workspace=${PAPERCUSP_WORKSPACE:-}' +
+        '&client=${PAPERCUSP_SID:-agent-1}&native_session=${CLAUDE_CODE_SESSION_ID:-}' +
+        '&workspace=${PAPERCUSP_WORKSPACE:-}' +
         // recall drill 2 (2026-07-12): ?harness= feeds the initialize-time memory
         // prelude's recall query — absent, every psu session was a bare session
         // with NO session-start recall. Env-expanded like the rest.
@@ -61,6 +63,14 @@ describe('buildClaudeMcpEntry', () => {
   });
   it('power profile bakes profile=power as the fallback', () => {
     expect(buildClaudeMcpEntry('http://x', 'T', 'a', 'power').url).toContain('profile=${PAPERCUSP_PROFILE:-power}');
+  });
+
+  it('keeps the standalone Claude installer bound to the live native session too', () => {
+    const installer = readFileSync(
+      new URL('../../../../apps/operator/scripts/install-standalone-mcp.sh', import.meta.url),
+      'utf8',
+    );
+    expect(installer).toContain("&native_session=${CLAUDE_CODE_SESSION_ID:-}");
   });
 });
 

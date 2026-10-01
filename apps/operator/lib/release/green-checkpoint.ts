@@ -427,6 +427,8 @@ export interface CheckpointExecutionContext {
    * initial candidate and prefix-confirm runs preserve the historical barrier.
    */
   repairVerification?: boolean;
+  /** Persisted queue.openedAtMs for the immutable candidate associated with this run. */
+  frozenCandidateOpenedAtMs?: number;
   /** Original affected-task proof identity for a frozen repair chain. Distinct from runId. */
   affectedTestProofGroup?: string;
 }
@@ -12407,6 +12409,10 @@ async function runGreenCheckpointInner(
       headAtStart: candidate,
       ...(setupIdentity ? { setup: setupIdentity } : {}),
       repairVerification,
+      ...(repairQueue &&
+      (candidate === repairQueue.candidate || candidate === repairQueue.repairHead)
+        ? { frozenCandidateOpenedAtMs: repairQueue.openedAtMs }
+        : {}),
       ...(repairVerification && repairQueue?.affectedTestProofGroup
         ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
         : {}),
@@ -16127,6 +16133,8 @@ function postSuiteCommandId(cmd: string, args: readonly string[]): string {
 interface PostSuiteRunOptions {
   /** Deterministic test seam; production uses the monotonic-enough wall clock. */
   now?: () => number;
+  /** Stable openedAtMs of the frozen queue candidate being judged, when applicable. */
+  frozenCandidateOpenedAtMs?: number;
   /** Test seam only. Production always uses the fixed resource-derived ceiling. */
   lowMemoryConcurrency?: number;
   /** EI-203121: real-path run/setup identity; optional keeps injected legacy seams valid. */
@@ -16738,10 +16746,30 @@ export async function runPostSuiteLegs(
       skipReason: "candidate provides no lint:migration-forward-compat script",
     };
   } else {
+    const frozenCandidateOpenedAtMs = options.frozenCandidateOpenedAtMs;
+    if (
+      frozenCandidateOpenedAtMs !== undefined &&
+      (!Number.isSafeInteger(frozenCandidateOpenedAtMs) ||
+        frozenCandidateOpenedAtMs <= 0 ||
+        !Number.isFinite(new Date(frozenCandidateOpenedAtMs).getTime()))
+    ) {
+      throw new Error(
+        "frozen candidate openedAtMs is not a valid epoch-millisecond timestamp",
+      );
+    }
+    const forwardCompatEnv =
+      frozenCandidateOpenedAtMs === undefined
+        ? env
+        : {
+            ...env,
+            PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS: String(
+              frozenCandidateOpenedAtMs,
+            ),
+          };
     const forwardCompat = await exec(
       "npm",
       ["run", "lint:migration-forward-compat"],
-      { cwd: treeDir, env, allowNonZero: true },
+      { cwd: treeDir, env: forwardCompatEnv, allowNonZero: true },
     );
     legs.lintMigrationForwardCompat = {
       status: forwardCompat.code === 0 ? "passed" : "failed",
@@ -19263,6 +19291,15 @@ export function realCheckpointDeps(
           "unknown",
         ...(execution?.setup ? { setup: execution.setup } : {}),
       };
+      const postSuiteOptions: PostSuiteRunOptions = {
+        identity: postSuiteIdentity,
+        ...(execution?.frozenCandidateOpenedAtMs !== undefined
+          ? {
+              frozenCandidateOpenedAtMs:
+                execution.frozenCandidateOpenedAtMs,
+            }
+          : {}),
+      };
       // EI-21053570719607951: the early orchestration preflight protects setupTree, but it
       // cannot explain a filesystem that fills DURING the suite. Capture the same tmpdir
       // filesystem immediately around the expensive run so a red with ENOSPC (or a measured
@@ -19303,7 +19340,7 @@ export function realCheckpointDeps(
       // confirmation runs on their historical suite-first barrier.
       const repairLegsPromise = execution?.repairVerification
         ? runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
-            identity: postSuiteIdentity,
+            ...postSuiteOptions,
           })
         : null;
       const [r, concurrentRepairLegs] = repairLegsPromise
@@ -19330,7 +19367,7 @@ export function realCheckpointDeps(
       let legs = concurrentRepairLegs ??
         (suiteCompleted
           ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
-              identity: postSuiteIdentity,
+              ...postSuiteOptions,
             })
           : legsNotRun(
               "suite red — post-suite legs deferred until the suite is considered passing",
@@ -19478,7 +19515,7 @@ export function realCheckpointDeps(
               env,
               exec,
               cfg.spaBuildWorkspace,
-              { identity: postSuiteIdentity },
+              postSuiteOptions,
             );
             fullOutput += legs.output;
           }

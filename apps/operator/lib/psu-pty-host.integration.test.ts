@@ -745,6 +745,16 @@ describe('session-port managed seed + native persistence helpers', () => {
     const startingFooter =
       '› Ask Codex to do anything   Starting \xb7 GPT-5.6-Sol high \xb7 Context 100% left';
     expect(startupOutputReady('codex', startingFooter)).toBe(false);
+    // Cursor motion can be stripped from accumulated scrollback, flattening a repaint
+    // into `anythingReady` / `anythingStarting`. Normalize only these known suffixes.
+    expect(startupOutputReady(
+      'codex',
+      '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left',
+    )).toBe(true);
+    expect(startupOutputReady(
+      'codex',
+      '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left',
+    )).toBe(false);
     // A later Ready repaint in the same accumulated buffer does prove readiness.
     expect(startupOutputReady('codex', startingFooter + '\x1b[22;3H' + readyFooter)).toBe(true);
     // A later Starting repaint revokes an earlier Ready footer in the same buffer.
@@ -922,6 +932,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       bridgeTty: false,
       signalSource: new EventEmitter(),
       kickoff,
+      onExit: () => undefined,
     });
     try {
       await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-FRAME'), { timeout: 8000 });

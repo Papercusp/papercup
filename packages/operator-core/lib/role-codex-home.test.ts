@@ -443,6 +443,25 @@ describe('writeRoleCodexHome', () => {
 });
 
 describe('writeSuCodexHome', () => {
+  it('sends the live native Codex session and repairs older configs without it', async () => {
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const opts = {
+      sessionKey: 'native-session-binding',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'P',
+      sid: 'su-native-session-binding',
+      model: RESOLVED_CODEX_DEFAULT,
+    };
+    const home = writeSuCodexHome(opts);
+    const expected = 'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }';
+    expect(readFileSync(home.configPath, 'utf8')).toContain(expected);
+
+    writeFileSync(home.configPath, readFileSync(home.configPath, 'utf8').replace(`${expected}\n`, ''));
+    const repaired = ensureSuCodexHomeConfig(opts);
+    expect(repaired.repaired).toBe(true);
+    expect(readFileSync(home.configPath, 'utf8')).toContain(expected);
+  });
+
   it('suppresses browser-capable plugin auth in fresh and repaired headless homes without changing visible homes', async () => {
     const { ensureSuCodexHomeConfig, writeRoleCodexHome, writeSuCodexHome } = await import('./role-codex-home');
     const role = writeRoleCodexHome({
@@ -894,11 +913,12 @@ describe('writeSuCodexHome', () => {
     expect(toml).toContain('status_line = ["run-state", "model-with-reasoning", "context-remaining", "git-branch"]');
   });
 
-  it('no token → degraded config (url only, no http_headers / superuser bearer)', async () => {
+  it('no token → degraded config keeps only the native-session header, never a superuser bearer', async () => {
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({ sessionKey: 11, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 's' });
     const toml = readFileSync(out.configPath, 'utf8');
-    expect(toml).not.toContain('http_headers');
+    expect(toml).toContain('env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }');
+    expect(toml).not.toContain('http_headers = { Authorization');
     expect(toml).not.toContain('Authorization');
   });
 

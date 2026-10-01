@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import {
+  fleetSlugFromName,
   getFleet,
   getFleetHeadcountTarget,
   projectFleetHeadcountState,
@@ -398,21 +399,26 @@ export default defineTool({
     // `resolveConcreteWorkspaceId` absorbing the unscoped-su '*' sentinel (EI-13820).
     const { workspaceId: callerWorkspaceId } = resolveFleetCaller(ctx);
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, callerWorkspaceId);
-    const fleet = await getFleet(workspaceId, args.fleet);
+    const requestedFleetSlug = fleetSlugFromName(args.fleet);
+    const fleet = await getFleet(workspaceId, requestedFleetSlug);
     if (!fleet) {
       // Name the workspace actually searched: "not in this workspace" is unactionable
       // when the caller cannot see which workspace "this" resolved to.
       return json(
         {
           ok: false,
-          error:
-            `no fleet '${args.fleet}' in workspace '${workspaceId}' — see fleet:list. ` +
+          error: 'unknown_fleet',
+          fleet: args.fleet,
+          normalizedFleetSlug: requestedFleetSlug,
+          message:
+            `No fleet '${args.fleet}' (resolved as '${requestedFleetSlug}') in workspace '${workspaceId}' — see fleet:list. ` +
             `If it belongs to a different workspace, pass { workspace } to read it there.`,
           workspaceSearched: workspaceId,
         },
         true,
       );
     }
+    const fleetSlug = fleet.fleetSlug;
     // WI-3818: each leg is independently bounded so a slow/hanging one degrades
     // to its fallback instead of hanging the whole handler — completionStats
     // (an optional harness-scoped aggregate) and the bee counts are the
@@ -428,7 +434,7 @@ export default defineTool({
       everMembersResult,
     ] = await Promise.all([
       listFleetRosterDiagnosed({
-        fleetSlug: args.fleet,
+        fleetSlug,
         workspaceId,
         leaderOwnerId: fleet.leaderOwnerId,
       }),
@@ -444,25 +450,25 @@ export default defineTool({
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:runningBees',
       }),
-      withBoundedTimeout(countRunningFleetBees(args.fleet, workspaceId), {
+      withBoundedTimeout(countRunningFleetBees(fleetSlug, workspaceId), {
         fallback: 0,
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:beeCount',
       }),
-      withBoundedTimeout(getFleetHeadcountTarget(workspaceId, args.fleet), {
+      withBoundedTimeout(getFleetHeadcountTarget(workspaceId, fleetSlug), {
         fallback: undefined,
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:headcountTarget',
       }),
       withBoundedTimeout(
-        liveFleetMemberIds(args.fleet, workspaceId, 'launch'),
+        liveFleetMemberIds(fleetSlug, workspaceId, 'launch'),
         {
           fallback: null,
           timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
           label: 'fleet:status:headcountCurrent',
         },
       ),
-      withBoundedTimeout(fleetEverMembers(args.fleet, { workspaceId }), {
+      withBoundedTimeout(fleetEverMembers(fleetSlug, { workspaceId }), {
         fallback: new Set<string>(),
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:everMembers',
@@ -557,13 +563,13 @@ export default defineTool({
         measuredAt: new Date().toISOString(),
         scope: {
           workspace: workspaceId,
-          fleet: args.fleet,
+          fleet: fleetSlug,
           ...(args.harness ? { harness: args.harness } : {}),
         },
       },
     );
     const populationLifecycle = buildFleetPopulationLifecycle({
-      fleet: args.fleet,
+      fleet: fleetSlug,
       candidates: roster,
       everMemberIds: [...everMembersResult.value],
       everMembersAvailable: !everMembersResult.degraded,

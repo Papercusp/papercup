@@ -4171,9 +4171,11 @@ test('[serviceable fallback] a near-cap-but-ALLOWED account is SERVED (residual 
   );
   gov.recordResponse({
     'anthropic-ratelimit-unified-5h-status': 'allowed', // still ALLOWED by Anthropic
-    'anthropic-ratelimit-unified-5h-utilization': '0.97', // ≥ predict-pause watermark → predictively paused
+    'anthropic-ratelimit-unified-5h-utilization': '0.97', // near the cap — no longer pauses on its own (WI-10004492)
     'anthropic-ratelimit-unified-5h-reset': String(Math.round((Date.now() + 5 * 60 * 60_000) / 1000)),
   });
+  assert.equal(gov.state.pausedUntil, 0, 'an allowed 0.97 window alone does NOT pause (no early 95% pause)');
+  gov.penalize({ retryAfterMs: 60_000 }); // a real non-window penalty on the still-allowed account → SOFT pause
   assert.ok(gov.softPaused(Date.now()), 'precondition: the account is SOFT-paused (serviceable, not rejected)');
   assert.ok(
     gov.state.pausedUntil - Date.now() > 80,

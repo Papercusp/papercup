@@ -26,7 +26,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 // eslint-disable-next-line import/no-relative-packages
 import { armMigration, buildAllocationResult } from '../../../scripts/next-migration.mjs';
 
@@ -98,8 +98,8 @@ describe('next-migration CLI entry (WI-10004484)', () => {
   it('detects the original raw entry guard after bundling', async () => {
     const source = readFileSync(join(REPO_ROOT, 'scripts/next-migration.mjs'), 'utf8');
     const unsafeSource = source.replace(
-      'if (isCliEntry(import.meta.url)) await main();',
-      'if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) await main();',
+      'if (isCliEntry(import.meta.url)) {',
+      'if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {',
     );
     expect(unsafeSource).not.toBe(source);
     const bundlePath = await bundleAllocator(unsafeSource);
@@ -109,6 +109,21 @@ describe('next-migration CLI entry (WI-10004484)', () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/--name is required and must contain at least one letter or digit/);
+  });
+
+  // WI-10004497: the host bundle imports this file, so a top-level await here
+  // turns it and every importer into async esbuild inits. Across an import
+  // cycle those inits waited on each other and the operator host never
+  // listened (:3170 and every verify-tauri-headless rig, 2026-10-01). esbuild
+  // refuses top-level await for CommonJS output, so this transform fails on
+  // exactly that construct anywhere in the file.
+  it('has no top-level await, so bundling it cannot make its importers async', async () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/next-migration.mjs'), 'utf8');
+    await expect(transform(source, { format: 'cjs', loader: 'js', logLevel: 'silent' })).resolves.toBeDefined();
+    // Positive control: the same check rejects the pre-fix spelling.
+    const withTopLevelAwait = `${source}\nif (globalThis.__never__) await main();\n`;
+    await expect(transform(withTopLevelAwait, { format: 'cjs', loader: 'js', logLevel: 'silent' }))
+      .rejects.toThrow(/Top-level await/);
   });
 });
 

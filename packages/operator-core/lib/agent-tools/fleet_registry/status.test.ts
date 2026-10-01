@@ -92,6 +92,7 @@ import statusTool, {
   shapeFleetStatus,
 } from './status';
 import type { FleetRosterEntry } from '../../fleet/fleet-roster';
+import { fleetSlugFromName } from '../../agent-fleets-store';
 
 const CTX = { workspaceId: 'ws', role: 'operator' } as never;
 const parse = (res: { content?: { text: string }[]; data?: unknown }) =>
@@ -194,6 +195,40 @@ describe('fleet:status', () => {
       claimFlow: { status: 'unknown', values: null },
     });
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
+  });
+
+  it('resolves an untruncated launch name to the canonical fleet slug', async () => {
+    const launchName = 'papercusp-session-transcript-exact-fuzzy-search-2026-09-14-plan-fleet';
+    const slug = fleetSlugFromName(launchName);
+    h.getFleet.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: slug,
+      title: launchName,
+      description: 'Handles the test lane',
+      owner: 'su-owner',
+      leaderOwnerId: 'su-leader',
+      colorScheme: 'forest',
+      lastLaunchTransaction: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    const out = parse(await invoke({ fleet: launchName }));
+
+    expect(h.getFleet).toHaveBeenCalledWith('ws', slug);
+    expect(h.listFleetRosterDiagnosed).toHaveBeenCalledWith(
+      expect.objectContaining({ fleetSlug: slug, workspaceId: 'ws' }),
+    );
+    expect(out).toMatchObject({ ok: true, slug });
+  });
+
+  it('returns unknown_fleet instead of an untyped not-found response', async () => {
+    h.getFleet.mockResolvedValueOnce(null);
+
+    const out = parse(await invoke({ fleet: 'does-not-exist' }));
+
+    expect(out).toMatchObject({ ok: false, error: 'unknown_fleet', fleet: 'does-not-exist', workspaceSearched: 'ws' });
+    expect(h.listFleetRosterDiagnosed).not.toHaveBeenCalled();
   });
 
   it('reports an enabled target against the exact current launch membership', async () => {
@@ -954,6 +989,7 @@ describe('fleet:status workspace targeting (EI-21934696112365508)', () => {
     const res = parse(await invoke({ fleet: 'citations-sweep', workspace: 'papercusp' })) as {
       ok?: boolean;
       error?: string;
+      message?: string;
       workspaceSearched?: string;
     };
 
@@ -961,8 +997,9 @@ describe('fleet:status workspace targeting (EI-21934696112365508)', () => {
     // "not in this workspace" is unactionable when the caller cannot see which
     // workspace "this" resolved to — the miss must name it, and say how to retarget.
     expect(res.workspaceSearched).toBe('papercusp');
-    expect(res.error).toContain('papercusp');
-    expect(res.error).toContain('workspace');
+    expect(res.error).toBe('unknown_fleet');
+    expect(res.message).toContain('papercusp');
+    expect(res.message).toContain('workspace');
   });
 
   it("skips the unscoped-su '*' sentinel rather than querying for it (EI-13820)", async () => {

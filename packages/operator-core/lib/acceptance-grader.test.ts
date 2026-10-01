@@ -1248,6 +1248,25 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     });
   });
 
+  it('matches the completed invalidated Codex OAuth refresh 502 only for a controlled caller', () => {
+    const raw =
+      'API Error: unexpected status 502 Bad Gateway: ' +
+      'inference-gateway: codex OAuth token refresh failed: codex-oauth-proxy: token refresh failed 401 ' +
+      '(refresh_token_invalidated). Your session has ended. Please log in again.\r\n' +
+      '✻ Cooked for 1m 2s · done 11:47 AM\r\n❯';
+
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(raw, { allowInferenceGatewayError: true })).toMatchObject({
+      code: 'inference_gateway_error',
+      evidence: expect.stringContaining('refresh_token_invalidated'),
+    });
+
+    const transientRefreshFailure = raw.replace('refresh_token_invalidated', 'refresh_timeout');
+    expect(
+      classifyAcceptanceGraderTerminalFailure(transientRefreshFailure, { allowInferenceGatewayError: true }),
+    ).toBeNull();
+  });
+
   it('matches the completed gateway pool-exhaustion screen only for a controlled caller', () => {
     const error =
       '\u001b[38;5;220m●\u001b[3GAPI Error: Request rejected (429) · inference-gateway: all accounts \r\n' +

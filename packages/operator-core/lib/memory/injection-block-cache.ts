@@ -45,6 +45,8 @@ export const MEMORY_BLOCK_COLD_DEADLINE_MS = 2_000;
 
 /** Invalidation tag — bump via the cache ECA for an eager refresh. */
 export const MEMORY_BLOCK_CACHE_TAG = 'memory-inject-block';
+/** Base-table tag the generic cache-ECA bumps after a canonical memory write. */
+export const MEMORY_CANONICAL_CACHE_TAG = 'memory_canonical';
 
 export interface MemoryBlockBoundedOpts {
   /** Override the cold-miss wait cap (sentinel_scan turns have no human waiting). */
@@ -91,7 +93,11 @@ export async function getMemoryBlockBoundedResult(
       deadlineMs,
       softTtlMs: opts.softTtlMs ?? MEMORY_BLOCK_SOFT_TTL_MS,
       hardTtlMs: opts.hardTtlMs ?? MEMORY_BLOCK_HARD_TTL_MS,
-      tags: [MEMORY_BLOCK_CACHE_TAG],
+      // The memory-write path publishes a synthetic memory_canonical.changed
+      // event through sync-sse. The generic cache-ECA bumps this base-table tag
+      // in every listening process, so the next prompt cannot serve a superseded
+      // block from its process-local SWR cache.
+      tags: [MEMORY_BLOCK_CACHE_TAG, MEMORY_CANONICAL_CACHE_TAG],
       // A null block (no hits / degraded store) is a completed build — cache it
       // so a quiet or degraded store isn't re-probed on the blocking path.
       cacheEmpty: true,

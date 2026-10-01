@@ -83,6 +83,14 @@ describe('gym:arm', () => {
     );
   });
 
+  it('rejects dryRun-only calls at argument validation', () => {
+    const dryRunOnly = tool.args.safeParse({ harness: 'papercusp', dryRun: true });
+    expect(dryRunOnly.success).toBe(false);
+    if (!dryRunOnly.success) expect(dryRunOnly.error.issues[0]?.message).toMatch(/enabled and\/or budgetUsd/i);
+    expect(tool.args.safeParse({ harness: 'papercusp', enabled: false, dryRun: true }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: 'papercusp', budgetUsd: null, dryRun: true }).success).toBe(true);
+  });
+
   it('arming writes BOTH layers with the same state and verifies', async () => {
     const b = body(
       await tool.handler({ harness: 'papercusp', enabled: true, budgetUsd: 50 } as never, { role: 'operator' } as never),

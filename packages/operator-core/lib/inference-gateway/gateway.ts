@@ -8147,6 +8147,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return best;
         },
         tokenTimeoutMs,
+        authQuarantineMs: CODEX_CLI_AUTH_QUARANTINE_MS,
         failoverBackoffMs: bare429FailoverBackoffMs,
         ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
         transportCooldownMs: IP_TRANSPORT_COOLDOWN_MS,
@@ -8283,6 +8284,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (account !== lastAccountId) codexFailovers++;
               lastAccountId = account;
               if (error) {
+                const authRefresh =
+                  context.route.value.reason === 'refresh' ? kernelAdapter.noteRefreshFailure(context, error) : null;
                 // The STATUS discriminates the token-resolve throw (503) from the
                 // transport throw (502); a TTFB timeout, the request ceiling and a
                 // downstream abort all surfaced through the old transport catch, so
@@ -8291,8 +8294,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 codexUpstreamErrors++;
                 recordOwnerOutcome(routing.ownerId, 'upstream_error', {
                   account,
-                  detail: tokenResolve ? 'oauth-token-resolve' : 'oauth-transport',
+                  detail: tokenResolve
+                    ? 'oauth-token-resolve'
+                    : authRefresh?.authClass
+                      ? 'oauth-auth-refresh'
+                      : 'oauth-transport',
                 });
+                if (authRefresh?.authClass) {
+                  const disposition = authRefresh.parkedAccountId
+                    ? 'quarantined for ' +
+                      Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000) +
+                      's' +
+                      (authRefresh.nextAccountId ? ' and failing over to ' + authRefresh.nextAccountId : '')
+                    : routing.hardPin
+                      ? 'not quarantined because the request is hard-pinned'
+                      : 'not quarantined because no account pool is available';
+                  log(
+                    'warn',
+                    'inference-gateway: Codex OAuth account ' +
+                      account +
+                      ' rejected refresh credentials; ' +
+                      disposition,
+                  );
+                }
                 log(
                   'error',
                   `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,

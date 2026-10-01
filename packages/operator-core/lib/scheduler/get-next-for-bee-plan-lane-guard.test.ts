@@ -23,6 +23,9 @@ const { sqlMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
 }));
 const getLongLivedAdminPoolMock = vi.hoisted(() => vi.fn(() => sqlMock));
+const boundedOrgTxnMock = vi.hoisted(() =>
+  vi.fn(async (run: (tx: unknown) => Promise<unknown>, opts: { client?: unknown }) => run(opts.client)),
+);
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -31,6 +34,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 vi.mock('../long-lived-admin-pool', () => ({
   getLongLivedAdminPool: getLongLivedAdminPoolMock,
+}));
+
+vi.mock('../pg-bounded-txn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pg-bounded-txn')>()),
+  boundedOrgTxn: (...args: unknown[]) => boundedOrgTxnMock(...(args as [never, never])),
 }));
 
 const getNextWorkItemMock = vi.fn();
@@ -61,12 +69,17 @@ vi.mock('./claim-spec-match', async (importOriginal) => ({
   matchesWorkItemClaimSpec: (...args: unknown[]) => matchesWorkItemClaimSpecMock(...args),
 }));
 
-import { getNextForBee } from './claim-spec-store';
+import { getNextForBee, SCHEDULER_CLAIM_SETUP_BUDGET_MS } from './claim-spec-store';
 import { buildP2pLaneFence } from './p2p-lane-fence';
 
 function claimResult(id: string) {
   return {
-    workItem: { id, family: 'feature' as 'feature' | 'issue', payload: { plan_item: { plan_slug: 'a-plan', item_id: id } }, harness: 'papercusp' },
+    workItem: {
+      id,
+      family: 'feature' as 'feature' | 'issue',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: id } },
+      harness: 'papercusp',
+    },
     claimedUnder: { specId: 'default', revision: 1 },
   };
 }
@@ -81,6 +94,11 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
     recordClaimAttemptMock.mockReset().mockResolvedValue(undefined);
     getLongLivedAdminPoolMock.mockClear();
+    boundedOrgTxnMock
+      .mockReset()
+      .mockImplementation(async (run: (tx: unknown) => Promise<unknown>, opts: { client?: unknown }) =>
+        run(opts.client),
+      );
   });
 
   it('routes the public pull path through the isolated scheduler claim pool', async () => {
@@ -104,11 +122,13 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     sqlMock.mockImplementation(branches.handler);
     getNextWorkItemMock.mockResolvedValue(null);
 
+    const signal = new AbortController().signal;
     await getNextForBee({
       cupId: 'me',
       harness: 'papercusp',
       ignoreStoredSpec: true,
       useDedicatedClaimPool: true,
+      signal,
     });
 
     expect(getLongLivedAdminPoolMock).toHaveBeenCalledWith('scheduler-claim', {
@@ -120,6 +140,14 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       expect.anything(),
       expect.objectContaining({ client: sqlMock }),
     );
+    expect(boundedOrgTxnMock).toHaveBeenCalledTimes(1);
+    expect(boundedOrgTxnMock).toHaveBeenCalledWith(expect.any(Function), {
+      client: sqlMock,
+      signal,
+      acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+      statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+      lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+    });
     branches.assertAllMatched();
   });
 
@@ -293,9 +321,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
   });
 
   it('returns null (never serves a blocked row) when the queue drains mid-retry', async () => {
-    getNextWorkItemMock
-      .mockResolvedValueOnce(claimResult('F-1'))
-      .mockResolvedValueOnce(null); // nothing left after releasing F-1
+    getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-1')).mockResolvedValueOnce(null); // nothing left after releasing F-1
     planItemLaneBlockReasonMock.mockResolvedValueOnce({
       reason: 'blocked',
       planSlug: 'a-plan',
@@ -384,9 +410,9 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
    * admission.
    */
   // @covers INV-14
-// The 'writes NO bounce row when the lane is clear' case is the half that makes the count
-// mean something: an always-recording instrument would pass every other case identically.
-describe('claim_audit instrumentation of the bounce (P-011)', () => {
+  // The 'writes NO bounce row when the lane is clear' case is the half that makes the count
+  // mean something: an always-recording instrument would pass every other case identically.
+  describe('claim_audit instrumentation of the bounce (P-011)', () => {
     function auditCalls() {
       return recordClaimAttemptMock.mock.calls.map(([raw]) => {
         const attempt = raw as {
@@ -406,12 +432,17 @@ describe('claim_audit instrumentation of the bounce (P-011)', () => {
     }
     const bounceRows = () => auditCalls().filter((c) => c.detail.reason === 'plan-lane-blocked');
 
-    it('records a claim_audit row carrying the lane guard\'s verdict when it bounces a row', async () => {
+    it("records a claim_audit row carrying the lane guard's verdict when it bounces a row", async () => {
       getNextWorkItemMock
         .mockResolvedValueOnce(claimResult('F-1')) // blocked
         .mockResolvedValueOnce(claimResult('F-2')); // clear
       planItemLaneBlockReasonMock
-        .mockResolvedValueOnce({ reason: 'blocked-by', planSlug: 'a-plan', itemId: 'P-007', effectiveStatus: 'blocked' })
+        .mockResolvedValueOnce({
+          reason: 'blocked-by',
+          planSlug: 'a-plan',
+          itemId: 'P-007',
+          effectiveStatus: 'blocked',
+        })
         .mockResolvedValueOnce(null);
 
       const res = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });

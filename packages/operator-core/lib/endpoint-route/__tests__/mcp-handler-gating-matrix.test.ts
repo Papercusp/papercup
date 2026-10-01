@@ -70,6 +70,8 @@ const h = vi.hoisted(() => {
     signingRows: null as null | Array<{ value_b64: string; rotated_at: string }>,
     fakeTx,
     fakeSql,
+    nativeSessionBinding: 'unbound' as 'bound' | 'unbound' | 'foreign',
+    nativeSessionCalls: [] as Array<{ ownerId: string; sessionId: string }>,
     /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
     rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
     /** EI-22390450916579377: plugin-host warm seam for late projected-tool registration. */
@@ -343,7 +345,18 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 vi.mock('../../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
+  return {
+    ...actual,
+    workspaceForCoordOwner: h.workspaceForCoordOwner,
+    classifyOwnerNativeSession: async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
+      h.nativeSessionCalls.push({ ownerId, sessionId });
+      return {
+        binding: h.nativeSessionBinding,
+        boundSessionId: h.nativeSessionBinding === 'foreign' ? 'native-parent' : h.nativeSessionBinding === 'bound' ? sessionId : null,
+        advSessionId: 1,
+      };
+    },
+  };
 });
 vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -1682,6 +1695,8 @@ beforeEach(() => {
   h.resourceReads.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
+  h.nativeSessionBinding = 'unbound';
+  h.nativeSessionCalls.length = 0;
   h.workspaceAcquireError = null;
   h.getPresence.mockResolvedValue(null);
   h.rubricGet.mockResolvedValue(null);
@@ -4672,6 +4687,33 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(res.isError).toBeUndefined();
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('su-header-sid');
+  });
+
+  it('rejects an inherited owner SID when the native CLI session is bound elsewhere', async () => {
+    h.nativeSessionBinding = 'foreign';
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&client=su-parent-sid', {
+        'x-papercusp-native-session': 'native-child-session',
+      }),
+    );
+    expect(res.isError).toBe(true);
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-parent-sid', sessionId: 'native-child-session' }]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('allows the owner incarnation when Claude supplies its native session in the URL', async () => {
+    h.nativeSessionBinding = 'bound';
+    const res = await callTool(
+      'gatingtest:scoped',
+      {},
+      superuserExtra('&client=su-owner&native_session=native-owner-session'),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-owner-session' }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ctx.uiClientId).toBe('su-owner');
   });
 
   it('Mcp-Session-Id still identifies a caller that supplied NO SID at all', async () => {

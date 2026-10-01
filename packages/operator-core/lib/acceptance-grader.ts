@@ -682,6 +682,18 @@ export function classifyAcceptanceGraderTerminalFailure(
   // mission. Require BOTH the exact gateway screen and Claude's completed-turn
   // footer, and keep recognition opt-in so quoted error prose in a general frozen
   // acceptance prompt cannot retire a healthy grader.
+  const codexOAuthInvalidRefreshError = allowInferenceGatewayError
+    ? normalized.match(
+        /API Error:\s*(?:unexpected status\s+)?502 Bad Gateway:\s+inference-gateway:\s+codex OAuth token refresh failed:[\s\S]{0,600}?refresh_token_invalidated[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
+      )
+    : null;
+  if (codexOAuthInvalidRefreshError) {
+    return {
+      code: 'inference_gateway_error',
+      evidence: codexOAuthInvalidRefreshError[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+
   const gatewayError = allowInferenceGatewayError
     ? normalized.match(
         /API Error:\s*(?:5\d{2}\s+inference-gateway internal error\.|Request rejected \(429\)(?:\s*·\s*inference-gateway:\s*(?:all accounts\s+throttled|account\s+'[^'\n]{1,120}'\s+paced\/paused);\s*retry after \d+s|\s+This request would exceed your\s+account(?:'|’)s rate limit\.\s*Please try again later\.))[\s\S]{0,800}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,

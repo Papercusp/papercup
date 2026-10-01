@@ -418,6 +418,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // personally arms it. Owner-authority does not consume a parking-watermark
   // slot. Count 34 → 35.
   "papercusp-standing-goal-boot-arm",
+  // 2026-10-01 (stripe-subscription-signup-2026-10-01 P-005, WI-10004478) —
+  // deliberate owner-authority dark flag: with it OFF the hosted billing runtime
+  // refuses an sk_live_/rk_live_ key (`live_mode_not_allowed`), so no composition
+  // can charge real cards until the owner arms it. Test-mode signup ships live
+  // and fully tested with this OFF. Owner-authority does not consume a
+  // parking-watermark slot. Count 35 → 36.
+  "papercusp-hosted-billing-live-mode",
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -790,7 +797,12 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // GRADUATED to default-ON (the snapshot producer; cross-machine catch-up proof met by
     // P-003/P-004/P-008). case was 'incomplete', so the parking subset and
     // DARK_FLAGS_HIGH_WATERMARK both ratchet 13 → 12. Count 35 → 34.
-    expect(offCount).toBe(34);
+    // 2026-10-01 (stripe-subscription-signup-2026-10-01 P-005, WI-10004478) —
+    // papercusp-hosted-billing-live-mode, the live-key refusal for hosted
+    // subscription billing (test mode ships live with it OFF). case:
+    // 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK both
+    // stay 12. Count 34 → 35.
+    expect(offCount).toBe(35);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

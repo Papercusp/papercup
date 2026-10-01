@@ -72,6 +72,14 @@ export function evaluateForwardCompatSidecar({ artifactFile, effectiveFile, side
     refusals: string[];
 };
 /**
+ * Parse the frozen repair queue's persisted openedAtMs. An absent value keeps the
+ * historical wall-clock evaluation; a malformed supplied value must fail closed.
+ *
+ * @param {string | undefined} raw
+ * @returns {Date | undefined}
+ */
+export function parseFrozenCandidateOpenedAtMs(raw: string | undefined): Date | undefined;
+/**
  * Read + evaluate the sidecar for one migration artifact on disk.
  *
  * @param {string} directory

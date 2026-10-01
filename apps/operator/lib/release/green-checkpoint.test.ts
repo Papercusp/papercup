@@ -2003,6 +2003,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(verificationExecution).toMatchObject({
       candidate: repaired,
       affectedTestProofGroup: "initial-proof-run",
+      frozenCandidateOpenedAtMs: now - 1_000,
     });
     expect(await revParse(repo, "ready")).toBe(repaired);
     expect(queue).toBeNull();
@@ -13563,6 +13564,63 @@ describe("post-suite legs get their own heap (WI-37510: fork cap OOM'd lint:tsc,
       );
       // And it must not eat unrelated flags the gate set.
       expect(lintTscNodeOptions).toContain("--expose-gc");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("frozen candidate forward-compat review clock", () => {
+  it("passes the persisted queue time only to the forward-compat lint subprocess", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "green-frozen-review-clock-"));
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: {
+            "lint:migrations": "node lint-migrations.mjs",
+            "lint:migration-forward-compat": "node check-forward-compat.mjs",
+          },
+        }),
+      );
+
+      const calls: Array<{
+        cmd: string;
+        args: string[];
+        env?: NodeJS.ProcessEnv;
+      }> = [];
+      const exec = (async (
+        cmd: string,
+        args: string[],
+        opts?: { env?: NodeJS.ProcessEnv },
+      ) => {
+        calls.push({ cmd, args, env: opts?.env });
+        return { code: cmd === "git" ? 1 : 0, stdout: "", stderr: "" };
+      }) as unknown as Parameters<typeof runPostSuiteLegs>[2];
+      const openedAtMs = Date.parse("2026-09-27T13:00:00.000Z");
+
+      const result = await runPostSuiteLegs(
+        dir,
+        { NODE_ENV: "test" },
+        exec,
+        "apps/operator",
+        { frozenCandidateOpenedAtMs: openedAtMs },
+      );
+
+      const forwardCompat = calls.find((call) =>
+        call.args.includes("lint:migration-forward-compat"),
+      );
+      const migrations = calls.find((call) =>
+        call.args.includes("lint:migrations"),
+      );
+      expect(result.lintMigrationForwardCompat.status).toBe("passed");
+      expect(forwardCompat?.env?.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS).toBe(
+        String(openedAtMs),
+      );
+      expect(
+        migrations?.env?.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS,
+      ).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

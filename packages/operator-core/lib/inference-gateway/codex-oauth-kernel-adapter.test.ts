@@ -175,6 +175,7 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
     stripRequestHeaders: STRIP_REQUEST,
     streaming: overrides.streaming ?? true,
     tokenTimeoutMs: 1_000,
+    authQuarantineMs: 15 * 60 * 1000,
     failoverBackoffMs: 5_000,
     ipCooldownMaxMs: 60_000,
     transportCooldownMs: 30_000,
@@ -223,7 +224,12 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
     },
     policy: POLICY,
     telemetry,
-    admission: { async run(_context, task) { return task(); } },
+    admission: {
+      async run(_context, task) { return task(); },
+      observeAttempt: ({ context, error }) => {
+        if (error) adapter.noteRefreshFailure(context, error);
+      },
+    },
     adapter: observedAdapter,
     downstream: {
       start: (response) => {
@@ -366,6 +372,62 @@ describe('codex OAuth kernel adapter — 401 refresh is a re-attempt, not a fail
     // A 401 is recoverable only by refresh — it must not park the account.
     expect(pool.exhaustedCalls).toEqual([]);
     expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
+  });
+
+  it('quarantines an invalidated refresh token and fails over without retrying a sibling egress', async () => {
+    const now = 1_800_000_000_000;
+    const quarantineMs = 15 * 60 * 1000;
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const seenAccounts: string[] = [];
+    const { options, started } = harness(
+      async (_url, init) => {
+        const accountId = init.headers['chatgpt-account-id']!;
+        seenAccounts.push(accountId);
+        return accountId === 'chatgpt-a'
+          ? upstream(401, {}, sseBody('expired'))
+          : upstream(200, {}, sseBody('ok'));
+      },
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool,
+        siblingEgressAvailable: () => true,
+        refreshAccessToken: async () => {
+          throw new Error('codex-oauth-proxy: token refresh failed 401; code=refresh_token_invalidated');
+        },
+        extra: { authQuarantineMs: quarantineMs, now: () => now },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, attempts: 3, failovers: 1 });
+    expect(seenAccounts).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(pool.exhaustedCalls).toEqual([{ id: 'chatgpt-a', resetAt: now + quarantineMs }]);
+    expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
+  });
+
+  it('does not park or rotate an invalid refresh credential under a hard account pin', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const seenAccounts: string[] = [];
+    const { options } = harness(
+      async (_url, init) => {
+        seenAccounts.push(init.headers['chatgpt-account-id']!);
+        return upstream(401, {}, sseBody('expired'));
+      },
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool,
+        pin: { accountId: 'chatgpt-a', mode: 'hard' },
+        siblingEgressAvailable: () => true,
+        refreshAccessToken: async () => {
+          throw new Error('codex-oauth-proxy: token refresh failed 401; code=refresh_token_invalidated');
+        },
+      },
+    );
+
+    await expect(executeGatewayRequestKernel(options)).rejects.toMatchObject({ status: 502 });
+    expect(seenAccounts).toEqual(['chatgpt-a']);
+    expect(pool.exhaustedCalls).toEqual([]);
   });
 
   it('rotates when the REFRESH itself fails, matching the live handler', async () => {

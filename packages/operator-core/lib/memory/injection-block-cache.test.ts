@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCache } from '@papercusp/cache';
 
-import { getMemoryBlockBounded, getMemoryBlockBoundedResult } from './injection-block-cache';
+const { notifySyncInvalidateMock } = vi.hoisted(() => ({ notifySyncInvalidateMock: vi.fn() }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: notifySyncInvalidateMock }));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-memory' }));
+
+import { tagsForTableChange } from '../events/cache-eca-rule';
+import { invalidateUserMemoryViews, USER_MEMORY_SYNC_KEYS } from './invalidate-user-memory-views';
+import {
+  getMemoryBlockBounded,
+  getMemoryBlockBoundedResult,
+  MEMORY_CANONICAL_CACHE_TAG,
+} from './injection-block-cache';
 
 /** A controllable build: counts calls, resolves/rejects on demand. */
 function controlledBuild(block: string | null = '## Operator memory') {
@@ -171,5 +181,40 @@ describe('getMemoryBlockBounded', () => {
     await expect(pb).resolves.toBe('B');
     expect(a.calls()).toBe(1);
     expect(b.calls()).toBe(1);
+  });
+
+  it('rebuilds the cached prompt block after the cache-ECA reports a canonical memory change', async () => {
+    const cache = createCache({ clock: () => Date.now() });
+    const old = controlledBuild('SUPERSEDED MEMORY');
+    const initial = getMemoryBlockBounded('ws', 'papercup:u1:c1', old.build, { cache, deadlineMs: 2000 });
+    old.resolveAll();
+    await expect(initial).resolves.toBe('SUPERSEDED MEMORY');
+
+    // This is the same table tag the generic `*.changed` cache-ECA derives from
+    // harness_shared.memory_canonical.changed when memory writes publish it.
+    cache.invalidateByTags('ws', tagsForTableChange(MEMORY_CANONICAL_CACHE_TAG, undefined));
+
+    const current = controlledBuild('CURRENT MEMORY');
+    const afterWrite = getMemoryBlockBounded('ws', 'papercup:u1:c1', current.build, { cache, deadlineMs: 2000 });
+    current.resolveAll();
+    await expect(afterWrite).resolves.toBe('CURRENT MEMORY');
+    expect(old.calls()).toBe(1);
+    expect(current.calls()).toBe(1);
+  });
+
+  it('publishes memory writes as cross-process cache-ECA changes while keeping the sync views live', async () => {
+    notifySyncInvalidateMock.mockReset().mockResolvedValue(undefined);
+
+    await invalidateUserMemoryViews();
+
+    expect(notifySyncInvalidateMock).toHaveBeenCalledWith(
+      'harness_shared.memory_canonical.changed',
+      { workspace_id: 'ws-memory' },
+      undefined,
+      { dedupeWindowMs: 0 },
+    );
+    for (const key of USER_MEMORY_SYNC_KEYS) {
+      expect(notifySyncInvalidateMock).toHaveBeenCalledWith(key);
+    }
   });
 });

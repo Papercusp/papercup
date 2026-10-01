@@ -20,6 +20,7 @@ import { useHarnessFeature, useHarnessIssues, type FeatureStatus, type HarnessFe
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
 import type { WorkItemRow } from './WorkItemsPanel';
+import { HumanWorkSection } from './HumanWorkSection';
 import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
@@ -574,6 +575,9 @@ export function WorkItemDetail({
           <div className="pc-adv-detail__section">
             <div className="pc-adv-detail__prose">{workItem.summary}</div>
           </div>
+        ) : null}
+        {(workItem as WorkItemRow & { payload?: { humanWork?: { route?: string } } }).payload?.humanWork?.route === 'market' ? (
+          <HumanWorkSection slug={slug} id={workItem.id} refreshKey={workItem.updatedAt} />
         ) : null}
         {/* Feature-family rows keep their richer F-* detail: cross-link to it. */}
         {workItem.family === 'feature' && workItem.id.startsWith('F-') ? (

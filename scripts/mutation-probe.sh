@@ -689,6 +689,9 @@ readonly SCRATCH
 # only after restoration. The lock is not held during the guard itself.
 PROBE_ADMISSION_FD=""
 PROBE_MANIFEST=""
+PROBE_MUTANT_FILE="$SCRATCH/in-tree-mutant"
+PROBE_MUTANT_SUM=""
+PROBE_MUTATION_APPLIED=0
 if [ "$IN_TREE" -eq 1 ]; then
   command -v bwrap >/dev/null || die "--in-tree requires bwrap to isolate concurrent testing:run children"
   ADMISSION_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel)" ||
@@ -771,37 +774,60 @@ finish() {
   # Disarm FIRST: without this the handler runs twice (once for TERM, once for
   # the EXIT that TERM causes) and prints its verdict twice.
   trap - EXIT INT TERM
-  # Restore FIRST. `kill_tree` walks the host process table once per descendant;
-  # on the shared box that can take seconds before it signals even a tiny
-  # shell->sleep tree. Putting cleanup first left the tracked mutant in place
-  # for that entire walk and intermittently exceeded the harness's 5s
-  # SIGTERM->restore integrity deadline. The guard child is read-only with
-  # respect to FILE, and the old ordering did not wait for it to exit before
-  # copying anyway, so deferring the copy bought no race protection.
-  if [ "$IN_TREE" = "1" ]; then
-    # Restore must not wait for a slow unrelated test. Already admitted children
-    # hold a bwrap bind to the immutable original snapshot.
-    cp "$BASE" "$FILE" 2>/dev/null || true
+  # COPY-OUT never writes FILE: a changed source is an external edit, not probe
+  # damage. IN-TREE may restore only when the current bytes still equal the
+  # exact mutant generated from BASE; otherwise a blind copy would erase a peer
+  # edit. Hash into scratch and read it without command substitution so a
+  # signal cannot interrupt nested hash parsing inside this trap.
+  local now tree_conflict=0
+  if git hash-object "$FILE" > "$SCRATCH/current.sha" 2>/dev/null; then
+    IFS= read -r now < "$SCRATCH/current.sha" || now="MISSING"
+  else
+    now="MISSING"
   fi
-  rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"
-  # Once the shared-tree invariant is restored, reap the probe's own child and
-  # every descendant so a cancelled npm/node/vitest guard cannot run orphaned.
-  if [ -n "$CHILD" ]; then
-    kill_tree "$CHILD"
-  fi
-  local now
-  now="$(git hash-object "$FILE" 2>/dev/null || echo MISSING)"
   if [ "$now" = "$ORIG_SUM" ]; then
     RESTORE_STATUS="verified-identical"
     log "tree integrity: VERIFIED — $FILE is byte-identical to its pre-probe state"
+  elif [ "$IN_TREE" = "1" ] && [ "$PROBE_MUTATION_APPLIED" = "1" ] &&
+      [ -n "$PROBE_MUTANT_SUM" ] && [ "$now" = "$PROBE_MUTANT_SUM" ]; then
+    # The only bytes on disk are the probe's own mutant, so restoring BASE is
+    # safe. The caller's path lock remains the serialization boundary for this
+    # in-tree write.
+    if cp -- "$BASE" "$FILE" 2>/dev/null &&
+        git hash-object "$FILE" > "$SCRATCH/restored.sha" 2>/dev/null &&
+        IFS= read -r now < "$SCRATCH/restored.sha" && [ "$now" = "$ORIG_SUM" ]; then
+      RESTORE_STATUS="verified-identical"
+      log "tree integrity: VERIFIED — $FILE is byte-identical to its pre-probe state"
+    else
+      RESTORE_STATUS="restore-verification-failed"
+      tree_conflict=1
+      log "🚨 IN-TREE RESTORE VERIFICATION FAILED — preserving the current file and recovery snapshots."
+      printf 'MUTATION_PROBE_TREE_RESULT status=restore-verification-failed target=in-tree source_sha=%s mutant_sha=%s current_sha=%s\n' \
+        "$ORIG_SUM" "$PROBE_MUTANT_SUM" "$now"
+    fi
+  elif [ "$IN_TREE" = "1" ]; then
+    RESTORE_STATUS="concurrent-change-preserved"
+    tree_conflict=1
+    log "🚨 IN-TREE SOURCE CHANGED — it matches neither the pre-probe nor exact mutant snapshot."
+    log "🚨 Refusing to overwrite it; the baseline and mutant snapshots remain at $BASE and $PROBE_MUTANT_FILE."
+    log "🚨 Review the diff before reconciling any probe mutation."
+    printf 'MUTATION_PROBE_TREE_RESULT status=concurrent-change-preserved target=in-tree source_sha=%s mutant_sha=%s current_sha=%s\n' \
+      "$ORIG_SUM" "${PROBE_MUTANT_SUM:-unknown}" "$now"
   else
-    RESTORE_STATUS="DIRTY"
-    log ""
-    log "🚨🚨 TREE INTEGRITY FAILURE — $FILE does NOT match its pre-probe state."
-    log "🚨🚨 git-sync will COMMIT this within minutes. Restore it NOW:"
-    log "🚨🚨     cp '$BASE' '$FILE'"
-    log "🚨🚨 (the pre-probe copy is preserved at $BASE — this scratch dir is NOT cleaned up)"
-    log ""
+    RESTORE_STATUS="external-change-preserved"
+    log "copy-out source changed during the probe; copy-out did not write the tracked file."
+    log "The probe measured source blob $ORIG_SUM; the current source blob is $now. No restore was attempted."
+    printf 'MUTATION_PROBE_TREE_RESULT status=external-change-preserved target=copy-out source_sha=%s current_sha=%s\n' \
+      "$ORIG_SUM" "$now"
+  fi
+  rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"
+  # Reap the probe's own child and every descendant. For a known in-tree
+  # conflict, preserve scratch recovery copies and stop before recording a
+  # successful restore or deleting the admission manifest.
+  if [ -n "$CHILD" ]; then
+    kill_tree "$CHILD"
+  fi
+  if [ "$tree_conflict" -eq 1 ]; then
     trap - EXIT
     exit 3
   fi
@@ -1699,6 +1725,15 @@ if ! perl -Mstrict -pe "$MUTATE" "$SCRATCH/strict-check" >/dev/null 2>"$SCRATCH/
       the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
 fi
 
+# Keep an exact in-tree mutant snapshot outside the dirty window. Cleanup may
+# restore the tracked file only if it still matches this byte-for-byte result.
+if [ "$IN_TREE" -eq 1 ]; then
+  perl -pe "$MUTATE" "$BASE" > "$PROBE_MUTANT_FILE" ||
+    die "could not stage the expected in-tree mutant snapshot"
+  PROBE_MUTANT_SUM="$(git hash-object "$PROBE_MUTANT_FILE")" ||
+    die "could not hash the expected in-tree mutant snapshot"
+fi
+
 MUTANT_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").mutant.non-whitespace"
 readonly MUTANT_NON_WHITESPACE
 
@@ -1706,7 +1741,20 @@ readonly MUTANT_NON_WHITESPACE
 if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
   verify_sweep_fence
 fi
+if [ "$IN_TREE" -eq 1 ]; then
+  current_before_mutation="$(git hash-object "$FILE" 2>/dev/null)" ||
+    die "could not verify the tracked file before mutation; refusing to edit it"
+  if [ "$current_before_mutation" != "$ORIG_SUM" ]; then
+    log "tracked file changed after the probe snapshot; refusing to apply the in-tree mutation."
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d source_sha=%s current_sha=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$ORIG_SUM" "$current_before_mutation"
+    die "the tracked file no longer matches the pre-probe snapshot; no in-tree mutation was applied."
+  fi
+fi
 perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
+if [ "$IN_TREE" -eq 1 ]; then
+  PROBE_MUTATION_APPLIED=1
+fi
 
 # Show the exact mutation before running the guard. This makes an accidental
 # match in indentation/comments visible immediately instead of being inferred

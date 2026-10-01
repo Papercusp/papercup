@@ -546,6 +546,30 @@ export function evaluateForwardCompatSidecar({
 }
 
 /**
+ * Parse the frozen repair queue's persisted openedAtMs. An absent value keeps the
+ * historical wall-clock evaluation; a malformed supplied value must fail closed.
+ *
+ * @param {string | undefined} raw
+ * @returns {Date | undefined}
+ */
+export function parseFrozenCandidateOpenedAtMs(raw) {
+  if (raw == null || raw.trim() === '') return undefined;
+  const value = raw.trim();
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new TypeError('frozen candidate openedAtMs must be a positive integer');
+  }
+  const openedAtMs = Number(value);
+  const date = new Date(openedAtMs);
+  if (
+    !Number.isSafeInteger(openedAtMs) ||
+    !Number.isFinite(date.getTime())
+  ) {
+    throw new TypeError('frozen candidate openedAtMs is outside the valid date range');
+  }
+  return date;
+}
+
+/**
  * Read + evaluate the sidecar for one migration artifact on disk.
  *
  * @param {string} directory
@@ -1252,6 +1276,26 @@ function main() {
     .sort((a, b) => a.num - b.num);
 
   const isAncestorOfHead = makeAncestorResolver();
+  let frozenCandidateOpenedAt;
+  try {
+    frozenCandidateOpenedAt = parseFrozenCandidateOpenedAtMs(
+      process.env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS,
+    );
+  } catch (error) {
+    console.error(
+      'check-migration-forward-compat: invalid PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS (' +
+        String(error instanceof Error ? error.message : error) +
+        ')',
+    );
+    process.exit(2);
+    return;
+  }
+  if (frozenCandidateOpenedAt) {
+    console.log(
+      'check-migration-forward-compat: evaluating reviewBy as of frozen candidate selection ' +
+        frozenCandidateOpenedAt.toISOString(),
+    );
+  }
   const offenders = [];
   const acknowledged = [];
   for (const { file, text } of readScannedFiles(SQL_DIR, inScope.map(({ file }) => file))) {
@@ -1262,7 +1306,11 @@ function main() {
     // The migration itself is immutable once applied, so the acknowledgement may
     // live in a typed sidecar beside it (D-092). Any defect refuses the WHOLE
     // sidecar — a partially-valid one never waves a migration through.
-    const sidecar = readForwardCompatSidecar(SQL_DIR, file, { migrationText: text, isAncestorOfHead });
+    const sidecar = readForwardCompatSidecar(SQL_DIR, file, {
+      migrationText: text,
+      isAncestorOfHead,
+      now: frozenCandidateOpenedAt,
+    });
     if (sidecar.honored) {
       acknowledged.push({ file, sidecarFile: sidecar.sidecarFile });
       continue;

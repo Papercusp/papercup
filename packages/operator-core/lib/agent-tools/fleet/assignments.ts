@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { fleetSlugFromName, getFleet } from '../../agent-fleets-store';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { selectFleetPopulation, withShownCount, withLivenessComposition } from './fleet-population';
@@ -1077,6 +1078,28 @@ export default defineTool({
     // falls through to the concrete active workspace instead of leaking the
     // sentinel into the query.
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
+    // A fleet name supplied to launch-on-plan is normalized and truncated to the
+    // durable fleet_slug. Resolve that same user-facing name here before filtering;
+    // otherwise an untruncated launch name produces a confident empty roster. Also
+    // reject unknown names explicitly so an invalid fleet never looks measured-empty.
+    const requestedFleetSlug = args.fleet === undefined ? undefined : fleetSlugFromName(args.fleet);
+    let fleetFilter = requestedFleetSlug;
+    if (requestedFleetSlug !== undefined) {
+      const fleet = await getFleet(workspaceId, requestedFleetSlug);
+      if (!fleet) {
+        return {
+          data: {
+            ok: false,
+            error: 'unknown_fleet',
+            fleet: args.fleet,
+            normalizedFleetSlug: requestedFleetSlug,
+            workspaceSearched: workspaceId,
+            message: `No fleet '${args.fleet}' (resolved as '${requestedFleetSlug}') in this workspace — see fleet:list.`,
+          },
+        };
+      }
+      fleetFilter = fleet.fleetSlug;
+    }
     const degradedLegs = new Set<string>();
     const boundedRead = async <T>(
       label: string,
@@ -1102,7 +1125,7 @@ export default defineTool({
           workspaceId,
           agent: queryAgent,
           plan: args.plan,
-          fleet: args.fleet,
+          fleet: fleetFilter,
           harness: args.harness,
           activeOnly: !args.include_lapsed,
         }),
@@ -1711,7 +1734,7 @@ export default defineTool({
         scope: {
           agent: args.agent ?? null,
           plan: args.plan ?? null,
-          fleet: args.fleet ?? null,
+          fleet: fleetFilter ?? null,
           harness: args.harness ?? null,
           /** True when narrowed to the caller itself — then `summary.agents` is at
            *  most 1 BY CONSTRUCTION and says nothing about the fleet. For fleet-wide

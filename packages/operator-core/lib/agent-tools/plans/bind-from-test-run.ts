@@ -130,6 +130,8 @@ export type TestRunBindingError =
   | 'test_run_unfinished'
   | 'test_run_not_adoptable'
   | 'test_run_file_outside_root'
+  | 'test_run_canonical_path_source_unsupported'
+  | 'test_run_canonical_path_mismatch'
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy';
 
@@ -505,12 +507,33 @@ export async function expandTestRunBinding(
     // Copy-out mirrors are temporary and are intentionally not Git worktrees.
     // Only an explicitly named canonical test in the same harness can replace
     // their path; never use a caller-supplied path for another run source.
-    if (row.source !== 'mutation-probe' || !matchingSuffix || (testPath && testPath !== input.canonicalTestPath)) {
+    if (row.source !== 'mutation-probe') {
       return {
         ok: false,
-        error: 'test_run_file_outside_root',
+        error: 'test_run_canonical_path_source_unsupported',
         testRunId,
-        message: `canonicalTestPath does not match mutation-probe run ${testRunId}'s recorded test path.`,
+        message:
+          `canonicalTestPath is only supported for mutation-probe copy-out runs; test-run ${testRunId} has source ${JSON.stringify(row.source)}. ` +
+          'Omit canonicalTestPath to bind the recorded test file.',
+      };
+    }
+    if (!matchingSuffix) {
+      return {
+        ok: false,
+        error: 'test_run_canonical_path_mismatch',
+        testRunId,
+        message: recordedRelative
+          ? `canonicalTestPath ${JSON.stringify(input.canonicalTestPath)} does not preserve mutation-probe run ${testRunId}'s recorded relative test path ${JSON.stringify(recordedRelative)}.`
+          : `canonicalTestPath cannot be checked because mutation-probe run ${testRunId}'s file cannot be resolved relative to its recorded root.`,
+      };
+    }
+    if (testPath && testPath !== input.canonicalTestPath) {
+      return {
+        ok: false,
+        error: 'test_run_canonical_path_mismatch',
+        testRunId,
+        message:
+          `canonicalTestPath ${JSON.stringify(input.canonicalTestPath)} differs from the recorded test path ${JSON.stringify(testPath)} in this harness checkout.`,
       };
     }
     try {

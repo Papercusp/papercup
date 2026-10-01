@@ -133,15 +133,40 @@ export interface PathRewrite {
 export function replaceAcross(pieces: readonly string[], from: string, to: string): readonly string[] {
   const s = pieces.join('');
   if (!from || from === to || !s.includes(from)) return pieces;
-  const matches: number[] = [];
-  for (let i = s.indexOf(from); i >= 0; i = s.indexOf(from, i + from.length)) matches.push(i);
-  const out = s.split(from).join(to);
-  const d = to.length - from.length;
+  const edits: Edit[] = [];
+  for (let i = s.indexOf(from); i >= 0; i = s.indexOf(from, i + from.length)) edits.push({ start: i, end: i + from.length, to });
+  return spliceAcross(pieces, edits);
+}
+
+/** One replacement in the concatenation of a piece list: `[start, end)` becomes `to`. */
+export interface Edit {
+  start: number;
+  end: number;
+  to: string;
+}
+
+/**
+ * Apply sorted, non-overlapping `edits` to the concatenation of `pieces`, then cut the result
+ * back into the same number of pieces at the mapped boundaries. A boundary that fell inside an
+ * edited span moves to the end of its replacement. Returns `pieces` itself when no edit changes
+ * anything.
+ */
+export function spliceAcross(pieces: readonly string[], edits: readonly Edit[]): readonly string[] {
+  const s = pieces.join('');
+  const real = edits.filter((e) => s.slice(e.start, e.end) !== e.to);
+  if (real.length === 0) return pieces;
+  let out = '';
+  let at = 0;
+  for (const e of real) {
+    out += s.slice(at, e.start) + e.to;
+    at = e.end;
+  }
+  out += s.slice(at);
   const mapCut = (cut: number): number => {
     let shift = 0;
-    for (const m of matches) {
-      if (m + from.length <= cut) shift += d;
-      else if (m < cut) return m + shift + to.length;
+    for (const e of real) {
+      if (e.end <= cut) shift += e.to.length - (e.end - e.start);
+      else if (e.start < cut) return e.start + shift + e.to.length;
       else break;
     }
     return cut + shift;
@@ -166,22 +191,30 @@ function variants(rw: PathRewrite): PathRewrite[] {
   return out;
 }
 
-function replaceAllVariants(pieces: readonly string[], rw: PathRewrite): readonly string[] {
-  let cur = pieces;
-  for (const v of variants(rw)) cur = replaceAcross(cur, v.from, v.to);
-  return cur;
+/**
+ * Rewrites the concatenation of a piece list and hands back the same number of pieces (see
+ * `spliceAcross`), or the input array itself when nothing changed.
+ */
+export type PieceRewriter = (pieces: readonly string[]) => readonly string[];
+
+function pathRewriter(rw: PathRewrite): PieceRewriter {
+  return (pieces) => {
+    let cur = pieces;
+    for (const v of variants(rw)) cur = replaceAcross(cur, v.from, v.to);
+    return cur;
+  };
 }
 
-/** Recursive string replace; returns the input itself when nothing changed. */
-function deepReplace(v: unknown, rw: PathRewrite): unknown {
+/** Recursive string rewrite; returns the input itself when nothing changed. */
+function deepReplace(v: unknown, fn: PieceRewriter): unknown {
   if (typeof v === 'string') {
-    const [r] = replaceAllVariants([v], rw);
+    const [r] = fn([v]);
     return r;
   }
   if (Array.isArray(v)) {
     let changed = false;
     const out = v.map((x) => {
-      const y = deepReplace(x, rw);
+      const y = deepReplace(x, fn);
       if (y !== x) changed = true;
       return y;
     });
@@ -191,7 +224,7 @@ function deepReplace(v: unknown, rw: PathRewrite): unknown {
     let changed = false;
     const out: Record<string, unknown> = {};
     for (const [k, x] of Object.entries(v)) {
-      const y = deepReplace(x, rw);
+      const y = deepReplace(x, fn);
       if (y !== x) changed = true;
       out[k] = y;
     }
@@ -286,11 +319,13 @@ function deltaSlot(d: Record<string, unknown>): { key: string; get: () => string
  * set of events completed at the same recorded time, so a client sees each event when the
  * recording delivered its last byte.
  */
-export function rewriteExchange(ex: RecordedExchange, rw: PathRewrite): RecordedExchange {
-  if (!rw.from || rw.from === rw.to || ex.chunks.length === 0) return ex;
+export function rewriteExchange(ex: RecordedExchange, rewrite: PathRewrite | PieceRewriter): RecordedExchange {
+  if (typeof rewrite !== 'function' && (!rewrite.from || rewrite.from === rewrite.to)) return ex;
+  if (ex.chunks.length === 0) return ex;
+  const rw = typeof rewrite === 'function' ? rewrite : pathRewriter(rewrite);
   if (!(ex.contentType ?? '').includes('event-stream')) {
     const body = Buffer.concat(ex.chunks.map(decodeChunk)).toString('utf8');
-    const [out] = replaceAllVariants([body], rw);
+    const [out] = rw([body]);
     if (out === body) return ex;
     return { ...ex, chunks: [encodeChunk(ex.chunks.at(-1)!.t, Buffer.from(out, 'utf8'))] };
   }
@@ -314,7 +349,7 @@ export function rewriteExchange(ex: RecordedExchange, rw: PathRewrite): Recorded
   }
   for (const s of streams.values()) {
     const before = s.slots.map((x) => x.get());
-    const after = replaceAllVariants(before, rw);
+    const after = rw(before);
     if (after === before) continue;
     after.forEach((piece, i) => {
       if (piece === before[i]) return;
@@ -336,6 +371,118 @@ export function rewriteExchange(ex: RecordedExchange, rw: PathRewrite): Recorded
   }
   if (pendingT !== null) chunks.push(encodeChunk(pendingT, Buffer.from(pending, 'utf8')));
   return { ...ex, chunks };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Exec-session id rewriting (Codex unified exec).
+//
+// A Codex command still running when its tool call yields comes back to the model as
+// `session_id: <n>`, and the model polls or interrupts it later with
+// `tools.write_stdin({session_id:<n>, ...})`. The CLI picks <n> at random, so a replay's ids
+// differ from the recording's and every served poll named a process that did not exist:
+// `write_stdin failed: Unknown process id`. The polls fail fast, the first run is never read
+// or interrupted, and the replay's tool work (and its CPU and memory) stops following the
+// recording while every request still matches `exact`.
+//
+// Request bodies were not recorded, so a recorded id is visible only where the model names
+// it (served responses), and a replay id only where the CLI reports it (tool outputs in the
+// incoming requests). Each instance pairs them in order of first appearance: the i-th
+// distinct recorded id the model names maps to the i-th distinct id the replay's tool outputs
+// reported. That is exact when the model first polls its processes in the order it started
+// them. It drifts when the model first polls a later process, or when a command still running
+// in the replay had already finished in the recording. (In the 2026-09-30 corpus, 11 Codex
+// recordings poll processes and 4 of them alternate between several.) Each served record
+// logs the map it applied and any named id left unmapped, so a drifted replay is visible.
+// ---------------------------------------------------------------------------------------------
+
+/** The id in a model-written `session_id:<n>` (JS argument or JSON, raw or JSON-escaped). */
+const NAMED_SESSION_ID = /(session_id\\*"?\s*:\s*)(\d+)/g;
+
+/** Distinct exec-session ids the model names in this exchange's response, in order. */
+export function namedExecSessionIds(ex: RecordedExchange): string[] {
+  const body = Buffer.concat(ex.chunks.map(decodeChunk)).toString('utf8');
+  const out: string[] = [];
+  for (const m of body.matchAll(NAMED_SESSION_ID)) if (!out.includes(m[2])) out.push(m[2]);
+  return out;
+}
+
+/** A rewriter that replaces each mapped id in `session_id:<n>`; ids sharing a prefix are safe. */
+export function execSessionRewriter(map: ReadonlyMap<string, string>): PieceRewriter {
+  return (pieces) => {
+    if (map.size === 0) return pieces;
+    const s = pieces.join('');
+    const edits: Edit[] = [];
+    for (const m of s.matchAll(NAMED_SESSION_ID)) {
+      const to = map.get(m[2]);
+      if (to === undefined) continue;
+      const start = m.index + m[1].length;
+      edits.push({ start, end: start + m[2].length, to });
+    }
+    return spliceAcross(pieces, edits);
+  };
+}
+
+// The CLI's own report of a still-running process: an unescaped JSON `"session_id": <n>`
+// (Codex code mode returns the tool result as JSON text) or the plain-text "session ID <n>".
+// An escaped `\"session_id\"` is command OUTPUT quoted inside that JSON, not the CLI's report.
+const REPORTED_SESSION_ID = [/(?<!\\)"session_id"\s*:\s*(\d+)/g, /\bsession ID (\d+)/g];
+
+/**
+ * Distinct exec-session ids the CLI reported in the tool outputs of an OpenAI Responses
+ * request (`input[]` items whose type ends in `_output`), in conversation order. Model-written
+ * items are skipped, so a served recorded id is never mistaken for a replay one.
+ */
+export function reportedExecSessionIds(body: Buffer): string[] {
+  let input: unknown;
+  try {
+    input = (JSON.parse(body.toString('utf8')) as { input?: unknown }).input;
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  const scan = (v: unknown): void => {
+    if (typeof v === 'string') {
+      const found: { at: number; id: string }[] = [];
+      for (const re of REPORTED_SESSION_ID) for (const m of v.matchAll(re)) found.push({ at: m.index, id: m[1] });
+      for (const f of found.sort((a, b) => a.at - b.at)) if (!out.includes(f.id)) out.push(f.id);
+    } else if (Array.isArray(v)) v.forEach(scan);
+    else if (v && typeof v === 'object') Object.values(v).forEach(scan);
+  };
+  for (const item of input) {
+    const type = item && typeof item === 'object' ? (item as { type?: unknown }).type : undefined;
+    if (typeof type === 'string' && type.endsWith('_output')) scan((item as { output?: unknown }).output);
+  }
+  return out;
+}
+
+/** Per-instance pairing of recorded exec-session ids with the replay's own. */
+export interface ExecSessionIds {
+  /** Recorded ids in the order the served responses first named them. */
+  recorded: string[];
+  /** Replay ids in the order the instance's tool outputs first reported them. */
+  replay: string[];
+}
+
+/** Record ids newly reported by an incoming request. */
+export function learnReplayIds(ids: ExecSessionIds, reported: readonly string[]): void {
+  for (const id of reported) if (!ids.replay.includes(id)) ids.replay.push(id);
+}
+
+/**
+ * The recorded->replay map for the ids this response names, registering ids named for the
+ * first time, plus the named ids that have no replay id yet.
+ */
+export function pairFor(ids: ExecSessionIds, named: readonly string[]): { map: Map<string, string>; unmapped: string[] } {
+  const map = new Map<string, string>();
+  const unmapped: string[] = [];
+  for (const id of named) {
+    if (!ids.recorded.includes(id)) ids.recorded.push(id);
+    const replay = ids.replay[ids.recorded.indexOf(id)];
+    if (replay === undefined) unmapped.push(id);
+    else map.set(id, replay);
+  }
+  return { map, unmapped };
 }
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
@@ -366,6 +513,10 @@ export interface ServedRecord {
   recordedMs: number | null;
   /** True when the instance's work-dir rewrite changed this response. */
   rewritten?: boolean;
+  /** Recorded->replay exec-session ids rewritten in this response (Codex `write_stdin`). */
+  execSessionIds?: Record<string, string>;
+  /** Exec-session ids this response names that the replay never reported (served unchanged). */
+  execSessionUnmapped?: string[];
 }
 
 export interface ReplayServerOptions {
@@ -405,6 +556,13 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
     const out = rewriteExchange(ex, rw);
     if (out === ex) untouched.set(ex, rw.from);
     return out;
+  };
+  const execIds = new Map<string, ExecSessionIds>();
+  const named = new WeakMap<RecordedExchange, string[]>();
+  const namedIn = (ex: RecordedExchange): string[] => {
+    let hit = named.get(ex);
+    if (!hit) named.set(ex, (hit = namedExecSessionIds(ex)));
+    return hit;
   };
 
   const recording =(sessionId: string): RecordedExchange[] | null => {
@@ -453,6 +611,16 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
       req.on('end', () => {
         const body = Buffer.concat(parts);
         const fp = fingerprintRequest(body);
+        // Only OpenAI Responses requests carry exec-session reports; skip re-parsing the
+        // (often larger) Anthropic bodies.
+        if (parsed.rest.includes('/responses') && body.length > 0) {
+          const reported = reportedExecSessionIds(body);
+          if (reported.length > 0) {
+            const ids = execIds.get(key) ?? { recorded: [], replay: [] };
+            execIds.set(key, ids);
+            learnReplayIds(ids, reported);
+          }
+        }
         const method = req.method ?? 'GET';
         const t0 = performance.now();
         const picked = takeExchange(st, { method, path: parsed.rest, fp });
@@ -480,8 +648,20 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           return;
         }
         const { tier } = picked;
-        const ex = served(picked.exchange, rewrites.get(key));
+        let ex = served(picked.exchange, rewrites.get(key));
         const rewritten = ex !== picked.exchange;
+        let sessions: Pick<ServedRecord, 'execSessionIds' | 'execSessionUnmapped'> = {};
+        const names = namedIn(picked.exchange);
+        if (names.length > 0) {
+          const ids = execIds.get(key) ?? { recorded: [], replay: [] };
+          execIds.set(key, ids);
+          const { map, unmapped } = pairFor(ids, names);
+          if (map.size > 0) ex = rewriteExchange(ex, execSessionRewriter(map));
+          sessions = {
+            ...(map.size > 0 ? { execSessionIds: Object.fromEntries(map) } : {}),
+            ...(unmapped.length > 0 ? { execSessionUnmapped: unmapped } : {}),
+          };
+        }
         void (async () => {
           let aborted = false;
           res.on('close', () => {
@@ -489,7 +669,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           });
           const first = ex.chunks[0];
           if (first) await sleep(delayOf(first.t));
-          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten });
+          if (aborted) return write({ tier, seq: ex.seq, status: 499, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions });
           const headers: http.OutgoingHttpHeaders = {};
           if (ex.contentType) headers['content-type'] = ex.contentType;
           res.writeHead(ex.status, headers);
@@ -504,7 +684,7 @@ export async function startReplayServer(opts: ReplayServerOptions): Promise<Repl
           const tail = ex.totalMs - prevT;
           if (!aborted && tail > 0 && ex.chunks.length === 0) await sleep(delayOf(tail));
           res.end();
-          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten });
+          write({ tier, seq: ex.seq, status: aborted ? 499 : ex.status, recordedReqBytes: ex.req.bytes, recordedMessages: ex.req.messages, recordedMs: ex.totalMs, rewritten, ...sessions });
         })();
       });
     });

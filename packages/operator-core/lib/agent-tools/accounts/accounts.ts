@@ -15,8 +15,56 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { trackDetached } from '../../detached-imports';
 import { accountsForProvider } from '../../deployment/account-pool';
+import type { GatewayAccountBilling } from '../../inference-gateway/gateway';
 
-const ok = (payload: Record<string, unknown>) => ({
+/**
+ * WI-10004486 (anthropic-credits-gateway P-009 remainder). A Claude account's LIVE billing state
+ * (included | usage-credits | walled | api-credits) and its metered token totals exist only in the
+ * gateway process's memory — `GET :8788/stats` → `billing.byAccount[id]` — never in the pool store
+ * `accountStatus` reads. So `accounts:status` joins them per claude row, and says so when it can't:
+ *   • `'unavailable'`  — the gateway did not answer. UNKNOWN, never "not metered".
+ *   • `'not-observed'` — the gateway answered but holds no billing entry for this account (it has not
+ *                        served it since the gateway started, or the gateway predates P-009).
+ * Codex rows carry no `billing` key: the Anthropic billing model does not apply to them.
+ */
+export type AccountBillingView = GatewayAccountBilling | 'unavailable' | 'not-observed';
+
+export interface AccountsBillingSummary {
+  source: 'gateway:/stats';
+  /** false ⇒ every claude row reads `billing:'unavailable'`. */
+  reachable: boolean;
+  /** false ⇒ the gateway answered without a `billing` block (a pre-P-009 build). */
+  supported: boolean;
+  /** Pool-wide metered tally (`billing.metered`), when the gateway reported one. */
+  metered?: unknown;
+}
+
+export function joinGatewayBilling<R extends { id: string; provider?: string }>(
+  rows: readonly R[],
+  stats: unknown,
+): { accounts: Array<R & { billing?: AccountBillingView }>; billing: AccountsBillingSummary } {
+  const reachable = stats !== null && typeof stats === 'object';
+  const block = reachable ? (stats as { billing?: unknown }).billing : undefined;
+  const supported = block !== null && typeof block === 'object';
+  const byAccountRaw = supported ? (block as { byAccount?: unknown }).byAccount : undefined;
+  const byAccount =
+    byAccountRaw !== null && typeof byAccountRaw === 'object'
+      ? (byAccountRaw as Record<string, GatewayAccountBilling | undefined>)
+      : {};
+  const accounts = rows.map((row) => {
+    if ((row.provider ?? 'claude') !== 'claude') return { ...row };
+    const entry = Object.prototype.hasOwnProperty.call(byAccount, row.id) ? byAccount[row.id] : undefined;
+    const view: AccountBillingView = !reachable ? 'unavailable' : (entry ?? 'not-observed');
+    return { ...row, billing: view };
+  });
+  const metered = supported ? (block as { metered?: unknown }).metered : undefined;
+  return {
+    accounts,
+    billing: { source: 'gateway:/stats', reachable, supported, ...(metered !== undefined ? { metered } : {}) },
+  };
+}
+
+const ok =(payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
 });
 const fail = (payload: Record<string, unknown>) => ({
@@ -185,7 +233,7 @@ export const accountsStatusTool = defineTool({
       'accounts:scale_policy (tune when to scale out under sustained limiting)',
     ],
     returns:
-      "{ ok, accounts:[...], poolVerdict:[...] }. ⚠ `accounts` INTERLEAVES every provider in one list, so counting walled rows yourself makes a claude wall read as evidence about codex. Read `poolVerdict` instead — one row PER PROVIDER, derived from those same rows: { provider, total, serviceable, walledFresh, paused, pacing, unknown, atCapacity, binding, reason }. `atCapacity` is true ONLY when every row is measured unable to serve (no serviceable AND no unknown rows) — a pool of stale readings is unmeasured, never at capacity. `binding` is the shared capacity vocabulary: usage-wall | admission-concurrency | pacing-policy | host | none. The counts OVERLAP (a row can be both walledFresh and paused); `pacing` counts accounts under a burn PACING PROJECTION, which still SERVE — never add them to the walls. Per row, `burn.disposition` ('measured-wall' | 'pacing-projection' | 'no-verdict') says whether that verdict is a measurement or this system pacing itself; a 'pacing-projection' throttle/shed is NOT a provider wall and must not be remedied by throttling the fleet.",
+      "{ ok, accounts:[...], poolVerdict:[...], billing }. Each claude row's `billing` is the gateway's live billing view (state, meteredNow, metered tokens); 'unavailable' = the gateway did not answer, so UNKNOWN. ⚠ `accounts` INTERLEAVES every provider in one list, so counting walled rows yourself makes a claude wall read as evidence about codex. Read `poolVerdict` instead — one row PER PROVIDER, derived from those same rows: { provider, total, serviceable, walledFresh, paused, pacing, unknown, atCapacity, binding, reason }. `atCapacity` is true ONLY when every row is measured unable to serve (no serviceable AND no unknown rows) — a pool of stale readings is unmeasured, never at capacity. `binding` is the shared capacity vocabulary: usage-wall | admission-concurrency | pacing-policy | host | none. The counts OVERLAP (a row can be both walledFresh and paused); `pacing` counts accounts under a burn PACING PROJECTION, which still SERVE — never add them to the walls. Per row, `burn.disposition` ('measured-wall' | 'pacing-projection' | 'no-verdict') says whether that verdict is a measurement or this system pacing itself; a 'pacing-projection' throttle/shed is NOT a provider wall and must not be remedied by throttling the fleet.",
   },
   capability: 'harness:read',
   requirePrincipal: false,
@@ -200,13 +248,20 @@ export const accountsStatusTool = defineTool({
     .passthrough(),
   async handler(args) {
     const { accountStatus, poolVerdictByProvider } = await import('../../deployment/account-pool-store');
+    const { fetchGatewayStatsRaw } = await import('../../inference-gateway/observability');
     const ws = args.workspace ?? activeWorkspaceId();
     const now = Date.now();
-    const accounts = await accountStatus(ws, now);
+    // WI-10004486: the live billing view is gateway-process memory. accountStatus already reads
+    // /stats for edge-throttle state, so fetch ONE snapshot here (same 500ms bound; resolves null —
+    // never throws — when :8788 is down) and inject it: one round-trip, and the edge-throttle and
+    // billing fields describe the same instant. Unreachable ⇒ `billing:'unavailable'` per row.
+    const stats = await fetchGatewayStatsRaw({ timeoutMs: 500 });
+    const rows = await accountStatus(ws, now, { gatewayStats: stats });
+    const { accounts, billing } = joinGatewayBilling(rows, stats);
     // P-002: the rows are INTERLEAVED across providers, so a reader diagnosing one provider
     // otherwise counts another's walls as evidence about theirs. Roll up per provider, from
     // these same rows, so that inference cannot be made.
-    return ok({ accounts, poolVerdict: poolVerdictByProvider(accounts, now) });
+    return ok({ accounts, poolVerdict: poolVerdictByProvider(rows, now), billing });
   },
 });
 

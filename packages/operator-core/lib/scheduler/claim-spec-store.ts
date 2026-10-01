@@ -12,7 +12,7 @@
  * and the id the Queen addresses a bee by). The store fns take an optional `sql` (dependency-injected
  * for tests); production passes getOrgPg().sql.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
@@ -26,6 +26,7 @@ import { recordClaimAttempt } from '../orchestrator/claim-audit';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
+import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -127,6 +128,15 @@ export async function countActiveClaimsForBee(
  * Exported so no consumer re-spells `?? 1` and silently drifts from the others.
  */
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 1;
+
+/**
+ * EI-23227815561098131: the scheduler-only pool setup must finish well inside the
+ * public get_next watchdog. These reads used to run directly on the max:2 pool, so
+ * a queued connection acquisition survived the outer timeout and could consume a
+ * slot indefinitely. Two such abandoned setup reads then made every later pull time
+ * out before the candidate query even started.
+ */
+export const SCHEDULER_CLAIM_SETUP_BUDGET_MS = 5_000;
 
 /** The verdict {@link evaluateClaimConcurrency} returns — what every surface must report FROM. */
 export type ClaimConcurrencyVerdict = {
@@ -598,13 +608,66 @@ export async function getNextForBee(args: {
   const claimSql = args.useDedicatedClaimPool
     ? (getLongLivedAdminPool('scheduler-claim', { max: 2, prepare: false }) as unknown as OrgSql)
     : undefined;
-  // EI-8579: resolve via getClaimSpecRecord (not the bare getClaimSpec) so the caller can
-  // tell WHICH row answered — a bee with neither a per-bee nor an inherited fleet spec
-  // (source:'default') is silently drawing plain oldest-first ordering, which can hand it
-  // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
-  // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
-  // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
-  const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId }, claimSql);
+  const readClaimSetup = async (sqlOverride?: OrgSql) => {
+    // EI-8579: resolve via getClaimSpecRecord (not the bare getClaimSpec) so the caller can
+    // tell WHICH row answered — a bee with neither a per-bee nor an inherited fleet spec
+    // (source:'default') is silently drawing plain oldest-first ordering, which can hand it
+    // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
+    // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
+    // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
+    const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
+    const transitionBlocked = resolvedRecord.source === 'default' && Boolean(resolvedRecord.fleetSlug);
+    const resolvedPullRecord: ClaimSpecRecord = args.ignoreStoredSpec
+      ? { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null }
+      : resolvedRecord;
+    const record = effectiveClaimSpecRecord(resolvedPullRecord);
+    const concurrency = transitionBlocked
+      ? null
+      : await readClaimConcurrency(
+          {
+            cupId: args.cupId,
+            workspaceId: args.workspaceId,
+            maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
+          },
+          sqlOverride,
+        );
+    return { resolvedRecord, record, concurrency };
+  };
+
+  // EI-23227815561098131: the dedicated max:2 pool is an isolation boundary only if its
+  // acquisition + setup reads are bounded and cancellation-aware too. Previously the
+  // claim UPDATE was bounded, but getClaimSpecRecord/readClaimConcurrency ran directly on
+  // the pool before it. A timed-out Promise.race therefore returned to the caller while the
+  // setup read kept its slot; after two abandoned reads the pool was permanently wedged and
+  // every later pull timed out without issuing a candidate query or claim-audit row.
+  let setup: Awaited<ReturnType<typeof readClaimSetup>>;
+  if (claimSql) {
+    try {
+      setup = await boundedOrgTxn((tx) => readClaimSetup(tx), {
+        client: claimSql,
+        signal: args.signal,
+        acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+        statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+        lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+      });
+    } catch (error) {
+      // Acquisition has no PostgreSQL SQLSTATE, but it is still the scheduler's own
+      // bounded setup budget rather than evidence that PostgreSQL timed out. Preserve that
+      // distinction in the same typed result get_next already renders for caller budgets.
+      if (error instanceof DbCallDeadlineError) {
+        throw new OrgTxnTimeoutError(
+          '57014',
+          error,
+          `scheduler:get_next claim setup could not acquire the dedicated scheduler-claim pool within ${SCHEDULER_CLAIM_SETUP_BUDGET_MS}ms; no claim was attempted`,
+          'caller-budget',
+        );
+      }
+      throw error;
+    }
+  } else {
+    setup = await readClaimSetup();
+  }
+  const { resolvedRecord, record, concurrency } = setup;
   // WI-4770: membership changes are not an authorization to widen into the
   // default backlog. A fleet/leader transition can briefly have no valid
   // inherited sentinel while the leader rebinds the intended lane. Keep that
@@ -631,16 +694,6 @@ export async function getNextForBee(args: {
     });
     return null;
   }
-  const resolvedPullRecord: ClaimSpecRecord = args.ignoreStoredSpec
-    ? { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null }
-    : resolvedRecord;
-
-  // EI-20185650623647293: a missing spec used to send every self-puller through the
-  // unbounded default backlog, whose deterministic oldest-first head was often another
-  // fleet's p2p/federation work. Apply the shared fence only to the default-source
-  // effective pull; an explicitly authored bee/fleet spec remains authoritative.
-  const record = effectiveClaimSpecRecord(resolvedPullRecord);
-
   // EI-11796: one active/held lane is the fail-closed default. The limit is
   // intentionally read from the resolved spec, not from prompt compliance:
   // parked claims remain assigned, and a fresh get_next must not hand the same
@@ -649,15 +702,7 @@ export async function getNextForBee(args: {
   // get_next.ts's miss diagnosis, and nowhere else — the two other surfaces that report
   // on claims (fleet:leader-brief, work_items:claim) never applied it. All four now share
   // evaluateClaimConcurrency so they cannot answer differently.
-  const concurrency = await readClaimConcurrency(
-    {
-      cupId: args.cupId,
-      workspaceId: args.workspaceId,
-      maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
-    },
-    claimSql,
-  );
-  if (concurrency.blocked) return null;
+  if (concurrency?.blocked) return null;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked

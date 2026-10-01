@@ -425,4 +425,16 @@ async function main() {
 // comparison) because agent-tools/db/next_migration.ts imports armCommandFor
 // from here, which puts this file in the bundled operator host graph; isCliEntry
 // is always false inside the bundle, so main() never runs at host boot.
-if (isCliEntry(import.meta.url)) await main();
+//
+// NO top-level await here. Because the host bundle imports this file, a
+// top-level `await` makes esbuild compile it, and every module that imports
+// it, into an async lazy init (`__esm({ async ... })`). When that chain
+// crosses an import cycle the init promises wait on each other: the host sits
+// idle forever before it listens (2026-10-01: :3170 and every
+// verify-tauri-headless rig hung at boot, WI-10004497).
+if (isCliEntry(import.meta.url)) {
+  main().catch((e) => {
+    console.error(e?.stack ?? e);
+    process.exitCode = 1;
+  });
+}

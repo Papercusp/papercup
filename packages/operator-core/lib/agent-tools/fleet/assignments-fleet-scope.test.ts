@@ -23,6 +23,11 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   readJsonResult: () => undefined,
 }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+const getFleetMock = vi.fn(async (..._args: unknown[]) => null as unknown);
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleet: (...a: unknown[]) => getFleetMock(...a),
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-leader',
@@ -93,11 +98,13 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
 }));
 
 import fleetAssignmentsTool from './assignments';
+import { fleetSlugFromName } from '../../agent-fleets-store';
 
 const ctx = { workspaceId: 'ws-real' } as unknown as Parameters<typeof fleetAssignmentsTool.handler>[1];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getFleetMock.mockImplementation(async (...args: unknown[]) => ({ fleetSlug: String(args[1]) }));
   listFleetAssignmentsMock.mockResolvedValue([]);
   groupByAgentMock.mockReturnValue([]);
 });
@@ -112,6 +119,26 @@ describe('fleet:assignments — EI-18689331932953939 fleet-scoped read', () => {
     expect(listFleetAssignmentsMock).toHaveBeenCalledWith(
       expect.objectContaining({ fleet: 'gui-chat-controls' }),
     );
+  });
+
+  it('resolves the untruncated launch name to its persisted slug before filtering', async () => {
+    const launchName = 'papercusp-session-transcript-exact-fuzzy-search-2026-09-14-plan-fleet';
+    const slug = fleetSlugFromName(launchName);
+    await fleetAssignmentsTool.handler({ fleet: launchName } as never, ctx);
+
+    expect(getFleetMock).toHaveBeenCalledWith('ws-real', slug);
+    expect(listFleetAssignmentsMock).toHaveBeenCalledWith(expect.objectContaining({ fleet: slug }));
+  });
+
+  it('returns unknown_fleet instead of a measured-empty roster for an unresolved name', async () => {
+    getFleetMock.mockResolvedValueOnce(null);
+    const result = (await fleetAssignmentsTool.handler(
+      { fleet: 'does-not-exist' } as never,
+      ctx,
+    )) as { data?: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({ ok: false, error: 'unknown_fleet', fleet: 'does-not-exist' });
+    expect(listFleetAssignmentsMock).not.toHaveBeenCalled();
   });
 
   it('omitting { fleet } passes undefined — byte-identical to pre-fix behavior', async () => {

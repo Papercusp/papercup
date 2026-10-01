@@ -11,6 +11,7 @@ import {
   buildTaskScopeArgv,
   buildTaskScopeArgvWithTransport,
   buildTaskServiceArgv,
+  buildTaskServiceArgvWithTransport,
   createSecretEnvironmentTransport,
   escapeSystemdServiceArgument,
   SYSTEMD_ENV_RUNNER_PATH,
@@ -81,6 +82,41 @@ describe('transient service payload escaping', () => {
     expect(argv.at(-1)).toContain('[$$$$]');
     expect(argv.at(-1)).not.toBe(command);
   });
+
+  it.skipIf(!userManagerBusReachable())(
+    'preserves Bash $VAR and $$ through systemd-run and the credential env runner',
+    async () => {
+      const command = 'printf "value=<%s> pid=<%s>\\n" "$PC_WI10004318_VALUE" "$$"';
+      const built = buildTaskServiceArgvWithTransport(['/bin/bash', '-o', 'pipefail', '-c', command], {
+        unit: `pc-wi10004318-env-handoff-${process.pid}-${Date.now()}.service`,
+        slice: 'papercusp-bash-job.slice',
+        env: { PC_WI10004318_VALUE: 'expanded' },
+        runtimeMaxSec: 10,
+      });
+      let stdout = '';
+      let stderr = '';
+
+      try {
+        const child = spawn(built.argv[0]!, built.argv.slice(1), {
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        child.stdout?.setEncoding('utf8').on('data', (chunk: string) => {
+          stdout += chunk;
+        });
+        child.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+          stderr += chunk;
+        });
+        const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
+
+        expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+        expect(stdout).toMatch(/^value=<expanded> pid=<\d+>\n$/);
+      } finally {
+        built.transport?.release();
+      }
+    },
+    15_000,
+  );
 
   it('leaves transient scope payloads byte-for-byte unchanged', () => {
     const command = 'printf "%s" "${PIPESTATUS[0]} $$"';

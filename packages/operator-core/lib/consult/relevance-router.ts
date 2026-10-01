@@ -380,6 +380,8 @@ export interface ConsultRouteParams {
    * do" must be reachable, D-003). */
   requesterId: string;
   question: string;
+  /** Optional exact durable subject whose transcript mentions may justify this route. */
+  subjectRef?: string | null;
   /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
    * decliner is excluded on the requester's re-call, never auto-cascaded. */
   excludeOwners?: string[];

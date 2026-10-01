@@ -41,7 +41,7 @@
  */
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
-import type { CodexCliAccount } from './codex-cli-bridge';
+import { isCodexAuthFailure, type CodexCliAccount } from './codex-cli-bridge';
 import { rewriteCodexRequestModel, type CodexAuth } from './codex-oauth-proxy';
 import {
   CODEX_REFUSAL_BODY_MAX_BYTES,
@@ -156,6 +156,8 @@ export interface CodexOAuthAdapterOptions {
   /** Hidden upstream model to try after a public Luna 429. */
   reserveModel?: string | null;
   tokenTimeoutMs: number;
+  /** Credential-death quarantine, deliberately longer than the ordinary retry backoff. */
+  authQuarantineMs: number;
   /** Backoff applied to an account parked without an explicit rate reset. */
   failoverBackoffMs: number;
   /** Cap on a 429-derived IP cooldown. */
@@ -242,7 +244,12 @@ export type CodexOAuthKernelAdapter = GatewayKernelAdapter<
   CodexOAuthPreparedAttempt,
   CodexOAuthChunk,
   CodexOAuthResponseMetadata
->;
+> & {
+  noteRefreshFailure(
+    context: GatewayKernelAttemptContext<CodexOAuthRouteValue>,
+    error: GatewayRequestKernelError,
+  ): { authClass: boolean; parkedAccountId: string | null; nextAccountId: string | null };
+};
 
 export type CodexOAuthUpstream = GatewayKernelUpstreamResponse<CodexOAuthChunk, CodexOAuthResponseMetadata>;
 
@@ -286,6 +293,8 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
   // Once selected, subsequent egress/account retries stay on that tier until a
   // definitive model refusal sends us back to the public model.
   let reserveAttempted = false;
+  let hardPinned = false;
+  let pendingAuthFailure: { attempt: number; nextAccount: CodexCliAccount | null } | null = null;
 
   const routeFor = (
     account: CodexCliAccount,
@@ -316,13 +325,36 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
   };
 
   return {
+    noteRefreshFailure(context, error) {
+      const { account, reason } = context.route.value;
+      if (reason !== 'refresh' || !isCodexAuthFailure(error.message)) {
+        return { authClass: false, parkedAccountId: null, nextAccountId: null };
+      }
+
+      const park = !hardPinned && Boolean(opts.pool);
+      const exhausted = park ? opts.pool!.onExhausted(account.accountId, now() + opts.authQuarantineMs) : null;
+      const candidate =
+        exhausted && exhausted.accountId !== account.accountId
+          ? (opts.accounts().find((item) => item.accountId === exhausted.accountId) ?? null)
+          : null;
+      const nextAccount = candidate && !triedAccounts.has(candidate.accountId) ? candidate : null;
+      pendingAuthFailure = { attempt: context.attempt, nextAccount };
+      return {
+        authClass: true,
+        parkedAccountId: park ? account.accountId : null,
+        nextAccountId: nextAccount?.accountId ?? null,
+      };
+    },
+
     selectInitial(context) {
       pinnedAccountId = context.pin?.accountId ?? null;
+      hardPinned = context.pin?.mode === 'hard';
       // No `pool.active()` — see the header note (D-010).
       return routeFor(opts.initialAccount, 'initial');
     },
 
     selectReattempt(context) {
+      if (pendingAuthFailure?.attempt === context.attempt) return null;
       const currentRoute = context.currentRoute;
       if (!currentRoute) return null;
       const { account, egress, modelMode } = currentRoute.value;
@@ -370,6 +402,18 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
     },
 
     selectFailover(context) {
+      if (pendingAuthFailure?.attempt === context.attempt) {
+        const authFailure = pendingAuthFailure;
+        pendingAuthFailure = null;
+        const currentRoute = context.currentRoute;
+        if (!currentRoute || !authFailure.nextAccount || triedAccounts.has(authFailure.nextAccount.accountId)) {
+          return null;
+        }
+        triedAccounts.add(authFailure.nextAccount.accountId);
+        auth = undefined;
+        authAccount = '';
+        return routeFor(authFailure.nextAccount, 'rotate', currentRoute.value.modelMode);
+      }
       // Hard pins never reach here — the kernel declines them before consulting
       // the adapter, and that suppression is unchanged by D-011.
       const currentRoute = context.currentRoute;

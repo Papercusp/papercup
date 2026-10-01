@@ -52,6 +52,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // In-tree refusal cases intentionally leave their admission manifest in
+  // place. Each fixture has a unique temporary checkout root, so remove only
+  // that fixture's external admission directory after the child has exited.
+  if (dir && existsSync(dir)) {
+    const root = realpathSync(dir);
+    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    rmSync(admissionDir, { recursive: true, force: true });
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -211,6 +219,23 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     // The guard fails on the mutant => the mutant was CAUGHT => probe exits 0.
     expect(code).toBe(0);
     expect(read()).toBe(ORIGINAL);
+  });
+
+  it('preserves a source edit made during copy-out and reports the measured snapshot', () => {
+    const sourceSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
+    const testCommand = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf 'peer-edit\\n' > ${JSON.stringify(subject)}; fi; grep -q "^beta$" {}`;
+
+    const result = runProbeIO(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCommand]);
+    const currentSha = spawnSync('git', ['hash-object', subject], { encoding: 'utf8' }).stdout?.trim();
+
+    expect(result.code).toBe(0);
+    expect(read()).toBe('peer-edit\n');
+    expect(result.out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(sourceSha).toMatch(/^[0-9a-f]{40,64}$/);
+    expect(currentSha).toMatch(/^[0-9a-f]{40,64}$/);
+    expect(result.out).toContain(`MUTATION_PROBE_TREE_RESULT status=external-change-preserved target=copy-out source_sha=${sourceSha} current_sha=${currentSha}`);
+    expect(result.out).not.toContain('TREE INTEGRITY FAILURE');
+    expect(result.out).not.toContain('Restore it NOW:');
   });
 
   it('runs concurrent copy-out probes on ONE subject with no cross-talk (P-011: probes run in parallel)', async () => {
@@ -1053,6 +1078,31 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(read()).toBe(ORIGINAL);
     expect(restoredRecord()).toEqual(verifiedOriginal());
   });
+
+  it('preserves a concurrent edit instead of restoring the probe baseline over it', async () => {
+    const mutantStarted = join(dir, 'in-tree-mutant-started');
+    const command = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then : > ${JSON.stringify(mutantStarted)}; sleep 4; fi; grep -q "^beta$" {}`;
+    const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/beta/BETA/', '--test', command], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = createTextCollector();
+    output.attach(child.stdout);
+    output.attach(child.stderr);
+    const closed = new Promise<number>((resolveCode) => child.once('close', (code) => resolveCode(code ?? -1)));
+    try {
+      const deadline = Date.now() + 15_000;
+      while (!existsSync(mutantStarted) && Date.now() < deadline) await sleep(50);
+      expect(existsSync(mutantStarted), output.peek()).toBe(true);
+      writeFileSync(subject, 'peer-edit\n');
+      expect(await closed).toBe(3);
+      expect(read()).toBe('peer-edit\n');
+      expect(output.text()).toContain('MUTATION_PROBE_RESULT verdict=caught');
+      expect(output.text()).toContain('MUTATION_PROBE_TREE_RESULT status=concurrent-change-preserved');
+      expect(output.text()).not.toContain('Restore it NOW:');
+      expect(restoredRecord()).toBeNull();
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  }, 20_000);
 
   it('restores and clears an orphaned admission manifest after the probe is killed before its trap', async () => {
     const marker = join(dir, 'guard.pid');
