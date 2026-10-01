@@ -69,8 +69,20 @@ export function jevModeKey(workspaceId: string): string {
   return `jev_memory_injection:${workspaceId}`;
 }
 
+/**
+ * How long a read of the stored key is reused (WI-10004485). Every memory recall
+ * resolves the key once for the effective-mode gate and, in Log only / On, once
+ * more inside the decision client, so an uncached read cost two Postgres
+ * round-trips per recall (about 60,000 recalls a day). That read sits BEFORE the
+ * client arms its 400 ms deadline, so a slow pool acquire inflated the recorded
+ * latency (answered calls at 1-3 s on 2026-10-01). A save in this process
+ * refreshes the entry at once; a save in another process is seen within the TTL.
+ */
+const KEY_TTL_MS = 10_000;
+
 const state = pinModuleState('@papercusp/operator-core.jev-settings', () => ({
   modeCache: new Map<string, { value: JevMode; at: number }>(),
+  keyCache: null as { value: string | null; at: number } | null,
 }));
 
 /**
@@ -115,11 +127,18 @@ export async function setJevMode(mode: JevMode, workspaceId: string = activeWork
   return mode;
 }
 
-/** The stored Jev key, or null. A read failure is treated as "no key" (fail open to today's system). */
+/**
+ * The stored Jev key, or null. A read failure is treated as "no key" (fail open to
+ * today's system) and is NOT cached, so the next call reads again.
+ */
 export async function readJevApiKey(): Promise<string | null> {
+  const hit = state.keyCache;
+  if (hit && Date.now() - hit.at < KEY_TTL_MS) return hit.value;
   try {
     const key = await readIntegrationKey(JEV_API_KEY_NAME);
-    return key && key.trim().length > 0 ? key.trim() : null;
+    const value = key && key.trim().length > 0 ? key.trim() : null;
+    state.keyCache = { value, at: Date.now() };
+    return value;
   } catch {
     return null;
   }
@@ -141,6 +160,7 @@ export async function setJevApiKey(key: string | null): Promise<void> {
     if (problem) throw new Error(problem);
   }
   await writeIntegrationCredentials({ [JEV_API_KEY_NAME]: key === null ? null : key.trim() });
+  state.keyCache = { value: key === null ? null : key.trim(), at: Date.now() };
 }
 
 export interface JevMemoryInjectionResolution {
@@ -203,4 +223,5 @@ export function ensureJevDecisionClient(): DecisionClient {
 
 export function __resetJevSettingsCacheForTest(): void {
   state.modeCache.clear();
+  state.keyCache = null;
 }
