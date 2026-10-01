@@ -319,7 +319,10 @@ async function completionHistoryLocation(
     (entry) => {
       if (entry) entries.push(entry);
     },
-    { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
+    // One entry per ancestor prefix: bounded output, so the sidecar can run it.
+    // The settlement reconciler issues these on every git-sync pass from bg-host
+    // (~8/s traced 2026-10-01, ~54 ms of frozen loop per local fork).
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
   );
   if (outcome !== 'complete' || opts.signal?.aborted) return undefined;
 
@@ -397,7 +400,9 @@ export async function completionBlobHistoryContains(
       found = true;
       return true;
     },
-    { ...opts, timeoutMs: opts.timeoutMs ?? 5000 },
+    // One path over a closed commit range: bounded output, so the early stop is
+    // not load-bearing and the sidecar can run it (see the ls-tree read above).
+    { ...opts, timeoutMs: opts.timeoutMs ?? 5000, preferSidecar: true },
   );
   if (opts.signal?.aborted || outcome !== 'complete') return undefined;
   return found;

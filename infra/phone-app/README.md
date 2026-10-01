@@ -61,12 +61,21 @@ sudo apt-get install -y libopusfile0   # it is dynamically linked; this is the o
 
 ```bash
 infra/phone-app/deploy.sh            # idempotent — safe to re-run
-infra/phone-app/verify-media-plane.sh # acceptance test, exits non-zero on failure
+infra/phone-app/verify-media-plane.sh # local one-direction audio smoke test
 systemctl --user status papercusp-phone-livekit papercusp-phone-sip
 journalctl --user -u papercusp-phone-livekit -f
 ```
 
 `deploy.sh --rotate-secret` mints a fresh API secret (restarts both units).
+
+The smoke test requires a positive received-audio packet row and a complete,
+error-free subscriber summary from `lk` 2.16. It refuses unknown output formats,
+missing tracks and zero traffic even when `lk` exits zero. It does not prove public,
+bidirectional or PSTN audio. `PHONE_CONFIG_DIR`, `PHONE_LK_BIN` and `PHONE_NODE_BIN`
+allow an isolated local candidate. The recurring `npm --workspace @papercusp/web
+run test:phone-media` suite includes an actual private LiveKit process and CLI;
+install `livekit-server` and `lk` under `~/.local/bin` before running it, or set
+`PHONE_TEST_LIVEKIT_BIN` and `PHONE_TEST_LK_BIN` to maintained local binaries.
 
 For a hosted browser, keep server-to-server control on the internal URL and
 provide a separately reachable WSS origin for the browser:

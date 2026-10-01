@@ -22,6 +22,35 @@ import {
 export const AWS_AMI_RELEASE_CONTRACT_VERSION = 'papercusp-aws-ami-release-v1';
 export const AWS_AMI_VERSION_MANIFEST_SCHEMA_VERSION = 1;
 
+/** Every released AMI is named `<prefix><release version>`. */
+export const AWS_AMI_NAME_PREFIX = 'papercusp-workspace-host-';
+
+const AWS_AMI_DESCRIPTION_PATTERN = /^papercusp-workspace-host (\S+) release-sha256:([a-f0-9]{64})$/;
+
+/**
+ * The release provenance an AMI carries in its Description.
+ *
+ * AWS does not share user-defined AMI tags with the accounts an AMI is shared with, so a
+ * customer account sees only the Name, Description, owner and architecture of a published
+ * AMI. The release digest therefore has to live in the Description for the customer's image
+ * catalog to recognise a signed release. EC2 caps a Description at 255 characters.
+ */
+export function awsAmiReleaseDescription(releaseVersion: string, releaseSha256: string): string {
+  const description = `papercusp-workspace-host ${releaseVersion} release-sha256:${releaseSha256}`;
+  if (!AWS_AMI_DESCRIPTION_PATTERN.test(description) || description.length > 255) {
+    throw new AwsAmiReleaseError('AMI release description must be one version token and a SHA-256 digest within 255 characters');
+  }
+  return description;
+}
+
+/** Parse the release provenance written by `awsAmiReleaseDescription`; undefined for anything else. */
+export function parseAwsAmiReleaseDescription(
+  description: string | undefined,
+): { releaseVersion: string; releaseSha256: string } | undefined {
+  const match = description ? AWS_AMI_DESCRIPTION_PATTERN.exec(description) : null;
+  return match ? { releaseVersion: match[1]!, releaseSha256: match[2]! } : undefined;
+}
+
 /** Host prerequisites from the common bootstrap contract plus AWS transport. */
 export const AWS_AMI_REQUIRED_GUEST_TOOLS = [
   'acl',
@@ -158,6 +187,10 @@ export interface AwsAmiReleaseAdapter {
   buildCandidate(input: {
     sourceRegion: string;
     imageName: string;
+    /** Cross-account-visible release provenance (see `awsAmiReleaseDescription`). */
+    description: string;
+    /** The source region's target key: the candidate must already be encrypted with it. */
+    kmsKeyArn: string;
     builderKind: WorkspaceHostBuilderKind;
     templatePath: string;
     /** Present exactly for bootc builds: the already-rendered AMI disk to import. */
@@ -180,6 +213,7 @@ export interface AwsAmiReleaseAdapter {
     sourceImageId: string;
     targetRegion: string;
     imageName: string;
+    description: string;
     encrypted: true;
     kmsKeyArn: string;
     tags: Readonly<Record<string, string>>;
@@ -520,11 +554,14 @@ export async function executeAwsAmiRelease(
       );
   }
 
-  const imageName = `papercusp-workspace-host-${artifact.image.version}`;
+  const imageName = `${AWS_AMI_NAME_PREFIX}${artifact.image.version}`;
+  const description = awsAmiReleaseDescription(artifact.image.version, workspaceHostReleaseSubjectSha256(artifact));
   const tags = tagsFor(artifact);
   const built = await adapter.buildCandidate({
     sourceRegion,
     imageName,
+    description,
+    kmsKeyArn: sourceTarget.kmsKeyArn,
     builderKind: artifact.buildManifest.builder.kind,
     templatePath: artifact.buildManifest.builder.templatePath,
     ...(artifact.buildManifest.builder.kind === WORKSPACE_HOST_BOOTC_BUILDER_KIND
@@ -559,6 +596,7 @@ export async function executeAwsAmiRelease(
       sourceImageId: built.imageId,
       targetRegion: target.region,
       imageName,
+      description,
       encrypted: true,
       kmsKeyArn: target.kmsKeyArn,
       tags,

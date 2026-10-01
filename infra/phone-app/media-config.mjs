@@ -141,10 +141,64 @@ export async function remotePreflight(env) {
     next: 'Prove authenticated bidirectional audio from external and UDP-blocked clients; TLS is a prerequisite only.' };
 }
 
+// This is the single-publisher/single-subscriber CLI smoke test, not public or
+// bidirectional acceptance. lk 2.16 writes received RTP payload counts in the
+// Track loading table; its process may exit zero even when a subscriber failed.
+export function loadTestReceipt(output) {
+  const text = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  const sections = text.split('Subscriber summaries:');
+  if (sections.length !== 2 || !sections[0].includes('Track loading:')) {
+    throw new Error('missing unambiguous media measurement tables');
+  }
+  function table(section, header) {
+    const rows = section.split(/\r?\n/).filter(line => /^[\s]*[│|]/.test(line))
+      .map(line => line.trim().split(/[│|]/).slice(1, -1).map(cell => cell.trim()));
+    if (rows.length < 2 || rows[0].join('|') !== header.join('|') ||
+        rows.slice(1).some(row => row.length !== header.length)) {
+      throw new Error('unknown media measurement table format');
+    }
+    return rows.slice(1).filter(row => row.some(Boolean));
+  }
+  function positiveBitrate(value) {
+    const match = /^(\d+(?:\.\d+)?)(?:[kmg])?bps$/i.exec(value);
+    return Boolean(match && Number(match[1]) > 0);
+  }
+  const tracks = table(sections[0].split('Track loading:')[1],
+    ['Tester', 'Track', 'Kind', 'Pkts.', 'Bitrate', 'Pkt. Loss']);
+  const summaries = table(sections[1], ['Tester', 'Tracks', 'Bitrate', 'Total Pkt. Loss', 'Error']);
+  if (tracks.length !== 1 || summaries.length !== 2) {
+    throw new Error('expected exactly one received audio track and one subscriber');
+  }
+  const [tester, track, kind, packets, bitrate] = tracks[0];
+  const [summary, total] = summaries;
+  if (!/^Sub \d+$/.test(tester) || !/^TR_[A-Za-z0-9]+$/.test(track) || kind !== 'audio' ||
+      !/^[1-9]\d*$/.test(packets) || !Number.isSafeInteger(Number(packets)) ||
+      !positiveBitrate(bitrate) || summary[0] !== tester || summary[1] !== '1/1' ||
+      !positiveBitrate(summary[2]) || summary[4] !== '-' ||
+      total[0] !== 'Total' || total[1] !== '1/1' || total[4] !== '0') {
+    throw new Error('subscriber did not demonstrate a complete error-free audio receive path');
+  }
+  return { subscriber: tester, track, receivedPackets: Number(packets), bitrate,
+    scope: 'single-publisher-to-subscriber', publicAudioVerified: false, bidirectionalAudioVerified: false };
+}
+
+export function localProbeHealthUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'ws:' || !['127.0.0.1', '[::1]'].includes(url.hostname) ||
+      !url.port || Number(url.port) < 1024 || url.port === '7880' ||
+      url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('local media smoke test requires an explicit loopback control origin; public acceptance is separate');
+  }
+  url.protocol = 'http:';
+  return url.href;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const action = process.argv[2];
     if (action === 'preflight') console.log(JSON.stringify(await remotePreflight(process.env)));
+    else if (action === 'load-test-receipt') console.log(JSON.stringify(loadTestReceipt(readFileSync(process.argv[3], 'utf8'))));
+    else if (action === 'local-probe-health') console.log(localProbeHealthUrl(process.argv[3]));
     else if (action === 'public-dns') {
       const config = mediaConfig(process.env, true);
       for (const hostname of [new URL(config.publicUrl).hostname, config.turnDomain]) {

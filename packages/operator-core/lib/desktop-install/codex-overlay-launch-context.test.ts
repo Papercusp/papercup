@@ -76,6 +76,13 @@ const CODEX_GUIDANCE = [
   'use the CLI fallback below.',
   'ptool tools:find --json -',
   '`tools.find` and',
+  // WI-10005083: seeded tools are called directly, never re-found per restart
+  // (a Codex drain fleet re-ran tools:find ~12x per restart for seeded tools).
+  'Your seeded tools are already callable. Do not re-find them after a restart.',
+  'Check `ALL_TOOLS` first, then call the method',
+  'tools.mcp__papercusp_su__work_items_get({ id, harness })',
+  'Use `tools:find` only for a capability that is\nnot in `ALL_TOOLS`',
+  'on the `ptool` path it cannot',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {

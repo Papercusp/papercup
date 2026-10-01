@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isPublicAddress, publicHostname, publicMediaUrl, publicAddresses } from "../../../../infra/phone-app/media-config.mjs";
+import { isPublicAddress, publicHostname, publicMediaUrl, publicAddresses, loadTestReceipt, localProbeHealthUrl } from "../../../../infra/phone-app/media-config.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 const deployPath = resolve(repoRoot, "infra/phone-app/deploy.sh");
@@ -54,5 +54,47 @@ describe("Phone hosted media deployment contract", () => {
     await expect(publicAddresses("voice.example.com", async () => [
       { address: "8.8.8.8" }, { address: "8.8.8.8" },
     ])).resolves.toEqual(["8.8.8.8"]);
+  });
+});
+
+// Shape measured from installed lk 2.16.0 against an isolated LiveKit 1.10.1.
+const receivedAudio = `Track loading:
+│ Tester │ Track │ Kind │ Pkts. │ Bitrate │ Pkt. Loss │
+│ Sub 1 │ TR_A123 │ audio │ 147 │ 25.3kbps │ 0 (0%) │
+Subscriber summaries:
+│ Tester │ Tracks │ Bitrate │ Total Pkt. Loss │ Error │
+│ Sub 1 │ 1/1 │ 25.3kbps │ 0 (0%) │ - │
+│ Total │ 1/1 │ 25.3kbps (25.3kbps avg) │ 0 (0%) │ 0 │`;
+
+describe('Phone audio receive verdict', () => {
+  it('accepts only the measured single-direction audio scope', () => {
+    expect(loadTestReceipt(receivedAudio)).toMatchObject({ receivedPackets: 147,
+      publicAudioVerified: false, bidirectionalAudioVerified: false });
+    expect(loadTestReceipt(receivedAudio.replaceAll('│', '|'))).toMatchObject({ receivedPackets: 147 });
+    expect(loadTestReceipt(`\u001b[32m${receivedAudio}\u001b[0m`)).toMatchObject({ receivedPackets: 147 });
+  });
+
+  it.each([
+    ['keyword-only zero traffic', 'received 0 packets, bitrate 0bps'],
+    ['zero received packets', receivedAudio.replace('147', '0')],
+    ['zero receive bitrate', receivedAudio.replace('25.3kbps', '0bps')],
+    ['video-only traffic', receivedAudio.replace('audio', 'video')],
+    ['absent subscriber', receivedAudio.replace('│ Sub 1 │ 1/1', '│ Sub 1 │ 0/1')],
+    ['subscriber error', receivedAudio.replace('│ - │', '│ connection failed │')],
+    ['total error', receivedAudio.replace('│ 0 │', '│ 1 │')],
+    ['wrong subscriber', receivedAudio.replace('│ Sub 1 │ 1/1', '│ Sub 2 │ 1/1')],
+    ['unknown header', receivedAudio.replace('Pkts.', 'Sent')],
+    ['publisher row', receivedAudio.replace('│ Sub 1 │ TR_', '│ Pub 0 │ TR_')],
+    ['duplicate runs', receivedAudio + '\n' + receivedAudio],
+    ['missing summary', receivedAudio.split('Subscriber summaries:')[0]],
+  ])('refuses %s', (_name, output) => expect(() => loadTestReceipt(output)).toThrow());
+
+  it('derives health only from an explicit local candidate control origin', () => {
+    expect(localProbeHealthUrl('ws://127.0.0.1:7890')).toBe('http://127.0.0.1:7890/');
+    expect(localProbeHealthUrl('ws://[::1]:18000')).toBe('http://[::1]:18000/');
+    for (const url of ['wss://voice.example.com', 'ws://127.0.0.1:7880',
+      'ws://localhost:7890', 'ws://127.0.0.1:7890?key=secret', 'ws://secret@127.0.0.1:7890']) {
+      expect(() => localProbeHealthUrl(url)).toThrow();
+    }
   });
 });

@@ -1624,3 +1624,55 @@ describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 /
     await expect(issues.claimIssue(finished, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
   });
 });
+
+/**
+ * WI-10005102: the auto-close census must be the set of rows a closing route can act on,
+ * not the newest N watchdog rows. Measured 2026-10-01: 11,598 open watchdog-keyed rows,
+ * 9,615 of them repeated-tool-error with no repair evidence, so the sweep's capped read
+ * again covered only ~12 h. Closable rows are seeded OLDEST and noise NEWEST, so a capped
+ * read without the route filter returns noise only; the first assertion pins that control.
+ */
+describe('listIssues watchdogCloseRoutes selects closing routes in SQL, not a recency window (WI-10005102)', () => {
+  const routes = { closableSources: ['routine-failure', 'red-test'] };
+  const create = (watchdogKey: string, extra: Record<string, unknown> = {}) =>
+    issues.createIssue({ title: `wd ${watchdogKey}`, createdBy: 'agA', payload: { watchdogKey, ...extra } });
+
+  it('returns every closable row and no noise even when noise outnumbers the limit', async () => {
+    const absence = await create('routine-failure:alpha');
+    const redTest = await create('red-test:packages/x/y.test.ts');
+    const repaired = await create('repeated-tool-error:fixed', {
+      toolFailureProbation: { repairEvidence: { kind: 'contract-change' } },
+    });
+    const dupA = await create('tool-failure-signature:dup');
+    const dupB = await create('tool-failure-signature:dup');
+    // A duplicate whose partner is TERMINAL is not a duplicate group (nothing to dedupe).
+    const lonely = await create('tool-failure-signature:closed-pair');
+    const closedPartner = await create('tool-failure-signature:closed-pair');
+    await issues.setIssueState(closedPartner.id, 'resolved', 'agA', 'test');
+    for (let n = 0; n < 12; n++) await create(`repeated-tool-error:noise-${n}`);
+
+    const limit = 8;
+    // Control: the bare watchdog-keyed read at this limit is a window of newest noise only.
+    const windowed = await issues.listIssues({ state: 'open', watchdogKeyed: true, limit });
+    expect(windowed).toHaveLength(limit);
+    expect(windowed.map((i) => i.id)).not.toContain(absence.id);
+
+    const census = await issues.listIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes, limit });
+    expect(new Set(census.map((i) => i.id))).toEqual(
+      new Set([absence.id, redTest.id, repaired.id, dupA.id, dupB.id]),
+    );
+    expect(census.map((i) => i.id)).not.toContain(lonely.id);
+
+    // Every reader honours the fragment (issues-engineer-filter-parity), so the count agrees.
+    await expect(
+      issues.countIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes }),
+    ).resolves.toBe(5);
+  });
+
+  it('is inert without watchdogKeyed (the route filter refines that predicate, it does not replace it)', async () => {
+    await issues.createIssue({ title: 'plain issue', createdBy: 'agA' });
+    await create('repeated-tool-error:noise');
+    const rows = await issues.listIssues({ state: 'open', watchdogCloseRoutes: routes, limit: 10 });
+    expect(rows).toHaveLength(2);
+  });
+});

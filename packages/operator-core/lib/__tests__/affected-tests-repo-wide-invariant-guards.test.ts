@@ -206,8 +206,10 @@ function printAffected(changedPaths: string): string {
 
 describe('affected-tests: Phone media source recurrence', () => {
   it.each(['infra/phone-app/deploy.sh', 'infra/phone-app/media-config.mjs',
-    'infra/phone-app/livekit-server.yaml.tmpl', 'infra/phone-app/livekit-sip.yaml.tmpl'])
-  ('selects both registered media layers for %s without a workspace edit', path => {
+    'infra/phone-app/livekit-server.yaml.tmpl', 'infra/phone-app/livekit-sip.yaml.tmpl',
+    'infra/phone-app/verify-media-plane.sh', 'apps/operator/e2e/phone-media-probe.spec.ts',
+    'apps/operator/package.json'])
+  ('selects all registered media layers for %s', path => {
     expect(printAffected(path)).toContain('test:phone-media');
   });
 
@@ -219,11 +221,12 @@ describe('affected-tests: Phone media source recurrence', () => {
     expect(printAffected('infra/defguard/Caddyfile')).not.toContain('test:phone-media');
   });
 
-  it('names real unit and integration commands in its host workspace', () => {
+  it('names real unit, integration and isolated e2e commands in its host workspace', () => {
     const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'));
     const command = pkg.scripts['test:phone-media'];
     expect(command).toContain('phone-app-hosted-config.test.ts --config vitest.config.ts');
     expect(command).toContain('phone-app-hosted-config.integration.test.ts --config vitest.integration.config.ts');
+    expect(command).toContain('OPERATOR_E2E_REUSE_SERVER=1 playwright test e2e/phone-media-probe.spec.ts --workers=1');
   });
 });
 

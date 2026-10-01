@@ -1,7 +1,9 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -21,6 +23,30 @@ beforeAll(() => {
       '-addext', 'subjectAltName=DNS:turn.example.com'], { encoding: 'utf8' });
     expect(result.status, 'generate isolated test certificate').toBe(0);
   }
+});
+
+describe('Phone smoke-test process verdict (fixture evidence only)', () => {
+  it('rejects a successful CLI process with only zero-traffic keywords', async () => {
+    const server = createHttpServer((_req, res) => res.end('OK'));
+    await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing fixture listener');
+    const conf = join(root, 'smoke-zero'); mkdirSync(conf);
+    writeFileSync(join(conf, 'livekit.env'), `PHONE_LIVEKIT_API_KEY=fixture-key\nPHONE_LIVEKIT_API_SECRET=fixture-secret-withheld\nPHONE_LIVEKIT_URL=ws://127.0.0.1:${address.port}\n`, { mode: 0o600 });
+    const cli = join(conf, 'lk');
+    writeFileSync(cli, '#!/bin/sh\nprintf "received 0 packets, bitrate 0bps\\n"\n', { mode: 0o700 });
+    const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('PHONE_')));
+    try {
+      const outcome = await promisify(execFile)('bash', [join(repoRoot, 'infra/phone-app/verify-media-plane.sh')], {
+        env: { ...env, PHONE_CONFIG_DIR: conf, PHONE_LK_BIN: cli, PHONE_NODE_BIN: process.execPath },
+        timeout: 10_000,
+      }).then(r => ({ code: 0, ...r }), e => ({ code: e.code, stdout: e.stdout, stderr: e.stderr }));
+      expect(outcome.code).toBe(1);
+      expect(outcome.stderr).toContain('no complete measured audio receive path');
+      expect(outcome.stdout).not.toContain('verified');
+      expect(outcome.stdout + outcome.stderr).not.toContain('fixture-secret-withheld');
+    } finally { await new Promise<void>(r => server.close(() => r())); }
+  });
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 

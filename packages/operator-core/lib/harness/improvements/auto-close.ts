@@ -69,6 +69,23 @@ import {
 } from './auto-close-sources';
 export { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES };
 
+/**
+ * WI-10005102: sources with a SOURCE-LEVEL closing route, which is what the census read
+ * (`listOpen`) selects on. That is the absence-close allowlist PLUS 'red-test'. 'red-test' is
+ * deliberately absent from AUTO_CLOSE_ELIGIBLE_SOURCES (a quiet tick must never close it), but
+ * the positive green-run resolution below still needs to see it. The other two routes,
+ * positive tool-failure repair and duplicate close, are row-level and are selected by
+ * `ListIssuesFilter.watchdogCloseRoutes` itself.
+ */
+export const AUTO_CLOSE_CENSUS_SOURCES: readonly string[] = [...AUTO_CLOSE_ELIGIBLE_SOURCES, 'red-test'];
+
+/**
+ * Row cap on the census read. The SQL route filter is what keeps the census small; this cap
+ * only bounds the transfer, and `listOpen` reports loudly when it is reached. It is the
+ * listIssues ceiling (ISSUES_MAX_LIMIT), the largest legal value.
+ */
+export const AUTO_CLOSE_CENSUS_LIMIT = 2000;
+
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */
 export interface AutoCloseCandidate {
   issueId: string;
@@ -324,7 +341,29 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
     // its named test). With the filter the read returns the ~59 watchdog-keyed rows and the
     // limit stops binding. Do NOT "fix" a recurrence by raising the limit: ISSUES_MAX_LIMIT
     // is 2000 < 17,154, so the cap cannot cover the backlog and the horizon returns.
-    listOpen: () => listIssues({ state: 'open', watchdogKeyed: true, limit: 500 }),
+    //
+    // WI-10005102: the same horizon came back one level down. By 2026-10-01 there were
+    // 11,598 open watchdog-keyed rows (9,615 repeated-tool-error), so this read again saw
+    // only the newest ~12 h. `watchdogCloseRoutes` narrows it, in SQL, to rows some route
+    // below can close (521 of 11,598 that day). `body` is dropped because nothing in this
+    // sweep reads it. If the read ever fills its limit the census is a window again, so
+    // that is reported instead of being silently treated as the full set.
+    listOpen: async () => {
+      const rows = await listIssues({
+        state: 'open',
+        watchdogKeyed: true,
+        watchdogCloseRoutes: { closableSources: AUTO_CLOSE_CENSUS_SOURCES },
+        includeBody: false,
+        limit: AUTO_CLOSE_CENSUS_LIMIT,
+      });
+      if (rows.length >= AUTO_CLOSE_CENSUS_LIMIT) {
+        console.warn(
+          `[watchdog-auto-close] census read SATURATED at ${AUTO_CLOSE_CENSUS_LIMIT} rows: ` +
+            'older closable watchdog items are invisible to this tick (WI-10005102 horizon class)',
+        );
+      }
+      return rows;
+    },
     recentRanTickKeys: async (n: number) => {
       // WI-40769: `collectors` comes back alongside the keys so a BLIND tick is
       // distinguishable from a QUIET one. It is the existing jsonb column — no

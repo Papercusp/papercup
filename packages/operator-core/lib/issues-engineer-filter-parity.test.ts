@@ -67,6 +67,7 @@ const MATCH_FRAGMENT_FIELDS = [
   'titlePrefix',
   'excludeObservationLane',
   'watchdogKeyed',
+  'watchdogCloseRoutes',
 ] as const;
 
 /** Line span of a top-level `function <name>` up to the next function in READERS order. */

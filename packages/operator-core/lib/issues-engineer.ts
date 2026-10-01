@@ -1341,6 +1341,25 @@ export interface ListIssuesFilter {
    */
   watchdogKeyed?: boolean;
   /**
+   * WI-10005102: narrow a watchdog-keyed read to the rows a closing route can act on,
+   * in SQL. Honoured only together with {@link watchdogKeyed}.
+   *
+   * WHY. `watchdogKeyed` alone stopped being a set. Measured 2026-10-01 on the live box:
+   * 11,598 open watchdog-keyed rows (9,615 `repeated-tool-error`, ~1,300
+   * `tool-failure-signature`), so the auto-close sweep's capped read saw only the newest
+   * ~12 h again, which is the WI-4532 horizon one level down. Only 521 of those rows had
+   * any closing route. A row is selected when ANY route can close it:
+   *   - a source-level route (absence close, green-run resolution): the key's source
+   *     prefix is in `closableSources`;
+   *   - positive tool-failure repair: the payload carries
+   *     `toolFailureProbation.repairEvidence`;
+   *   - duplicate close: another NON-TERMINAL row in the workspace shares the
+   *     `watchdogKey` (the sweep must see every member of a duplicate group to keep the
+   *     canonical one).
+   * A closing route added to the sweep must be added here too, or its rows stay invisible.
+   */
+  watchdogCloseRoutes?: { closableSources: readonly string[] };
+  /**
    * P-008 (db-performance-remediation-2026-07-26): omit `body` from the read for a
    * caller that never reads it. Default TRUE (unchanged behavior) — a reader opts OUT
    * explicitly, so a new caller can never silently lose a field it depends on.
@@ -1776,7 +1795,33 @@ export function issueMatchWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
     -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
     -- applied HERE, not in JS after the read: a row read's ORDER BY/LIMIT would make a
     -- JS post-filter a recency window rather than a set.
-    AND ${filter.watchdogKeyed ? sql`${col('payload')}->>'watchdogKey' IS NOT NULL` : sql`TRUE`}`;
+    AND ${filter.watchdogKeyed ? sql`${col('payload')}->>'watchdogKey' IS NOT NULL` : sql`TRUE`}
+    -- WI-10005102: closing-route restriction (see ListIssuesFilter.watchdogCloseRoutes).
+    -- Same reason as the line above: in SQL, or the LIMIT makes it a recency window.
+    AND ${
+      filter.watchdogKeyed && filter.watchdogCloseRoutes
+        ? sql`(
+            split_part(${col('payload')}->>'watchdogKey', ':', 1)
+              = ANY(${filter.watchdogCloseRoutes.closableSources as string[]}::text[])
+            OR ${col('payload')}->'toolFailureProbation'->'repairEvidence' IS NOT NULL
+            -- Base table, not the view, with exactly the partial predicate of
+            -- work_items_watchdog_identity_uq (kind set + any-family terminal set) so the
+            -- planner can use that index. Measured live 2026-10-01: through the view it
+            -- seq-scanned ~250k rows (1.63M buffers, 1.76 s); this form reads the index
+            -- (267k buffers, 0.28 s).
+            OR ${col('payload')}->>'watchdogKey' IN (
+              SELECT dup.payload->>'watchdogKey'
+                FROM harness_shared.work_items dup
+               WHERE dup.workspace_id = ${issuesScopeWorkspace()}
+                 AND dup.item_kind = ANY(${['bug', 'change', 'task']}::text[])
+                 AND dup.status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+                 AND dup.payload->>'watchdogKey' IS NOT NULL
+               GROUP BY 1
+              HAVING count(*) > 1
+            )
+          )`
+        : sql`TRUE`
+    }`;
 }
 
 /**

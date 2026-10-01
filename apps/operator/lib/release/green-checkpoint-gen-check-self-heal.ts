@@ -24,6 +24,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ADMISSION_GIT_DATE,
   admitPathsOntoRepairHead,
   realAdmissionGit,
   type AdmissionGitRunner,
@@ -344,11 +345,15 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
     async buildSourceCommit(repairHead, paths) {
       if (!SHA_RE.test(repairHead)) throw new Error(`repairHead is not a full sha: ${repairHead}`);
       const scratch = mkdtempSync(join(tmpdir(), "papercusp-gen-check-heal-"));
+      // Fixed dates make every heal commit a pure function of tree, parent and message, so a
+      // submodule commit can be published (gate-pin tag) before the gate builds it again.
       const identity = {
         GIT_AUTHOR_NAME: "papercusp-gate",
         GIT_AUTHOR_EMAIL: "gate@papercusp.invalid",
+        GIT_AUTHOR_DATE: ADMISSION_GIT_DATE,
         GIT_COMMITTER_NAME: "papercusp-gate",
         GIT_COMMITTER_EMAIL: "gate@papercusp.invalid",
+        GIT_COMMITTER_DATE: ADMISSION_GIT_DATE,
       };
       let indexes = 0;
       const commitTree = (repo: string, tree: string, parent: string, title: string, staged: readonly string[]): string => {
@@ -409,8 +414,9 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
         if (inner.length === 0) throw new Error(`submodule ${checkout} reported dirty but has no changed paths`);
         const commit = commitTree(repo, stageTree(repo, checkout, pin, inner), pin, "gen:*:check self-heal submodule source on", inner);
         // The verification checkout clones each submodule from this repository, and gc
-        // would prune an unreferenced commit before the lineage is promoted.
-        gitOk(["update-ref", `refs/papercusp/gen-heal/${commit}`, commit], repo);
+        // would prune an unreferenced commit before the lineage is promoted. Promotion
+        // publishes it by this ref (publishGenHealGitlinks).
+        gitOk(["update-ref", genHealRef(commit), commit], repo);
         return commit;
       };
       try {
@@ -422,4 +428,56 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
     },
     admit: admitPathsOntoRepairHead,
   };
+}
+
+/** The local ref that marks (and keeps from gc) a heal-built submodule commit. */
+export function genHealRef(sha: string): string {
+  return `refs/papercusp/gen-heal/${sha}`;
+}
+
+/** The tag promotion publishes on the submodule's origin for a heal-built commit. */
+export function genHealPinTag(sha: string): string {
+  return `refs/tags/gate-pin/${sha}`;
+}
+
+/**
+ * Promotion pushes the superproject with a plain `git push`, which never checks that a
+ * gitlink's commit exists on the submodule's origin. A heal-built submodule commit exists
+ * only in the integration tree, so a promoted main pinning one would not resolve for a
+ * fresh clone. Push a gate-pin tag for every gitlink in `candidateSha` that carries a
+ * gen-heal ref (recursing into heal-built commits for nested submodules). Throws on any
+ * failed publication, which holds promotion before main moves.
+ */
+export function publishGenHealGitlinks(input: {
+  integrationRoot: string;
+  candidateSha: string;
+  git?: AdmissionGitRunner;
+}): { path: string; sha: string }[] {
+  const git = input.git ?? realAdmissionGit;
+  const published: { path: string; sha: string }[] = [];
+  const visit = (repo: string, commit: string, prefix: string): void => {
+    const listed = git(["ls-tree", "-r", "-z", commit], { cwd: repo });
+    if (listed.status !== 0) {
+      throw new Error(`git ls-tree -r ${commit.slice(0, 12)} (cwd ${repo}) exited ${listed.status}: ${(listed.stderr ?? "").trim().slice(-300)}`);
+    }
+    for (const record of (listed.stdout ?? "").split("\0")) {
+      const m = /^160000 commit ([0-9a-f]{40})\t(.+)$/.exec(record);
+      if (!m) continue;
+      const [, sha, path] = m as unknown as [string, string, string];
+      const subRepo = join(repo, path);
+      if (!existsSync(subRepo)) continue;
+      if (git(["rev-parse", "--verify", "--quiet", genHealRef(sha)], { cwd: subRepo }).status !== 0) continue;
+      const pushed = git(["push", "origin", `${sha}:${genHealPinTag(sha)}`], { cwd: subRepo });
+      if (pushed.status !== 0) {
+        throw new Error(
+          `gate-pin publication for ${prefix}${path}@${sha.slice(0, 12)} failed (exit ${pushed.status}): ` +
+            (pushed.stderr ?? "").trim().slice(-300),
+        );
+      }
+      published.push({ path: `${prefix}${path}`, sha });
+      visit(subRepo, sha, `${prefix}${path}/`);
+    }
+  };
+  visit(input.integrationRoot, input.candidateSha, "");
+  return published;
 }

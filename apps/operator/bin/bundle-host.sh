@@ -163,6 +163,18 @@ HOST_EXTERNALS+=(
   --external:testcontainers
   --external:dockerode
   --external:esbuild
+  # These runtime packages already resolve to JavaScript beside the host in
+  # staging and release. Keep their SDK/parser source out of each host copy;
+  # the desktop sidecar still bundles its own dependencies for distribution.
+  --external:undici
+  --external:@dbos-inc/dbos-sdk
+  --external:mingo
+  --external:acorn
+  --external:fast-check
+  --external:@mcp-ui/server
+  --external:viem
+  --external:iconv-lite
+  --external:@smithy/core
 )
 
 # self-exec guards would all fire at boot. isCliEntry()
