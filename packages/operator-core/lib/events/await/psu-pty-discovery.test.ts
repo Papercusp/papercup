@@ -11,6 +11,7 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -215,6 +216,27 @@ describe('pruneDeadDiscoveryFiles (WI-2510 — standing janitor hygiene sweep)',
     writeMeta(dir, 'su-consistent', { pid: process.pid, ptyPid: process.pid, sock, command: 'x', startedAt: 1 });
     expect(await pruneDeadDiscoveryFilesAsync(dir, ID_OK)).toBe(0);
     expect(findLiveHost('su-consistent', dir, ID_OK)).not.toBeNull();
+  });
+
+  it('WI-10004784: reaps abandoned <target>.<pid>.tmp staging files past the age gate, keeps fresh ones and the ledgers', async () => {
+    const dir = tmpDir();
+    const nowMs = Date.now();
+    const staleMeta = join(dir, `${sanitizeKey('su-crashed')}.json.12345.tmp`);
+    const staleTrim = join(dir, `${sanitizeKey('su-crashed')}.events.jsonl.12345.tmp`);
+    const freshMeta = join(dir, `${sanitizeKey('su-writing')}.json.67890.tmp`);
+    const oldLedger = join(dir, `${sanitizeKey('su-crashed')}.events.jsonl`);
+    const notStaging = join(dir, 'notes.tmp'); // no <pid> segment — not the host's staging name
+    for (const p of [staleMeta, staleTrim, freshMeta, oldLedger, notStaging]) writeFileSync(p, '{}');
+    const twoHoursAgoSec = (nowMs - 2 * 60 * 60 * 1000) / 1000;
+    for (const p of [staleMeta, staleTrim, oldLedger, notStaging]) utimesSync(p, twoHoursAgoSec, twoHoursAgoSec);
+
+    expect(await pruneDeadDiscoveryFilesAsync(dir, { ...ID_OK, nowMs })).toBe(2);
+
+    expect(existsSync(staleMeta)).toBe(false);
+    expect(existsSync(staleTrim)).toBe(false);
+    expect(existsSync(freshMeta)).toBe(true); // a writer may still be mid-rename
+    expect(existsSync(oldLedger)).toBe(true); // the events-ingest routine owns ledger retention
+    expect(existsSync(notStaging)).toBe(true);
   });
 });
 

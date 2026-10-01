@@ -636,6 +636,39 @@ async function safeUnlinkAsync(p: string): Promise<void> {
   }
 }
 
+/** Age past which a `<target>.<pid>.tmp` staging file is treated as abandoned. The
+ *  host renames its staging file within the same synchronous call that wrote it,
+ *  so an hour is several orders of magnitude of margin. */
+export const ABANDONED_TEMP_MAX_AGE_MS = 60 * 60 * 1000;
+
+/** The host's atomic-write staging name: `<target>.<pid>.tmp` (psu-pty-host.mjs
+ *  writeMeta and the events-ledger trim). */
+const ATOMIC_STAGING_RE = /\.\d+\.tmp$/;
+
+/** Unlink staging files in `entries` older than `maxAgeMs`. Reuses the caller's
+ *  directory listing so the janitor iterates the directory once. Returns the count. */
+async function pruneAbandonedTempFilesAsync(
+  dir: string,
+  entries: readonly string[],
+  nowMs: number,
+  maxAgeMs: number,
+): Promise<number> {
+  let removed = 0;
+  for (const f of entries) {
+    if (!ATOMIC_STAGING_RE.test(f)) continue;
+    const p = join(dir, f);
+    try {
+      const st = await fsp.stat(p);
+      if (!st.isFile() || nowMs - st.mtimeMs < maxAgeMs) continue;
+      await fsp.unlink(p);
+      removed += 1;
+    } catch {
+      /* raced with its writer or another sweep — skip */
+    }
+  }
+  return removed;
+}
+
 /**
  * Remove discovery files (+ their sockets) whose host is no longer a live psu session
  * (WI-2510). `pruneDead()` in psu-pty-host.mjs runs ONLY opportunistically — when a NEW
@@ -652,19 +685,36 @@ async function safeUnlinkAsync(p: string): Promise<void> {
  * ASYNC ONLY (WI-10004559, WI-10004587): the standing janitor runs it on the operator
  * main thread, and a synchronous scan of the psu-pty directory blocks that thread in
  * D-state during a journal stall. The synchronous `pruneDeadDiscoveryFiles` was deleted.
+ *
+ * It also reaps ABANDONED atomic-write staging files (WI-10004784), counted in the
+ * same return value. The host writes `<owner>.json` and trims `<owner>.events.jsonl`
+ * through `<target>.<pid>.tmp` + rename(2). A host that dies between the write and
+ * the rename leaves the staging file behind, and no other sweep removes one: the
+ * `.json` glob above cannot match it, and the events-ingest routine only globs
+ * `.events.jsonl`. Measured 2026-10-01: 35 of them, the oldest from 2026-08-20.
+ * A live writer renames its staging file within the same synchronous call, so one
+ * older than {@link ABANDONED_TEMP_MAX_AGE_MS} has no writer left. The ledgers
+ * themselves are NOT this janitor's: the ingest routine deletes each one 14 days after
+ * its last write, once its rows are in Postgres.
  */
 export async function pruneDeadDiscoveryFilesAsync(
   dir: string = PSU_PTY_DIR,
-  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+  opts: { verifyIdentity?: VerifyPidIdentity; nowMs?: number; tempMaxAgeMs?: number } = {},
 ): Promise<number> {
   const verify = opts.verifyIdentity ?? pidIsPsuHost;
-  let files: string[];
+  let entries: string[];
   try {
-    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.json'));
+    entries = await fsp.readdir(dir);
   } catch {
     return 0; // no discovery dir yet — nothing to prune
   }
-  let pruned = 0;
+  const files = entries.filter((f) => f.endsWith('.json'));
+  let pruned = await pruneAbandonedTempFilesAsync(
+    dir,
+    entries,
+    opts.nowMs ?? Date.now(),
+    opts.tempMaxAgeMs ?? ABANDONED_TEMP_MAX_AGE_MS,
+  );
   for (const f of files) {
     const metaPath = join(dir, f);
     let h: PsuPtyHost | null = null;

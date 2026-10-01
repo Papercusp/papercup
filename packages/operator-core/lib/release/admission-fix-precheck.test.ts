@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   classifyTestFileRun,
   createCheckpointTreeFixPrecheckRunner,
+  dependencyGenerationInfraCode,
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
@@ -329,5 +330,26 @@ describe('resolveCanonicalIntegrationRoot (P-006 / R6)', () => {
   it('a root git cannot classify is returned unchanged — the runner then fails loudly instead of guessing', () => {
     expect(resolveCanonicalIntegrationRoot('/not-a-repo', () => null)).toBe('/not-a-repo');
     expect(resolveCanonicalIntegrationRoot('/bare.git', () => '/bare.git')).toBe('/bare.git');
+  });
+});
+
+describe('dependencyGenerationInfraCode (WI-10004849)', () => {
+  it('maps the typed copy refusals by exit code', () => {
+    expect(dependencyGenerationInfraCode(76, '')).toBe('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+    expect(dependencyGenerationInfraCode(77, '')).toBe('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+  });
+
+  it('recognizes the logged marker when a wrapper re-mapped the exit', () => {
+    expect(
+      dependencyGenerationInfraCode(
+        1,
+        '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=1',
+      ),
+    ).toBe('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+  });
+
+  it('is null for an ordinary setup failure', () => {
+    expect(dependencyGenerationInfraCode(1, 'npm ERR! missing script')).toBeNull();
+    expect(dependencyGenerationInfraCode(null, '')).toBeNull();
   });
 });

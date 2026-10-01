@@ -60,7 +60,7 @@
  *     packages/operator-core/lib/scheduler/claim-ssot-agreement.integration.test.ts)
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,6 +75,15 @@ import {
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { WIDE_TRIGGER_DDL } from './dependency-trigger-fixture';
+import {
+  IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS,
+  createImplementationReadiness,
+  implementationReadinessAdmitsClaim,
+  implementationReadinessNormalExclusionSql,
+  sealImplementationAcceptance,
+  type ImplementationAcceptanceContract,
+} from '../harness/improvements/agent-review-policy';
+import type { OrgSql } from '../work-items';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -390,6 +399,10 @@ beforeAll(async () => {
   // WI-41737: a normalized D-NNN self-only/direct route decision reserves the referenced
   // linked item even when no live lease or durable per-item assignment exists.
   await db.sql.unsafe(readMigration('1081-plan-route-decision-claim-floor.sql')).simple();
+  // P-007 / WI-10004706: floor #16 (implementation readiness + acceptance contract) joins the
+  // view through the 12-argument work_item_claim_floors overload. Seeds default to created_ts 0,
+  // i.e. before the enforcement cutover, so every earlier case keeps its legacy admission.
+  await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql.DRAFT')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -1057,5 +1070,144 @@ describe('the CLAIM path honors every spec leg, not just kind/id (false-drain re
     await seed('WI-FREE1', { kind: 'change', createdTs: 1 });
     await seed('WI-FREE2', { kind: 'bug', createdTs: 2 });
     expect(await drainInlineClaimIds()).toEqual(['WI-FREE1', 'WI-FREE2']);
+  });
+});
+
+describe('floor #16 implementation-readiness: view, 12-arg floor labels and the TS claim path agree (P-007, migration 1301)', () => {
+  const PRE = 1;
+  const POST = IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS + 60_000;
+  const TITLE = 'Bounded parser drops the trailing token';
+  const SUMMARY = 'The bounded parser drops the last token of every line.';
+  const UPDATED_AT = '2026-10-01T00:00:00.000Z';
+  const PROPOSAL = {
+    problem: 'The bounded parser drops the trailing token of a line.',
+    evidence: ['parser.test.ts trailing-token fixture fails on HEAD'],
+    outcome: 'Every token of a line survives parsing.',
+    scope: 'Fix the bounded parser defect only.',
+    completionCheck: 'The trailing-token regression fixture passes.',
+  };
+  const sealedFor = (title: string): ImplementationAcceptanceContract => {
+    const sealed = sealImplementationAcceptance({
+      proposal: PROPOSAL,
+      authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1 },
+      reason: 'agent-review-approved (grade 5/5)',
+      source: { kind: 'bug', title, summary: SUMMARY },
+      acceptedAt: UPDATED_AT,
+    });
+    if (!sealed.ok) throw new Error('fixture contract must seal');
+    return sealed.contract;
+  };
+  const readiness = (status: 'ready' | 'unknown' | 'not-ready', source: 'agent-review' | 'creation-enrollment', acceptance?: object) => ({
+    implementationReadiness: createImplementationReadiness({
+      status,
+      source,
+      reason: source === 'creation-enrollment' ? 'created' : 'agent-review-approved',
+      updatedAt: UPDATED_AT,
+      ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
+    }),
+  });
+  const qualifying = () => readiness('ready', 'agent-review', sealedFor(TITLE));
+  // Sealed against a DIFFERENT title, so the row's current source revision no longer matches.
+  const stale = () => readiness('ready', 'agent-review', sealedFor('An earlier title of the same defect'));
+  // A self-review: reviewer === submittedBy is not an independent acceptance authority.
+  const selfReviewed = () =>
+    readiness('ready', 'agent-review', {
+      ...sealedFor(TITLE),
+      authority: { kind: 'agent-review', reviewer: 'su-author', submittedBy: 'su-author', round: 1 },
+    });
+
+  const cases: Array<{ id: string; createdTs: number; payload: Record<string, unknown> | null; admit: boolean }> = [
+    { id: 'WI-F16-PRE-ABSENT', createdTs: PRE, payload: null, admit: true },
+    { id: 'WI-F16-POST-ABSENT', createdTs: POST, payload: null, admit: false },
+    { id: 'WI-F16-PRE-ENROLLED', createdTs: PRE, payload: readiness('unknown', 'creation-enrollment'), admit: true },
+    { id: 'WI-F16-POST-ENROLLED', createdTs: POST, payload: readiness('unknown', 'creation-enrollment'), admit: false },
+    { id: 'WI-F16-PRE-NOT-READY', createdTs: PRE, payload: readiness('not-ready', 'agent-review'), admit: false },
+    { id: 'WI-F16-PRE-READY-BARE', createdTs: PRE, payload: readiness('ready', 'agent-review'), admit: true },
+    { id: 'WI-F16-POST-READY-BARE', createdTs: POST, payload: readiness('ready', 'agent-review'), admit: false },
+    { id: 'WI-F16-POST-QUALIFYING', createdTs: POST, payload: qualifying(), admit: true },
+    { id: 'WI-F16-PRE-STALE', createdTs: PRE, payload: stale(), admit: false },
+    { id: 'WI-F16-POST-STALE', createdTs: POST, payload: stale(), admit: false },
+    { id: 'WI-F16-PRE-SELF-REVIEW', createdTs: PRE, payload: selfReviewed(), admit: false },
+  ];
+
+  it('the SQL helper body IS the TypeScript floor, re-rendered (a TS edit without a migration fails here)', async () => {
+    let captured: { query: string; params: unknown[] } | null = null;
+    const probe = postgres(db.url, {
+      max: 1,
+      debug: (_connection, query, params) => {
+        captured = { query, params: params as unknown[] };
+      },
+    });
+    try {
+      await probe`
+        SELECT ${implementationReadinessNormalExclusionSql(probe as unknown as OrgSql, 'payload', 'work_items')} AS admits
+          FROM (SELECT NULL::jsonb AS payload, 'bug'::text AS item_kind, ''::text AS title,
+                       ''::text AS summary, 0::bigint AS created_ts) AS row_columns`;
+    } finally {
+      await probe.end();
+    }
+    if (!captured) throw new Error('the probe query was never captured');
+    const { query, params } = captured as { query: string; params: unknown[] };
+    const literal = (v: unknown): string =>
+      v === null || v === undefined
+        ? 'NULL'
+        : typeof v === 'number' || typeof v === 'bigint'
+          ? String(v)
+          : `'${String(v).replace(/'/g, "''")}'`;
+    const inlined = query.replace(/\$(\d+)/g, (_m, n: string) => literal(params[Number(n) - 1]));
+    const rendered = inlined.slice(inlined.indexOf('SELECT') + 'SELECT'.length, inlined.lastIndexOf(' AS admits'));
+    const [{ prosrc }] = await db.sql<{ prosrc: string }[]>`
+      SELECT prosrc FROM pg_proc
+       WHERE oid = 'harness_shared.work_item_implementation_readiness_admits(jsonb,text,text,text,bigint)'::regprocedure`;
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
+    // Calibration: the rendered fragment is the real floor, not an empty or truncated slice.
+    expect(normalize(rendered)).toContain("'implementation-readiness-v1'");
+    expect(normalize(rendered)).toContain(String(IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS));
+    expect(normalize(prosrc)).toContain(normalize(rendered));
+  });
+
+  it('view membership === TS twin === TS claim drain over a pre/post-cutover matrix; refused rows carry the label', async () => {
+    for (const c of cases) await seed(c.id, { createdTs: c.createdTs, payload: c.payload, title: TITLE });
+    await db.sql`UPDATE harness_shared.work_items SET summary = ${SUMMARY} WHERE feature_id LIKE 'WI-F16-%'`;
+    const expected = cases.filter((c) => c.admit).map((c) => c.id).sort();
+
+    // The TypeScript twin the by-id / assignment claim paths use agrees with every declared row.
+    for (const c of cases) {
+      const admits = implementationReadinessAdmitsClaim({
+        payload: c.payload ?? {},
+        kind: 'bug',
+        title: TITLE,
+        summary: SUMMARY,
+        createdAtMs: c.createdTs,
+      });
+      expect([c.id, admits]).toEqual([c.id, c.admit]);
+    }
+
+    const viewIds = (
+      await db.sql<{ feature_id: string }[]>`
+        SELECT feature_id FROM harness_shared.work_items_claimable WHERE feature_id LIKE 'WI-F16-%'`
+    )
+      .map((r) => r.feature_id)
+      .sort();
+    expect(viewIds).toEqual(expected);
+
+    const labels = await db.sql<{ feature_id: string; floors: string[] }[]>`
+      SELECT feature_id,
+             harness_shared.work_item_claim_floors(
+               workspace_id, status, taken_by, origin, title, terminal_owner, terminal_completion_ref,
+               payload, feature_id, item_kind, summary, created_ts
+             ) AS floors
+        FROM harness_shared.work_items
+       WHERE feature_id LIKE 'WI-F16-%'
+       ORDER BY feature_id`;
+    expect(labels).toHaveLength(cases.length);
+    for (const r of labels) {
+      const refused = !expected.includes(r.feature_id);
+      expect([r.feature_id, r.floors.includes('implementation-readiness')]).toEqual([r.feature_id, refused]);
+      // Floor #16 is the ONLY reason any of these rows is refused.
+      expect([r.feature_id, r.floors.filter((f) => f !== 'implementation-readiness')]).toEqual([r.feature_id, []]);
+    }
+
+    expect(await drainInlineClaimIds()).toEqual(expected);
   });
 });

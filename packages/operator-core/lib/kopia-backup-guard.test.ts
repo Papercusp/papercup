@@ -472,7 +472,10 @@ describe('Kopia global backup guard', () => {
       expect(existsSync(marker)).toBe(false);
     } finally {
       writeFileSync(releaseHolder, 'released');
-      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+      if (holder.exitCode === null && holder.signalCode === null) {
+        const cleanupTimeout = setTimeout(() => holder.kill('SIGKILL'), 1_000);
+        try { await holderClosed; } finally { clearTimeout(cleanupTimeout); }
+      }
     }
     expect(await holderClosed).toBe(0);
   });

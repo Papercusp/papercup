@@ -701,6 +701,43 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
   });
 });
 
+describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes or code reds', () => {
+  it('exit 77 (headroom) is disk-headroom and exit 76 (lock timeout) is infra-inconclusive', () => {
+    const headroom = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh exited 77: ' +
+          '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT avail=1 need=2',
+      ),
+      runId: 'run-a',
+    });
+    const lock = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh exited 76: ' +
+          '[dependency-generation] DEPENDENCY_GENERATION_LOCK_TIMEOUT',
+      ),
+      runId: 'run-b',
+    });
+    expect(headroom.reason).toBe('disk-headroom');
+    expect(headroom.green).toBeNull();
+    expect(headroom.summary).toMatch(/NO code verdict/);
+    expect(lock.reason).toBe('infra-inconclusive');
+    expect(lock.green).toBeNull();
+    expect(classifyGateStallStatus('disk-headroom')).toBe('no-verdict');
+  });
+
+  it('an unrelated dependency-generation exit stays on the crash path', () => {
+    const other = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error('bash /repo/apps/operator/bin/release/dependency-generation.sh exited 1: boom'),
+      runId: 'run-c',
+    });
+    expect(other.reason).not.toBe('disk-headroom');
+    expect(other.reason).not.toBe('infra-inconclusive');
+  });
+});
+
 describe('WI-10002039: an UNAUTHORIZED promotion push is a typed STANDING access fault, not an anonymous crash', () => {
   // Verbatim from the run's own log, 2026-09-20T10:26:45Z (hello-world-3). Quoted rather than
   // paraphrased for the reason the P-007 block above quotes its own: the discriminator matches

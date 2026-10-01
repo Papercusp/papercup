@@ -100,6 +100,11 @@ export const LEDGER_CHAIN_LINKS_PATH = '/commerce/ledger-chain/links';
 export const TRANSPARENCY_LIVE_PATH = '/commerce/transparency/live';
 /** P-044 (D-028 §4): a signed monthly statement (signed PUT; immutable once stored). */
 export const TRANSPARENCY_STATEMENT_PATH = '/commerce/transparency/statement';
+/**
+ * P-047 (D-031): an outside accountant's attestation record of a published
+ * statement, with its anchored inclusion proof once one exists (signed PUT).
+ */
+export const TRANSPARENCY_ATTESTATION_PATH = '/commerce/transparency/attestation';
 
 /** A gate older than this pauses transfers: a reconciliation that stopped reporting must not leave them running. */
 export const TRANSFER_GATE_MAX_AGE_MS = 3 * 60 * 60 * 1000;

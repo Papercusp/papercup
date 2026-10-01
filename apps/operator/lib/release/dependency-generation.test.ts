@@ -2727,7 +2727,10 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     const { root, source } = copyFixture();
     const lock = join(root, 'copy.lock');
     writeFileSync(`${lock}.holder`, 'pid=4242 op=copy fixture since=0\n');
-    const holder = spawn('flock', [lock, 'sleep', '30'], { stdio: 'ignore' });
+    // Detached: the lock is held by the open file description, which `sleep`
+    // inherits from flock, so release needs the whole process group killed.
+    const holder = spawn('flock', [lock, 'sleep', '30'], { stdio: 'ignore', detached: true });
+    const exited = new Promise((r) => holder.once('exit', r));
     try {
       // Wait until the holder actually owns the lock.
       for (let i = 0; i < 100; i++) {
@@ -2746,10 +2749,18 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
       expect(result.stderr).toContain('holder=pid=4242');
       expect(existsSync(join(root, 'out/node_modules'))).toBe(false);
     } finally {
-      holder.kill('SIGKILL');
+      try {
+        process.kill(-(holder.pid as number), 'SIGKILL');
+      } catch {
+        holder.kill('SIGKILL');
+      }
     }
     // Once released, the same copy succeeds and records itself as the holder.
-    await new Promise((r) => holder.once('exit', r));
+    await exited;
+    for (let i = 0; i < 100; i++) {
+      if (spawnSync('flock', ['-n', lock, 'true']).status === 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     const after = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
       SOURCE: source,
       DEST: join(root, 'out/node_modules'),

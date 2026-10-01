@@ -69,6 +69,7 @@ import {
   type GateRoundPhases,
 } from "@papercusp/operator-core/lib/release/gate-round-phases";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
+import { dependencyGenerationInfraCode } from "@papercusp/operator-core/lib/release/admission-fix-precheck";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import {
@@ -2039,6 +2040,44 @@ export function buildTerminalFailureCheckpointResult(opts: {
   const dependencyPrewarmMissing =
     dependencyGenerationUnusable &&
     detail.includes("no prewarmed dependency generation for input fingerprint");
+
+  // WI-10004849: dependency-generation.sh reserves exit 76 (could not take the materialization
+  // flock in time — another copy holds it) and exit 77 (free space minus the tree would drop the
+  // root fs under git-sync's reserve). Both refuse BEFORE any test runs, so no code verdict was
+  // rendered. Classify on the writer's exit-code contract (shared with the fix precheck), not prose.
+  const depGenExit = /dependency-generation\.sh exited (\d+)/.exec(detail)?.[1];
+  const depGenInfra = depGenExit
+    ? dependencyGenerationInfraCode(Number(depGenExit), detail)
+    : null;
+  if (depGenInfra === "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT") {
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "disk-headroom",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: dependency-generation refused to materialize a " +
+        "node_modules tree (exit 77) because the copy would drop root free space below the " +
+        "reserve. NO code verdict was rendered — do not triage this candidate's files. Free disk " +
+        `space (old generations, scratch) before the next run. ${detail}`,
+    };
+  }
+  if (depGenInfra === "DEPENDENCY_GENERATION_LOCK_TIMEOUT") {
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "infra-inconclusive",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint deferred before the suite: dependency-generation timed out waiting for " +
+        "the materialization lock held by another copy (exit 76). NO code verdict was rendered; " +
+        `the next run retries once that copy finishes. ${detail}`,
+    };
+  }
 
   if (dependencyPrewarmMissing) {
     // Name the exact fingerprint the producer must publish. Without it the operator reading this

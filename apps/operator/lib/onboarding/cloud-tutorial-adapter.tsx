@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
-import { driver } from "driver.js";
-import "driver.js/dist/driver.css";
+import { useEffect, useRef, useState } from "react";
+import { Joyride } from "react-joyride";
 
 export type HighlightStatus = "waiting" | "missing" | "ready";
+
+// The persistent Guide owns the explanation and controls. Use Joyride's supported
+// custom renderer rather than a second tooltip or private library state.
+function PanelOwnedTooltip() { return null; }
 
 /** Highlighting observes the app. It never clicks a target or advances a lesson. */
 export function CloudTutorialHighlight({
@@ -20,52 +23,63 @@ export function CloudTutorialHighlight({
   reducedMotion?: boolean;
   onStatus?: (status: HighlightStatus) => void;
 }) {
+  const [element, setElement] = useState<HTMLElement | null>(null);
+  const [portal, setPortal] = useState<HTMLDivElement | null>(null);
+  const statusRef = useRef(onStatus);
+  statusRef.current = onStatus;
   useEffect(() => {
+    setElement(null);
     if (!active) return;
     const focus = document.activeElement as HTMLElement | null;
-    const highlight = driver({
-      animate: !reducedMotion,
-      smoothScroll: false,
-      allowScroll: true,
-      allowKeyboardControl: false,
-      disableActiveInteraction: false,
-      advanceOnClick: false,
-      overlayOpacity: 0.12,
-      stagePadding: 8,
-      stageRadius: 8,
-    });
     let current: HTMLElement | null = null;
     let disposed = false;
+    let timeout: ReturnType<typeof window.setTimeout> | undefined;
+    const waitForTarget = () => {
+      window.clearTimeout(timeout);
+      statusRef.current?.("waiting");
+      timeout = window.setTimeout(() => {
+        if (!disposed && !current) statusRef.current?.("missing");
+      }, 1500);
+    };
     const observe = () => {
       if (disposed) return;
-      const element = document.querySelector<HTMLElement>(target);
-      if (element === current) return;
-      if (current) highlight.destroy();
-      current = element;
-      if (element) {
-        highlight.highlight({ element });
-        // The guide is nonmodal: unrelated app controls and its own panel stay usable.
-        const overlay = document.querySelector<SVGElement>(".driver-overlay");
-        if (overlay) overlay.style.pointerEvents = "none";
-        onStatus?.("ready");
+      const found = document.querySelector<HTMLElement>(target);
+      const visible = found && getComputedStyle(found).display !== "none" && getComputedStyle(found).visibility !== "hidden";
+      const next = visible ? found : null;
+      if (next === current) return;
+      current = next;
+      setElement(next);
+      if (next) {
+        window.clearTimeout(timeout);
+        statusRef.current?.("ready");
       } else {
-        onStatus?.("waiting");
+        waitForTarget();
       }
     };
-    onStatus?.("waiting");
+    waitForTarget();
     const observer = new MutationObserver(observe);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "hidden"] });
     observe();
-    const timeout = window.setTimeout(() => {
-      if (!current) onStatus?.("missing");
-    }, 1500);
     return () => {
       disposed = true;
       observer.disconnect();
       window.clearTimeout(timeout);
-      highlight.destroy();
       if (focus?.isConnected) focus.focus({ preventScroll: true });
     };
-  }, [target, active, contextKey, reducedMotion, onStatus]);
-  return null;
+  }, [target, active, contextKey]);
+  return <div ref={setPortal} data-cloud-tutorial-highlight data-reduced-motion={reducedMotion}>
+    <style>{`
+      [data-cloud-tutorial-highlight] .react-joyride__overlay path { pointer-events: none !important; }
+      [data-cloud-tutorial-highlight][data-reduced-motion="true"] .react-joyride__spotlight path { transition: none !important; }
+      @media (prefers-reduced-motion: reduce) {
+        [data-cloud-tutorial-highlight] .react-joyride__spotlight path { transition: none !important; }
+      }
+    `}</style>
+    {active && element && portal && <Joyride key={`${contextKey}:${target}`} run stepIndex={0}
+      portalElement={portal} tooltipComponent={PanelOwnedTooltip}
+      steps={[{ target: element, content: "", skipBeacon: true, disableFocusTrap: true,
+        blockTargetInteraction: false, skipScroll: true, targetWaitTimeout: 1500 }]}
+      options={{ dismissKeyAction: false, overlayClickAction: false, scrollDuration: 0,
+        overlayColor: "rgba(0, 0, 0, 0.12)", spotlightRadius: 8 }} />}
+  </div>;
 }

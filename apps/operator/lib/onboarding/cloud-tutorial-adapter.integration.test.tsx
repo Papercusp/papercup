@@ -1,12 +1,25 @@
 // @vitest-environment jsdom
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { Joyride } from "react-joyride";
+import { driver } from "driver.js";
+import "driver.js/dist/driver.css";
+import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router-adapter";
 import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
+import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import { CloudTutorialHighlight } from "./cloud-tutorial-adapter";
+
+const cloudBoundary = vi.hoisted(() => ({ mutate: vi.fn(), invalidate: vi.fn() }));
+// Only the authenticated data boundary is substituted; page, forms, Radix controls,
+// URL state and routing use the maintained application implementations.
+vi.mock("@papercusp/sync", () => ({
+  useSyncQuery: () => ({ data: [], loading: false, fetching: false, error: null, invalidate: cloudBoundary.invalidate }),
+  useSyncMutate: () => cloudBoundary.mutate,
+  planChunks: vi.fn(),
+}));
 
 // The alternative stays test-only. The production adapter has one engine.
 function JoyrideCandidate({ target, active }: { target: string; active: boolean }) {
@@ -17,14 +30,38 @@ function JoyrideCandidate({ target, active }: { target: string; active: boolean 
   }]} options={{ dismissKeyAction: false, overlayClickAction: false, scrollDuration: 0 }} />;
 }
 
+// Rejected candidate retained only for comparative evidence, using its public API.
+function DriverCandidate({ target, active }: { target: string; active: boolean }) {
+  useEffect(() => {
+    if (!active) return;
+    const highlight = driver({ animate: false, allowKeyboardControl: false,
+      disableActiveInteraction: false, advanceOnClick: false, smoothScroll: false });
+    let current: Element | null = null;
+    const observe = () => {
+      const next = document.querySelector(target);
+      if (next === current) return;
+      if (current) highlight.destroy();
+      current = next;
+      if (next) highlight.highlight({ element: next });
+    };
+    const observer = new MutationObserver(observe);
+    observer.observe(document.body, { childList: true, subtree: true });
+    observe();
+    return () => { observer.disconnect(); highlight.destroy(); };
+  }, [target, active]);
+  return null;
+}
+
 beforeEach(() => {
+  cloudBoundary.mutate.mockReset().mockResolvedValue({ ok: true });
+  cloudBoundary.invalidate.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn() })));
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 20, y: 20, top: 20, left: 20, width: 200, height: 40, right: 220, bottom: 60, toJSON: () => ({}) });
   Object.defineProperty(HTMLElement.prototype, "offsetParent", { configurable: true, get: () => document.body });
   Element.prototype.scrollIntoView = vi.fn();
   window.scrollTo = vi.fn();
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanStack controls", (candidate) => {
   function Fixture() {
@@ -45,7 +82,7 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
       </Modal>
       {saved && <p>Saved by product action</p>}
       <p role="status">{status}</p>
-      {candidate === "driver" ? <CloudTutorialHighlight target={target} active={active} contextKey="cloud" reducedMotion onStatus={setStatus} /> : <JoyrideCandidate target={target} active={active} />}
+      {candidate === "driver" ? <DriverCandidate target={target} active={active} /> : <JoyrideCandidate target={target} active={active} />}
     </>;
   }
   function mount() {
@@ -83,5 +120,98 @@ describe.each(["driver", "joyride"] as const)("%s on the maintained React/TanSta
     expect(await screen.findByRole("heading", { name: "Other app view" })).toBeTruthy();
     await waitFor(() => expect(document.querySelector(".driver-overlay, .react-joyride__overlay")).toBeNull());
     expect(document.body.classList.contains("driver-active")).toBe(false);
+  });
+  it("removes overlays when paused and remounts just one overlay on replay in StrictMode", async () => {
+    const view = mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Mount target" }));
+    const selector = candidate === "driver" ? ".driver-overlay" : ".react-joyride__overlay";
+    await waitFor(() => expect(document.querySelectorAll(selector)).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Exit guide" }));
+    await waitFor(() => expect(document.querySelectorAll(selector)).toHaveLength(0));
+    view.unmount();
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Mount target" }));
+    await waitFor(() => expect(document.querySelectorAll(selector)).toHaveLength(1));
+  });
+
+  it("observes the actual Cloud connection form through the app's nuqs/TanStack adapter", async () => {
+    function ActualCloud() {
+      const [active, setActive] = useState(true);
+      const target = "input[aria-label='Connection label']";
+      return <>
+        <Button onClick={() => setActive(false)}>Pause prototype</Button>
+        <CloudWorkspacesPage />
+        {candidate === "driver"
+          ? <DriverCandidate target={target} active={active} />
+          : <JoyrideCandidate target={target} active={active} />}
+      </>;
+    }
+    const root = createRootRoute({ component: () => <NuqsAdapter><main><Outlet /></main></NuqsAdapter> });
+    const cloud = createRoute({ getParentRoute: () => root, path: "/cloud-workspaces", component: ActualCloud });
+    const router = createRouter({ routeTree: root.addChildren([cloud]), history: createMemoryHistory({ initialEntries: ["/cloud-workspaces"] }) });
+    render(<StrictMode><RouterProvider router={router} /></StrictMode>);
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Google Cloud" }));
+    const input = await screen.findByRole("textbox", { name: "Connection label" });
+    await waitFor(() => expect(document.querySelector(candidate === "driver" ? ".driver-active-element" : "[data-testid='spotlight']")).not.toBeNull());
+    input.focus();
+    fireEvent.change(input, { target: { value: "tutorial-gcp" } });
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(input).toHaveProperty("value", "tutorial-gcp");
+    expect(document.activeElement).toBe(input);
+    expect(cloudBoundary.mutate).not.toHaveBeenCalled();
+    // URL selection comes from the real product action, never the highlight adapter.
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ connect: "gcp" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause prototype" }));
+    await waitFor(() => expect(document.querySelector(".driver-overlay, .react-joyride__overlay")).toBeNull());
+    expect(screen.getByRole("textbox", { name: "Connection label" })).toBe(input);
+  });
+});
+
+describe("Selected nonmodal Joyride highlight lifecycle", () => {
+  it("honors reduced motion, preserves focus, passes pointer events through and ignores navigation keys", async () => {
+    const view = render(<><Button>Guide trigger</Button><input aria-label="Product target" data-tutorial-target="focus" /></>);
+    const trigger = screen.getByRole("button", { name: "Guide trigger" });
+    trigger.focus();
+    view.rerender(<><Button>Guide trigger</Button><input aria-label="Product target" data-tutorial-target="focus" /><CloudTutorialHighlight target="[data-tutorial-target='focus']" active contextKey="workspace-a" reducedMotion /></>);
+    await waitFor(() => expect(document.querySelector(".react-joyride__overlay")).not.toBeNull());
+    const overlayPath = document.querySelector<SVGElement>(".react-joyride__overlay path")!;
+    expect(getComputedStyle(overlayPath).pointerEvents).toBe("none");
+    expect(getComputedStyle(overlayPath).transition).toBe("none");
+    expect(document.querySelector("[role='dialog']")).toBeNull();
+    const input = screen.getByRole("textbox", { name: "Product target" });
+    input.focus();
+    for (const key of ["ArrowRight", "ArrowLeft", "Escape", "Tab"]) expect(fireEvent.keyDown(input, { key, cancelable: true })).toBe(true);
+    expect(document.activeElement).toBe(input);
+    expect(document.querySelector(".react-joyride__spotlight")).not.toBeNull();
+    view.rerender(<><Button>Guide trigger</Button><input aria-label="Product target" data-tutorial-target="focus" /></>);
+    expect(document.activeElement).toBe(trigger);
+    expect(document.querySelector(".react-joyride__overlay")).toBeNull();
+  });
+
+  it("reports missing targets and can recover when the target later mounts", async () => {
+    vi.useFakeTimers();
+    const status = vi.fn();
+    const view = render(<CloudTutorialHighlight target="[data-tutorial-target='late-recovery']" active contextKey="workspace-a" reducedMotion onStatus={status} />);
+    expect(status).toHaveBeenLastCalledWith("waiting");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+    expect(status).toHaveBeenLastCalledWith("missing");
+    view.rerender(<><input data-tutorial-target="late-recovery" /><CloudTutorialHighlight target="[data-tutorial-target='late-recovery']" active contextKey="workspace-a" reducedMotion onStatus={status} /></>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(16); });
+    expect(status).toHaveBeenLastCalledWith("ready");
+    expect(document.querySelector(".react-joyride__spotlight")).not.toBeNull();
+    view.unmount();
+    const countAtExit = status.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(status).toHaveBeenCalledTimes(countAtExit);
+    expect(document.querySelector(".react-joyride__overlay")).toBeNull();
+  });
+
+  it("characterizes Driver's unsupported nonmodal Tab behavior before rejecting that engine", async () => {
+    render(<><input data-tutorial-target="rejected-driver" /><DriverCandidate target="[data-tutorial-target='rejected-driver']" active /></>);
+    await waitFor(() => expect(document.querySelector(".driver-overlay")).not.toBeNull());
+    const input = screen.getByRole("textbox");
+    input.focus();
+    expect(fireEvent.keyDown(input, { key: "Tab", cancelable: true })).toBe(false);
+    expect(document.activeElement).toBe(input);
   });
 });

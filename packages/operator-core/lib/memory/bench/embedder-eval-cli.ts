@@ -11,6 +11,8 @@
  *     [--vectors <candidate-vectors.json>]
  *     [--mdenseon-model <validated-local-directory>] [--isolated-sidecar]
  *     [--vectors-out <path.json>] [--warm-trials <N>]
+ *     Performance manifest cells use frozen requests and five randomized
+ *     fresh-process blocks; retain cold/warm/batch/cache/resource raw samples.
  *
  * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
  * added leg loads/pools/sizes correctly before paying for a full corpus. Its
@@ -111,6 +113,9 @@ import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentRefer
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { loadPerformanceInput, collectSidecarPerformance, runPerformanceBlocks, isolatedEvaluationBuilders } from './sidecar-performance';
+
+const processStartedAtMs = Date.now() - process.uptime() * 1000;
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
@@ -530,6 +535,12 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
+  if (argValue('--run-performance')) {
+    const model = argValue('--mdenseon-model'), driver = argValue('--driver-out');
+    if (!model || !driver) throw new Error('--run-performance requires --mdenseon-model and --driver-out');
+    console.log('performance summary', await runPerformanceBlocks(argValue('--run-performance')!, argValue('--manifest-sha256') ?? '', model, driver));
+    process.exit(0);
+  }
   if (argValue('--summarize-reference')) {
     const output = argValue('--out'), python = argValue('--python-reference');
     if (!output || !python) throw new Error('--summarize-reference requires --python-reference and --out');
@@ -566,6 +577,11 @@ async function main(): Promise<void> {
     await assertCandidateArm(arm, arm.model as 'mdenseon' | 'gemma' | 'harrier', http ? 'local-http-client-worker' : 'worker', EMBED_SIDECAR_RUNTIME);
   }
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
+  const performanceInput = preparedMeasurement?.cell.bar === 'performance' ? loadPerformanceInput(preparedMeasurement) : undefined;
+  if (performanceInput && (argValue('--warm-trials') || process.argv.includes('--timing-only') || argValue('--vectors-out'))) {
+    throw new Error('performance samples must come from the frozen request contract');
+  }
+  if (performanceInput && getWorkerState().alive) throw new Error('performance cell requires a fresh process with a cold worker');
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
   const timingOnly = process.argv.includes('--timing-only');
   if (timingOnly && warmTrials === 0) throw new Error('--timing-only requires --warm-trials');
@@ -574,8 +590,8 @@ async function main(): Promise<void> {
     if (sidecarUrl) throw new Error('--isolated-sidecar cannot target an existing sidecar');
     if (!mdenseonModel) throw new Error('--isolated-sidecar requires --mdenseon-model');
     readMdenseOnExport(mdenseonModel);
-    isolatedSidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 1,
-      builders: { mdenseon: async (kind) => buildMdenseOnEmbedder({ kind, model: mdenseonModel }) },
+    isolatedSidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: performanceInput?.serverConcurrency ?? 1,
+      builders: isolatedEvaluationBuilders(async (kind) => buildMdenseOnEmbedder({ kind, model: mdenseonModel })),
       modelRevisions: { mdenseon: MDENSEON_REVISION },
       log: (line) => console.log(`[isolated-sidecar] ${line}`),
     });
@@ -591,6 +607,19 @@ async function main(): Promise<void> {
       `embedder-eval-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`,
     );
   if (preparedMeasurement && path.resolve(outPath) !== preparedMeasurement.rawOutput) throw new Error('runner output differs from declared cell');
+
+  if (performanceInput && preparedMeasurement && sidecarUrl) {
+    const { arm, cell } = preparedMeasurement;
+    const report = await collectSidecarPerformance(sidecarUrl, arm, performanceInput, { processStartedAtMs,
+      onPhase: (phase) => console.log(`[performance] ${cell.id} ${phase}`),
+      onSample: (sample) => fs.appendFileSync(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
+    });
+    assertMeasuredExecution(arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
+    writeMeasurementCell(preparedMeasurement, { ...report, block: cell.parameters.block, order: cell.parameters.order,
+      execution: embedExecutionTarget(), threads: ORT_SESSION_OPTIONS, workerState: getWorkerState() });
+    await isolatedSidecar?.close(); await shutdownLocalEmbedder();
+    console.log('wrote', outPath); process.exit(0);
+  }
 
   // Which corpus/gold-set pair to score against. 'memory' (default) keeps the
   // original memory-bench behaviour; 'prose' scores the prose surfaces, whose
