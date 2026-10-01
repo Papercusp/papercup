@@ -78,3 +78,68 @@ describe('ledger anchor pass', () => {
     expect(a.filed.map((f) => f.watchdogKey)).toEqual([missedHourWatchdogKey('ws-a'), missedHourWatchdogKey('ws-b')]);
   });
 });
+
+describe('ledger anchor pass with the Cupboard Worker feed (D-027)', () => {
+  const pgOnlyWs1: AnchorLinkFeed = {
+    links: async (ws) => (ws === 'ws-1' ? links.map((l) => ({ streamId: l.streamId, seq: l.seq, entryHash: l.entryHash })) : []),
+  };
+  const workerLinks = [
+    ...appendLinks('cupboard-commerce', null, [entryDigest({ order: 1 })]),
+    ...appendLinks('cupboard-treasury', null, [entryDigest({ grant: 1 }), entryDigest({ grant: 2 })]),
+  ].map((l) => ({ streamId: l.streamId, seq: l.seq, entryHash: l.entryHash }));
+  const workerFeed: AnchorLinkFeed = { links: async (ws) => (ws === 'ws-treasury' ? workerLinks : []) };
+
+  it("anchors the treasury workspace from the Worker's links even when PG holds none for it", async () => {
+    const store = memoryLedgerAnchorStore();
+    const r = await runLedgerAnchorPass({
+      nowSeconds: T0 + 300,
+      backend: okBackend(),
+      store,
+      feed: pgOnlyWs1,
+      workspaces: ['ws-1'],
+      alertDeps: alerts().deps,
+      cupboard: { feed: workerFeed, treasuryWorkspace: 'ws-treasury' },
+    });
+    expect(r.cupboardFeedUnavailable).toBeNull();
+    expect(r.workspaces.map((w) => w.workspaceId)).toEqual(['ws-1', 'ws-treasury']);
+    expect(r.workspaces[0]).toMatchObject({ tick: { status: 'anchored', newLeaves: 2 }, feedErrors: [] });
+    expect(r.workspaces[1]).toMatchObject({ tick: { status: 'anchored', newLeaves: 3 }, feedErrors: [] });
+    expect((await store.leaves('ws-treasury')).length).toBe(3);
+    expect((await store.leaves('ws-1')).length).toBe(2);
+  });
+
+  it('a failing Worker feed is reported per workspace and does not stop the PG links being anchored', async () => {
+    const store = memoryLedgerAnchorStore();
+    const failing: AnchorLinkFeed = {
+      links: async () => {
+        throw new Error('cupboard worker 503\n<html>…</html>');
+      },
+    };
+    const r = await runLedgerAnchorPass({
+      nowSeconds: T0 + 300,
+      backend: okBackend(),
+      store,
+      feed: pgOnlyWs1,
+      workspaces: ['ws-1'],
+      alertDeps: alerts().deps,
+      cupboard: { feed: failing, treasuryWorkspace: 'ws-treasury' },
+    });
+    expect(r.workspaces[0]).toMatchObject({ workspaceId: 'ws-1', tick: { status: 'anchored', newLeaves: 2 }, feedErrors: ['cupboard: cupboard worker 503'] });
+    expect(r.workspaces[1]).toMatchObject({ workspaceId: 'ws-treasury', feedErrors: ['cupboard: cupboard worker 503'] });
+    expect((await store.leaves('ws-treasury')).length).toBe(0);
+  });
+
+  it('cupboard: null feeds no Worker links and adds no treasury workspace', async () => {
+    const r = await runLedgerAnchorPass({
+      nowSeconds: T0 + 300,
+      backend: okBackend(),
+      store: memoryLedgerAnchorStore(),
+      feed: pgOnlyWs1,
+      workspaces: ['ws-1'],
+      alertDeps: alerts().deps,
+      cupboard: null,
+    });
+    expect(r.workspaces.map((w) => w.workspaceId)).toEqual(['ws-1']);
+    expect(r.cupboardFeedUnavailable).toBeNull();
+  });
+});
