@@ -489,7 +489,7 @@ export default defineTool({
       .array(TripwireSchema)
       .max(12)
       .optional()
-      .describe('structured form of the kill criterion — renders as live bars instead of prose nobody re-checks'),
+      .describe('structured kill criterion; renders as live bars, not prose'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
     sourceWorkItemId: z
       .string()
