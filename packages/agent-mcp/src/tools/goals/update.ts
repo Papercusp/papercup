@@ -20,7 +20,10 @@ import type { Sql } from 'postgres';
 import type { PapercuspUnifiedToolContext } from '@papercusp/operator-core/lib/agent-tools/_tool-context';
 import { evaluateGoalWindDownOutputs } from '@papercusp/operator-core/lib/goals/goal-io-validation';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
-import { GENERICALLY_MEASURABLE_METRICS } from '@papercusp/operator-core/lib/goals/tripwire-refresh';
+import {
+  GENERICALLY_MEASURABLE_METRICS,
+  unmeasuredTripwireAdvisories,
+} from '@papercusp/operator-core/lib/goals/tripwire-refresh';
 import { HARNESS_SLUG_RE, isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import {
   GOAL_LAUNCH_DEFAULTS,
@@ -869,9 +872,24 @@ const goalUpdateTool = defineTool({
       }
     }
 
+    // WI-10004424: only when this call touched what decides measurability, and
+    // read off the PERSISTED row so a window change and a tripwire change made in
+    // one call are judged together.
+    const tripwireAdvisories =
+      row && (args.tripwires !== undefined || args.budgetWindowSec !== undefined)
+        ? unmeasuredTripwireAdvisories(Array.isArray(row.tripwires) ? row.tripwires : null, {
+            budgetWindowSec: row.budget_window_sec === null ? null : Number(row.budget_window_sec),
+          })
+        : [];
+
     return {
       data: row
-        ? { ...row, stop, ...(blockedByApplied !== null ? { blocked_by: blockedByApplied } : {}) }
+        ? {
+            ...row,
+            stop,
+            ...(blockedByApplied !== null ? { blocked_by: blockedByApplied } : {}),
+            ...(tripwireAdvisories.length ? { tripwire_advisories: tripwireAdvisories } : {}),
+          }
         : null,
       ...(degradedReasons.length ? { degraded: true, degradedReasons } : {}),
     };
