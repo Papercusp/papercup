@@ -13,7 +13,11 @@
  * SATURATED step; the ramp script owns that verdict, so it is read, never recomputed here. A
  * ramp that never saturated is CENSORED: its capacity is at least the largest N tested, and
  * the cost it implies is an upper bound. Cost per agent-month is the machine's list price
- * (gcp-rails, disk included) x 730 h / capacity.
+ * (gcp-rails, disk included) x 730 h / ACTIVE agents, where active agents is the mean number of
+ * sessions the capacity step actually held in flight (`achieved=` on its verdict line, capped at
+ * N). Dividing by N overstated capacity whenever slots sat idle between sessions: the lever ramp
+ * (D-020) passed n=96 on e2-custom-16-32768 with only 73.2 in flight and flat throughput, and the
+ * table priced it at 96. Per-agent cores and anon are normalized the same way.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -32,6 +36,8 @@ export interface StepVerdict {
   /** Why the step saturated (`driver-rc=1,failed=2`) or was underdriven (`achieved=12.7/64`); null when it passed. */
   reason: string | null;
   wallSlowdown: number | null;
+  /** Mean sessions in flight over the step (`achieved=X/N`); null on a log that predates the field. */
+  achieved: number | null;
 }
 
 /** The step verdicts in a ramp log, in order. */
