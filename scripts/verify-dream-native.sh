@@ -21,6 +21,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${DREAM_NATIVE_OUT:-/tmp/dream-native-$STAMP}"
 mkdir -p "$OUT"
 TARGET_SOURCES=(
+  apps/operator-vite/src/components/adv/DreamControl.tsx
   apps/operator-vite/src/components/adv/DreamPanel.tsx
   apps/operator-vite/src/components/adv/dream-view.fixture.json
   packages/operator-core/lib/dream/capability-catalog.ts
@@ -37,6 +38,8 @@ TARGET_SOURCES=(
   packages/operator-core/lib/dream/dream-read.ts
   packages/operator-core/lib/dream/dream-run-provenance.ts
   packages/operator-core/lib/dream/dream-sources.ts
+  packages/operator-core/lib/agent-tools/learning/dream-control.ts
+  packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts
   scripts/verify-dream-native.sh
 )
 TARGET_HASHES="$OUT/target-sources.sha256"
