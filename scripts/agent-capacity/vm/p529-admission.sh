@@ -35,12 +35,21 @@ mkdir -p "$TMPD" || exit 1
 chmod 1777 "$TMPD" 2>/dev/null || true
 for v in $(env | sed -n 's/^\(PC_HEAVY_[A-Z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 
-echo "P529_START k=$K steps=\"$STEPS\" dur=$DUR repo=$REPO $(ts)"
+# The P-019 recordings were made from their own tasks.json, placed beside them in the corpus; the
+# driver's default (scripts/agent-capacity/corpus/tasks.json) is the P-003 corpus, not this one.
+export TASKS_FILE=${TASKS_FILE:-$CACHE/corpus/tasks.json}
+[ -f "$TASKS_FILE" ] || { echo "P529_ERROR no tasks file at $TASKS_FILE" >&2; exit 2; }
+
+echo "P529_START k=$K steps=\"$STEPS\" dur=$DUR repo=$REPO tasks=$TASKS_FILE $(ts)"
 
 bash "$S/vm/install-heavy-shim.sh" "$PREP" --uninstall
 echo "P529_ARM_START arm=a $(ts)"
 bash "$S/vm/p005-ramp.sh" p529-a all "$STEPS" "$DUR"
-echo "P529_ARM_END arm=a rc=$? $(ts)"
+rc=$?
+echo "P529_ARM_END arm=a rc=$rc $(ts)"
+# rc 3 = the driver could not run (preflight or an immediate crash): arm A measured nothing, so
+# arm B would have no baseline to compare against.
+[ "$rc" -ne 3 ] || { echo "P529_ERROR arm=a driver did not run, stopping before arm B" >&2; exit 5; }
 
 bash "$S/vm/install-heavy-shim.sh" "$PREP" || { echo "P529_ERROR shim install failed" >&2; exit 3; }
 rm -rf "$TMPD/slots-k$K"

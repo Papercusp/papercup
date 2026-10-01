@@ -272,7 +272,7 @@ describe('post-GO public-release canary readiness', () => {
     );
   });
 
-  describe('release-scoped soak minimum (endgame D-128)', () => {
+  describe('release-scoped soak minimum (endgame D-132)', () => {
     /** Shift the whole post-canary sequence so the soak is exactly `hours` long. */
     function soakOf(hours: number, releaseVersion: string): PostGoReleaseCanaryInput {
       const input = validInput();
@@ -286,10 +286,10 @@ describe('post-GO public-release canary readiness', () => {
       return input;
     }
 
-    it('maps 0.0.28-alpha to 24h with its decision ref, and every other release to the 72h default', () => {
+    it('removes the 0.0.28-alpha timer without falling back to the 72h default', () => {
       expect(postGoReleaseCanaryMinimum('0.0.28-alpha')).toEqual({
-        minimumDurationMs: 24 * 3_600_000,
-        decisionRef: 'p2p-public-release-endgame-2026-09-01#D-128',
+        minimumDurationMs: 0,
+        decisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
       });
       for (const other of ['0.0.29-alpha', '0.0.28', '0.0.28-alpha.1', '', 'toString', undefined]) {
         expect(postGoReleaseCanaryMinimum(other)).toEqual({
@@ -305,11 +305,28 @@ describe('post-GO public-release canary readiness', () => {
       expect(verdict.errors).toContain('canary must run for an actual minimum of 72 hours');
     });
 
-    it('rejects a 0.0.28-alpha soak one hour short of 24h, naming the ruling', () => {
-      const input = soakOf(24, '0.0.28-alpha');
-      input.canary.finishedAt = new Date(Date.parse(input.canary.finishedAt) - 1).toISOString();
+    it('accepts immediate 0.0.28-alpha evidence after independent GO without a timed soak', () => {
+      const input = validInput();
+      input.releaseVersion = '0.0.28-alpha';
+      input.canary.finishedAt = input.canary.startedAt;
+      input.canary.observations = input.canary.observations.slice(0, 1);
+      input.canary.alarmRail.deliveredPageAt = input.canary.startedAt;
+      const verdict = validatePostGoReleaseCanary(input);
+      expect(verdict.errors).toEqual([]);
+      expect(verdict.ok).toBe(true);
+      expect(verdict.result).toMatchObject({
+        canaryDurationMs: 0,
+        minimumDurationMs: 0,
+        minimumDurationDecisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
+      });
+    });
+
+    it('still requires independent approval when the 0.0.28-alpha timer is removed', () => {
+      const input = validInput();
+      input.releaseVersion = '0.0.28-alpha';
+      input.independentGo.reviewerOwnerId = input.independentGo.implementationOwnerId;
       expect(validatePostGoReleaseCanary(input).errors).toContain(
-        'canary must run for an actual minimum of 24 hours (0.0.28-alpha, p2p-public-release-endgame-2026-09-01#D-128)',
+        'independent GO reviewer must differ from the implementation owner',
       );
     });
 

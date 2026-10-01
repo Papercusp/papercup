@@ -122,10 +122,16 @@
  * looks stuck again, run the cross-check by hand — and if you ADD a streak to another emitter,
  * this is the property to preserve.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { defaultIsUnitActive, readCutStatus } from '../release-cut-launch';
+import {
+  defaultIsUnitActive,
+  defaultIsUnitActiveAsync,
+  readCutStatus,
+  readCutStatusAsync,
+  readUnitActiveStateAsync,
+} from '../release-cut-launch';
 import {
   openEscalation,
   resolveEscalation,
@@ -252,6 +258,55 @@ export function defaultIsCutQuiescing(unit: string): boolean {
     const out = typeof stdout === 'string' ? stdout.trim() : '';
     return out === 'deactivating';
   }
+}
+
+/** Async {@link defaultIsCutQuiescing}: same states, no event-loop block. */
+export async function defaultIsCutQuiescingAsync(unit: string): Promise<boolean> {
+  const state = await readUnitActiveStateAsync(unit);
+  return state === 'active' || state === 'activating' || state === 'deactivating';
+}
+
+export interface D026QuiescenceAsyncReaderDeps {
+  readCutStatusAsync?: typeof readCutStatusAsync;
+  /** Strict probe for the restore leg (active/activating only). */
+  isUnitActiveAsync?: (unit: string) => Promise<boolean>;
+  /** Probe for the CUT unit; also counts `deactivating`. */
+  isCutActiveAsync?: (unit: string) => Promise<boolean>;
+}
+
+/**
+ * {@link readD026QuiescenceEvidence} without execFileSync
+ * (jev-memory-timeouts-to-zero-2026-10-01). The sync reader froze the calling
+ * worker's event loop for 107 ms p50 / 237 ms p95 per call on this host (three
+ * systemctl children, each waited on synchronously), and the liveness alarm ran
+ * it on every tick. The cut and restore probes now run concurrently in child
+ * processes while the loop keeps serving.
+ */
+export async function readD026QuiescenceEvidenceAsync(
+  deps: D026QuiescenceAsyncReaderDeps = {},
+): Promise<D026QuiescenceEvidence> {
+  const active = deps.isUnitActiveAsync ?? defaultIsUnitActiveAsync;
+  const isCutActiveAsync = deps.isCutActiveAsync ?? defaultIsCutQuiescingAsync;
+  const [cut, restoreActive] = await Promise.all([
+    (deps.readCutStatusAsync ?? readCutStatusAsync)({ isUnitActiveAsync: isCutActiveAsync }),
+    active(D026_RESTORE_UNIT),
+  ]);
+  return { cutActive: cut.running, restoreActive };
+}
+
+/** Async {@link readBackgroundPrimaryLoadState}. */
+export function readBackgroundPrimaryLoadStateAsync(
+  unit = process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT ?? 'papercusp-bg-host.service',
+): Promise<string | null> {
+  if (!unit.trim()) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(
+      'systemctl',
+      ['--user', 'show', unit, '-p', 'LoadState', '--value'],
+      { encoding: 'utf8', timeout: 5000 },
+      (err, stdout) => resolve(err ? null : stdout.trim() || null),
+    );
+  });
 }
 
 export function readBackgroundPrimaryLoadState(
@@ -1030,9 +1085,9 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
       void runSinglePrimaryCheck(undefined, {
         page: defaultPage,
         pageResolved: defaultPageResolved,
-        d026Quiescence: readD026QuiescenceEvidence,
+        d026Quiescence: () => readD026QuiescenceEvidenceAsync(),
         announcedQuiescence: () => readActiveAnnouncedQuiesce(ANNOUNCED_QUIESCE_SUBJECT, Date.now()),
-        backgroundUnitLoadState: readBackgroundPrimaryLoadState,
+        backgroundUnitLoadState: () => readBackgroundPrimaryLoadStateAsync(),
       }).catch(() => {});
     },
     { category: 'watchdog' },

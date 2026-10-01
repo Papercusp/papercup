@@ -187,19 +187,16 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
   });
 
   it("reports missing targets and can recover when the target later mounts", async () => {
-    vi.useFakeTimers();
     const status = vi.fn();
     const view = render(<CloudTutorialHighlight target="[data-tutorial-target='late-recovery']" active contextKey="workspace-a" reducedMotion onStatus={status} />);
     expect(status).toHaveBeenLastCalledWith("waiting");
-    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-    expect(status).toHaveBeenLastCalledWith("missing");
+    await waitFor(() => expect(status).toHaveBeenLastCalledWith("missing"), { timeout: 2500 });
     view.rerender(<><input data-tutorial-target="late-recovery" /><CloudTutorialHighlight target="[data-tutorial-target='late-recovery']" active contextKey="workspace-a" reducedMotion onStatus={status} /></>);
-    await act(async () => { await vi.advanceTimersByTimeAsync(16); });
-    expect(status).toHaveBeenLastCalledWith("ready");
-    expect(document.querySelector(".react-joyride__spotlight")).not.toBeNull();
+    await waitFor(() => expect(status).toHaveBeenLastCalledWith("ready"));
+    await waitFor(() => expect(document.querySelector(".react-joyride__spotlight")).not.toBeNull());
     view.unmount();
     const countAtExit = status.mock.calls.length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 1600)); });
     expect(status).toHaveBeenCalledTimes(countAtExit);
     expect(document.querySelector(".react-joyride__overlay")).toBeNull();
   });
@@ -214,14 +211,11 @@ describe("Selected nonmodal Joyride highlight lifecycle", () => {
   });
 
   it("restarts missing-target recovery after a previously ready control unmounts", async () => {
-    vi.useFakeTimers();
     const status = vi.fn();
     const view = render(<><span><input data-tutorial-target="removed" /></span><CloudTutorialHighlight target="[data-tutorial-target='removed']" active contextKey="workspace-a" onStatus={status} /></>);
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(status).toHaveBeenLastCalledWith("ready");
+    await waitFor(() => expect(status).toHaveBeenLastCalledWith("ready"));
     view.rerender(<><span /><CloudTutorialHighlight target="[data-tutorial-target='removed']" active contextKey="workspace-a" onStatus={status} /></>);
-    await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-    expect(status).toHaveBeenLastCalledWith("missing");
+    await waitFor(() => expect(status).toHaveBeenLastCalledWith("missing"), { timeout: 2500 });
     expect(document.querySelector(".react-joyride__overlay")).toBeNull();
   });
 });

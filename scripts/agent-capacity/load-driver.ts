@@ -11,6 +11,7 @@
  *     [--duration-sec 1800] [--speed 1] [--stagger-ms 2000] [--isolation systemd|none] \
  *     [--corpus ~/.cache/agent-capacity/corpus] [--out ~/.cache/agent-capacity/runs/<runId>] \
  *     [--tasks-file <tasks.json the recordings were made from; default corpus/tasks.json>]
+ *     [--check   validate imports, tasks file, corpus, selection and CLI versions; drive nothing]
  *
  * Each agent SLOT runs sessions round-robin from the selection; with `--duration-sec` a slot
  * keeps starting its next session until the deadline, so N stays N for the whole window (the
@@ -485,11 +486,20 @@ async function main(): Promise<void> {
   }
   const runId = arg('run-id', new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, ''))!;
   const outDir = arg('out', path.join(CACHE, 'runs', runId))!;
-  mkdirSync(outDir, { recursive: true });
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
   const workdir = arg('workdir', 'copy');
   if (workdir !== 'copy' && workdir !== 'overlay') throw new Error('--workdir copy|overlay');
+  // --check: everything above (the whole import graph, tasks file, corpus, selection, CLI versions)
+  // validated, nothing driven. Ramp scripts run this before their first step so a broken driver
+  // fails in seconds with its real error instead of reading as a saturated step (P-529, 2026-10-01:
+  // a missing module and a missing tasks.json both ended arm A and arm B at n=12 as "SATURATED").
+  if (process.argv.includes('--check')) {
+    if (!sessions.length) throw new Error(`the selection matched no recorded session in ${corpusDir}`);
+    console.log(`DRIVER_CHECK_OK sessions=${sessions.length} corpus=${corpusDir} tasks=${corpus.tasks.length}`);
+    return;
+  }
+  mkdirSync(outDir, { recursive: true });
   const opts: DriverOptions = {
     cacheDir: arg('cache', CACHE)!,
     agents: Math.max(1, Number(arg('agents', '1'))),

@@ -303,6 +303,8 @@ import './personal/search';
 import './personal/purge';
 import './personal/privacy-rules';
 import './personal/declassify';
+import './documents/search';
+import './documents/subscriptions';
 // external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
 import './slack/respond-in-thread';
 // external-triggers D-019 Tier 1 (P-029/P-030/P-031): provider-neutral capability

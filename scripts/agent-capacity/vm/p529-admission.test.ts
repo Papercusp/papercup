@@ -33,15 +33,20 @@ describe('vm/p529-admission.sh (faked p005-ramp.sh, real shim installer)', () =>
         '[ -n "${FAKE_PRIVATE_TMP:-}" ] && export PC_HEAVY_DIR="$FAKE_PRIVATE_TMP/slots" PC_HEAVY_SHIM_LOG="$FAKE_PRIVATE_TMP/shim.jsonl"\nexec "$@"\n',
     );
     chmodSync(path.join(home, 'bin', 'codex'), 0o755);
-    // The fake ramp records, per arm, the PC_HEAVY_* env it saw and whether .bin/vitest was the
-    // shim; arm B also writes two request/admit pairs (waits 0.5 and 4) into the shim log.
+    // The P-019 recordings' own tasks.json, placed beside them in the corpus.
+    mkdirSync(path.join(home, '.cache', 'agent-capacity', 'corpus'), { recursive: true });
+    writeFileSync(path.join(home, '.cache', 'agent-capacity', 'corpus', 'tasks.json'), '{"version":1,"tasks":[]}\n');
+    // The fake ramp records, per arm, the tasks file and PC_HEAVY_* env it saw and whether
+    // .bin/vitest was the shim; arm B also writes two request/admit pairs (waits 0.5 and 4) into
+    // the shim log. FAKE_ARM_A_RC makes arm A exit with that code (3 = the driver could not run).
     const ramp = path.join(vmDir(), 'p005-ramp.sh');
     writeFileSync(
       ramp,
       [
         '#!/usr/bin/env bash',
         `shim=$(grep -c PC_HEAVY_SHIM_V1 "${bin()}/vitest" 2>/dev/null || true)`,
-        'echo "ARM $1 sel=$2 steps=$3 dur=$4 shim=${shim:-0} env=$(env | grep ^PC_HEAVY_ | sort | tr \'\\n\' \' \')" >> "$HOME/ramp.log"',
+        'echo "ARM $1 sel=$2 steps=$3 dur=$4 shim=${shim:-0} tasks=${TASKS_FILE:-} env=$(env | grep ^PC_HEAVY_ | sort | tr \'\\n\' \' \')" >> "$HOME/ramp.log"',
+        '[ "$1" = p529-a ] && [ -n "${FAKE_ARM_A_RC:-}" ] && exit "$FAKE_ARM_A_RC"',
         'if [ -n "${PC_HEAVY_SHIM_LOG:-}" ]; then',
         '  printf \'%s\\n\' \'{"ev":"request","bin":"vitest","id":"a","t":1}\' \'{"ev":"admit","bin":"vitest","id":"a","t":1.5,"waitSec":0.500}\' \\',
         '    \'{"ev":"request","bin":"tsc","id":"b","t":2}\' \'{"ev":"admit","bin":"tsc","id":"b","t":6,"waitSec":4.000}\' \\',
@@ -62,8 +67,9 @@ describe('vm/p529-admission.sh (faked p005-ramp.sh, real shim installer)', () =>
     expect(out).toMatch(/^P529_PREFLIGHT_OK pool=\S+\/slots-k3$/m);
     const arms = readFileSync(path.join(home, 'ramp.log'), 'utf8').trim().split('\n');
     expect(arms).toHaveLength(2);
-    expect(arms[0]).toMatch(/^ARM p529-a sel=all steps=12 18 dur=300 shim=0 env=$/);
-    expect(arms[1]).toMatch(/^ARM p529-k3 sel=all steps=12 18 dur=300 shim=1 env=/);
+    const tasks = path.join(home, '.cache', 'agent-capacity', 'corpus', 'tasks.json');
+    expect(arms[0]).toBe(`ARM p529-a sel=all steps=12 18 dur=300 shim=0 tasks=${tasks} env=`);
+    expect(arms[1]).toMatch(new RegExp(`^ARM p529-k3 sel=all steps=12 18 dur=300 shim=1 tasks=${tasks.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} env=`));
     for (const kv of [
       'PC_HEAVY_SLOTS=3 ',
       `PC_HEAVY_DIR=${tmp()}/slots-k3 `,
@@ -101,6 +107,39 @@ describe('vm/p529-admission.sh (faked p005-ramp.sh, real shim installer)', () =>
     expect(stderr).toMatch(/P529_ERROR codex sandbox does not share the admission pool: out="pch-ok"/);
     expect(readFileSync(path.join(home, 'ramp.log'), 'utf8').trim().split('\n')).toHaveLength(1); // arm A only
     expect(readFileSync(path.join(bin(), 'vitest'), 'utf8')).not.toContain('PC_HEAVY_SHIM_V1');
+  });
+
+  it('stops before arm B, with the shim never installed, when arm A’s driver could not run', () => {
+    let code = 0;
+    let stderr = '';
+    try {
+      execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '3', '12', '300'], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        env: { ...process.env, PATH: `${home}/bin:${process.env.PATH}`, HOME: home, P529_TMP: tmp(), FAKE_ARM_A_RC: '3' },
+      });
+    } catch (e) {
+      code = (e as { status: number }).status;
+      stderr = String((e as { stderr: string }).stderr);
+    }
+    expect(code).toBe(5);
+    expect(stderr).toMatch(/P529_ERROR arm=a driver did not run, stopping before arm B/);
+    expect(readFileSync(path.join(home, 'ramp.log'), 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readFileSync(path.join(bin(), 'vitest'), 'utf8')).not.toContain('PC_HEAVY_SHIM_V1');
+  });
+
+  it('refuses to start without the recordings’ tasks file', () => {
+    rmSync(path.join(home, '.cache', 'agent-capacity', 'corpus'), { recursive: true, force: true });
+    let code = 0;
+    let stderr = '';
+    try {
+      execFileSync('bash', [path.join(vmDir(), 'p529-admission.sh'), '3', '12'], { encoding: 'utf8', env: { ...process.env, HOME: home, P529_TMP: tmp() }, stdio: 'pipe' });
+    } catch (e) {
+      code = (e as { status: number }).status;
+      stderr = String((e as { stderr: string }).stderr);
+    }
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/P529_ERROR no tasks file at \S+\/corpus\/tasks\.json/);
   });
 
   it('refuses to start without a prepared checkout', () => {

@@ -109,6 +109,78 @@ function execPreUsesBundle(execPre: string, expectedWorkdir = '/isolated/apps/op
   return r.status === 0;
 }
 
+function execPinsIntegrationRoot(execStart: string): boolean {
+  const r = runFn(
+    ['staging_exec_pins_integration_root'],
+    'staging_exec_pins_integration_root "$EXEC_START"',
+    { env: { EXEC_START: execStart } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`staging_exec_pins_integration_root exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
+function stagingUnitGuardResult(
+  root: string,
+  overrides: {
+    workingDirectory?: string;
+    environment?: string;
+    execPre?: string;
+    execStart?: string;
+  } = {},
+): { status: number | null; stdout: string; stderr: string } {
+  const binDir = mkdtempSync(join(tmpdir(), 'staging-unit-guard-'));
+  const systemctlPath = join(binDir, 'systemctl');
+  const spaDist = root + '/apps/operator-vite/dist';
+  const workingDirectory = overrides.workingDirectory ?? root + '/apps/operator';
+  const environment = overrides.environment ?? [
+    'PAPERCUSP_INTEGRATION_ROOT=' + root,
+    'PAPERCUSP_SPA_DIST=' + spaDist,
+    'PAPERCUSP_BUNDLE_REUSE_FRESH=1',
+  ].join(' ');
+  const execPre = overrides.execPre ?? (
+    '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ' +
+    root + '/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; status=0/0 }'
+  );
+  const execStart = overrides.execStart ?? (
+    'set -a; [ -f .env.local ] && . ./.env.local; set +a; ' +
+    'export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)" ' +
+    'PAPERCUSP_HONO_PORT=3170 PAPERCUSP_PTY_WS_PORT=3156 ' +
+    'MOBILE_VOICE_WS_PORT=3168 PAPERCUSP_BIND_HOST=127.0.0.1; ' +
+    'exec node dist-host/hono-host.mjs'
+  );
+  writeFileSync(systemctlPath, [
+    '#!/usr/bin/env bash',
+    'case "$4" in',
+    '  WorkingDirectory) printf "%s\\n" "$TEST_WORKING_DIRECTORY" ;;',
+    '  Environment) printf "%s\\n" "$TEST_ENVIRONMENT" ;;',
+    '  ExecStartPre) printf "%s\\n" "$TEST_EXEC_START_PRE" ;;',
+    '  ExecStart) printf "%s\\n" "$TEST_EXEC_START" ;;',
+    '  *) exit 2 ;;',
+    'esac',
+  ].join('\\n'), { mode: 0o700 });
+  try {
+    return runFn(
+      ['staging_exec_pre_uses_bundle', 'staging_exec_pins_integration_root', 'assert_staging_unit_checkout'],
+      'log() { printf "%s\\n" "$*" >&2; }; assert_staging_unit_checkout',
+      {
+        env: {
+          PATH: binDir + ':' + (process.env.PATH ?? ''),
+          UNIT: 'papercup-staging-api.service',
+          STAGING_ROOT: root,
+          TEST_WORKING_DIRECTORY: workingDirectory,
+          TEST_ENVIRONMENT: environment,
+          TEST_EXEC_START_PRE: execPre,
+          TEST_EXEC_START: execStart,
+        },
+      },
+    );
+  } finally {
+    rmSync(binDir, { recursive: true, force: true });
+  }
+}
+
 function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   const r = runFn(
     ['health_sha_matches_target'],
@@ -387,6 +459,15 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
   it('rejects an implicit/default bind because the effective staging policy is not proven', () => {
     expect(execForcesLoopback('exec node dist-host/hono-host.mjs')).toBe(false);
   });
+
+  it('pins runtime readers to the physical generation after loading .env.local', () => {
+    expect(execPinsIntegrationRoot(
+      'set -a; [ -f .env.local ] && . ./.env.local; set +a; export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"; exec node dist-host/hono-host.mjs',
+    )).toBe(true);
+    expect(execPinsIntegrationRoot(
+      'set -a; [ -f .env.local ] && . ./.env.local; set +a; exec node dist-host/hono-host.mjs',
+    )).toBe(false);
+  });
 });
 
 describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
@@ -404,6 +485,124 @@ describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
       'path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ',
       'path=/isolated/apps/operator/bin/bundle-host.sh ; argv[]=',
     ))).toBe(false);
+  });
+});
+
+describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)', () => {
+  it('creates a unique candidate home even for repeated preparations of one source SHA', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-generations-'));
+    const generationRoot = join(root, 'generations');
+    const targetSha = 'abcdef0123456789abcdef0123456789abcdef01';
+    const create = () => runFn(
+      ['create_staging_candidate'],
+      'create_staging_candidate "$TARGET_SHA"; printf "%s|%s\\n" "$STAGING_CANDIDATE_HOME" "$STAGING_CANDIDATE_ROOT"',
+      { env: { STAGING_GENERATIONS_ROOT: generationRoot, TARGET_SHA: targetSha } },
+    );
+    try {
+      const first = create();
+      const second = create();
+      expect(first.status).toBe(0);
+      expect(second.status).toBe(0);
+      const [firstHome, firstCheckout] = first.stdout.trim().split('|');
+      const [secondHome, secondCheckout] = second.stdout.trim().split('|');
+      expect(firstHome).not.toBe(secondHome);
+      expect(firstCheckout).toBe(firstHome + '/checkout');
+      expect(secondCheckout).toBe(secondHome + '/checkout');
+      expect(firstHome).toContain('.candidate-abcdef012345.');
+      expect(secondHome).toContain('.candidate-abcdef012345.');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the current alias untouched when a candidate is missing its required host bundle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-publish-failure-'));
+    const oldRoot = join(root, 'old-generation');
+    const alias = join(root, 'staging.current');
+    const candidateHome = join(root, '.candidate-next');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const targetSha = '0123456789abcdef0123456789abcdef01234567';
+    mkdirSync(oldRoot, { recursive: true });
+    mkdirSync(join(candidateRoot, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(candidateHome, { recursive: true });
+    writeFileSync(join(candidateRoot, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(candidateHome, '.ready'), targetSha + '\n');
+    symlinkSync(oldRoot, alias);
+    try {
+      const result = runFn(
+        ['staging_candidate_ready', 'publish_staging_generation'],
+        'log() { :; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 1',
+        {
+          env: {
+            STAGING_ROOT: alias,
+            CANDIDATE_ROOT: candidateRoot,
+            CANDIDATE_HOME: candidateHome,
+            TARGET_SHA: targetSha,
+          },
+        },
+      );
+      expect(result.status).toBe(1);
+      expect(realpathSync(alias)).toBe(realpathSync(oldRoot));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('atomically publishes a ready SPA-only candidate without requiring a host bundle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-publish-spa-'));
+    const oldRoot = join(root, 'old-generation');
+    const alias = join(root, 'staging.current');
+    const candidateHome = join(root, '.candidate-spa');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const targetSha = 'fedcba9876543210fedcba9876543210fedcba98';
+    mkdirSync(oldRoot, { recursive: true });
+    mkdirSync(join(candidateRoot, 'apps/operator-vite/dist'), { recursive: true });
+    mkdirSync(candidateHome, { recursive: true });
+    writeFileSync(join(candidateRoot, 'apps/operator-vite/dist/index.html'), '<html></html>');
+    writeFileSync(join(candidateHome, '.ready'), targetSha + '\n');
+    symlinkSync(oldRoot, alias);
+    try {
+      const result = runFn(
+        ['staging_candidate_ready', 'publish_staging_generation'],
+        'log() { :; }; publish_staging_generation "$CANDIDATE_ROOT" "$CANDIDATE_HOME" "$TARGET_SHA" 0',
+        {
+          env: {
+            STAGING_ROOT: alias,
+            CANDIDATE_ROOT: candidateRoot,
+            CANDIDATE_HOME: candidateHome,
+            TARGET_SHA: targetSha,
+          },
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(realpathSync(alias)).toBe(realpathSync(candidateRoot));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('sync-staging-checkout.sh staging unit generation contract (WI-10003262)', () => {
+  it('accepts the stable alias for SPA and bundle paths while runtime readers use the physical root', () => {
+    const alias = '/tmp/papercusp-staging.current';
+    expect(stagingUnitGuardResult(alias).status).toBe(0);
+    expect(stagingUnitGuardResult(alias, {
+      environment: 'PAPERCUSP_INTEGRATION_ROOT=/tmp/papercusp-staging PAPERCUSP_SPA_DIST=/tmp/papercusp-staging.current/apps/operator-vite/dist PAPERCUSP_BUNDLE_REUSE_FRESH=1',
+    }).status).not.toBe(0);
+    expect(stagingUnitGuardResult(alias, {
+      execStart: 'set -a; [ -f .env.local ] && . ./.env.local; set +a; exec node dist-host/hono-host.mjs',
+    }).status).not.toBe(0);
+  });
+
+  it('keeps both versioned drop-ins on the stable alias and pins the runtime root physically', () => {
+    const dropinDir = join(__dirname, '../../scripts/systemd/papercup-staging-api.service.d');
+    const checkout = readFileSync(join(dropinDir, '50-staging-checkout.conf'), 'utf8');
+    const bundle = readFileSync(join(dropinDir, '95-bundled-entry.conf'), 'utf8');
+    expect(checkout).toContain('WorkingDirectory=%h/papercupai-workspace/papercusp-staging.current/apps/operator');
+    expect(checkout).toContain('Environment=PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging.current');
+    expect(checkout).toContain('Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist');
+    expect(bundle).toContain('%h/papercupai-workspace/papercusp-staging.current/apps/operator/bin/bundle-host.sh');
+    expect(bundle).toContain('PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"');
   });
 });
 
@@ -928,9 +1127,9 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   });
 
   it('the SPA-only path skips the restart but still runs the rebuild', () => {
-    // The skip must come AFTER setup-release-checkout.sh (dist refreshed on
+    // The skip must come AFTER candidate preparation (dist refreshed on
     // disk), not instead of it — otherwise :3170 serves a stale SPA forever.
-    const buildIdx = script.indexOf('setup-release-checkout.sh');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     const skipIdx = script.indexOf('skipping restart — all');
     expect(buildIdx).toBeGreaterThan(-1);
     expect(skipIdx).toBeGreaterThan(buildIdx);
@@ -940,7 +1139,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     // Advancing the checkout while keeping the old process would serve a NEW
     // SPA against an OLD server. The defer must therefore precede the build.
     const deferIdx = script.indexOf('deferring sync —');
-    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     expect(deferIdx).toBeGreaterThan(-1);
     expect(script.indexOf('staging_live_client_count "$STAGING_PORT"')).toBeGreaterThan(-1);
     if (buildIdx > -1) expect(deferIdx).toBeLessThan(buildIdx);
@@ -972,6 +1171,21 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     expect(script.slice(prebuildIdx, restartIdx)).toContain('PAPERCUSP_BUNDLE_REUSE_FRESH=1');
   });
 
+  it('prepares, validates, and builds a candidate before publishing the stable alias', () => {
+    const prepareIdx = script.indexOf('prepare_staging_candidate "$target"');
+    const preflightIdx = script.indexOf('preflight_staging_migrations "$SYNC_ROOT"');
+    const prebuildIdx = script.indexOf('prebuilding proof-bound host bundle before publishing');
+    const schemaIdx = script.indexOf('prepare_staging_schema "$SYNC_ROOT"');
+    const readyIdx = script.indexOf('mark_staging_candidate_ready "$target"');
+    const publishIdx = script.indexOf('publish_staging_generation "$STAGING_CANDIDATE_ROOT"');
+    expect(prepareIdx).toBeGreaterThan(-1);
+    expect(preflightIdx).toBeGreaterThan(prepareIdx);
+    expect(prebuildIdx).toBeGreaterThan(preflightIdx);
+    expect(schemaIdx).toBeGreaterThan(prebuildIdx);
+    expect(readyIdx).toBeGreaterThan(schemaIdx);
+    expect(publishIdx).toBeGreaterThan(readyIdx);
+  });
+
   it('accepts post-restart health only when /api/health reports the target source SHA', () => {
     const healthLoopIdx = script.indexOf('last_health_sha=');
     expect(healthLoopIdx).toBeGreaterThan(-1);
@@ -980,7 +1194,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
 
   it('fails before advancing when the coordinated restart mechanism is unavailable', () => {
     const ptoolGateIdx = script.indexOf('coordinated dev:restart seam cannot run');
-    const buildIdx = script.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const buildIdx = script.indexOf('prepare_staging_candidate "$target"');
     expect(ptoolGateIdx).toBeGreaterThan(-1);
     expect(buildIdx).toBeGreaterThan(-1);
     expect(ptoolGateIdx).toBeLessThan(buildIdx);

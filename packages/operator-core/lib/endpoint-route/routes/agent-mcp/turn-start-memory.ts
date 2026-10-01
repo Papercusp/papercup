@@ -596,13 +596,16 @@ const turnStartMemory = defineTool({
       const personalPromise = (async (): Promise<string> => {
         if (body.memoryEnabled === false) return '';
         try {
-          const [{ buildPersonalAmbientContextBlock }, recallInput] = await Promise.all([
-            import('../../../personal-vault/ambient'),
+          // enterprise-data-sources P-017 / R-11: the generalized granted-sources
+          // leg — Personal Vault (same authorization) plus documents from sources
+          // this agent's pot/plan subscribes to, all fenced as untrusted data.
+          const [{ buildGrantedSourcesContextBlock }, recallInput] = await Promise.all([
+            import('../../../data-sources/granted-sources-injection'),
             recallInputPromise,
           ]);
           if (!recallInput?.userId) return '';
           return (
-            (await buildPersonalAmbientContextBlock({
+            (await buildGrantedSourcesContextBlock({
               ownerId: owner,
               userId: recallInput.userId,
               workspaceId,

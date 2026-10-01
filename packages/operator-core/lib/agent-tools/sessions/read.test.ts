@@ -11,7 +11,19 @@ import { describe, expect, it, vi } from 'vitest';
 
 const refreshTargetSessionBeforeRead = vi.hoisted(() => vi.fn(async () => ({ attempted: 1, refreshed: 1 })));
 const resolveSearchFilters = vi.hoisted(() => vi.fn());
-const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null));
+const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null as null | {
+  sourceKind: string;
+  owner: string | null;
+  turns: Array<{
+    source_kind: string;
+    turn_idx: number;
+    speaker: string;
+    owner: string | null;
+    ts: string | null;
+    text: string;
+  }>;
+  errors: Array<{ path: string; error: string }>;
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -198,6 +210,97 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(turn.text_offset).toBe(1_500);
     expect(turn.text_truncated).toBeUndefined();
     expect(turn.readMore).toBeUndefined();
+  });
+
+  it('recovers an index-capped turn from the redacted archive and paginates the full source', async () => {
+    const ref = 'session_turn:codex:sess-capped:9';
+    const fullText = 'p'.repeat(9_572);
+    readArchivedSessionTurns.mockReset();
+    readArchivedSessionTurns.mockResolvedValue({
+      sourceKind: 'codex',
+      owner: 'su-peer',
+      turns: [{
+        source_kind: 'codex', turn_idx: 9, speaker: 'assistant', owner: 'su-peer',
+        ts: null, text: fullText,
+      }],
+      errors: [],
+    });
+    const dispatch = (offset: number) => dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref, text_offset: offset, text_limit: 4_000 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: `read-full-source-${offset}`, role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex', session_id: 'sess-capped', turn_idx: 9,
+          speaker: 'assistant', owner: 'su-peer', ts: null,
+          text: offset < 8_000 ? fullText.slice(offset, Math.min(offset + 4_000, 8_000)) : '',
+          text_full_chars: 8_000, text_offset: offset,
+        }]),
+      },
+      {},
+    );
+
+    const middle = await dispatch(4_000);
+    expect(middle.ok, JSON.stringify(middle)).toBe(true);
+    const middleTurn = (middle.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(middleTurn).toMatchObject({
+      text: fullText.slice(4_000, 8_000),
+      text_offset: 4_000,
+      text_truncated: true,
+      text_full_chars: 9_572,
+      source_completeness: 'complete',
+      readMore: { tool: 'sessions:read', args: { ref, text_offset: 8_000, text_limit: 4_000 } },
+    });
+
+    const tail = await dispatch(8_000);
+    expect(tail.ok, JSON.stringify(tail)).toBe(true);
+    const tailTurn = (tail.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(tailTurn).toMatchObject({
+      text: fullText.slice(8_000),
+      text_offset: 8_000,
+      source_completeness: 'complete',
+    });
+    expect(tailTurn.text_truncated).toBeUndefined();
+    expect(tailTurn.readMore).toBeUndefined();
+    expect(readArchivedSessionTurns).toHaveBeenCalledWith(
+      'sess-capped', 'codex', undefined, { fullSource: true, turnIndices: [9] },
+    );
+  });
+
+  it('reports unknown source completeness when a cap-length index row has no archive', async () => {
+    const ref = 'session_turn:codex:sess-no-archive:3';
+    readArchivedSessionTurns.mockReset();
+    readArchivedSessionTurns.mockResolvedValue(null);
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { ref },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-source-unknown-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex', session_id: 'sess-no-archive', turn_idx: 3,
+          speaker: 'assistant', owner: 'su-peer', ts: null,
+          text: 'x'.repeat(1_500), text_full_chars: 8_000, text_offset: 0,
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const turn = (dispatched.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(turn).toMatchObject({
+      text_full_chars: 8_000,
+      text_truncated: true,
+      source_completeness: 'unknown',
+      readMore: { tool: 'sessions:read', args: { ref, text_offset: 1_500, text_limit: 1_500 } },
+    });
   });
 
   it('casts text-window bounds before PostgreSQL resolves substring overloads', async () => {

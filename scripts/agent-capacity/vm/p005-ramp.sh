@@ -37,6 +37,21 @@ ts() { date -u +%FT%TZ; }
 ooms() { awk '$1=="oom_kill"{print $2; f=1} END{if(!f) print 0}' "$SLICE/memory.events" 2>/dev/null || echo 0; }
 sel=()
 [ "$SELECT" = all ] || sel=(--select "$SELECT")
+# TASKS_FILE: the tasks.json the recordings were made from, when it is not the driver's default
+# (scripts/agent-capacity/corpus/tasks.json); e.g. the P-019 real-work recordings for P-529.
+tasks=()
+[ -z "${TASKS_FILE:-}" ] || tasks=(--tasks-file "$TASKS_FILE")
+RAMP_ERROR_SEC=${RAMP_ERROR_SEC:-120}
+
+# Preflight: the driver's own validation (import graph, tasks file, corpus, selection, CLI
+# versions) with nothing driven. A driver that cannot start must fail here with its real error,
+# not read as a saturated first step.
+if ! npx tsx "$S/load-driver.ts" --check "${sel[@]}" "${tasks[@]}" --workdir "$WORKDIR" >"$FP/p005-$LABEL.check.log" 2>&1; then
+  why=$(grep -m1 -E 'Error|Cannot find' "$FP/p005-$LABEL.check.log" | cut -c1-300)
+  echo "RAMP_PREFLIGHT_FAILED $LABEL ${why:-see $FP/p005-$LABEL.check.log} $(ts)"
+  exit 3
+fi
+echo "RAMP_PREFLIGHT_OK $LABEL $(grep -m1 DRIVER_CHECK_OK "$FP/p005-$LABEL.check.log") $(ts)"
 
 for n in $STEPS; do
   run="p005-$LABEL-n$n"
@@ -46,19 +61,28 @@ for n in $STEPS; do
   sampler=$!
   o0=$(ooms)
   echo "RAMP_STEP_START $run n=$n $(ts)"
-  npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" \
+  t0=$(date +%s)
+  npx tsx "$S/load-driver.ts" --agents "$n" --duration-sec "$DUR" --stagger-ms 1000 "${sel[@]}" "${tasks[@]}" \
     --run-id "$run" --isolation systemd --workdir "$WORKDIR" >"$FP/$run.driver.log" 2>&1
   rc=$?
+  elapsed=$(($(date +%s) - t0))
   kill "$sampler" 2>/dev/null || true
   systemctl --user stop "hold-capdrv-$run" 2>/dev/null || true
   o1=$(ooms)
-  verdict=$(python3 - "$CACHE/runs/$run/summary.json" "$rc" "$((o1 - o0))" "$SAT_SLOWDOWN" "$MIN_DRIVEN" <<'PY'
+  verdict=$(python3 - "$CACHE/runs/$run/summary.json" "$rc" "$((o1 - o0))" "$SAT_SLOWDOWN" "$MIN_DRIVEN" "$elapsed" "$RAMP_ERROR_SEC" <<'PY'
 import json, sys
 path, rc, oom, limit, min_driven = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+elapsed, error_sec = int(sys.argv[6]), int(sys.argv[7])
 try:
     s = json.load(open(path))
 except Exception:
-    print(f"SATURATED reason=no-summary,driver-rc={rc}")
+    # No summary and no OOM within RAMP_ERROR_SEC: the driver never ran a window, so this step
+    # measured nothing about the machine. Only a driver that died later (or with an OOM kill in
+    # the slice) is evidence of saturation.
+    if oom == 0 and elapsed < error_sec:
+        print(f"DRIVER_ERROR reason=no-summary,driver-rc={rc},elapsed={elapsed}s")
+    else:
+        print(f"SATURATED reason=no-summary,driver-rc={rc}" + (f",oom_kill={oom}" if oom else ""))
     sys.exit()
 why = []
 if rc != 0:
@@ -84,6 +108,7 @@ PY
 )
   echo "RAMP_STEP_END $run n=$n rc=$rc $verdict $(ts)"
   case "$verdict" in
+    DRIVER_ERROR*) echo "RAMP_DRIVER_ERROR $LABEL n=$n see $FP/$run.driver.log"; exit 3 ;;
     SATURATED*) echo "RAMP_SATURATED $LABEL n=$n"; break ;;
     UNDERDRIVEN*) echo "RAMP_UNDERDRIVEN $LABEL n=$n"; break ;;
   esac

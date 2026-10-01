@@ -6,7 +6,9 @@
  * `documents` later). A row's `scope` says whose it is:
  *   - personal      — owner-local Personal Vault row; read through personal-vault/store.ts, unchanged here.
  *   - organization  — user_id IS NULL; readable only through a source-derived permission list.
- *   - pot           — reserved by the schema; nothing writes it yet.
+ *   - pot           — user_id IS NULL, pot_slug set; written by chat-retrieval-units.ts (P-015) for
+ *                     a pot-scoped source and readable by an agent working in that pot
+ *                     (searchPotDocuments below).
  *
  * Access to an organization document needs ALL of:
  *   1. the vault grant machinery: authorizePersonalAccess for the acting principal
@@ -261,7 +263,7 @@ export async function searchOrganizationDocuments(
     participants: string[]; title: string; snippet: string; metadata: Record<string, unknown>;
     permission_list_id: string; score: number | string;
   }>>`
-    SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at, d.participants, d.title,
+    SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata, d.permission_list_id,
            ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
       FROM harness_shared.personal_documents d
@@ -309,4 +311,94 @@ export async function searchOrganizationDocuments(
     withheld: disclosed.withheld,
     disclosed: disclosed.disclosed,
   };
+}
+
+export const POT_SEARCH_VIA = 'pot:search';
+
+export interface PotSearchResult {
+  id: string;
+  source: string;
+  kind: string;
+  externalId: string | null;
+  occurredAt: string | null;
+  participants: string[];
+  title: string;
+  snippet: string;
+  metadata: Record<string, unknown>;
+  potSlug: string;
+  score: number;
+  privacy: DocumentLabel | null;
+}
+
+export interface PotSearchOutcome {
+  results: PotSearchResult[];
+  withheld: number;
+  disclosed: number;
+}
+
+/**
+ * Search the pot corpus (scope = 'pot') of ONE pot. A pot row carries no
+ * permission list (chat-retrieval-units refuses a source-acl source for exactly
+ * that reason), so membership of the pot is the whole access rule: `potSlug`
+ * MUST be the pot the agent is working in, read from server-owned presence
+ * (coord_presence.pot_slug) — never a slug from tool input or a provider payload.
+ * Results still pass the disclosure ledger, so the principal's privacy rules
+ * label them and refuse a wider outbound audience. Run it inside the
+ * transaction that returns the results.
+ */
+export async function searchPotDocuments(
+  sql: Sql,
+  params: {
+    workspaceId: string;
+    potSlug: string;
+    principalUserId: string;
+    agentOwnerId: string | null;
+    query: string;
+    sources?: string[];
+    limit?: number;
+    snippetChars?: number;
+  },
+): Promise<PotSearchOutcome> {
+  const potSlug = params.potSlug.trim();
+  if (!potSlug || !params.query.trim()) return { results: [], withheld: 0, disclosed: 0 };
+  const limit = Math.max(1, Math.min(50, params.limit ?? 10));
+  const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
+  const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
+  const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  const rows = await sql<Array<{
+    id: string; source: string; kind: string; external_id: string | null; occurred_at: string | null;
+    participants: string[]; title: string; snippet: string; metadata: Record<string, unknown>;
+    pot_slug: string; score: number | string;
+  }>>`
+    SELECT d.id, d.source, d.kind, d.external_id, d.occurred_at::text AS occurred_at, d.participants, d.title,
+           left(d.text, ${snippetChars}) AS snippet, d.metadata, d.pot_slug,
+           ts_rank_cd(d.text_tsv, websearch_to_tsquery('english', ${params.query})) AS score
+      FROM harness_shared.personal_documents d
+     WHERE d.workspace_id = ${params.workspaceId}
+       AND d.scope = 'pot' AND d.user_id IS NULL AND d.pot_slug = ${potSlug}
+       AND d.text_tsv @@ websearch_to_tsquery('english', ${params.query})
+       ${sourceFilter}
+     ORDER BY score DESC, d.occurred_at DESC NULLS LAST
+     LIMIT ${limit}`;
+  const documents = rows.map((r) => ({
+    id: r.id,
+    source: r.source,
+    kind: r.kind,
+    externalId: r.external_id,
+    occurredAt: r.occurred_at,
+    participants: r.participants,
+    title: r.title,
+    snippet: r.snippet,
+    metadata: r.metadata,
+    potSlug: r.pot_slug,
+    score: Number(r.score),
+  }));
+  const disclosed = await discloseDocuments(sql, {
+    workspaceId: params.workspaceId,
+    userId: params.principalUserId,
+    agentOwnerId: params.agentOwnerId,
+    documents,
+    via: POT_SEARCH_VIA,
+  });
+  return { results: disclosed.documents, withheld: disclosed.withheld, disclosed: disclosed.disclosed };
 }

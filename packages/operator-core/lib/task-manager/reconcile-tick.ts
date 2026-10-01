@@ -28,7 +28,7 @@ import {
   type ResidueGroup,
   type ScannedProcess,
 } from './reconcile';
-import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
+import { scanProcessesAsync, type ScanOptions, type ScanResult } from './scan';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import { readJobLogTerminal, type JobLogTerminal } from './job-log-terminal';
 import {
@@ -117,7 +117,13 @@ export interface ReconcileTickResult {
 export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<ReconcileTickResult> {
   const fs = deps.fs ?? nodeCgroupFs;
   const now = deps.now ?? Date.now;
-  const scanFn = deps.scan ?? scanProcesses;
+  // jev-memory-timeouts-to-zero-2026-10-01 P-004: the default scan yields its
+  // kernel IO. The synchronous walk froze bg-host's event loop for 150-185 ms
+  // per tick (782 processes, measured 2026-10-01), stalling every request and
+  // Jev call that host had in flight. The async scanner prefetches the same
+  // files and classifies with the same rules; an injected non-node `fs` without
+  // an `asyncFs` still takes the synchronous path.
+  const scanFn = deps.scan ?? scanProcessesAsync;
   const listLive = deps.listLive ?? listLiveTasks;
 
   const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });

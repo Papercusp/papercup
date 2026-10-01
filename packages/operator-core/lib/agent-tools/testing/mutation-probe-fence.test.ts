@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync,mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync,mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
 
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
@@ -13,10 +16,67 @@ vi.mock('../locks/su-lock-store', () => ({
 
 import { readQueue } from '../locks/su-lock-store';
 import { runTestFilesCore } from './run';
-import { mutationProbeRefusal } from './mutation-probe-fence';
+import { mutationProbeRefusal, testImportClosures } from './mutation-probe-fence';
 
 const readQueueMock = vi.mocked(readQueue);
 let root: string;
+
+it('keeps concurrent closure workers independent of an active caller compiler', async () => {
+  const dir = makeRoot();
+  writeFileSync(join(dir, 'subject.ts'), 'export const value = 1;');
+  writeFileSync(join(dir, 'entry.ts'), 'export { value } from "./subject.ts";');
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const parentBuild = build({ stdin: { contents: 'export const parent = 1;' }, write: false,
+    plugins: [{ name: 'held-parent-compiler', setup(api) { api.onStart(async () => { started(); await gate; }); } }] });
+  // Attach rejection handling immediately: killing the caller's service is the
+  // counterexample, and must be reported here rather than as an unhandled rejection.
+  const parentOutcome = parentBuild.then(result => ({ result }), error => ({ error }));
+  try {
+    await ready;
+    const results = await Promise.all([testImportClosures(dir, [join(dir, 'entry.ts')]),
+      testImportClosures(dir, [join(dir, 'entry.ts')])]);
+    for (const result of results) {
+      expect(result.status).toBe('complete');
+      if (result.status === 'complete') expect(result.files.get(join(dir, 'entry.ts'))).toContain(join(dir, 'subject.ts'));
+    }
+  } finally { release(); }
+  expect(await parentOutcome).toHaveProperty('result.outputFiles');
+}, 20_000);
+
+it.skipIf(process.platform !== 'linux')('terminates a deadline-expired compiler and its real esbuild child', async () => {
+  const dir = makeRoot(), marker = join(dir, 'service.json'), worker = join(dir, 'blocked.mjs');
+  const esbuild = pathToFileURL(createRequire(import.meta.url).resolve('esbuild')).href;
+  writeFileSync(worker, `import { build } from ${JSON.stringify(esbuild)};
+    import { readFileSync, writeFileSync } from 'node:fs';
+    import { workerData } from 'node:worker_threads';
+    await build({ stdin: { contents: 'export const blocked = 1' }, write: false,
+      plugins: [{ name: 'blocked-build', setup(api) { api.onStart(async () => {
+        // Synchronous thread-self reads select this worker's OS thread. A
+        // process-wide census would include the caller service we must preserve.
+        const children = readFileSync('/proc/thread-self/children', 'utf8').trim().split(/\\s+/).filter(Boolean)
+          .filter(pid => { try { return readFileSync('/proc/' + pid + '/cmdline', 'utf8').includes('--service='); } catch { return false; } });
+        writeFileSync(workerData.root + '/service.json', JSON.stringify(children.map(Number)));
+        await new Promise(() => {});
+      }); } }] });`);
+  const result = await testImportClosures(dir, [], { workerPath: worker, budgetMs: 1500 });
+  expect(result).toEqual({ status: 'incomplete', reason: 'closure exceeded 1500ms' });
+  expect(existsSync(marker), 'The compiler must have started before the deadline; startup alone is not a cancellation test.').toBe(true);
+  const children: number[] = JSON.parse(readFileSync(marker, 'utf8'));
+  expect(children.length).toBeGreaterThan(0);
+  const deadline = Date.now() + 3000;
+  while (children.some(pid => existsSync('/proc/' + pid)) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  expect(children.filter(pid => existsSync('/proc/' + pid))).toEqual([]);
+}, 6000);
+
+it('fails closed when the owned compiler worker errors or exits without evidence', async () => {
+  const dir = makeRoot(), worker = join(dir, 'broken.mjs');
+  writeFileSync(worker, 'throw new Error("compiler-fixture-error");');
+  await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler-fixture-error' });
+  writeFileSync(worker, 'process.exit(0);');
+  await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler worker exited before returning a closure (0)' });
+});
 
 afterEach(() => {
   readQueueMock.mockReset();

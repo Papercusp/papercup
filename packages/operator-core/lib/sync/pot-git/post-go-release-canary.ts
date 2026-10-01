@@ -3,7 +3,7 @@
  *
  * It deliberately does not start a canary, run chaos, change defaults, or
  * authorize shipment. It consumes already-produced evidence and proves that:
- *   P-501 began only after an independent GO and ran for an actual 72 hours;
+ *   P-501 began only after an independent GO and met its release-scoped minimum;
  *   P-502 followed the soak and retained the single-owning-hive freeze model;
  *   P-503 may now make the separate automatic-mode/default decision.
  */
@@ -28,16 +28,16 @@ export const POST_GO_RELEASE_PLAN_ITEMS = ['P-501', 'P-502', 'P-503'] as const;
 
 /**
  * Release-scoped soak minimums, each backed by a recorded owner ruling.
- * Endgame D-128: 0.0.28-alpha soaks for 24h; later releases fall back to the
- * 72h default unless the owner rules again. Keep this keyed by exact release
+ * Endgame D-132: the owner removed the timed soak for 0.0.28-alpha; later
+ * releases retain the existing 72h default. Keep this keyed by exact release
  * version: a global edit would silently shorten every later soak.
  */
 export const POST_GO_RELEASE_CANARY_DURATION_OVERRIDES: Readonly<
   Record<string, { minimumDurationMs: number; decisionRef: string }>
 > = Object.freeze({
   '0.0.28-alpha': {
-    minimumDurationMs: 24 * 60 * 60 * 1_000,
-    decisionRef: 'p2p-public-release-endgame-2026-09-01#D-128',
+    minimumDurationMs: 0,
+    decisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
   },
 });
 
@@ -204,13 +204,15 @@ export function validatePostGoReleaseCanary(
       canaryStartedAt >= approvedAt,
     'canary cannot start before the independent GO',
   );
-  pushError(
-    errors,
-    Number.isFinite(canaryDurationMs) &&
-      canaryDurationMs >= minimum.minimumDurationMs,
-    `canary must run for an actual minimum of ${formatHours(minimum.minimumDurationMs)} hours` +
-      (minimum.decisionRef ? ` (${releaseVersion}, ${minimum.decisionRef})` : ''),
-  );
+  if (minimum.minimumDurationMs > 0) {
+    pushError(
+      errors,
+      Number.isFinite(canaryDurationMs) &&
+        canaryDurationMs >= minimum.minimumDurationMs,
+      `canary must run for an actual minimum of ${formatHours(minimum.minimumDurationMs)} hours` +
+        (minimum.decisionRef ? ` (${releaseVersion}, ${minimum.decisionRef})` : ''),
+    );
+  }
   // Duration alone would pass a full-length window full of divergence escalations and
   // STALLED pages (WI-10002545): every P-501 predicate must hold throughout.
   errors.push(

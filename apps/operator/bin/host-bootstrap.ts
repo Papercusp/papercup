@@ -299,7 +299,7 @@ export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void
       async () => {
         const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
         const migrationAttempt = await withBoundedTimeout(
-          () => applyPendingMigrationsAtBoot(),
+          (signal) => applyPendingMigrationsAtBoot(signal),
           {
             fallback: null,
             timeoutMs,

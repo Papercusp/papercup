@@ -9,7 +9,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { createPersonalGrant } from '../personal-vault/store';
+import { createPersonalGrant, searchPersonalDocuments, setPersonalVaultEnabled } from '../personal-vault/store';
 import {
   chatUnitDedupeKey,
   placeLegalHold,
@@ -29,16 +29,50 @@ import {
 
 let org: OrgTestDb;
 let alice: string;
+let bob: string;
 let sourceId: string;
 const WS = 'chat-retrieval-units-test';
 const CH = 'T1:CGENERAL';
 
-async function makeSource(permissionMode: string): Promise<string> {
-  const [row] = await org.adminSql<{ id: string }[]>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, permission_mapping)
-    VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: permissionMode })})
-    RETURNING id`;
+async function makeSource(
+  permissionMode: string,
+  opts: { scope: 'personal' | 'pot'; scopeRef?: string; ownerUserId?: string; providerAccountId?: string } | null = null,
+): Promise<string> {
+  const [row] = opts
+    ? await org.adminSql<{ id: string }[]>`
+        INSERT INTO harness_shared.trigger_sources
+          (workspace_id, kind, permission_mapping, scope, scope_ref, owner_user_id, provider_account_id)
+        VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: permissionMode })}, ${opts.scope}, ${opts.scopeRef ?? null},
+                ${opts.ownerUserId ?? null}::uuid, ${opts.providerAccountId ?? null})
+        RETURNING id`
+    : await org.adminSql<{ id: string }[]>`
+        INSERT INTO harness_shared.trigger_sources (workspace_id, kind, permission_mapping)
+        VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: permissionMode })})
+        RETURNING id`;
   return row!.id;
+}
+
+/** Corpus rows of every scope, for the destination checks. */
+async function corpusRows(): Promise<Array<{ scope: string; user_id: string | null; pot_slug: string | null; dedupe_key: string; text: string }>> {
+  return org.adminSql<Array<{ scope: string; user_id: string | null; pot_slug: string | null; dedupe_key: string; text: string }>>`
+    SELECT scope, user_id::text AS user_id, pot_slug, dedupe_key, text FROM harness_shared.personal_documents
+     WHERE workspace_id = ${WS} ORDER BY scope, occurred_at`;
+}
+
+/** Give alice every organization-corpus prerequisite, so an empty result proves the row is not organization-readable. */
+async function orgSearchAsAlice(query: string): Promise<Array<[string, string | null]>> {
+  await createPersonalGrant(org.adminSql, {
+    workspaceId: WS, userId: alice, principalType: 'agent-role', principalId: 'meeting-prep',
+    scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner',
+  });
+  await mapProviderIdentity(org.adminSql, WS, { provider: 'slack', providerUserId: 'T1:UALICE', userId: alice, mappedBy: 'owner' });
+  const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: CH, title: '#general' });
+  await replacePermissionListMembers(org.adminSql, WS, list.id, [{ provider: 'slack', providerUserId: 'T1:UALICE' }]);
+  const out = await searchOrganizationDocuments(org.adminSql, { workspaceId: WS, role: 'meeting-prep' }, {
+    workspaceId: WS, principalUserId: alice, agentOwnerId: 'chat-units-test', query,
+  });
+  if (!out.allowed) throw new Error(`organization search refused for ${query}`);
+  return out.results.map((r) => [r.kind, r.externalId]);
 }
 
 const msg = (id: string, at: string, body: string, threadKey: string | null = null) => ({
@@ -63,10 +97,15 @@ beforeAll(async () => {
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${`chat-units-alice-${Date.now()}`}, 'alice') RETURNING id`;
   alice = user!.id;
+  const [other] = await org.adminSql<{ id: string }[]>`
+    INSERT INTO harness_shared.users (username, display_name)
+    VALUES (${`chat-units-bob-${Date.now()}`}, 'bob') RETURNING id`;
+  bob = other!.id;
 });
 
 afterAll(async () => {
   if (alice) await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${alice}`.catch(() => {});
+  if (bob) await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${bob}`.catch(() => {});
   await org?.cleanup();
 });
 
@@ -77,6 +116,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_vault_settings WHERE workspace_id = ${WS}`;
   sourceId = await makeSource('source-acl');
 });
 
@@ -249,13 +289,73 @@ describe('chat retrieval units (P-015)', () => {
     expect(row).toEqual({ body: null });
   });
 
-  it('computes units but writes no corpus row when permission mapping is not source-acl', async () => {
+  it('computes units but writes no corpus row when an organization source has no source ACL', async () => {
     await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
     const ownerOnly = await makeSource('owner');
     await upsertChatMessages(org.adminSql, WS, ownerOnly, [msg('8.1', '2026-09-30T10:00:00Z', 'not for the corpus')]);
     const out = await rollupChatUnits(org.adminSql, WS);
-    expect(out).toMatchObject({ unitsWritten: 1, documentsWritten: 0, corpusSkipped: { permission_mapping_not_source_acl: 1 } });
-    expect(await docs()).toEqual([]);
+    expect(out).toMatchObject({ unitsWritten: 1, documentsWritten: 0, corpusSkipped: { permission_mapping_mismatch: 1 } });
+    expect(await corpusRows()).toEqual([]);
     expect(chatUnitDedupeKey(ownerOnly, CH, 'window', '8.1')).toBe(`chat:${ownerOnly}:${CH}:window:8.1`);
+  });
+
+  // D-005: personal chat goes to the owner's Personal Vault with vault semantics.
+  it('a personal source writes its units into the owner vault only, and a delete removes them', async () => {
+    const personal = await makeSource('owner', { scope: 'personal', ownerUserId: alice, providerAccountId: 'T1:UALICE' });
+    await upsertChatMessages(org.adminSql, WS, personal, [
+      msg('9.1', '2026-09-30T10:00:00Z', 'The basalt contract renews in March', '9.1'),
+    ]);
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ unitsWritten: 1, documentsWritten: 1 });
+
+    const rows = await corpusRows();
+    expect(rows.map((r) => [r.scope, r.user_id, r.pot_slug])).toEqual([['personal', alice, null]]);
+    expect(rows[0]!.dedupe_key.startsWith('account:')).toBe(true);
+    const [unit] = await org.adminSql<{ document_dedupe_key: string }[]>`
+      SELECT document_dedupe_key FROM harness_shared.chat_retrieval_units WHERE workspace_id = ${WS}`;
+    expect(unit!.document_dedupe_key).toBe(rows[0]!.dedupe_key);
+
+    const ownerHits = await searchPersonalDocuments(org.adminSql, WS, alice, { query: 'basalt' });
+    expect(ownerHits.map((h) => [h.kind, h.externalId])).toEqual([['chat-thread', '9.1']]);
+    expect(await searchPersonalDocuments(org.adminSql, WS, bob, { query: 'basalt' })).toEqual([]);
+    expect(await orgSearchAsAlice('basalt')).toEqual([]);
+
+    await tombstoneChatMessage(org.adminSql, WS, personal, { channelId: CH, providerMessageId: '9.1' });
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ unitsRemoved: 1 });
+    expect(await corpusRows()).toEqual([]);
+  });
+
+  it('a disabled vault takes no chat units and counts the skip', async () => {
+    const personal = await makeSource('owner', { scope: 'personal', ownerUserId: alice, providerAccountId: 'T1:UALICE' });
+    await setPersonalVaultEnabled(org.adminSql, WS, alice, false, 'owner');
+    await upsertChatMessages(org.adminSql, WS, personal, [msg('10.1', '2026-09-30T10:00:00Z', 'vault is off')]);
+    expect(await rollupChatUnits(org.adminSql, WS))
+      .toMatchObject({ unitsWritten: 1, documentsWritten: 0, corpusSkipped: { personal_vault_disabled: 1 } });
+    expect(await corpusRows()).toEqual([]);
+  });
+
+  // D-005: pot chat is a scope='pot' row, readable by neither the organization corpus nor any personal vault.
+  it('a pot source writes a pot-scoped row that organization and personal search cannot reach', async () => {
+    const pot = await makeSource('owner', { scope: 'pot', scopeRef: 'research-pot' });
+    await upsertChatMessages(org.adminSql, WS, pot, [msg('11.1', '2026-09-30T10:00:00Z', 'The gneiss benchmark is flaky')]);
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ unitsWritten: 1, documentsWritten: 1 });
+    expect((await corpusRows()).map((r) => [r.scope, r.user_id, r.pot_slug, r.text]))
+      .toEqual([['pot', null, 'research-pot', 'alice: The gneiss benchmark is flaky']]);
+    expect(await orgSearchAsAlice('gneiss')).toEqual([]);
+    expect(await searchPersonalDocuments(org.adminSql, WS, alice, { query: 'gneiss' })).toEqual([]);
+  });
+
+  it('moving a source from organization to pot scope leaves no organization row behind', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('12.1', '2026-09-30T10:00:00Z', 'feldspar plan', '12.1')]);
+    await rollupChatUnits(org.adminSql, WS);
+    expect((await corpusRows()).map((r) => r.scope)).toEqual(['organization']);
+
+    await org.adminSql`
+      UPDATE harness_shared.trigger_sources
+         SET scope = 'pot', scope_ref = 'research-pot', permission_mapping = '{"mode": "owner"}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('12.2', '2026-09-30T10:01:00Z', 'feldspar reply', '12.1')]);
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ unitsWritten: 1, documentsWritten: 1 });
+    expect((await corpusRows()).map((r) => [r.scope, r.pot_slug])).toEqual([['pot', 'research-pot']]);
+    expect(await orgSearchAsAlice('feldspar')).toEqual([]);
   });
 });

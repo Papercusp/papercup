@@ -107,7 +107,8 @@ const nodeAsyncCgroupFs: AsyncCgroupFs = {
  * against an in-memory CgroupFs; only the IO changes. Prefetch both cgroup
  * passes and procfs facts with bounded concurrency, including the terminal
  * window's application pid set. A failed read stays null/unknown as in the
- * synchronous reconciler. Production reconciliation keeps its own scan path.
+ * synchronous reconciler. `reconcileTick` uses this scan by default too
+ * (jev-memory-timeouts-to-zero-2026-10-01 P-004).
  */
 export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanResult> {
   if (opts.fs && opts.fs !== nodeCgroupFs && !opts.asyncFs) return scanProcesses(opts);

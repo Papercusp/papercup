@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { upsertConditionWorkItem } from '../coord/condition-upsert';
 import { spawnAgentInHarness } from '../fleet/operator-spawn';
@@ -134,10 +135,26 @@ export interface LifecycleVerdictEnforcement {
   detail?: string;
 }
 
+export interface LifecycleVerdictAuditContext {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+export interface LifecycleVerdictAuditRecord extends LifecycleVerdictAuditContext {
+  taskId: string;
+  verdict: ProcessLifecycleVerdict;
+  target: LifecycleVerdictEnforcement['target'];
+  targetId: string | null;
+  phase: 'intent' | 'outcome';
+  auditId?: string;
+  outcome?: LifecycleVerdictEnforcement;
+}
+
 export interface LifecycleVerdictEnforcementDeps {
   loadTask(taskId: string): Promise<TaskRow | null>;
   killTask(taskId: string, opts: { reapTerminalResidue?: boolean }): Promise<ControlOutcome>;
   killScopeUnit(scopeUnit: string): Promise<ScopeControlOutcome>;
+  recordAudit?(record: LifecycleVerdictAuditRecord): Promise<string>;
 }
 
 export interface OpenLifecycleCandidateItem {
@@ -155,7 +172,10 @@ export interface LifecycleJudgementDeps {
   resolveLauncherStates(ownerIds: readonly string[]): Promise<Map<string, string | null>>;
   statLogMtimeMs(path: string): number | null;
   readLatestVerdicts(workspaceId: string, taskIds: readonly string[]): Promise<Map<string, ProcessLifecycleVerdict>>;
-  enforceVerdicts(verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>): Promise<LifecycleVerdictEnforcement[]>;
+  enforceVerdicts(
+    verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>,
+    context: LifecycleVerdictAuditContext,
+  ): Promise<LifecycleVerdictEnforcement[]>;
   persistProbes(updates: readonly { taskId: string; probe: ProcessLifecycleProbe }[]): Promise<number>;
   upsertCandidate(
     conditionKey: string,
@@ -284,18 +304,69 @@ function controlOutcomeSettled(
   return terminalConfinedTask && outcome.error === 'not_live';
 }
 
+export async function recordLifecycleVerdictAudit(record: LifecycleVerdictAuditRecord, inject?: Sql): Promise<string> {
+  const sql = inject ?? getOrgPg().sql;
+  const auditId = record.auditId ?? 'task-lifecycle-' + randomUUID();
+  const details = {
+    schemaVersion: 1,
+    phase: record.phase,
+    taskId: record.taskId,
+    harnessSlug: record.harnessSlug,
+    verdict: record.verdict,
+    target: record.target,
+    targetId: record.targetId,
+    ...(record.outcome ? { outcome: record.outcome } : {}),
+    recordedAt: new Date().toISOString(),
+  };
+
+  if (record.phase === 'outcome' && record.auditId) {
+    const updated = await sql.unsafe<{ id: string }[]>(
+      'UPDATE harness_shared.audit_log SET details = $2::jsonb WHERE id = $1 AND workspace_id = $3 RETURNING id',
+      [auditId, JSON.stringify(details), record.workspaceId],
+    );
+    if (updated.length !== 1) throw new Error('lifecycle verdict audit intent was not found for settlement');
+    return auditId;
+  }
+
+  const inserted = await sql.unsafe<{ id: string }[]>(
+    'INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id) ' +
+      'VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7) RETURNING id',
+    [
+      auditId,
+      Date.now(),
+      'system:task-manager',
+      'task.lifecycle.verdict',
+      record.taskId,
+      JSON.stringify(details),
+      record.workspaceId,
+    ],
+  );
+  if (inserted.length !== 1) throw new Error('lifecycle verdict audit intent was not inserted');
+  return auditId;
+}
+
 export const nodeLifecycleVerdictEnforcementDeps: LifecycleVerdictEnforcementDeps = {
   loadTask: (taskId) => getTask(taskId),
   killTask: (taskId, opts) => killTask(taskId, opts),
   killScopeUnit: (scopeUnit) => killScopeUnit(scopeUnit),
+  recordAudit: (record) => recordLifecycleVerdictAudit(record),
 };
 
 /** Enforce completed agent verdicts from the trusted task-manager boundary. */
 export async function enforceLifecycleVerdicts(
   verdicts: ReadonlyMap<string, ProcessLifecycleVerdict>,
   deps: LifecycleVerdictEnforcementDeps = nodeLifecycleVerdictEnforcementDeps,
+  context?: LifecycleVerdictAuditContext,
 ): Promise<LifecycleVerdictEnforcement[]> {
   const outcomes: LifecycleVerdictEnforcement[] = [];
+  const recordAudit = async (
+    event: Omit<LifecycleVerdictAuditRecord, 'workspaceId' | 'harnessSlug'>,
+  ): Promise<string | null> => {
+    if (!deps.recordAudit) return null;
+    if (!context) throw new Error('lifecycle verdict audit requires workspace context');
+    return deps.recordAudit({ ...context, ...event });
+  };
+
   for (const [taskId, verdict] of verdicts) {
     if (verdict.decision === 'keep') continue;
     if (verdict.decision === 'gone') {
@@ -343,8 +414,16 @@ export async function enforceLifecycleVerdicts(
         });
         continue;
       }
+      const auditId = await recordAudit({
+        taskId,
+        verdict,
+        target: 'scope-unit',
+        targetId: row.scopeUnit,
+        phase: 'intent',
+      });
+      if (deps.recordAudit && !auditId) throw new Error('lifecycle verdict audit intent returned no id');
       const outcome = await deps.killScopeUnit(row.scopeUnit);
-      outcomes.push({
+      const enforcement: LifecycleVerdictEnforcement = {
         taskId,
         decision: 'kill',
         target: 'scope-unit',
@@ -354,11 +433,29 @@ export async function enforceLifecycleVerdicts(
         reapTerminalResidue: false,
         ...(!outcome.ok ? { error: outcome.error } : {}),
         ...(outcome.detail ? { detail: outcome.detail } : {}),
+      };
+      await recordAudit({
+        ...(auditId ? { auditId } : {}),
+        taskId,
+        verdict,
+        target: 'scope-unit',
+        targetId: row.scopeUnit,
+        phase: 'outcome',
+        outcome: enforcement,
       });
+      outcomes.push(enforcement);
       continue;
     }
 
     let reapingResidue = isTerminalState(row.state);
+    const auditId = await recordAudit({
+      taskId,
+      verdict,
+      target: 'task-id',
+      targetId: taskId,
+      phase: 'intent',
+    });
+    if (deps.recordAudit && !auditId) throw new Error('lifecycle verdict audit intent returned no id');
     let outcome = await deps.killTask(taskId, { reapTerminalResidue: reapingResidue });
     // A live row can become terminal between the routing read and killTask's own
     // authoritative read. Re-read once and use the positive residue path.
@@ -371,7 +468,7 @@ export async function enforceLifecycleVerdicts(
       }
     }
     const terminalConfinedTask = reapingResidue && row.confined && Boolean(row.scopeUnit);
-    outcomes.push({
+    const enforcement: LifecycleVerdictEnforcement = {
       taskId,
       decision: 'kill',
       target: 'task-id',
@@ -381,7 +478,17 @@ export async function enforceLifecycleVerdicts(
       reapTerminalResidue: reapingResidue,
       ...(!outcome.ok ? { error: outcome.error } : {}),
       ...(outcome.detail ? { detail: outcome.detail } : {}),
+    };
+    await recordAudit({
+      ...(auditId ? { auditId } : {}),
+      taskId,
+      verdict,
+      target: 'task-id',
+      targetId: taskId,
+      phase: 'outcome',
+      outcome: enforcement,
     });
+    outcomes.push(enforcement);
   }
   return outcomes;
 }
@@ -720,7 +827,10 @@ export async function runLifecycleJudgementSweep(
     deps.resolveLauncherStates(launcherIds),
     deps.readLatestVerdicts(input.workspaceId, taskIds),
   ]);
-  const enforcement = await deps.enforceVerdicts(latestVerdicts);
+  const enforcement = await deps.enforceVerdicts(latestVerdicts, {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+  });
   const settledVerdictTaskIds = new Set(
     enforcement.filter((outcome) => outcome.settled).map((outcome) => outcome.taskId),
   );
@@ -870,7 +980,8 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
     return out;
   },
 
-  enforceVerdicts: (verdicts) => enforceLifecycleVerdicts(verdicts),
+  enforceVerdicts: (verdicts, context) =>
+    enforceLifecycleVerdicts(verdicts, nodeLifecycleVerdictEnforcementDeps, context),
 
   persistProbes: (updates) => mergeTaskLifecycleProbes(updates),
 

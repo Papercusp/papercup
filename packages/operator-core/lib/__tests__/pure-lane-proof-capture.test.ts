@@ -302,6 +302,62 @@ describe('runPureLaneProofCapture', () => {
     expect(h.slices).toHaveLength(0);
   });
 
+  // WI-10004717: a repair-queue run judged b8eb76cc, then moved the checkout to a newly admitted
+  // head before capture ran. HEAD had no rows, and the old reason claimed the lane never ran.
+  describe('when HEAD has no suite rows', () => {
+    const notRunAtHead = async () => ({ failed: new Set<string>(), passedInSuite: new Set<string>(), ranInSuite: 0 });
+    const runSince = (h: ReturnType<typeof harness>, sinceMs: number | null) =>
+      runPureLaneProofCapture({
+        root: '/r',
+        env: h.env,
+        runGroupId: 'run-1:pure-proof-capture',
+        sinceMs,
+        deps: h.deps as never,
+      });
+
+    it('names the judged sha when this run recorded the lane at a different sha', async () => {
+      const judged = 'b'.repeat(40);
+      const seen: Array<{ sinceMs: number; files: string[] }> = [];
+      const h = harness({
+        loadShaOutcomes: notRunAtHead,
+        loadLatestLaneSha: async (o: { sinceMs: number; files: string[] }) => {
+          seen.push(o);
+          return judged;
+        },
+      });
+      const r = await runSince(h, NOW - 3_600_000);
+      expect(r).toMatchObject({
+        state: 'skipped',
+        reason: `tree-moved-off-judged-sha(judged=${judged.slice(0, 12)},head=${SHA.slice(0, 12)})`,
+      });
+      expect(seen).toHaveLength(1);
+      expect(seen[0].sinceMs).toBe(NOW - 3_600_000);
+      expect(seen[0].files.length).toBeGreaterThan(0);
+      expect(h.slices).toHaveLength(0); // never mints a proof off-HEAD
+    });
+
+    it('keeps the plain reason when the latest recorded sha IS HEAD, none exists, or the lookup fails', async () => {
+      for (const latest of [async () => SHA, async () => null, async () => { throw new Error('boom'); }]) {
+        const h = harness({ loadShaOutcomes: notRunAtHead, loadLatestLaneSha: latest });
+        expect(await runSince(h, NOW - 1000)).toMatchObject({ state: 'skipped', reason: 'pure-lane-not-run-at-sha' });
+        expect(h.slices).toHaveLength(0);
+      }
+    });
+
+    it('does not query for a judged sha when the run start is unknown', async () => {
+      let calls = 0;
+      const h = harness({
+        loadShaOutcomes: notRunAtHead,
+        loadLatestLaneSha: async () => {
+          calls += 1;
+          return 'c'.repeat(40);
+        },
+      });
+      expect(await runSince(h, null)).toMatchObject({ reason: 'pure-lane-not-run-at-sha' });
+      expect(calls).toBe(0);
+    });
+  });
+
   it('skips when the database is unavailable, and never throws', async () => {
     const h = harness({
       connect: async () => {

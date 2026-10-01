@@ -9208,6 +9208,9 @@ export async function runPostVerdictPureProofCapture(
         env,
         runGroupId: `${runId}:pure-proof-capture`,
         logFile: path.join(cfg.checkpointLogDir, `pure-proof-capture-${runId}.log`),
+        // Lets a notRun skip name the sha this run's suite judged when a repair-queue pass has
+        // since moved the checkout to a newly admitted head (WI-10004717).
+        sinceMs: processStartedAtMs,
         deps: {
           log,
           // The earlier of the next scheduled fire and the run ceiling; an unreadable fire still

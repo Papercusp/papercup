@@ -27,6 +27,7 @@ NATIVE_PKGS=(
   onnxruntime-web
   "@huggingface/transformers"
   sharp
+  esbuild
 )
 
 # Shared optional/runtime-only externals. Callers append platform-specific
@@ -58,6 +59,7 @@ HOST_WORKER_OUTPUTS=(
   local-reranker-worker.script.mjs
   event-loop-sentinel.worker.mjs
   snapshot-fold.worker.mjs
+  mutation-probe-closure.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -117,7 +119,8 @@ bundle_host_workers() {
   done
   for source in \
     "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
-    "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts"; do
+    "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts" \
+    "$repo_root/packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
@@ -125,7 +128,7 @@ bundle_host_workers() {
     tmp="$out_dir/$output.new.$$.mjs"
     if ! npx --yes esbuild@0.25.0 "$source" \
       --bundle --platform=node --format=esm --target=node22 \
-      --external:sodium-native --outfile="$tmp" --log-limit=5; then
+      --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" --outfile="$tmp" --log-limit=5; then
       rm -f "$tmp"
       echo "FATAL: failed to bundle runtime worker $source" >&2
       return 1

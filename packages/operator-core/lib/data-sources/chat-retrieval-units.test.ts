@@ -40,21 +40,42 @@ describe('corpusRouteFor', () => {
     permission_mapping: { mode: 'source-acl' },
   };
 
-  it('writes for an organization source routed to documents with a source ACL', () => {
-    expect(corpusRouteFor(base)).toEqual({ write: true, source: 'slack' });
+  it('writes an organization source routed to documents with a source ACL', () => {
+    expect(corpusRouteFor(base)).toEqual({ write: true, scope: 'organization', source: 'slack' });
   });
 
-  it('refuses personal scope, event-only routing, and owner permission mapping', () => {
-    expect(corpusRouteFor({ ...base, scope: 'personal' })).toEqual({ write: false, reason: 'scope_not_organization' });
+  it('refuses event-only routing and an organization source without a source ACL', () => {
     expect(corpusRouteFor({ ...base, destination_policy: { 'chat-message': ['event'] } }))
       .toEqual({ write: false, reason: 'destination_not_document' });
     expect(corpusRouteFor({ ...base, permission_mapping: { mode: 'owner' } }))
-      .toEqual({ write: false, reason: 'permission_mapping_not_source_acl' });
+      .toEqual({ write: false, reason: 'permission_mapping_mismatch' });
+  });
+
+  it('routes a personal source to its owner vault, keyed by the provider account', () => {
+    const personal = {
+      ...base, scope: 'personal', permission_mapping: { mode: 'owner' },
+      owner_user_id: 'u-1', provider_account_id: 'T1:UALICE',
+    };
+    expect(corpusRouteFor(personal))
+      .toEqual({ write: true, scope: 'personal', source: 'slack', userId: 'u-1', providerAccountId: 'T1:UALICE' });
+    expect(corpusRouteFor({ ...personal, permission_mapping: { mode: 'source-acl' } }))
+      .toEqual({ write: false, reason: 'permission_mapping_mismatch' });
+    expect(corpusRouteFor({ ...personal, owner_user_id: null })).toEqual({ write: false, reason: 'personal_owner_missing' });
+    expect(corpusRouteFor({ ...personal, provider_account_id: ' ' })).toEqual({ write: false, reason: 'personal_account_missing' });
+  });
+
+  it('routes a pot source to its scope_ref, and refuses a source ACL that a pot row cannot carry', () => {
+    const pot = { ...base, scope: 'pot', permission_mapping: { mode: 'owner' }, scope_ref: 'research-pot' };
+    expect(corpusRouteFor(pot)).toEqual({ write: true, scope: 'pot', source: 'slack', potSlug: 'research-pot' });
+    expect(corpusRouteFor({ ...pot, permission_mapping: { mode: 'source-acl' } }))
+      .toEqual({ write: false, reason: 'permission_mapping_mismatch' });
+    expect(corpusRouteFor({ ...pot, scope_ref: null })).toEqual({ write: false, reason: 'pot_ref_missing' });
+    expect(corpusRouteFor({ ...base, scope: 'team' })).toEqual({ write: false, reason: 'scope_unknown' });
   });
 
   it('follows a custom datatype mapping for messages', () => {
     expect(corpusRouteFor({
       ...base, datatype_mappings: { message: 'slack-message' }, destination_policy: { 'slack-message': ['document'] },
-    })).toEqual({ write: true, source: 'slack' });
+    })).toEqual({ write: true, scope: 'organization', source: 'slack' });
   });
 });

@@ -183,16 +183,22 @@ export function renderPersonalAmbientBlock(
   return lines.length > 2 ? lines.join('\n') : null;
 }
 
-export async function buildPersonalAmbientContextBlock(
-  input: {
-    ownerId: string;
-    userId: string;
-    workspaceId: string;
-    query: string;
-    budgetChars?: number;
-  },
+export interface PersonalAmbientResults {
+  scopes: string[];
+  documents: Array<PersonalSearchResult & { privacy: DocumentLabel | null }>;
+}
+
+/**
+ * The granted-only core of the ambient leg: resolve identity, authorize, search,
+ * disclose. Returns null on refusal, an empty query, or any failure — the
+ * caller renders. Shared by the Personal Vault block below and by the
+ * generalized granted-sources leg (data-sources/granted-sources-injection.ts),
+ * so both run the exact same authorization.
+ */
+export async function collectPersonalAmbientResults(
+  input: { ownerId: string; userId: string; workspaceId: string; query: string },
   deps: PersonalAmbientDeps = defaultDeps(),
-): Promise<string | null> {
+): Promise<PersonalAmbientResults | null> {
   const query = input.query.trim().slice(0, 500);
   if (!query || !input.ownerId.trim() || !input.userId.trim()) return null;
   try {
@@ -216,10 +222,25 @@ export async function buildPersonalAmbientContextBlock(
       agentOwnerId: input.ownerId.trim(),
       documents: results,
     });
-    return renderPersonalAmbientBlock(disclosed.documents, authorization.scopes, input.budgetChars);
+    return { scopes: authorization.scopes, documents: disclosed.documents };
   } catch {
     // Turn-start injection is fail-soft. A vault/store/embedder failure is
     // silence; it must never cost the caller's turn or weaken authorization.
     return null;
   }
+}
+
+export async function buildPersonalAmbientContextBlock(
+  input: {
+    ownerId: string;
+    userId: string;
+    workspaceId: string;
+    query: string;
+    budgetChars?: number;
+  },
+  deps: PersonalAmbientDeps = defaultDeps(),
+): Promise<string | null> {
+  const collected = await collectPersonalAmbientResults(input, deps);
+  if (!collected) return null;
+  return renderPersonalAmbientBlock(collected.documents, collected.scopes, input.budgetChars);
 }

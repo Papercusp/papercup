@@ -107,6 +107,98 @@ async function retainedContainerCensus(client: any, kind: 'map' | 'array') {
 }
 
 describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory cohort', () => {
+  it('compares real closure and transform services in isolated processes and reaps their descendants', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-esbuild-census-'));
+    const script = String.raw`
+      import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+      import { join } from 'node:path';
+      import { pathToFileURL } from 'node:url';
+      import { transform, stop, version } from 'esbuild';
+      const mode = process.argv[1], dir = process.argv[2];
+      const modules = 192, declarations = 128;
+      const sources = Array.from({ length: modules }, (_, i) =>
+        Array.from({ length: declarations }, (_, j) =>
+          'export const v' + j + ' = ' + JSON.stringify(i + ':' + j + ':' + 'abcdef0123456789'.repeat(10)) + ';').join('\n'));
+      mkdirSync(join(dir, mode), { recursive: true });
+      const checkout = join(dir, mode);
+      for (let i = 0; i < modules; i++) writeFileSync(join(checkout, 'm' + i + '.ts'), sources[i]);
+      writeFileSync(join(checkout, 'entry.test.ts'), sources.map((_, i) => 'import * as m' + i + ' from "./m' + i + '";').join('\n') +
+        '\nconsole.log(' + sources.map((_, i) => 'm' + i).join(',') + ');');
+      writeFileSync(join(checkout, 'subject.ts'), 'export const unrelated = 1;');
+      const { mutationProbeRefusal } = await import(pathToFileURL(join(process.cwd(),
+        'packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts')).href);
+      const samples = [], servicePids = new Set();
+      function sample(phase) {
+        const children = readFileSync('/proc/' + process.pid + '/task/' + process.pid + '/children', 'utf8').trim().split(/\s+/).filter(Boolean);
+        const services = children.flatMap(id => {
+          try {
+            const command = readFileSync('/proc/' + id + '/cmdline', 'utf8').split('\0');
+            if (!command.some(arg => arg.startsWith('--service='))) return [];
+            const rollup = readFileSync('/proc/' + id + '/smaps_rollup', 'utf8');
+            servicePids.add(Number(id));
+            return [{ pid: Number(id), pssKb: Number(/^Pss:\s+(\d+)/m.exec(rollup)?.[1]),
+              anonymousKb: Number(/^Anonymous:\s+(\d+)/m.exec(rollup)?.[1]) }];
+          } catch { return []; }
+        });
+        samples.push({ phase, at: new Date().toISOString(), services, parent: process.memoryUsage() });
+      }
+      try {
+        await transform('export const warm = 1', { loader: 'ts' });
+        sample('warm');
+        for (let pass = 0; pass < 3; pass++) {
+          if (mode === 'closure') {
+            const result = await mutationProbeRefusal(checkout, ['entry.test.ts'], { probePaths: async () => ['subject.ts'] });
+            if (result !== null) throw new Error('Closure comparison did not admit unrelated source: ' + JSON.stringify(result));
+          } else {
+            for (const source of sources) await transform(source, { loader: 'ts', target: 'node22', logLevel: 'silent' });
+          }
+          sample('pass-' + pass);
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        sample('one-second-idle');
+      } finally { await stop(); }
+      const deadline = Date.now() + 3000;
+      while ([...servicePids].some(pid => existsSync('/proc/' + pid)) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const unreaped = [...servicePids].filter(pid => existsSync('/proc/' + pid));
+      console.log(JSON.stringify({ mode, version, modules, declarations,
+        sourceBytes: sources.reduce((n, source) => n + Buffer.byteLength(source), 0), samples, unreaped }));
+      if (unreaped.length) process.exitCode = 1;
+    `;
+    try {
+      const reports = ['closure', 'transform'].map(mode => {
+        const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script, mode, dir], {
+          cwd: root, env: process.env, encoding: 'utf8', timeout: 45_000, maxBuffer: 128 * 1024,
+        });
+        expect(result.error?.message ?? result.stderr).toBe('');
+        expect(result.status, result.stderr).toBe(0);
+        const report = JSON.parse(result.stdout.trim());
+        expect(report.unreaped).toEqual([]);
+        expect(report.samples.map((sample: any) => sample.phase)).toEqual(['warm', 'pass-0', 'pass-1', 'pass-2', 'one-second-idle']);
+        for (const sample of report.samples) {
+          expect(sample.services).toHaveLength(1);
+          expect(sample.services[0].pssKb).toBeGreaterThan(0);
+        }
+        return report;
+      });
+      expect(reports[0].sourceBytes).toBe(reports[1].sourceBytes);
+      const closure = reports[0], warmService = closure.samples[0].services[0];
+      for (const sample of closure.samples.slice(1)) {
+        expect(sample.services[0].pid, 'A closure must preserve the caller transform service.').toBe(warmService.pid);
+        // R12's inline implementation retained ~132 MiB above warm after this
+        // exact 4.66 MB graph. The 32 MiB allowance tolerates native GC timing
+        // while rejecting that retained ownership; it is not a leak threshold.
+        expect(sample.services[0].pssKb - warmService.pssKb).toBeLessThan(32 * 1024);
+      }
+      // Report measured costs without turning fluctuating PSS into a leak assertion.
+      const report = { schemaVersion: 1, definition: 'Isolated real closure versus transforms; one-second idle is not a production idle baseline.', reports };
+      if (process.env.PAPERCUSP_P011_ESBUILD_REPORT) writeFileSync(process.env.PAPERCUSP_P011_ESBUILD_REPORT, JSON.stringify(report, null, 2) + '\n');
+      console.log('P011_ESBUILD_CENSUS ' + JSON.stringify(reports.map(r => ({ mode: r.mode,
+        pssKb: r.samples.map((s: any) => s.services[0].pssKb), unreaped: r.unreaped }))));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 100_000);
+
   it('preserves the complete report when subprocess stdout exceeds its bound', () => {
     const dir = mkdtempSync(join(tmpdir(), 'papercusp-report-preflight-'));
     const path = join(dir, 'report.json');

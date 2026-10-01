@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { readArchivedSessionTurns } from './session-archive-read';
 import {
   archiveAndDeleteSession,
+  SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES,
   type ArchiveFileRow,
   type ArchiveStampRow,
   type SessionArchiveStore,
@@ -89,6 +90,61 @@ describe('readArchivedSessionTurns', () => {
     expect(assistant).not.toContain(FAKE_SECRET);
     expect(assistant).toContain('[redacted]');
     expect(assistant).toContain('Root cause found');
+  });
+
+  it('recovers a full redacted turn beyond the index cap and can retain only requested indexes', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-read-codex-full-'));
+    const root = join(tmp, 'sessions', '2026', '10', '01');
+    await mkdir(root, { recursive: true });
+    const secret = `token=${FAKE_SECRET} `;
+    const suffix = 'tail-sentinel';
+    const sourceText = `${secret}${'x'.repeat(9_572 - secret.length - suffix.length)}${suffix}`;
+    expect(sourceText).toHaveLength(9_572);
+    const line = JSON.stringify({
+      timestamp: '2026-10-01T21:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: sourceText }],
+      },
+    });
+    await writeFile(join(root, `rollout-2026-10-01T21-00-00-${SID}.jsonl`), `${line}\n`);
+
+    const store = new MiniStore();
+    await archiveAndDeleteSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp, owner: 'owner-a' }, store);
+
+    const indexed = await readArchivedSessionTurns(SID, 'codex', store);
+    expect(indexed?.turns[0]?.text.length).toBeLessThan(8_000);
+    expect(indexed?.turns[0]?.text).not.toContain(FAKE_SECRET);
+    const full = await readArchivedSessionTurns(SID, 'codex', store, { fullSource: true, turnIndices: [0] });
+    expect(full?.errors).toEqual([]);
+    expect(full?.turns).toHaveLength(1);
+    expect(full?.turns[0]).toMatchObject({ turn_idx: 0, speaker: 'assistant' });
+    expect(full?.turns[0]?.text).toContain('[redacted]');
+    expect(full?.turns[0]?.text).not.toContain(FAKE_SECRET);
+    expect(full?.turns[0]?.text).toContain(suffix);
+    expect(full?.turns[0]?.text.length).toBeGreaterThan(8_000);
+  });
+
+  it('rejects an archive whose declared raw bytes exceed the decompression budget', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-read-codex-bound-'));
+    const root = join(tmp, 'sessions', '2026', '10', '01');
+    await mkdir(root, { recursive: true });
+    const line = JSON.stringify({
+      timestamp: '2026-10-01T21:00:00.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'bounded source turn' }] },
+    });
+    await writeFile(join(root, `rollout-2026-10-01T21-00-00-${SID}.jsonl`), `${line}\n`);
+    const store = new MiniStore();
+    await archiveAndDeleteSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp }, store);
+    const row = store.files[0]!;
+    row.bytes_raw = SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES + 1;
+
+    const result = await readArchivedSessionTurns(SID, 'codex', store);
+    expect(result?.turns).toEqual([]);
+    expect(result?.errors).toEqual([expect.objectContaining({ error: expect.stringContaining('raw-byte limit') })]);
   });
 
   it('returns null when nothing is archived under any kind', async () => {

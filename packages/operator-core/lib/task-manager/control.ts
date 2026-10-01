@@ -514,8 +514,10 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
  * a ledger row. The scope unit is validated, systemd supplies the authoritative
  * cgroup path, and the cgroup is positively non-empty before signalling. A
  * bounded deep re-probe is required before success, matching `killTask`'s
- * no-false-green contract. Automatic reconciliation remains report-only; this
- * path exists only for an explicit operator `processes:kill { scopeUnit }`.
+ * no-false-green contract. Both explicit `processes:kill { scopeUnit }` calls
+ * and trusted lifecycle-verdict enforcement use this primitive. The lifecycle
+ * enforcer records a durable audit intent before signalling; this function does
+ * not invent or mutate a task-ledger row.
  */
 export async function killScopeUnit(
   scopeUnit: string,

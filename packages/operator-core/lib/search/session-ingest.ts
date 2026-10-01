@@ -100,7 +100,8 @@ const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 const MAX_PART_BACKFILL_FILES_PER_TICK = 25;
 const MAX_PART_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 /** Per-turn text cap (chars). */
-const TEXT_CAP = 8000;
+export const SESSION_TURN_TEXT_CAP = 8000;
+const TEXT_CAP = SESSION_TURN_TEXT_CAP;
 /** Skip micro-turns ("ok", "y") — noise for recall. */
 const MIN_TEXT_LEN = 3;
 /**
@@ -284,14 +285,19 @@ const BOILERPLATE_PREFIXES = [
  *  bound locally for use inside this file's own parseClaudeLine, below. */
 export { CLAUDE_OWNER_DIALOG_RESULT_PREFIXES };
 
-/** Exported for the archive fall-through reader (session-archive-read.ts,
- *  P-009): archived bytes are VERBATIM, so anything surfaced to agents must
- *  pass the SAME cap+redaction the index applies at ingest. */
-export function cleanTurnText(raw: string): string | null {
+/** Exported for the archive reader (session-archive-read.ts, P-009): archived
+ *  bytes are VERBATIM, so anything surfaced to agents must retain the same
+ *  secret redaction as the index, with an opt-in to recover past its cap. */
+export interface TurnTextParseOptions {
+  /** Return all parsed turn text while retaining the normal secret redaction. */
+  fullSource?: boolean;
+}
+
+export function cleanTurnText(raw: string, options: TurnTextParseOptions = {}): string | null {
   const t = raw.trim();
   if (t.length < MIN_TEXT_LEN) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
-  return redactSelfIdentifyingSecrets(t.slice(0, TEXT_CAP));
+  return redactSelfIdentifyingSecrets(options.fullSource ? t : t.slice(0, TEXT_CAP));
 }
 
 /**
@@ -347,7 +353,10 @@ export function promptOriginHash(raw: string): string {
  * human-authored prompt variant belongs in the recall index: other queued
  * commands are client plumbing and must keep the existing skip behavior.
  */
-function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | null {
+function parseClaudeQueuedCommand(
+  obj: Record<string, unknown>,
+  options: TurnTextParseOptions = {},
+): ParsedTurn | null {
   if (obj.type !== 'attachment') return null;
   const attachment = obj.attachment as {
     type?: unknown;
@@ -365,7 +374,7 @@ function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | nu
   ) {
     return null;
   }
-  const text = cleanTurnText(attachment.prompt);
+  const text = cleanTurnText(attachment.prompt, options);
   if (!text) return null;
   return {
     ts: parseTs(attachment.timestamp) ?? parseTs(obj.timestamp),
@@ -388,14 +397,14 @@ function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | nu
 
 /** Claude Code line → turn. Lines include normal user/assistant messages and
  * the narrowly gated human `attachment.type='queued_command'` prompt shape. */
-export function parseClaudeLine(line: string): ParsedTurn | null {
+export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const queuedCommand = parseClaudeQueuedCommand(obj);
+  const queuedCommand = parseClaudeQueuedCommand(obj, options);
   if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
   const message = obj.message as { role?: string; content?: unknown; stop_reason?: unknown } | undefined;
@@ -419,7 +428,7 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
       break;
     }
   }
-  const text = cleanTurnText(rawText);
+  const text = cleanTurnText(rawText, options);
   if (!text) return null;
   const messageId = typeof obj.uuid === 'string' ? obj.uuid : null;
   const parentMessageId = typeof obj.parentUuid === 'string' ? obj.parentUuid : null;
@@ -551,7 +560,7 @@ export function parseClaudeParts(line: string): ParsedPart[] {
 }
 
 /** OMP line → turn. Lines: {type:'message', timestamp, message:{role, content:[{type:'text',text}]}}. */
-export function parseOmpLine(line: string): ParsedTurn | null {
+export function parseOmpLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
@@ -568,7 +577,7 @@ export function parseOmpLine(line: string): ParsedTurn | null {
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
-  const text = cleanTurnText(textFromContent(message.content));
+  const text = cleanTurnText(textFromContent(message.content), options);
   if (!text) return null;
   const messageId = typeof obj.id === 'string' ? obj.id : null;
   const parentMessageId = typeof obj.parentId === 'string' ? obj.parentId : null;
@@ -595,7 +604,7 @@ export function parseOmpLine(line: string): ParsedTurn | null {
 }
 
 /** Codex rollout line → turn. Lines: {timestamp, type:'response_item', payload:{type:'message', role, content:[{type:'input_text'|'output_text', text}]}}. */
-export function parseCodexLine(line: string): ParsedTurn | null {
+export function parseCodexLine(line: string, options: TurnTextParseOptions = {}): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
     obj = JSON.parse(line) as Record<string, unknown>;
@@ -609,7 +618,7 @@ export function parseCodexLine(line: string): ParsedTurn | null {
     typeof obj.text === 'string' &&
     (typeof obj.ts === 'number' || typeof obj.ts === 'string')
   ) {
-    const text = cleanTurnText(obj.text);
+    const text = cleanTurnText(obj.text, options);
     if (!text) return null;
     const rawTs = obj.ts;
     const ts = typeof rawTs === 'number' && rawTs < 10_000_000_000
@@ -629,7 +638,7 @@ export function parseCodexLine(line: string): ParsedTurn | null {
   if (!payload || payload.type !== 'message') return null;
   const speaker = payload.role === 'user' ? 'user' : payload.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null; // 'developer'/'system' = injected instructions, skip
-  const text = cleanTurnText(textFromContent(payload.content));
+  const text = cleanTurnText(textFromContent(payload.content), options);
   if (!text) return null;
   const metadata =
     payload.internal_chat_message_metadata_passthrough != null &&

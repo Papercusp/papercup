@@ -19,8 +19,10 @@ import {
   lifecycleJudgeBrief,
   lifecycleCandidateConditionKey,
   lifecycleJudgeIntervalKey,
+  recordLifecycleVerdictAudit,
   runLifecycleJudgementSweep,
   type LifecycleJudgementDeps,
+  type LifecycleVerdictAuditRecord,
   type LifecycleVerdictEnforcementDeps,
   type ProcessLifecycleProbe,
   type ProcessLifecycleVerdict,
@@ -463,6 +465,109 @@ describe('enforceLifecycleVerdicts', () => {
     expect(killScopeUnit).toHaveBeenCalledWith('pc-orphan.scope');
     expect(killTask).not.toHaveBeenCalled();
     expect(outcome[0]).toMatchObject({ target: 'scope-unit', targetId: 'pc-orphan.scope', settled: true });
+  });
+
+  it('writes a durable audit intent before scope-unit signalling and settles it with the outcome', async () => {
+    const records: LifecycleVerdictAuditRecord[] = [];
+    const recordAudit = vi.fn(async (record: LifecycleVerdictAuditRecord) => {
+      records.push(record);
+      return record.auditId ?? 'audit-row-1';
+    });
+    const killScopeUnit = vi.fn(async (scopeUnit: string) => {
+      expect(records.map((record) => record.phase)).toEqual(['intent']);
+      return { ok: true as const, scopeUnit, action: 'kill' };
+    });
+    const outcome = await enforceLifecycleVerdicts(
+      new Map([['orphan', killVerdict('orphan')]]),
+      enforcementDeps({
+        loadTask: async () =>
+          row({ taskId: 'orphan', rootTaskId: 'orphan', state: 'unaccounted', scopeUnit: 'pc-orphan.scope' }),
+        killScopeUnit,
+        recordAudit,
+      }),
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+    );
+
+    expect(killScopeUnit).toHaveBeenCalledWith('pc-orphan.scope');
+    expect(outcome[0]).toMatchObject({ target: 'scope-unit', targetId: 'pc-orphan.scope', settled: true });
+    expect(records.map((record) => record.phase)).toEqual(['intent', 'outcome']);
+    expect(records[0]).toMatchObject({ phase: 'intent', taskId: 'orphan', target: 'scope-unit' });
+    expect(records[1]).toMatchObject({
+      phase: 'outcome',
+      auditId: 'audit-row-1',
+      outcome: { settled: true, signalled: true },
+    });
+  });
+
+  it('does not signal a scope unit when its audit intent cannot be written', async () => {
+    const killScopeUnit = vi.fn();
+    const recordAudit = vi.fn(async () => {
+      throw new Error('audit unavailable');
+    });
+
+    await expect(
+      enforceLifecycleVerdicts(
+        new Map([['orphan', killVerdict('orphan')]]),
+        enforcementDeps({
+          loadTask: async () =>
+            row({ taskId: 'orphan', rootTaskId: 'orphan', state: 'unaccounted', scopeUnit: 'pc-orphan.scope' }),
+          killScopeUnit,
+          recordAudit,
+        }),
+        { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      ),
+    ).rejects.toThrow('audit unavailable');
+    expect(killScopeUnit).not.toHaveBeenCalled();
+  });
+
+  it('inserts and settles lifecycle audit rows in the workspace audit log', async () => {
+    const calls: Array<{ query: string; values: unknown[] }> = [];
+    const sql = {
+      unsafe: vi.fn(async (query: string, values: unknown[] = []) => {
+        calls.push({ query, values });
+        return [{ id: String(values[0]) }];
+      }),
+    } as never;
+    const intent = {
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      taskId: 'orphan',
+      verdict: killVerdict('orphan'),
+      target: 'scope-unit' as const,
+      targetId: 'pc-orphan.scope',
+      phase: 'intent' as const,
+    };
+    const auditId = await recordLifecycleVerdictAudit(intent, sql);
+    const outcome = {
+      taskId: 'orphan',
+      decision: 'kill' as const,
+      target: 'scope-unit' as const,
+      targetId: 'pc-orphan.scope',
+      settled: true,
+      signalled: true,
+      reapTerminalResidue: false,
+    };
+    await recordLifecycleVerdictAudit({ ...intent, phase: 'outcome', auditId, outcome }, sql);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.query).toContain('INSERT INTO harness_shared.audit_log');
+    expect(calls[0]?.values[2]).toBe('system:task-manager');
+    expect(calls[0]?.values[3]).toBe('task.lifecycle.verdict');
+    expect(calls[0]?.values[4]).toBe('orphan');
+    expect(calls[0]?.values[6]).toBe('ws-1');
+    expect(JSON.parse(String(calls[0]?.values[5]))).toMatchObject({
+      phase: 'intent',
+      taskId: 'orphan',
+      harnessSlug: 'papercusp',
+      target: 'scope-unit',
+      targetId: 'pc-orphan.scope',
+    });
+    expect(calls[1]?.query).toContain('UPDATE harness_shared.audit_log SET details');
+    expect(calls[1]?.values[0]).toBe(auditId);
+    expect(JSON.parse(String(calls[1]?.values[1]))).toMatchObject({
+      phase: 'outcome',
+      outcome: { settled: true, signalled: true },
+    });
   });
 
   it('routes an owned row by task id and positively re-verifies terminal residue', async () => {

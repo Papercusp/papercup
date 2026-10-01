@@ -14,15 +14,19 @@
  * bucket from the LIVE messages. So an edit re-renders its unit, and a delete
  * (`tombstoneChatMessage`) removes the text from the unit on the next rollup.
  *
- * Rendered units go to the documents corpus (D-005) as organization documents, only
- * when the data source says so:
- *   - scope = organization (personal and pot scope are not written here yet);
- *   - destination_policy routes the source's chat-message datatype to `document`;
- *   - permission_mapping.mode = source-acl. The unit's permission list is the
- *     channel's list (source = connector kind, source_ref = channel id). A list that
- *     does not exist yet is created EMPTY, so nobody can read the unit until the
+ * Rendered units go to the documents corpus (D-005) only when destination_policy routes
+ * the source's chat-message datatype to `document`. Where they land follows the
+ * source's scope (see corpusRouteFor):
+ *   - organization (permission_mapping.mode = source-acl): the unit's permission list
+ *     is the channel's list (source = connector kind, source_ref = channel id). A list
+ *     that does not exist yet is created EMPTY, so nobody can read the unit until the
  *     connector reports the channel's members (fail closed).
- * Any other configuration still computes units but writes no corpus row.
+ *   - personal (mode = owner): the owner's Personal Vault, through the vault writer, so
+ *     vault semantics apply (deny-by-default grants, disclosure ledger, the disabled
+ *     switch). The key is account-prefixed like every vault row.
+ *   - pot: a scope='pot' row for the source's scope_ref; read only by that pot's agents.
+ * Any other configuration still computes units but writes no corpus row, and counts
+ * the reason in ChatRollupResult.corpusSkipped.
  *
  * Retention (`retention_policy.maxAgeDays`) and legal holds: `purgeExpiredChatMessages`
  * deletes expired messages and erases tombstoned bodies, skipping anything under an
@@ -34,8 +38,14 @@
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { normalizePersonalSource } from '../personal-vault/store';
-import { upsertOrganizationDocuments } from './documents-corpus';
+import {
+  dedupeKeyFor,
+  isPersonalVaultEnabled,
+  normalizePersonalSource,
+  upsertPersonalDocuments,
+} from '../personal-vault/store';
+import type { PersonalDocumentInput } from '../personal-vault/types';
+import { upsertOrganizationDocuments, type OrganizationDocumentInput } from './documents-corpus';
 
 export const DEFAULT_WINDOW_GAP_MINUTES = 30;
 export const DEFAULT_CHAT_MESSAGE_DATATYPE = 'chat-message';
@@ -221,24 +231,126 @@ interface SourceRow {
   id: string;
   kind: string;
   scope: string;
+  scope_ref?: string | null;
+  owner_user_id?: string | null;
+  provider_account_id?: string | null;
   datatype_mappings: Record<string, unknown>;
   destination_policy: Record<string, unknown>;
   permission_mapping: Record<string, unknown>;
 }
 
-export type CorpusRoute =
-  | { write: true; source: string }
-  | { write: false; reason: 'scope_not_organization' | 'destination_not_document' | 'permission_mapping_not_source_acl' };
+export type CorpusSkipReason =
+  | 'destination_not_document'
+  | 'permission_mapping_mismatch'
+  | 'personal_owner_missing'
+  | 'personal_account_missing'
+  | 'personal_vault_disabled'
+  | 'pot_ref_missing'
+  | 'scope_unknown';
 
-/** Whether this data source's units go to the organization corpus (see module doc). */
-export function corpusRouteFor(source: Pick<SourceRow, 'kind' | 'scope' | 'datatype_mappings' | 'destination_policy' | 'permission_mapping'>): CorpusRoute {
-  if (source.scope !== 'organization') return { write: false, reason: 'scope_not_organization' };
+/**
+ * Where a data source's units land in the documents corpus (D-005):
+ *   - organization: needs permission_mapping.mode = source-acl; read through the channel's permission list.
+ *   - personal: needs mode = owner; written into the owner's Personal Vault with the vault's own
+ *     semantics (deny-by-default grants, disclosure ledger). Needs the source's provider account,
+ *     the same rule the live vault sink applies.
+ *   - pot: pot_slug = the source's scope_ref. A source-acl source is refused because a pot row
+ *     carries no permission list, so it would widen access past the provider ACL.
+ */
+export type CorpusRoute =
+  | { write: true; scope: 'organization'; source: string }
+  | { write: true; scope: 'personal'; source: string; userId: string; providerAccountId: string }
+  | { write: true; scope: 'pot'; source: string; potSlug: string }
+  | { write: false; reason: CorpusSkipReason };
+
+type RouteInput = Pick<SourceRow, 'kind' | 'scope' | 'datatype_mappings' | 'destination_policy' | 'permission_mapping'>
+  & Partial<Pick<SourceRow, 'scope_ref' | 'owner_user_id' | 'provider_account_id'>>;
+
+/** Whether, and where, this data source's units go to the documents corpus. */
+export function corpusRouteFor(source: RouteInput): CorpusRoute {
   const mapped = source.datatype_mappings?.message;
   const datatype = typeof mapped === 'string' && mapped.trim() ? mapped.trim() : DEFAULT_CHAT_MESSAGE_DATATYPE;
   const natures = source.destination_policy?.[datatype];
   if (!Array.isArray(natures) || !natures.includes('document')) return { write: false, reason: 'destination_not_document' };
-  if (source.permission_mapping?.mode !== 'source-acl') return { write: false, reason: 'permission_mapping_not_source_acl' };
-  return { write: true, source: normalizePersonalSource(source.kind) };
+  const corpusSource = normalizePersonalSource(source.kind);
+  const mode = source.permission_mapping?.mode;
+  switch (source.scope) {
+    case 'organization':
+      if (mode !== 'source-acl') return { write: false, reason: 'permission_mapping_mismatch' };
+      return { write: true, scope: 'organization', source: corpusSource };
+    case 'personal': {
+      if (mode !== 'owner') return { write: false, reason: 'permission_mapping_mismatch' };
+      const userId = source.owner_user_id?.trim();
+      if (!userId) return { write: false, reason: 'personal_owner_missing' };
+      const providerAccountId = source.provider_account_id?.trim();
+      if (!providerAccountId) return { write: false, reason: 'personal_account_missing' };
+      return { write: true, scope: 'personal', source: corpusSource, userId, providerAccountId };
+    }
+    case 'pot': {
+      if (mode === 'source-acl') return { write: false, reason: 'permission_mapping_mismatch' };
+      const potSlug = source.scope_ref?.trim();
+      if (!potSlug) return { write: false, reason: 'pot_ref_missing' };
+      return { write: true, scope: 'pot', source: corpusSource, potSlug };
+    }
+    default:
+      return { write: false, reason: 'scope_unknown' };
+  }
+}
+
+/** The dedupe key the corpus row is stored under (the vault prefixes personal keys by account). */
+function storedDedupeKey(route: Extract<CorpusRoute, { write: true }>, unitKey: string, kind: string): string {
+  if (route.scope !== 'personal') return unitKey;
+  return dedupeKeyFor({ source: route.source, kind, dedupeKey: unitKey, providerAccountId: route.providerAccountId });
+}
+
+async function upsertPotDocument(sql: Sql, workspaceId: string, potSlug: string, doc: OrganizationDocumentInput): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.personal_documents
+      (workspace_id, user_id, scope, pot_slug, source, kind, external_id,
+       occurred_at, participants, title, text, metadata, dedupe_key)
+    VALUES (${workspaceId}, NULL, 'pot', ${potSlug}, ${doc.source}, ${doc.kind},
+            ${doc.externalId ?? null}, ${doc.occurredAt ?? null}, ${doc.participants ?? []}::text[],
+            ${doc.title ?? ''}, ${doc.text ?? ''}, ${sql.json((doc.metadata ?? {}) as never)}, ${doc.dedupeKey})
+    ON CONFLICT (workspace_id, pot_slug, source, dedupe_key) WHERE scope = 'pot'
+    DO UPDATE SET kind = EXCLUDED.kind,
+                  external_id = EXCLUDED.external_id,
+                  occurred_at = EXCLUDED.occurred_at,
+                  participants = EXCLUDED.participants,
+                  title = EXCLUDED.title,
+                  text = EXCLUDED.text,
+                  metadata = EXCLUDED.metadata,
+                  updated_at = now()`;
+}
+
+/** Write one unit's corpus row to the destination its route names. */
+async function writeCorpusDocument(
+  sql: Sql,
+  workspaceId: string,
+  route: Extract<CorpusRoute, { write: true }>,
+  dataSourceId: string,
+  permissionListId: string | null,
+  doc: OrganizationDocumentInput,
+): Promise<void> {
+  if (route.scope === 'organization') {
+    await upsertOrganizationDocuments(sql, workspaceId, permissionListId!, [doc]);
+  } else if (route.scope === 'pot') {
+    await upsertPotDocument(sql, workspaceId, route.potSlug, doc);
+  } else {
+    const personal: PersonalDocumentInput = {
+      source: doc.source,
+      sourceId: dataSourceId,
+      providerAccountId: route.providerAccountId,
+      kind: doc.kind,
+      externalId: doc.externalId ?? null,
+      occurredAt: doc.occurredAt ?? null,
+      participants: doc.participants,
+      title: doc.title,
+      text: doc.text,
+      metadata: doc.metadata,
+      dedupeKey: doc.dedupeKey,
+    };
+    await upsertPersonalDocuments(sql, workspaceId, route.userId, [personal]);
+  }
 }
 
 export function chatUnitDedupeKey(dataSourceId: string, channelId: string, unitKind: ChatUnitKind, unitKey: string): string {
@@ -278,10 +390,11 @@ async function deleteUnit(
   unit: { id: string; document_dedupe_key: string | null },
   corpusSource: string,
 ): Promise<void> {
+  // Any scope: the key embeds the data-source id, so only this unit ever wrote it.
   if (unit.document_dedupe_key) {
     await sql`
       DELETE FROM harness_shared.personal_documents
-       WHERE workspace_id = ${workspaceId} AND scope = 'organization'
+       WHERE workspace_id = ${workspaceId}
          AND source = ${corpusSource} AND dedupe_key = ${unit.document_dedupe_key}`;
   }
   await sql`DELETE FROM harness_shared.chat_retrieval_units WHERE workspace_id = ${workspaceId} AND id = ${unit.id}::uuid`;
@@ -294,7 +407,7 @@ export interface ChatRollupResult {
   unitsRemoved: number;
   documentsWritten: number;
   /** Buckets whose source routes no corpus row, by reason. */
-  corpusSkipped: Partial<Record<Exclude<CorpusRoute, { write: true }>['reason'], number>>;
+  corpusSkipped: Partial<Record<CorpusSkipReason, number>>;
 }
 
 /**
@@ -323,19 +436,25 @@ export async function rollupChatUnits(
   const result: ChatRollupResult = {
     buckets: buckets.length, unitsWritten: 0, unitsUnchanged: 0, unitsRemoved: 0, documentsWritten: 0, corpusSkipped: {},
   };
-  const sources = new Map<string, SourceRow>();
+  const sources = new Map<string, { source: SourceRow; route: CorpusRoute }>();
   for (const bucket of buckets) {
-    let source = sources.get(bucket.data_source_id);
-    if (!source) {
+    let resolved = sources.get(bucket.data_source_id);
+    if (!resolved) {
       const rows = await sql<SourceRow[]>`
-        SELECT id, kind, scope, datatype_mappings, destination_policy, permission_mapping
+        SELECT id, kind, scope, scope_ref, owner_user_id::text AS owner_user_id, provider_account_id,
+               datatype_mappings, destination_policy, permission_mapping
           FROM harness_shared.trigger_sources
          WHERE workspace_id = ${workspaceId} AND id = ${bucket.data_source_id}::uuid`;
       if (!rows[0]) continue;
-      source = rows[0];
-      sources.set(bucket.data_source_id, source);
+      let route = corpusRouteFor(rows[0]);
+      // A disabled vault takes no writes (upsertPersonalDocuments would throw and re-queue forever).
+      if (route.write && route.scope === 'personal' && !(await isPersonalVaultEnabled(sql, workspaceId, route.userId))) {
+        route = { write: false, reason: 'personal_vault_disabled' };
+      }
+      resolved = { source: rows[0], route };
+      sources.set(bucket.data_source_id, resolved);
     }
-    const route = corpusRouteFor(source);
+    const { source, route } = resolved;
     const corpusSource = normalizePersonalSource(source.kind);
     if (!route.write) result.corpusSkipped[route.reason] = (result.corpusSkipped[route.reason] ?? 0) + 1;
 
@@ -379,24 +498,43 @@ export async function rollupChatUnits(
       result.unitsRemoved += 1;
     }
 
-    const list = route.write ? await ensureChannelList(sql, workspaceId, route.source, bucket.channel_id) : null;
+    const list = route.write && route.scope === 'organization'
+      ? await ensureChannelList(sql, workspaceId, route.source, bucket.channel_id)
+      : null;
+    const docKind = unitKind === 'thread' ? 'chat-thread' : 'chat-window';
+    const target = route.write
+      ? {
+          scope: route.scope,
+          userId: route.scope === 'personal' ? route.userId : null,
+          potSlug: route.scope === 'pot' ? route.potSlug : null,
+        }
+      : null;
     for (const unit of computed) {
       const first = unit.messages[0]!;
       const last = unit.messages[unit.messages.length - 1]!;
-      const dedupeKey = route.write ? chatUnitDedupeKey(bucket.data_source_id, bucket.channel_id, unitKind, unit.unitKey) : null;
+      const unitDedupeKey = chatUnitDedupeKey(bucket.data_source_id, bucket.channel_id, unitKind, unit.unitKey);
+      const dedupeKey = route.write ? storedDedupeKey(route, unitDedupeKey, docKind) : null;
+      // The destination is part of the hash, so a scope or owner change forces a rewrite.
+      const destination = target ? `${target.scope}:${target.userId ?? ''}:${target.potSlug ?? ''}` : '';
       const contentHash = createHash('sha256')
-        .update(`${unit.text}\u0000${dedupeKey ?? ''}\u0000${list?.title ?? ''}`)
+        .update(`${unit.text}\u0000${dedupeKey ?? ''}\u0000${list?.title ?? ''}\u0000${destination}`)
         .digest('hex');
       const prior = existing.find((u) => u.unit_key === unit.unitKey);
       if (prior && prior.content_hash === contentHash && prior.document_dedupe_key === dedupeKey) {
         result.unitsUnchanged += 1;
         continue;
       }
-      if (prior?.document_dedupe_key && prior.document_dedupe_key !== dedupeKey) {
+      // Drop the prior row unless it IS the row about to be upserted (same key, scope, owner, pot).
+      if (prior?.document_dedupe_key) {
         await sql`
           DELETE FROM harness_shared.personal_documents
-           WHERE workspace_id = ${workspaceId} AND scope = 'organization'
-             AND source = ${corpusSource} AND dedupe_key = ${prior.document_dedupe_key}`;
+           WHERE workspace_id = ${workspaceId}
+             AND source = ${corpusSource} AND dedupe_key = ${prior.document_dedupe_key}
+             AND (${dedupeKey}::text IS NULL OR NOT (
+                   dedupe_key = ${dedupeKey}::text
+               AND scope = ${target?.scope ?? ''}
+               AND user_id IS NOT DISTINCT FROM ${target?.userId ?? null}::uuid
+               AND pot_slug IS NOT DISTINCT FROM ${target?.potSlug ?? null}::text))`;
       }
       await sql`
         INSERT INTO harness_shared.chat_retrieval_units
@@ -413,15 +551,16 @@ export async function rollupChatUnits(
                       document_dedupe_key = EXCLUDED.document_dedupe_key,
                       rolled_at = now()`;
       result.unitsWritten += 1;
-      if (route.write && list && dedupeKey) {
-        await upsertOrganizationDocuments(sql, workspaceId, list.id, [{
+      if (route.write) {
+        await writeCorpusDocument(sql, workspaceId, route, bucket.data_source_id, list?.id ?? null, {
           source: route.source,
-          kind: unitKind === 'thread' ? 'chat-thread' : 'chat-window',
-          dedupeKey,
+          kind: docKind,
+          // The personal writer re-applies its account prefix, so pass the unprefixed key.
+          dedupeKey: unitDedupeKey,
           externalId: unit.unitKey,
           occurredAt: last.postedAt.toISOString(),
           participants: [...new Set(unit.messages.map((m) => m.authorRef).filter((a): a is string => !!a))],
-          title: list.title || bucket.channel_id,
+          title: list?.title || bucket.channel_id,
           text: unit.text,
           metadata: {
             dataSourceId: bucket.data_source_id,
@@ -433,7 +572,7 @@ export async function rollupChatUnits(
             lastPostedAt: last.postedAt.toISOString(),
             providerMessageIds: unit.messages.map((m) => m.providerMessageId),
           },
-        }]);
+        });
         result.documentsWritten += 1;
       }
     }

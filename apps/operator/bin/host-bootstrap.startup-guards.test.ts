@@ -255,7 +255,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const dedupe = bootSrc.indexOf('return dedupeInFlight(', requestOnly);
     const store = bootSrc.indexOf('BOOTSTRAP_STATE.requestMigrationGateFlights', dedupe);
     const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', store);
-    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', timeout);
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsAtBoot(signal)', timeout);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(dedupe).toBeGreaterThan(requestOnly);
@@ -264,7 +264,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(apply).toBeGreaterThan(timeout);
     expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
     expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
-    expect(bootSrc.match(/\(\) => applyPendingMigrationsAtBoot\(\)/g))
+    expect(bootSrc.match(/\(signal\) => applyPendingMigrationsAtBoot\(signal\)/g))
       .toHaveLength(1); // the request-only single-flight body; the background owner goes through awaitBootMigrationGate
     expect(bootSrc.match(/applyAtBoot: applyPendingMigrationsAtBoot,/g)).toHaveLength(1);
   });
@@ -273,7 +273,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
-    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', requestOnly);
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsAtBoot(signal)', requestOnly);
     const result = bootSrc.indexOf('const migrationResult = migrationAttempt.value;', apply);
     const failure = bootSrc.indexOf(
       'if (!migrationResult || migrationResult.failed.length > 0)',

@@ -108,13 +108,12 @@ describe('Guide output-only voice lifecycle', () => {
       requests.push({ url: String(_url), body: JSON.parse(options!.body as string), signal: options!.signal! });
       return new Promise(resolve => { resolveHelp = resolve; });
     });
-    vi.useFakeTimers(); fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
-    await act(async () => { vi.advanceTimersByTime(15_001); });
-    expect(screen.getByText(/AI help is taking too long/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
+    await screen.findByText(/AI help is taking too long/, {}, { timeout: 17_000 });
     expect(requests.at(-1)!.signal.aborted).toBe(true);
     expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
     await act(async () => resolveHelp(Response.json({ answer: 'Late answer from obsolete request' })));
     expect(screen.queryByText('Late answer from obsolete request')).toBeNull();
     expect(screen.getByText('0 of 6 steps confirmed')).toBeTruthy();
-  });
+  }, 20_000);
 });

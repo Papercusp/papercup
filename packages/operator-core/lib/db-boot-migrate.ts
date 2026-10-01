@@ -241,7 +241,38 @@ export async function reconcileMigrationReservations(
   }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error(signal.reason === undefined ? 'boot migration aborted' : String(signal.reason));
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+  if (!signal) {
+    setTimeout(resolve, ms);
+    return;
+  }
+  if (signal.aborted) {
+    reject(abortError(signal));
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout>;
+  const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+  const onAbort = (): void => {
+    clearTimeout(timer);
+    cleanup();
+    reject(abortError(signal));
+  };
+  timer = setTimeout(() => {
+    cleanup();
+    resolve();
+  }, ms);
+  signal.addEventListener('abort', onAbort, { once: true });
+});
 
 /** How often a boot blocked on a busy backup rendezvous re-tries it and re-runs the proof. */
 export const BACKUP_RENDEZVOUS_POLL_MS = 5_000;
@@ -390,15 +421,18 @@ export interface ApplyPendingMigrationsNowOptions {
    * Failures are still console-logged either way.
    */
   broadcast?: boolean;
+  /** Cancel outstanding database work when the owning boot deadline expires. */
+  signal?: AbortSignal;
 }
 
 /** Apply pending sql/*.sql on operator boot (native box). Idempotent per
  *  process (the schema_migrations tracker also makes a re-run a no-op).
  *  Never throws — a failure leaves migrations pending, it never wedges boot. */
-export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult | null> {
+export async function applyPendingMigrationsAtBoot(signal?: AbortSignal): Promise<BootMigrateResult | null> {
+  if (signal?.aborted) return null;
   if (_ran) return null;
   _ran = true;
-  return applyPendingMigrationsNow();
+  return applyPendingMigrationsNow({ signal });
 }
 
 /**
@@ -417,6 +451,8 @@ export async function applyPendingMigrationsAtBoot(): Promise<BootMigrateResult 
 export async function applyPendingMigrationsNow(
   options: ApplyPendingMigrationsNowOptions = {},
 ): Promise<BootMigrateResult | null> {
+  const signal = options.signal;
+  if (signal?.aborted) return null;
   const sqlDir = options.sqlDir ?? resolveSqlDir();
   const broadcast = options.broadcast !== false;
   if (!sqlDir) {
@@ -440,6 +476,7 @@ export async function applyPendingMigrationsNow(
   // is never re-blocked merely because its companion later moved on.
   const deployedReleaseRoot = resolveDeployedReleaseRoot(sqlDir);
   const guardPendingMigration = async (file: string, sqlText: string): Promise<void> => {
+    throwIfAborted(signal);
     assertMigrationPassesPreApplyLints({ filename: file, sqlText, sqlDir });
     const verdict = verifyPendingCodeDeployMigration({
       filename: file,
@@ -491,6 +528,16 @@ export async function applyPendingMigrationsNow(
     onnotice: () => {},
     connection: { lock_timeout: 15_000, application_name: 'papercusp-boot-migrate' },
   });
+  let clientEndPromise: Promise<void> | undefined;
+  const closeClient = (timeout: number): Promise<void> => {
+    clientEndPromise ??= client.end({ timeout }).catch(() => {});
+    return clientEndPromise;
+  };
+  const closeClientOnAbort = (): void => {
+    void closeClient(0);
+  };
+  signal?.addEventListener('abort', closeClientOnAbort, { once: true });
+  if (signal?.aborted) closeClientOnAbort();
   // Hold the same session advisory lock used by workspace backups. The
   // connection-level lock_timeout above is intentionally disabled while
   // acquiring this rendezvous: a long pg_dump must finish before boot can
@@ -561,6 +608,7 @@ export async function applyPendingMigrationsNow(
     // Deliberately NOT reset after acquisition: the migration application that follows
     // is itself long-running and must not inherit a future role-level cap. `lock_timeout`
     // IS restored below, because lock WAITS during migration should stay bounded.
+    throwIfAborted(signal);
     await client`SET lock_timeout = 0`;
     await client`SET statement_timeout = 0`;
 
@@ -579,6 +627,7 @@ export async function applyPendingMigrationsNow(
     // the moment the dump stops holding what the pending migrations name.
     let announcedWait = false;
     for (;;) {
+      throwIfAborted(signal);
       const tryLock = await client<{ acquired: boolean }[]>`
         SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
       if (tryLock[0]?.acquired === true) {
@@ -589,6 +638,7 @@ export async function applyPendingMigrationsNow(
         break;
       }
       const proof = await proveBusyRendezvousSafe(client, sqlDir);
+      throwIfAborted(signal);
       if (proof.safe) {
         noPendingUnlockedSnapshot = new Set(proof.migrationFiles);
         unlockedWithPending = proof.pendingFiles.length > 0;
@@ -604,8 +654,9 @@ export async function applyPendingMigrationsNow(
         );
         announcedWait = true;
       }
-      await sleep(BACKUP_RENDEZVOUS_POLL_MS);
+      await sleep(BACKUP_RENDEZVOUS_POLL_MS, signal);
     }
+    throwIfAborted(signal);
     await client`SET lock_timeout = '15s'`;
     // Retry ONLY pure transaction contention (lock timeout / deadlock /
     // serialization). Any other failure — a syntax error, a constraint
@@ -619,6 +670,7 @@ export async function applyPendingMigrationsNow(
     let totalKnown = 0;
     let failed: { file: string; error: string }[] = [];
     for (let attempt = 1; attempt <= CONTENTION_RETRY_MAX_ATTEMPTS; attempt++) {
+      throwIfAborted(signal);
       const pass = await applyPendingMigrations({
         client,
         sqlDir,
@@ -627,6 +679,7 @@ export async function applyPendingMigrationsNow(
         beforeApply: guardPendingMigration,
         log: (s) => console.log(`[boot-migrate] ${s}`),
       });
+      throwIfAborted(signal);
       appliedCount += pass.appliedCount;
       totalKnown = pass.totalKnown;
       failed = pass.failed;
@@ -639,7 +692,7 @@ export async function applyPendingMigrationsNow(
           `(${failed.map((f) => `${f.file}: ${f.error}`).join('; ')}) — retrying in ${delayMs}ms ` +
           `(attempt ${attempt + 1}/${CONTENTION_RETRY_MAX_ATTEMPTS}); a deadlock is normally gone on the next try.`,
       );
-      await sleep(delayMs);
+      await sleep(delayMs, signal);
     }
     // Merge the cooling-down files (skipped this call — never attempted, so
     // `failed` above has no entry for them) back in, so callers (the
@@ -755,16 +808,22 @@ export async function applyPendingMigrationsNow(
     }
     return { applied: appliedCount, failed };
   } catch (err) {
-    console.error('[boot-migrate] boot apply failed (non-fatal):', err instanceof Error ? err.message : err);
+    if (!signal?.aborted) {
+      console.error('[boot-migrate] boot apply failed (non-fatal):', err instanceof Error ? err.message : err);
+    }
     return null;
   } finally {
-    if (backupMigrationLockHeld) {
+    // On abort, ending the session releases only locks owned by this client.
+    // A backup's session advisory lock belongs to its separate backend and
+    // remains held while this abandoned verifier disconnects.
+    if (backupMigrationLockHeld && !signal?.aborted) {
       await client`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch((error) => {
         console.warn(
           `[boot-migrate] backup migration rendezvous unlock failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
     }
-    await client.end({ timeout: 5 }).catch(() => {});
+    signal?.removeEventListener('abort', closeClientOnAbort);
+    await closeClient(signal?.aborted ? 0 : 5);
   }
 }

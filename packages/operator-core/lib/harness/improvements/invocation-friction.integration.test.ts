@@ -232,16 +232,18 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_idx');
   });
 
-  it('D-010: different measured contracts share one signature row under the real unique index and cannot promote it', async () => {
+  it('D-010: incomplete metadata keeps changed contracts on the exact-message row without promoting it', async () => {
     const f = persistedCapture();
-    for (const revision of ['schema-one', 'schema-two']) {
-      await f.invoke({ schema: revision, owner: revision });
-    }
+    await f.invoke({ schema: 'schema-one', owner: 'schema-one' });
+    const original = (await f.rows('ws-a'))[0];
+    await f.invoke({ schema: 'schema-two', owner: 'schema-two' });
     const persisted = await db.sql`SELECT payload FROM harness_shared.work_items ORDER BY feature_id`;
     expect(persisted).toHaveLength(1);
-    expect(persisted[0].payload.watchdogKey).toMatch(/^tool-failure-signature:coord:send:/);
+    expect(persisted[0].payload.watchdogKey).toBe(original.payload?.watchdogKey);
+    expect(String(persisted[0].payload.watchdogKey)).toMatch(/^repeated-tool-error:/);
     expect(persisted[0].payload.toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['schema-one'] });
     expect(persisted[0].payload.repeatCount).toBe(2);
+    expect(Object.keys(persisted[0].payload.toolFailureSignature.classes)).toHaveLength(2);
     // Prove the real arbiter can refuse, rather than merely reading two rows
     // from a fixture whose JSON was accidentally encoded as a string.
     await expect(db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)

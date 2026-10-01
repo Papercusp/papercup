@@ -34,6 +34,7 @@ import { getTestPg } from '@papercusp/test-config/pg';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import { readBackupLockedRelationNames } from './backup-lock-migration-proof';
+import { withBoundedTimeout } from './bounded-timeout';
 
 // ── shared test-DB + mock holders ────────────────────────────────────────────
 const h = vi.hoisted(() => ({
@@ -530,6 +531,100 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       await holder.end({ timeout: 5 });
     }
     expect(lockReleased).toBe(true);
+  });
+
+  it('closes the timed-out migration backend without releasing the backup lock or applying its migration', async () => {
+    const filename = '959-native-boot-timeout-cancel.sql';
+    const relation = 'boot_native_timeout_cancel_target';
+    await rootSql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.${relation} (id int)`);
+    const dir = makeSqlDir({
+      [filename]: `ALTER TABLE harness_shared.${relation} ADD COLUMN timeout_note text;`,
+    });
+    await seedMigrationReservations([filename]);
+
+    const backupApp = 'pcbackup-workspace';
+    const holder = postgres(dbUrl, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: backupApp },
+    });
+    const dump = await holder.reserve();
+    const bootLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let boundedAttempt: Promise<unknown> | undefined;
+    try {
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump`LOCK TABLE harness_shared.boot_native_timeout_cancel_target IN ACCESS SHARE MODE`;
+
+      const attempt = withBoundedTimeout(
+        (signal) => applyPendingMigrationsNow({ sqlDir: dir, broadcast: false, signal }),
+        { fallback: null, timeoutMs: 5_000, label: 'boot migration cancellation regression' },
+      );
+      boundedAttempt = attempt;
+
+      const waitLine = `waiting for backup migration rendezvous; pending migrations: ${filename}`;
+      const startDeadline = Date.now() + 4_000;
+      let backendSeenWaiting = false;
+      while (!backendSeenWaiting && Date.now() < startDeadline) {
+        const backends = await rootSql<{ pid: number }[]>`
+          SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+        const loggedWait = bootLog.mock.calls.some((call) => String(call[0]).includes(waitLine));
+        backendSeenWaiting = backends.length === 1 && loggedWait;
+        if (!backendSeenWaiting) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(backendSeenWaiting, 'the migration backend must be observed waiting before its deadline').toBe(true);
+
+      const timeout = await attempt;
+      expect(timeout).toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+
+      const closeDeadline = Date.now() + 5_000;
+      let backendClosed = false;
+      while (!backendClosed && Date.now() < closeDeadline) {
+        const backends = await rootSql<{ pid: number }[]>`
+          SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+        backendClosed = backends.length === 0;
+        if (!backendClosed) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(backendClosed, 'timeout must close the abandoned postgres-js backend').toBe(true);
+
+      const backupLock = await rootSql<{ held: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_locks l
+          JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = ${backupApp}
+        ) AS held`;
+      expect(backupLock).toEqual([{ held: true }]);
+
+      const migrationState = await rootSql<{ recorded: boolean; columnPresent: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM harness_shared.schema_migrations WHERE filename = ${filename}
+        ) AS recorded,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'harness_shared' AND table_name = ${relation}
+             AND column_name = 'timeout_note'
+        ) AS "columnPresent"`;
+      expect(migrationState).toEqual([{ recorded: false, columnPresent: false }]);
+    } finally {
+      // Let the bounded timeout fire before dropping the backup barriers, then
+      // clean up a leaked backend so a failing regression cannot apply its
+      // fixture after the assertion has finished.
+      await boundedAttempt?.catch(() => {});
+      await rootSql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+      await dump`ROLLBACK`.catch(() => {});
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
+      bootLog.mockRestore();
+      warnLog.mockRestore();
+      errorLog.mockRestore();
+    }
   });
 
   // WI-10003357: the wait is relation-scoped. Boot waits while the backup

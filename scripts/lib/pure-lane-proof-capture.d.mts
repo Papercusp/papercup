@@ -99,16 +99,19 @@ export function repoRelativeLaneFiles(root: any, wsAbsDir: any, include: any): a
  * @param {Record<string, string | undefined>} o.env the gate's suite env (buildGreenCheckpointEnv)
  * @param {string} o.runGroupId test_runs group for this phase's rows
  * @param {string | null} [o.logFile] where vitest output goes (appended per slice)
+ * @param {number | null} [o.sinceMs] epoch ms the gate run started; lets a notRun skip name the
+ *   sha the suite actually judged when the checkout has since moved off it
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
  *   remaining: number, stoppedBy: string | null, lines: string[] }>}
  */
-export function runPureLaneProofCapture({ root, env, runGroupId, logFile, deps }: {
+export function runPureLaneProofCapture({ root, env, runGroupId, logFile, sinceMs, deps, }: {
     root: string;
     env: Record<string, string | undefined>;
     runGroupId: string;
     logFile?: string | null | undefined;
+    sinceMs?: number | null | undefined;
     deps?: Partial<{
         git: typeof defaultGit;
         laneInclude: (wsAbsDir: any) => string[];
@@ -116,6 +119,7 @@ export function runPureLaneProofCapture({ root, env, runGroupId, logFile, deps }
         connect: (env: any) => Promise<import("pg").Client>;
         loadProofs: typeof loadReuseProofs;
         loadShaOutcomes: typeof defaultLoadShaOutcomes;
+        loadLatestLaneSha: typeof defaultLoadLatestLaneSha;
         loadSliceFailures: typeof defaultLoadSliceFailures;
         readResults: (file: any) => import("./executed-source-map.mjs").ExecutedMapResultRead;
         runSlice: typeof defaultRunSlice;
@@ -177,6 +181,17 @@ declare function defaultLoadShaOutcomes({ client, sha, files }: {
     passedInSuite: Set<any>;
     ranInSuite: number;
 }>;
+/**
+ * The newest commit the gate suite recorded a clean source=ci row at, for any lane file, since
+ * `sinceMs` (this gate process's start). Used only to explain a notRun skip: a repair-queue run can
+ * judge one head and then move the checkout to a newly admitted head before capture runs, so HEAD
+ * no longer names the sha the suite judged (measured 2026-10-01: judged b8eb76cc, HEAD 3f0e22e9).
+ */
+declare function defaultLoadLatestLaneSha({ client, files, sinceMs }: {
+    client: any;
+    files: any;
+    sinceMs: any;
+}): Promise<any>;
 declare function defaultLoadSliceFailures({ client, runGroupId, files }: {
     client: any;
     runGroupId: any;

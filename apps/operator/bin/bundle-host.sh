@@ -237,12 +237,36 @@ trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$N
 # strictly better than a down one; an INVISIBLY-stale one is worse than both.
 BUILD_LOG="$OUTFILE.build-error.log"
 
+# WI-10005113: name HOW the bundle step failed. Every failure path INSIDE the
+# subshell below prints its own error before exiting (the lock timeout, esbuild,
+# the guard checks), so an EMPTY log plus a signal status means the subshell was
+# killed from OUTSIDE (or its redirect failed), not that the build was wrong.
+# Measured 2026-10-01 22:03:10-22:03:20Z: the first staging generation bundle
+# died 10s in with an empty log and the old `bundle_rc=1`, so the cause was
+# unrecoverable once the candidate checkout was pruned, and :3170 stayed down.
+report_bundle_step_failure() {
+  local rc="$1" log="$2"
+  if (( rc > 128 )); then
+    local sig=$((rc - 128))
+    echo "🚨 the bundle step was KILLED by signal $sig (SIG$(kill -l "$sig" 2>/dev/null || echo '?'), exit status $rc): an external kill, not a build error."
+  else
+    echo "bundle step exit status: $rc"
+  fi
+  if [[ ! -s "$log" ]]; then
+    echo "🚨 the build log is EMPTY: no step inside the bundle subshell reached its own error path."
+    echo "🚨   Suspect an external kill of the subshell or a failed redirect of $log or $LOCKFILE,"
+    echo "🚨   not esbuild or the guard checks (each prints its error before it exits)."
+  fi
+}
+
 echo "→ esbuild-bundling $ENTRY → $OUTFILE (plain-node host entry, no tsx loader)"
 bundle_rc=0
-# `if ! ( … )` rather than a bare call: `set -e` would otherwise kill the script
-# at precisely the failure this block exists to survive. Output is captured to a
-# file so it can be BOTH echoed to the journal and parsed into the marker.
-if ! (
+# `( … ) || bundle_rc=$?` rather than a bare call: `set -e` would otherwise kill
+# the script at precisely the failure this block exists to survive. Output is
+# captured to a file so it can be BOTH echoed to the journal and parsed into the
+# marker. WI-10005113: `|| bundle_rc=$?`, not `if ! ( … ); then bundle_rc=1`, so
+# the subshell's REAL status survives and a signal death (128+N) is reported as one.
+(
   flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
   # WI-55467: the SAME errexit hole the checker comment below describes applies to
   # esbuild itself, and it was left unplugged. A failed/killed esbuild wrote no
@@ -263,8 +287,8 @@ if ! (
     echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
     exit 1
   fi
-  # This subshell is the condition of `if ! (...)`; Bash disables errexit inside such a tested
-  # compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
+  # This subshell is the left side of `|| bundle_rc=$?`; Bash disables errexit inside such a
+  # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
   if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
     --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."; then
@@ -276,10 +300,11 @@ if ! (
   # the escape is correct, just fatter, and is not worth failing a boot over.
   node "$SCRIPT_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
   mv -f "$TMPFILE" "$OUTFILE"
-) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1; then
-  bundle_rc=1
-fi
+) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1 || bundle_rc=$?
 cat "$BUILD_LOG"
+if [[ $bundle_rc -ne 0 ]]; then
+  report_bundle_step_failure "$bundle_rc" "$BUILD_LOG"
+fi
 
 if [[ $bundle_rc -ne 0 ]]; then
   if [[ -f "$OUTFILE" ]]; then

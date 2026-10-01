@@ -1269,6 +1269,30 @@ describe('work_items:set_blocker', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    // The SET path for the event-key form: R-2's falsifier names both the bare id (above)
+    // and a work-item:done:<id> event key. The external-key negative control is below.
+    it('AUTO-BAR-R-2-P-002: an event blocker keyed work-item:done:<id> is stored as a blocks edge, writing no external row', async () => {
+      getWorkItem.mockResolvedValue(openItem);
+      linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [edgeFor('WI-40086')] });
+
+      const out = await one({ id: 'WI-1', kind: 'event', ref: 'work-item:done:WI-40086' });
+
+      expect(out).toMatchObject({
+        ok: true,
+        id: 'WI-1',
+        convertedToEdge: { rel: 'blocks', blockers: ['WI-40086'] },
+        activeBlockers: [],
+      });
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledWith({
+        dependentId: 'WI-1',
+        harness: undefined,
+        referents: ['WI-40086'],
+        by: 'su-a',
+      });
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     it('converts every kind and both ref forms, deduplicating referents', async () => {
       for (const kind of ['event', 'gate', 'runtime', 'human'] as const) {
         vi.clearAllMocks();

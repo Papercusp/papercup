@@ -269,6 +269,25 @@ async function defaultLoadShaOutcomes({ client, sha, files }) {
   return { failed, passedInSuite, ranInSuite };
 }
 
+/**
+ * The newest commit the gate suite recorded a clean source=ci row at, for any lane file, since
+ * `sinceMs` (this gate process's start). Used only to explain a notRun skip: a repair-queue run can
+ * judge one head and then move the checkout to a newly admitted head before capture runs, so HEAD
+ * no longer names the sha the suite judged (measured 2026-10-01: judged b8eb76cc, HEAD 3f0e22e9).
+ */
+async function defaultLoadLatestLaneSha({ client, files, sinceMs }) {
+  const { rows } = await client.query(
+    `SELECT commit_sha FROM harness_shared.test_runs
+      WHERE source = 'ci' AND worktree_dirty = false
+        AND file_path = ANY($1::text[])
+        AND finished_at >= to_timestamp($2::double precision / 1000)
+      ORDER BY finished_at DESC
+      LIMIT 1`,
+    [files, sinceMs],
+  );
+  return rows[0]?.commit_sha ?? null;
+}
+
 async function defaultLoadSliceFailures({ client, runGroupId, files }) {
   const { rows } = await client.query(
     `SELECT DISTINCT file_path FROM harness_shared.test_runs
@@ -328,6 +347,7 @@ const defaultDeps = {
   connect: (env) => connectExecutedMapPg({ env }),
   loadProofs: loadReuseProofs,
   loadShaOutcomes: defaultLoadShaOutcomes,
+  loadLatestLaneSha: defaultLoadLatestLaneSha,
   loadSliceFailures: defaultLoadSliceFailures,
   readResults: (file) => readExecutedMapResults(file),
   runSlice: defaultRunSlice,
@@ -362,12 +382,21 @@ async function withClient(d, env, fn) {
  * @param {Record<string, string | undefined>} o.env the gate's suite env (buildGreenCheckpointEnv)
  * @param {string} o.runGroupId test_runs group for this phase's rows
  * @param {string | null} [o.logFile] where vitest output goes (appended per slice)
+ * @param {number | null} [o.sinceMs] epoch ms the gate run started; lets a notRun skip name the
+ *   sha the suite actually judged when the checkout has since moved off it
  * @param {Partial<typeof defaultDeps>} [o.deps]
  * @returns {Promise<{ state: string, reason: string | null, sha: string | null, slices: number,
  *   files: number, rows: number, retired: number, failed: number, isolatedFail: number,
  *   remaining: number, stoppedBy: string | null, lines: string[] }>}
  */
-export async function runPureLaneProofCapture({ root, env, runGroupId, logFile = null, deps = {} }) {
+export async function runPureLaneProofCapture({
+  root,
+  env,
+  runGroupId,
+  logFile = null,
+  sinceMs = null,
+  deps = {},
+}) {
   const d = { ...defaultDeps, ...deps };
   const lines = [];
   const emit = (text) => {
@@ -425,7 +454,17 @@ export async function runPureLaneProofCapture({ root, env, runGroupId, logFile =
   try {
     plan = await withClient(d, env, async (client) => {
       const outcomes = await d.loadShaOutcomes({ client, sha, files: laneFiles });
-      if (outcomes.ranInSuite === 0) return { notRun: true };
+      if (outcomes.ranInSuite === 0) {
+        let judgedSha = null;
+        if (Number.isFinite(sinceMs)) {
+          try {
+            judgedSha = await d.loadLatestLaneSha({ client, files: laneFiles, sinceMs });
+          } catch {
+            judgedSha = null; // diagnostic only: fall back to the plain notRun reason
+          }
+        }
+        return { notRun: true, judgedSha };
+      }
       const { proofs } = await d.loadProofs({
         client,
         workspaceName: PURE_PROOF_CAPTURE_WORKSPACE.name,
@@ -448,7 +487,17 @@ export async function runPureLaneProofCapture({ root, env, runGroupId, logFile =
   }
   // D-005: capture follows a verdict in which the pure lane executed at this sha. No source=ci row
   // for any lane file here means the suite never ran it at HEAD (an early exit, another tree).
-  if (plan.notRun) return skip("pure-lane-not-run-at-sha");
+  // A repair-queue run can also judge one head and then move the checkout to a newly admitted
+  // head before capture runs; then the suite DID run, at a sha HEAD no longer names. Say so,
+  // rather than reporting a lane that never ran. Capture still never mints a proof off-HEAD.
+  if (plan.notRun) {
+    if (typeof plan.judgedSha === "string" && plan.judgedSha && plan.judgedSha !== sha) {
+      return skip(
+        `tree-moved-off-judged-sha(judged=${plan.judgedSha.slice(0, 12)},head=${sha.slice(0, 12)})`,
+      );
+    }
+    return skip("pure-lane-not-run-at-sha");
+  }
 
   const budgetMs = pureProofCaptureBudgetMs(env);
   const sliceSize = pureProofCaptureSliceSize(env);

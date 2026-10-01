@@ -1824,6 +1824,17 @@ describe('AUTO-BAR-R-18-P-002 — the hold does not over-block', () => {
     expect(edges).toHaveLength(0);
   });
 
+  // The R-18 behaviour in one scenario: the held sibling and both claimable items share
+  // one snapshot, so a hold that leaked plan-wide would fail here.
+  it('positive: while sibling P-001 is held, the complete-contract sibling and the independent item both stay claimable', async () => {
+    const { deps, filed, edges } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps)).not.toBeNull();
+    expect(await acceptanceReadinessHold(holdItem('WI-complete', ['P-002']), holdCtx, deps)).toBeNull();
+    expect(await acceptanceReadinessHold(holdItem('WI-independent', ['P-003']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+    expect(edges).toHaveLength(0);
+  });
+
   it('a plan with no acceptance rubric yet holds nothing (rubrics are authored after implementation)', async () => {
     const { deps, filed } = holdDeps(holdSnapshot());
     expect(await acceptanceReadinessHold(holdItem('WI-free', ['P-001']), holdCtx, deps)).toBeNull();

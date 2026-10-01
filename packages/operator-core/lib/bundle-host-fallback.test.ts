@@ -145,6 +145,51 @@ describe('bundle-host.sh last-known-good fallback', () => {
       expect(code).not.toBe(0);
       expect(output).toMatch(/NO previous bundle/);
       expect(existsSync(outfile)).toBe(false);
+      // Calibration for the WI-10005113 case below: a real build error is
+      // reported with its own status and log, never as an external kill.
+      expect(output).toMatch(/bundle step exit status: 1/);
+      expect(output).not.toMatch(/KILLED by signal/);
+      expect(output).not.toMatch(/build log is EMPTY/);
+    },
+    260_000,
+  );
+
+  // WI-10005113: measured 2026-10-01 22:03:10-22:03:20Z, the first staging
+  // generation bundle died 10s in with an EMPTY build log. The old
+  // `if ! ( … ); then bundle_rc=1` discarded the subshell's real status, so a
+  // kill read exactly like a build error and the cause was unrecoverable once
+  // the candidate checkout was pruned. A fake `npx` that SIGKILLs its parent
+  // (the bundle subshell) reproduces that shape on a perfectly buildable entry.
+  it(
+    'reports an EXTERNAL kill of the bundle step as a signal, with an empty-log diagnosis',
+    () => {
+      const entry = join(dir, 'ok-entry.ts');
+      writeFileSync(entry, 'export const ok = 1;\nconsole.log(ok);\n');
+      const shimDir = join(dir, 'shim');
+      execFileSync('mkdir', ['-p', shimDir], { timeout: 10_000, killSignal: 'SIGKILL' });
+      writeFileSync(
+        join(shimDir, 'npx'),
+        [
+          '#!/usr/bin/env bash',
+          'for a in "$@"; do',
+          '  if [[ "$a" == "$BUNDLE_TEST_KILL_ENTRY" ]]; then kill -9 "$PPID"; sleep 1; exit 0; fi',
+          'done',
+          'PATH="${PATH#*:}" exec npx "$@"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+
+      const { code, output } = runBundler(entry, {
+        PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+        BUNDLE_TEST_KILL_ENTRY: entry,
+      });
+
+      expect(code).not.toBe(0);
+      expect(output).toMatch(/KILLED by signal 9 \(SIGKILL, exit status 137\)/);
+      expect(output).toMatch(/build log is EMPTY/);
+      expect(output).toMatch(/NO previous bundle/);
+      expect(existsSync(outfile)).toBe(false);
     },
     260_000,
   );

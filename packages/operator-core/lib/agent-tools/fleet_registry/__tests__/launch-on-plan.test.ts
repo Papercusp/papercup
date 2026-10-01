@@ -4654,7 +4654,8 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     };
     expect(persisted.fleetSlug).toBe('target-drain-fleet');
     expect(persisted.target).toBe(3);
-    expect(persisted.config).toMatchObject({ harness: 'papercusp', headless: true, carry: 'warm' });
+    // The recipe mirrors the launch: `headless` was omitted, so it records the visible default.
+    expect(persisted.config).toMatchObject({ harness: 'papercusp', headless: false, carry: 'warm' });
     // Claim scope lives in the claim-spec store (top-ups launch plan-less and read it there),
     // so the recipe carries no plan and no duplicated claimKinds.
     expect(persisted.config).not.toHaveProperty('plan');

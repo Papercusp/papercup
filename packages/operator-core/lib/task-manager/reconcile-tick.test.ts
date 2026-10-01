@@ -42,6 +42,7 @@ vi.mock('./store', () => ({
 }));
 
 const { reconcileTick, resetNotifyDebounce } = await import('./reconcile-tick');
+const { scanProcesses } = await import('./scan');
 
 const OURS = '/user.slice/user@1000.service/papercusp.slice';
 
@@ -679,5 +680,69 @@ describe('reconcileTick — notification discipline', () => {
     // The condition never closed, so this is ONE alarm — not five.
     expect(notify).toHaveBeenCalledOnce();
     expect(sent[0]!.summary).toContain('unaccounted cgroup(s)');
+  });
+});
+
+describe('reconcileTick — default scan yields its kernel IO (jev-memory-timeouts P-004)', () => {
+  // Every other test injects `scan`, so none of them exercises the default. This
+  // one does: the kernel is reachable ONLY through the async source, and the
+  // synchronous `fs` answers "empty slice". The old synchronous default ignores
+  // `asyncFs`, finds nothing, and strands the row; the nonblocking default finds
+  // the task's process and keeps it alive.
+  const scopeAbs = `/sys/fs/cgroup${OURS}/pc-ccc333.scope`;
+  function asyncKernel() {
+    const MGR = '/user.slice/user@1000.service';
+    const sliceAbs = `/sys/fs/cgroup${OURS}`;
+    const files: Record<string, string> = {
+      '/proc/999/cgroup': `0::${MGR}/papercusp-bg-host.service\n`,
+      [`${sliceAbs}/cgroup.procs`]: '',
+      [`${scopeAbs}/cgroup.procs`]: '42',
+      '/proc/42/cmdline': 'node\0worker',
+    };
+    const dirs: Record<string, string[]> = {
+      [`/sys/fs/cgroup${MGR}`]: ['papercusp.slice'],
+      [sliceAbs]: ['pc-ccc333.scope'],
+      [scopeAbs]: [],
+    };
+    const reads: string[] = [];
+    const asyncFs = {
+      readFile: async (p: string) => {
+        reads.push(p);
+        return files[p] ?? null;
+      },
+      readDir: async (p: string) => dirs[p] ?? [],
+      isDir: async (p: string) => p in dirs,
+    };
+    return { reads, asyncFs };
+  }
+
+  it('reads the cgroup tree through the async scanner when no scan is injected', async () => {
+    const { reads, asyncFs } = asyncKernel();
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ccc333' })],
+      fs: memFs({}),
+      scanOptions: { selfPid: 999, asyncFs },
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(reads).toContain(`${scopeAbs}/cgroup.procs`);
+    expect(out.strandedCount).toBe(0);
+    expect(out.summary.alive).toBe(1);
+    expect(store.touched[0]).toMatchObject({ taskId: 'ccc333', pid: 42 });
+  });
+
+  it('control: the synchronous scanner on the same fixture strands the row', async () => {
+    // Proves the fixture separates the two scanners. If this ever stops
+    // stranding, the test above no longer fails when the default reverts.
+    const { reads, asyncFs } = asyncKernel();
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ccc333' })],
+      scan: scanProcesses,
+      fs: memFs({}),
+      scanOptions: { selfPid: 999, asyncFs },
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(reads).toEqual([]);
+    expect(out.strandedCount).toBe(1);
+    expect(store.stranded[0]!.taskId).toBe('ccc333');
   });
 });
