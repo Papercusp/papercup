@@ -457,6 +457,43 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(refused).toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
     expect(refused.ok ? '' : refused.message).toContain(`Its clean commit ${'e'.repeat(12)} does not contain that file`);
   });
+
+  describe('a CLEAN copy-out mutation row bound by canonicalTestPath is verified against its commit', () => {
+    const mirrorRow = (over: Partial<TestRunEvidenceRow> = {}) =>
+      cleanRow({
+        root: path.join(tmpdir(), `mutation-probe-gone${process.pid}`, 'mirror', 'pkg'),
+        file_path: 'lib/x.test.ts',
+        source: 'mutation-probe',
+        execution_details: { mutationPhase: 'mutant' },
+        ...over,
+      });
+    const canonical = input({ canonicalTestPath: 'pkg/lib/x.test.ts', sourcePaths: ['pkg/lib/x.ts'] });
+
+    it('binds with contentVerified when this checkout still holds the commit content', async () => {
+      const bound = await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow()));
+      expect(bound).toMatchObject({ ok: true, binding: { evidenceKind: 'mutation', evidenceRef: expect.stringContaining('pkg/lib/x.test.ts') } });
+      if (!bound.ok) return;
+      expect(bound.binding.details.testRun).toMatchObject({
+        canonicalTestPathOverride: 'pkg/lib/x.test.ts',
+        asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+      });
+    });
+
+    it('THE BUG: refuses when the subject here differs from what the mutant ran (a peer edited it since)', async () => {
+      const file = path.join(harness, 'pkg/lib/x.ts');
+      await writeFile(file, 'export const x = 2;\n');
+      try {
+        const refused = await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow()));
+        expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+        expect(refused.ok ? '' : refused.message).toContain('pkg/lib/x.ts differs from its content at');
+        // A dirty or commit-less row proves no commit, so it keeps the checkout pin (and stays dirty evidence).
+        expect(await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow({ worktree_dirty: true })))).toMatchObject({ ok: true });
+        expect(await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow({ commit_sha: null })))).toMatchObject({ ok: true });
+      } finally {
+        await writeFile(file, 'export const x = 1;\n');
+      }
+    });
+  });
 });
 
 describe('testRunBindingSchema', () => {

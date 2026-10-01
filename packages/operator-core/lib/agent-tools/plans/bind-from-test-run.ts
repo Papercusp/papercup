@@ -629,6 +629,8 @@ export async function expandTestRunBinding(
   }
   const root = await deps.resolveRoot(scope);
   let testPath = await recordedTestPath(root, row, deps.git);
+  // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
+  let asCommitted: AsCommittedMapping | null = null;
   if (input.canonicalTestPath) {
     const recordedRelative = row.root && isAbsolute(row.root) && row.file_path
       ? repoRelativeTestPath(row.root, row.file_path)
@@ -679,9 +681,15 @@ export async function expandTestRunBinding(
         message: `canonicalTestPath ${JSON.stringify(input.canonicalTestPath)} is not a readable test in this harness checkout.`,
       };
     }
+    // A CLEAN, commit-stamped copy-out row (its probe's origin root was an as-committed clone)
+    // executed that commit's files, not this checkout's. Verify the measured files against the
+    // commit exactly like a clone run, or the pin would fingerprint whatever the shared tree
+    // holds at bind time (measured: a peer's later bulk-run-store.ts edit pinned onto a mutant
+    // that mutated the committed blob). Dirty or commit-less rows keep the checkout pin.
+    if (row.worktree_dirty === false && row.commit_sha && FULL_SHA_RE.test(row.commit_sha)) {
+      asCommitted = { testPath: input.canonicalTestPath, repoPrefix: '', commitSha: row.commit_sha };
+    }
   }
-  // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
-  let asCommitted: AsCommittedMapping | null = null;
   if (!testPath && !input.canonicalTestPath) {
     asCommitted = await asCommittedTestPath(root, row, deps.git);
     testPath = asCommitted?.testPath ?? null;
