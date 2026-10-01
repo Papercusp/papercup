@@ -190,6 +190,48 @@ describe('readShadowStatement (P-003)', () => {
     }
   });
 
+  it('reads layers from identityHistory for exactly the applied revision once the record moved on (WI-10004494)', async () => {
+    // Own owner: a further applied event under OWNER would close the spans the other cases price.
+    const owner = 'su-shadow-reader-history';
+    const specHist = 'f'.repeat(64);
+    const specDecoy = 'e'.repeat(64);
+    const record = {
+      ...launchSpec('d'.repeat(64), 'claude', [layer('papercusp-engineer-current', ['domain'])]),
+      identityHistory: [
+        // A neighbouring revision: never read for a span that applied specHist.
+        { specificationRevision: specDecoy, stateRevision: 'state-1',
+          specificationArtifact: { inputs: [layer('decoy-engineer', ['domain'])] } },
+        { specificationRevision: specHist, stateRevision: 'state-1',
+          specificationArtifact: { inputs: [layer('base'), layer('papercusp-engineer', ['domain'])] } },
+        // Not an artifact object: skipped rather than read.
+        { specificationRevision: specHist, stateRevision: 'state-2', specificationArtifact: 'not-an-artifact' },
+      ],
+    };
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (3,${WS},${owner},'adv-key-3','2026-08-01T00:00:00Z',NULL,NULL,${JSON.stringify(record)}::text::jsonb)`;
+    await db.sql`
+      INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      VALUES (${WS},${owner},${owner},'principal-shadow','shadow-p3',3,'native-shadow-3',
+        't-hist',1,'applied','launch',${specHist},'state-1','[]'::jsonb,'2026-08-01T00:01:00Z'::timestamptz)`;
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts, cost_usd, cost_source)
+      VALUES (110,${WS},'native-shadow-3',${ms('2026-08-20T00:00:00Z')},4.0,'estimated')`;
+    try {
+      const rows = await readShadowUsageAggregates(db.sql, { workspaceId: WS, month: MONTH });
+      const hist = rows.filter((r) => r.attributed && r.costMicros === 4_000_000);
+      expect(hist).toEqual([expect.objectContaining({
+        agent: 'claude', profile: 'engineer', specificationLayerRefs: ['domain:papercusp-engineer'], samples: 1,
+      })]);
+      // The span of adv 2 applied SPEC_B, which neither its record nor any history carries: still no layers.
+      expect(rows.find((r) => r.attributed && r.costMicros === 2_000_000)?.specificationLayerRefs).toEqual([]);
+    } finally {
+      await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = 110`;
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 3`;
+    }
+  });
+
   it('counts the cost basis against the price table it is given (D-018 point 4)', async () => {
     await db.sql`UPDATE harness_shared.agent_usage_samples
       SET price_table_version = 'v-it', usage_provenance = '{"costBound":"lower"}'::jsonb WHERE id IN (102, 103)`;
