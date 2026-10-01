@@ -35,6 +35,22 @@ export function scriptUsesPassWithNoTests(scriptText) {
   return /--passWithNoTests\b/.test(scriptText ?? '');
 }
 
+// scripts/run-vitest-pure-lane.mjs passes --passWithNoTests on every shard it spawns, and it
+// passes an all-reused lane without spawning vitest (via reuseSkipCoversRun below), so a script
+// that invokes it runs zero files as a pass although its own text never names the flag.
+const PURE_LANE_RUNNER = /(?:^|[\s/])run-vitest-pure-lane\.mjs(?=\s|$)/;
+
+/**
+ * May a pass-reuse skip list empty this script's run? True for a script that declares
+ * --passWithNoTests, and for the pure-lane runner (gate-test-reuse-yield-2026-10-01 P-006, D-005).
+ * This is the REUSE eligibility test only: the EI-11132 guard below still keys on the literal
+ * flag (scriptUsesPassWithNoTests), because only a script that declares it can be given
+ * --no-passWithNoTests meaningfully.
+ */
+export function scriptRunsZeroFilesAsPass(scriptText) {
+  return scriptUsesPassWithNoTests(scriptText) || PURE_LANE_RUNNER.test(scriptText ?? '');
+}
+
 // Mirrors libs/test-config/src/vitest-config.ts's baseExclude — directories
 // that are never real test source regardless of workspace.
 const PRUNE_DIRS = ['node_modules', '.git', 'dist', 'build', '.next', '.papercusp', '_retired'];

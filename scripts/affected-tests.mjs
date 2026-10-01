@@ -114,7 +114,7 @@ import {
   formatRetryPoolLine,
 } from "./lib/retry-failure-shape.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
-import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
+import { emptySuiteGuardArgs, scriptRunsZeroFilesAsPass } from "./lib/empty-suite-guard.mjs";
 // EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
 // declaring-path set rather than restating any of it — fields (`declaredIn`), columns (their
 // migration), and the registry module itself. Import-safe: check-declared-consumed.mjs runs
@@ -5513,7 +5513,8 @@ async function armTestPassReuse(taskList) {
     (t) =>
       (t.script === "test" || LANE_SCRIPTS.includes(t.script)) &&
       // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-      /--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? ""),
+      // The pure-lane runner does, without naming the flag (gate-test-reuse-yield P-006, D-005).
+      scriptRunsZeroFilesAsPass(t.ws.scripts?.[t.script] ?? ""),
   );
   if (unitTasks.length === 0) return;
   const off = (reason) => outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);

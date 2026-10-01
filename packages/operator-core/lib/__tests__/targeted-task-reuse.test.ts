@@ -158,6 +158,22 @@ describe('armTargetedTaskReuse', () => {
     expect(existsSync(listPath)).toBe(false);
   });
 
+  // gate-test-reuse-yield-2026-10-01 P-006 (D-005): the pure-lane runner's script never names
+  // --passWithNoTests, yet it runs zero files as a pass, so the repair-head rerun may reuse too.
+  it('arms reuse for the pure-lane runner script, which runs an all-reused lane as a pass', async () => {
+    fixture('PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs');
+    const armed = await armTargetedTaskReuse({
+      root,
+      workspace: WS,
+      script: SCRIPT,
+      expectedSha: HEAD,
+      env: baseEnv(),
+      deps: deps(),
+    });
+    expect(armed.reused).toBe(1);
+    expect(armed.lines.join('\n')).not.toMatch(/script-cannot-run-zero-files/);
+  });
+
   it('keeps the soundness audit: an audit draw runs a reusable file instead of skipping it', async () => {
     fixture();
     const armed = await armTargetedTaskReuse({
