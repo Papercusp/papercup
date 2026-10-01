@@ -181,6 +181,23 @@ describe('cleanPartText — cap', () => {
     expect(cleanPartText('  hello  ')).toBe('  hello  ');
   });
 
+  it('redacts a prefixed opaque value across the cap before storing a Codex tool result', () => {
+    const prefix = 'x'.repeat(PART_TEXT_CAP_TOOL - 40);
+    const secret = 'opaque-fixture-value-that-crosses-the-cap';
+    const suffix = ' trailing diagnostic context'.repeat(2);
+    const raw = prefix + ' AWS_SECRET_ACCESS_KEY=' + secret + suffix;
+    const expected = cleanPartText(prefix + ' AWS_SECRET_ACCESS_KEY=[redacted]' + suffix, 'tool_result');
+    const parts = parseCodexParts(JSON.stringify({
+      type: 'response_item', timestamp: '2026-10-01T00:00:00Z',
+      payload: { type: 'function_call_output', output: raw },
+    }));
+    expect(parts).toHaveLength(1);
+    expect(parts[0].text).toBe(expected);
+    expect(parts[0].text).toContain('[redacted]');
+    expect(parts[0].text).not.toContain('opaque-fixture');
+    expect(parts[0].text).toContain('[truncated ');
+  });
+
   it('caps PROSE at the render budget, not the tool cap (EI-20637908167729753)', () => {
     // The regression: prose used to share the tool cap, so an agent's own
     // report was cut to 2,000 chars even though the pane could render 8,000.

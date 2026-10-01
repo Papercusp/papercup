@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 import {
   redactKeyDirectedSecrets,
@@ -65,6 +66,42 @@ describe('sensitive diagnostic text', () => {
   it('does not redact prose that merely mentions credential concepts', () => {
     const prose = 'The API key is unavailable, so the task remains stopped.';
     expect(redactSensitiveText(prose)).toBe(prose);
+  });
+
+  it('bounds key-directed scans of long non-secret identifiers without losing prefixed keys', () => {
+    // Match ingestion's plain tool-result strings. Keep the bytes fixed while
+    // separating JSON parsing, the token-shape pass, and key-directed scanning.
+    const receipts: Array<Record<string, string | number>> = [];
+    for (const length of [1024, 8192, 32768]) {
+      for (const shape of ['identifier', 'delimited'] as const) {
+        const text = shape === 'identifier' ? 'x'.repeat(length) : 'x.'.repeat(length / 2);
+        const wire = JSON.stringify({ output: text });
+        for (const [stage, run] of [
+          ['json', () => JSON.parse(wire).output as string],
+          ['self-identifying', () => redactSelfIdentifyingSecrets(text)],
+          ['key-directed', () => redactKeyDirectedSecrets(text)],
+        ] as const) {
+          const cpuStarted = process.cpuUsage();
+          const wallStarted = performance.now();
+          const output = run();
+          const wallMs = performance.now() - wallStarted;
+          const cpu = process.cpuUsage(cpuStarted);
+          expect(output).toBe(text);
+          receipts.push({ length, shape, stage, wallMs, cpuMs: (cpu.user + cpu.system) / 1000 });
+        }
+      }
+    }
+    console.info('REDACTION_SCAN_RECEIPT ' + JSON.stringify(receipts));
+    // A loose process-CPU ceiling distinguishes the quadratic retry path from
+    // an ordinary scan, without treating scheduling delays as redactor cost.
+    const longest = receipts.find(row => row.length === 32768 && row.shape === 'identifier' && row.stage === 'key-directed')!;
+    expect(longest.cpuMs).toBeLessThan(200);
+    for (const prefix of ['', 'AWS_', 'papercusp_deployment_', 'x'.repeat(32768) + '_']) {
+      for (const key of ['ACCESS_KEY_ID', 'SECRET_ACCESS_KEY', 'DATABASE_URL']) {
+        const name = prefix + key;
+        expect(redactKeyDirectedSecrets(name + '=opaque-fixture-value')).toBe(name + '=[redacted]');
+      }
+    }
   });
 
   it('redacts nested secret values while preserving opaque credential references', () => {
