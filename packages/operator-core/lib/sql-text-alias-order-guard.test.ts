@@ -21,11 +21,19 @@
  * `array_agg(x ORDER BY id)`) live in their own parenthesis scope, which has no alias,
  * and they bind to input columns anyway, so they are correctly ignored.
  *
+ * TIMESTAMPS too (WI-10004628). timestamptz text carries the session's UTC offset, and the
+ * server default zone here is America/New_York, so across a DST fall-back hour a LATER
+ * instant ('01:10-05') sorts before an EARLIER one ('01:30-04'). Measured on the live server
+ * under that zone: ORDER BY the alias returned 06:10Z before 05:30Z; ORDER BY the column did
+ * not. Timestamp-shaped = a column named `at`, `ts`, `*_at` or `*_ts`, a now()-family call,
+ * or any other call whose alias has one of those names (`COALESCE(ts, x)::text AS ts`).
+ * A set operation's outer ORDER BY (`(SELECT ...) UNION ALL (SELECT ...) ORDER BY ts`) sorts
+ * by its first branch's output names, so it is checked against that branch's aliases.
+ *
  * ⚠ Bounds (not detected): a positional `ORDER BY 1`; an outer query ordering by a text
- * column of a derived table (`FROM (SELECT id::text AS id ...) s ORDER BY id`); a text-cast
- * TIMESTAMP alias (it misorders only across a DST fall-back hour, so it is a separate, minor
- * defect class). A `*_id` column that is a uuid is flagged and exempted below, because uuid
- * text order equals uuid order.
+ * column of a derived table (`FROM (SELECT id::text AS id ...) s ORDER BY id`). A `*_id`
+ * column that is a uuid is flagged and exempted below, because uuid text order equals uuid
+ * order.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -48,36 +56,64 @@ const INTEGER_CALL = /^(?:count|sum|length|char_length|row_number|rank|dense_ran
 const ORDER_BY = /\bORDER\s+BY\s+/gi;
 const CLAUSE_END = /\b(?:LIMIT|OFFSET|FETCH|FOR\s+(?:UPDATE|SHARE|NO\s+KEY|KEY)|UNION|INTERSECT|EXCEPT|WINDOW)\b|;/i;
 
+const TIMESTAMP_COLUMN = /^(?:at|ts|\w+_at|\w+_ts)$/i;
+const TIMESTAMP_CALL = /^(?:now|clock_timestamp|statement_timestamp|transaction_timestamp)\(\)$/i;
+/** A scope that IS a set operation: its first operand is a parenthesised branch. */
+const SET_OPERATION = /^\s*\(\)\s*(?:UNION|INTERSECT|EXCEPT)\b/i;
+
 function isIntegerShaped(source: string): boolean {
   if (INTEGER_CALL.test(source)) return true;
   if (source.endsWith('()')) return false;
   return INTEGER_COLUMN.test(source.split('.').pop()!);
 }
 
+/** Integer-shaped, or timestamp-shaped (a call other than the now() family is judged by its alias). */
+function isHazardShaped(source: string, alias: string): boolean {
+  if (isIntegerShaped(source) || TIMESTAMP_CALL.test(source)) return true;
+  return TIMESTAMP_COLUMN.test(source.endsWith('()') ? alias : source.split('.').pop()!);
+}
+
+interface Scope {
+  /** The scope's own text, each inner scope flattened to `()`. */
+  text: string;
+  /** Direct inner scopes' texts, in source order. */
+  children: string[];
+}
+
 /** Split SQL into parenthesis scopes; each inner scope appears as `()` in its parent. */
-function scopes(sqlText: string): string[] {
-  const out: string[] = [];
-  const stack: string[] = [''];
+function scopes(sqlText: string): Scope[] {
+  const out: Scope[] = [];
+  const stack: Scope[] = [{ text: '', children: [] }];
   let inQuote = false;
   for (const ch of sqlText) {
+    const top = stack[stack.length - 1]!;
     if (inQuote) {
-      stack[stack.length - 1] += ch;
+      top.text += ch;
       if (ch === "'") inQuote = false;
     } else if (ch === "'") {
       inQuote = true;
-      stack[stack.length - 1] += ch;
+      top.text += ch;
     } else if (ch === '(') {
-      stack.push('');
+      stack.push({ text: '', children: [] });
     } else if (ch === ')') {
       if (stack.length > 1) {
-        out.push(stack.pop()!);
-        stack[stack.length - 1] += '()';
+        const done = stack.pop()!;
+        out.push(done);
+        const parent = stack[stack.length - 1]!;
+        parent.text += '()';
+        parent.children.push(done.text);
       }
     } else {
-      stack[stack.length - 1] += ch;
+      top.text += ch;
     }
   }
   return [...out, ...stack];
+}
+
+function hazardAliases(scopeText: string): Set<string> {
+  return new Set(
+    [...scopeText.matchAll(TEXT_ALIAS)].filter((m) => isHazardShaped(m[1]!, m[2]!)).map((m) => m[2]!.toLowerCase()),
+  );
 }
 
 /** Aliases that an ORDER BY in this literal sorts as text although they hold integers. */
@@ -87,10 +123,12 @@ function textAliasOrderHazards(sqlText: string): string[] {
     .replace(/--[^\n]*/g, ' ')
     .replace(CAST_CALL, '$1::text');
   const found: string[] = [];
-  for (const scope of scopes(clean)) {
-    const aliases = new Set(
-      [...scope.matchAll(TEXT_ALIAS)].filter((m) => isIntegerShaped(m[1]!)).map((m) => m[2]!.toLowerCase()),
-    );
+  for (const { text: scope, children } of scopes(clean)) {
+    const aliases = hazardAliases(scope);
+    // A set operation's ORDER BY sorts by the output names of its FIRST branch.
+    if (SET_OPERATION.test(scope) && children[0] !== undefined) {
+      for (const a of hazardAliases(children[0])) aliases.add(a);
+    }
     if (aliases.size === 0) continue;
     for (const m of scope.matchAll(ORDER_BY)) {
       const rest = scope.slice(m.index! + m[0].length);
@@ -189,7 +227,7 @@ function scanTree() {
   return { files, sites };
 }
 
-describe('ORDER BY never sorts an integer column through its text alias (WI-10004608)', () => {
+describe('ORDER BY never sorts an integer or timestamp column through its text alias (WI-10004608, WI-10004628)', () => {
   describe('detector controls', () => {
     const h = textAliasOrderHazards;
 
@@ -221,10 +259,32 @@ describe('ORDER BY never sorts an integer column through its text alias (WI-1000
       expect(h('SELECT id::text AS id, array_agg(x ORDER BY id) FROM t GROUP BY id')).toEqual([]);
     });
 
-    it('ignores SQL comments and non-integer aliases (the documented bounds)', () => {
+    it('ignores SQL comments and aliases whose text order is their value order', () => {
       expect(h('SELECT id::text AS id FROM t -- a bare ORDER BY id would bind to the alias\n ORDER BY id::bigint')).toEqual([]);
-      expect(h('SELECT created_at::text AS created_at FROM t ORDER BY created_at DESC')).toEqual([]);
+      // a date renders without an offset, so its text order is its date order
+      expect(h('SELECT ran_on::text AS ran_on FROM t ORDER BY ran_on')).toEqual([]);
       expect(h("SELECT 'x'::text AS row_kind FROM t ORDER BY row_kind")).toEqual([]);
+    });
+
+    it('flags a timestamp text alias, whose text carries the session UTC offset (WI-10004628)', () => {
+      expect(h('SELECT created_at::text AS created_at FROM t ORDER BY created_at DESC')).toEqual(['created_at']);
+      expect(h('SELECT fleet_slug, at::text AS at FROM e WHERE owner_id = ${} ORDER BY at DESC, id DESC')).toEqual(['at']);
+      expect(h('SELECT COALESCE(ts, ingested_at)::text AS ts FROM t ORDER BY ts')).toEqual(['ts']);
+      expect(h('SELECT now()::text AS seen FROM t ORDER BY seen')).toEqual(['seen']);
+    });
+
+    it('flags the outer ORDER BY of a set operation over text-aliased branches', () => {
+      expect(
+        h('(SELECT invoked_at::text AS ts FROM a ORDER BY invoked_at DESC) UNION ALL (SELECT x::text AS ts FROM b) ORDER BY ts DESC LIMIT ${}'),
+      ).toEqual(['ts']);
+    });
+
+    it('does not flag the fixed timestamp forms', () => {
+      expect(h('SELECT created_at::text AS created_at FROM t ORDER BY t.created_at DESC')).toEqual([]);
+      expect(h('SELECT DISTINCT ON (owner_id) updated_at::text AS updated_at FROM c ORDER BY owner_id, c.updated_at DESC')).toEqual([]);
+      expect(
+        h('SELECT * FROM ((SELECT invoked_at::text AS ts FROM a) UNION ALL (SELECT ts::text AS ts FROM b ORDER BY b.ts DESC)) u ORDER BY u.ts::timestamptz DESC'),
+      ).toEqual([]);
     });
 
     it('reports file and line from a TypeScript source', () => {
@@ -242,13 +302,13 @@ describe('ORDER BY never sorts an integer column through its text alias (WI-1000
       expect(files).toContain('packages/operator-core/lib/endpoint-route/routes/activity/stream.ts');
     });
 
-    it('has no ORDER BY over an integer text alias without a written reason', () => {
+    it('has no ORDER BY over an integer or timestamp text alias without a written reason', () => {
       const unexplained = sites
         .filter((s) => !EXEMPT.some((e) => e.file === s.file && s.text.includes(e.contains)))
         .map((s) => `${s.file}:${s.line} [${s.aliases.join(',')}] ${s.text.slice(0, 140)}`);
       expect(
         unexplained,
-        'ORDER BY the column, not its text alias: write ORDER BY id::bigint (or t.id), ' +
+        'ORDER BY the column, not its text alias: write ORDER BY t.col (or id::bigint / ts::timestamptz), ' +
           'or add an EXEMPT entry saying why text order is correct for this column',
       ).toEqual([]);
     });
