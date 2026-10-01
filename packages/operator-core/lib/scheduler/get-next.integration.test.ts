@@ -24,7 +24,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -133,10 +133,9 @@ beforeAll(async () => {
   // missing latch table as fail-soft, but vitest-fail-on-console correctly turns that warning
   // into a fixture failure. Keep the fixture honest about the runtime table instead of mocking
   // the emit away: this suite is meant to exercise the complete claim path.
-  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
-    label: 'scheduler/get-next.integration.test.ts',
-    runtimeTables: ['harness_shared.event_key_fires'],
-  });
+  // The key-fire latch resolves subscribers from event_awaits (WI-10004234), so the
+  // whole shared event substrate is needed, not just event_key_fires (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'scheduler/get-next.integration.test.ts' });
   // The claim path records the latest coordination-post id in the claimed row's
   // payload.  This focused fixture exercises real claims but does not bootstrap the
   // full coordination substrate, so provide the minimal runtime shape that query

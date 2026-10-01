@@ -19,7 +19,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -129,26 +129,11 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   // Terminal work-item transitions synchronously retire lifecycle-bound interest
-  // machinery. Apply the same production schema chain as the sibling
-  // plan-item-convert integration suite; a hand-rolled stub would drift as watch
-  // cardinality and lifecycle columns evolve.
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '541-predicate-watches.sql',
-    // recordKeyFire's announcement-pending probe filters event_awaits on
-    // superseded_at; without the column's owning migration every event-emitting
-    // test logs "column superseded_at does not exist" (EI-24551293655721837).
-    '599-event-announcement-generation.sql',
-    // Work-item create/status/settled events all write the durable fire latch.
-    // Without its owning migration every event-emitting test logs a missing-
-    // relation warning, which fail-on-console correctly turns into a red suite
-    // (EI-21222032743884155).
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // machinery, and create/status/settled events write the durable fire latch. The
+  // shared event-substrate list is audited from each table's creating migration, so
+  // a new event column fails here by name instead of as a fail-on-console warning
+  // (EI-24551293655721837, EI-21222032743884155, WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
   // EI-22040912157347872: the reserved-plan-lane predicate now reads the durable
   // assignment + adopted-name tables as well as live claim leases. Install their

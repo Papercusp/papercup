@@ -30,7 +30,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -162,9 +162,10 @@ beforeAll(async () => {
   // runtime path. Its durable fire latch is migration 632; without this table the
   // fail-soft emit logs a warning, and vitest-fail-on-console turns it into a red
   // unrelated to the NULL-semantics assertions.
-  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
+  // The key-fire latch resolves subscribers from event_awaits (WI-10004234), so the
+  // whole shared event substrate is needed, not just event_key_fires (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'scheduler/claim-spec-null-semantics.integration.test.ts',
-    runtimeTables: ['harness_shared.event_key_fires'],
   });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);

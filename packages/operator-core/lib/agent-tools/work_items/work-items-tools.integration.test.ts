@@ -34,7 +34,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   CARRY_NOTES_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -272,19 +272,14 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('500-agent-modes.sql')).simple();
   await db.sql.unsafe(readMigration('767-agent-modes-subject.sql')).simple();
   await db.sql.unsafe(readMigration('1032-agent-mode-goal-holder-election.sql')).simple();
-  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
-  // The handlers also exercise the shared event-await/watch machinery during
-  // lifecycle operations. Apply its canonical migrations so the integration
-  // suite validates the tool surface against the same schema as production.
-  await db.sql.unsafe(readMigration('163-await-event-subscriptions.sql')).simple();
-  // 599 adds event_awaits.superseded_at (+ causal_generation…) — the per-key fire-latch
-  // writer (events/await/store.ts recordKeyFire) filters on it, so without it every
-  // emitAwaitedEvent console.warns "column superseded_at does not exist" under
-  // vitest-fail-on-console (WI-10003618 / EI-24551293655721837 fixture-lag class).
-  await db.sql.unsafe(readMigration('599-event-announcement-generation.sql')).simple();
-  await db.sql.unsafe(readMigration('175-watch-floor-coalesce-cols.sql')).simple();
-  await db.sql.unsafe(readMigration('541-predicate-watches.sql')).simple();
-  await db.sql.unsafe(readMigration('871-lifecycle-bound-watches.sql')).simple();
+  // The handlers also exercise the shared event-await/watch machinery and the
+  // per-key fire latch during lifecycle operations. The shared event-substrate list
+  // is audited from each table's creating migration, so a missing event column
+  // fails here by name instead of as a fail-on-console warning (WI-10003618,
+  // EI-24551293655721837, WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'agent-tools/work_items/work-items-tools.integration.test.ts',
+  });
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(FLEET_MEMBERSHIP_EVENTS_DDL);
   await db.sql.unsafe(HFC_DDL);

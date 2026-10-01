@@ -14,7 +14,7 @@ import type postgres from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
@@ -164,19 +164,9 @@ beforeAll(async () => {
   // The claim path emits awaited claim/release events and arms lifecycle-bound
   // interests. Keep this throwaway DB on the event schema those side effects
   // actually use; without it, the CAS assertions are obscured by fail-soft
-  // event warnings and missing-relation errors (EI-21196424219621734).
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '387-event-wake-delivery-source.sql',
-    '533-add-event-awaits-payload-filter.sql',
-    '541-predicate-watches.sql',
-    '599-event-announcement-generation.sql',
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // event warnings and missing-relation errors (EI-21196424219621734). The shared
+  // event-substrate list is audited from creation, so it cannot fall behind (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items-claim.integration.test.ts' });
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items

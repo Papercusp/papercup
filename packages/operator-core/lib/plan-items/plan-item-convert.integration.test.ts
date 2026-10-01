@@ -21,7 +21,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
@@ -140,28 +140,13 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   // Work-item release/terminal transitions retire lifecycle-bound interest
-  // machinery. Use the production schema chain instead of a hand-rolled
-  // event_awaits stub so the conversion fixture stays faithful as watch
-  // cardinality and lifecycle columns evolve.
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '541-predicate-watches.sql',
-    // EI-13705's per-key fire latch. emitAwaitedEvent upserts one row here on EVERY
-    // real fire, so both minting ('work-item:created:<sev>') and claiming
-    // ('work-item:claimed:<id>') a work_item in this fixture reach it. Absent, the
-    // latch write throws, engine.ts logs `[await-event] …`, and vitest-fail-on-console
-    // fails every test in this file that mints or claims — measured 17 of 22.
-    // Ledger (harness_shared.test_runs): this file last PASSED 2026-08-22T01:08:52Z
-    // and had not been run again until the 2026-08-23 run that surfaced this, so the
-    // regression window is those ~27h; the causing change is NOT identified here, and
-    // the missing-table gap is the same fixture-completeness debt the event_awaits
-    // entries above were added for.
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // machinery, and minting ('work-item:created:<sev>') or claiming
+  // ('work-item:claimed:<id>') writes EI-13705's per-key fire latch. A missing event
+  // table or column made the latch write throw and vitest-fail-on-console fail every
+  // mint/claim test here (17 of 22 in 2026-08). The shared event-substrate list is
+  // audited from each table's creating migration, so the next gap fails here by name
+  // (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'plan-item-convert.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.

@@ -34,7 +34,7 @@ import { createTextCollector } from './child-output';
 import { createServer } from 'node:http';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -191,20 +191,9 @@ beforeAll(async () => {
   await db.sql.unsafe(PLAN_RUNS_DDL);
   // Terminal work-item transitions cancel lifecycle-bound awaits. Keep this
   // fixture on the same production schema chain as work-items.integration.test
-  // so a missing event table cannot masquerade as a lifecycle regression.
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '387-event-wake-delivery-source.sql',
-    '533-add-event-awaits-payload-filter.sql',
-    '541-predicate-watches.sql',
-    '572-event-await-nodes-threshold-tree.sql',
-    '599-event-announcement-generation.sql',
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // so a missing event table cannot masquerade as a lifecycle regression. The shared
+  // event-substrate list is audited from creation, so it cannot fall behind (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items-lifecycle.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(readMigration('1219-blueprint-operation-invocations.sql')).simple();
   await db.sql.unsafe(readMigration('1223-blueprint-operation-event-replay.sql')).simple();
@@ -268,9 +257,9 @@ beforeAll(async () => {
   `;
   await db.sql.unsafe(readMigration('1214-work-item-completion-event-intent.sql')).simple();
   // The completion event runs through the current await writer. Keep its
-  // composed-row and fired-delivery-intent columns in this isolated database.
+  // composed-row index in this isolated database; the fired-delivery-intent column
+  // (1216) already came from the shared event-substrate list in beforeAll.
   await db.sql.unsafe(readMigration('1215-event-await-delivery-intent-recovery-index.sql')).simple();
-  await db.sql.unsafe(readMigration('1216-event-await-fired-delivery-intent-marker.sql')).simple();
   // WI-10004562 / D-045: receipts record the work item's storage slug.
   await db.sql.unsafe(readMigration('1282-blueprint-receipt-target-harness-slug.sql')).simple();
   const after1214 = await db.sql<{ intent: string | null }[]>`

@@ -203,6 +203,7 @@ beforeAll(async () => {
       '777-work-items-embedding-recipe-discriminator.sql',
       '1110-work-items-admission-flags-generated-columns.sql',
       '1135-work-items-epoch-ms-timestamp-guard.sql',
+      '1194-work-items-directive-ref.sql',
     ],
   });
 }, 120_000);

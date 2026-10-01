@@ -31,7 +31,7 @@ import { unwrapToolResult, type ToolResult } from '@papercusp/tooldef';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
@@ -261,13 +261,10 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(FIXTURE_DDL).simple();
-  for (const migration of [
-    '163-await-event-subscriptions.sql', '175-watch-floor-coalesce-cols.sql',
-    '387-event-wake-delivery-source.sql', '533-add-event-awaits-payload-filter.sql',
-    '541-predicate-watches.sql', '572-event-await-nodes-threshold-tree.sql',
-    '599-event-announcement-generation.sql', '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) await db.sql.unsafe(readMigration(migration)).simple();
+  // Shared, audited event-substrate list (WI-10004700); it includes 1216.
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'blueprint/operation-docs-examples.integration.test.ts',
+  });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(readMigration('1219-blueprint-operation-invocations.sql')).simple();
   await db.sql.unsafe(readMigration('1223-blueprint-operation-event-replay.sql')).simple();
@@ -277,7 +274,6 @@ beforeAll(async () => {
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   await db.sql.unsafe(readMigration('1214-work-item-completion-event-intent.sql')).simple();
   await db.sql.unsafe(readMigration('1215-event-await-delivery-intent-recovery-index.sql')).simple();
-  await db.sql.unsafe(readMigration('1216-event-await-fired-delivery-intent-marker.sql')).simple();
   // WI-10004562 / D-045: receipts record the work item's storage slug.
   await db.sql.unsafe(readMigration('1282-blueprint-receipt-target-harness-slug.sql')).simple();
   await db.sql.unsafe(`
