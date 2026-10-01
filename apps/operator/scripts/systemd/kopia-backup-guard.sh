@@ -238,8 +238,10 @@ exec 9>>"$lock_path" || exit 73
 umask "$lock_umask"
 
 priority_request_path=
+priority_due_path=
 cleanup_priority_request() {
   [ -z "$priority_request_path" ] || rm -f "$priority_request_path" 2>/dev/null || true
+  [ -z "$priority_due_path" ] || rm -f "$priority_due_path" 2>/dev/null || true
 }
 
 # A restart-safe holder that YIELDS to a priority waiter stamps this note just
@@ -268,24 +270,50 @@ take_handoff_note() {
 # next work, and a single multi-hour `kopia snapshot create` otherwise leaves
 # the hourly DB backup parked indefinitely. The marker is adjacent to the
 # shared lock so user and root guards use the same request namespace.
+#
+# A scheduled waiter also publishes WHEN its own staleness floor arms, in a
+# sibling .due file (WI-10004741). An OVERDUE restart-safe holder keeps the lock
+# until that instant instead of yielding at once (see has_live_priority_waiter).
+# Measured 2026-10-01: with the hourly dump preempting it, the hot sweep went from
+# 23:50Z to past 09:30Z without one finished run, each attempt stopped 5s-37min in
+# by a dump that was not itself late. Waiting until the dump's floor never holds
+# the dump past the point where its own override would force it through anyway.
+# The .due is written BEFORE the .wait marker, so a holder never sees a marker
+# without its deadline. A marker with no .due -- a wait-mode producer, an
+# unknown baseline, or a guard from before this change -- counts as due now.
 register_priority_request() {
+  local base due
   priority_request_path="${lock_path}.${state_key}.$$.wait"
+  priority_due_path=
+  trap cleanup_priority_request EXIT
+  if [ "$mode" = scheduled ] && base=$(read_stamp "$deadline_base_path"); then
+    due=$(awk -v base="$base" -v defer="$max_defer" 'BEGIN { printf "%d", base + defer }')
+    priority_due_path="${lock_path}.${state_key}.$$.due"
+    printf '%s\n' "$due" >"$priority_due_path" 2>/dev/null || priority_due_path=
+  fi
   if ! printf '%s\n' "$$" >"$priority_request_path" 2>/dev/null; then
     priority_request_path=
     return 0
   fi
-  trap cleanup_priority_request EXIT
 }
 
 # Validate the marker's owner before honoring it. A SIGKILL can bypass the EXIT
 # trap, and a stale PID must never make every scheduled snapshot self-cancel.
+#
+# A holder whose own staleness floor armed this cycle (pressure_escalated) is
+# itself overdue, so it honors a waiter only once that waiter is due as well:
+# its .due deadline has passed, or it published none (see
+# register_priority_request). A holder that is not overdue honors every live
+# waiter at once, exactly as before. Declining is logged once per waiter.
+not_due_waiter_logged=
 has_live_priority_waiter() {
-  local request pid cmd
+  local request pid cmd due_path due
   for request in "${lock_path}".*.wait; do
     [ -f "$request" ] || continue
+    due_path="${request%.wait}.due"
     pid=$(cat "$request" 2>/dev/null || true)
     if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ ! -r "/proc/$pid/cmdline" ]; then
-      rm -f "$request" 2>/dev/null || true
+      rm -f "$request" "$due_path" 2>/dev/null || true
       continue
     fi
     cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
@@ -294,9 +322,17 @@ has_live_priority_waiter() {
     # the lock while the recovery-point-critical DB dump is already waiting.
     if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ||
           "$cmd" == *kopia-backup-guard.sh*--mode\ scheduled* ]]; then
+      if [ "$pressure_escalated" = 1 ] && due=$(read_stamp "$due_path") &&
+        awk -v now="$(date +%s)" -v due="$due" 'BEGIN { exit !(now < due) }'; then
+        if [ "$not_due_waiter_logged" != "$request" ]; then
+          not_due_waiter_logged="$request"
+          guard_log "result=holding-against-priority-waiter reason=holder-overdue waiter=${request##*/} waiter_due_in_sec=$(( ${due%.*} - $(date +%s) )) $staleness_override_reason"
+        fi
+        continue
+      fi
       return 0
     fi
-    rm -f "$request" 2>/dev/null || true
+    rm -f "$request" "$due_path" 2>/dev/null || true
   done
   return 1
 }

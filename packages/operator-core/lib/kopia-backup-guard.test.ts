@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -1151,6 +1152,10 @@ describe('Kopia managed entrypoint contract', () => {
     // case the retry exists for, so the next tick must be free to override again.
     const { dir, env } = fixture();
     seedDeadlineBase(dir, 'hot', 25_200);
+    // The dump is overdue too, so its published deadline has passed and the overdue
+    // sweep yields at once (WI-10004741). A dump that is not yet due is held until it
+    // is: see 'keeps an overdue hot sweep running until a waiting dump is itself due'.
+    seedDeadlineBase(dir, 'db-dump', 25_200);
     const scenario = spawnSync(
       'bash',
       [
@@ -1166,6 +1171,7 @@ describe('Kopia managed entrypoint contract', () => {
         [ "$?" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 93
         grep -q 'result=staleness-override-armed' "$HOT_LOG" || exit 94
         grep -q 'result=escalation-refunded reason=priority-waiter shared-guard handoff' "$HOT_LOG" || exit 95
+        ! grep -q 'reason=holder-overdue' "$HOT_LOG" || exit 96
         `,
       ],
       {
@@ -1186,6 +1192,103 @@ describe('Kopia managed entrypoint contract', () => {
     expect(next.stdout).toContain('result=admitted-despite-pressure reason=memory-pressure');
     expect(next.stdout).not.toContain('escalation_retry_in_sec');
     expect(existsSync(marker)).toBe(true);
+  });
+
+  // WI-10004741 defect 2. Measured 2026-10-01: an hours-overdue hot sweep yielded at
+  // once to every hourly dump, none of which was itself late, and no hot sweep
+  // finished from 23:50Z until past 09:30Z. An overdue holder now keeps the lock until
+  // the waiter's own floor arms (its published .due), and yields then.
+  it('keeps an overdue hot sweep running until a waiting dump is itself due, then yields', () => {
+    const fx = fixture();
+    const { dir } = fx;
+    const env = { ...fx.env, KOPIA_BACKUP_MAX_DEFER_SEC: '10' };
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', 3), 'utf8').trim());
+    const dueEpoch = dumpBase + 10;
+    const hotLog = join(dir, 'hot.log');
+    const dbLog = join(dir, 'db.log');
+    const dbRan = join(dir, 'db-ran');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for _ in $(seq 1 400); do sleep 0.05; done' _ "$HOT_READY" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- bash -c 'date +%s.%N >"$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        echo "db_rc=$db_rc hot_rc=$hot_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, HOT_READY: join(dir, 'hot-ready'), HOT_LOG: hotLog, DB_LOG: dbLog, DB_RAN: dbRan },
+        timeout: 30_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    const dbOut = existsSync(dbLog) ? readFileSync(dbLog, 'utf8') : 'missing';
+    const evidence = `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}\ndb guard:\n${dbOut}`;
+
+    expect(scenario.stdout, evidence).toContain(`db_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    // The sweep is overdue and the dump is not: the dump queues without arming its floor.
+    expect(hotOut, evidence).toContain('result=staleness-override-armed');
+    expect(dbOut, evidence).toContain('result=waiting reason=priority-on-contention');
+    expect(dbOut, evidence).not.toContain('result=staleness-override-armed');
+    // The sweep declines exactly once, naming the waiter and how long until it is due.
+    const declined = hotOut.match(
+      /result=holding-against-priority-waiter reason=holder-overdue waiter=global\.lock\.db-dump\.\d+\.wait waiter_due_in_sec=(\d+) /g,
+    );
+    expect(declined, evidence).toHaveLength(1);
+    // ...then yields once the dump is due, not before and not at its own end.
+    expect(hotOut, evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(hotOut, evidence).toContain('result=escalation-refunded');
+    expect(Number(readFileSync(dbRan, 'utf8').trim()), evidence).toBeGreaterThanOrEqual(dueEpoch);
+    expect(
+      readdirSync(dir).filter((name) => /\.(wait|due)$/.test(name)),
+      evidence,
+    ).toEqual([]);
+  });
+
+  it('yields an overdue hot sweep at once to a waiter that publishes no deadline', () => {
+    // Calibration for the hold above: a wait-mode producer (the daily home snapshot),
+    // a waiter with no baseline, and a guard from before WI-10004741 all write a marker
+    // with no .due. Each counts as due now, so even an overdue sweep yields at once.
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const hotLog = join(dir, 'hot.log');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for _ in $(seq 1 400); do sleep 0.05; done' _ "$HOT_READY" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode wait --label daily-home-vm -- touch "$WAIT_RAN" >/dev/null 2>&1 || exit 92
+        wait "$hot"
+        [ "$?" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 93
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, HOT_READY: join(dir, 'hot-ready'), HOT_LOG: hotLog, WAIT_RAN: join(dir, 'wait-ran') },
+        timeout: 10_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}`).toBe(0);
+    expect(hotOut).toContain('result=staleness-override-armed');
+    expect(hotOut).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(hotOut).not.toContain('reason=holder-overdue');
+    expect(existsSync(join(dir, 'wait-ran'))).toBe(true);
   });
 
   it('keeps the escalation spent when an override cycle ends on its own', () => {
