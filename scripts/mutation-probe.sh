@@ -429,7 +429,7 @@ ptool_json() {
 }
 
 verify_sweep_fence() {
-  local lock_root lock_path queue_args presence_json owner_id queue_json file_lock_id heartbeat_args heartbeat_json
+  local lock_root lock_path queue_args presence_json owner_id queue_json file_lock_id heartbeat_args heartbeat_json heartbeat_excerpt
   local superproject_root harness_scope resource lock_list_args lock_list_json minimum_resource_ms
   [ -n "${PAPERCUSP_SID:-}" ] || die "--sweep-lock-held requires the active Papercusp session id (PAPERCUSP_SID); use copy-out mode instead."
   [ "$GUARD_MAX_SEC" -gt 0 ] && [ "$GUARD_MAX_SEC" -le 600 ] \
@@ -455,8 +455,11 @@ verify_sweep_fence() {
   # A real pick: dispatch refuses an empty projection ('{}') as projection_invalid.
   heartbeat_json="$(ptool_json locks:heartbeat "$heartbeat_args" '{"pick":["results[].lock_id","results[].extended"]}')" \
     || die "could not extend the verified file lock; refusing an unverified in-tree mutation."
-  printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=process.argv[1];const walk=v=>{if(!v)return false;if(typeof v==="string"){try{return walk(JSON.parse(v))}catch{return false}}if(Array.isArray(v))return v.some(walk);if(typeof v==="object"){if(v.lock_id===id&&v.extended===true)return true;return Object.values(v).some(walk)}return false};if(!walk(JSON.parse(s)))process.exit(1)}catch{process.exit(2)}})' "$file_lock_id" \
-    || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
+  if ! printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=process.argv[1];const walk=v=>{if(!v)return false;if(typeof v==="string"){try{return walk(JSON.parse(v))}catch{return false}}if(Array.isArray(v))return v.some(walk);if(typeof v==="object"){if(v.lock_id===id&&v.extended===true)return true;return Object.values(v).some(walk)}return false};if(!walk(JSON.parse(s)))process.exit(1)}catch{process.exit(2)}})' "$file_lock_id"; then
+    heartbeat_excerpt="$(printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(s.replace(/\s+/g," ").slice(0,400)))')"
+    log "file-lock heartbeat response did not confirm ownership (first 400 chars): $heartbeat_excerpt"
+    die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
+  fi
   log "verified this session's live file lock for $lock_path"
 
   # EI-24712906810240170: the file lock IS the whole sweep fence, in every repository.

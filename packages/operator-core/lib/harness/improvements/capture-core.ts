@@ -2445,13 +2445,19 @@ export async function captureImprovement(
   // Key-aware title net (watchdog-audit P-004 / D-001): a candidate carrying a
   // DIFFERENT watchdogKey is a different signal — nested-path red-test titles
   // token-subset each other and used to false-classify. A candidate WITHOUT a key
-  // stays in the net (legacy items + agent captures).
+  // stays in the net for ordinary captures (legacy items + agent captures).
   const candidateById = new Map(candidates.map((i) => [i.id, i]));
   const candidateKeyOf = (id: string): string | null => {
     const p = candidateById.get(id)?.payload;
     const k = p && typeof p === 'object' ? (p as Record<string, unknown>).watchdogKey : undefined;
     return typeof k === 'string' ? k : null;
   };
+  // A directly-evidenced tool failure already carries an exact watchdog identity.
+  // A keyless legacy candidate is not evidence of that failure, so it may remain
+  // advisory in possibleDuplicates but cannot block or burst-coalesce this report.
+  // Exact-key lookup/coalescing ran above and continues to own repeated failures.
+  const directEvidenceToolFailure =
+    incomingProbation?.state === 'promoted' && incomingProbation.directEvidence === true;
 
   // ─── P-004: keyless non-observation titleKey fold ─────────────────────────────
   // A recurring non-observation capture that supplies no watchdogKey has NO
@@ -2568,12 +2574,14 @@ export async function captureImprovement(
     // neither carve-out applies to it.
     (d) => d.exactKey === true || ((softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment'),
   );
-  const compatible = input.watchdogKey
-    ? blockEligible.filter((d) => {
-        const ck = candidateKeyOf(d.id);
-        return ck == null || ck === input.watchdogKey;
-      })
-    : blockEligible;
+  const compatible = directEvidenceToolFailure
+    ? blockEligible.filter((d) => candidateKeyOf(d.id) === input.watchdogKey)
+    : input.watchdogKey
+      ? blockEligible.filter((d) => {
+          const ck = candidateKeyOf(d.id);
+          return ck == null || ck === input.watchdogKey;
+        })
+      : blockEligible;
 
   let blockingDuplicates: PossibleDuplicate[];
   let declineReason: 'likely-duplicate' | 'stale-evidence' = 'likely-duplicate';
@@ -2620,6 +2628,7 @@ export async function captureImprovement(
   let queueAdmission: IssueAdmissionPressure | undefined;
   const burstCandidates = possibleDuplicates.filter((candidate) => {
     if (candidate.semantic !== 'soft' || candidate.state !== 'open') return false;
+    if (directEvidenceToolFailure) return candidateKeyOf(candidate.id) === input.watchdogKey;
     if (!input.watchdogKey) return true;
     const candidateKey = candidateKeyOf(candidate.id);
     return candidateKey == null || candidateKey === input.watchdogKey;

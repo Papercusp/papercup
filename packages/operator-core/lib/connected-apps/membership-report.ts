@@ -56,12 +56,17 @@ function normalizedEmails(values: readonly unknown[]): string[] | null {
   return [...out].sort();
 }
 
-/** Pure: build the frame for an organization and its removed members' addresses. */
-export function membershipReportFrame(organizationId: string, emails: readonly string[]): MembershipReport | null {
-  if (!organizationId || emails.length > MEMBERSHIP_REPORT_MAX_EMAILS) return null;
-  const removedEmails = normalizedEmails(emails);
+/** Shared by both entry points: `normalizedEmails` validates each value at runtime. */
+function frameFromValues(organizationId: string, values: readonly unknown[]): MembershipReport | null {
+  if (!organizationId || values.length > MEMBERSHIP_REPORT_MAX_EMAILS) return null;
+  const removedEmails = normalizedEmails(values);
   if (!removedEmails) return null;
   return { type: MEMBERSHIP_REPORT_FRAME_TYPE, organizationId, removedEmails };
+}
+
+/** Pure: build the frame for an organization and its removed members' addresses. */
+export function membershipReportFrame(organizationId: string, emails: readonly string[]): MembershipReport | null {
+  return frameFromValues(organizationId, emails);
 }
 
 /**
@@ -74,7 +79,7 @@ export function parseMembershipReport(value: unknown): MembershipReport | null {
   if (frame.type !== MEMBERSHIP_REPORT_FRAME_TYPE) return null;
   if (typeof frame.organizationId !== 'string' || !frame.organizationId || frame.organizationId.length > 128) return null;
   if (!Array.isArray(frame.removedEmails)) return null;
-  return membershipReportFrame(frame.organizationId, frame.removedEmails as unknown[]);
+  return frameFromValues(frame.organizationId, frame.removedEmails);
 }
 
 type SqlClient = ReturnType<typeof getOrgPg>['sql'];

@@ -1,0 +1,1704 @@
+{
+  "formatVersion": 1,
+  "workItem": "WI-10004537",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "status": "initial-independent-cohort-measured-power-unresolved",
+  "p003Complete": false,
+  "artifactPathConvention": "Paths beginning ~/ resolve against the executing account home; immutable hashes identify private artifacts.",
+  "measuredAt": "2026-10-01T12:31:07.990Z",
+  "sourceCommit": "f3e4afe03b4e4fcac1368b7e32bb4620045f5a5c",
+  "labelAuthority": "independent-blind-before-inference",
+  "scoringPartition": "test",
+  "calibrationExcludedFromComparisons": true,
+  "decision": {
+    "mrrMargin": 0.03,
+    "primaryUnit": "source-target-component",
+    "bootstrapSeed": 10004537,
+    "bootstrapIterations": 20000,
+    "marginResolvedAcrossPromisedPositiveClasses": false,
+    "fullAccessibleSourceCensusExhausted": false,
+    "adoptionSuperiorityEstablished": false
+  },
+  "manifest": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v1.json",
+    "sha256": "14a7e80fbc44d257070001fd94df4a98510d387a5a175c8b77ebfa051531fd1d",
+    "bytes": 101591
+  },
+  "pairAnalysis": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/all-three-arm-paired-v1.json",
+    "sha256": "337a5caf6238589e9d0cbf886f2924932b3474dc726b44b5fe64092657e99923",
+    "bytes": 86243
+  },
+  "sourceFiles": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+      "sha256": "33f67014ff2695799c447066085274b1559df1ed086c510f6e95d05476f9a550",
+      "bytes": 46288
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "sha256": "bccaeb52cecf997605a6fc26164cf82292b6b9c0a87b0b1f3942ac7db6a240e8",
+      "bytes": 27735
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+      "sha256": "8a7252c607bb5d042964a0c98dbaf54413ff6c99be122af66814663b527c94ac",
+      "bytes": 13389
+    }
+  ],
+  "sourceIdentity": "All three loaded evaluator/helper source hashes also match the historical sourceCommit; auto-commit movement is not substituted for loaded content.",
+  "corpora": {
+    "memory": {
+      "documents": 512,
+      "labelQueries": 36,
+      "heldoutPositiveQueries": 15,
+      "heldoutNegativeQueries": 5,
+      "calibrationQueries": 16,
+      "modelScores": {
+        "mdenseon": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 0.8,
+              "mrr_at_10": 0.8
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.9333,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 0.9333,
+              "mrr_at_10": 0.9333
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.5327,
+            "hardNegTop1Mean": 0.4899,
+            "margin": 0.0428
+          }
+        },
+        "gemma": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.9333,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.9467
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.84
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.7296,
+            "hardNegTop1Mean": 0.6593,
+            "margin": 0.0703
+          }
+        },
+        "harrier": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 0.8,
+              "mrr_at_10": 0.8
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.8667,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 0.9333,
+              "mrr_at_10": 0.9
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.9
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.6527,
+            "hardNegTop1Mean": 0.6191,
+            "margin": 0.0336
+          }
+        }
+      },
+      "comparisons": {
+        "harrier-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.09999999999999998,
+                  "lower": 0,
+                  "upper": 0.3,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.15,
+                "mde80": 0.25080001645031824,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8,
+                "meanB": 0.8,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 1,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 0.9333333333333333,
+                "delta": {
+                  "point": 0.033333333333333326,
+                  "lower": 0,
+                  "upper": 0.09999999999999998,
+                  "ci": 0.95
+                },
+                "rho": 0.875,
+                "halfWidth": 0.04999999999999999,
+                "mde80": 0.0836000054834224,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 0.8,
+                "candidateMrr": 0.8,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8,
+                  "meanB": 0.8,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 1,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9,
+                "candidateMrr": 0.9333,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9,
+                  "meanB": 0.9333333333333333,
+                  "delta": {
+                    "point": 0.033333333333333326,
+                    "lower": 0,
+                    "upper": 0.1,
+                    "ci": 0.95
+                  },
+                  "rho": 0.8882347881956884,
+                  "halfWidth": 0.05,
+                  "mde80": 0.09035474056839199,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8667,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 14,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta 0.0333 MRR, 95% CI [0, 0.1]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 0.9,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.9,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.09999999999999998,
+                    "lower": 0,
+                    "upper": 0.3,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.15,
+                  "mde80": 0.2528014056134307,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "lexical-gap: UNDERPOWERED — delta 0.1 MRR, 95% CI [0, 0.3]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "gemma-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 0.8,
+                "delta": {
+                  "point": -0.19999999999999996,
+                  "lower": -0.6,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.3,
+                "mde80": 0.4992921296103148,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8400000000000001,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.15999999999999992,
+                  "lower": 0,
+                  "upper": 0.4800000000000001,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.24000000000000005,
+                "mde80": 0.3997965629785437,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9466666666666667,
+                "meanB": 0.9333333333333333,
+                "delta": {
+                  "point": -0.013333333333333308,
+                  "lower": -0.2,
+                  "upper": 0.15999999999999998,
+                  "ci": 0.95
+                },
+                "rho": -0.25,
+                "halfWidth": 0.18,
+                "mde80": 0.238107097604228,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "gemma",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 0.8,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 0.8,
+                  "delta": {
+                    "point": -0.19999999999999996,
+                    "lower": -0.6,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.3,
+                  "mde80": 0.5086366790580488,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 0,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "exact-identifier: UNDERPOWERED — delta -0.2 MRR, 95% CI [-0.6, 0]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9467,
+                "candidateMrr": 0.9333,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9466666666666667,
+                  "meanB": 0.9333333333333333,
+                  "delta": {
+                    "point": -0.013333333333333308,
+                    "lower": -0.2,
+                    "upper": 0.16000000000000003,
+                    "ci": 0.95
+                  },
+                  "rho": -0.07142857142857142,
+                  "halfWidth": 0.18000000000000002,
+                  "mde80": 0.23631603709994142,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.9333,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 1,
+                  "concordant": 13,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta -0.0133 MRR, 95% CI [-0.2, 0.16]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 0.84,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8400000000000001,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.15999999999999992,
+                    "lower": 0,
+                    "upper": 0.4800000000000001,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.24000000000000005,
+                  "mde80": 0.4007453395321342,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "session-start-intent: UNDERPOWERED — delta 0.16 MRR, 95% CI [0, 0.48]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              }
+            }
+          }
+        },
+        "harrier-to-gemma": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.09999999999999998,
+                  "lower": 0,
+                  "upper": 0.3,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.15,
+                "mde80": 0.25080001645031824,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.19999999999999996,
+                  "lower": 0,
+                  "upper": 0.6,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.3,
+                "mde80": 0.4992921296102638,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 0.8400000000000001,
+                "delta": {
+                  "point": -0.15999999999999992,
+                  "lower": -0.4800000000000001,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.24000000000000005,
+                "mde80": 0.399796562978527,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 0.9466666666666667,
+                "delta": {
+                  "point": 0.046666666666666634,
+                  "lower": -0.12666666666666665,
+                  "upper": 0.21333333333333337,
+                  "ci": 0.95
+                },
+                "rho": -0.375,
+                "halfWidth": 0.17,
+                "mde80": 0.2494032051071987,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "gemma",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 0.8,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.19999999999999996,
+                    "lower": 0,
+                    "upper": 0.6,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.3,
+                  "mde80": 0.5086366790580737,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "exact-identifier: UNDERPOWERED — delta 0.2 MRR, 95% CI [0, 0.6]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9,
+                "candidateMrr": 0.9467,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9,
+                  "meanB": 0.9466666666666667,
+                  "delta": {
+                    "point": 0.046666666666666634,
+                    "lower": -0.12666666666666668,
+                    "upper": 0.23333333333333334,
+                    "ci": 0.95
+                  },
+                  "rho": -0.09869275424396533,
+                  "halfWidth": 0.18,
+                  "mde80": 0.25112200658903816,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8667,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 2,
+                  "concordant": 12,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta 0.0467 MRR, 95% CI [-0.1267, 0.2333]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 0.9,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.9,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.09999999999999998,
+                    "lower": 0,
+                    "upper": 0.3,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.15,
+                  "mde80": 0.2528014056134307,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "lexical-gap: UNDERPOWERED — delta 0.1 MRR, 95% CI [0, 0.3]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 0.84,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 0.8400000000000001,
+                  "delta": {
+                    "point": -0.15999999999999992,
+                    "lower": -0.4800000000000001,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.24000000000000005,
+                  "mde80": 0.40074533953211944,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 0,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "session-start-intent: UNDERPOWERED — delta -0.16 MRR, 95% CI [-0.48, 0]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              }
+            }
+          }
+        }
+      }
+    },
+    "prose": {
+      "documents": 515,
+      "labelQueries": 32,
+      "heldoutPositiveQueries": 6,
+      "heldoutNegativeQueries": 2,
+      "calibrationQueries": 24,
+      "modelScores": {
+        "mdenseon": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.514,
+            "hardNegTop1Mean": 0.4289,
+            "margin": 0.0851
+          }
+        },
+        "gemma": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.7149,
+            "hardNegTop1Mean": 0.6232,
+            "margin": 0.0917
+          }
+        },
+        "harrier": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.6533,
+            "hardNegTop1Mean": 0.5595,
+            "margin": 0.0938
+          }
+        }
+      },
+      "comparisons": {
+        "harrier-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "gemma-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "gemma",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "harrier-to-gemma": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "gemma",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "validation": {
+    "unitTests": {
+      "runId": "64a73ce8-b53c-4cad-ace9-d099e5496a0d",
+      "testRunIds": [
+        20383726,
+        20383727,
+        20383728
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "files": 3
+    },
+    "typecheck": {
+      "passed": true,
+      "namedFiles": 5,
+      "typeReferencingFiles": 58,
+      "directImporters": 3,
+      "errors": 0,
+      "log": "b77e04ba-f4f",
+      "at": "2026-10-01T11:51:48.999Z"
+    },
+    "modelCells": {
+      "requested": 6,
+      "completed": 6,
+      "exitCode": 0,
+      "driver": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/driver.json",
+        "sha256": "8d6d66cc74e149d5286df3441f76b3d2125f0188b1695af8d0dabfc0abfa0770",
+        "bytes": 667
+      },
+      "artifacts": [
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-mdenseon.json",
+          "sha256": "08c1e5984e1aa284b2689d0cc3823ad07d0630e77a22d1c67f6951995b92065f",
+          "bytes": 70294
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-mdenseon.vectors.json",
+          "sha256": "5d4d9a4ce33ad346754a3bb3ebbb1935cbc3825889d122f4afde0586318f94d5",
+          "bytes": 8919725
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-gemma.json",
+          "sha256": "c2ff666cac49c0215cbf17396be569af252298f85825e8028991f2c33ef31bae",
+          "bytes": 69989
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-gemma.vectors.json",
+          "sha256": "9694cc90af595a688267c53c4287a965b31c304c3ec19daa1bacab35fe8acf44",
+          "bytes": 8994272
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-harrier.json",
+          "sha256": "8913737ffb9c07d729b3c89cd0b69575fedbca1bd213eb5de424b680027f556e",
+          "bytes": 70014
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-harrier.vectors.json",
+          "sha256": "efe9d3d631be1ad2cc5b340a00dab411c258cce68f4685c9b20b395f2cf0e64c",
+          "bytes": 11923626
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-mdenseon.json",
+          "sha256": "425b053b09c37f1869f893a227c43c3e37cf1f148b5be4b651b79a5921d594b3",
+          "bytes": 98324
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-mdenseon.vectors.json",
+          "sha256": "2b8de8db7a2aac65294ed5386692c8de8dcf141fa9145127ae3c4f9264de1f67",
+          "bytes": 8928717
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-gemma.json",
+          "sha256": "010426e8c479b4e52e19f41714005c41a42fcd3c5048bacab329b0c22070a0bd",
+          "bytes": 98039
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-gemma.vectors.json",
+          "sha256": "2e9e232f8782531ae695eb1c4bde399dc97e7641ff8729e0f2c822a71112571b",
+          "bytes": 8992708
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-harrier.json",
+          "sha256": "660b003795619a37c6f447250c18274a25740dcf6051ffde4eab3f5a32829682",
+          "bytes": 98057
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-harrier.vectors.json",
+          "sha256": "0a975ba0af243efd5e92c58f202f20061ac5b244eab77be21bda4f8ad4ac4231",
+          "bytes": 11927147
+        }
+      ]
+    },
+    "independentJudgmentAudit": "docs/evidence/mdenseon-blind-numeric-repair-2026-10-01.json"
+  },
+  "expansion": {
+    "targetsPerPartition": 32,
+    "status": "failed-provider-rate-limit",
+    "exitCode": 1,
+    "recoveredAuthorReferences": 16,
+    "newJudgmentsProduced": false,
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-targets32",
+    "log": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-targets32.log",
+      "sha256": "d01dfff8ed8e4bd15110e017aac0c0206c7e1c02aaf6a56f3b958a5cdeb7cc16",
+      "bytes": 7490
+    },
+    "ownedFollowup": "EI-24778746019586062",
+    "providerError": "429 rate_limit_error; first new author invocation failed after existing bounded retry policy; original labels unchanged"
+  },
+  "limitations": [
+    "Memory has five accepted heldout source targets; prose has two. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
+    "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
+    "The larger full accessible source census remains unexhausted and provider-limited expansion did not produce new labels.",
+    "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
+    "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
+  ],
+  "next": "Continue P-005/P-006 non-LLM measurements and full P-004 preparation. Resume stronger blind power collection only through the unchanged independent judging contract when transport serves; preserve previous authored inputs/receipt IDs and failed expansion.",
+  "reproduction": {
+    "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
+    "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",
+    "rerunPolicy": "New runId/output root for another inference attempt; do not overwrite immutable cell outputs."
+  }
+}

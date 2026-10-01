@@ -10,8 +10,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const {
+  ADMISSION_REVIEW_MOOT_OUTCOME,
   admissionPairKey,
   applyReviewedAdmissionCleanup,
+  closeMootAdmissionReviews,
   judgedPairsMissingAdjudication,
   persistAdmissionPlan,
   previewReviewedAdmissionCleanup,
@@ -20,6 +22,7 @@ const {
   readWorkItemAdmissionSnapshot,
   readWorkItemAdmissionProducerPressure,
   readWorkItemReadinessProjection,
+  readPromoterLiveness,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -2614,5 +2617,254 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     // the KNOWN behaviour (both writers only ever stamp non-empty, per dedup-candidates-
     // stamp.ts's contract) rather than left for a reader to rediscover by surprise.
     expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
+  });
+});
+
+// WI-10004725 / plan work-queue-bulk-cleanup-remediation-2026-10-01 P-007. Measured 2026-10-01:
+// 1,084 of papercusp's 2,176 fail-open rows still "owed" a duplication review although their item
+// was already terminal, and the LLM spend pause stopped the only path that promotes rows without a
+// model, so the debt could only grow.
+describe('review-debt policy (P-007): moot terminal reviews and the no-model pass', () => {
+  const PENDING_REVIEW = {
+    admissionFailOpen: { reason: 'pending-age-exceeded-two-promoter-ticks' },
+    admissionReview: {
+      state: 'pending',
+      enteredAt: '2026-08-26T10:00:00Z',
+      reviewDueAt: '2026-08-26T11:00:00Z',
+      retryOwner: 'system:work-item-admission-promoter',
+      retryAttempts: 0,
+      alert: { key: 'work-item-admission-review-debt', state: 'open' },
+    },
+  };
+
+  async function reviewRow(id: string) {
+    const [row] = await db.sql<Array<{ admission: string; status: string; payload: Record<string, any> }>>`
+      SELECT admission, status, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return row!;
+  }
+
+  it('closes a terminal row\'s owed review as review-moot with a reason, and leaves open rows owing it', async () => {
+    await seedItem({ id: 'WI-moot-done', admission: 'unreviewed', status: 'done', vector: null, payload: PENDING_REVIEW });
+    // No admissionReview block at all: an unreviewed row with an absent state still owes review.
+    await seedItem({ id: 'WI-moot-implicit', admission: 'unreviewed', status: 'dropped', vector: null });
+    await seedItem({ id: 'WI-still-open', admission: 'unreviewed', status: 'open', vector: null, payload: PENDING_REVIEW });
+    // Already reviewed: the sweep must never rewrite a finished review.
+    await seedItem({
+      id: 'WI-reviewed-done',
+      admission: 'admitted',
+      status: 'done',
+      vector: null,
+      payload: { admissionReview: { state: 'reviewed', retryAttempts: 1, reviewedBy: 'system:work-item-admission-promoter' } },
+    });
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-review-moot',
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(result.reviewMoot).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: false });
+    // Closed BEFORE the debt census, so the census reports the real remaining debt.
+    expect(result.reviewDebt).toMatchObject({ pending: 1, terminal: 2, reReviewed: 1 });
+
+    const done = await reviewRow('WI-moot-done');
+    expect(done).toMatchObject({
+      admission: 'admitted',
+      status: 'done',
+      payload: {
+        // Fail-open provenance survives the close.
+        admissionFailOpen: { reason: 'pending-age-exceeded-two-promoter-ticks' },
+        admissionReview: {
+          state: 'terminal',
+          terminalOutcome: ADMISSION_REVIEW_MOOT_OUTCOME,
+          reviewedBy: 'system:work-item-admission-fail-open',
+          retryAttempts: 0,
+          alert: { key: 'work-item-admission-review-debt', state: 'cleared' },
+        },
+      },
+    });
+    expect(done.payload.admissionReview.mootReason).toContain('item was already done');
+    const implicit = await reviewRow('WI-moot-implicit');
+    expect(implicit.payload.admissionReview).toMatchObject({ state: 'terminal', terminalOutcome: 'review-moot' });
+    expect(implicit.payload.admissionReview.mootReason).toContain('item was already dropped');
+
+    expect(await reviewRow('WI-still-open')).toMatchObject({
+      admission: 'unreviewed',
+      payload: { admissionReview: { state: 'pending', alert: { state: 'open' } } },
+    });
+    expect((await reviewRow('WI-reviewed-done')).payload.admissionReview).toEqual({
+      state: 'reviewed',
+      retryAttempts: 1,
+      reviewedBy: 'system:work-item-admission-promoter',
+    });
+
+    // The per-tick trend is durable on the ledger, beside reviewDebt.
+    const [ledger] = await db.sql<Array<{ detail: Record<string, any> }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'fail-open-review-moot'`;
+    expect(ledger!.detail.reviewMoot).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: false });
+  });
+
+  it('follows the fail-open scope: a workspace tick reaches a neighbour harness, a harness tick does not', async () => {
+    await seedItem({ id: 'WI-home-done', admission: 'unreviewed', status: 'done', vector: null });
+    await seedItem({ id: 'WI-email-done', admission: 'unreviewed', status: 'done', vector: null, harness: 'email' });
+    await seedItem({
+      id: 'WI-other-tenant-done',
+      admission: 'unreviewed',
+      status: 'done',
+      vector: null,
+      workspaceId: 'some-other-workspace',
+    });
+
+    const harnessTick = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-moot-harness',
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+    expect(harnessTick.reviewMoot).toEqual({ closed: 1, byHarness: { [HARNESS]: 1 }, truncatedByLimit: false });
+    expect((await db.sql`SELECT admission FROM harness_shared.work_items WHERE harness_slug = 'email'`)[0]).toEqual({
+      admission: 'unreviewed',
+    });
+
+    const workspaceTick = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-moot-workspace',
+      sql: db.sql,
+      now: () => NOW,
+      scope: 'workspace',
+      onNewlyAdmitted: async () => {},
+    });
+    expect(workspaceTick.reviewMoot).toEqual({ closed: 1, byHarness: { email: 1 }, truncatedByLimit: false });
+    const [foreign] = await db.sql<Array<{ admission: string }>>`
+      SELECT admission FROM harness_shared.work_items WHERE workspace_id = 'some-other-workspace'`;
+    expect(foreign).toEqual({ admission: 'unreviewed' });
+  });
+
+  it('bounds one call and drains the rest oldest-first on the next', async () => {
+    for (let i = 0; i < 3; i++) {
+      await seedItem({
+        id: `WI-moot-${i}`,
+        admission: 'unreviewed',
+        status: 'done',
+        vector: null,
+        createdAtMs: NOW - (10 - i) * 60_000,
+      });
+    }
+    const first = await closeMootAdmissionReviews(db.sql, { workspaceId: WS, harnessSlug: HARNESS, nowMs: NOW, limit: 2 });
+    expect(first).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: true });
+    const remaining = await db.sql<Array<{ feature_id: string }>>`
+      SELECT feature_id FROM harness_shared.work_items WHERE admission = 'unreviewed'`;
+    expect(remaining.map((row) => row.feature_id)).toEqual(['WI-moot-2']);
+
+    const second = await closeMootAdmissionReviews(db.sql, { workspaceId: WS, harnessSlug: HARNESS, nowMs: NOW, limit: 2 });
+    expect(second).toEqual({ closed: 1, byHarness: { [HARNESS]: 1 }, truncatedByLimit: false });
+    expect(await closeMootAdmissionReviews(db.sql, { workspaceId: WS, nowMs: NOW })).toEqual({
+      closed: 0,
+      byHarness: {},
+      truncatedByLimit: false,
+    });
+  });
+
+  it('no-model pass promotes candidate-free rows and leaves paired rows untouched for the model', async () => {
+    await seedItem({ id: 'WI-solo', title: 'a uniquely worded standalone finding', vector: null });
+    await seedItem({ id: 'WI-twin-pending', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-twin-unreviewed', admission: 'unreviewed', createdAtMs: NOW - 19_000, payload: PENDING_REVIEW });
+    const llmCall = vi.fn();
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-no-model-pass',
+      sql: db.sql,
+      llmCall,
+      now: () => NOW,
+      noModel: true,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(llmCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ promoted: 1, merged: 0, modelCalled: false, flaggedPairs: 1, deferredToModel: 2 });
+    expect(result.held).toBe(2);
+    expect((await reviewRow('WI-solo')).admission).toBe('admitted');
+    // Deferred, not held: nothing is written, so the re-review watermark only counts real reviews.
+    expect(await reviewRow('WI-twin-pending')).toMatchObject({ admission: 'pending', payload: {} });
+    expect((await reviewRow('WI-twin-unreviewed')).payload.admissionReview).toEqual(PENDING_REVIEW.admissionReview);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+
+    const [ledger] = await db.sql<Array<{ run_kind: string; model_id: string | null; tokens_in: string; detail: Record<string, any> }>>`
+      SELECT run_kind, model_id, tokens_in::text, detail FROM harness_shared.admission_runs WHERE id = 'promoter-no-model-pass'`;
+    expect(ledger).toMatchObject({
+      run_kind: 'promoter-tick',
+      model_id: null,
+      tokens_in: '0',
+      detail: { status: 'complete', mode: 'promoter-no-model', deferredToModel: 2, modelCostUsd: 0 },
+    });
+
+    // The same rows with the model available are judged, so the deferral is the flag doing the work.
+    const modelRun = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-model-pass',
+      sql: db.sql,
+      llmCall: judgementCall('r-remedy-keep'),
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+    expect(modelRun).toMatchObject({ promoted: 2, modelCalled: true });
+    expect(modelRun.deferredToModel).toBeUndefined();
+  });
+
+  it('a no-model tick never satisfies the model promoter\'s liveness alarm', async () => {
+    const nowMs = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.routines (id, install_slug, workspace_id, name, active, created_at)
+      VALUES ('rt-promoter', ${HARNESS}, ${WS}, ${WORK_ITEM_ADMISSION_PROMOTER}, true,
+              to_timestamp(${nowMs - 4 * 60 * 60_000} / 1000.0))`;
+    await seedItem({ id: 'WI-solo', title: 'a uniquely worded standalone finding', vector: null });
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-no-model-liveness',
+      sql: db.sql,
+      llmCall: vi.fn(),
+      noModel: true,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, nowMs, 90)).toMatchObject({ stale: true });
+    // Positive control: the identical row recorded as a MODEL tick does clear the alarm, so the
+    // stale verdict above is the mode filter, not a row the reader cannot see.
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET detail = jsonb_set(detail, '{mode}', '"promoter"')
+       WHERE id = 'promoter-no-model-liveness'`;
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, nowMs, 90)).toMatchObject({ stale: false });
+  });
+
+  it('orders the no-model window: candidate-free pending rows first, unreviewed rows last', async () => {
+    const insert = async (id: string, admission: string, createdAtMs: number, payload: Record<string, unknown>) => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+           admission, payload, created_ts, updated_ts)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'title', 'summary', 'open', 'bug', ${admission},
+                ${db.sql.json(payload as unknown as Parameters<typeof db.sql.json>[0])}, ${createdAtMs}, ${createdAtMs})`;
+    };
+    const stamped = { dedupCandidates: [{ id: 'WI-9', similarity: 0.91, method: 'semantic-hard' }] };
+    await insert('WI-unreviewed-plain', 'unreviewed', NOW - 50_000, {});
+    await insert('WI-pending-stamped', 'pending', NOW - 40_000, stamped);
+    await insert('WI-pending-plain', 'pending', NOW - 30_000, {});
+
+    const noModel = await readPendingBatch(db.sql, WS, HARNESS, 10, undefined, { preferModelFree: true });
+    expect(noModel.map((item) => item.id)).toEqual(['WI-pending-plain', 'WI-pending-stamped', 'WI-unreviewed-plain']);
+    // Control: the model promoter's own order is unchanged (candidate-stamped first, then FIFO).
+    const model = await readPendingBatch(db.sql, WS, HARNESS, 10);
+    expect(model.map((item) => item.id)).toEqual(['WI-pending-stamped', 'WI-unreviewed-plain', 'WI-pending-plain']);
   });
 });

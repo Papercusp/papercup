@@ -407,6 +407,14 @@ export interface RehomeClassifierPolicy {
   platformSystemRoles: string[];
   /** vocabulary that names platform surfaces (tool verbs, subsystems) */
   platformTerms: string[];
+  /**
+   * Harness-slug prefixes that are the platform's own NON-POT homes. `operator:<workspaceId>` is
+   * the legacy workspace-global issue slug (issues-engineer.ts now homes `operator` scope to the
+   * platform Pot), so anything still landing there was mis-homed by a filer that skipped that
+   * resolution — never another pot's work. WI-10004723: 14 learning-loop alarms filed under
+   * `operator:papercusp-workspace` sat held by scope for 6 days because no text signal matched.
+   */
+  platformHarnessPrefixes: string[];
 }
 
 export const DEFAULT_REHOME_CLASSIFIER_POLICY: RehomeClassifierPolicy = {
@@ -439,7 +447,17 @@ export const DEFAULT_REHOME_CLASSIFIER_POLICY: RehomeClassifierPolicy = {
     'capability:',
     'papercusp',
   ],
+  platformHarnessPrefixes: ['operator:'],
 };
+
+/** True when `harness` is a platform non-pot home (`operator:<ws>`), i.e. a held row there is mis-homed. */
+export function isPlatformNonPotHarness(
+  harness: string | null | undefined,
+  cls: RehomeClassifierPolicy = DEFAULT_REHOME_CLASSIFIER_POLICY,
+): boolean {
+  const slug = (harness ?? '').trim();
+  return slug.length > 0 && cls.platformHarnessPrefixes.some((prefix) => slug.startsWith(prefix));
+}
 
 export type RehomeVerdict =
   | { action: 'keep'; reason: 'in-scope' }
@@ -453,6 +471,7 @@ export function classifyForRehome(
 ): RehomeVerdict {
   if (isHarnessInScope(item.harness, scope)) return { action: 'keep', reason: 'in-scope' };
   const signals: string[] = [];
+  if (isPlatformNonPotHarness(item.harness, cls)) signals.push(`harness:${item.harness.trim()}`);
   const role = item.createdByRole?.trim().toLowerCase();
   if (role && cls.platformSystemRoles.includes(role)) signals.push(`system-role:${role}`);
   for (const p of item.paths ?? []) {

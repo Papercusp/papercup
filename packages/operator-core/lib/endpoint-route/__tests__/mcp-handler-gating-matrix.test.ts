@@ -4724,6 +4724,7 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-owner-session' }]);
     expect(seen).toHaveLength(1);
     expect(seen[0].ctx.uiClientId).toBe('su-owner');
+    expect(seen[0].ctx.advSessionId).toBe(1);
   });
 
   it('Mcp-Session-Id still identifies a caller that supplied NO SID at all', async () => {

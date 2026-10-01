@@ -293,7 +293,7 @@ export async function resolveScorecardInstrumentSnapshots(
       measuredAt,
       provenance: 'platform-computed',
       window,
-      value: { resolver: key, resolverVersion: 1, reason },
+      value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
     if (!subject?.ref || !subject.windowStart || !subject.windowEnd) {
@@ -333,11 +333,21 @@ export async function resolveScorecardInstrumentSnapshots(
         );
         continue;
       }
-      const verdicts = Object.values(card.ratings).map((entry) => entry.rating.toLowerCase());
-      // Partial/unknown base behavior cannot establish a passing foundation.
-      const verdict = verdicts.some((rating) => ['fail', 'severe', 'broken'].includes(rating))
+      const entries = Object.values(card.ratings);
+      const isPassLike = (rating: string) => ['pass', 'exemplary', 'healthy'].includes(rating.toLowerCase());
+      // v2 (EI-24770558745369103): an unknown whose STRUCTURED unknownReason says the
+      // behavior did not occur in the window (idle / not-exercised) hides no evidence, so it
+      // does not block a passing foundation. v1 required all ~37 base ratings to be pass,
+      // which no real window reaches because most criteria are not exercised in a given
+      // window. A partial, a reasonless (legacy) unknown, or any other unknown reason still
+      // cannot establish a passing foundation, and at least one exercised pass is required.
+      const absentBehavior = (entry: (typeof entries)[number]) =>
+        entry.rating.toLowerCase() === 'unknown' &&
+        (entry.unknownReason === 'not-exercised' || entry.unknownReason === 'idle');
+      const verdict = entries.some((entry) => ['fail', 'severe', 'broken'].includes(entry.rating.toLowerCase()))
         ? 'fail'
-        : verdicts.length > 0 && verdicts.every((rating) => ['pass', 'exemplary', 'healthy'].includes(rating))
+        : entries.some((entry) => isPassLike(entry.rating)) &&
+            entries.every((entry) => isPassLike(entry.rating) || absentBehavior(entry))
           ? 'pass'
           : 'unknown';
       snapshots[key] = {
@@ -348,7 +358,7 @@ export async function resolveScorecardInstrumentSnapshots(
         evidenceRef: card.issueId,
         value: {
           resolver: key,
-          resolverVersion: 1,
+          resolverVersion: 2,
           baseCard: card.issueId,
           rubricRevision: card.rubricRevision,
           criteriaHash: card.criteriaHash,

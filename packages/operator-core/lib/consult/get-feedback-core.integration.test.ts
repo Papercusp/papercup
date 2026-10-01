@@ -47,6 +47,7 @@ import { sweepExpiredConsults } from './consult-expiry-core';
 import { advanceCascade } from './cascade-core';
 import { closeSourceAuditConsults, independentSourceAuditRoute, routeSourceGradingAudit } from '../grading-audit-routing';
 import { dispatchPendingGradingAudits, type DispatchPendingGradingAuditsInput } from '../grading-integrity';
+import { specQualitySubjectRef } from '../agent-tools/plans/spec-quality';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import { GRADING_INTEGRITY_AUDIT_POLICY } from './selection-policies';
 import type { ScorecardRow } from '../scorecards';
@@ -151,6 +152,18 @@ beforeAll(async () => {
       owner text,
       template_data jsonb,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    )`);
+  // Minimal real-PG read fixture for the immutable seq-1 plan-author lookup.
+  // It intentionally allows contradictory duplicate origins so the router's
+  // fail-closed ambiguity guard remains covered.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.plan_revisions (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      author_kind text NOT NULL,
+      author_id text
     )`);
   // The source-audit router's persisted-responder liveness check uses the same
   // session-log evidence as the production oracle. Keep this fixture minimal,
@@ -274,6 +287,108 @@ const baseReq: GetFeedbackRequest = {
 };
 
 describe('source-audit dispatcher through persisted consult routing', () => {
+  it('excludes the creator from the plan origin revision for spec-quality audits', async () => {
+    const planSlug = `spec-quality-origin-${randomBytes(5).toString('hex')}`;
+    const planCreator = 'spec-quality-plan-creator';
+    const latestEditor = 'spec-quality-latest-editor';
+    const issueId = 'EI-spec-quality-plan-creator-exclusion';
+    const subjectRef = specQualitySubjectRef(planSlug, 'plan-class-feature-ship', 'a'.repeat(64));
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${WS}, 'papercusp', ${planSlug}, NULL)`;
+    await rootSql`
+      INSERT INTO harness_shared.plan_revisions
+        (workspace_id, harness_slug, plan_slug, seq, author_kind, author_id)
+      VALUES
+        (${WS}, 'papercusp', ${planSlug}, 1, 'agent', ${planCreator}),
+        (${WS}, 'papercusp', ${planSlug}, 2, 'agent', ${latestEditor})`;
+
+    const fixture = makeDeps(routeOf([
+      cand(planCreator), cand('spec-quality-plan-creator-child'), cand('scorecard-author'), cand('eligible-auditor'),
+    ]));
+    const feedback = vi.fn(async (
+      req: GetFeedbackRequest,
+      _identity: unknown,
+      options: {
+        harnessSlug?: string | null;
+        filterRoute?: (route: RouteResult) => Promise<RouteResult>;
+      } = {},
+    ) =>
+      getFeedbackCore(req, {
+        ...fixture.deps,
+        route: async (params) => {
+          const routed = await fixture.deps.route(params);
+          return options.filterRoute ? options.filterRoute(routed) : routed;
+        },
+      }),
+    );
+
+    const result = await routeSourceGradingAudit({
+      card: {
+        issueId,
+        createdBy: 'scorecard-author',
+        rubricRef: 'spec-quality',
+        subject: { kind: 'plan', ref: subjectRef },
+      } as ScorecardRow,
+      reservationKey: `grading-audit:${issueId}`,
+      reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+      brief: 'Audit the exact specification set.',
+      ctx: { workspaceId: WS, uiClientId: 'spec-quality-audit-requester', isSuperuser: true },
+      harness: 'papercusp',
+    }, {
+      getSql: () => rootSql,
+      feedback,
+      confirmReservation: async () => true,
+      resolveParties: async (ids) => new Map(ids.map((id) => [
+        id,
+        id === 'spec-quality-plan-creator-child' ? planCreator : id,
+      ])),
+      resolveResponderLiveness: async () => ({ sessionState: 'live' }),
+    });
+
+    expect(result.state).toBe('routed');
+    expect(feedback.mock.calls[0]?.[0].excludeOwners).toContain(planCreator);
+    expect(fixture.reached.map((delivery) => delivery.responder)).toEqual(['eligible-auditor']);
+  });
+
+  it.each([
+    { provenance: 'missing', authors: [] },
+    { provenance: 'ambiguous', authors: ['origin-a', 'origin-b'] },
+  ])('refuses a spec-quality audit when plan creator provenance is $provenance', async ({ provenance, authors }) => {
+    const planSlug = `spec-quality-${provenance}-${randomBytes(5).toString('hex')}`;
+    const issueId = `EI-spec-quality-${provenance}-creator`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, owner)
+      VALUES (${WS}, 'papercusp', ${planSlug}, NULL)`;
+    for (const author of authors) {
+      await rootSql`
+        INSERT INTO harness_shared.plan_revisions
+          (workspace_id, harness_slug, plan_slug, seq, author_kind, author_id)
+        VALUES (${WS}, 'papercusp', ${planSlug}, 1, 'agent', ${author})`;
+    }
+    const feedback = vi.fn();
+    await expect(routeSourceGradingAudit({
+      card: {
+        issueId,
+        createdBy: 'scorecard-author',
+        rubricRef: 'spec-quality',
+        subject: { kind: 'plan', ref: specQualitySubjectRef(planSlug, 'plan-class-feature-ship', 'b'.repeat(64)) },
+      } as ScorecardRow,
+      reservationKey: `grading-audit:${issueId}`,
+      reservationReservedAt: SOURCE_AUDIT_RESERVED_AT,
+      brief: 'Audit the exact specification set.',
+      ctx: { workspaceId: WS, uiClientId: `spec-quality-${provenance}-requester`, isSuperuser: true },
+      harness: 'papercusp',
+    }, {
+      getSql: () => rootSql,
+      feedback,
+      confirmReservation: async () => true,
+    })).rejects.toThrow(/plan creator provenance is missing or ambiguous/);
+    expect(feedback).not.toHaveBeenCalled();
+  });
+
   it.each(['ended', 'recorded'] as const)(
     'falls back in the initial reservation epoch when the newly routed responder is already %s',
     async (sessionState) => {

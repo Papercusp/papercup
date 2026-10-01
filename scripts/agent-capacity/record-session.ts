@@ -177,6 +177,22 @@ export function recordedWorkDir(sessionId: string, cacheDir = CACHE): string {
 }
 
 /**
+ * Everything the session changed relative to the pinned sha: committed work, uncommitted edits
+ * and new files, with submodule changes inlined. A plain `git diff` (worktree vs index) is empty
+ * when the agent commits its fix, which the P-019 real-work tasks ask it to do. Stages the
+ * throwaway session checkout to pick up untracked files; returns '' if git fails.
+ */
+export async function sessionDiff(workDir: string, baseSha: string): Promise<string> {
+  const opts = { encoding: 'utf8' as const, maxBuffer: 64 * 1024 * 1024 };
+  try {
+    await execFileAsync('git', ['-C', workDir, 'add', '-A'], opts);
+    return (await execFileAsync('git', ['-C', workDir, 'diff', '--cached', '--submodule=diff', baseSha], opts)).stdout;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * `<command> --version` resolved on `PATH` — the PATH the session itself ran under, so the
  * recorded version is the build the session used (the parent's PATH can resolve a different
  * one: measured 2026-10-01, the systemd user PATH found codex 0.157.1 before the pinned 0.159.2).
@@ -296,10 +312,7 @@ export async function recordSession(opts: {
   await new Promise<void>((r) => cliOut.end(r));
   await new Promise<void>((r) => cliErr.end(r));
 
-  let diff = '';
-  try {
-    diff = (await execFileAsync('git', ['-C', workDir, 'diff'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })).stdout;
-  } catch {}
+  const diff = await sessionDiff(workDir, repo.sha);
   writeFileSync(path.join(sessionDir, 'diff.patch'), diff);
   const stats = existsSync(statsFile) ? parseCgroupStats(readFileSync(statsFile, 'utf8')) : { memPeakBytes: null, cpuUsec: null };
   const meta: SessionMeta = {

@@ -1965,6 +1965,114 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     ]);
   });
 
+  it('P-005 direct-evidence tool failures ignore keyless soft siblings during a burst', async () => {
+    const unrelated = existing({
+      id: 'EI-24441622330454419',
+      title: 'background command quoted-$L expansion',
+      scope: 'harness:papercusp',
+      payload: { lane: 'improvement' },
+    });
+    const base = deps({ found: [] });
+    const d = semDeps(base, { hard: [], soft: [{ id: unrelated.id, similarity: 0.91 }] }, [unrelated]);
+    let pressureReads = 0;
+    d.readIssueAdmissionPressure = async () => {
+      pressureReads += 1;
+      return assessIssueAdmissionPressure({
+        rawOccurrences: 455,
+        duplicateOccurrences: 455,
+        canonicalStock: 2_494,
+        canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+        emitterCounts: [430, 5, 5, 5, 5, 5],
+      });
+    };
+    const watchdogKey = 'repeated-tool-error:improvements:capture:structural:unrelated-coalescence:field-unknown';
+
+    const res = await captureImprovement({
+      title: 'improvements:capture tool-call failure (unrelated-coalescence)',
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      payloadExtra: {
+        toolFailureProbation: { state: 'promoted', directEvidence: true, watchdogKey },
+      },
+    }, d);
+
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toEqual([
+      expect.objectContaining({ id: unrelated.id, semantic: 'soft' }),
+    ]);
+    expect(pressureReads).toBe(0);
+    expect(base.created).toHaveLength(1);
+  });
+
+  it('P-005 CONTROL: ordinary keyed captures still use a keyless soft sibling during a burst', async () => {
+    const worded = existing({
+      id: 'EI-59',
+      title: 'similar queue admission failure',
+      scope: 'harness:papercusp',
+      payload: { lane: 'improvement' },
+    });
+    const base = deps({ found: [] });
+    const d = semDeps(base, { hard: [], soft: [{ id: worded.id, similarity: 0.91 }] }, [worded]);
+    d.readIssueAdmissionPressure = async () =>
+      assessIssueAdmissionPressure({
+        rawOccurrences: 455,
+        duplicateOccurrences: 455,
+        canonicalStock: 2_494,
+        canonicalClusterCounts: [430, 5, 5, 5, 5, 5],
+        emitterCounts: [430, 5, 5, 5, 5, 5],
+      });
+
+    const res = await captureImprovement({
+      title: 'differently worded queue admission failure',
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      watchdogKey: 'condition:ordinary-keyed-capture',
+    }, d);
+
+    expect(res).toMatchObject({ created: false, reason: 'coalesced', issue: { id: 'EI-59' } });
+    expect(base.created).toHaveLength(0);
+  });
+
+  it('P-005 direct-evidence tool failures still coalesce on their exact watchdog key', async () => {
+    const watchdogKey = 'repeated-tool-error:improvements:capture:structural:unrelated-coalescence:field-unknown';
+    const sameFailure = existing({
+      id: 'EI-SAME-TOOL-FAILURE',
+      title: 'the same captured tool failure',
+      scope: 'harness:papercusp',
+      payload: {
+        lane: 'improvement',
+        watchdogKey,
+        toolFailureProbation: { state: 'promoted', directEvidence: true, watchdogKey },
+      },
+    });
+    const d = {
+      ...deps({ found: [sameFailure] }),
+      findIssuesByWatchdogKeys: async () => [sameFailure],
+      mergeIssuePayload: async (_id, patch) => {
+        sameFailure.payload = { ...(sameFailure.payload as Record<string, unknown>), ...patch };
+        return sameFailure;
+      },
+      updateIssuePatch: async (_id, patch) => {
+        Object.assign(sameFailure, { title: patch.title, body: patch.body });
+        return sameFailure;
+      },
+    } satisfies CaptureDeps;
+
+    const res = await captureImprovement({
+      title: 'improvements:capture tool-call failure (unrelated-coalescence)',
+      kind: 'bug',
+      scope: 'harness:papercusp',
+      watchdogKey,
+      payloadExtra: {
+        toolFailureProbation: { state: 'promoted', directEvidence: true, watchdogKey },
+      },
+    }, d);
+
+    expect(res).toMatchObject({ created: false, reason: 'coalesced', issue: { id: sameFailure.id } });
+    expect(d.created).toHaveLength(0);
+  });
+
   it('P-005 never consults the burst circuit for a critical finding', async () => {
     const worded = existing({ id: 'EI-58', title: 'near critical finding' });
     const base = deps({ found: [] });

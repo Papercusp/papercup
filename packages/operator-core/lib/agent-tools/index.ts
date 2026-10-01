@@ -1577,6 +1577,7 @@ import './cupboard/ledger-anchor';
 import './cupboard/ledger-anchor-run';
 // agent-economy-flywheel-2026-08-30 P-046 (D-029) — per-payment receipts.
 import './cupboard/payment-receipt';
+import './cupboard/statement-attestation';
 import './cupboard/reconciliation';
 import './cupboard/bind-wallet';
 import './cupboard/bind-identity-funding';

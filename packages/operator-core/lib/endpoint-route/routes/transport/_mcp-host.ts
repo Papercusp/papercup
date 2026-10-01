@@ -973,6 +973,8 @@ export interface BuiltSpawnContext {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  /** Verified adv_sessions row for this caller's native CLI incarnation. */
+  advSessionId?: number;
   uiClientId: string | null;
   /** Private detector-only session key; never used as public coordination identity. */
   detectorSessionKey: string | null;
@@ -1589,11 +1591,20 @@ export async function tryBuildSpawnContext(
     const nativeSessionId =
       (headers.get('x-papercusp-native-session') ?? '').trim() ||
       (url.searchParams.get('native_session') ?? '').trim();
+    let verifiedAdvSessionId: number | null = null;
     if (suIdentity && nativeSessionId) {
       try {
         const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
         if (binding.binding === 'foreign') {
           return { kind: 'failed', reason: 'superuser_foreign_native_session' };
+        }
+        if (
+          binding.binding === 'bound' &&
+          binding.advSessionId != null &&
+          Number.isSafeInteger(binding.advSessionId) &&
+          binding.advSessionId > 0
+        ) {
+          verifiedAdvSessionId = binding.advSessionId;
         }
       } catch {
         // A supplied native-session claim is meaningful only when the binding
@@ -1741,6 +1752,7 @@ export async function tryBuildSpawnContext(
           .map((b) => b.toString(16).padStart(2, '0'))
           .join('')}`,
         parentSpawnId: null,
+        ...(verifiedAdvSessionId !== null ? { advSessionId: verifiedAdvSessionId } : {}),
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         detectorSessionKey,
         // Caller backend + model (fleet-launch-agent-inheritance-2026-07-03): psu stamps them onto
@@ -2748,6 +2760,7 @@ async function buildMcpToolContext(
     runId: spawn.runId,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
+    advSessionId: spawn.advSessionId,
     uiClientId: spawn.uiClientId,
     failureLoopSessionKey: spawn.detectorSessionKey,
     callerAgent: spawn.callerAgent ?? null,
@@ -3068,6 +3081,7 @@ function identitySurfaceContext(spawn: BuiltSpawnContext): UnifiedToolContext {
     harnessSlug: spawn.harnessSlug,
     principal: synthesizeTransportPrincipal(spawn),
     role: spawn.role,
+    advSessionId: spawn.advSessionId,
     uiClientId: spawn.uiClientId,
     sigVerifiedSpawn: spawn.sigVerifiedSpawn ?? false,
     isSuperuser: spawn.isSuperuser ?? false,

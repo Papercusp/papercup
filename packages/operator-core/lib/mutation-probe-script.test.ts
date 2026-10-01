@@ -1077,6 +1077,57 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(readFileSync(ptoolLog, "utf8").trim()).toBe("coord:presence|probe-session|" + hostToken);
   });
 
+  it("prints a bounded heartbeat reply when ownership is not confirmed", () => {
+    const bin = join(dir, "bin");
+    const baselineMarker = join(dir, "baseline-started");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "ptool"), [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      'const tool = args.find((arg) => ["coord:presence", "locks:queue", "locks:heartbeat"].includes(arg));',
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => { input += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  if (tool === "coord:presence") { process.stdout.write(JSON.stringify({ self: { ownerId: "probe-owner" } })); return; }',
+      '  if (tool === "locks:queue") {',
+      '    const { paths } = JSON.parse(input);',
+      '    process.stdout.write(JSON.stringify({ active_locks: [{ path: paths[0], owner: "probe-owner", intent: "mutation probe", lock_id: "probe-lock" }] }));',
+      '    return;',
+      '  }',
+      '  if (tool === "locks:heartbeat") { process.stdout.write(JSON.stringify({ results: [{ lock_id: "probe-lock", extended: false }], trace: "x".repeat(600) + "-TAIL-SENTINEL" })); return; }',
+      '  process.exitCode = 2;',
+      '});',
+    ].join("\n"), { mode: 0o700 });
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    env.PATH = bin + ":" + (process.env.PATH ?? "");
+    env.PAPERCUSP_SID = "probe-session";
+    env.PAPERCUSP_WORKSPACE = "probe-workspace";
+    env.PAPERCUSP_TEST_RUN_HARNESS = "probe-harness";
+    env.MUTATION_PROBE_WINDOW_MAX_SEC = "60";
+
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > "' + baselineMarker
+      + '"; fi; grep -q "^beta$" {}';
+    const { code, out } = runProbeIO([
+      "--in-tree",
+      "--sweep-lock-held",
+      "--file",
+      subject,
+      "--mutate",
+      "s/beta/BETA/",
+      "--test",
+      guard,
+    ], env);
+
+    expect(code).toBe(2);
+    expect(out).toContain("the file-lock heartbeat did not confirm ownership");
+    expect(out).toContain('"trace":"');
+    expect(out).not.toContain("-TAIL-SENTINEL");
+    expect(existsSync(baselineMarker)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   /**
    * EI-24720263797874266: the verified-restore record the testing:run fence reads, so a
    * 'mutation probe' lock that outlives the dirty window stops fencing unrelated tests.

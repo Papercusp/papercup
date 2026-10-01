@@ -206,13 +206,13 @@ describe('registered scorecard instrument provenance', () => {
     const measured = await resolveScorecardInstrumentSnapshots({ rubric, subject }, read([card]));
     expect(measured?.['woe.goal-mode-base-scorecard']).toMatchObject({
       provenance: 'platform-computed',
-      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 1 },
+      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 2 },
     });
     const unknown = await resolveScorecardInstrumentSnapshots({ rubric, subject }, read([]));
     expect(unknown?.['woe.goal-mode-base-scorecard']).toMatchObject({
       verdict: 'unknown',
       provenance: 'platform-computed',
-      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 1 },
+      value: { resolver: 'woe.goal-mode-base-scorecard', resolverVersion: 2 },
     });
   });
 
@@ -228,6 +228,53 @@ describe('registered scorecard instrument provenance', () => {
       { rubric, subject }, read([{ ...card, ...override } as unknown as ScorecardRow]),
     );
     expect(snapshots?.['woe.goal-mode-base-scorecard'].verdict).toBe('unknown');
+  });
+
+  // v2 (EI-24770558745369103): behavior that did not occur in the window must not block a
+  // passing foundation, but nothing else may be waved through.
+  it.each([
+    {
+      name: 'passes with not-exercised and idle unknowns beside exercised passes',
+      ratings: {
+        alpha: rating(),
+        beta: rating({ rating: 'unknown', unknownReason: 'not-exercised' }),
+        gamma: rating({ rating: 'unknown', unknownReason: 'idle' }),
+      },
+      verdict: 'pass',
+    },
+    {
+      name: 'stays unknown for a reasonless (legacy) unknown',
+      ratings: { alpha: rating(), beta: rating({ rating: 'unknown' }) },
+      verdict: 'unknown',
+    },
+    {
+      name: 'stays unknown when the unknown was an unavailable instrument',
+      ratings: { alpha: rating(), beta: rating({ rating: 'unknown', unknownReason: 'instrument-unavailable' }) },
+      verdict: 'unknown',
+    },
+    {
+      name: 'stays unknown for a partial base rating',
+      ratings: { alpha: rating(), beta: rating({ rating: 'partial' }) },
+      verdict: 'unknown',
+    },
+    {
+      name: 'stays unknown when nothing was exercised',
+      ratings: { beta: rating({ rating: 'unknown', unknownReason: 'not-exercised' }) },
+      verdict: 'unknown',
+    },
+    {
+      name: 'fails on any failing base rating even beside not-exercised unknowns',
+      ratings: {
+        alpha: rating({ rating: 'fail' }),
+        beta: rating({ rating: 'unknown', unknownReason: 'not-exercised' }),
+      },
+      verdict: 'fail',
+    },
+  ])('v2 base verdict: $name', async ({ ratings, verdict }) => {
+    const snapshots = await resolveScorecardInstrumentSnapshots(
+      { rubric, subject }, read([{ ...card, ratings } as ScorecardRow]),
+    );
+    expect(snapshots?.['woe.goal-mode-base-scorecard'].verdict).toBe(verdict);
   });
 
   it('does not misreport an unavailable instrument as a subject failure', async () => {

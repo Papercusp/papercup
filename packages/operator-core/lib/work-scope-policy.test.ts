@@ -27,6 +27,7 @@ const {
   clearWorkScopePolicy,
   reconcilePresencePot,
   classifyForRehome,
+  isPlatformNonPotHarness,
   WORK_SCOPE_LEDGER_CAP,
 } = mod;
 
@@ -172,5 +173,23 @@ describe('classifyForRehome (P-009 — the non-naive half)', () => {
     const pathRef = classifyForRehome({ harness: 'email', title: 'x', paths: ['packages/operator-core/lib/x.ts'] }, ENFORCE);
     expect(pathRef).toMatchObject({ action: 'rehome' });
     expect(classifyForRehome({ harness: 'sidestage', title: 'Seller copilot mission: add auction chat overlay', body: 'SideStage studio' }, ENFORCE)).toEqual({ action: 'hold', reason: 'no-platform-signal' });
+  });
+
+  // WI-10004723 (plan work-queue-bulk-cleanup-remediation-2026-10-01 P-003): 14 learning-loop alarms
+  // filed under the legacy non-pot slug `operator:papercusp-workspace` carried no text signal, so
+  // they were HELD as if they were another pot's work for 6 days.
+  it('re-homes anything in the workspace operator harness, whatever its text says', () => {
+    const alarm = classifyForRehome(
+      { harness: 'operator:papercusp-workspace', title: 'LEARNING LOOP needs attention: negative-space (absent)' },
+      ENFORCE,
+    );
+    expect(alarm).toEqual({ action: 'rehome', to: 'papercusp', signals: ['harness:operator:papercusp-workspace'] });
+    expect(isPlatformNonPotHarness('operator:papercusp-workspace')).toBe(true);
+    // Control: a real pot whose slug merely CONTAINS "operator" is still judged on its content.
+    expect(isPlatformNonPotHarness('pot-operator-tools')).toBe(false);
+    expect(classifyForRehome({ harness: 'pot-operator-tools', title: 'add a recipe card' }, ENFORCE)).toEqual({
+      action: 'hold',
+      reason: 'no-platform-signal',
+    });
   });
 });

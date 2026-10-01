@@ -26,6 +26,9 @@
  *   PAPERCUSP_RECONCILIATION_GATE_SECRET_REF   HMAC secret shared with the Worker (RECONCILIATION_GATE_SECRET)
  *   PAPERCUSP_CUPBOARD_URL                     the Worker origin (base-url.ts)
  *   PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL     optional: verify DAO transfer receipts on chain
+ *   PAPERCUSP_RECONCILIATION_SAFE_ADDRESS      optional, with the two below: the DAO Safe the
+ *   PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS  safe-balance invariant reads (needs the RPC URL;
+ *   PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK     a 6-decimal token such as USDC; the deployment block)
  *
  * The DBOS schedule (dbos/reconciliation-workflow.ts) and the
  * `cupboard:reconciliation` tool both call `runReconciliationPass`.
@@ -59,6 +62,7 @@ import {
   type ReconciliationRunRecord,
   type ReconciliationSources,
   type ReconciliationStore,
+  type SafeSnapshot,
   type SourceRead,
 } from './reconciliation';
 import {
@@ -87,6 +91,48 @@ export interface ReconciliationRuntimeConfig {
   readonly gateSecretRef: string | null;
   readonly cupboardUrl: string;
   readonly chainRpcUrl: string | null;
+  /** The DAO Safe whose token balance the safe-balance invariant checks (D-025 §1). */
+  readonly safe: SafeReadConfig;
+}
+
+/**
+ * Where the DAO Safe lives on chain. `invalid` is a misconfiguration (some
+ * variables set, or set wrongly), which the pass reads as a failed source: the
+ * Safe was meant to be checked.
+ */
+export type SafeReadConfig =
+  | { readonly status: 'not-configured' }
+  | { readonly status: 'invalid'; readonly detail: string }
+  | {
+      readonly status: 'configured';
+      readonly safeAddress: `0x${string}`;
+      readonly tokenAddress: `0x${string}`;
+      /** The block the Safe was deployed in: receipts are summed from here. */
+      readonly fromBlock: bigint;
+    };
+
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+export function parseSafeReadConfig(env: NodeJS.ProcessEnv): SafeReadConfig {
+  const safeAddress = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_ADDRESS);
+  const tokenAddress = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS);
+  const fromBlock = trimmed(env.PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK);
+  if (!safeAddress && !tokenAddress && !fromBlock) return { status: 'not-configured' };
+  if (!safeAddress || !EVM_ADDRESS.test(safeAddress)) {
+    return { status: 'invalid', detail: 'PAPERCUSP_RECONCILIATION_SAFE_ADDRESS must be an EVM address' };
+  }
+  if (!tokenAddress || !EVM_ADDRESS.test(tokenAddress)) {
+    return { status: 'invalid', detail: 'PAPERCUSP_RECONCILIATION_SAFE_TOKEN_ADDRESS must be an EVM address' };
+  }
+  if (!fromBlock || !/^\d+$/.test(fromBlock)) {
+    return { status: 'invalid', detail: "PAPERCUSP_RECONCILIATION_SAFE_FROM_BLOCK must be the Safe's deployment block number" };
+  }
+  return {
+    status: 'configured',
+    safeAddress: safeAddress.toLowerCase() as `0x${string}`,
+    tokenAddress: tokenAddress.toLowerCase() as `0x${string}`,
+    fromBlock: BigInt(fromBlock),
+  };
 }
 
 const trimmed = (value: string | undefined): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null);
@@ -118,6 +164,7 @@ export function readReconciliationRuntimeConfig(env: NodeJS.ProcessEnv = process
     gateSecretRef: trimmed(env.PAPERCUSP_RECONCILIATION_GATE_SECRET_REF),
     cupboardUrl: trimmed(env.PAPERCUSP_CUPBOARD_URL)?.replace(/\/+$/, '') ?? resolveCupboardBaseUrl(),
     chainRpcUrl: trimmed(env.PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL),
+    safe: parseSafeReadConfig(env),
   };
 }
 
@@ -252,6 +299,122 @@ export async function verifyDaoTransfers(
     else unconfirmed.push(`chain-tx:${t.chainId}:${t.transactionHash}`);
   }
   return { confirmed, unconfirmed };
+}
+
+// ---------------------------------------------------------------------------
+// The DAO Safe (D-025 §1, WI-10004708).
+//
+// Balance and receipts come from the chain; approved spends come from the
+// Worker's treasury transfers (each one authorized through the Zodiac Roles
+// modifier and confirmed on chain). A spend that bypassed the Worker, such as
+// an owner-signed transfer, leaves the balance short of receipts minus approved
+// spends, which breaks the invariant and closes the transfer gate. A transfer
+// the Worker has not recorded yet reads the same way until the next pass.
+// ---------------------------------------------------------------------------
+
+/** One consistent read of the Safe's token position, pinned to a single block. */
+export interface SafeChainState {
+  readonly chainId: number;
+  readonly blockNumber: bigint;
+  readonly decimals: number;
+  /** Token balance of the Safe at `blockNumber`, in base units. */
+  readonly balance: bigint;
+  /** Sum of Transfer(to = Safe) from the deployment block through `blockNumber`, excluding the Safe paying itself. */
+  readonly received: bigint;
+}
+
+export type SafeChainReader = (input: {
+  readonly safeAddress: `0x${string}`;
+  readonly tokenAddress: `0x${string}`;
+  readonly fromBlock: bigint;
+}) => Promise<SafeChainState>;
+
+const ERC20_READ_ABI = [
+  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'owner', type: 'address' }], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint8' }] },
+] as const;
+
+const ERC20_TRANSFER_EVENT = {
+  type: 'event',
+  name: 'Transfer',
+  inputs: [
+    { name: 'from', type: 'address', indexed: true },
+    { name: 'to', type: 'address', indexed: true },
+    { name: 'value', type: 'uint256', indexed: false },
+  ],
+} as const;
+
+/**
+ * A viem reader over one RPC endpoint. Logs are read in `blockSpan` windows
+ * because providers cap the range of one eth_getLogs call; more than `maxSpans`
+ * windows fails the read rather than returning a partial sum.
+ */
+export function viemSafeChainReader(rpcUrl: string, opts: { readonly blockSpan?: bigint; readonly maxSpans?: number } = {}): SafeChainReader {
+  const blockSpan = opts.blockSpan ?? 10_000n;
+  const maxSpans = opts.maxSpans ?? 2_000;
+  return async ({ safeAddress, tokenAddress, fromBlock }) => {
+    const { createPublicClient, http } = await import('viem');
+    const pc = createPublicClient({ transport: http(rpcUrl) });
+    const [chainId, blockNumber] = await Promise.all([pc.getChainId(), pc.getBlockNumber()]);
+    if (fromBlock > blockNumber) throw new Error(`the Safe's deployment block ${fromBlock} is after the chain head ${blockNumber}`);
+    const spans = (blockNumber - fromBlock) / blockSpan + 1n;
+    if (spans > BigInt(maxSpans)) throw new Error(`${spans} log windows of ${blockSpan} blocks exceed the limit of ${maxSpans}`);
+    const [balance, decimals] = await Promise.all([
+      pc.readContract({ address: tokenAddress, abi: ERC20_READ_ABI, functionName: 'balanceOf', args: [safeAddress], blockNumber }),
+      pc.readContract({ address: tokenAddress, abi: ERC20_READ_ABI, functionName: 'decimals', blockNumber }),
+    ]);
+    const safe = safeAddress.toLowerCase();
+    let received = 0n;
+    for (let from = fromBlock; from <= blockNumber; from += blockSpan) {
+      const to = from + blockSpan - 1n < blockNumber ? from + blockSpan - 1n : blockNumber;
+      const logs = await pc.getLogs({ address: tokenAddress, event: ERC20_TRANSFER_EVENT, args: { to: safeAddress }, fromBlock: from, toBlock: to, strict: true });
+      for (const log of logs) {
+        if (log.args.from.toLowerCase() === safe) continue;
+        received += log.args.value;
+      }
+    }
+    return { chainId, blockNumber, decimals: Number(decimals), balance, received };
+  };
+}
+
+/**
+ * The SafeSnapshot the engine checks. Fails closed on anything that would make
+ * the comparison meaningless: a token that is not 6-decimal (base units are then
+ * not micro-USD), a DAO transfer on another chain (it did not leave this Safe),
+ * or an amount beyond exact Number range.
+ */
+export async function readSafeSnapshot(input: {
+  readonly reader: SafeChainReader;
+  readonly safeAddress: `0x${string}`;
+  readonly tokenAddress: `0x${string}`;
+  readonly fromBlock: bigint;
+  readonly approvedSpends: ReconciliationInputs['daoTransfers'];
+}): Promise<SourceRead<SafeSnapshot>> {
+  let state: SafeChainState;
+  try {
+    state = await input.reader({ safeAddress: input.safeAddress, tokenAddress: input.tokenAddress, fromBlock: input.fromBlock });
+  } catch (error) {
+    return { status: 'failed', detail: `the Safe could not be read on chain: ${errorText(error)}` };
+  }
+  if (state.decimals !== 6) {
+    return { status: 'failed', detail: `the Safe token has ${state.decimals} decimals; the invariant compares 6-decimal micros` };
+  }
+  const foreign = input.approvedSpends.filter((t) => t.chainId !== state.chainId);
+  if (foreign.length > 0) {
+    return {
+      status: 'failed',
+      detail: `${foreign.length} DAO transfer(s) settled on chain ${foreign[0]!.chainId}, but the Safe is read on chain ${state.chainId}`,
+    };
+  }
+  const spent = input.approvedSpends.reduce((sum, t) => sum + BigInt(t.amountMicros), 0n);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  if (state.balance > max || state.received > max || spent > max) {
+    return { status: 'failed', detail: 'a Safe amount exceeds the exact integer range of the comparison' };
+  }
+  return {
+    status: 'ok',
+    value: { balanceMicros: Number(state.balance), receiptsMicros: Number(state.received), approvedSpendsMicros: Number(spent) },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +584,8 @@ export interface ReconciliationPassDeps {
   readonly stripeLister?: StripeBalanceTransactionLister | null;
   readonly cupboardInputs?: CupboardInputsReader | null;
   readonly chainVerifier?: ChainReceiptVerifier | null;
+  /** WI-10004708: reads the DAO Safe (default: viem over the chain RPC URL, when the Safe is configured). */
+  readonly safeReader?: SafeChainReader | null;
   readonly store?: ReconciliationStore;
   readonly filer?: BreakFiler;
   readonly gate?: GatePublisher;
@@ -520,6 +685,31 @@ export async function runReconciliationPass(
     }
   }
 
+  // The Safe is deployment-wide too: read once, and only if a treasury workspace runs.
+  const safeReader =
+    deps.safeReader !== undefined ? deps.safeReader : config.chainRpcUrl ? viemSafeChainReader(config.chainRpcUrl) : null;
+  let safeRead: Promise<SourceRead<SafeSnapshot>> | null = null;
+  const readSafe = (): Promise<SourceRead<SafeSnapshot>> => {
+    safeRead ??= (async (): Promise<SourceRead<SafeSnapshot>> => {
+      const safe = config.safe;
+      if (safe.status === 'not-configured') return { status: 'not-configured' };
+      if (safe.status === 'invalid') return { status: 'failed', detail: safe.detail };
+      if (!safeReader) return { status: 'failed', detail: 'PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL is required to read the Safe' };
+      if (verified.status !== 'ok') {
+        const why = verified.status === 'failed' ? verified.detail : 'the Cupboard reconciliation inputs are not configured';
+        return { status: 'failed', detail: `approved spends could not be read: ${why}` };
+      }
+      return readSafeSnapshot({
+        reader: safeReader,
+        safeAddress: safe.safeAddress,
+        tokenAddress: safe.tokenAddress,
+        fromBlock: safe.fromBlock,
+        approvedSpends: verified.value.confirmed,
+      });
+    })();
+    return safeRead;
+  };
+
   const workspaceIds =
     input.workspaces ?? (await reconciliationWorkspaces(sql(), [config.stripeJournalWorkspace, config.treasuryWorkspace]));
   const results: WorkspaceReconciliation[] = [];
@@ -608,7 +798,7 @@ export async function runReconciliationPass(
                 },
               }
             : verified,
-        safe: { status: 'not-configured' },
+        safe: ownsTreasury ? await readSafe() : { status: 'not-configured' },
       };
 
       // 3. Reconcile, persist, file or resolve, push the gate.
