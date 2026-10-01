@@ -1092,6 +1092,90 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     }
   }, 20_000);
+  it('holds producer cleanup until an admitted child finishes its snapshot handoff', async () => {
+    const root = realpathSync(dir);
+    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const manifest = join(admissionDir, 'original.manifest');
+    const mutantReady = join(dir, 'mutant-ready');
+    const finishProducer = join(dir, 'finish-producer');
+    const handoffReady = join(dir, 'handoff-ready');
+    const finishHandoff = join(dir, 'finish-handoff');
+    const cleanupAttempt = join(dir, 'cleanup-attempt');
+    const bin = join(dir, 'handoff-bin');
+    mkdirSync(bin);
+    const realFlock = spawnSync('bash', ['-c', 'command -v flock'], { encoding: 'utf8' });
+    const realBwrap = spawnSync('bash', ['-c', 'command -v bwrap'], { encoding: 'utf8' });
+    expect(realFlock.status).toBe(0);
+    expect(realBwrap.status).toBe(0);
+    writeFileSync(join(bin, 'flock'), '#!/usr/bin/env bash\nset -euo pipefail\n'
+      + 'if [ "$1" = -x ] && [ -e "$PROBE_TEST_FINISH_PRODUCER" ]; then : > "$PROBE_TEST_CLEANUP_ATTEMPT"; fi\n'
+      + 'exec "$PROBE_TEST_FLOCK" "$@"\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'bwrap'), '#!/usr/bin/env bash\nset -euo pipefail\n'
+      + ': > "$PROBE_TEST_HANDOFF_READY"\n'
+      + 'for ((n=0; n<1000; n++)); do [ ! -e "$PROBE_TEST_FINISH_HANDOFF" ] || break; sleep 0.01; done\n'
+      + '[ -e "$PROBE_TEST_FINISH_HANDOFF" ] || exit 99\n'
+      + 'exec "$PROBE_TEST_BWRAP" "$@"\n', { mode: 0o700 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      PROBE_TEST_FLOCK: realFlock.stdout.trim(), PROBE_TEST_BWRAP: realBwrap.stdout.trim(),
+      PROBE_TEST_MUTANT_READY: mutantReady, PROBE_TEST_FINISH_PRODUCER: finishProducer,
+      PROBE_TEST_HANDOFF_READY: handoffReady, PROBE_TEST_FINISH_HANDOFF: finishHandoff,
+      PROBE_TEST_CLEANUP_ATTEMPT: cleanupAttempt };
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then '
+      + ': > "$PROBE_TEST_MUTANT_READY"; '
+      + 'for ((n=0; n<1000; n++)); do [ ! -e "$PROBE_TEST_FINISH_PRODUCER" ] || break; sleep 0.01; done; '
+      + '[ -e "$PROBE_TEST_FINISH_PRODUCER" ] || exit 99; fi; grep -q "^beta$" {}';
+    const producer = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/beta/BETA/', '--test', guard], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const producerOutput = createTextCollector();
+    producerOutput.attach(producer.stdout);
+    producerOutput.attach(producer.stderr);
+    const producerClosed = new Promise<number | null>((resolveExit) => producer.once('close', resolveExit));
+    let admitted: ReturnType<typeof spawn> | undefined;
+    let admittedClosed: Promise<number | null> | undefined;
+    const admittedOutput = createTextCollector();
+    const awaitMarker = async (path: string) => {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(path) && Date.now() < deadline) await sleep(25);
+      expect(existsSync(path), producerOutput.peek() + admittedOutput.peek()).toBe(true);
+    };
+    try {
+      await awaitMarker(mutantReady);
+      const snapshot = readFileSync(manifest, 'utf8').split('\0')[2]!;
+      expect(read()).toContain('BETA');
+      admitted = spawn('bash', [OVERLAY, root, '--', 'cat', subject],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      admittedOutput.attach(admitted.stdout);
+      admittedOutput.attach(admitted.stderr);
+      admittedClosed = new Promise<number | null>((resolveExit) => admitted!.once('close', resolveExit));
+      await awaitMarker(handoffReady);
+      writeFileSync(finishProducer, '');
+      await awaitMarker(cleanupAttempt);
+      expect(read()).toBe(ORIGINAL);
+      expect(producer.exitCode).toBeNull();
+      expect(existsSync(manifest)).toBe(true);
+      expect(readFileSync(snapshot, 'utf8')).toBe(ORIGINAL);
+      // A non-blocking exclusive acquisition proves the admitted process tree
+      // still owns the shared lock while the real producer is trying to finish.
+      const exclusive = spawnSync(realFlock.stdout.trim(), ['-n', '-x', join(admissionDir, 'admission.lock'), 'true']);
+      expect(exclusive.status).toBe(1);
+      writeFileSync(finishHandoff, '');
+      expect(await admittedClosed, admittedOutput.peek()).toBe(0);
+      expect(admittedOutput.text()).toBe(ORIGINAL);
+      expect(await producerClosed, producerOutput.peek()).toBe(0);
+      expect(existsSync(manifest)).toBe(false);
+      expect(existsSync(dirname(snapshot))).toBe(false);
+      expect(read()).toBe(ORIGINAL);
+      expect(restoredRecord()).toEqual(verifiedOriginal());
+    } finally {
+      writeFileSync(finishProducer, '');
+      writeFileSync(finishHandoff, '');
+      if (admitted && admitted.exitCode === null && admitted.signalCode === null) admitted.kill('SIGTERM');
+      if (producer.exitCode === null && producer.signalCode === null) producer.kill('SIGTERM');
+      if (admittedClosed) await admittedClosed;
+      await producerClosed;
+    }
+  }, 35_000);
+
   it('restores after a normal exit', () => {
     // Assert the exit code, not just the restore: without this the probe REFUSING outright
     // (exit 2, tracked file never touched) also leaves the file byte-identical, so the restore

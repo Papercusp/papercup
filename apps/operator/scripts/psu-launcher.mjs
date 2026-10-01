@@ -4326,6 +4326,7 @@ export function modelSpecFromRecycleArgv(args = []) {
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
  *          configDir?: string | null, codexHome?: string | null,
  *          advSessionId?: string | number | null, modelSource?: string | null,
+ *          includeInherited?: boolean,
  *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
  *                                 opts?: { home?: string }) => string | null }} [opts]
@@ -4341,6 +4342,7 @@ export function detectRespawnModelSpec(
     codexHome = null,
     advSessionId = null,
     modelSource = null,
+    includeInherited = false,
     readLatestCodexRollout = latestCodexRollout,
     readLastActiveModel = lastActiveModelFor,
   } = {},
@@ -4382,12 +4384,15 @@ export function detectRespawnModelSpec(
         const configured = codexModelSpecFromConfigText(
           readFileSync(join(codexHome, "config.toml"), "utf8"),
         );
-        return configured && configured !== inherited ? configured : null;
+        if (configured && configured !== inherited) return configured;
       } catch {
-        return null;
+        // Home repair still needs the inherited model if config is unreadable.
       }
     }
-    return null;
+    // A null is the argv rewriter's "unchanged" sentinel. The home repair
+    // endpoint instead reads null as "restore the historical launch model".
+    // Let that caller carry the current selection even when no swap is needed.
+    return includeInherited ? inherited : null;
   }
   if (normalized && normalized !== "claude") return null;
   const sessionId = nativeSessionIdFromLaunchArgs(args);
@@ -11816,6 +11821,7 @@ export function runWrapper(options) {
                 codexHome: env.CODEX_HOME || null,
                 advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
+                includeInherited: true,
               }),
               routeMode: env[ACCOUNT_ROUTING_MODE_ENV] || null,
               accountId: env.PAPERCUSP_ACCOUNT_ID || null,

@@ -137,6 +137,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     seedScript: 'seed-episode-scoped-operational-reconcile-routine.ts',
   },
   { name: 'inbox-bulk-resolve', seedScript: 'seed-inbox-bulk-resolve-routine.ts' },
+  { name: 'plan-cleanup-sweep', seedScript: 'seed-plan-cleanup-sweep-routine.ts' },
   {
     name: 'frozen-candidate-drift-sweep',
     seedScript: 'seed-frozen-candidate-drift-sweep-routine.ts',

@@ -347,6 +347,15 @@ describe('process:exec cancellation over the real spawner IPC protocol', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('preserves a silent external termination signal in the sidecar result', async () => {
+    const result = await execProcess({
+      command: process.execPath, args: ['-e', "process.kill(process.pid, 'SIGTERM');"], timeoutMs: 5000,
+    }, { onPid: (pid) => pids.add(pid) });
+    expect(result).toMatchObject({ code: -1, stdout: '' });
+    expect(result.stderr).toContain('terminated by signal SIGTERM');
+    expect(h.finished).toHaveBeenCalledOnce();
+  });
+
   it('does not spawn after cancellation while admission was pending', async () => {
     const controller = new AbortController();
     let admit!: (value: GovernedExecution) => void;

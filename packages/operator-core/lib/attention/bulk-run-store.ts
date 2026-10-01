@@ -45,8 +45,10 @@ import {
   type BulkRecommendation,
   type BulkRecommendationKind,
   type BulkResponsibility,
+  type BulkIntakeDecision,
   isBulkDispositionKind,
   normalizeBulkAutomationPolicy,
+  readIntakeDecision,
 } from './bulk-dispositions';
 import { readStandingBulkAutomationPolicy } from './automation-policy';
 import { deliverUnattendedRunOwnerDigest, UNATTENDED_BULK_REQUESTER } from './bulk-run-owner-digest';
@@ -290,6 +292,8 @@ export interface BulkRunItemRow {
   responsibility?: BulkResponsibility | null;
   confidenceLevel?: BulkConfidence | null;
   retryCondition?: string | null;
+  /** Typed intake decision for an intake input (P-004); null until decided. */
+  intakeDecision?: BulkIntakeDecision | null;
 }
 
 /** What the resolver reports back for one item. */
@@ -313,6 +317,8 @@ export interface BulkOutcomeReport {
   /** Canonical typed disposition. Required for new non-terminal reports; old
    *  callers may omit it and retain legacy outcome semantics. */
   disposition?: BulkDispositionKind | null;
+  /** Validated intake decision (bulk-dispositions parseIntakeDecision). */
+  intakeDecision?: BulkIntakeDecision | null;
 }
 
 function dispositionForReport(report: BulkOutcomeReport): BulkDispositionKind {
@@ -459,6 +465,7 @@ interface RawItemRow {
   responsibility: BulkResponsibility | null;
   confidence_level: BulkConfidence | null;
   retry_condition: string | null;
+  intake_decision?: unknown;
 }
 
 function mapItem(r: RawItemRow): BulkRunItemRow {
@@ -523,6 +530,7 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     responsibility: r.responsibility ?? recommendation?.responsibility ?? null,
     confidenceLevel: r.confidence_level ?? recommendation?.confidence ?? null,
     retryCondition: r.retry_condition ?? recommendation?.retryCondition ?? null,
+    intakeDecision: readIntakeDecision(r.intake_decision),
   };
 }
 
@@ -537,7 +545,7 @@ const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref
                       consult_reply, error, decided_at, revert_handle, reversal_window_until,
                       reverted_at, revert_note, disposition, recommendation_kind,
                       recommendation_label, recommendation_rationale, evidence_basis,
-                      responsibility, confidence_level, retry_condition`;
+                      responsibility, confidence_level, retry_condition, intake_decision`;
 
 type BulkSql = Sql | TransactionSql;
 
@@ -1313,6 +1321,7 @@ export async function resumeReviewRun(input: {
                recommendation_label = NULL, recommendation_rationale = NULL,
                evidence_basis = '[]'::jsonb, responsibility = NULL,
                confidence_level = NULL, retry_condition = NULL,
+               intake_decision = NULL,
                updated_at = now()
          WHERE workspace_id = ${ws} AND run_id = ${input.runId}
            AND item_id = ANY(${ids})
@@ -1530,6 +1539,7 @@ export async function reportOutcomes(input: {
              responsibility = ${o.responsibility ?? null},
              confidence_level = ${o.confidenceLevel ?? (o.confidence === 'high' ? 'high' : o.confidence === 'low' ? 'low' : null)},
              retry_condition = ${o.retryCondition ?? null},
+             intake_decision = ${o.intakeDecision ? JSON.stringify(o.intakeDecision) : null}::jsonb,
              error = ${o.error ?? null},
              decided_at = now(),
              revert_handle = CASE

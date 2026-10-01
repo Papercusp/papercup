@@ -2425,6 +2425,55 @@ describe('work_items:complete (keyed-array)', () => {
       ).toBe(false);
     });
 
+    it.each([
+      {
+        label: 'single-item',
+        input: {
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, classRef: 'certify-spec-clauses' },
+        },
+      },
+      {
+        label: 'bulk-item',
+        input: {
+          items: [
+            {
+              id: 'WI-101',
+              state: 'resolved',
+              assumptions: 'none',
+              completion: { summary: 'fixed' },
+              specAdequacy: { ...specAdequacy, classRef: 'certify-spec-clauses' },
+            },
+          ],
+        },
+      },
+    ])('reports invalid specAdequacy.classRef from the matching $label branch', ({ input }) => {
+      const parsed = (
+        complete.args as {
+          safeParse: (
+            value: unknown,
+          ) => { success: true } | { success: false; error: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse(input);
+      expect(parsed.success).toBe(false);
+      if (parsed.success) return;
+
+      const message = parsed.error.issues.map((issue) => issue.message).join('\n');
+      expect(message).toContain('specAdequacy.classRef');
+      for (const ref of [
+        'plan-class-feature-ship',
+        'plan-class-bugfix',
+        'plan-class-migration',
+        'plan-class-investigation',
+      ]) {
+        expect(message).toContain(ref);
+      }
+      expect(message).not.toContain('Unrecognized key: "specAdequacy"');
+    });
+
     it('documents specAdequacy/outputPayload as top-level siblings and auto-hoists a nested specAdequacy (EI-22073105984724419, was EI-21709695952126373)', () => {
       expect(complete.guidance?.when).toContain('top-level siblings of `completion`');
       expect(complete.guidance?.when).toContain('auto-hoisted');

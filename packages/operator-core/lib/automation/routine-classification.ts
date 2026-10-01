@@ -628,6 +628,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Starts the supervised Inbox resolver agent, which can bill model turns',
   },
+  'system:plan-cleanup-sweep': {
+    spend: 'llm',
+    why: 'Runs the deterministic plan clean-up pass, then starts the supervised cleanup resolver agent when judgment residue remains, which can bill model turns',
+  },
   'system:consult-expiry-sweep': {
     spend: 'llm',
     why: 'Expiry emit wakes a hard-blocked parked requester (latched consult:reply key), and a wake bills a turn',

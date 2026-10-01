@@ -685,7 +685,7 @@ export async function recordScheduledFireFailure(
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   await sql`
     UPDATE harness_shared.plan_runs
-       SET status = 'failed', outcome = 'failed', result_summary = ${`fire failed: ${message}`.slice(0, 4000)},
+       SET status = 'failed', outcome = 'failed', note = ${`fire failed: ${message}`.slice(0, 4000)},
            finished_at = ${now}, updated_at = ${now}
      WHERE id = ${input.runId} AND status = 'running'
   `;

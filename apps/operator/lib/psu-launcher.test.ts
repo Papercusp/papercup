@@ -9661,6 +9661,23 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
   describe("detectRespawnModelSpec", () => {
     const argv = ["claude", "--session-id", UUID, "--model", LAUNCHED];
 
+    it("Codex home repair retains an unchanged explicit 6.1 model instead of requesting the saved default", () => {
+      const previous = ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"'];
+      const options = {
+        agent: "codex", codexHome: join(tmpdir(), "codex-model-carry-test"),
+        modelSource: "explicit", includeInherited: true,
+        readLatestCodexRollout: () => ({ id: UUID }),
+        readLastActiveModel: () => "gpt-6.1-sol:xhigh",
+      };
+      expect(detectRespawnModelSpec(previous, options)).toBe("gpt-6.1-sol:xhigh");
+      // Ordinary argv rewriting still uses null to mean no change.
+      expect(detectRespawnModelSpec(previous, { ...options, includeInherited: false })).toBeNull();
+      expect(detectRespawnModelSpec(previous, {
+        ...options, readLastActiveModel: () => null,
+      })).toBe("gpt-6.1-sol:xhigh");
+      expect(detectRespawnModelSpec([], options)).toBeNull();
+    });
+
     it("Codex carry uses the repaired isolated-home model when the old launch model was still active", () => {
       const home = mkdtempSync(join(tmpdir(), "codex-model-carry-"));
       const codexHome = join(home, "isolated");

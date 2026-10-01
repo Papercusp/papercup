@@ -887,3 +887,252 @@ describe('terminalDependencies plan-item wire contract (WI-41370)', () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// observation-candidate-acceptance-promotion-2026-09-30 P-004 — intake inputs
+// in a saved bulk run (BARs R-3, R-18, R-19).
+// ---------------------------------------------------------------------------
+
+const intakeItem = {
+  ...item,
+  itemId: 'obs-1',
+  position: 1,
+  kind: 'improvement',
+  title: 'Observation: gate flaked twice',
+  ref: { kind: 'improvement', id: 'EI-1' },
+  ownerAgentId: null,
+};
+
+type WrittenOutcome = {
+  itemId: string;
+  outcome: string;
+  disposition: string | null;
+  recommendationKind: string | null;
+  responsibility: string | null;
+  retryCondition: string | null;
+  rationale: string | null;
+  intakeDecision: Record<string, unknown> | null;
+};
+
+function written(): WrittenOutcome[] {
+  return h.reportOutcomes.mock.calls.flatMap((call) => (call[0] as { outcomes: WrittenOutcome[] }).outcomes);
+}
+
+async function reportIntake(items: Record<string, unknown>[]) {
+  return body(
+    await bulkRunReport.handler({ runId: run.runId, items } as never, { workspaceId: run.workspaceId } as never),
+  );
+}
+
+describe('P-004 intake: the manifest offers six typed dispositions (R-3)', () => {
+  it('attaches the six-way offer to intake inputs only, each requiring a reason', async () => {
+    h.getRunItems.mockResolvedValue([item, intakeItem]);
+    const result = body(
+      await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never),
+    );
+    const items = result.items as Array<Record<string, unknown>>;
+    const intake = items.find((row) => row.itemId === intakeItem.itemId)!.intake as {
+      dispositions: { disposition: string; requires: string[] }[];
+      decision: unknown;
+    };
+    expect(intake.dispositions.map((d) => d.disposition)).toEqual([
+      'promote',
+      'merge',
+      'investigate',
+      'retain',
+      'reject',
+      'retry',
+    ]);
+    expect(intake.dispositions.every((d) => d.requires.includes('reason'))).toBe(true);
+    expect(intake.dispositions.find((d) => d.disposition === 'merge')!.requires).toContain('targetRef');
+    expect(intake.dispositions.find((d) => d.disposition === 'retry')!.requires).toContain('missingInformation');
+    expect(intake.decision).toBeNull();
+    expect(items.find((row) => row.itemId === item.itemId)).not.toHaveProperty('intake');
+  });
+
+  it('refuses a reject without a reason and writes nothing for it', async () => {
+    h.getRunItems.mockResolvedValue([intakeItem]);
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        intakeDecision: { disposition: 'reject' },
+      },
+    ]);
+    expect(JSON.stringify(result)).toContain('requires a non-blank reason');
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+  });
+
+  it('accepts a reject with a reason', async () => {
+    h.getRunItems.mockResolvedValue([intakeItem]);
+    await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        intakeDecision: { disposition: 'reject', reason: 'Duplicate of an already-fixed gate flake.' },
+      },
+    ]);
+    expect(written()).toEqual([
+      expect.objectContaining({
+        itemId: intakeItem.itemId,
+        intakeDecision: expect.objectContaining({
+          disposition: 'reject',
+          reason: 'Duplicate of an already-fixed gate flake.',
+        }),
+      }),
+    ]);
+  });
+});
+
+describe('P-004 intake: every report carries an attributable decision or an actionable failure (R-18)', () => {
+  beforeEach(() => {
+    h.getRunItems.mockResolvedValue([item, intakeItem]);
+  });
+
+  it('persists the decision with its decider, owner and the projected recommendation columns', async () => {
+    await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'medium',
+        intakeDecision: { disposition: 'retry', reason: 'Cannot tell which gate.', missingInformation: 'the run id' },
+      },
+    ]);
+    const [row] = written();
+    expect(row).toMatchObject({
+      itemId: intakeItem.itemId,
+      outcome: 'recommended',
+      disposition: 'retry_needed',
+      recommendationKind: 'retry_needed',
+      responsibility: 'agent',
+      retryCondition: 'the run id',
+      rationale: 'Cannot tell which gate.',
+    });
+    expect(row.intakeDecision).toMatchObject({
+      disposition: 'retry',
+      decidedBy: 'su-resolver',
+      owner: 'agent',
+      missingInformation: 'the run id',
+    });
+    expect(typeof row.intakeDecision!.decidedAt).toBe('string');
+  });
+
+  it('refuses an intake report that carries no intake decision, and refuses skipping one', async () => {
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        recommendationKind: 'investigate',
+        recommendationLabel: 'Look into it',
+        rationale: 'Unclear.',
+        responsibility: 'agent',
+        confidenceLevel: 'low',
+      },
+    ]);
+    expect(JSON.stringify(result)).toContain('is an intake input');
+    const skipped = await reportIntake([{ itemId: intakeItem.itemId, outcome: 'skipped', error: 'not now' }]);
+    expect(JSON.stringify(skipped)).toContain('is an intake input');
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+  });
+
+  it('accepts an explicit failure with its error as the actionable outcome', async () => {
+    await reportIntake([
+      { itemId: intakeItem.itemId, outcome: 'failed', error: 'Evidence link 404s; re-capture needed.' },
+    ]);
+    expect(written()).toEqual([
+      expect.objectContaining({ itemId: intakeItem.itemId, outcome: 'failed', intakeDecision: null }),
+    ]);
+  });
+
+  it('refuses merge without a target, missing confidence, contradictory kinds, and decisions on non-intake rows', async () => {
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        intakeDecision: { disposition: 'merge', reason: 'Same root cause.' },
+      },
+    ]);
+    expect(JSON.stringify(result)).toContain('requires targetRef');
+    const noConfidence = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        intakeDecision: { disposition: 'promote', reason: 'Real defect with a repro.' },
+      },
+    ]);
+    expect(JSON.stringify(noConfidence)).toContain('needs confidenceLevel');
+    const contradicts = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        recommendationKind: 'investigate',
+        recommendationLabel: 'x',
+        responsibility: 'agent',
+        rationale: 'x',
+        intakeDecision: { disposition: 'promote', reason: 'Real defect with a repro.' },
+      },
+    ]);
+    expect(JSON.stringify(contradicts)).toContain('contradicts intake disposition');
+    const nonIntake = await reportIntake([
+      {
+        itemId: item.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        intakeDecision: { disposition: 'promote', reason: 'n/a' },
+      },
+    ]);
+    expect(JSON.stringify(nonIntake)).toContain('only valid for intake inputs');
+    expect(h.reportOutcomes).not.toHaveBeenCalled();
+  });
+});
+
+describe('P-004 intake: unresolved rows stay visible and resumable (R-19)', () => {
+  it('writes the decided rows of a mixed batch and leaves the refused row for the next pass', async () => {
+    const second = { ...intakeItem, itemId: 'obs-2', position: 2 };
+    h.getRunItems.mockResolvedValue([intakeItem, second]);
+    const result = await reportIntake([
+      {
+        itemId: intakeItem.itemId,
+        outcome: 'recommended',
+        confidenceLevel: 'high',
+        intakeDecision: { disposition: 'promote', reason: 'Reproduced on staging.' },
+      },
+      { itemId: second.itemId, outcome: 'recommended', confidenceLevel: 'high', intakeDecision: { disposition: 'retry' } },
+    ]);
+    expect(written().map((row) => row.itemId)).toEqual([intakeItem.itemId]);
+    expect(JSON.stringify(result)).toContain(second.itemId);
+  });
+
+  it('a resumed manifest shows only pending rows, and includeReported shows prior decisions and failures', async () => {
+    const decision = {
+      disposition: 'promote',
+      reason: 'Reproduced on staging.',
+      decidedBy: 'su-earlier',
+      owner: 'engineering',
+      targetRef: null,
+      missingInformation: null,
+      decidedAt: '2026-10-01T10:00:00.000Z',
+    };
+    const decided = { ...intakeItem, outcome: 'recommended', intakeDecision: decision };
+    const failed = { ...intakeItem, itemId: 'obs-3', position: 3, outcome: 'failed', intakeDecision: null };
+    const pending = { ...intakeItem, itemId: 'obs-2', position: 2 };
+    h.getRunItems.mockResolvedValue([decided, pending, failed]);
+
+    const resumed = body(await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never));
+    expect((resumed.items as Array<{ itemId: string }>).map((row) => row.itemId)).toEqual(['obs-2']);
+    expect(resumed.remaining).toBe(1);
+
+    const all = body(
+      await bulkRunManifest.handler({ runId: run.runId, includeReported: true }, {
+        workspaceId: run.workspaceId,
+      } as never),
+    );
+    const rows = all.items as Array<{ itemId: string; outcome: string; intake: { decision: unknown } }>;
+    expect(rows.find((row) => row.itemId === 'obs-1')!.intake.decision).toEqual(decision);
+    expect(rows.find((row) => row.itemId === 'obs-3')!.outcome).toBe('failed');
+  });
+});

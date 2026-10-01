@@ -553,6 +553,52 @@ function firstUnrecognizedKeyMessage(value: unknown): string | undefined {
 }
 
 /**
+ * Keep specAdequacy field errors from the completion-envelope branch that
+ * matches the caller's shape. A single-item payload and a bulk payload both
+ * fail the other strict branch, so union-wide traversal can otherwise surface
+ * that unrelated branch's unrecognized-key error first.
+ */
+function firstSpecAdequacyIssueMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstSpecAdequacyIssueMessage(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  const record = value as { code?: unknown; message?: unknown; path?: unknown; errors?: unknown };
+  if (record.code === 'unrecognized_keys') return undefined;
+  if (Array.isArray(record.errors)) {
+    const message = firstSpecAdequacyIssueMessage(record.errors);
+    if (message) return message;
+  }
+  if (
+    record.code !== 'invalid_union' &&
+    typeof record.message === 'string' &&
+    record.message !== 'Invalid input'
+  ) {
+    const segments = Array.isArray(record.path) ? record.path.map(String) : [];
+    if (segments.includes('specAdequacy')) {
+      return `${segments.join('.')}: ${record.message}`;
+    }
+  }
+  return undefined;
+}
+
+function firstCompletionEnvelopeBranchMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as { code?: unknown; input?: unknown; errors?: unknown };
+  if (record.code !== 'invalid_union' || !Array.isArray(record.errors)) return undefined;
+  if (!record.input || typeof record.input !== 'object' || Array.isArray(record.input)) return undefined;
+
+  const input = record.input as Record<string, unknown>;
+  const hasBulkItems = Object.prototype.hasOwnProperty.call(input, 'items') && input.items !== undefined;
+  const matchingBranch = record.errors[hasBulkItems ? 1 : 0];
+  return firstSpecAdequacyIssueMessage(matchingBranch) ?? firstUnrecognizedKeyMessage(matchingBranch);
+}
+
+/**
  * WI-39573: the completion schema deliberately emits an actionable repair for a
  * bare-string `completion`. Zod wraps that issue inside the union branch errors;
  * if the union-level mapper ignores it, callers instead see the generic close
@@ -5577,6 +5623,7 @@ const workItemsCompleteTool = defineTool({
             firstCompletionCoverageContract(issue) ??
             firstCompletionStringRejection(issue) ??
             firstRootCauseVerificationInputError(issue) ??
+            firstCompletionEnvelopeBranchMessage(issue) ??
             firstUnrecognizedKeyMessage(issue) ??
             COMPLETE_CLOSE_SHAPE_MESSAGE,
         }),

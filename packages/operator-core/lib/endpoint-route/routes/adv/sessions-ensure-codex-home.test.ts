@@ -49,6 +49,9 @@ vi.mock('../../../superuser-token', async (original) => ({
   ...(await original<typeof import('../../../superuser-token')>()),
   readSuperuserToken: vi.fn(() => 'fixture-token'),
 }));
+vi.mock('../../../cupboard/identity-activation-restart', () => ({
+  rebuildSuLaunchArtifactFunded: async (input: unknown) => ({ rebuilt: await mocks.rebuild(input) }),
+}));
 
 let ensureCodexHome: (req: Request) => Promise<Response>;
 beforeAll(async () => {
@@ -66,13 +69,43 @@ beforeEach(() => {
     codexHome: '/tmp/p006-home' });
 });
 
-async function call() {
+async function call(model?: string) {
   return ensureCodexHome(new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
-    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: 123 }),
+    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: 123, model }),
   }));
 }
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it('persists the actual model when the prompt and home are already current', async () => {
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    mocks.ensureHome.mockReturnValue({ repaired: false, promptRepaired: false });
+    mocks.recordLaunchSpec.mockResolvedValue(true);
+    const response = await call('gpt-6.1-sol:xhigh');
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.1-sol:xhigh' }));
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+      model: 'gpt-6.1-sol:xhigh', modelSource: 'inherited',
+      selectedIdentity: savedRecord.selectedIdentity,
+    }));
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
+  it('persists the model through pinned-source recovery without activating another identity', async () => {
+    mocks.rebuild.mockRejectedValue(new Error('selected identity inherited source revision changed before SU artifact rebuild'));
+    mocks.recordLaunchSpec.mockResolvedValue(true);
+    const response = await call('gpt-6.1-sol:xhigh');
+    expect(response.status).toBe(200);
+    expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(123, OWNER, expect.objectContaining({
+      model: 'gpt-6.1-sol:xhigh', selectedIdentity: savedRecord.selectedIdentity,
+      specificationRevision: REVISION,
+    }));
+    expect(mocks.requestActivation).not.toHaveBeenCalled();
+  });
+
   it('restores v1 instructions when v2 blocks rebuild, without claiming a new activation', async () => {
     mocks.rebuild.mockRejectedValue(new Error('selected identity inherited source revision changed before SU artifact rebuild'));
     const response = await call();

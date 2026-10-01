@@ -209,6 +209,8 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1149-session-identity-activation-spans.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1177-identity-usage-carry-correlation.sql'));
+  // The activation recorder stamps specification_layer_refs (WI-10004494 gap 3).
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1295-activation-event-specification-layer-refs.sql'));
   await applyPlanItemClaimMigrations(db.sql);
 }, 120_000);
 

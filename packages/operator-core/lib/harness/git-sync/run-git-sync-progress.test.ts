@@ -40,6 +40,13 @@ function alive(pid: number): boolean {
 }
 
 describe('local Git cancellation lifetime', () => {
+  it.skipIf(process.platform === 'win32')('preserves a silent external termination signal in the Git result', async () => {
+    fixture.script = "process.kill(process.pid, 'SIGTERM');";
+    const result = await runGitBounded(['diff'], tmpdir(), 5000);
+    expect(result).toMatchObject({ code: -1, stdout: '' });
+    expect(result.stderr).toContain('git terminated by signal SIGTERM');
+  });
+
   it('does not spawn when cancellation precedes the command', async () => {
     fixture.script = "process.stderr.write('should not run');";
     const controller = new AbortController();

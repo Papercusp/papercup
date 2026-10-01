@@ -12,6 +12,7 @@ import {
   type PhysicalPhaseGInput,
 } from './physical-drill-phase-g';
 import {
+  phaseITargetOf,
   validatePhysicalPhaseI,
   type PhysicalPhaseIInput,
 } from './physical-drill-phase-i';
@@ -215,6 +216,21 @@ export function validatePostGoReleaseCanary(
       `Phase I evidence is malformed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // D-119 / WI-10004748: P-502 must freeze the canary's REAL owning authority.
+  // A Phase I run against a disposable minted key (the P-521 drill target)
+  // proves the fencing model, not that the live canary owner froze.
+  const phaseITarget = phaseI ? phaseITargetOf(phaseI) : null;
+  const canaryOwnerBound =
+    phaseITarget?.kind === 'canary-owner' &&
+    phaseITarget.potHomeSlug === input.canary?.hive &&
+    phaseI?.owner?.first?.hiveId === phaseITarget.hiveId &&
+    phaseI?.owner?.restored?.hiveId === phaseITarget.hiveId;
+  pushError(
+    errors,
+    canaryOwnerBound,
+    'Phase I must target the canary hive\'s real owning authority (target.kind canary-owner, potHomeSlug = canary.hive, owner hiveId = target.hiveId)',
+  );
+  if (!canaryOwnerBound) ownerFreezeVerified = ownerRecoveryVerified = false;
   pushError(
     errors,
     ownerFreezeVerified,

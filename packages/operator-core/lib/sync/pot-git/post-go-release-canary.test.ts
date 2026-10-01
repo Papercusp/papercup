@@ -82,6 +82,7 @@ beforeAll(async () => {
   };
   phaseI = buildPhysicalPhaseIInput({
     runId: 'p502-post-go-phase-i-0001',
+    canary: { workspaceId: 'papercusp-workspace', potHomeSlug: CANARY_HIVE, repoKey: 'hello-world-3-pot:main' },
     towerDeviceKey: tower.pubkeyBase64,
     vmDeviceKey: vm.pubkeyBase64,
     startMs: Date.parse(PHASE_I_START),
@@ -126,6 +127,50 @@ function validInput(): PostGoReleaseCanaryInput {
 }
 
 describe('post-GO public-release canary readiness', () => {
+  it('refuses a Phase I that froze a disposable drill key instead of the canary owner (WI-10004748, D-119)', () => {
+    const input = validInput();
+    const ephemeral = buildPhysicalPhaseIInput({
+      runId: 'p502-post-go-phase-i-0002',
+      towerDeviceKey: input.ownerFreezeChaos.phaseI.identities.towerDeviceKey,
+      vmDeviceKey: input.ownerFreezeChaos.phaseI.identities.vmDeviceKey,
+      startMs: Date.parse(input.ownerFreezeChaos.phaseI.window.startedAt) - 1_000,
+    });
+    input.ownerFreezeChaos.phaseI = ephemeral;
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/real owning authority/);
+  });
+
+  it('refuses a canary-owner Phase I aimed at a different hive than the soak observed', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.potHomeSlug = 'some-other-pot';
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/potHomeSlug = canary\.hive/);
+  });
+
+  it('refuses when the canary\'s real staging ref moved during the owner outage (G1)', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.realTargets.duringOutage.stagingRef = 'f'.repeat(40);
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/G1: the canary's real protected refs moved/);
+  });
+
+  it('refuses when the restored owner made no fresh progress on the real staging ref (G3)', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.realTargets.afterRecovery.stagingRef = target.realTargets.duringOutage.stagingRef;
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/G3: the restored owner made no fresh progress/);
+  });
+
   it('reports the canary hive and sample count on a passing receipt', () => {
     const verdict = validatePostGoReleaseCanary(validInput());
     expect(verdict.errors).toEqual([]);

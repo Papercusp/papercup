@@ -457,7 +457,8 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           finish(-1);
         }
       });
-      child.on('close', async (code) => {
+      child.on('close', async (code, signal) => {
+        if (signal) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {
           await waitForCommandExit();
           // Admission settlement can itself wait on IO. Remove kill timers

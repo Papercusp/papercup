@@ -609,3 +609,231 @@ export function isBulkRecommendationKind(value: unknown): value is BulkRecommend
 export function isBulkDispositionKind(value: unknown): value is BulkDispositionKind {
   return typeof value === 'string' && (BULK_DISPOSITION_KINDS as readonly string[]).includes(value);
 }
+
+// ---------------------------------------------------------------------------
+// Intake dispositions (observation-candidate-acceptance-promotion-2026-09-30
+// P-004, BARs R-3 / R-18 / R-19).
+//
+// An INTAKE input is an observation or unverified candidate surfaced in the
+// attention feed. Reviewing one in a saved bulk run ends in exactly one of six
+// typed decisions. The decision rides BESIDE the existing disposition /
+// recommendation columns (migration 1296 `intake_decision`): each intake
+// disposition also projects onto the existing recommendation vocabulary, so the
+// run counters, settle and report UI keep reading the columns they already read.
+// Promotion itself (creating/updating canonical work) is P-006; this layer only
+// records an attributable, validated decision with an owned next step.
+// ---------------------------------------------------------------------------
+
+export const BULK_INTAKE_DISPOSITIONS = [
+  'promote',
+  'merge',
+  'investigate',
+  'retain',
+  'reject',
+  'retry',
+] as const;
+
+export type BulkIntakeDisposition = (typeof BULK_INTAKE_DISPOSITIONS)[number];
+
+/** Attention-item kinds that are intake inputs (observations / candidates). */
+export const INTAKE_ATTENTION_KINDS = ['improvement'] as const;
+
+export function isIntakeAttentionKind(kind: unknown): boolean {
+  return typeof kind === 'string' && (INTAKE_ATTENTION_KINDS as readonly string[]).includes(kind);
+}
+
+export function isBulkIntakeDisposition(value: unknown): value is BulkIntakeDisposition {
+  return typeof value === 'string' && (BULK_INTAKE_DISPOSITIONS as readonly string[]).includes(value);
+}
+
+/** A persisted, validated intake decision. Every field a reader needs to
+ *  attribute the outcome and find its owner is present (R-18). */
+export interface BulkIntakeDecision {
+  disposition: BulkIntakeDisposition;
+  /** Why — required for every disposition, so a reject always has a reason. */
+  reason: string;
+  /** Who decided (the resolver's coord owner id). */
+  decidedBy: string;
+  /** Who owns the next step. */
+  owner: BulkResponsibility;
+  /** merge: the canonical item/candidate this input merges into. */
+  targetRef: string | null;
+  /** retry: what information is missing before the input can be decided. */
+  missingInformation: string | null;
+  decidedAt: string;
+}
+
+/** What a resolver submits; validated by `parseIntakeDecision`. */
+export interface BulkIntakeDecisionInput {
+  disposition: string;
+  reason?: string | null;
+  owner?: BulkResponsibility | null;
+  targetRef?: string | null;
+  missingInformation?: string | null;
+}
+
+interface IntakeDispositionSpec {
+  disposition: BulkIntakeDisposition;
+  label: string;
+  /** Fields beyond `reason` this disposition requires. */
+  requires: readonly ('targetRef' | 'missingInformation')[];
+  /** Default owner of the next step. */
+  owner: BulkResponsibility;
+  /** Projection onto the existing recommendation vocabulary (CHECK-constrained). */
+  recommendationKind: BulkRecommendationKind;
+}
+
+const INTAKE_DISPOSITION_SPECS: Record<BulkIntakeDisposition, IntakeDispositionSpec> = {
+  promote: {
+    disposition: 'promote',
+    label: 'Promote to accepted work',
+    requires: [],
+    owner: 'engineering',
+    recommendationKind: 'routed',
+  },
+  merge: {
+    disposition: 'merge',
+    label: 'Merge / link into existing work',
+    requires: ['targetRef'],
+    owner: 'agent',
+    recommendationKind: 'cleanup_candidate',
+  },
+  investigate: {
+    disposition: 'investigate',
+    label: 'Investigate before deciding',
+    requires: [],
+    owner: 'agent',
+    recommendationKind: 'investigate',
+  },
+  retain: {
+    disposition: 'retain',
+    label: 'Retain as evidence',
+    requires: [],
+    owner: 'system',
+    recommendationKind: 'cleanup_candidate',
+  },
+  reject: {
+    disposition: 'reject',
+    label: 'Reject with reason',
+    requires: [],
+    owner: 'system',
+    recommendationKind: 'cleanup_candidate',
+  },
+  retry: {
+    disposition: 'retry',
+    label: 'Retry when information is supplied',
+    requires: ['missingInformation'],
+    owner: 'agent',
+    recommendationKind: 'retry_needed',
+  },
+};
+
+/** The six dispositions offered for every intake input, as the manifest shows them. */
+export const BULK_INTAKE_DISPOSITION_OFFER: readonly {
+  disposition: BulkIntakeDisposition;
+  label: string;
+  requires: readonly string[];
+}[] = BULK_INTAKE_DISPOSITIONS.map((d) => ({
+  disposition: d,
+  label: INTAKE_DISPOSITION_SPECS[d].label,
+  requires: ['reason', ...INTAKE_DISPOSITION_SPECS[d].requires],
+}));
+
+function nonBlank(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Validate a resolver's intake decision. Refuses (never defaults) a missing
+ * reason, a merge without a target, or a retry that does not say what is
+ * missing. Migration 1296 repeats these rules as a CHECK constraint.
+ */
+export function parseIntakeDecision(
+  input: BulkIntakeDecisionInput,
+  ctx: { decidedBy: string; now?: Date },
+): { ok: true; decision: BulkIntakeDecision } | { ok: false; error: string } {
+  if (!isBulkIntakeDisposition(input?.disposition)) {
+    return {
+      ok: false,
+      error: `intake disposition must be one of ${BULK_INTAKE_DISPOSITIONS.join(', ')} (got ${JSON.stringify(input?.disposition)})`,
+    };
+  }
+  const spec = INTAKE_DISPOSITION_SPECS[input.disposition];
+  const reason = nonBlank(input.reason);
+  if (!reason) return { ok: false, error: `intake disposition "${spec.disposition}" requires a non-blank reason` };
+  const decidedBy = nonBlank(ctx.decidedBy);
+  if (!decidedBy) return { ok: false, error: 'intake decision requires an attributable decider' };
+  const targetRef = nonBlank(input.targetRef);
+  const missingInformation = nonBlank(input.missingInformation);
+  if (spec.requires.includes('targetRef') && !targetRef) {
+    return { ok: false, error: `intake disposition "${spec.disposition}" requires targetRef (the work it merges into)` };
+  }
+  if (spec.requires.includes('missingInformation') && !missingInformation) {
+    return {
+      ok: false,
+      error: `intake disposition "${spec.disposition}" requires missingInformation (what must be supplied before retrying)`,
+    };
+  }
+  const owner =
+    input.owner && (BULK_RESPONSIBILITIES as readonly string[]).includes(input.owner) ? input.owner : spec.owner;
+  return {
+    ok: true,
+    decision: {
+      disposition: spec.disposition,
+      reason,
+      decidedBy,
+      owner,
+      targetRef,
+      missingInformation,
+      decidedAt: (ctx.now ?? new Date()).toISOString(),
+    },
+  };
+}
+
+/** Project an intake decision onto the existing disposition/recommendation columns. */
+export function intakeRecommendationFor(decision: BulkIntakeDecision): {
+  disposition: BulkDispositionKind;
+  recommendationKind: BulkRecommendationKind;
+  label: string;
+  responsibility: BulkResponsibility;
+  retryCondition: string | null;
+} {
+  const spec = INTAKE_DISPOSITION_SPECS[decision.disposition];
+  return {
+    disposition: spec.recommendationKind,
+    recommendationKind: spec.recommendationKind,
+    label: spec.label,
+    responsibility: decision.owner,
+    retryCondition: decision.disposition === 'retry' ? decision.missingInformation : null,
+  };
+}
+
+/** Tolerant read of a persisted `intake_decision` value (jsonb, parsed or string). */
+export function readIntakeDecision(raw: unknown): BulkIntakeDecision | null {
+  let value: unknown = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (!isBulkIntakeDisposition(v.disposition)) return null;
+  const reason = nonBlank(v.reason);
+  const decidedBy = nonBlank(v.decidedBy);
+  if (!reason || !decidedBy) return null;
+  const owner = (BULK_RESPONSIBILITIES as readonly string[]).includes(String(v.owner))
+    ? (v.owner as BulkResponsibility)
+    : INTAKE_DISPOSITION_SPECS[v.disposition].owner;
+  return {
+    disposition: v.disposition,
+    reason,
+    decidedBy,
+    owner,
+    targetRef: nonBlank(v.targetRef),
+    missingInformation: nonBlank(v.missingInformation),
+    decidedAt: nonBlank(v.decidedAt) ?? '',
+  };
+}

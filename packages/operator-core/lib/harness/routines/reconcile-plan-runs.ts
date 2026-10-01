@@ -123,7 +123,7 @@ export async function reconcileScheduledPlanRuns(
     await db`
       UPDATE harness_shared.plan_runs
          SET status = ${status}, outcome = ${outcome}, finished_at = ${now}, updated_at = ${now}
-             ${unpromoted ? db`, result_summary = ${'promotion never completed: the instance has open items but the run minted no work-items'}` : db``}
+             ${unpromoted ? db`, note = ${'promotion never completed: the instance has open items but the run minted no work-items'}` : db``}
        WHERE id = ${run.id}
     `;
     settled.push({ runId: run.id, harnessSlug: run.harness_slug, planSlug: run.plan_slug, outcome });

@@ -1121,6 +1121,21 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', 'main:file.txt')).toBe('finished edit');
   });
 
+  it('reports a silent staged-deletion command failure without committing or pushing', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const runGit: RunGit = async (args, cwd) => args.includes('--diff-filter=D')
+      ? { code: -1, stdout: '', stderr: '' }
+      : directRunGit(args, cwd);
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
+    expect(out.status).toBe('error');
+    if (out.status !== 'error') throw new Error(`expected error outcome, got ${out.status}`);
+    expect(out.errors.map((error) => error.message).join('\n')).toContain(
+      'post-stage guard could not read staged deletions: git exited with code -1 without output',
+    );
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('normal.txt');
+    expect(git(repo, 'diff', '--cached', '--name-only')).toContain('normal.txt');
+  });
+
   it('EI-24712906810240170: fails closed when the post-stage live-lock refresh rejects', async () => {
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
     let calls = 0;

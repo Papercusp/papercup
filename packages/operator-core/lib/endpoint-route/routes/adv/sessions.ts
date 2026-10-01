@@ -1597,6 +1597,8 @@ const ensureCodexHome = defineTool({
       model: repairModel,
       modelSource: requestedModel ? 'inherited' as const : 'configured-default' as const,
     } : record;
+    const modelChanged = repairRecord.model !== record.model ||
+      repairRecord.modelSource !== record.modelSource;
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
       sessionKey: advSessionId,
       mcpUrl,
@@ -1672,6 +1674,11 @@ const ensureCodexHome = defineTool({
         model: repairModel, stack: [], modes: [],
       });
       const recovered = ensureConfig(connection.mcpUrl, pinned.promptText);
+      // Model selection is independent of instruction activation. Preserve the
+      // pinned identity while recording the model this resume actually chose.
+      if (modelChanged && !(await recordSuLaunchSpec(advSessionId, owner, repairRecord))) {
+        throw new Error('repaired Codex model receipt was not persisted');
+      }
       return new Response(JSON.stringify({
         ok: true, owner, advSessionId, ...recovered,
         reason: 'pinned-source-stale',
@@ -1679,18 +1686,21 @@ const ensureCodexHome = defineTool({
       }), { status: 200, headers: JSON_HEADERS });
     }
     const r = ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
-    if (r.promptRepaired) {
+    if (r.promptRepaired || modelChanged) {
       const artifact = rebuilt.artifact;
-      const updatedRecord = {
+      const updatedRecord = r.promptRepaired ? {
         ...repairRecord,
         stack: artifact.stack,
         specificationRevision: artifact.specificationRevision,
         stateRevision: artifact.stateRevision,
         specificationArtifact: artifact.specificationArtifact,
-      };
-      if (!(await recordSuLaunchSpec(null, owner, updatedRecord))) {
+      } : repairRecord;
+      if (!(await recordSuLaunchSpec(advSessionId, owner, updatedRecord))) {
         throw new Error('repaired Codex launch specification receipt was not persisted');
       }
+    }
+    if (r.promptRepaired) {
+      const artifact = rebuilt.artifact;
       await requestSessionIdentityActivation({
         ownerId: owner,
         workspaceId: record.workspaceId,

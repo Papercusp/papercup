@@ -1164,12 +1164,13 @@ export function modelSpecFromRecycleArgv(args?: any[]): string | null;
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
  *          configDir?: string | null, codexHome?: string | null,
  *          advSessionId?: string | number | null, modelSource?: string | null,
+ *          includeInherited?: boolean,
  *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
  *                                 opts?: { home?: string }) => string | null }} [opts]
  * @returns {string | null}
  */
-export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, codexHome, advSessionId, modelSource, readLatestCodexRollout, readLastActiveModel, }?: {
+export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, codexHome, advSessionId, modelSource, includeInherited, readLatestCodexRollout, readLastActiveModel, }?: {
     ownerId?: string | null;
     agent?: string | null;
     home?: string;
@@ -1177,6 +1178,7 @@ export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, 
     codexHome?: string | null;
     advSessionId?: string | number | null;
     modelSource?: string | null;
+    includeInherited?: boolean;
     readLatestCodexRollout?: (root: string) => {
         id: string;
     } | null;

@@ -60,6 +60,9 @@ import {
 
 export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
 
+const gitFailureDetail = (result: Awaited<ReturnType<RunGit>>): string =>
+  (result.stderr.trim() || result.stdout.trim() || `git exited with code ${result.code} without output`).slice(0, 300);
+
 const envMs = (name: string, dflt: number): number => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? v : dflt;
@@ -307,7 +310,8 @@ const runGitLocalBounded = (
       // A failed spawn has no child to drain. Other errors are not exit proof.
       if (child.pid === undefined) finish(-1);
     });
-    child.on('close', async (code) => {
+    child.on('close', async (code, signal) => {
+      if (signal) out.stderr.append(`${out.stderr.peek() ? '\n' : ''}git terminated by signal ${signal}`);
       await groupLifetime.waitForExit();
       finish(code ?? -1);
     });
@@ -3551,7 +3555,7 @@ async function unstagePreStagedProtectedPaths(
   if (staged.code !== 0) {
     return {
       ok: false,
-      error: `could not inspect pre-staged protected paths: ${(staged.stderr || staged.stdout).trim().slice(0, 300)}`,
+      error: `could not inspect pre-staged protected paths: ${gitFailureDetail(staged)}`,
     };
   }
   const protectedStaged = [
@@ -3580,7 +3584,7 @@ async function unstagePreStagedProtectedPaths(
   if (unstage.code !== 0) {
     return {
       ok: false,
-      error: `could not unstage protected paths: ${(unstage.stderr || unstage.stdout).trim().slice(0, 300)}`,
+      error: `could not unstage protected paths: ${gitFailureDetail(unstage)}`,
     };
   }
   log(
@@ -3647,7 +3651,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
   if (stagedRes.code !== 0) {
     return {
       ok: false,
-      error: `post-stage guard could not read the index: ${(stagedRes.stderr || stagedRes.stdout).trim().slice(0, 300)}`,
+      error: `post-stage guard could not read the index: ${gitFailureDetail(stagedRes)}`,
     };
   }
   const staged = stagedRes.stdout.split('\0').filter(Boolean);
@@ -3683,7 +3687,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
   if (driftRes.code !== 0) {
     return {
       ok: false,
-      error: `post-stage guard could not compare the working tree to the index: ${(driftRes.stderr || driftRes.stdout).trim().slice(0, 300)}`,
+      error: `post-stage guard could not compare the working tree to the index: ${gitFailureDetail(driftRes)}`,
     };
   }
   const drifted = new Set(
@@ -3703,7 +3707,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
   if (deletedRes.code !== 0) {
     return {
       ok: false,
-      error: `post-stage guard could not read staged deletions: ${(deletedRes.stderr || deletedRes.stdout).trim().slice(0, 300)}`,
+      error: `post-stage guard could not read staged deletions: ${gitFailureDetail(deletedRes)}`,
     };
   }
   const stagedDeletions = deletedRes.stdout.split('\0').filter((path) => path && !lateLocked.has(path));
@@ -3713,7 +3717,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     if (reappeared.code !== 0) {
       return {
         ok: false,
-        error: `post-stage guard could not check reappeared deletions: ${(reappeared.stderr || reappeared.stdout).trim().slice(0, 300)}`,
+        error: `post-stage guard could not check reappeared deletions: ${gitFailureDetail(reappeared)}`,
       };
     }
     for (const path of reappeared.stdout.split('\0').filter(Boolean)) {
@@ -3822,7 +3826,7 @@ export async function commitAttributedGroups(
       return {
         committedAny,
         committedCount,
-        error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+        error: `attributed commit failed: ${gitFailureDetail(c)}`,
       };
     }
   }
@@ -4437,7 +4441,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           committedLocal: false,
           dirtyPathCount,
           committedCount,
-          error: `git add -A failed — the tree would strand uncommitted: ${(addRes.stderr || addRes.stdout).trim().slice(0, 300)}`,
+          error: `git add -A failed — the tree would strand uncommitted: ${gitFailureDetail(addRes)}`,
           oversized,
           contentErrors,
           skippedPaths,
@@ -4520,7 +4524,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         committedLocal: false,
         dirtyPathCount,
         committedCount,
-        error: `commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
+        error: `commit failed: ${gitFailureDetail(c)}`,
         oversized,
         contentErrors,
         skippedPaths,
@@ -4617,7 +4621,7 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     await runGit(['merge', '--abort'], repoPath);
     return {
       status: 'error',
-      message: `contained ${sourceRef} ancestry bridge failed: ${(merge.stderr || merge.stdout).trim().slice(0, 300)}`,
+      message: `contained ${sourceRef} ancestry bridge failed: ${gitFailureDetail(merge)}`,
     };
   }
   const joined = await runGit(['rev-parse', 'HEAD'], repoPath);

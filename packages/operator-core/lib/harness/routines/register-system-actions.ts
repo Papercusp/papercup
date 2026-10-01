@@ -563,6 +563,11 @@ import './episode-scoped-operational-reconcile-action';
 // autonomous-inbox-resolution-2026-08-31 P-009: durable routinesTick backstop
 // for the existing supervised Inbox bulk-resolver launch path.
 import './inbox-bulk-resolve-action';
+// plan-cleanup-system-repair-2026-10-01 P-004: `system:plan-cleanup-sweep` — the
+// deterministic recurring plan clean-up (same start path as the Plans-pane button;
+// a resolver only for judgment residue). Replaces the never-producing LLM plan-run
+// template `plan-cleanup-recurring-sweep-2026-09-01`.
+import './plan-cleanup-sweep-action';
 import './work-item-admission-daily-digest-action';
 // silent-intake-central-resolution-2026-09-01 P-007: `system:resolver-whole-corpus` — the
 // infrequent, quality-first whole-corpus resolver pass (same-defect merges + same-cause

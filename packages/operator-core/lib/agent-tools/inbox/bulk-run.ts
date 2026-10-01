@@ -63,9 +63,16 @@ import {
 import { deliverInboxOwnerReply } from '../coordination/inbox-reply';
 import {
   BULK_CONFIDENCE_LEVELS,
+  BULK_INTAKE_DISPOSITIONS,
+  BULK_INTAKE_DISPOSITION_OFFER,
   BULK_RECOMMENDATION_KINDS,
+  INTAKE_ATTENTION_KINDS,
+  intakeRecommendationFor,
+  isIntakeAttentionKind,
+  parseIntakeDecision,
   type BulkConfidence,
   type BulkDispositionKind,
+  type BulkIntakeDecision,
   type BulkRecommendationKind,
   type BulkResponsibility,
 } from '../../attention/bulk-dispositions';
@@ -133,6 +140,16 @@ interface ManifestItem {
     evidenceBasis: string[];
     retryCondition: string | null;
   } | null;
+  /**
+   * P-004 (R-3/R-18/R-19): present only for INTAKE inputs (observations /
+   * unverified candidates). `dispositions` is the six-way offer every intake
+   * input gets; `decision` is the persisted, attributable decision (null while
+   * the row is still pending).
+   */
+  intake?: {
+    dispositions: typeof BULK_INTAKE_DISPOSITION_OFFER;
+    decision: BulkIntakeDecision | null;
+  };
 }
 
 type LiveAction = { id: string; label: string; terminal: boolean };
@@ -347,7 +364,7 @@ async function resolveRunId(runId?: string): Promise<string | null> {
 export const bulkRunManifest = defineTool({
   name: 'inbox:bulk-run-manifest',
   description:
-    "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping.",
+    "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping. Intake inputs carry `intake.dispositions` (the six-way offer) and `intake.decision` once decided.",
   guidance: {
     when: 'FIRST call when you are woken as a bulk-resolve resolver — it tells you what you are working on and what each item can actually do. Re-read it after a consult reply lands to pick up any item whose options changed.',
     notWhen:
@@ -435,6 +452,9 @@ export const bulkRunManifest = defineTool({
           : null,
         reported:
           r.outcome === 'pending' ? null : { actionId: r.actionId, rationale: r.rationale, confidence: r.confidence },
+        ...(isIntakeAttentionKind(r.kind)
+          ? { intake: { dispositions: BULK_INTAKE_DISPOSITION_OFFER, decision: r.intakeDecision ?? null } }
+          : {}),
       });
     }
 
@@ -819,6 +839,99 @@ function autoAcceptSummary(input: {
   };
 }
 
+/**
+ * P-004 (R-3/R-18/R-19): the typed intake decision a resolver reports for an
+ * INTAKE input. `reason` is deliberately optional HERE so a missing reason
+ * fails only its own item (parseIntakeDecision refuses it) instead of
+ * rejecting the whole batch at the schema boundary.
+ */
+const IntakeDecisionArg = z
+  .object({
+    disposition: z.enum(BULK_INTAKE_DISPOSITIONS),
+    reason: softText(LIMITS.ANNOTATION).optional().describe('why — required for every disposition, reject included'),
+    owner: z
+      .enum(['owner', 'agent', 'system', 'engineering', 'unknown'])
+      .optional()
+      .describe('who owns the next step; defaults per disposition'),
+    targetRef: z.string().min(1).max(200).optional().describe('merge: the canonical work this input merges into'),
+    missingInformation: softText(LIMITS.ANNOTATION)
+      .optional()
+      .describe('retry: what must be supplied before the input can be decided'),
+  })
+  .describe(
+    'intake inputs only: promote | merge (targetRef) | investigate | retain | reject | retry (missingInformation), each with a reason',
+  );
+
+export type IntakeDecisionArgs = z.infer<typeof IntakeDecisionArg>;
+
+/**
+ * P-004 (R-3/R-18/R-19) — apply the intake rules to ONE report, before it is
+ * written. Pure: it throws an actionable error that fails only this item
+ * (runBulk isolates per-item failures), and it never defaults a missing field.
+ *
+ *   - non-intake rows: an intakeDecision is refused; otherwise unchanged.
+ *   - intake rows: must carry a validated decision (outcome `recommended`) or
+ *     be an explicit `failed` with its error. `skipped` is refused — an intake
+ *     input that cannot be decided yet is a `retry` naming what is missing.
+ *   - a decision projects onto the existing disposition/recommendation columns
+ *     (counters, settle and the report UI read those) and is persisted beside
+ *     them with its decider, so every decision is attributable.
+ */
+export function applyIntakeDecision(
+  report: BulkOutcomeReport,
+  input: { kind: string | null; intakeDecision?: IntakeDecisionArgs; decidedBy: string; now?: Date },
+): BulkOutcomeReport {
+  if (!isIntakeAttentionKind(input.kind)) {
+    if (input.intakeDecision) {
+      throw new Error(
+        `intakeDecision is only valid for intake inputs (kinds: ${INTAKE_ATTENTION_KINDS.join(', ')}); ${report.itemId} is kind "${input.kind ?? 'unknown'}"`,
+      );
+    }
+    return report;
+  }
+  if (!input.intakeDecision) {
+    if (report.outcome === 'failed') return { ...report, intakeDecision: null };
+    throw new Error(
+      `${report.itemId} is an intake input: report intakeDecision { disposition: ${BULK_INTAKE_DISPOSITIONS.join(' | ')}, reason } (retry + missingInformation when it cannot be decided yet), or outcome "failed" with an actionable error`,
+    );
+  }
+  if (report.outcome !== 'recommended') {
+    throw new Error(
+      `${report.itemId}: an intakeDecision is reported with outcome "recommended" (got "${report.outcome}")`,
+    );
+  }
+  const parsed = parseIntakeDecision(input.intakeDecision, { decidedBy: input.decidedBy, now: input.now });
+  if (!parsed.ok) throw new Error(`${report.itemId}: ${parsed.error}`);
+  const decision = parsed.decision;
+  const projected = intakeRecommendationFor(decision);
+  if (report.recommendationKind && report.recommendationKind !== projected.recommendationKind) {
+    throw new Error(
+      `${report.itemId}: recommendationKind "${report.recommendationKind}" contradicts intake disposition "${decision.disposition}" (which records as "${projected.recommendationKind}") — omit recommendationKind`,
+    );
+  }
+  if (report.disposition && report.disposition !== 'recommended' && report.disposition !== projected.disposition) {
+    throw new Error(
+      `${report.itemId}: disposition "${report.disposition}" contradicts intake disposition "${decision.disposition}" — omit disposition`,
+    );
+  }
+  if (!report.confidenceLevel && !report.confidence) {
+    throw new Error(
+      `${report.itemId}: an intake decision needs confidenceLevel (${BULK_CONFIDENCE_LEVELS.join(' | ')}) so the run's authority/confidence settings apply`,
+    );
+  }
+  return {
+    ...report,
+    disposition: projected.disposition,
+    recommendationKind: projected.recommendationKind,
+    recommendationLabel: report.recommendationLabel ?? projected.label,
+    recommendationRationale: report.recommendationRationale ?? report.rationale ?? decision.reason,
+    rationale: report.rationale ?? decision.reason,
+    responsibility: projected.responsibility,
+    retryCondition: projected.retryCondition ?? report.retryCondition ?? null,
+    intakeDecision: decision,
+  };
+}
+
 const OutcomeItem = z
   .object({
     itemId: z.string().min(1),
@@ -870,8 +983,9 @@ const OutcomeItem = z
     responsibility: z.enum(['owner', 'agent', 'system', 'engineering', 'unknown']).optional(),
     confidenceLevel: z.enum(BULK_CONFIDENCE_LEVELS).optional(),
     retryCondition: softText(LIMITS.ANNOTATION).optional(),
+    intakeDecision: IntakeDecisionArg.optional(),
   })
-  .refine((d) => d.outcome !== 'recommended' || !!d.actionId || !!d.recommendationKind, {
+  .refine((d) => d.outcome !== 'recommended' || !!d.actionId || !!d.recommendationKind || !!d.intakeDecision, {
     message: 'actionId is required for recommended outcomes',
     path: ['actionId'],
   })
@@ -921,7 +1035,7 @@ const OutcomeItem = z
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
   description:
-    'Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived.',
+    'Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived. Intake inputs (manifest `intake`) need `intakeDecision` {disposition, reason, confidenceLevel on the item} or `failed` with an error.',
   guidance: {
     when: 'After deciding each item in a bulk-resolve run. Batch several via `items:[…]` rather than one call per item.',
     notWhen: 'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
@@ -960,6 +1074,7 @@ export const bulkRunReport = defineTool({
       responsibility: z.enum(['owner', 'agent', 'system', 'engineering', 'unknown']).optional(),
       confidenceLevel: z.enum(BULK_CONFIDENCE_LEVELS).optional(),
       retryCondition: softText(LIMITS.ANNOTATION).optional(),
+      intakeDecision: IntakeDecisionArg.optional(),
       items: z.array(OutcomeItem).min(1).max(100).optional().describe('outcomes to record (1–100)'),
     })
     .refine((a) => Boolean(a.items?.length) || (Boolean(a.itemId) && Boolean(a.outcome)), {
@@ -967,7 +1082,7 @@ export const bulkRunReport = defineTool({
     })
     .superRefine((a, ctx) => {
       if (a.items?.length || a.outcome !== 'recommended') return;
-      if (!a.actionId && !a.recommendationKind) {
+      if (!a.actionId && !a.recommendationKind && !a.intakeDecision) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['actionId'],
@@ -1052,8 +1167,15 @@ export const bulkRunReport = defineTool({
             responsibility: args.responsibility,
             confidenceLevel: args.confidenceLevel,
             retryCondition: args.retryCondition,
+            intakeDecision: args.intakeDecision,
           } as z.infer<typeof OutcomeItem>,
         ];
+
+    // P-004: intake inputs (observations / unverified candidates) must end in a
+    // typed intake decision or an explicit actionable failure. The run's own
+    // snapshot says which rows are intake inputs; ids outside the snapshot are
+    // left to the existing `ignored` path below.
+    const kindById = new Map((await getRunItems(runId)).map((row) => [row.itemId, row.kind] as const));
 
     // Validate each proposed action id against what the item ACTUALLY offers,
     // before anything is written. One invocation gets one canonical snapshot;
@@ -1075,7 +1197,7 @@ export const bulkRunReport = defineTool({
           }
         }
 
-        accepted.push({
+        const base: BulkOutcomeReport = {
           itemId: r.itemId,
           outcome: r.outcome,
           actionId: r.actionId ?? null,
@@ -1093,8 +1215,18 @@ export const bulkRunReport = defineTool({
           evidenceBasis: r.evidenceBasis ?? null,
           responsibility: r.responsibility ?? null,
           retryCondition: clampText(r.retryCondition, LIMITS.ANNOTATION)?.trim() ?? null,
-        });
-        return { ok: true as const, itemId: r.itemId, outcome: r.outcome };
+          intakeDecision: null,
+        };
+        accepted.push(
+          kindById.has(r.itemId)
+            ? applyIntakeDecision(base, {
+                kind: kindById.get(r.itemId) ?? null,
+                intakeDecision: r.intakeDecision,
+                decidedBy: identity.ownerId,
+              })
+            : base,
+        );
+        return { ok: true as const, itemId: r.itemId, outcome: r.outcome, ...(r.intakeDecision ? { intakeDisposition: r.intakeDecision.disposition } : {}) };
       },
       { keyOf: ({ itemId }) => ({ itemId }) },
     );

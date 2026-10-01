@@ -1,8 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ register: vi.fn(), failOpen: vi.fn(), workflowID: 'durable-promoter-test' }));
+const h = vi.hoisted(() => ({
+  register: vi.fn(),
+  failOpen: vi.fn(),
+  reap: vi.fn(async () => [] as unknown[]),
+  workflowID: 'durable-promoter-test',
+}));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { get workflowID() { return h.workflowID; } } }));
 vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
+vi.mock('../../admission-runs-reaper', async (orig) => {
+  const actual = await orig<typeof import('../../admission-runs-reaper')>();
+  return { ...actual, reapStrandedAdmissionRuns: h.reap };
+});
 vi.mock('../../work-items-admission-promoter', async (orig) => {
   const actual = await orig<typeof import('../../work-items-admission-promoter')>();
   return { ...actual, runWorkItemAdmissionFailOpen: h.failOpen };
@@ -180,6 +189,76 @@ describe('work-item admission routine actions', () => {
 
     expect(h.failOpen).toHaveBeenCalledTimes(1);
     expect(h.failOpen.mock.calls[0]![0]).toMatchObject({ scope: 'workspace', workspaceId: 'ws' });
+    // WI-10004726 P-008: the production tick also reaps stranded admission_runs,
+    // workspace-wide, never reaping its own run.
+    expect(h.reap).toHaveBeenCalledTimes(1);
+    expect(h.reap.mock.calls[0]![1]).toMatchObject({ workspaceId: 'ws', reaperRunId: 'f-prod' });
+  });
+
+  const healthyFailOpen = {
+    runId: 'f-reap',
+    autoPromoted: [],
+    autoPromotedByHarness: {},
+    heldByScope: {},
+    scope: 'workspace' as const,
+    liveness: {
+      stale: false,
+      reason: 'healthy',
+      active: true,
+      routineExists: true,
+      lastSuccessAtMs: 1,
+      ageMs: 1,
+      thresholdMs: 90,
+    },
+  };
+
+  it('reaps stranded admission_runs on every fail-open tick and names each reaped row in the tick log', async () => {
+    const reap = vi.fn(async () => [
+      { id: 'promoter-old', harnessSlug: 'papercusp', runKind: 'promoter-tick', startedAt: '2026-09-08T18:37:02.987Z' },
+      { id: 'park-old', harnessSlug: 'papercusp', runKind: 'durable-park-audit', startedAt: '2026-09-15T08:11:50.510Z' },
+    ]);
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => healthyFailOpen,
+      reap,
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+
+    expect(reap).toHaveBeenCalledWith(ctx, 'f-reap');
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('reaped-stranded=2 [promoter-tick:promoter-old,durable-park-audit:park-old]'),
+    );
+  });
+
+  it('logs reaped-stranded=0 on a clean tick, so a silent reaper is distinguishable from an idle one', async () => {
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => healthyFailOpen,
+      reap: vi.fn(async () => []),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('reaped-stranded=0'));
+  });
+
+  it('a reaper failure never costs the tick its admissions, invalidation or log line', async () => {
+    const run = vi.fn(async () => healthyFailOpen);
+    const invalidate = vi.fn(async () => undefined);
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run,
+      reap: vi.fn(async () => { throw new Error('admission_runs locked'); }),
+      alarm: vi.fn(async () => undefined),
+      invalidate,
+      log,
+    })(ctx);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('reaped-stranded=ERROR (admission_runs locked)'));
   });
 
   it('raises the liveness alarm only on a stale fail-open verdict', async () => {

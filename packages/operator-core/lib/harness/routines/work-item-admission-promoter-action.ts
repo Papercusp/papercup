@@ -6,6 +6,7 @@ import type { Sql } from 'postgres';
 import type { AdmissionRecoveryDeps } from '../../work-item-admission-recovery';
 import { captureImprovement } from '../improvements/capture-core';
 import { notifySyncInvalidate } from '../../sync-sse';
+import { reapStrandedAdmissionRuns, type ReapedAdmissionRun } from '../../admission-runs-reaper';
 import {
   DEFAULT_PROMOTER_BATCH_SIZE,
   DEFAULT_PROMOTER_LIVENESS_MINUTES,
@@ -189,9 +190,25 @@ export function makeWorkItemAdmissionPromoterAction(overrides: Partial<Admission
 
 export interface AdmissionFailOpenActionDeps {
   run: (ctx: SystemActionCtx) => Promise<FailOpenRunResult>;
+  /**
+   * Settle stranded admission_runs rows (WI-10004726, plan
+   * work-queue-bulk-cleanup-remediation-2026-10-01 P-008). It runs here because the
+   * fail-open tick is the one admission action that fires every tick, workspace-wide,
+   * independent of model spend. The bulk-stage lease reaper fires only when a stage
+   * starts, and none started between 2026-09-05 and 2026-10-01.
+   */
+  reap: (ctx: SystemActionCtx, reaperRunId: string) => Promise<ReapedAdmissionRun[]>;
   alarm: (ctx: SystemActionCtx, result: FailOpenRunResult) => Promise<void>;
   invalidate: () => Promise<void>;
   log: (message: string) => void;
+}
+
+async function productionReap(ctx: SystemActionCtx, reaperRunId: string): Promise<ReapedAdmissionRun[]> {
+  return reapStrandedAdmissionRuns(getOrgPg().sql, {
+    workspaceId: ctx.workspaceId,
+    reaperRunId,
+    nowMs: Date.now(),
+  });
 }
 
 async function productionFailOpen(ctx: SystemActionCtx): Promise<FailOpenRunResult> {
@@ -229,6 +246,7 @@ async function productionLivenessAlarm(ctx: SystemActionCtx, result: FailOpenRun
 export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<AdmissionFailOpenActionDeps> = {}) {
   const deps: AdmissionFailOpenActionDeps = {
     run: productionFailOpen,
+    reap: productionReap,
     alarm: productionLivenessAlarm,
     invalidate: invalidateAdmissionRuns,
     log: (message) => console.log(`[${WORK_ITEM_ADMISSION_FAIL_OPEN}] ${message}`),
@@ -236,6 +254,18 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
   };
   return async (ctx: SystemActionCtx): Promise<void> => {
     const result = await deps.run(ctx);
+    // A reaper failure must never cost the fail-open its admissions, and a silent reaper is
+    // how the stranded rows were missed for weeks. So it runs after the admission work, and
+    // its outcome is always logged, including a failure.
+    let reapedSummary: string;
+    try {
+      const reaped = await deps.reap(ctx, result.runId);
+      reapedSummary = reaped.length === 0
+        ? 'reaped-stranded=0'
+        : `reaped-stranded=${reaped.length} [${reaped.map((row) => `${row.runKind}:${row.id}`).join(',')}]`;
+    } catch (error) {
+      reapedSummary = `reaped-stranded=ERROR (${error instanceof Error ? error.message : String(error)})`;
+    }
     await deps.invalidate();
     if (result.liveness.stale) await deps.alarm(ctx, result);
     const byHarness = Object.entries(result.autoPromotedByHarness)
@@ -255,7 +285,8 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
       `${ctx.installSlug}: run=${result.runId} scope=${result.scope} ` +
         `auto-promoted=${result.autoPromoted.length}${byHarness ? ` [${byHarness}]` : ''} ` +
         `held-by-scope=${heldTotal}${heldByScope ? ` [${heldByScope}]` : ''} ` +
-        `liveness=${result.liveness.stale ? 'STALE' : 'healthy'} (${result.liveness.reason})`,
+        `liveness=${result.liveness.stale ? 'STALE' : 'healthy'} (${result.liveness.reason}) ` +
+        reapedSummary,
     );
   };
 }

@@ -170,9 +170,9 @@ describe('reconcileScheduledPlanRuns', () => {
       const row = await runRow(id);
       expect(row.status).toBe('failed');
       expect(row.outcome).toBe('failed');
-      const [summary] = await sql<{ result_summary: string | null }[]>`
-        SELECT result_summary FROM harness_shared.plan_runs WHERE id = ${id}`;
-      expect(summary.result_summary).toMatch(/promotion never completed/);
+      const [summary] = await sql<{ note: string | null }[]>`
+        SELECT note FROM harness_shared.plan_runs WHERE id = ${id}`;
+      expect(summary.note).toMatch(/promotion never completed/);
     });
 
     it('leaves it running inside the grace window, so an in-flight promotion is never raced', async () => {
