@@ -949,6 +949,7 @@ interface CurrentnessRow {
   coverage_evidence_present: boolean;
   test_run_id: number | null;
   test_run_present: boolean;
+  test_run_worktree_dirty?: boolean | null;
 }
 
 function compareFingerprint(stored: string | null, current: string | null | undefined): FingerprintState {
@@ -972,14 +973,31 @@ export function classifySpecEvidenceCurrentness(
     environment: compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
     coverageEvidence:
       row.coverage_evidence_ref === null ? 'not-applicable' : row.coverage_evidence_present ? 'current' : 'stale',
-    testRun: row.test_run_id === null ? 'not-applicable' : row.test_run_present ? 'current' : 'stale',
+    // A durable testRunId proves that a ledger row exists; it does not prove that a
+    // run against a dirty shared worktree executed the committed files now being
+    // fingerprinted. The file-set measurement covers only declared paths, so a
+    // dirty run remains unknown even when those declared hashes happen to match.
+    testRun:
+      row.test_run_id === null
+        ? 'not-applicable'
+        : !row.test_run_present
+          ? 'stale'
+          : row.test_run_worktree_dirty === false
+            ? 'current'
+            : 'unknown',
   };
   const staleReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'stale')
     .map(([dimension]) => `${dimension}-stale`);
   const unknownReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'unknown')
-    .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+    .map(([dimension]) =>
+      dimension === 'testRun'
+        ? row.test_run_worktree_dirty === true
+          ? 'test-run-worktree-not-clean'
+          : 'test-run-worktree-cleanliness-unproven'
+        : `${dimension}-current-fingerprint-not-supplied`,
+    );
   const attestedDimensions = [...new Set(options.attestedDimensions ?? [])].sort();
   const provenance: EvidenceCurrentnessProvenance =
     current === undefined

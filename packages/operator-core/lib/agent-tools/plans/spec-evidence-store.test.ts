@@ -187,6 +187,41 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
     });
   });
 
+  it.each([
+    { label: 'dirty', worktreeDirty: true, expectedOverall: 'unknown' },
+    { label: 'clean', worktreeDirty: false, expectedOverall: 'current' },
+  ])(
+    '$label test-run worktree yields $expectedOverall freshness',
+    ({ worktreeDirty, expectedOverall }) => {
+      const currentness = classifySpecEvidenceCurrentness(
+        {
+          spec_is_current: true,
+          source_fingerprint: 'git:one',
+          test_fingerprint: 'sha256:test',
+          fixture_fingerprint: null,
+          rubric_fingerprint: null,
+          environment_fingerprint: null,
+          coverage_evidence_ref: null,
+          coverage_evidence_present: false,
+          test_run_id: 43,
+          test_run_present: true,
+          test_run_worktree_dirty: worktreeDirty,
+        },
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'vitest:one',
+          sourceFingerprint: 'git:one',
+          testFingerprint: 'sha256:test',
+        },
+        { provenance: 'server-measured' },
+      );
+
+      expect(currentness.overall).toBe(expectedOverall);
+      expect(currentness.dimensions.testRun).toBe(expectedOverall);
+      if (worktreeDirty) expect(currentness.unknownReasons).toContain('test-run-worktree-not-clean');
+    },
+  );
+
   it('labels an echoed caller fingerprint set attested-current and caps aggregate freshness at unknown', () => {
     const currentness = classifySpecEvidenceCurrentness(
       {
