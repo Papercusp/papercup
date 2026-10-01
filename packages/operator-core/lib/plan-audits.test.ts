@@ -1068,3 +1068,49 @@ describe('independentSiblingRepos — a checkout directly under $HOME (EI-221889
     expect(fs.readFileSync(abs, 'utf8')).toContain('sheets');
   });
 });
+
+/**
+ * WI-10005009: git-sync rewrites .git/index on every sweep, and a half-written index makes
+ * both the tracked-file snapshot and `ls-files --error-unmatch` answer "not tracked" for a
+ * committed file. A citation to that file would then be refused as untracked. isTracked must
+ * fall back to HEAD's tree, and must not promote an untracked file while doing so.
+ */
+describe('repoCitationDeps — torn index (WI-10005009)', () => {
+  const tornRepo = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-torn-index-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', [
+        '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t',
+        '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
+      ], { stdio: 'pipe' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(dir, 'tracked.ts'), 'export const x = 1;\n');
+    git('add', 'tracked.ts');
+    git('commit', '-q', '-m', 'seed');
+    fs.writeFileSync(path.join(dir, 'untracked.ts'), 'export const y = 2;\n');
+    const index = path.join(dir, '.git', 'index');
+    const bytes = fs.readFileSync(index);
+    fs.writeFileSync(index, bytes.subarray(0, Math.floor(bytes.length / 2)));
+    return dir;
+  };
+
+  it('keeps a committed file tracked, and an untracked one untracked, under a half-written index', () => {
+    const dir = tornRepo();
+    try {
+      // Calibration: the raw index read really does misreport, so this case is not vacuous.
+      let rawTracked = true;
+      try {
+        execFileSync('git', ['-C', dir, 'ls-files', '--error-unmatch', '--', 'tracked.ts'], { stdio: 'ignore' });
+      } catch {
+        rawTracked = false;
+      }
+      expect(rawTracked).toBe(false);
+
+      const deps = repoCitationDeps(dir);
+      expect(deps.isTracked('tracked.ts')).toBe(true);
+      expect(deps.isTracked('untracked.ts')).not.toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
