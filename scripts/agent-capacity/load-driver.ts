@@ -204,6 +204,29 @@ export function versionMismatches(
   return out;
 }
 
+/** The major of a `node --version` string (`v25.9.0` → 25), or null when it does not parse. */
+export function nodeMajor(version: string | null | undefined): number | null {
+  const m = /^v?(\d+)\./.exec((version ?? '').trim());
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * The recorded `node --version`s whose major differs from the replay host's `node`. A different
+ * Node major ships a different toolset: Node 25 dropped the bundled corepack, so a recorded
+ * `command -v corepack` that failed on the tower succeeds on a Node 24 VM and the replay's tool
+ * outcomes diverge (WI-10004683). Sessions recorded before `env.node` was stored are skipped;
+ * `unchecked` counts them so the caller can say the check did not cover them.
+ */
+export function nodeMismatches(
+  sessions: Pick<SessionMeta, 'env'>[],
+  installed: string,
+): { have: string; want: string[]; unchecked: number } {
+  const have = nodeMajor(installed);
+  const recorded = sessions.map((s) => s.env?.node ?? null);
+  const want = [...new Set(recorded.filter((v): v is string => !!v && nodeMajor(v) !== have))];
+  return { have: installed, want, unchecked: recorded.filter((v) => !v).length };
+}
+
 /** `<cli> --version` resolved on `PATH` (the driver's own when undefined). */
 function installedVersion(cli: string, PATH?: string): string {
   try {
@@ -445,6 +468,13 @@ async function main(): Promise<void> {
     byPath.set(p, [...(byPath.get(p) ?? []), m]);
   }
   const mismatch = [...byPath].flatMap(([p, group]) => versionMismatches(group, (cli) => installedVersion(cli, p || undefined)));
+  let nodeUnchecked = 0;
+  for (const [p, group] of byPath) {
+    const node = nodeMismatches(group, installedVersion('node', p || undefined));
+    nodeUnchecked += node.unchecked;
+    if (node.want.length) mismatch.push({ cli: 'node', have: node.have, want: node.want });
+  }
+  if (nodeUnchecked) console.log(`NOTE ${nodeUnchecked} session(s) predate the recorded node version; their node major is not checked`);
   if (mismatch.length) {
     // A different CLI build sends different requests, so the replay would diverge and read as a
     // fidelity failure. Refuse unless explicitly allowed (measured 2026-10-01: the systemd user

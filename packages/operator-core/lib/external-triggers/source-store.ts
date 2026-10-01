@@ -168,6 +168,86 @@ export async function getExternalTriggerSource(
   return rows[0] ?? null;
 }
 
+/** How a connector receives provider changes (migration 1317, plan D-010). */
+export type DataSourceSyncMode = 'poll' | 'webhook' | 'socket' | 'federated' | 'manual';
+/** Who a source's ingested data belongs to: one person, the organization, or one pot. */
+export type DataSourceScope = 'personal' | 'organization' | 'pot';
+export type DataSourceBackfillStatus = 'not-requested' | 'pending' | 'running' | 'complete' | 'failed';
+
+/**
+ * The data-source record (enterprise-data-sources P-013, plan D-010): a trigger
+ * source row plus the ingestion-policy columns migration 1317 added in place.
+ * Trigger consumers keep reading {@link ExternalTriggerSourceRow}; ingestion reads
+ * this, so a trigger is one consumer of a data source rather than its identity.
+ * The JSON policy columns are shape-checked by CHECK constraints in the database.
+ */
+export interface DataSourceRecord extends ExternalTriggerSourceRow {
+  syncMode: DataSourceSyncMode;
+  backfillStatus: DataSourceBackfillStatus;
+  scope: DataSourceScope;
+  /** The pot slug when `scope` is `pot`; null otherwise (enforced by a CHECK). */
+  scopeRef: string | null;
+  scopeMapping: Record<string, unknown>;
+  /** Provider record type -> datatype key, e.g. `{ "message": "email-message" }`. */
+  datatypeMappings: Record<string, unknown>;
+  /** Datatype key -> destinations (document / event / record); never work. */
+  destinationPolicy: Record<string, unknown>;
+  retentionPolicy: Record<string, unknown>;
+  permissionMapping: Record<string, unknown>;
+}
+
+function dataSourceColumns(sql: postgres.Sql) {
+  return sql`
+    id::text,
+    workspace_id AS "workspaceId",
+    kind,
+    owner_user_id::text AS "ownerUserId",
+    provider_account_id AS "providerAccountId",
+    credential_ref AS "credentialRef",
+    status,
+    config,
+    cursor,
+    sync_mode AS "syncMode",
+    backfill_status AS "backfillStatus",
+    scope,
+    scope_ref AS "scopeRef",
+    scope_mapping AS "scopeMapping",
+    datatype_mappings AS "datatypeMappings",
+    destination_policy AS "destinationPolicy",
+    retention_policy AS "retentionPolicy",
+    permission_mapping AS "permissionMapping"`;
+}
+
+/** Read one source as a data-source record, including its ingestion policy. */
+export async function getDataSourceRecord(
+  sql: postgres.Sql,
+  workspaceId: string,
+  sourceId: string,
+): Promise<DataSourceRecord | null> {
+  const rows = await sql<DataSourceRecord[]>`
+    SELECT ${dataSourceColumns(sql)}
+      FROM harness_shared.trigger_sources
+     WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
+       AND id = ${required(sourceId, 'source_id')}::uuid
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
+
+/** List a workspace's data sources, optionally narrowed to one scope. */
+export async function listDataSourceRecords(
+  sql: postgres.Sql,
+  workspaceId: string,
+  opts: { scope?: DataSourceScope } = {},
+): Promise<DataSourceRecord[]> {
+  const ws = required(workspaceId, 'workspace_id');
+  return sql<DataSourceRecord[]>`
+    SELECT ${dataSourceColumns(sql)}
+      FROM harness_shared.trigger_sources
+     WHERE workspace_id = ${ws}
+       ${opts.scope ? sql`AND scope = ${opts.scope}` : sql``}
+     ORDER BY created_at, id`;
+}
+
 /**
  * Read the owned, credentialed sources a replay-safe provider poller may run.
  * `error`/`disabled` are deliberately excluded: reconnect is required after a

@@ -41,6 +41,7 @@ import {
   workspaceHostTeardownBillingSubject,
   workspaceHostTeardownReleaseRefusal,
 } from '../../../workspace-host/teardown-release-receipt';
+import { findWorkspaceHostCensusProfile } from '../../../workspace-host/census-profiles';
 import {
   recordWorkspaceHostCustomerAcceptance,
   WorkspaceHostCustomerAcceptanceError,
@@ -434,7 +435,10 @@ export function createWorkspaceHostActionRoute(
           ...(stored.statusDetail ? { detail: stored.statusDetail } : {}),
         });
       }
-      if (stored.target !== target.target || target.target !== 'gcp') {
+      // Lifecycle actions are offered for every provider whose destroy has a controller-independent
+      // census (GCP, AWS): the runner refuses any other destroy, so admitting it here would only
+      // strand a host that can be provisioned but never safely torn down.
+      if (stored.target !== target.target || !findWorkspaceHostCensusProfile(target.target)) {
         return requestError('workspace-host lifecycle target is not implemented', 501, { target: target.target });
       }
 
@@ -460,6 +464,7 @@ export function createWorkspaceHostActionRoute(
             workspaceId,
             hostId,
             operationId: operationId!,
+            provider: target.target,
             billing: workspaceHostTeardownBillingSubject(destroyAdmission!.canary!),
           });
         }

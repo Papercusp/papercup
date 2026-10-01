@@ -4435,6 +4435,86 @@ production source/fixture fingerprints are unchanged, so no unchanged
 test matrix was repeated. P-008/R-8, app impact, adoption and shipment
 remain open.
 
+### Exact owner-input fingerprint guard — October 1, 20:39Z
+
+The adapter inspection confirmed that `ownerBackfill` collects path-derived
+metadata before the unchanged-byte short circuit, in newest-file order. The
+actual sweep can stop at its file/turn budgets, and duplicate session IDs use
+the existing Map's overwrite behavior. A map constructed from stored first-turn
+owners is therefore a different population from the adapter's actual input.
+
+The existing `metadataBackfills` receipt now adds `inputSha256` for owner repair:
+SHA-256 of `JSON.stringify([sessionIds, owners])` in the exact UNNEST parameter
+order. The repair computes it from the same arrays passed to postgres.js, before
+executing the query, so a failed repair retains its input fingerprint too. The
+existing completion logger carries that field without raw session or owner IDs.
+This extends the existing receipt; it adds no scanner, cache, table, timer,
+service or SQL round trip. A fingerprint cannot reconstruct the input values,
+and different fingerprints can reflect only changed traversal order.
+
+The canonical phase regression was red with **3 failures / 2 passes**, exit 1,
+because the old source omitted the fingerprint. After the source change, the
+five-file focused command passed **28 tests, zero skips, exit 0**. It compares
+the receipt with captured bound inputs, distinguishes different owners at equal
+cardinality, retains an unchanged fingerprint across failure/retry, checks one
+owner UPDATE and asserts that raw IDs stay out of the log.
+
+The maintained private background integration passed **2/2, zero skips, exit 0**
+at 20:38Z. Both children compare Codex and Claude receipt hashes with actual
+driver-bound arrays, preserve the hash across a Codex EOF owner repair, repair
+4,099 Claude turn owners from 179 sessions at EOF, retain rollback proof and
+verify private HOME/datadir removal and database-port closure. Their loaded
+source SHA-256 is `958f9bdc47721b971bf2f0d0494828ba40bee453ac20cf5f93cf2bb7771539e9`;
+child HEAD is `8a33b9bffc263a1b7185104448942cbe60bad350` plus the local edits.
+The source UPDATE SQL remains `c33700f4…`. Scoped `lint:tsc` for the source and
+both tests reported zero type errors, exit 0; scoped diff checking passed.
+
+The [canonical fingerprint evidence](p008-owner-input-fingerprint-2026-10-01-fire105.json)
+retains commands, exit codes, exact source/test/log hashes, native provenance,
+selected private receipts and limitations. Evidence-file SHA-256 is
+`43e06c5f86bed59b211c4657b241532cc8d7932b4765ace15e6a3d670cbc7f21`.
+This is a detector improvement and current private-source proof. It does not
+recover the original natural input arrays, certify shared bg-host adoption,
+explain the slow UPDATE's whole-query wait mechanism or establish app impact.
+The earlier frozen mixed-record replay remains dated evidence for its older
+source. **WI-10002830/P-008/R-8 and shipment remain open.**
+
+### Current adapter discovery owner population — October 1, 20:43Z
+
+Task `0muq03wyl11u2f1k1v0` reused the actual exported Claude adapter and
+`jsonlAtDepth` walker, then applied the source's 45-day/nonempty-file filter,
+newest-mtime ordering and Map overwrite behavior. It read metadata from paths;
+it did not read transcript payloads or launch ingestion. Source SHA-256 was
+`958f9bdc…` before and after the read. The dedicated PostgreSQL transaction
+verified repeatable-read, read-only on, statement timeout 5s and lock timeout
+1s; its client closed, task exit 0.
+
+The complete current discovery set contains **5,187 candidate files**:
+**332 unowned files**, **1,691 duplicate session-ID occurrences**, and a final
+map of **3,164 distinct sessions / 240 distinct owner strings**. Discovery
+took 868 ms. The current state read found **494 candidates with pending bytes**,
+including **449 without a saved state row**. Therefore this complete discovery
+map is **not** an observed natural sweep input: the source's file/turn budgets,
+actual insert counts and errors can select a shorter prefix.
+
+The map's ordered input fingerprint is
+`1455ca2aec361df717a98188e65320f1ec518ca0db6ade08454c91e527375726`.
+Its read-only density query matched **82,423 turns**, with minimum **0**,
+median **25**, p90 **46**, maximum **434**, **8,201 owner differences**, zero
+null turn owners and **13 sessions without indexed turns**. These are values
+at this DB snapshot relative to this path-derived map, not confirmed wrong-owner
+defects or changes to the original natural UPDATE population. The query took
+3,042 ms; the complete diagnostic receipt spans 4,152 ms. No UPDATE timing,
+execution plan, whole-query wait mechanism or app impact is inferred.
+
+The [current adapter evidence](p008-current-adapter-owner-read-2026-10-01-fire105.json)
+retains the exact script, source/discovery/input/SQL/log hashes, task identity,
+bounds, cleanup and limitations. The filesystem walk is not an atomic snapshot;
+active writers/deletions can race it. This replaces neither the historical
+2,985-session natural input nor the earlier 2,985-session database-constructed
+sample. Shared bg-host adoption remains on D-006's runtime-owner route;
+**P-008/R-8 and shipment remain open.**
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

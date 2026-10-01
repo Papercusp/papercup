@@ -4,7 +4,9 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   createOwnedExternalTriggerSource,
   disconnectOwnedExternalTriggerSources,
+  getDataSourceRecord,
   getExternalTriggerSource,
+  listDataSourceRecords,
   listOwnedExternalTriggerSources,
   listPollableExternalTriggerSources,
   renameOwnedExternalTriggerSourceAccount,
@@ -289,5 +291,58 @@ describe('external trigger source ownership', () => {
       credentialRef: 'google-workspace:second-field',
       status: 'disabled',
     });
+  });
+});
+
+// enterprise-data-sources P-013 / D-010: the same row read as a data-source record.
+describe('data-source record (migration 1317)', () => {
+  it('gives an owned source its connector defaults and personal scope without the writer naming them', async () => {
+    const source = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      credentialRef: 'google-workspace:data-source-owner',
+      status: 'ready',
+    });
+
+    await expect(getDataSourceRecord(sql, WS, source.id)).resolves.toMatchObject({
+      id: source.id,
+      kind: 'gmail',
+      ownerUserId: userId,
+      syncMode: 'poll',
+      backfillStatus: 'not-requested',
+      scope: 'personal',
+      scopeRef: null,
+      datatypeMappings: { message: 'email-message' },
+      destinationPolicy: { 'email-message': ['document', 'event'] },
+      permissionMapping: { mode: 'owner' },
+    });
+  });
+
+  it('derives organization scope for an unowned row and filters the list by scope', async () => {
+    const [org] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+      VALUES (${WS}, 'slack', 'ready')
+      RETURNING id::text AS id`;
+    const [pot] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, scope, scope_ref)
+      VALUES (${WS}, 'webhook', 'ready', 'pot', 'research-pot')
+      RETURNING id::text AS id`;
+
+    await expect(getDataSourceRecord(sql, WS, org.id)).resolves.toMatchObject({
+      scope: 'organization',
+      syncMode: 'socket',
+      ownerUserId: null,
+    });
+    const pots = await listDataSourceRecords(sql, WS, { scope: 'pot' });
+    expect(pots.map((r) => [r.id, r.scopeRef, r.syncMode])).toEqual([[pot.id, 'research-pot', 'webhook']]);
+    expect((await listDataSourceRecords(sql, WS)).map((r) => r.id).sort()).toEqual([org.id, pot.id].sort());
+  });
+
+  it('refuses a personal source with no owner', async () => {
+    await expect(
+      sql`INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, scope)
+          VALUES (${WS}, 'gmail', 'ready', 'personal')`,
+    ).rejects.toThrow(/trigger_sources_personal_owner_chk/);
   });
 });

@@ -45,7 +45,11 @@ set -euo pipefail
 TASKS=${1:?usage: bootstrap-agent-vm.sh <tasks.json>}
 : "${CLAUDE_VERSION:?set CLAUDE_VERSION to the recorded claude version}"
 : "${CODEX_VERSION:?set CODEX_VERSION to the recorded codex version}"
-NODE_VERSION=${NODE_VERSION:-24.18.1}
+# The recording host's node (the tower runs 25.9.0). A different major ships a different
+# toolset: Node 24 bundles corepack and 25 does not, so a recorded `command -v corepack` that
+# failed on the tower succeeded on a 24.x VM and the replay's tool outcomes diverged
+# (WI-10004683). load-driver refuses a replay whose node major differs from a session's env.node.
+NODE_VERSION=${NODE_VERSION:-25.9.0}
 CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
 CACHE_XFS_GB=${CACHE_XFS_GB:-}
 CACHE_XFS_IMAGE=${CACHE_XFS_IMAGE:-$CACHE.xfs.img}

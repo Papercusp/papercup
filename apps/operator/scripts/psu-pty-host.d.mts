@@ -356,6 +356,48 @@ export function nativeTurnVerifierSupport(agent: string | undefined, env?: Envir
     supported: boolean;
     reason: "no-classifier" | "no-isolated-root" | null;
 };
+/** Is this native row the kickoff PROMPT itself?
+ *
+ * WI-10004982: for claude this must be the real `type:'user'` prompt row.
+ * Claude also copies the prompt into other rows: `last-prompt` bookkeeping
+ * rows (measured on transcript 98404f60: rows 14, 21 and 34, written before
+ * AND after the reply) and a `queue-operation` row when the prompt is queued
+ * behind a running turn. Binding to a queued copy would count the PREVIOUS
+ * turn's assistant row as this kickoff's activity. Codex keeps the original
+ * any-row match, because no codex copy written after the turn is measured. */
+export function kickoffMarkerPromptRow(agent: any, row: any, markerText: any): boolean;
+/** A plain launch's marker proves submission. A native task-start or assistant
+ * row AFTER that exact marker proves model activity, including a short turn
+ * that completed before the marker scan returned. PTY output is not used as
+ * execution proof when this isolated transcript is available.
+ *
+ * WI-10004982: this reads FORWARD from the prompt row. It used to read only
+ * the last 256 KiB, but a fresh Claude session writes rows far larger than
+ * that right after the reply (measured: `instructions` 276 KB, then
+ * `prompt_snapshot` rows of 168 KB and 258 KB). The window then started PAST
+ * the reply, bound to a later `last-prompt` copy of the marker, saw no
+ * assistant row, and the host re-sent the kickoff 40 s later as a duplicate
+ * turn. Now the first call scans from the file start to the first real prompt
+ * row and records it in `anchor`. Later calls re-check that exact row, then read
+ * only the bytes not yet scanned (`anchor.scannedEndOffset`), so the cost stays
+ * flat as the transcript grows.
+ *
+ * A `started:true` answer does not advance the cursor, so repeated calls keep
+ * answering true. Every unreadable or inconsistent case returns
+ * `available:false`, which keeps the existing retry path. */
+export function nativeKickoffTurnActivityAfterMarker({ agent, env, transcriptPath, marker, markerLostChars, anchor, home, maxScanBytes, }: {
+    agent: any;
+    env?: NodeJS.ProcessEnv | undefined;
+    transcriptPath: any;
+    marker: any;
+    markerLostChars?: number | undefined;
+    anchor?: null | undefined;
+    home?: string | undefined;
+    maxScanBytes?: number | undefined;
+}): {
+    available: boolean;
+    started: boolean;
+};
 /** A queued kickoff retry may wait behind the original turn. At the final
  * write boundary only positive native execution proof cancels the retry;
  * missing or unreadable evidence preserves the existing bounded recovery. */
@@ -2730,6 +2772,10 @@ export const TURN_ROW_CLASSIFIERS: Readonly<{
     codex: typeof classifyCodexTranscriptRow;
     claude: typeof classifyClaudeTranscriptRow;
 }>;
+/** WI-10004982: how far one launch-activity probe call reads FORWARD. It
+ * matches the 64 MiB cap of the marker proof scan, so any transcript whose
+ * marker the proof could find is one this probe can also read from the start. */
+export const NATIVE_KICKOFF_SCAN_BYTES: number;
 /** The persona-refresh `reason` the operator returns when a restart would activate a
  *  priced Cupboard identity that has no funds behind it and cannot be dropped from the
  *  stack (agent-economy-flywheel P-016, D-012). The respawn is refused on it, never

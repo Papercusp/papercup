@@ -236,11 +236,16 @@ export interface IngestStats {
   phaseMs?: Record<'setup' | 'history' | 'discovery' | 'state' | 'metadata' | 'decode' | 'writes' | 'metadataBackfill' | 'chats' | 'other', number>;
   /** One receipt per nonempty adapter/repair operation, not per file or row.
    * Wall spans include database and scheduling waits; they do not measure CPU.
-   * Counts/spans identify the operation without retaining session IDs or SQL. */
+   * Counts/spans and input hashes identify the operation without retaining
+   * session IDs, owner IDs or SQL. */
   metadataBackfills?: Array<{
     sourceKind: SourceKind;
     operation: 'sessionOwners' | 'codexAdvSessions';
     requested: number;
+    /** Owner repair: SHA-256 of JSON.stringify([sessionIds, owners]) in the
+     * exact UNNEST parameter order. Captured before execution, even on failure;
+     * a fingerprint supports comparison but cannot reconstruct the values. */
+    inputSha256?: string;
     updated?: number;
     startedAtMs: number;
     durationMs: number;
@@ -1759,10 +1764,12 @@ async function backfillSessionOwners(
   sql: Sql,
   sourceKind: SourceKind,
   ownersBySession: Map<string, string>,
+  onInput: (inputSha256: string) => void,
 ): Promise<number> {
   if (!ownersBySession.size) return 0;
   const sessionIds = [...ownersBySession.keys()];
   const owners = sessionIds.map((sessionId) => ownersBySession.get(sessionId)!);
+  onInput(createHash('sha256').update(JSON.stringify([sessionIds, owners])).digest('hex'));
   const repaired = await sql`
     UPDATE harness_shared.session_turns AS turns
        SET owner = resolved.owner
@@ -2760,7 +2767,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     sourceKind: SourceKind,
     operation: NonNullable<IngestStats['metadataBackfills']>[number]['operation'],
     requested: number,
-    work: () => Promise<number>,
+    work: (receipt: NonNullable<IngestStats['metadataBackfills']>[number]) => Promise<number>,
   ): Promise<void> {
     if (!requested) return;
     const startedAtMs = Date.now();
@@ -2769,7 +2776,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
       sourceKind, operation, requested, startedAtMs, durationMs: 0, status: 'failed',
     };
     try {
-      receipt.updated = await measure('metadataBackfill', work);
+      receipt.updated = await measure('metadataBackfill', () => work(receipt));
       receipt.status = 'completed';
     } catch (err) {
       // Metadata repair must not discard successful tail/offset progress or
@@ -3000,7 +3007,8 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
         }
       }
       await measureMetadataBackfill(adapter.sourceKind, 'sessionOwners', ownerBackfill.size,
-        () => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill));
+        (receipt) => backfillSessionOwners(sql, adapter.sourceKind, ownerBackfill,
+          (inputSha256) => { receipt.inputSha256 = inputSha256; }));
       if (adapter.sourceKind === 'codex') {
         await measureMetadataBackfill(adapter.sourceKind, 'codexAdvSessions', codexMetadataBackfill.size,
           () => backfillCodexAdvSessions(sql, codexMetadataBackfill));

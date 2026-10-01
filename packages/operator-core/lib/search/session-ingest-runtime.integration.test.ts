@@ -399,11 +399,16 @@ describe('current-build ingestion on a private background runtime', () => {
           assert.equal(owners.requested, files.length);
           assert.equal(owners.updated, 0, 'already-correct owners must be a measured no-op');
           assert.equal(owners.status, 'completed');
+          const ownerInputs = ownerQueries.get('codex');
+          assert.ok(ownerInputs, 'capture the actual driver-bound owner arrays');
+          assert.equal(owners.inputSha256,
+            createHash('sha256').update(JSON.stringify(ownerInputs.parameters.slice(0, 2))).digest('hex'));
           for (const receipt of stats.metadataBackfills) {
             assert.ok(Number.isFinite(receipt.startedAtMs) && receipt.startedAtMs > 0);
             assert.ok(Number.isFinite(receipt.durationMs) && receipt.durationMs >= 0);
             assert.deepEqual(Object.keys(receipt).sort(),
-              ['sourceKind', 'operation', 'requested', 'updated', 'startedAtMs', 'durationMs', 'status'].sort());
+              ['sourceKind', 'operation', 'requested', 'updated', 'startedAtMs', 'durationMs', 'status',
+                ...(receipt.operation === 'sessionOwners' ? ['inputSha256'] : [])].sort());
           }
           const offsets = await sql.unsafe([
             'SELECT file_path, byte_offset::text FROM harness_shared.session_ingest_state',
@@ -430,6 +435,8 @@ describe('current-build ingestion on a private background runtime', () => {
           assert.equal(noTail.phaseMs.decode, 0);
           assert.equal(noTail.phaseMs.writes, 0);
           assert.equal(noTail.metadataBackfills.find(row => row.operation === 'sessionOwners').updated, 1);
+          assert.equal(noTail.metadataBackfills.find(row => row.operation === 'sessionOwners').inputSha256,
+            owners.inputSha256, 'unchanged adapter inputs retain their fingerprint after a turn-owner repair');
           const repaired = await sql.unsafe(
             "SELECT owner FROM harness_shared.session_turns WHERE source_kind = 'codex' AND session_id = $1 AND turn_idx = (SELECT min(turn_idx) FROM harness_shared.session_turns WHERE source_kind = 'codex' AND session_id = $1)",
             [ids[0]]);
@@ -563,6 +570,9 @@ describe('current-build ingestion on a private background runtime', () => {
         const captured = ownerQueries.get('claude');
         assert.ok(captured, 'capture the real source UPDATE and bound Claude parameters');
         assert.ok(captured.query.includes('UNNEST('));
+        assert.equal(claudeRepair.inputSha256,
+          createHash('sha256').update(JSON.stringify(captured.parameters.slice(0, 2))).digest('hex'),
+          'Claude receipt fingerprints the exact bound arrays, including the current candidate order');
         const beforeReplay = await sql.unsafe(
           "SELECT session_id, turn_idx, owner, xmin::text FROM harness_shared.session_turns WHERE source_kind = 'claude' ORDER BY session_id, turn_idx");
         assert.equal(beforeReplay.length, claudeTurns);

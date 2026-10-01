@@ -164,8 +164,10 @@ export async function buildHiveRekeyBootDeps(opts: {
       // per-boot regenerate). Record what the epoch tier ACTUALLY resolved + which
       // keychain tier(s) hold the id, so a mismatch is diagnosable from boot-history.
       try {
-        const { keychainProbeTiers } = await import('../../identity/keychain');
-        const tiers = await keychainProbeTiers(localDevice.keychainId);
+        // Cached per keychainId (WI-10004975): this diagnostic used to re-spawn secret-tool
+        // per harness on every rekey refresh — ~34% of a 13 GB bg-host's spawn samples.
+        const { keychainProbeTiersCached } = await import('../../identity/keychain');
+        const tiers = await keychainProbeTiersCached(localDevice.keychainId);
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,

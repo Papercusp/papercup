@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { achievedConcurrency, drive, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+import { achievedConcurrency, drive, nodeMajor, nodeMismatches, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
 
 // WI-10004672: the corpus profile limits gave each recording a different slowdown tolerance
 // (286s recorded against 300s timed out under ANY slowdown), so the limit is relative.
@@ -145,6 +145,25 @@ describe('selection and scheduling', () => {
     expect(versionMismatches(sessions, installed({ codex: 'codex-cli 0.159.2' }))).toEqual([
       { cli: 'claude', have: 'missing', want: ['2.1.284 (Claude Code)'] },
     ]);
+  });
+});
+
+// WI-10004683: recordings made on the tower's Node 25 (no bundled corepack) diverged on a Node 24
+// VM, where `command -v corepack` succeeds. The driver now compares node majors as well.
+describe('nodeMismatches', () => {
+  it('parses a node major and rejects what does not parse', () => {
+    expect(nodeMajor('v25.9.0')).toBe(25);
+    expect(nodeMajor('24.18.1\n')).toBe(24);
+    expect(nodeMajor('missing')).toBeNull();
+    expect(nodeMajor(null)).toBeNull();
+  });
+
+  it('flags a recorded major the replay host does not match, and counts sessions it cannot check', () => {
+    const sessions = [{ env: { path: null, node: 'v25.9.0' } }, { env: { path: null, node: 'v25.8.1' } }, {}];
+    expect(nodeMismatches(sessions, 'v25.1.0')).toEqual({ have: 'v25.1.0', want: [], unchecked: 1 });
+    expect(nodeMismatches(sessions, 'v24.18.1')).toEqual({ have: 'v24.18.1', want: ['v25.9.0', 'v25.8.1'], unchecked: 1 });
+    expect(nodeMismatches(sessions, 'missing').want).toEqual(['v25.9.0', 'v25.8.1']);
+    expect(nodeMismatches([{}], 'v24.18.1')).toEqual({ have: 'v24.18.1', want: [], unchecked: 1 });
   });
 });
 

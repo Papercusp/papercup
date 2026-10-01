@@ -1034,10 +1034,11 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
   return { supported: true, reason: null };
 }
 
-/** Read a bounded, complete tail from one transcript under the backend's
- * isolated root. This is shared by the turn-boundary and launch-activity
- * probes so neither can accidentally certify another live session. */
-function readIsolatedNativeTranscriptWindow({ agent, env = process.env, transcriptPath, home = homedir() }) {
+/** Open one transcript under the backend's isolated root, behind the shared
+ * containment, symlink and regular-file guards. Both native readers below go
+ * through this, so neither can accidentally certify another live session.
+ * Returns an open fd the caller MUST close, or null. */
+function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath, home = homedir() }) {
   if (!nativeTurnVerifierSupport(agent, env).supported || !transcriptPath) return null;
   let fd;
   try {
@@ -1049,54 +1050,160 @@ function readIsolatedNativeTranscriptWindow({ agent, env = process.env, transcri
     if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return null;
     fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const info = fstatSync(fd);
-    if (!info.isFile() || info.size === 0) return null;
+    if (!info.isFile() || info.size === 0) {
+      closeSync(fd);
+      return null;
+    }
+    return { fd, info };
+  } catch {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+    return null;
+  }
+}
+
+/** Read a bounded, complete TAIL from one isolated transcript. Used by the
+ * turn-boundary probe, which only needs the newest rows. */
+function readIsolatedNativeTranscriptWindow(options) {
+  const opened = openIsolatedNativeTranscript(options);
+  if (!opened) return null;
+  const { fd, info } = opened;
+  try {
     const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     const read = readSync(fd, bytes, 0, length, info.size - length);
     let tailBytes = bytes.subarray(0, read);
     if (!tailBytes.length || tailBytes[tailBytes.length - 1] !== 0x0a) return null; // newest row is being written
-    let firstByteOffset = info.size - length;
     if (info.size > length) {
       const firstNewline = tailBytes.indexOf(0x0a);
       if (firstNewline < 0) return null; // the first complete row is outside the bounded window
       tailBytes = tailBytes.subarray(firstNewline + 1);
-      firstByteOffset += firstNewline + 1;
     }
     const rows = [];
     let cursor = 0;
     while (cursor < tailBytes.length) {
       const newline = tailBytes.indexOf(0x0a, cursor);
       if (newline < 0) return null;
-      const startOffset = firstByteOffset + cursor;
-      const endOffset = firstByteOffset + newline + 1;
       const line = tailBytes.subarray(cursor, newline).toString('utf8');
-      if (line.trim()) rows.push({ row: JSON.parse(line), startOffset, endOffset });
+      if (line.trim()) rows.push(JSON.parse(line));
       cursor = newline + 1;
     }
-    return {
-      rows,
-      firstCompleteRowOffset: rows[0]?.startOffset ?? null,
-      fileIdentity: `${info.dev}:${info.ino}`,
-      size: info.size,
-    };
+    return rows;
   } catch {
     return null;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    closeSync(fd);
   }
 }
 
-/** Read rows from the bounded native window without exposing its byte metadata. */
+/** Read parsed rows from the bounded native tail window. */
 function readIsolatedNativeTranscriptRows(options) {
-  const window = readIsolatedNativeTranscriptWindow(options);
-  return window ? window.rows.map(({ row }) => row) : null;
+  return readIsolatedNativeTranscriptWindow(options);
+}
+
+/** WI-10004982: how far one launch-activity probe call reads FORWARD. It
+ * matches the 64 MiB cap of the marker proof scan, so any transcript whose
+ * marker the proof could find is one this probe can also read from the start. */
+export const NATIVE_KICKOFF_SCAN_BYTES = 64 * 1024 * 1024;
+
+/** Read COMPLETE rows FORWARD from a row boundary of one isolated transcript.
+ * `fromOffset` must be 0 or the end offset of an earlier complete row; the
+ * byte before it is checked to be a newline, so a stale or wrong offset is
+ * refused rather than parsed mid-row. A trailing row still being written is
+ * left out (it is not evidence yet) and `nextOffset` stops before it. Lines
+ * are returned unparsed so a caller can prefilter cheaply. */
+function readIsolatedNativeTranscriptForward({
+  agent,
+  env = process.env,
+  transcriptPath,
+  home = homedir(),
+  fromOffset = 0,
+  maxBytes = NATIVE_KICKOFF_SCAN_BYTES,
+}) {
+  if (!Number.isSafeInteger(fromOffset) || fromOffset < 0 || !(maxBytes > 0)) return null;
+  const opened = openIsolatedNativeTranscript({ agent, env, transcriptPath, home });
+  if (!opened) return null;
+  const { fd, info } = opened;
+  try {
+    if (fromOffset > info.size) return null; // the file shrank under the anchor
+    const lead = fromOffset > 0 ? 1 : 0;
+    const start = fromOffset - lead;
+    const length = Math.min(info.size - start, maxBytes + lead);
+    const bytes = Buffer.alloc(length);
+    const view = bytes.subarray(0, readSync(fd, bytes, 0, length, start));
+    if (lead && view[0] !== 0x0a) return null; // not a row boundary
+    const lines = [];
+    let cursor = lead;
+    while (cursor < view.length) {
+      const newline = view.indexOf(0x0a, cursor);
+      if (newline < 0) break; // still being written, or past the bound
+      const text = view.subarray(cursor, newline).toString('utf8');
+      if (text.trim()) lines.push({ text, startOffset: start + cursor, endOffset: start + newline + 1 });
+      cursor = newline + 1;
+    }
+    return { lines, fileIdentity: `${info.dev}:${info.ino}`, size: info.size, nextOffset: start + cursor };
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Is this native row the kickoff PROMPT itself?
+ *
+ * WI-10004982: for claude this must be the real `type:'user'` prompt row.
+ * Claude also copies the prompt into other rows: `last-prompt` bookkeeping
+ * rows (measured on transcript 98404f60: rows 14, 21 and 34, written before
+ * AND after the reply) and a `queue-operation` row when the prompt is queued
+ * behind a running turn. Binding to a queued copy would count the PREVIOUS
+ * turn's assistant row as this kickoff's activity. Codex keeps the original
+ * any-row match, because no codex copy written after the turn is measured. */
+export function kickoffMarkerPromptRow(agent, row, markerText) {
+  if (!markerText) return false;
+  if (agent === 'claude') {
+    if (row?.type !== 'user' || row.isMeta) return false;
+    const content = row.message?.content;
+    if (typeof content === 'string') return content.includes(markerText);
+    if (!Array.isArray(content) || content.some((block) => block?.type === 'tool_result')) return false;
+    return content.some((block) => typeof block?.text === 'string' && block.text.includes(markerText));
+  }
+  try { return JSON.stringify(row).includes(markerText); }
+  catch { return false; }
+}
+
+/** Does this native row prove the model started working? */
+function kickoffModelActivityRow(agent, row) {
+  if (agent === 'codex') {
+    if (row?.type === 'event_msg' &&
+      ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
+      return true;
+    }
+    return row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant';
+  }
+  return row?.type === 'assistant';
 }
 
 /** A plain launch's marker proves submission. A native task-start or assistant
  * row AFTER that exact marker proves model activity, including a short turn
  * that completed before the marker scan returned. PTY output is not used as
- * execution proof when this isolated transcript is available. */
-function nativeKickoffTurnActivityAfterMarker({
+ * execution proof when this isolated transcript is available.
+ *
+ * WI-10004982: this reads FORWARD from the prompt row. It used to read only
+ * the last 256 KiB, but a fresh Claude session writes rows far larger than
+ * that right after the reply (measured: `instructions` 276 KB, then
+ * `prompt_snapshot` rows of 168 KB and 258 KB). The window then started PAST
+ * the reply, bound to a later `last-prompt` copy of the marker, saw no
+ * assistant row, and the host re-sent the kickoff 40 s later as a duplicate
+ * turn. Now the first call scans from the file start to the first real prompt
+ * row and records it in `anchor`. Later calls re-check that exact row, then read
+ * only the bytes not yet scanned (`anchor.scannedEndOffset`), so the cost stays
+ * flat as the transcript grows.
+ *
+ * A `started:true` answer does not advance the cursor, so repeated calls keep
+ * answering true. Every unreadable or inconsistent case returns
+ * `available:false`, which keeps the existing retry path. */
+export function nativeKickoffTurnActivityAfterMarker({
   agent,
   env = process.env,
   transcriptPath,
@@ -1104,61 +1211,62 @@ function nativeKickoffTurnActivityAfterMarker({
   markerLostChars = 0,
   anchor = null,
   home = homedir(),
+  maxScanBytes = NATIVE_KICKOFF_SCAN_BYTES,
 }) {
-  if (!['codex', 'claude'].includes(agent) || !marker) return { available: false, started: false };
-  const window = readIsolatedNativeTranscriptWindow({ agent, env, transcriptPath, home });
-  if (!window) return { available: false, started: false };
+  const unavailable = { available: false, started: false };
+  if (!['codex', 'claude'].includes(agent) || !marker) return unavailable;
   const markerText = markerLostChars > 0 ? marker.slice(markerLostChars) : marker;
-  const rowsAfter = (entries) => {
-    for (const { row } of entries) {
-      if (agent === 'codex') {
-        if (row?.type === 'event_msg' &&
-          ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
-          return true;
-        }
-        if (row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant') {
-          return true;
-        }
-      } else if (row?.type === 'assistant') {
-        return true;
+  // The nonce tail is ASCII, so it prefilters raw lines no matter how the
+  // backend escaped the brackets; the parsed row is then checked exactly.
+  const prefilter = /([0-9a-f]{8,})⟧$/i.exec(markerText)?.[1] ?? markerText;
+  const readOptions = { agent, env, transcriptPath, home };
+  try {
+    if (anchor?.fileIdentity) {
+      const { markerStartOffset, markerEndOffset } = anchor;
+      if (!Number.isSafeInteger(markerStartOffset) || !Number.isSafeInteger(markerEndOffset) ||
+          markerEndOffset <= markerStartOffset) {
+        return unavailable;
       }
+      // Refuse unless the same file still holds the same prompt row.
+      const head = readIsolatedNativeTranscriptForward({
+        ...readOptions, fromOffset: markerStartOffset, maxBytes: markerEndOffset - markerStartOffset,
+      });
+      if (!head || head.fileIdentity !== anchor.fileIdentity || head.lines.length !== 1 ||
+          head.lines[0].endOffset !== markerEndOffset ||
+          !kickoffMarkerPromptRow(agent, JSON.parse(head.lines[0].text), markerText)) {
+        return unavailable;
+      }
+      const from = Math.max(markerEndOffset, Number.isSafeInteger(anchor.scannedEndOffset) ? anchor.scannedEndOffset : 0);
+      const rest = readIsolatedNativeTranscriptForward({ ...readOptions, fromOffset: from, maxBytes: maxScanBytes });
+      if (!rest || rest.fileIdentity !== anchor.fileIdentity) return unavailable;
+      for (const line of rest.lines) {
+        if (kickoffModelActivityRow(agent, JSON.parse(line.text))) return { available: true, started: true };
+      }
+      anchor.scannedEndOffset = rest.nextOffset;
+      return { available: true, started: false };
     }
-    return false;
-  };
 
-  if (anchor?.fileIdentity) {
-    const markerEndOffset = anchor.markerEndOffset;
-    if (window.fileIdentity !== anchor.fileIdentity || !Number.isFinite(markerEndOffset) || window.size < markerEndOffset) {
-      return { available: false, started: false };
-    }
-    // Every complete row in this tail is after the proven marker row. Keep the
-    // bounded read, but no longer require the old marker itself to be present.
-    if (window.firstCompleteRowOffset != null && window.firstCompleteRowOffset >= markerEndOffset) {
-      return { available: true, started: rowsAfter(window.rows) };
-    }
-    // The window still overlaps the marker row; re-anchor there before using
-    // any later activity, and refuse if the file no longer contains that row.
-    const markerIndex = window.rows.findIndex(({ row, endOffset }) => {
-      if (endOffset !== markerEndOffset) return false;
-      try { return JSON.stringify(row).includes(markerText); }
-      catch { return false; }
-    });
-    if (markerIndex < 0) return { available: false, started: false };
-    return { available: true, started: rowsAfter(window.rows.slice(markerIndex + 1)) };
-  }
-
-  for (let index = 0; index < window.rows.length; index += 1) {
-    let serialized;
-    try { serialized = JSON.stringify(window.rows[index].row); }
-    catch { return { available: false, started: false }; }
-    if (!serialized.includes(markerText)) continue;
+    const scan = readIsolatedNativeTranscriptForward({ ...readOptions, fromOffset: 0, maxBytes: maxScanBytes });
+    if (!scan) return unavailable;
+    const markerIndex = scan.lines.findIndex(({ text }) =>
+      text.includes(prefilter) && kickoffMarkerPromptRow(agent, JSON.parse(text), markerText));
+    if (markerIndex < 0) return unavailable;
+    const markerLine = scan.lines[markerIndex];
     if (anchor) {
-      anchor.fileIdentity = window.fileIdentity;
-      anchor.markerEndOffset = window.rows[index].endOffset;
+      anchor.fileIdentity = scan.fileIdentity;
+      anchor.markerStartOffset = markerLine.startOffset;
+      anchor.markerEndOffset = markerLine.endOffset;
+      anchor.scannedEndOffset = null;
     }
-    return { available: true, started: rowsAfter(window.rows.slice(index + 1)) };
+    for (const line of scan.lines.slice(markerIndex + 1)) {
+      if (kickoffModelActivityRow(agent, JSON.parse(line.text))) return { available: true, started: true };
+    }
+    if (anchor) anchor.scannedEndOffset = scan.nextOffset;
+    return { available: true, started: false };
+  } catch {
+    // A malformed complete row is not evidence either way.
+    return unavailable;
   }
-  return { available: false, started: false };
 }
 
 /** A queued kickoff retry may wait behind the original turn. At the final
@@ -8370,7 +8478,9 @@ export function hostThroughPty(o) {
         // proof returned and must not become a late sampling baseline.
         const readLastOutputAt = () => activity.snapshot().lastOutputAt ?? 0;
         const kickoffMarker = leadingTurnOriginMarker(launchKickoff);
-        const kickoffMarkerAnchor = { fileIdentity: null, markerEndOffset: null };
+        const kickoffMarkerAnchor = {
+          fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null,
+        };
         const nativeTurnActivity = kickoffMarker && proof.nativeRef &&
           nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported
           ? () => nativeKickoffTurnActivityAfterMarker({

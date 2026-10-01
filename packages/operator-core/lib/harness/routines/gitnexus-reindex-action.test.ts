@@ -2491,10 +2491,12 @@ describe('canary edge queries target the REAL graph schema', () => {
 
     it('no execFile in the source builds a bare [cypher, query] argv any more', () => {
       expect(CODE).not.toMatch(/\[\s*'cypher',\s*query\s*\]/);
-      // Both cypher helpers route through the builder (positive control: the builder is
-      // referenced at least twice — once per helper — outside its own definition).
-      const uses = CODE.match(/canaryCypherArgv\(repoName, query\)/g) ?? [];
-      expect(uses.length).toBeGreaterThanOrEqual(2);
+      // Both cypher helpers route through ONE sidecar-routed runner (WI-10004975), and that
+      // runner builds its argv with the builder. Positive controls: the runner's exec names
+      // the builder, and each helper (scalar + first-string) calls the runner.
+      expect(CODE).toMatch(/execFileViaSidecar\(bin, canaryCypherArgv\(repoName, query\)/);
+      const viaRunner = CODE.match(/await runCanaryCypher\(bin, root, repoName, query, timeoutMs\)/g) ?? [];
+      expect(viaRunner.length).toBeGreaterThanOrEqual(2);
     });
 
     it('the tick passes the routine repoName into runCanary (not the module default)', () => {

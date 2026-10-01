@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const probe = vi.hoisted(() => ({
   clock: 0, unchangedPath: '', unchangedSize: 0, failInsert: false,
   failOwners: false,
+  ownerParams: [] as string[][],
   queries: [] as string[],
 }));
 
@@ -21,6 +23,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       return Promise.resolve(Object.assign([], { count: 1 }));
     }
     if (query.includes('UPDATE harness_shared.session_turns AS turns')) {
+      probe.ownerParams = values.slice(0, 2) as string[][];
       if (probe.failOwners) return Promise.reject(new Error('injected owner backfill failure'));
       return Promise.resolve(Object.assign([], { count: 3 }));
     }
@@ -92,6 +95,7 @@ beforeEach(async () => {
   probe.queries = [];
   probe.failInsert = false;
   probe.failOwners = false;
+  probe.ownerParams = [];
   vi.spyOn(performance, 'now').mockImplementation(() => probe.clock);
 });
 
@@ -115,6 +119,7 @@ describe('ingestion phase attribution', () => {
     expect(stats.phaseMs!.metadataBackfill).toBeGreaterThan(0);
     expect(stats.metadataBackfills).toEqual([
       { sourceKind: 'codex', operation: 'sessionOwners', requested: 2, updated: 3,
+        inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
       { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
@@ -132,6 +137,7 @@ describe('ingestion phase attribution', () => {
     expect(failed.errorSample).toContain('codex owner backfill: injected owner backfill failure');
     expect(failed.metadataBackfills).toEqual([
       { sourceKind: 'codex', operation: 'sessionOwners', requested: 2,
+        inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         startedAtMs: expect.any(Number), durationMs: 7, status: 'failed' },
       { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
@@ -142,6 +148,29 @@ describe('ingestion phase attribution', () => {
     expect(retried.skipped).toBeUndefined();
     expect(retried.errors).toBe(0);
     expect(retried.metadataBackfills?.[0]).toMatchObject({ updated: 3, status: 'completed' });
+    expect(retried.metadataBackfills?.[0].inputSha256).toBe(failed.metadataBackfills?.[0].inputSha256);
+  });
+
+  it('fingerprints the exact bound owner inputs and distinguishes changed owners at equal cardinality', async () => {
+    const fingerprint = () => createHash('sha256').update(JSON.stringify(probe.ownerParams)).digest('hex');
+    const initial = await runSessionIngestOnce();
+    const initialHash = initial.metadataBackfills![0].inputSha256;
+    expect(initialHash).toBe(fingerprint());
+    expect(probe.ownerParams[0]).toHaveLength(2);
+    const queryCount = probe.queries.filter(q => q.includes('UPDATE harness_shared.session_turns AS turns')).length;
+    expect(queryCount).toBe(1);
+    const line = sessionIngestLogLine(initial)!;
+    expect(line).toContain(initialHash);
+    expect(line).not.toContain('phase-owner');
+    for (const sessionId of probe.ownerParams[0]) expect(line).not.toContain(sessionId);
+
+    await writeFile(join(root, 'su-codex-homes', 'session-4242', 'papercusp-diagnostics.json'),
+      '{"lockOwnerSid":"changed-phase-owner"}');
+    const changed = await runSessionIngestOnce();
+    expect(changed.metadataBackfills![0].requested).toBe(initial.metadataBackfills![0].requested);
+    expect(changed.metadataBackfills![0].inputSha256).toBe(fingerprint());
+    expect(changed.metadataBackfills![0].inputSha256).not.toBe(initialHash);
+    expect(changed.metadataBackfills![1]).not.toHaveProperty('inputSha256');
   });
 
   it('retains failed-write time while preserving the failed file offset and releasing the sweep latch', async () => {

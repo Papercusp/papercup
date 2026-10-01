@@ -6982,6 +6982,60 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
   return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind, satisfaction: r.satisfaction }));
 }
 
+/** One unresolved `blocks` edge on an item the reader holds — see `readHeldUnresolvedDepBlockers`. */
+export interface HeldUnresolvedDepBlocker {
+  /** The held (blocked) item's feature_id. */
+  featureId: string;
+  /** The edge's blocker ref, in the blocker family's own form (bare issue id, or `<harness>#<id>`). */
+  blockerRef: string;
+  blockerKind: string;
+  /** When the edge was written, so a reader can age the wait. */
+  since: string | null;
+}
+
+/**
+ * Every unresolved `blocks` edge on the work items `ownerId` currently holds — the EDGE-side
+ * twin of the held-item `externalBlockers` read in `derive-awaiting.ts` (WI-10005020, plan
+ * feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01 D-008 §4a). R-15 moves
+ * work-item-ref external blockers onto `work_item_deps` edges; without this read a migrated item
+ * silently drops out of the sender's `awaiting` stamp.
+ *
+ * It uses the same per-family blocked-ref form and the same `unsatisfiedBlockerSql` predicate as
+ * the claim floor, so it names exactly the edges that gate the queue: a `settled` edge whose
+ * blocker is done OR dropped is satisfied and is not listed. Bounded; throws like any read — the
+ * caller owns fail-soft.
+ */
+export async function readHeldUnresolvedDepBlockers(args: {
+  ownerId: string;
+  workspaceId: string;
+  limit: number;
+}): Promise<HeldUnresolvedDepBlocker[]> {
+  if (!args.ownerId || !args.workspaceId || args.limit <= 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string; blocker_ref: string; blocker_kind: string; created_at: Date | string | null }[]>`
+    SELECT wi.feature_id, d.blocker_ref, d.blocker_kind, d.created_at
+      FROM harness_shared.work_items wi
+      JOIN harness_shared.work_item_deps d
+        ON d.workspace_id = 'default'
+       AND d.dep_type = 'blocks'
+       AND d.blocked_ref = CASE
+             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             ELSE wi.harness_slug || '#' || wi.feature_id
+           END
+     WHERE wi.workspace_id = ${args.workspaceId}
+       AND wi.taken_by = ${args.ownerId}
+       AND wi.status NOT IN ('done', 'resolved', 'deprecated', 'dropped')
+       AND ${unsatisfiedBlockerSql(sql)}
+     ORDER BY d.created_at DESC NULLS LAST, wi.feature_id, d.blocker_ref
+     LIMIT ${args.limit}`;
+  return rows.map((r) => ({
+    featureId: r.feature_id,
+    blockerRef: r.blocker_ref,
+    blockerKind: r.blocker_kind,
+    since: r.created_at == null ? null : new Date(r.created_at).toISOString(),
+  }));
+}
+
 /**
  * Find active work held by `member` whose unresolved blocker is `dependencyId`.
  *

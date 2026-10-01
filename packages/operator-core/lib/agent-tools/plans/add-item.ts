@@ -173,30 +173,57 @@ export const argsSchema = z
         'pass the item string as `text`. `title` and `body` are each accepted as an alias for it, but not BOTH at once — this tool stores ONE item string, so combine them into `text` yourself rather than have this tool guess a separator and an order you did not specify.',
     },
   )
-  .refine(
-    (a) =>
-      (a.items?.length ?? 0) > 0
-        ? // Bulk form: every item must RESOLVE a slug, phase, text and importance (its
-          // own or the batch fallback). The handler dereferences the resolved phase
-          // (`as string` casts), so an unresolvable field used to escape validation and
-          // crash inside the plan lock with "Cannot read properties of undefined
-          // (reading 'slice')".
-          a.items!.every(
-            (it) =>
-              Boolean(it.slug ?? a.slug) &&
-              Boolean(it.phase ?? a.phase) &&
-              Boolean(itemTextOrUndefined(it)) &&
-              Boolean(it.importance ?? a.importance),
-          )
-        : Boolean(a.slug) &&
-          Boolean(a.phase) &&
-          Boolean(itemTextOrUndefined(a)) &&
-          Boolean(a.importance),
-    {
-      message:
-        'pass { slug, phase, text, importance } for one, or items:[{ text, importance }] (with batch slug/phase) / items:[{ slug, phase, text, importance }] for many — every item must resolve a slug, a phase, a text (or its `title`/`body` alias) AND an importance (per-item or batch-level)',
-    },
-  );
+  // Every item must RESOLVE a slug, phase, text and importance (its own or the batch
+  // fallback). The handler dereferences the resolved phase (`as string` casts), so an
+  // unresolvable field used to escape validation and crash inside the plan lock with
+  // "Cannot read properties of undefined (reading 'slice')".
+  //
+  // This is a superRefine emitting ONE path-addressed issue per unresolved field, NOT a
+  // boolean refine with one static message (EI-23745289035139187): a single message
+  // cannot say WHICH of the four fields is still unresolved, so a caller who satisfied
+  // one of them got the byte-identical refusal back and had no signal to converge on.
+  // Per-field issues make the refusal SHRINK as the input improves, and name the
+  // field's type/domain on the FIRST refusal (including that `phase: null` is not
+  // accepted — `plans:items` reports phase:null for existing items, which invites it).
+  .superRefine((a, ctx) => {
+    const bulk = (a.items?.length ?? 0) > 0;
+    const targets: Array<{ it: z.infer<typeof itemSpec>; path: Array<string | number> }> = bulk
+      ? a.items!.map((it, i) => ({ it, path: ['items', i] }))
+      : [{ it: a as z.infer<typeof itemSpec>, path: [] }];
+    const where = bulk ? ' (per-item, or once at batch level)' : '';
+    for (const { it, path } of targets) {
+      if (!(it.slug ?? a.slug)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...path, 'slug'],
+          message: `required${where} — the plan slug (string), e.g. "my-plan-2026-01-01".`,
+        });
+      }
+      if (!(it.phase ?? a.phase)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...path, 'phase'],
+          message: `required${where} — a phase heading string such as "Phase 1 — Tooling". A name not starting with "Phase" is auto-prefixed ("Baseline" → "Phase — Baseline"); null/"" are not accepted.`,
+        });
+      }
+      // title+body together is already refused by the alias refine above, with its own
+      // message — don't pile a misleading "text is missing" on top of it.
+      if (resolveItemText(it).ok && !itemTextOrUndefined(it)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...path, 'text'],
+          message: `required${where} — the item string, as \`text\` (or its \`title\`/\`body\` alias).`,
+        });
+      }
+      if (!(it.importance ?? a.importance)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [...path, 'importance'],
+          message: `required${where} — one of ${[...IMPORTANCE_LEVELS].join('|')}; there is no default, choose it deliberately (most routine items are \`normal\`).`,
+        });
+      }
+    }
+  });
 
 interface NewItem {
   slug: string;

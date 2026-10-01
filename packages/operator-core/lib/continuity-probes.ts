@@ -567,6 +567,14 @@ function observedScalar(value: unknown): unknown {
 
 export interface ContinuityProbeDispatchContext {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Per-probe dispatch budget. Defaults to CONTINUITY_PROBE_TIMEOUT_MS, which is
+   * sized for the wake/orient replay path where every probe sits on a turn's
+   * critical path. A deliberate fail-closed caller (scorecard criterion probes)
+   * must pass a budget sized to the dispatched tool's measured tail latency, or
+   * a slow-but-healthy read is refused as unjudgeable (EI-24809550207915153).
+   */
+  timeoutMs?: number;
 }
 
 async function runOne(
@@ -634,9 +642,10 @@ async function runOne(
     probe.kind === 'tool'
       ? { ...probe.args, ...(probe.projection !== undefined ? { projection: probe.projection } : {}) }
       : { cell: probe.cell, ...(probe.as ? { as: probe.as } : {}) };
+  const timeoutMs = ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS;
   const dispatched = await withBoundedTimeout(ctx.dispatchTool(name, args), {
     fallback: null,
-    timeoutMs: CONTINUITY_PROBE_TIMEOUT_MS,
+    timeoutMs,
     label: `continuity-probe:${name}`,
   });
   if (dispatched.degraded || dispatched.value === null) {
@@ -646,7 +655,7 @@ async function runOne(
       executed: true,
       diagnostic: {
         code: dispatched.reason ?? 'empty_result',
-        message: dispatched.errorMessage ?? `probe ${name} did not return within its budget`,
+        message: dispatched.errorMessage ?? `probe ${name} did not return within its ${timeoutMs}ms budget`,
       },
     };
   }
@@ -716,7 +725,7 @@ export async function runContinuityProbeBatch(
     limits: {
       maxProbes: CONTINUITY_PROBE_MAX_PER_WAKE,
       concurrency: CONTINUITY_PROBE_CONCURRENCY,
-      timeoutMs: CONTINUITY_PROBE_TIMEOUT_MS,
+      timeoutMs: ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS,
       maxResultBytes: CONTINUITY_PROBE_RESULT_MAX_BYTES,
       maxBatchBytes: CONTINUITY_PROBE_BATCH_MAX_BYTES,
     },

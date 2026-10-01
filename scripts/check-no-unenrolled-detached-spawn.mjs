@@ -113,6 +113,7 @@ export const ALLOWLIST = new Map([
   // these two should come off the list.
   ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
   ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+  ['packages/operator-core/lib/release/admission-fix-precheck.ts', 'detached ONLY to lead a process group so a timeout (or a stdout-holding grandchild after exit) group-kills the pre-check subtree; the child is awaited and dies with the call (WI-10004928 part 5)'],
   // Same category-(2) shape, verified first-hand (WI-10004340): each spawn site is inside
   // `await new Promise((resolve) => …)` that resolves on the child's `close`, and `detached`
   // exists only so the timeout can `process.kill(-child.pid, 'SIGTERM')` the whole replay /

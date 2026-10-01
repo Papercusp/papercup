@@ -31,7 +31,7 @@ function census(overrides: Partial<GcpWorkspaceHostResourceCensus> = {}): GcpWor
 
 describe('teardown.resource-census', () => {
   it('names the eight GCP resource kinds the census covers as its identity', () => {
-    const stage = workspaceHostResourceCensusStage();
+    const stage = workspaceHostResourceCensusStage('gcp');
     expect(stage.stage).toBe(WORKSPACE_HOST_RESOURCE_CENSUS_STAGE);
     expect(stage.identity).toEqual({
       provider: 'gcp',
@@ -39,8 +39,50 @@ describe('teardown.resource-census', () => {
     });
   });
 
+  it('binds an AWS host to the AWS kind set, so a GCP census can never close an AWS release', () => {
+    expect(workspaceHostResourceCensusStage('aws').identity).toEqual({
+      provider: 'aws',
+      kinds: ['disk', 'snapshot', 'vm'],
+    });
+    expect(() => workspaceHostResourceCensusStage('azure')).toThrow(/no controller-independent workspace-host census/);
+  });
+
+  it('judges AWS coverage against the AWS kinds only (no GCP network kinds required)', () => {
+    const awsCensus = census({
+      inventoryEvidence: census()
+        .inventoryEvidence.filter((evidence) => ['vm', 'disk', 'snapshot'].includes(evidence.kind)),
+    });
+    const committed = workspaceHostResourceCensusOutcome({
+      subject: SUBJECT,
+      disposition: 'discard',
+      provider: 'aws',
+      census: awsCensus,
+    });
+    expect(committed.outcome).toBe('committed');
+    expect(committed.evidenceRefs.some((ref) => ref.startsWith('census-uncovered:'))).toBe(false);
+
+    // The same AWS-shaped census judged as GCP is missing five kinds and must refuse.
+    const asGcp = workspaceHostResourceCensusOutcome({
+      subject: SUBJECT,
+      disposition: 'discard',
+      provider: 'gcp',
+      census: awsCensus,
+    });
+    expect(asGcp.outcome).toBe('refused');
+    expect(asGcp.evidenceRefs).toContain('census-uncovered:nat');
+
+    const awsMissingSnapshot = workspaceHostResourceCensusOutcome({
+      subject: SUBJECT,
+      disposition: 'discard',
+      provider: 'aws',
+      census: census({ inventoryEvidence: awsCensus.inventoryEvidence.filter((evidence) => evidence.kind !== 'snapshot') }),
+    });
+    expect(awsMissingSnapshot.outcome).toBe('refused');
+    expect(awsMissingSnapshot.evidenceRefs).toContain('census-uncovered:snapshot');
+  });
+
   it('commits a clean census whose inventory covered every kind, naming each kind it read', () => {
-    const outcome = workspaceHostResourceCensusOutcome({ subject: SUBJECT, disposition: 'discard', census: census() });
+    const outcome = workspaceHostResourceCensusOutcome({ subject: SUBJECT, disposition: 'discard', provider: 'gcp', census: census() });
     expect(outcome.outcome).toBe('committed');
     expect(outcome.evidenceRefs).toEqual(
       expect.arrayContaining([
@@ -57,7 +99,7 @@ describe('teardown.resource-census', () => {
     const partial = census({
       inventoryEvidence: census().inventoryEvidence.filter((evidence) => evidence.kind !== 'nat'),
     });
-    const outcome = workspaceHostResourceCensusOutcome({ subject: SUBJECT, disposition: 'discard', census: partial });
+    const outcome = workspaceHostResourceCensusOutcome({ subject: SUBJECT, disposition: 'discard', provider: 'gcp', census: partial });
     expect(outcome.outcome).toBe('refused');
     expect(outcome.evidenceRefs).toContain('census-uncovered:nat');
   });
@@ -71,6 +113,7 @@ describe('teardown.resource-census', () => {
     const outcome = workspaceHostResourceCensusOutcome({
       subject: SUBJECT,
       disposition: 'snapshot',
+      provider: 'gcp',
       census: census({ clean: false, untracked: [survivor] }),
     });
     expect(outcome.outcome).toBe('refused');

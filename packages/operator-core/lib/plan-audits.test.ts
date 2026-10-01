@@ -1107,8 +1107,11 @@ describe('repoCitationDeps — torn index (WI-10005009)', () => {
       expect(rawTracked).toBe(false);
 
       const deps = repoCitationDeps(dir);
-      expect(deps.isTracked('tracked.ts')).toBe(true);
-      expect(deps.isTracked('untracked.ts')).not.toBe(true);
+      // isTracked is optional on the deps type; require it, so the negative case below
+      // cannot pass vacuously through an absent reader.
+      expect(deps.isTracked).toBeTypeOf('function');
+      expect(deps.isTracked?.('tracked.ts')).toBe(true);
+      expect(deps.isTracked?.('untracked.ts')).not.toBe(true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

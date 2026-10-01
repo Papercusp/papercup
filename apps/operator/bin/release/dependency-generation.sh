@@ -1572,8 +1572,47 @@ dependency_generation_copy_lock_file() {
     "${DEPENDENCY_GENERATION_COPY_LOCK_FILE:-${TMPDIR:-/tmp}/papercusp-dependency-generation-copy.lock}"
 }
 
+# WI-10004928 part 6: total I/O (rchar+wchar) of a pid and all its live
+# descendants, or empty when it cannot be measured (pid gone, /proc unreadable,
+# another pid namespace). The copy-lock waiter treats any CHANGE in this number
+# as the holder making progress; a child exiting also changes it, which is
+# still activity. Reads only /proc, so a sample costs milliseconds.
+dependency_generation_subtree_io() {
+  local root="$1" pids p total='' r w
+  case "$root" in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$root" 2>/dev/null || return 0
+  pids="$( { ps -e -o pid=,ppid= 2>/dev/null || true; } | awk -v root="$root" '
+    { kids[$2] = kids[$2] " " $1 }
+    END {
+      queue[1] = root; n = 1; i = 1
+      while (i <= n) {
+        p = queue[i++]; print p
+        m = split(kids[p], c, " ")
+        for (j = 1; j <= m; j++) queue[++n] = c[j]
+      }
+    }')"
+  for p in $pids; do
+    [ -r "/proc/$p/io" ] || continue
+    r="$(awk '$1 == "rchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
+    w="$(awk '$1 == "wchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
+    [ -n "$r$w" ] || continue
+    total=$(( ${total:-0} + ${r:-0} + ${w:-0} ))
+  done
+  [ -n "$total" ] && printf '%s\n' "$total"
+  return 0
+}
+
+# The copy lock's timeout is a STALL budget, not a wall-clock one (WI-10004928
+# part 6). A full tree copy takes ~20 min, so a wall-clock 600s budget made every
+# waiter behind a healthy copy fail with exit 76 and lose a whole gate round.
+# The waiter keeps waiting while the holder's subtree I/O keeps changing, fails
+# after DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC (default 600) without
+# progress, and never waits past DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC
+# (default 5400). An unmeasurable holder gets no credit for progress, which
+# keeps the old wall-clock behaviour for that case.
 dependency_generation_acquire_copy_lock() {
-  local op="$1" lock fd timeout_sec started now waited next_notice holder
+  local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
+  local holder_pid io last_io last_progress next_sample idle reason
   if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
     DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
@@ -1584,6 +1623,9 @@ dependency_generation_acquire_copy_lock() {
   fi
   timeout_sec="${DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC:-600}"
   case "$timeout_sec" in ''|*[!0-9]*) timeout_sec=600 ;; esac
+  max_sec="${DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC:-5400}"
+  case "$max_sec" in ''|*[!0-9]*) max_sec=5400 ;; esac
+  [ "$max_sec" -ge "$timeout_sec" ] || max_sec="$timeout_sec"
   lock="$(dependency_generation_copy_lock_file)"
   mkdir -p "$(dirname "$lock")" 2>/dev/null || true
   exec {fd}>>"$lock" || {
@@ -1592,17 +1634,36 @@ dependency_generation_acquire_copy_lock() {
   }
   started="$(date +%s)"
   next_notice=30
+  last_io=''
+  last_progress="$started"
+  next_sample="$started"
   while ! flock -n "$fd"; do
     now="$(date +%s)"
     waited=$((now - started))
     holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
-    if [ "$waited" -ge "$timeout_sec" ]; then
-      dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=${waited}s timeout=${timeout_sec}s holder=${holder:-unknown} op=$op lock=$lock"
+    if [ "$now" -ge "$next_sample" ]; then
+      holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+      io="$(dependency_generation_subtree_io "$holder_pid" || true)"
+      if [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; then
+        last_progress="$now"
+      fi
+      last_io="$io"
+      next_sample=$((now + ${DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC:-5}))
+    fi
+    idle=$((now - last_progress))
+    reason=''
+    if [ "$waited" -ge "$max_sec" ]; then
+      reason=cap
+    elif [ "$idle" -ge "$timeout_sec" ]; then
+      if [ -n "$last_io" ]; then reason=stalled; else reason=unmeasurable; fi
+    fi
+    if [ -n "$reason" ]; then
+      dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=${waited}s idle=${idle}s timeout=${timeout_sec}s max=${max_sec}s reason=$reason holder=${holder:-unknown} op=$op lock=$lock"
       exec {fd}>&-
       return 76
     fi
     if [ "$waited" -ge "$next_notice" ]; then
-      dependency_generation_log "still waiting for the host dependency-copy lock after ${waited}s of ${timeout_sec}s (holder ${holder:-unknown})"
+      dependency_generation_log "still waiting for the host dependency-copy lock after ${waited}s (idle ${idle}s of ${timeout_sec}s, cap ${max_sec}s; holder ${holder:-unknown})"
       next_notice=$((waited + 30))
     fi
     sleep 0.2

@@ -2933,6 +2933,104 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     expect(readFileSync(`${lock}.holder`, 'utf8')).toMatch(/^pid=\d+ op=copy /);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  // WI-10004928 part 6: the timeout is a STALL budget. A waiter behind a holder
+  // whose process subtree keeps doing I/O keeps waiting past it; a silent live
+  // holder still times out, and nothing waits past the hard cap.
+  async function holdLock(lock: string, workFile: string, script: string) {
+    const holder = spawn(
+      'flock',
+      [lock, 'bash', '-c', `printf 'pid=%s op=fixture since=0\\n' "$$" > "$LOCK.holder"; ${script}`],
+      { stdio: 'ignore', detached: true, env: { ...process.env, LOCK: lock, WORK: workFile } },
+    );
+    const exited = new Promise((r) => holder.once('exit', r));
+    for (let i = 0; i < 100; i++) {
+      if (spawnSync('flock', ['-n', lock, 'true']).status !== 0 && existsSync(`${lock}.holder`)) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const kill = () => {
+      try {
+        process.kill(-(holder.pid as number), 'SIGKILL');
+      } catch {
+        holder.kill('SIGKILL');
+      }
+    };
+    return { exited, kill };
+  }
+
+  const waitEnv = (lock: string, extra: Record<string, string>) => ({
+    DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+    DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC: '0',
+    ...extra,
+  });
+
+  it('keeps waiting past the stall budget while the holder is making progress', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'progress.lock');
+    const held = await holdLock(
+      lock,
+      join(root, 'work'),
+      'for i in $(seq 1 60); do printf "%04096d" 0 >> "$WORK"; sleep 0.1; done',
+    );
+    try {
+      const started = Date.now();
+      // A 2s budget, not 1s: one sample of a busy host's process table can take
+      // most of a second, and progress needs two samples to be seen at all.
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+        waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '2' }),
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('ACQUIRED');
+      expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      // The holder ran ~6s, well past the 2s stall budget.
+      expect(Date.now() - started).toBeGreaterThan(4000);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('times out reason=stalled behind a live holder that does no I/O', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'stalled.lock');
+    const held = await holdLock(lock, join(root, 'work'), 'sleep 30');
+    try {
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter',
+        waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1' }),
+      );
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=stalled/);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('never waits past the hard cap, even behind a progressing holder', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'cap.lock');
+    const held = await holdLock(
+      lock,
+      join(root, 'work'),
+      'for i in $(seq 1 300); do printf "%04096d" 0 >> "$WORK"; sleep 0.1; done',
+    );
+    try {
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter',
+        waitEnv(lock, {
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+          DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '2',
+        }),
+      );
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=cap/);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('the lock is re-entrant within one process', () => {
     const { root } = copyFixture();
     const result = runShell(
