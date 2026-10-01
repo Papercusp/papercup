@@ -33,6 +33,7 @@ import { evaluatePlanStartReadiness, type PlanStartReadiness } from '../../agent
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { checkPlanAdmission, type PlanAdmissionRefusal } from '../../agent-tools/plans/plan-admission-gate';
 import { routineStorageSlug } from '../../pot-membership';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
@@ -740,15 +741,15 @@ export async function recordScheduledFireFailure(
      WHERE id = ${input.runId} AND status = 'running'
   `;
   const planStorageSlug = await routineStorageSlug(input.appHarnessSlug, input.workspaceId);
-  await sql`
-    UPDATE harness_shared.harness_plans
-       SET status = 'superseded'
-     WHERE workspace_id = ${input.workspaceId}
-       AND harness_slug = ${planStorageSlug}
-       AND plan_slug = ${input.instanceSlug}
-       AND template_slug = ${input.templateSlug}
-       AND status = 'active'
-  `;
+  // Same single retirement path as reconcile — closes the instance's plan_items with the
+  // status instead of leaving them open on a superseded plan (WI-10005040).
+  await retireRunInstancePlan(sql, {
+    workspaceId: input.workspaceId,
+    planStorageSlug,
+    instanceSlug: input.instanceSlug,
+    templateSlug: input.templateSlug,
+    outcome: 'failed',
+  });
 }
 
 type PreparedScheduledFire = Extract<Awaited<ReturnType<typeof runScheduledPlanFireTx>>, { started: true }>;

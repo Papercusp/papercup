@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
 import { routineStorageSlug } from '../../pot-membership';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
 // The orphan threshold has ONE definition; this module drives the same reclaim on the
 // tick rather than re-deciding what "orphaned" means (see sweepOrphanedPlanRuns below).
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
@@ -107,17 +108,19 @@ export async function reconcileScheduledPlanRuns(
     //
     // plan_runs stores the raw install slug while harness_plans is Hive-scoped. Resolve
     // the latter with the same mapping used by plan-run-action before updating it.
+    //
+    // Retire through `retireRunInstancePlan`, never a bare `UPDATE … status='superseded'`:
+    // that left every never-promoted `plan_items` row open forever (28 phantom-open items
+    // on 10 superseded instances, WI-10005040). The helper closes the items with the status.
     if (run.instance_plan_slug) {
       const planStorageSlug = await routineStorageSlug(run.harness_slug, run.workspace_id);
-      await db`
-        UPDATE harness_shared.harness_plans
-           SET status = 'superseded'
-         WHERE workspace_id = ${run.workspace_id}
-           AND harness_slug = ${planStorageSlug}
-           AND plan_slug = ${run.instance_plan_slug}
-           AND template_slug = ${run.plan_slug}
-           AND status = 'active'
-      `;
+      await retireRunInstancePlan(db, {
+        workspaceId: run.workspace_id,
+        planStorageSlug,
+        instanceSlug: run.instance_plan_slug,
+        templateSlug: run.plan_slug,
+        outcome,
+      });
     }
 
     await db`
