@@ -179,6 +179,7 @@ export function HostedWorkspaceSession({
   const terminalRef = useRef<import("@xterm/xterm").Terminal | null>(null);
   const fitRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);
   const resizeRef = useRef<ResizeObserver | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const ticketWorkspaceRef = useRef<string | null>(null);
   const roleRef = useRef<HostedWorkspaceTabRole | null>(null);
@@ -368,6 +369,8 @@ export function HostedWorkspaceSession({
     }
     resizeRef.current?.disconnect();
     resizeRef.current = null;
+    if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+    resizeFrameRef.current = null;
     terminalRef.current?.dispose();
     terminalRef.current = null;
     fitRef.current = null;
@@ -382,6 +385,8 @@ export function HostedWorkspaceSession({
     }
     terminalRef.current?.dispose();
     resizeRef.current?.disconnect();
+    if (resizeFrameRef.current !== null) cancelAnimationFrame(resizeFrameRef.current);
+    resizeFrameRef.current = null;
     const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
       import("@xterm/xterm"),
       import("@xterm/addon-fit"),
@@ -413,18 +418,24 @@ export function HostedWorkspaceSession({
       send({ type: "pty.input", data: utf8ToBase64(data) });
     });
     const resize = new ResizeObserver(() => {
-      try {
-        fit.fit();
-        if (roleRef.current === "controller") {
-          send({
-            type: "pty.resize",
-            cols: terminal.cols,
-            rows: terminal.rows,
-          });
+      // Fit mutates layout. Run outside observer delivery to avoid the
+      // browser's resize-loop error and coalesce one fit per animation frame.
+      if (resizeFrameRef.current !== null) return;
+      resizeFrameRef.current = requestAnimationFrame(() => {
+        resizeFrameRef.current = null;
+        try {
+          fit.fit();
+          if (roleRef.current === "controller") {
+            send({
+              type: "pty.resize",
+              cols: terminal.cols,
+              rows: terminal.rows,
+            });
+          }
+        } catch {
+          // A hidden or unmounted terminal has no measurable geometry.
         }
-      } catch {
-        // A hidden or unmounted terminal has no measurable geometry.
-      }
+      });
     });
     resize.observe(terminalContainerRef.current);
     terminalRef.current = terminal;
