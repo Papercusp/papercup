@@ -46,6 +46,13 @@ import subscriptionsTool from './subscriptions';
 
 const CTX = { workspaceId: 'ws-1', tx: {} } as never;
 
+// handler() returns ToolResponse | ToolResult; both tools return the { data } shape.
+type Data = { data: Record<string, any> };
+const search = async (args: Record<string, unknown>, ctx: never): Promise<Data> =>
+  (await searchTool.handler(args as never, ctx)) as Data;
+const subs = async (args: Record<string, unknown>, ctx: never): Promise<Data> =>
+  (await subscriptionsTool.handler(args as never, ctx)) as Data;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.subject.mockReturnValue('su-agent');
@@ -60,7 +67,7 @@ beforeEach(() => {
 
 describe('documents:search', () => {
   it('runs every leg by default and tags results with their scope', async () => {
-    const result = await searchTool.handler({ query: 'release' }, CTX);
+    const result = await search({ query: 'release' }, CTX);
     expect(result.data.results).toEqual([
       { scope: 'personal', id: 'p1', title: 'Personal' },
       { scope: 'organization', id: 'o1', title: 'Org' },
@@ -86,7 +93,7 @@ describe('documents:search', () => {
   it('reports a refused leg and still runs the others', async () => {
     mocks.authorize.mockResolvedValue({ allowed: false, reason: 'no_grant' });
     mocks.searchOrganization.mockResolvedValue({ allowed: false, reason: 'no_provider_identity' });
-    const result = await searchTool.handler({ query: 'release' }, CTX);
+    const result = await search({ query: 'release' }, CTX);
     expect(result.data.legs.personal).toEqual({ allowed: false, refusal: 'no_grant' });
     expect(result.data.legs.organization).toEqual({ allowed: false, refusal: 'no_provider_identity' });
     expect(result.data.results).toEqual([{ scope: 'pot', id: 't1', title: 'Pot' }]);
@@ -103,7 +110,7 @@ describe('documents:search', () => {
 
   it('reads the pot from presence and refuses the pot leg without one', async () => {
     mocks.resolveSubjects.mockResolvedValue({ potSlug: null, planSlug: null });
-    const result = await searchTool.handler({ query: 'release', legs: ['pot'] }, CTX);
+    const result = await search({ query: 'release', legs: ['pot'] }, CTX);
     expect(mocks.resolveSubjects).toHaveBeenCalledWith({}, 'su-agent', 'ws-1');
     expect(result.data.legs.pot).toEqual({ allowed: false, refusal: 'no_pot_in_presence' });
     expect(mocks.searchPot).not.toHaveBeenCalled();
@@ -111,7 +118,7 @@ describe('documents:search', () => {
 
   it('refuses the pot leg for an unresolvable agent identity', async () => {
     mocks.subject.mockReturnValue(null);
-    const result = await searchTool.handler({ query: 'release', legs: ['pot'] }, CTX);
+    const result = await search({ query: 'release', legs: ['pot'] }, CTX);
     expect(result.data.legs.pot).toEqual({ allowed: false, refusal: 'no_pot_in_presence' });
     expect(mocks.resolveSubjects).not.toHaveBeenCalled();
   });
@@ -123,7 +130,7 @@ describe('documents:search', () => {
 
   it('surfaces restricted and withheld counts', async () => {
     mocks.searchOrganization.mockResolvedValue({ allowed: true, results: [], withheld: 2, disclosed: 1 });
-    const result = await searchTool.handler({ query: 'release', legs: ['organization'] }, CTX);
+    const result = await search({ query: 'release', legs: ['organization'] }, CTX);
     expect(result.data).toMatchObject({
       restrictedResults: 1, withheldRestricted: 2, withheldReason: 'disclosure_identity_unresolved',
     });
@@ -133,7 +140,7 @@ describe('documents:search', () => {
 describe('documents:subscriptions', () => {
   it('lists subscriptions with the given filter', async () => {
     mocks.list.mockResolvedValue([{ subjectKind: 'pot', subjectRef: 'papercusp', source: 'slack' }]);
-    const result = await subscriptionsTool.handler({ op: 'list', subjectKind: 'pot' }, CTX);
+    const result = await subs({ op: 'list', subjectKind: 'pot' }, CTX);
     expect(result.data.subscriptions).toHaveLength(1);
     expect(mocks.list).toHaveBeenCalledWith({}, 'ws-1', { op: 'list', subjectKind: 'pot' });
   });
