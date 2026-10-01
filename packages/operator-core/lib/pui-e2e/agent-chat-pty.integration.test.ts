@@ -36,6 +36,7 @@ import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@pap
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
 import { describeObserverBlock, pollUntil } from './poll-until';
+import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
@@ -6158,21 +6159,24 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   // debug build still takes and reports every measurement, unasserted.
   const optimised = () => !bin.includes(`${path.sep}debug${path.sep}`);
 
-  function p95(samples: number[]): number {
-    const sorted = [...samples].sort((a, b) => a - b);
-    return sorted[Math.ceil(sorted.length * 0.95) - 1];
-  }
+  // Every sample is timed inside this vitest worker, so it carries the worker's
+  // own event-loop lateness. Under fleet load that alone measured 194-354ms
+  // (WI-10004247 run 6) and failed these budgets on a fast binary (WI-10004333).
+  const lateness = new LatenessMonitor();
+  afterAll(() => lateness.dispose());
 
-  /** Milliseconds from `act()` until the rendered screen satisfies `ready`. */
-  function renderedAfter(
+  /** Milliseconds from `act()` until the rendered screen satisfies `ready`,
+   *  with the worker's own event-loop lateness inside that window. */
+  async function renderedAfter(
     pane: PuiPane,
     act: () => void,
     ready: (screen: string) => boolean,
     timeoutMs = 5_000,
-  ): Promise<number> {
+  ): Promise<TimedSample> {
+    await lateness.begin();
     const vt = new VtScreen(pane.size.rows, pane.size.cols);
     vt.feed(pane.rawSince(0));
-    return new Promise((resolve, reject) => {
+    const ms = await new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => {
         subscription.dispose();
         reject(new Error(`not rendered within ${timeoutMs}ms:\n${vt.text()}`));
@@ -6187,21 +6191,43 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       const started = performance.now();
       act();
     });
+    return { ms, workerLateMs: await lateness.end() };
   }
 
   /** Per-key feedback samples: each key's time until the draft shows it. */
-  async function keyFeedback(pane: PuiPane, keys: string): Promise<number[]> {
+  async function keyFeedback(pane: PuiPane, keys: string): Promise<TimedSample[]> {
     const base = `K${randomUUID().slice(0, 6)} `;
     pane.write(base);
     await pane.waitFor(base.trim());
     let draft = base;
-    const samples: number[] = [];
+    const samples: TimedSample[] = [];
     for (const key of keys) {
       draft += key;
       const expected = draft;
       samples.push(await renderedAfter(pane, () => pane.write(key), (screen) => screen.includes(expected)));
     }
     return samples;
+  }
+
+  /** Assert a budget on an optimised build. Lateness only inflates a sample,
+   *  so a value the lateness could explain is a HARNESS STALL, not a product
+   *  verdict either way (WI-10004333). Debug builds report, unasserted. */
+  function assertBudget(what: string, samples: TimedSample[], budgetMs: number, q = 1): BudgetJudgement {
+    const judgement = judgeBudget(samples, budgetMs, q);
+    if (!optimised()) return judgement;
+    if (judgement.verdict === 'inconclusive') throw new Error(describeHarnessStall(what, judgement));
+    expect(judgement.observedMs, `${what} (product lower bound ${Math.round(judgement.lowerBoundMs)}ms)`)
+      .toBeLessThanOrEqual(budgetMs);
+    return judgement;
+  }
+
+  /** Key feedback p95, with one fresh series if the first was inconclusive. */
+  async function keyBudget(pane: PuiPane, keys: string): Promise<BudgetJudgement> {
+    let samples = await keyFeedback(pane, keys);
+    if (optimised() && judgeBudget(samples, KEY_FEEDBACK_P95_MS, 0.95).verdict === 'inconclusive') {
+      samples = await keyFeedback(pane, keys);
+    }
+    return assertBudget('key feedback p95', samples, KEY_FEEDBACK_P95_MS, 0.95);
   }
 
   /** Every SGR parameter list (`ESC [ … m`) in a raw PTY stream. */
@@ -6317,12 +6343,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   test('P-013: first frame <= 2 s, key feedback p95 <= 100 ms, send feedback <= 250 ms', { timeout: 240_000 }, async () => {
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
     try {
-      const firstFrameMs = await renderedAfter(pane, () => {}, (screen) => screen.includes('· pui ·'), 10_000);
-      if (optimised()) expect(firstFrameMs).toBeLessThanOrEqual(FIRST_FRAME_MS);
+      const firstFrame = assertBudget('first frame',
+        [await renderedAfter(pane, () => {}, (screen) => screen.includes('· pui ·'), 10_000)], FIRST_FRAME_MS);
 
       await openComposer(pane, false);
-      const keyMs = await keyFeedback(pane, 'p13keyfeedback0123456789abcdef');
-      if (optimised()) expect(p95(keyMs)).toBeLessThanOrEqual(KEY_FEEDBACK_P95_MS);
+      const keys = await keyBudget(pane, 'p13keyfeedback0123456789abcdef');
 
       // The first message opens the session; the measured send is the second,
       // held in flight by the streaming fixture so its busy state is on screen.
@@ -6334,13 +6359,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       pane.write(second);
       await pane.waitFor(second);
       scriptedEngine.mode = 'stream';
-      const sendMs = await renderedAfter(pane, () => pane.enter(), (screen) =>
-        screen.includes('Sending — awaiting acceptance') || screen.includes('Running — Enter queues'));
-      if (optimised()) expect(sendMs).toBeLessThanOrEqual(SEND_FEEDBACK_MS);
+      const send = assertBudget('send feedback', [await renderedAfter(pane, () => pane.enter(), (screen) =>
+        screen.includes('Sending — awaiting acceptance') || screen.includes('Running — Enter queues'))], SEND_FEEDBACK_MS);
       await pane.waitFor('STREAM-E5', { timeoutMs: 30_000 });
       console.info('PUI_P013_RESPONSIVENESS_ACCEPTANCE', JSON.stringify({
-        binary: bin, binarySha256, optimised: optimised(), firstFrameMs, keyFeedbackP95Ms: p95(keyMs),
-        keyFeedbackMaxMs: Math.max(...keyMs), keySamples: keyMs.length, sendFeedbackMs: sendMs,
+        binary: bin, binarySha256, optimised: optimised(),
+        firstFrameMs: firstFrame.observedMs, firstFrameWorkerLateMs: firstFrame.maxWorkerLateMs,
+        keyFeedbackP95Ms: keys.observedMs, keyFeedbackP95LowerBoundMs: keys.lowerBoundMs,
+        keyWorkerLateMaxMs: keys.maxWorkerLateMs, keySamples: keys.samples,
+        sendFeedbackMs: send.observedMs, sendWorkerLateMs: send.maxWorkerLateMs,
       }));
     } finally {
       await pane.stop().catch(() => {});
@@ -6413,13 +6440,12 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       }
       expect(new Set(scriptedEngine.requests).size).toBe(turns);
       const rssAfterLastMiB = rssMiB(pane);
-      const keyMs = await keyFeedback(pane, 'longsessionkeys0123456789');
-      if (optimised()) expect(p95(keyMs)).toBeLessThanOrEqual(KEY_FEEDBACK_P95_MS);
+      const keys = await keyBudget(pane, 'longsessionkeys0123456789');
       // A 40-turn transcript is kilobytes; growth beyond this is a leak.
       expect(rssAfterLastMiB - rssAfterFirstMiB).toBeLessThan(64);
       console.info('PUI_P013_LONG_SESSION_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, optimised: optimised(), turns, rssAfterFirstMiB, rssAfterLastMiB,
-        keyFeedbackP95Ms: p95(keyMs),
+        keyFeedbackP95Ms: keys.observedMs, keyWorkerLateMaxMs: keys.maxWorkerLateMs,
       }));
     } catch (error) {
       // Keep the actual UI/HTTP/engine boundary when the request-count assertion
