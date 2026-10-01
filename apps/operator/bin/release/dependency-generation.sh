@@ -200,6 +200,40 @@ dependency_generation_device() {
   stat -c '%d' "$path" 2>/dev/null || stat -f '%d' "$path"
 }
 
+# WI-10004825: every swap-by-rename in this script and setup-release-checkout.sh
+# names its scratch sibling with the creating shell's $$ (`<dest>.deploy-tmp.<pid>`,
+# `<dest>.generation-tmp.<pid>`, `...-old.<pid>`) and only ever clears its OWN pid's
+# leftovers. A run killed mid-copy (gate timeout, SIGTERM, operator restart) therefore
+# strands a partial multi-GB copy that no later run removes: four such trees from dead
+# pids were found in the admission-precheck checkout, the oldest a week old. Reap a
+# sibling only when its creating pid is gone AND it has not been touched for the grace
+# window; a live pid (including one we cannot signal) or a recent mtime is skipped, so
+# a concurrent run's in-flight copy is never deleted.
+dependency_generation_reap_dead_siblings() {
+  local dest="$1" grace="${DEPENDENCY_GENERATION_REAP_GRACE_SEC:-1800}"
+  local candidate base rest pid now mtime
+  case "$grace" in ''|*[!0-9]*) grace=1800 ;; esac
+  now="$(date +%s)"
+  for candidate in "$dest".deploy-tmp.* "$dest".deploy-old.* \
+    "$dest".generation-tmp.* "$dest".generation-old.*; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    base="${candidate##*/}"
+    rest="${base#"${dest##*/}".}"
+    rest="${rest#*.}"
+    pid="${rest%%.*}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" = "$$" ] && continue
+    if kill -0 "$pid" 2>/dev/null || [ -d "/proc/$pid" ]; then
+      continue
+    fi
+    mtime="$(stat -c '%Y' "$candidate" 2>/dev/null || stat -f '%m' "$candidate" 2>/dev/null || echo "$now")"
+    [ $((now - mtime)) -ge "$grace" ] || continue
+    dependency_generation_log "reaping orphaned scratch tree from dead pid $pid: $candidate"
+    find "$candidate" -type d -exec chmod u+rwx {} + 2>/dev/null || true
+    rm -rf -- "$candidate"
+  done
+}
+
 # Empty means the historical full-product generation. A selected generation is
 # configured by repeated --workspace-dir arguments and always retains the root
 # node_modules tree in addition to these package-local trees.
@@ -1619,6 +1653,7 @@ dependency_generation_materialize_tree() {
   old="${dest}.generation-old.$$"
   rm -rf -- "$tmp" "$old"
   mkdir -p "$(dirname "$dest")"
+  dependency_generation_reap_dead_siblings "$dest"
   source_device="$(dependency_generation_device "$src")" || return 1
   dest_device="$(dependency_generation_device "$(dirname "$dest")")" || return 1
   if [ "${DEPENDENCY_GENERATION_ALLOW_HARDLINK:-0}" = '1' ] \
