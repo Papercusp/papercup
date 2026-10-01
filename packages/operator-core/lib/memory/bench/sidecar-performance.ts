@@ -14,7 +14,8 @@ import type { Socket } from 'node:net';
 import { sidecarEmbedBatch, SIDECAR_MAX_TEXT_CHARS, buildGemmaEmbedder, buildHarrierEmbedder, type SidecarEmbedResponse } from '@papercusp/memory';
 import type { EmbedderBuilders } from '../embed-sidecar-server';
 import { assertMeasuredEmbedResponse, hashJson, validateMeasurementManifest, measurementOwner, fingerprintFile,
-  type MeasurementArm, type PreparedMeasurement, type MeasurementManifest } from './measurement-manifest';
+  type MeasurementArm, type PreparedMeasurement, type MeasurementManifest, type MeasurementCell } from './measurement-manifest';
+import type { runGovernedOperation } from '../../resource-governor/execution';
 
 const request = z.strictObject({ id: z.string().min(1), corpus: z.enum(['memory', 'prose']),
   text: z.string().min(1).max(SIDECAR_MAX_TEXT_CHARS) });
@@ -275,6 +276,50 @@ export function summarizePerformanceReceipts(manifest: MeasurementManifest, mani
     performanceComplete: true, modelAdoptionAuthorized: false };
 }
 
+/** The parent admits model residency before starting the database-free child.
+ * Artifact bytes are the initial estimate; the retained child receipt supplies
+ * measured peak RSS when the lease settles. Governor setup stays lazy so merely
+ * loading the local CLI never opens an operator database connection. */
+export async function runPerformanceChild(input: {
+  manifest: MeasurementManifest; manifestSha256: string; cell: MeasurementCell; arm: MeasurementArm;
+  manifestFile: string; mdenseonModel: string; rawOutput: string; logFd: number;
+}, deps: { governedOperation?: typeof runGovernedOperation; spawnProcess?: typeof spawn; workspaceId?: string } = {}) {
+  const { runGovernedOperation, admissionContextFromEnvironment } = await import('../../resource-governor/execution');
+  const { activeWorkspaceId } = await import('../../workspace-registry');
+  const { manifest, manifestSha256, cell, arm } = input;
+  const parent = admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
+  const memoryBytes = [arm.artifacts.graph, arm.artifacts.tokenizer, arm.artifacts.config, ...arm.artifacts.weights]
+    .reduce((n, file) => n + file.bytes, 0);
+  const governed = deps.governedOperation ?? runGovernedOperation;
+  return governed({ workspaceId: deps.workspaceId ?? activeWorkspaceId(), namespace: 'embedding-performance',
+    owner: manifest.ownerId, admissionClass: 'embedding', dedicatedClient: true,
+    idempotencyKey: `embedding-performance:${manifestSha256}:${cell.id}`, payloadRef: `${manifest.plan}#P-005`,
+    demand: { cpuWeight: arm.execution.intraOpThreads, memoryBytes }, ...(parent ? { parent } : {}),
+    metadata: { model: arm.model, cellId: cell.id, device: arm.execution.device, memoryEstimate: 'pinned-artifact-bytes' },
+    measureActualDemand: () => {
+      const receipt = JSON.parse(fs.readFileSync(input.rawOutput, 'utf8'));
+      const peakRssMiB = receipt.report?.resource?.peakRssMiB;
+      if (receipt.manifestSha256 !== manifestSha256 || receipt.ownerId !== manifest.ownerId || receipt.cellId !== cell.id
+        || receipt.armId !== arm.id || !Number.isFinite(peakRssMiB) || peakRssMiB <= 0) {
+        throw new Error('missing/unbound performance child resource receipt');
+      }
+      return { cpuWeight: arm.execution.intraOpThreads, memoryBytes: Math.ceil(peakRssMiB * 1024 * 1024) };
+    },
+  }, async (context) => {
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const child = (deps.spawnProcess ?? spawn)(process.execPath,
+        [...process.execArgv, fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
+          '--manifest', input.manifestFile, '--manifest-sha256', manifestSha256, '--cell', cell.id,
+          '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', input.mdenseonModel, '--out', input.rawOutput],
+        { stdio: ['ignore', input.logFd, input.logFd], env: { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1',
+          PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(context) } });
+      child.once('error', reject); child.once('exit', resolve);
+    });
+    if (exitCode !== 0) throw new Error(`performance child failed ${cell.id}: exit ${exitCode}; see immutable cell log`);
+    return exitCode;
+  });
+}
+
 /** Existing CLI owns the only entry point. Each scheduled arm is a fresh child
  * process; immutable receipts/logs prevent replaying a completed/failed cell. */
 export async function runPerformanceBlocks(manifestFile: string, expectedSha: string, mdenseonModel: string, driverFile: string) {
@@ -305,16 +350,8 @@ export async function runPerformanceBlocks(manifestFile: string, expectedSha: st
         state.current = cell.id; update();
         const log = fs.openSync(`${raw}.log`, 'wx', 0o600);
         try {
-          const exitCode = await new Promise<number | null>((resolve, reject) => {
-            const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(new URL('./embedder-eval-cli.ts', import.meta.url)),
-              '--manifest', manifestFile, '--manifest-sha256', expectedSha, '--cell', cell.id,
-              '--legs', `sidecar:${cell.armId}`, '--isolated-sidecar', '--mdenseon-model', mdenseonModel, '--out', raw],
-            // Local HTTP/worker measurements must never acquire operator
-            // database pools, including after a future import regression.
-            { stdio: ['ignore', log, log], env: { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1' } });
-            child.once('error', reject); child.once('exit', resolve);
-          });
-          if (exitCode !== 0) throw new Error(`performance child failed ${cell.id}: exit ${exitCode}; see immutable cell log`);
+          await runPerformanceChild({ manifest: m, manifestSha256: expectedSha, cell,
+            arm: m.arms.find((a) => a.id === cell.armId)!, manifestFile, mdenseonModel, rawOutput: raw, logFd: log });
         } finally { fs.closeSync(log); }
       }
       const receipt = JSON.parse(fs.readFileSync(raw, 'utf8')) as PerformanceReceipt;
