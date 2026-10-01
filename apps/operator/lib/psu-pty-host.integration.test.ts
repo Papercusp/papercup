@@ -994,6 +994,76 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   }, 20_000);
 
+  // WI-10004919: Codex v0.159.3 held its footer at `Starting` (MCP servers
+  // booting) for 86.2s; the 75s backend-frame budget dropped the kickoff 11s
+  // before the Ready frame and the resolver idled at its prompt. Scaled down:
+  // budget = 260ms x 5 = 1.3s from the probe, Ready at ~2.1s.
+  it('keeps waiting past the frame budget while the Codex footer still reads Starting', async () => {
+    const ownerId = `su-codex-starting-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+    const kickoff = marker + '\nKICKOFF-AFTER-STARTING';
+    const { captured, io } = fakeIo();
+    const childCode =
+      "process.stdout.write('psu: launcher banner\\n');" +
+      "process.stdin.setEncoding('utf8');let swallowing=false;let b='';" +
+      "process.stdin.on('data',d=>{if(swallowing){process.stdout.write('SWALLOWED:'+JSON.stringify(d)+'\\n');return;}" +
+      "b+=d;let i;while((i=b.search(/[\\r\\n]/))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+      "if(!line)continue;if(line==='QUIT')process.exit(0);process.stdout.write('ECHO:'+line+'\\n');}});" +
+      "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
+      "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
+      "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');},2000);},100);" +
+      'setTimeout(()=>process.exit(0),15000);';
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      signalSource: new EventEmitter(),
+      kickoff,
+      onExit: () => undefined,
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-STARTING'), { timeout: 8000 });
+      expect(captured()).not.toContain('SWALLOWED:');
+      const hostEvents = () =>
+        readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+      const written = await vi.waitFor(() => {
+        const row = hostEvents().find((e) => e.kind === 'startup-turn-written');
+        expect(row).toBeDefined();
+        return row;
+      }, { timeout: 8000 });
+      expect(written).toMatchObject({ label: 'launch kickoff', authorizedBy: 'backend-session-frame' });
+      const extended = hostEvents().filter((e) => e.kind === 'launch-kickoff-backend-frame-wait-extended');
+      expect(extended).toHaveLength(1);
+      expect(extended[0]).toMatchObject({ reason: 'codex-footer-starting' });
+      expect(extended[0].elapsedMs).toBeGreaterThanOrEqual(1_300);
+      expect(hostEvents().some((e) => e.kind === 'startup-turn-dropped')).toBe(false);
+      expect(hostEvents().some((e) => e.kind === 'launch-kickoff-backend-frame-timeout')).toBe(false);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done;
+    }
+  }, 20_000);
+
   it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
     const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
