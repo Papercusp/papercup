@@ -69,6 +69,8 @@ const SSH_USER = /^[a-z_][a-z0-9_-]{0,31}$/;
 const EXECUTABLE = /^(?:\/[A-Za-z0-9._+-]+)+$|^[A-Za-z0-9._+-]+$/;
 
 export interface GcpIapWorkspaceHostInitializationProfile {
+  /** Transport discriminant. Absent means GCP IAP, so every existing GCP profile stays valid. */
+  kind?: 'gcp-iap-ssh';
   projectId: string;
   zone: string;
   instanceName: string;
@@ -88,6 +90,37 @@ export interface GcpIapWorkspaceHostInitializationProfile {
   sshExecutable?: string;
   gcloudExecutable?: string;
 }
+
+/**
+ * The AWS twin of the GCP IAP profile (aws-byoc-gcp-parity-2026-10-01 P-005): OpenSSH reaches the
+ * instance through an SSM Session Manager tunnel (`AWS-StartSSHSession`), so the host needs the SSM
+ * agent and an instance profile carrying AmazonSSMManagedInstanceCore, and nothing else — no public
+ * IP and no inbound rule. Everything above the transport (step protocol, readiness probe, credential
+ * delivery, connector enrollment) is shared with GCP through `buildWorkspaceHostSshInvocation`.
+ */
+export interface AwsSsmWorkspaceHostInitializationProfile {
+  kind: 'aws-ssm-ssh';
+  region: string;
+  /** EC2 instance id — the INCARNATION. A replaced instance gets a new id and so a new trust pin. */
+  instanceId: string;
+  sshUser: string;
+  /** Absolute path to a controller-owned, pre-enrolled known_hosts file. */
+  knownHostsFile: string;
+  /** Controller keypair the host authorized at provision time; never serialized. */
+  identityFile?: string;
+  /** Fixed binary shipped in the signed workspace-host release. */
+  remoteEntrypoint: string;
+  sshExecutable?: string;
+  /** AWS CLI v2; it drives the Session Manager plugin, which must be installed beside it. */
+  awsExecutable?: string;
+  /** Named AWS CLI profile carrying the connection's credentials; absent = the CLI's default chain. */
+  awsProfile?: string;
+}
+
+/** Every transport the shared SSH initialization operations can drive. */
+export type WorkspaceHostSshInitializationProfile =
+  | GcpIapWorkspaceHostInitializationProfile
+  | AwsSsmWorkspaceHostInitializationProfile;
 
 export interface GcpIapWorkspaceHostInitializationCommand {
   command: string;
@@ -202,6 +235,16 @@ export type GcpIapWorkspaceHostTransportProfile = Omit<
   GcpIapWorkspaceHostInitializationProfile,
   'remoteEntrypoint'
 >;
+
+export type AwsSsmWorkspaceHostTransportProfile = Omit<
+  AwsSsmWorkspaceHostInitializationProfile,
+  'remoteEntrypoint'
+>;
+
+/** The transport half of any supported profile. Narrow on `kind` (absent = GCP IAP). */
+export type WorkspaceHostSshTransportProfile =
+  | GcpIapWorkspaceHostTransportProfile
+  | AwsSsmWorkspaceHostTransportProfile;
 
 /** One program to run on the host, with the bytes to feed its stdin. */
 export interface GcpIapRemoteInvocation {
@@ -325,7 +368,7 @@ export function buildGcpIapSshInvocation(
  * so a leak is attributed to whichever of the two introduced it.
  */
 export function buildGcpIapWorkspaceHostInitializationCommand(
-  profile: GcpIapWorkspaceHostInitializationProfile,
+  profile: WorkspaceHostSshInitializationProfile,
   step: GcpIapWorkspaceHostInitializationStep,
 ): GcpIapWorkspaceHostInitializationCommand {
   assertWorkspaceHostSecretIsolation(step, `workspaceHost.gcpIap.initialization.${step.id}`);
@@ -336,7 +379,7 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
   };
   assertWorkspaceHostSecretIsolation(protocolRequest, 'workspaceHost.gcpIap.initialization.request');
 
-  return buildGcpIapSshInvocation(profile, {
+  return buildWorkspaceHostSshInvocation(profile, {
     entrypoint: profile.remoteEntrypoint,
     entrypointLabel: 'Remote initializer',
     args: ['--protocol-version', GCP_IAP_INITIALIZATION_PROTOCOL_VERSION, '--json-stdin'],
@@ -349,6 +392,113 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
  * requires an absolute entrypoint, and resolving `test` off the remote PATH would make the probe
  * depend on the login shell of a host we are probing precisely because it is half-configured.
  */
+const AWS_REGION = /^[a-z]{2}(?:-gov|-iso[a-z]*)?-[a-z]+-[0-9]$/;
+const EC2_INSTANCE_ID = /^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$/;
+const AWS_CLI_PROFILE = /^[A-Za-z0-9_.+-]{1,64}$/;
+
+/**
+ * The trust-pin alias for one EC2 incarnation. Bound to the instance id for the same reason as
+ * `gcpIapHostKeyAlias` (WI-10002493): a replaced instance is a different machine with different
+ * host keys and must get its own pin, while a key change on the SAME instance still refuses.
+ */
+export function awsSsmHostKeyAlias(
+  profile: Pick<AwsSsmWorkspaceHostInitializationProfile, 'region' | 'instanceId'>,
+): string {
+  requireCondition(AWS_REGION.test(profile.region), 'AWS region has an invalid value');
+  requireCondition(EC2_INSTANCE_ID.test(profile.instanceId), 'EC2 instance id has an invalid value');
+  return `aws-ssm-${profile.region}-${profile.instanceId}`;
+}
+
+/** The trust-pin alias for whichever transport the profile names. */
+export function workspaceHostSshHostKeyAlias(profile: WorkspaceHostSshTransportProfile): string {
+  return profile.kind === 'aws-ssm-ssh' ? awsSsmHostKeyAlias(profile) : gcpIapHostKeyAlias(profile);
+}
+
+/**
+ * OpenSSH over an SSM Session Manager tunnel. Same hardening as the IAP builder — batch mode,
+ * strict host-key checking against the controller's own known_hosts under an incarnation alias,
+ * one explicit identity, no forwarding — only the ProxyCommand differs: `aws ssm start-session`
+ * with the AWS-managed `AWS-StartSSHSession` document carries the TCP stream to port 22 on the
+ * instance, and `%h` is the instance id.
+ */
+export function buildAwsSsmSshInvocation(
+  profile: AwsSsmWorkspaceHostTransportProfile,
+  invocation: GcpIapRemoteInvocation,
+): GcpIapWorkspaceHostInitializationCommand {
+  const alias = awsSsmHostKeyAlias(profile);
+  requireCondition(SSH_USER.test(profile.sshUser), 'OpenSSH user has an invalid value');
+  const knownHostsFile = requireAbsolutePath(profile.knownHostsFile, 'OpenSSH known_hosts file');
+  requireCondition(
+    typeof profile.identityFile === 'string' && profile.identityFile.trim().length > 0,
+    'OpenSSH identity file is required: the controller cannot authenticate to a host that ' +
+      'authorized the controller public key at provision time. Set ' +
+      'PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE to the controller keypair.',
+  );
+  const identityFile = requireAbsolutePath(profile.identityFile, 'OpenSSH identity file');
+  const sshExecutable = requireExecutable(profile.sshExecutable ?? 'ssh', 'OpenSSH executable');
+  const awsExecutable = requireExecutable(profile.awsExecutable ?? 'aws', 'AWS CLI executable');
+  if (profile.awsProfile !== undefined) {
+    requireCondition(AWS_CLI_PROFILE.test(profile.awsProfile), 'AWS CLI profile has an invalid value');
+  }
+  const remoteEntrypoint = requireExecutable(invocation.entrypoint, invocation.entrypointLabel, true);
+
+  const proxyCommand = [
+    awsExecutable,
+    'ssm',
+    'start-session',
+    '--target',
+    '%h',
+    '--document-name',
+    'AWS-StartSSHSession',
+    '--parameters',
+    'portNumber=%p',
+    `--region=${profile.region}`,
+    ...(profile.awsProfile === undefined ? [] : [`--profile=${profile.awsProfile}`]),
+  ].join(' ');
+  const remoteCommand = [remoteEntrypoint, ...invocation.args].map(quotePosixShellArg).join(' ');
+
+  return {
+    command: sshExecutable,
+    args: [
+      '-T',
+      '-o',
+      'BatchMode=yes',
+      '-o',
+      'ClearAllForwardings=yes',
+      '-o',
+      'StrictHostKeyChecking=yes',
+      '-o',
+      `UserKnownHostsFile=${knownHostsFile}`,
+      '-o',
+      `HostKeyAlias=${alias}`,
+      '-o',
+      'IdentitiesOnly=yes',
+      '-i',
+      identityFile,
+      '-o',
+      `ProxyCommand=${proxyCommand}`,
+      '--',
+      `${profile.sshUser}@${profile.instanceId}`,
+      remoteCommand,
+    ],
+    stdin: invocation.stdin,
+  };
+}
+
+/**
+ * The transport seam: one remote invocation over whichever transport the profile names. Every
+ * caller above the transport (step protocol, readiness probe, credential delivery, connector
+ * enrollment) goes through this, so a new transport is one builder, not a fork of those callers.
+ */
+export function buildWorkspaceHostSshInvocation(
+  profile: WorkspaceHostSshTransportProfile,
+  invocation: GcpIapRemoteInvocation,
+): GcpIapWorkspaceHostInitializationCommand {
+  return profile.kind === 'aws-ssm-ssh'
+    ? buildAwsSsmSshInvocation(profile, invocation)
+    : buildGcpIapSshInvocation(profile, invocation);
+}
+
 const POSIX_TEST_EXECUTABLE = '/bin/test';
 
 /**
@@ -376,9 +526,9 @@ const PROBE_EXIT_NOT_READY = 1;
  * trying to tell apart; `test -x` cannot have side effects and answers exactly one question.
  */
 export function buildGcpIapWorkspaceHostBootstrapReadinessProbe(
-  profile: GcpIapWorkspaceHostInitializationProfile,
+  profile: WorkspaceHostSshInitializationProfile,
 ): GcpIapWorkspaceHostInitializationCommand {
-  return buildGcpIapSshInvocation(profile, {
+  return buildWorkspaceHostSshInvocation(profile, {
     entrypoint: POSIX_TEST_EXECUTABLE,
     entrypointLabel: 'POSIX test',
     args: ['-x', profile.remoteEntrypoint],
@@ -615,14 +765,14 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
     (kind) => kind !== 'install-desktop-pack',
   );
 
-  private readonly profile: GcpIapWorkspaceHostInitializationProfile;
+  private readonly profile: WorkspaceHostSshInitializationProfile;
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly bootstrapStatus: GcpIapWorkspaceHostBootstrapStatusSource | undefined;
 
   constructor(
-    profile: GcpIapWorkspaceHostInitializationProfile,
+    profile: WorkspaceHostSshInitializationProfile,
     runner: GcpIapWorkspaceHostInitializationCommandRunner = new NodeGcpIapWorkspaceHostInitializationCommandRunner(),
     /**
      * Clock and delay seam. Injected rather than imported so the readiness gate's timeout and

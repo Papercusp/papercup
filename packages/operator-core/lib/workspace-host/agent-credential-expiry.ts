@@ -24,9 +24,9 @@
 import type { WorkspaceHostHealthCheck } from '@papercusp/deployment-driver';
 
 import {
-  buildGcpIapSshInvocation,
+  buildWorkspaceHostSshInvocation,
   type GcpIapWorkspaceHostInitializationCommand,
-  type GcpIapWorkspaceHostTransportProfile,
+  type WorkspaceHostSshTransportProfile,
 } from './gcp-iap-initialization-operations';
 
 /**
@@ -85,9 +85,9 @@ one codex "$HOME/.codex/auth.json" refresh_token s OPENAI_API_KEY
 
 /** The probe invocation, over the SAME pinned transport as the reach probe and initialization. */
 export function buildWorkspaceHostAgentCredentialExpiryProbe(
-  profile: GcpIapWorkspaceHostTransportProfile,
+  profile: WorkspaceHostSshTransportProfile,
 ): GcpIapWorkspaceHostInitializationCommand {
-  return buildGcpIapSshInvocation(profile, {
+  return buildWorkspaceHostSshInvocation(profile, {
     entrypoint: '/bin/sh',
     entrypointLabel: 'POSIX sh',
     args: ['-c', WORKSPACE_HOST_AGENT_CREDENTIAL_EXPIRY_SCRIPT],
