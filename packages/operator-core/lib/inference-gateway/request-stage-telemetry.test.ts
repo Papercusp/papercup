@@ -7,6 +7,7 @@ import {
   assertCompleteGatewayRequestTimeline,
   classifyGatewayTelemetryOutcome,
   assessStartupCacheSharing,
+  parseStartupCacheEvidenceLine,
   type StartupCacheEvidence,
 } from './request-stage-telemetry';
 
@@ -396,6 +397,41 @@ describe('GatewayRequestTelemetry', () => {
     const first = fingerprint('first', 'same');
     expect(first.tools).not.toEqual(fingerprint('second', 'same').tools);
     expect(first.instructions).not.toEqual(fingerprint('first', 'different').instructions);
+  });
+
+  it('journals ONE bounded startup-evidence line per owner start, and the reader feeds the assessor', () => {
+    const lines: string[] = [];
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: (line) => lines.push(line) });
+    const run = (ownerId: string | null, secretUser: string) => {
+      const span = telemetry.begin({ ownerId, provider: 'codex', protocol: 'openai-responses', transport: 'oauth-http' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ model: 'gpt-x', tools: [{ name: 'private-tool' }],
+        instructions: 'secret-instructions', input: secretUser })));
+      span.recordCacheUsage(10, 90, 0);
+      span.finish('ok', 200);
+    };
+    for (let i = 0; i < 3; i++) run(`su-owner-${i}`, `not-for-logs-${i}`);
+    run('su-owner-0', 'second request of an owner already seen');
+    run(null, 'ownerless request');
+    // Only each owner's FIRST observed request is durable; repeats and ownerless rows are not.
+    expect(lines).toHaveLength(3);
+    expect(lines.join('\n')).not.toMatch(/private-tool|secret-instructions|not-for-logs|second request|ownerless/);
+    for (const line of lines) expect(line.length).toBeLessThan(2048);
+    const evidence = lines.map((line) => parseStartupCacheEvidenceLine(line));
+    expect(evidence.every((row) => row !== null)).toBe(true);
+    // No eligibility source exists in the line, so the assessor must say timing is unknown, never infer a window.
+    const assessed = assessStartupCacheSharing(evidence as StartupCacheEvidence[]);
+    expect(assessed).toMatchObject({ requests: 3, singleWriteGuaranteed: false, withEarlierEligibleComponentMatch: 0 });
+    expect(evidence[0]).toMatchObject({ availableAt: null, expiresAt: null });
+    // Garbage and foreign lines are rejected, not coerced.
+    for (const bad of ['', 'startup-cache-evidence/v1 {not json', 'startup-cache-evidence/v1 {"schema":"other"}',
+      'unrelated journal line']) expect(parseStartupCacheEvidenceLine(bad)).toBeNull();
+  });
+
+  it('a throwing durable sink never fails a completed request', () => {
+    const telemetry = new GatewayRequestTelemetry({ onStartupEvidence: () => { throw new Error('journal down'); } });
+    const span = telemetry.begin({ ownerId: 'su-x', provider: 'claude', protocol: 'anthropic-messages' });
+    expect(span.finish('ok', 200)).not.toBeNull();
+    expect(telemetry.snapshot().requests.finalized).toBe(1);
   });
 
   it('compares complete representative large tool and instruction blocks', () => {

@@ -2276,7 +2276,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // incarnations can never coin the same fallback key, while the sequence counters still keep
   // keys unique WITHIN one process's lifetime exactly as before.
   const gatewayProcessInstanceId = randomUUID();
-  const requestStageTelemetry = new GatewayRequestTelemetry();
+  // First request per owner is journaled as bounded startup-cache evidence (R-10): the 256-row
+  // in-process ring spans only minutes, so a ten-launch cohort rolls out before it can be assessed.
+  // `log` is initialised later in this closure but is only invoked at request-completion time.
+  const requestStageTelemetry = new GatewayRequestTelemetry({
+    onStartupEvidence: (line) => log('info', line),
+  });
   interface RequestTelemetryState {
     span: GatewayRequestSpan;
     finished: boolean;

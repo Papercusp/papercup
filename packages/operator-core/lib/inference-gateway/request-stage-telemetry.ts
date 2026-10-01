@@ -220,6 +220,112 @@ export function assessStartupCacheSharing(rows: readonly StartupCacheEvidence[])
   };
 }
 
+/** Greppable prefix of the durable startup-evidence journal line. */
+export const STARTUP_CACHE_EVIDENCE_SCHEMA = 'startup-cache-evidence/v1';
+
+/**
+ * Durable, privacy-safe record of an owner's first observed request.
+ *
+ * The 256-row in-process timeline ring spans only minutes on a busy gateway, so the R-10
+ * ten-launch cohort evidence rolled out before it could be evaluated (plan
+ * cache-efficiency-and-accounting-2026-09-23, D-074). One line per first-observed-request-per-owner
+ * lands in the gateway journal (days of retention, zero migration) and carries ONLY bounded
+ * hashes/byte counts, enumerated dimensions and token counts - never request text, headers, URLs
+ * or credentials. It is evidence of what was observed, never a cache key or a promised write.
+ */
+export interface StartupCacheEvidenceRecord {
+  schema: typeof STARTUP_CACHE_EVIDENCE_SCHEMA;
+  requestId: number;
+  ownerId: string;
+  provider: GatewayTelemetryProvider;
+  protocol: GatewayTelemetryProtocol;
+  transport: GatewayTelemetryTransport;
+  model: string | null;
+  authorizationScope: string | null;
+  tools: GatewayCacheFingerprint | null;
+  instructions: GatewayCacheFingerprint | null;
+  native: { sessionId: string | null; threadId: string | null };
+  startedAt: number;
+  finalizedAt: number;
+  inputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reuse: GatewayCacheObservation['reuse'];
+  outcome: GatewayRequestOutcome;
+  finalStatus: number | null;
+}
+
+/** Null unless this is the owner's first request in the bounded ring (gap unknown). */
+export function startupCacheEvidenceRecord(timeline: GatewayRequestTimeline): StartupCacheEvidenceRecord | null {
+  if (timeline.ownerId === null || timeline.previousObservedRequestGapMs !== null) return null;
+  const { cache } = timeline;
+  return {
+    schema: STARTUP_CACHE_EVIDENCE_SCHEMA,
+    requestId: timeline.requestId,
+    ownerId: timeline.ownerId,
+    provider: timeline.provider,
+    protocol: timeline.protocol,
+    transport: timeline.transport,
+    model: timeline.model,
+    authorizationScope: cache.servingAccountId,
+    tools: cache.tools ? { ...cache.tools } : null,
+    instructions: cache.instructions ? { ...cache.instructions } : null,
+    native: { sessionId: timeline.nativeCorrelation.sessionId, threadId: timeline.nativeCorrelation.threadId },
+    startedAt: timeline.startedAt,
+    finalizedAt: timeline.finalizedAt,
+    inputTokens: cache.inputTokens,
+    cacheReadTokens: cache.cacheReadTokens,
+    cacheWriteTokens: cache.cacheWriteTokens,
+    reuse: cache.reuse,
+    outcome: timeline.outcome,
+    finalStatus: timeline.finalStatus,
+  };
+}
+
+export const formatStartupCacheEvidenceLine = (record: StartupCacheEvidenceRecord): string =>
+  `${STARTUP_CACHE_EVIDENCE_SCHEMA} ${JSON.stringify(record)}`;
+
+const finiteOrNull = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+const parseFingerprint = (value: unknown): GatewayCacheFingerprint | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const bytes = finiteOrNull(v.bytes), hashedBytes = finiteOrNull(v.hashedBytes);
+  return typeof v.sha256 === 'string' && /^[a-f0-9]{64}$/.test(v.sha256) && bytes !== null && hashedBytes !== null
+    ? { sha256: v.sha256, bytes, hashedBytes }
+    : null;
+};
+const TRANSPORTS: readonly GatewayTelemetryTransport[] = ['bearer-http', 'oauth-http', 'cli-exec', 'local-http', 'unknown'];
+
+/**
+ * Parse one journal line back into assessor input. The line carries no provider eligibility
+ * source, so availableAt/expiresAt stay null and the assessor reports `timingUnknown` rather
+ * than inventing a cache window. Returns null for anything that is not a well-formed record.
+ */
+export function parseStartupCacheEvidenceLine(line: string): StartupCacheEvidence | null {
+  const at = line.indexOf(`${STARTUP_CACHE_EVIDENCE_SCHEMA} {`);
+  if (at < 0) return null;
+  let raw: unknown;
+  try { raw = JSON.parse(line.slice(at + STARTUP_CACHE_EVIDENCE_SCHEMA.length + 1)); } catch { return null; }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const startedAt = finiteOrNull(r.startedAt);
+  if (r.schema !== STARTUP_CACHE_EVIDENCE_SCHEMA || startedAt === null) return null;
+  return {
+    authorizationScope: typeof r.authorizationScope === 'string' ? r.authorizationScope : null,
+    model: typeof r.model === 'string' ? r.model : null,
+    transport: TRANSPORTS.includes(r.transport as GatewayTelemetryTransport)
+      ? (r.transport as GatewayTelemetryTransport) : 'unknown',
+    tools: parseFingerprint(r.tools),
+    instructions: parseFingerprint(r.instructions),
+    startedAt,
+    availableAt: null,
+    expiresAt: null,
+    cacheReadTokens: finiteOrNull(r.cacheReadTokens),
+    cacheWriteTokens: finiteOrNull(r.cacheWriteTokens),
+  };
+}
+
 export const GATEWAY_REQUEST_STAGE_NAMES = [
   'routeSelection',
   'queueWait',
@@ -816,11 +922,19 @@ export class GatewayRequestTelemetry {
   private readonly sampleCapacity: number;
   private readonly recentCapacity: number;
   private readonly now: () => number;
+  private readonly onStartupEvidence: ((line: string) => void) | undefined;
 
-  constructor(opts: { sampleCapacity?: number; recentCapacity?: number; now?: () => number } = {}) {
+  constructor(opts: {
+    sampleCapacity?: number;
+    recentCapacity?: number;
+    now?: () => number;
+    /** Durable sink for first-request-per-owner startup evidence (the gateway journal). Never throws into the request path. */
+    onStartupEvidence?: (line: string) => void;
+  } = {}) {
     this.sampleCapacity = Math.max(1, Math.floor(opts.sampleCapacity ?? 4096));
     this.recentCapacity = Math.max(1, Math.floor(opts.recentCapacity ?? 256));
     this.now = opts.now ?? Date.now;
+    this.onStartupEvidence = opts.onStartupEvidence;
     this.stageSamples = Object.fromEntries(
       GATEWAY_REQUEST_STAGE_NAMES.map((stage) => [stage, new BoundedSamples(this.sampleCapacity)]),
     ) as Record<GatewayRequestStageName, BoundedSamples>;
@@ -877,6 +991,14 @@ export class GatewayRequestTelemetry {
     this.recent.push(timeline);
     if (this.recent.length > this.recentCapacity) {
       this.recent.splice(0, this.recent.length - this.recentCapacity);
+    }
+    if (this.onStartupEvidence) {
+      try {
+        const record = startupCacheEvidenceRecord(timeline);
+        if (record) this.onStartupEvidence(formatStartupCacheEvidenceLine(record));
+      } catch {
+        // Durable evidence capture is best-effort and must never fail a completed request.
+      }
     }
   }
 
