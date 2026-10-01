@@ -4374,6 +4374,33 @@ whole-query wait decomposition and app impact remain unresolved. The private
 P-008/R-8 and shipment remain open. Next use a bounded current plan-only
 control at the newly observed cardinality, preserving D-006's runtime route.
 
+### Observed-cardinality plan-only control — October 1, 18:51Z
+
+Task `0mupw1hkv1btozjgydd`, exit 0, reused the source UPDATE with a
+constructed current stored-owner map of **2,985 distinct Claude sessions**.
+The dedicated client verified read-only on, statement timeout 5s and lock
+timeout 1s, then closed. The exact source/SQL hashes remain
+`81276d34…` / `c33700f4…`. Both current-bound and generic EXPLAIN-only
+plans contain ModifyTable/Update, Nested Loop, Function Scan and the
+composite primary Index Scan. Bound Function/Join estimates are
+**2,985 / 29,677**; generic estimates are **10 / 76**. Planning round trips
+were 8 / 2 ms; the full native receipt spans 168 ms. These are estimates
+and planning reads, not UPDATE execution measurements.
+
+The first input selection, task `0mupvwwn044bxoj3rkp`, exited 1 with
+server timeout 57014 before producing a plan. Both attempts used the same
+5s/1s server bounds; the deadline was not widened. EXPLAIN-only selector
+controls show Incremental Sort for `ORDER BY session_id, owner` and no
+sort for primary-key order `session_id, turn_idx`. The successful attempt
+uses the latter. Changed time/cache state prevents attributing the first
+timeout to the sort. Both receipts are preserved in
+[p008-owner-update-planonly-2985-2026-10-01-fire100.json](p008-owner-update-planonly-2985-2026-10-01-fire100.json).
+
+This extends the current planning control to the observed input cardinality.
+It does not recover the original values, matching-turn distribution or
+executed live access plan. Existing private tests remain dated and passing;
+P-008/R-8 and whole-query/app-impact attribution remain open.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash
