@@ -84,7 +84,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const BASE = { workspaceId: 'ws', userId: 'user-1' };
+const BASE = { workspaceId: 'ws', userId: 'user-1', agentOwnerId: null };
 
 describe('social:reply — rail 1', () => {
   it('sends text to the server-resolved destination and echoes where it went', async () => {

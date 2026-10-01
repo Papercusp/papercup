@@ -104,6 +104,7 @@ function post(sql: unknown, overrides: Record<string, unknown> = {}) {
   return postToCanonicalSocialDestination(sql as never, {
     workspaceId: 'ws',
     userId: 'user-1',
+    agentOwnerId: null,
     destination: 'reddit:r/rust',
     text: 'hello world',
     provenance: { from: 'owner-instruction' },

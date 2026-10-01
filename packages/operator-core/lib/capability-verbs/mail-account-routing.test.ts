@@ -75,6 +75,7 @@ describe('mail reply account routing', () => {
     const result = await replyToCanonicalMail(fakeSql(), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       sourceId: SECOND,
       text: 'Account-safe draft',
@@ -104,6 +105,7 @@ describe('mail reply account routing', () => {
     await expect(replyToCanonicalMail(fakeSql(), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       text: 'Must not guess',
       mode: 'draft',
@@ -115,6 +117,7 @@ describe('mail reply account routing', () => {
     const result = await replyToCanonicalMail(fakeSql({ singleAccount: true }), {
       workspaceId: WORKSPACE,
       userId: USER,
+      agentOwnerId: null,
       messageId: 'shared-message',
       text: 'Legacy single-account draft',
       mode: 'draft',

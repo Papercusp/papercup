@@ -58,6 +58,7 @@ function fakeSql() {
 const BASE = {
   workspaceId: WORKSPACE,
   userId: USER,
+  agentOwnerId: null,
   to: ['hiring@company.example'],
   subject: 'Senior Engineer',
   text: 'Hello.',

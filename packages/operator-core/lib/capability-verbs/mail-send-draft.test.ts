@@ -69,6 +69,7 @@ function deps(overrides: Record<string, unknown> = {}) {
 const BASE = {
   workspaceId: WORKSPACE,
   userId: USER,
+  agentOwnerId: null,
   draftId: 'draft-1',
   provenance: { from: 'owner-instruction' } as const,
 };
