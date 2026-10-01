@@ -206,6 +206,14 @@ const workspaceTxnCalls: Array<{ coordinationDomain: string; owner: string }> = 
 vi.mock('../../agent-tools/locks/ended-session-owners', () => ({
   endedSessionOwners: vi.fn(async (_owners: readonly string[]): Promise<ReadonlySet<string>> => new Set<string>()),
 }));
+// WI-10004472: a DBOS recovery replay returns a recorded step's operation_output
+// WITHOUT calling its body. Default: empty map, so every step runs live exactly as
+// the real helper does outside a workflow.
+const replayedSteps = vi.hoisted(() => new Map<string, unknown>());
+vi.mock('../../dbos/checkpointed-step', () => ({
+  runCheckpointedStep: async <T,>(name: string, fn: () => Promise<T>): Promise<T> =>
+    replayedSteps.has(name) ? (replayedSteps.get(name) as T) : fn(),
+}));
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (coordinationDomain: string, owner: string, fn: (tx: unknown) => unknown) => {
     workspaceTxnCalls.push({ coordinationDomain, owner });
@@ -1596,6 +1604,62 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(sequence).toEqual(['peer-held-refusal', 'released:libs-papercusp-submodule', 'released-own-lock-set']);
     expect(peerRowLive).toBe(true);
     expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
+  });
+
+  describe('WI-10004472: a DBOS recovery replay refused its locks', () => {
+    // Observed 2026-10-01 00:52:32Z: four fires recovered after a bg-host restart
+    // replayed git-sync:eligibility, were refused the workspace `git-sync` barrier
+    // (a dev:restart exclusive, not a git-sync holder), took the skip branch, and
+    // the engine's settle step then collided with the recorded git-sync:pointer-bump.
+    const restartBarrierRefusal = () =>
+      tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+        (opts as { resource: string }).resource === 'git-sync'
+          ? {
+              ok: false,
+              reason: 'exclusive_pending',
+              holders: [
+                {
+                  owner: 'dev-restart:barrier-owner',
+                  owner_label: 'dev:restart',
+                  mode: 'exclusive' as const,
+                  status: 'held' as const,
+                  lock_id: 'lock-restart-barrier',
+                  reason: 'dev:restart git-sync kill barrier (WI-222053)',
+                  acquired_ts: new Date('2026-10-01T00:51:30.000Z'),
+                  expires_ts: new Date('2026-10-01T00:53:30.000Z'),
+                  fence_seq: 7,
+                },
+              ],
+            }
+          : { ok: true },
+      );
+
+    it('abandons the replay: tells the engine to issue no further DBOS step, runs no pipeline, emits nothing', async () => {
+      const { gitSyncCronAction } = await import('./git-sync-action');
+      restartBarrierRefusal();
+      replayedSteps.set('git-sync:eligibility', { eligible: true });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = await gitSyncCronAction({ ...ctx, workflowId: 'sched-.routinesTick-2026-10-01T00:44:30.000Z-11' });
+        expect(result).toEqual({ replayAbandoned: { reason: 'exclusive_pending' } });
+        expect(runGitSyncMock).not.toHaveBeenCalled();
+        expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
+        expect(warn.mock.calls.some((c) => String(c[0]).includes('abandoning the replay'))).toBe(true);
+      } finally {
+        replayedSteps.clear();
+        warn.mockRestore();
+      }
+    });
+
+    it('control: the SAME refusal on a live first execution keeps the ordinary skip (no abandon signal)', async () => {
+      const { gitSyncCronAction } = await import('./git-sync-action');
+      restartBarrierRefusal();
+      const result = await gitSyncCronAction({ ...ctx, workflowId: 'sched-.routinesTick-2026-10-01T00:55:30.000Z-2' });
+      expect(result).toBeUndefined();
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      // exclusive_pending is a non-held_exclusive refusal, so the live skip still signals retry.
+      expect(emitGitSyncLockRetryEventMock).toHaveBeenCalledOnce();
+    });
   });
 
   it('WI-209800: purges queued terminal git-sync fires without disturbing a peer FIFO ticket', async () => {
