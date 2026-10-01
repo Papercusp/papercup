@@ -51,9 +51,17 @@ function fixture(name: string, files: Record<string, string>): string {
   return dir;
 }
 
+/**
+ * A SYNTHETIC build-box home path. identity_literals() resolves build-home-path from
+ * os.path.expanduser("~"), i.e. $HOME, so pinning HOME makes the canary deterministic
+ * without writing any real box's identity into source (lint:no-identity-literals).
+ * Derived under the per-run tmp dir so no home-path literal appears in source.
+ */
+const SYNTHETIC_HOME = path.join(tmp, 'synthetic-release-canary-home');
+
 /** Run the audit's --scan-dir mode and return only its exit code. */
 function scanDir(dir: string, ownerName?: string): number {
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: SYNTHETIC_HOME };
   // Deleting rather than blanking: the gate treats a blank as absent, and we want the
   // "genuinely unset" path that a real build box hits.
   delete env[OWNER_NAME_ENV];
@@ -95,29 +103,35 @@ describe('audit-release-bundle.py --scan-dir — the installer backstop must fai
     expect(fs.existsSync(AUDIT)).toBe(true);
   });
 
-  it('exits 2 (CANNOT CHECK) when no owner-name literal resolves', () => {
-    // The bug's exact shape: git user.name became an automation identity, so the owner's
-    // name silently left the query set while the scan still read every byte.
-    const clean = fixture('clean', { 'index.html': '<h1>Papercusp releases</h1>' });
-    expect(scanDir(clean)).toBe(2);
+  it('exits 2 (CANNOT CHECK) when the scan target does not exist', () => {
+    // A gate pointed at a missing path reads nothing; it must not report CLEAN.
+    expect(scanDir(path.join(tmp, 'does-not-exist'))).toBe(2);
   });
 
-  it('exits 0 (VERIFIED CLEAN) on a clean tree once an owner name IS supplied', () => {
+  it('exits 0 (VERIFIED CLEAN) on a clean tree with no owner literal supplied (D-112)', () => {
+    // p2p-public-release-endgame-2026-09-01#D-112 [owner 2026-10-01]: the release
+    // identity policy is machine-only, so an unset owner name is no longer CANNOT CHECK.
     const clean = fixture('clean', { 'index.html': '<h1>Papercusp releases</h1>' });
-    expect(scanDir(clean, STANDIN_OWNER)).toBe(0);
+    expect(scanDir(clean)).toBe(0);
   });
 
-  it('exits 1 (FOUND LEAKS) on a canary tree — proving it can still FAIL', () => {
-    // THE CALIBRATION CONTROL. An always-refuse gate would pass both cases above.
-    const canary = fixture('canary', { 'notes.txt': `built by ${STANDIN_OWNER} on the release box` });
-    expect(scanDir(canary, STANDIN_OWNER)).toBe(1);
+  it('exits 1 (FOUND LEAKS) on a build-box home-path canary — proving it can still FAIL', () => {
+    // THE CALIBRATION CONTROL. An always-pass gate would satisfy the clean case above.
+    const canary = fixture('canary', { 'notes.txt': `built in ${SYNTHETIC_HOME}/src/papercusp` });
+    expect(scanDir(canary)).toBe(1);
+  });
+
+  it('does NOT treat owner authorship as a leak (D-112)', () => {
+    // Owner name in shipped content is legitimate under D-112, even when the legacy env
+    // var is set by an older producer script.
+    const authored = fixture('authored', { 'notes.txt': `authored by ${STANDIN_OWNER}` });
+    expect(scanDir(authored, STANDIN_OWNER)).toBe(0);
   });
 
   it('keeps CANNOT-CHECK and FOUND-LEAKS on distinct exit codes', () => {
-    // A caller's `|| fail` cannot tell a blind gate from a clean one if these collide —
-    // the original bug, one layer up.
-    const canary = fixture('canary', { 'notes.txt': `built by ${STANDIN_OWNER} on the release box` });
-    expect(scanDir(canary)).not.toBe(scanDir(canary, STANDIN_OWNER));
+    // A caller's `|| fail` cannot tell a blind gate from a leaking one if these collide.
+    const canary = fixture('canary', { 'notes.txt': `built in ${SYNTHETIC_HOME}/src/papercusp` });
+    expect(scanDir(path.join(tmp, 'does-not-exist'))).not.toBe(scanDir(canary));
   });
 });
 
@@ -163,58 +177,35 @@ describe('audit-release-bundle.py release false-positive controls', () => {
   });
 });
 
-describe('audit-release-bundle.py — the owner-name check does not rest on the denylist', () => {
-  // PINS the claim release-content-scrub.ts makes about this file. The TS scrub drops a
-  // git-derived name at COLLECTION time; this gate keeps it (so a bot's name is still
-  // REDACTED) and refuses one layer later instead. That reads like a disagreement about
-  // who the owner is, and a future reader "aligning" them would reintroduce the denylist
-  // the TS side deliberately abandoned. What actually makes the divergence safe is that
-  // has_owner_name_literal() ignores the literal set entirely and consults only the env.
-
-  /** Both owner-name predicates, without touching this box's real git config. */
-  function ownerNamePredicates(
-    name: string,
-    ownerEnv?: string,
-  ): { denylisted: boolean; detectable: boolean } {
+describe('audit-release-bundle.py — the identity policy is machine-only (D-112)', () => {
+  // p2p-public-release-endgame-2026-09-01#D-112 [owner 2026-10-01] removed the
+  // owner-name/email literals from the release identity gate. Pin that the build-box
+  // literal set carries no owner/git-identity key and the legacy preflight stays a no-op,
+  // so a later edit cannot silently re-arm the removed policy.
+  function probe(): { keys: string[]; preflight: number } {
     const source = [
-      'import json, runpy, sys',
+      'import contextlib, io, json, runpy, sys',
       'ns = runpy.run_path(sys.argv[1])',
-      'name = sys.argv[2]',
-      'print(json.dumps({',
-      '    "denylisted": bool(ns["looks_like_automation_identity"](name)),',
-      '    "detectable": bool(ns["has_owner_name_literal"]({"build-git-name": name})),',
-      '}))',
+      'with contextlib.redirect_stdout(io.StringIO()):',
+      '    rc = ns["owner_preflight"]()',
+      'print(json.dumps({"keys": sorted(ns["identity_literals"]().keys()), "preflight": rc}))',
     ].join('\n');
-    const env = { ...process.env };
-    delete env[OWNER_NAME_ENV];
-    if (ownerEnv !== undefined) env[OWNER_NAME_ENV] = ownerEnv;
-    const r = spawnSync('python3', ['-c', source, AUDIT, name], { env, encoding: 'utf8' });
+    const r = spawnSync('python3', ['-c', source, AUDIT], {
+      env: { ...process.env, HOME: SYNTHETIC_HOME },
+      encoding: 'utf8',
+    });
     if (r.error) throw r.error;
     expect(r.status, r.stderr).toBe(0);
-    return JSON.parse(r.stdout) as { denylisted: boolean; detectable: boolean };
+    return JSON.parse(r.stdout) as { keys: string[]; preflight: number };
   }
 
-  // An AUTOMATION spelling the denylist does not enumerate (never an owner identity). If
-  // someone later adds it to AUTOMATION_NAME_RE, the premise assertion below fails loudly
-  // rather than the pin silently testing nothing — pick another unenumerated spelling at
-  // that point, do not delete the case.
-  //
-  // Keep the spelling SYNTHETIC. Naming a REAL build box here is a bare box-identity
-  // literal, which lint:no-identity-literals refuses — and because that lint is repo-wide
-  // and carries no failing test FILE for the re-triage to rescue, one such literal
-  // red-pins every later green-checkpoint candidate. Nothing in this case needs a real
-  // box's name; it needs only a name the denylist misses.
-  const UNENUMERATED_BOT = 'example-buildbox';
-
-  it('a bot name the denylist MISSES still cannot satisfy the owner-name check', () => {
-    const { denylisted, detectable } = ownerNamePredicates(UNENUMERATED_BOT);
-    expect(denylisted).toBe(false); // premise: this is the fails-open case, not a caught one
-    expect(detectable).toBe(false); // and it refuses anyway — the denylist is not load-bearing
+  it('resolves only build-box keys — no build-git-name / build-git-email', () => {
+    const { keys } = probe();
+    expect(keys).toContain('build-home-path'); // calibration: the probe really resolved literals
+    expect(keys.filter((k) => k.startsWith('build-git-'))).toEqual([]);
   });
 
-  it('only the EXPLICIT owner name satisfies it — the calibration control', () => {
-    // Without this, a has_owner_name_literal() hard-wired to False would pass the case
-    // above and look like a stronger gate than it is.
-    expect(ownerNamePredicates(UNENUMERATED_BOT, STANDIN_OWNER).detectable).toBe(true);
+  it('owner_preflight succeeds without any owner literal', () => {
+    expect(probe().preflight).toBe(0);
   });
 });

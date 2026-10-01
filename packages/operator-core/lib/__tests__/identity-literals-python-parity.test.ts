@@ -93,6 +93,16 @@ const DELEGATED_TO_ANOTHER_CLASS: Record<string, string> = {
   'build-home-path': 'class 2 — findBoxIdentityPaths (check-no-box-identity.mjs)',
 };
 
+/**
+ * Owner git-identity keys that ONLY the edit-time .mjs detector resolves. Under
+ * p2p-public-release-endgame-2026-09-01#D-112 [owner 2026-10-01] the release gate is
+ * machine-only: owner name/email are legitimate release content, so the python
+ * identity_literals() no longer resolves them. The edit-time lint still keeps owner names
+ * out of tracked source, which is a different concern. Any OTHER .mjs-only key is still a
+ * parity break.
+ */
+const EDIT_TIME_ONLY_OWNER_KEYS = ['build-git-email', 'build-git-name'];
+
 /** Keys in python's cross-box KNOWN_SENSITIVE_IDENTITIES dict (names only, never values). */
 export function pyKnownSensitiveKeys(source: string): string[] {
   const start = source.indexOf('KNOWN_SENSITIVE_IDENTITIES = {');
@@ -113,14 +123,21 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
     // A regex that silently stops matching would make every assertion below pass on empty
     // arrays — the zero-work false-green class this repo keeps hitting.
     expect(mjsKeys.length).toBeGreaterThanOrEqual(4);
-    expect(pyBuildKeys.length).toBeGreaterThanOrEqual(4);
+    // Machine-only since D-112: build-user-name, build-home-path, build-hostname.
+    expect(pyBuildKeys.length).toBeGreaterThanOrEqual(3);
     expect(knownSensitiveKeys.length).toBeGreaterThanOrEqual(3);
   });
 
   it('⭐ UNDER-PORT: every python build-box key is covered by SOME class in the .mjs', () => {
     // NOT set-equality against class 3 alone — the .mjs decomposes what python keeps flat.
     // A python key is covered if class 3 resolves it OR another class owns it explicitly.
-    const covered = [...new Set([...mjsKeys, ...Object.keys(DELEGATED_TO_ANOTHER_CLASS)])].sort();
+    const covered = [...new Set([...mjsKeys, ...Object.keys(DELEGATED_TO_ANOTHER_CLASS)])]
+      .filter((key) => !EDIT_TIME_ONLY_OWNER_KEYS.includes(key))
+      .sort();
+    // Calibration: the edit-time owner keys must really still exist in the .mjs, or this
+    // exemption is silently exempting nothing.
+    for (const key of EDIT_TIME_ONLY_OWNER_KEYS) expect(mjsKeys).toContain(key);
+    for (const key of EDIT_TIME_ONLY_OWNER_KEYS) expect(pyBuildKeys).not.toContain(key);
     expect(
       covered,
       'audit-release-bundle.py identity_literals() gained (or lost) a key that the .mjs does not ' +
@@ -223,12 +240,11 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
       'build-git-email': 'human@example.test',
     });
 
-    // Pin the Python side's value rules too; comparing only key names missed this exact drift.
-    expect(py).toMatch(/AUTOMATION_NAME_RE\s*=\s*re\.compile/);
-    expect(py).toMatch(/AUTOMATION_EMAIL_RE\s*=\s*re\.compile/);
-    expect(py).toMatch(/looks_like_automation_identity\(v\)/);
-    expect(py).toMatch(/looks_like_automation_email\(v\)/);
-    expect(py).toMatch(/explicit_owner_values\(env_var\)/);
+    // The Python release gate no longer has an owner class at all (D-112, machine-only), so
+    // its automation-drop rules were removed with it. Pin that they stay gone rather than
+    // half-returning without the owner class they existed to protect.
+    expect(py).not.toMatch(/def looks_like_automation_identity\(/);
+    expect(py).not.toMatch(/def explicit_owner_values\(/);
   });
 
   it('scopes explicit owner linting to the sidecar CC files copied verbatim', () => {
