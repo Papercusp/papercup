@@ -1308,4 +1308,148 @@ describe('work_items:set_blocker', () => {
       expect(mergeWorkItemPayload).toHaveBeenCalled();
     });
   });
+
+  // WI-10005020 (P-002 / R-15): pre-existing rows naming only work-items are migrated
+  // to the canonical blocks edge; genuine external rows are the negative control.
+  describe('migrateWorkItemRefs (R-15)', () => {
+    const row = (kind: string, ref: string) => ({
+      kind,
+      ref,
+      summary: `waiting on ${ref}`,
+      status: 'active',
+      capability: kind === 'human' ? 'product-decision' : 'live-dependency',
+      capabilitySource: 'explicit',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      createdBy: 'su-old',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+    });
+    const blockedWith = (rows: unknown[], state = 'blocked') => ({
+      id: 'WI-10002828',
+      family: 'issue',
+      kind: 'change',
+      state,
+      harness: 'papercusp',
+      payload: { externalBlockers: rows },
+    });
+    const persistMerge = (item: { payload: Record<string, unknown> }) =>
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+        ...item,
+        payload: { ...item.payload, ...patch },
+      }));
+    const activeRefs = (blockers: Array<{ ref: string; status: string }>) =>
+      blockers.filter((b) => b.status === 'active').map((b) => b.ref);
+
+    it('replaces a work-item:done row with a blocks edge, clears the row and restores open', async () => {
+      const item = blockedWith([row('event', 'work-item:done:WI-10004474')]);
+      getWorkItem.mockResolvedValue(item);
+      persistMerge(item);
+      linkWorkItemRefDependencies.mockResolvedValue({
+        ok: true,
+        edges: [{ blocker: 'WI-10004474', blocked: { kind: 'issue', ref: 'WI-10002828' } }],
+      });
+      setWorkItemStateWithAliasInfo.mockResolvedValueOnce({ workItem: { ...item, state: 'open' } });
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(out.ok).toBe(true);
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledWith({
+        dependentId: 'WI-10002828',
+        harness: undefined,
+        referents: ['WI-10004474'],
+        by: 'su-a',
+      });
+      expect(out.migration.converted).toEqual([
+        { kind: 'event', ref: 'work-item:done:WI-10004474', blockers: ['WI-10004474'] },
+      ]);
+      // Falsifier: no row naming another work item may stay active after the migration.
+      expect(out.activeBlockers).toEqual([]);
+      const [, patch] = mergeWorkItemPayload.mock.calls[0];
+      expect(activeRefs(patch.externalBlockers)).toEqual([]);
+      expect(patch.externalBlockers[0]).toMatchObject({ status: 'cleared', ref: 'work-item:done:WI-10004474' });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-10002828', 'open', {
+        harness: undefined,
+        by: 'su-a',
+      });
+      expect(out.workItem.state).toBe('open');
+    });
+
+    it('leaves genuine external rows and self-only owner rows untouched (negative control)', async () => {
+      const item = blockedWith([
+        row('gate', 'WI-40086; WI-40509'),
+        row('event', 'release:deployed:papercusp'),
+        row('human', 'WI-10002828'),
+      ]);
+      getWorkItem.mockResolvedValue(item);
+      persistMerge(item);
+      linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [] });
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(out.ok).toBe(true);
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledTimes(1);
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledWith(
+        expect.objectContaining({ referents: ['WI-40086', 'WI-40509'] }),
+      );
+      expect(out.migration.untouchedSelfOnly).toEqual([{ kind: 'human', ref: 'WI-10002828' }]);
+      expect(activeRefs(out.activeBlockers)).toEqual(['release:deployed:papercusp', 'WI-10002828']);
+      // Rows still active, so the item stays blocked: no lifecycle change.
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    });
+
+    it('drops the item\'s own id from a multi-ref row and links only the real dependencies', async () => {
+      const item = blockedWith([row('gate', 'WI-10002828, WI-2140973')], 'needs-human');
+      getWorkItem.mockResolvedValue(item);
+      persistMerge(item);
+      linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [] });
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(linkWorkItemRefDependencies).toHaveBeenCalledWith(expect.objectContaining({ referents: ['WI-2140973'] }));
+      expect(out.activeBlockers).toEqual([]);
+      // needs-human is not a blocked-park state; the migration leaves it for its owner.
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('clears rows on a terminal dependent without writing any edge', async () => {
+      const item = blockedWith([row('gate', 'WI-40086')], 'done');
+      getWorkItem.mockResolvedValue(item);
+      persistMerge(item);
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(out.ok).toBe(true);
+      expect(linkWorkItemRefDependencies).not.toHaveBeenCalled();
+      expect(out.migration).toMatchObject({ dependentTerminal: true, converted: [{ ref: 'WI-40086', blockers: [] }] });
+      expect(out.activeBlockers).toEqual([]);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('keeps a row active and reports it when its edge is refused', async () => {
+      const item = blockedWith([row('event', 'work-item:done:WI-404')]);
+      getWorkItem.mockResolvedValue(item);
+      linkWorkItemRefDependencies.mockResolvedValue({
+        ok: false,
+        code: 'work_item_ref_dependency_refused',
+        error: "blocker work_item 'WI-404' was not found",
+      });
+
+      const out = await one({ id: 'WI-10002828', migrateWorkItemRefs: true });
+
+      expect(out).toMatchObject({ ok: false, code: 'work_item_ref_dependency_refused', changed: false });
+      expect(out.migration.refused).toEqual([
+        { kind: 'event', ref: 'work-item:done:WI-404', error: "blocker work_item 'WI-404' was not found" },
+      ]);
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('refuses migrateWorkItemRefs combined with a set or clear field', () => {
+      expect(() => parse({ id: 'WI-1', migrateWorkItemRefs: true, ref: 'WI-2' })).toThrow(/cannot be combined/);
+      expect(() => parse({ items: [{ id: 'WI-1', migrateWorkItemRefs: true, clear: true }] })).toThrow(
+        /cannot be combined/,
+      );
+      expect(() => parse({ id: 'WI-1', migrateWorkItemRefs: true })).not.toThrow();
+    });
+  });
 });

@@ -63,6 +63,7 @@ type BlockerInput = {
   decideBy?: string;
   clear?: boolean;
   harness?: string;
+  migrateWorkItemRefs?: boolean;
 };
 type NormalizedBlockerInput = Omit<BlockerInput, 'kind'> & { kind?: ExternalBlockerKind };
 const CAPABILITY_KIND_ALIASES = {
@@ -108,13 +109,139 @@ const fields = {
   decideBy: z.string().max(40).optional(),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
+  migrateWorkItemRefs: z
+    .boolean()
+    .optional()
+    .describe('Migrate this item\'s legacy rows that name only work-items to blocks edges; pass id (+harness) only.'),
 };
+
+/** A migration request names only the item: it rewrites existing rows, so a set/clear field is contradictory. */
+function validateMigrateOnly(
+  value: { migrateWorkItemRefs?: boolean; kind?: unknown; capability?: unknown; ref?: unknown; clear?: unknown },
+  ctx: z.RefinementCtx,
+  path: (string | number)[] = [],
+) {
+  if (value.migrateWorkItemRefs !== true) return;
+  for (const key of ['kind', 'capability', 'ref', 'clear'] as const) {
+    if (value[key] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, key],
+        message: `migrateWorkItemRefs rewrites the item's existing rows and cannot be combined with '${key}'`,
+      });
+    }
+  }
+}
+
 const itemSpec = z
   .object({ id: z.string().min(1), ...fields })
   .strict()
   .superRefine(validateCapabilityKindAlias);
 
 const TERMINAL = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']);
+
+type WorkItemRow = NonNullable<Awaited<ReturnType<typeof getWorkItem>>>;
+const MIGRATION_EVIDENCE = 'WI-10005020 R-15: migrated to the work_item_deps blocks edge (canonical dependency form)';
+
+/**
+ * WI-10005020 (P-002 / R-15) — migrate an item's legacy `externalBlockers` rows whose ref
+ * names ONLY work-items to the canonical `blocks` edge, then clear the row (history kept).
+ *
+ * - A referent equal to the item's own id is not a dependency: rows naming only the item
+ *   itself are owner-action records and stay untouched; a self id inside a multi-ref row
+ *   is dropped from the referents.
+ * - A terminal dependent gets its rows cleared without new edges — nothing can wait on it.
+ * - A refused edge (missing referent, cycle, an active dependant's guard) leaves that row
+ *   active and is reported, so no dependency is ever lost.
+ * - When no active row remains, the lifecycle mirrors clearing the last blocker: `blocked`
+ *   returns to `open` (the edge alone now gates claiming) and an issue's claim hold drops.
+ */
+async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: WorkItemRow, by: string) {
+  const ownId = input.id.toUpperCase();
+  const dependentTerminal = TERMINAL.has(workItem.state.toLowerCase());
+  const converted: Array<{ kind: string; ref: string; blockers: string[] }> = [];
+  const refused: Array<{ kind: string; ref: string; error: string }> = [];
+  const untouchedSelfOnly: Array<{ kind: string; ref: string }> = [];
+  let payload: Record<string, unknown> =
+    workItem.payload && typeof workItem.payload === 'object' && !Array.isArray(workItem.payload)
+      ? (workItem.payload as Record<string, unknown>)
+      : {};
+  let blockers = readExternalBlockers(payload);
+
+  for (const row of activeExternalBlockers(workItem.payload)) {
+    const referents = pureWorkItemDependencyReferents(row.ref);
+    if (!referents) continue;
+    const dependencies = referents.filter((referent) => referent !== ownId);
+    if (!dependencies.length) {
+      untouchedSelfOnly.push({ kind: row.kind, ref: row.ref });
+      continue;
+    }
+    if (!dependentTerminal) {
+      const linked = await linkWorkItemRefDependencies({
+        dependentId: input.id,
+        harness: input.harness,
+        referents: dependencies,
+        by,
+      });
+      if (!linked.ok) {
+        refused.push({ kind: row.kind, ref: row.ref, error: linked.error });
+        continue;
+      }
+    }
+    const history = applyExternalBlockerUpdate(
+      payload,
+      { kind: row.kind, ref: row.ref, clear: true, evidence: MIGRATION_EVIDENCE },
+      by,
+      { autoAuthority: false },
+    );
+    blockers = history.blockers;
+    payload = { ...payload, externalBlockers: blockers };
+    converted.push({ kind: row.kind, ref: row.ref, blockers: dependentTerminal ? [] : dependencies });
+  }
+
+  const migration = { dependentTerminal, converted, refused, untouchedSelfOnly };
+  if (!converted.length) {
+    return {
+      ok: refused.length === 0,
+      id: input.id,
+      changed: false,
+      workItem,
+      migration,
+      activeBlockers: activeExternalBlockers(workItem.payload),
+      ...(refused.length ? { code: 'work_item_ref_dependency_refused', error: refused.map((r) => r.error).join(' | ') } : {}),
+    };
+  }
+
+  const updated = await mergeWorkItemPayload(input.id, { externalBlockers: blockers }, { harness: input.harness });
+  if (!updated) return { ok: false as const, id: input.id, error: 'blocker payload write did not return the work-item', migration };
+  const active = activeExternalBlockers(updated.payload);
+  let finalWorkItem = updated;
+  let lifecycle: unknown = null;
+  if (active.length === 0 && !dependentTerminal) {
+    if (updated.state === 'blocked') {
+      const restored = await setWorkItemStateWithAliasInfo(input.id, 'open', { harness: input.harness, by });
+      if (restored.workItem) finalWorkItem = restored.workItem;
+      lifecycle = restored;
+    } else if (updated.family === 'issue') {
+      lifecycle = await setWorkItemClaimHold(input.id, false, {
+        harness: input.harness,
+        by,
+        reason: 'external work-item-ref blockers migrated to blocks edges',
+      });
+    }
+  }
+  return {
+    ok: refused.length === 0,
+    id: input.id,
+    changed: true,
+    workItem: finalWorkItem,
+    migration,
+    activeBlockers: active,
+    blockerHistory: blockers,
+    lifecycle,
+    ...(refused.length ? { code: 'work_item_ref_dependency_refused', error: refused.map((r) => r.error).join(' | ') } : {}),
+  };
+}
 
 export default defineTool({
   name: 'work_items:set_blocker',
@@ -154,23 +281,26 @@ export default defineTool({
       decideBy: z.string().max(40).optional(),
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
+      migrateWorkItemRefs: fields.migrateWorkItemRefs,
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
     .refine(
       (args) =>
         (args.items?.length ?? 0) > 0 ||
-        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true)),
+        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true || args.migrateWorkItemRefs === true)),
       {
         message:
-          'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches',
+          'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches; migrateWorkItemRefs:true takes only id',
       },
     )
     .superRefine((args, ctx) => {
       validateCapabilityKindAlias(args, ctx);
+      validateMigrateOnly(args, ctx);
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
-        if (!item.clear && !item.ref) {
+        validateMigrateOnly(item, ctx, ['items', index]);
+        if (!item.clear && !item.ref && item.migrateWorkItemRefs !== true) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'ref'],
@@ -179,13 +309,20 @@ export default defineTool({
         }
       }
     })
-    .refine((args) => (args.items?.length ?? 0) > 0 || Boolean(args.kind) || args.clear === true, {
-      message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
-    })
+    .refine(
+      (args) =>
+        (args.items?.length ?? 0) > 0 ||
+        Boolean(args.kind) ||
+        args.clear === true ||
+        args.migrateWorkItemRefs === true,
+      {
+        message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
+      },
+    )
     .superRefine((args, ctx) => {
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
-        if (!item.kind && item.clear !== true) {
+        if (!item.kind && item.clear !== true && item.migrateWorkItemRefs !== true) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'kind'],
@@ -222,6 +359,7 @@ export default defineTool({
             decideBy: args.decideBy,
             clear: args.clear,
             harness: args.harness,
+            migrateWorkItemRefs: args.migrateWorkItemRefs,
           },
         ];
     const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
@@ -240,6 +378,9 @@ export default defineTool({
       async (input) => {
         const workItem = await getWorkItem(input.id, input.harness);
         if (!workItem) return { ok: false as const, id: input.id, error: `work_item '${input.id}' not found` };
+        if (input.migrateWorkItemRefs) {
+          return migrateWorkItemRefRows(input, workItem, identity.ownerId);
+        }
         if (!input.clear && TERMINAL.has(workItem.state.toLowerCase())) {
           return {
             ok: false as const,
