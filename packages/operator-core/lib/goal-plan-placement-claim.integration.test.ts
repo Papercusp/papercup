@@ -167,7 +167,7 @@ describe('canonical delegated-member claim receipt', () => {
     expect((await placement()).state).not.toBe('working');
     const work = await claimedWork();
     expect(await placement()).toMatchObject({ state: 'working', activeLane: { ownerId: MEMBER, workItemId: work.id },
-      fleet: { leaderOwnerId: LEADER, planScoped: true }, reconciliation: { consistent: true, action: 'none' } });
+      fleet: { leaderOwnerId: LEADER, planScoped: true, planAdmitted: true }, reconciliation: { consistent: true, action: 'none' } });
   });
   it('does not substitute a claimed self-contained bare item for the required organizing plan', async () => {
     await lease();

@@ -53,6 +53,9 @@ import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
   createImplementationReadiness,
+  type ImplementationAcceptanceContract,
+  readImplementationAcceptanceProposal,
+  sealImplementationAcceptance,
   LEGACY_AGENT_REVIEW_SUBMITTER,
   mintAgentReviewClaimAdmission,
   readAgentReviewState,
@@ -374,10 +377,17 @@ function reviewImplementationReadiness(
     round: number;
     reviewer?: string;
     grade?: number;
+    /** Sealed contract written by an approval; other transitions carry the unsealed proposal. */
+    acceptance?: Partial<ImplementationAcceptanceContract>;
   },
 ): ImplementationReadinessState {
   const existing = readImplementationReadiness(payload);
   const review = existing?.evidence?.review;
+  // P-005: never drop a producer's acceptance proposal across review transitions.
+  // A previously sealed contract is carried as its proposal fields only, so a
+  // re-review judges it afresh rather than inheriting the old authority.
+  const proposal = readImplementationAcceptanceProposal(payload);
+  const acceptance = input.acceptance ?? (Object.keys(proposal).length > 0 ? proposal : undefined);
   if (
     existing?.source === 'agent-review' &&
     existing.status === input.status &&
@@ -385,7 +395,8 @@ function reviewImplementationReadiness(
     review?.submittedBy === input.submittedBy &&
     review.round === input.round &&
     review.reviewer === input.reviewer &&
-    review.grade === input.grade
+    review.grade === input.grade &&
+    JSON.stringify(existing.evidence?.acceptance ?? null) === JSON.stringify(acceptance ?? null)
   ) {
     return existing;
   }
@@ -400,8 +411,28 @@ function reviewImplementationReadiness(
         ...(input.reviewer ? { reviewer: input.reviewer } : {}),
         ...(input.grade == null ? {} : { grade: input.grade }),
       },
+      ...(acceptance ? { acceptance } : {}),
     },
   });
+}
+
+/**
+ * Approval is the independent-review authority (R-20). It seals the producer's
+ * proposal into a qualifying contract bound to the revision the reviewer judged;
+ * an incomplete proposal is NOT defaulted — the approval stays a bare `ready`
+ * that the intake-stage derivation keeps in intake (R-4).
+ */
+export function approvalAcceptance(
+  workItem: Pick<WorkItem, 'kind' | 'title' | 'summary' | 'payload'>,
+  input: { reviewer: string; submittedBy: string; round: number; grade: number },
+): ImplementationAcceptanceContract | undefined {
+  const sealed = sealImplementationAcceptance({
+    proposal: readImplementationAcceptanceProposal(workItem.payload),
+    authority: { kind: 'agent-review', reviewer: input.reviewer, submittedBy: input.submittedBy, round: input.round },
+    reason: `agent-review-approved (grade ${input.grade}/5)`,
+    source: { kind: workItem.kind, title: workItem.title, summary: workItem.summary ?? null },
+  });
+  return sealed.ok ? sealed.contract : undefined;
 }
 
 export interface EnterAgentReviewInput {
@@ -759,6 +790,12 @@ export async function reconcileAgentReviewGrade(
         reviewer: gradedBy,
         round: current.round,
         grade,
+        acceptance: approvalAcceptance(workItem, {
+          reviewer: gradedBy,
+          submittedBy: current.submittedBy,
+          round: current.round,
+          grade,
+        }),
       }),
     },
     {

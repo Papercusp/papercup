@@ -24,6 +24,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   hasStrictOwnerAction,
   readAgentReviewState,
+  implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
 import { selectCanonicalIssue, recordIssueOccurrence, type IssueOccurrenceCounts } from './issue-occurrence-ledger';
@@ -3073,8 +3074,12 @@ function endpointProtection(
   }
   if (options.requireImplementationReadiness && (role === 'loser' || role === 'canonical')) {
     const enrolled = Object.prototype.hasOwnProperty.call(payload, 'implementationReadiness');
-    const readiness = readImplementationReadiness(snapshot.payload);
-    if (enrolled && !readiness) {
+    // A creation-enrollment `unknown` row is the absent-key legacy exception under
+    // a recorded producer stamp (P-005 D-011): route it to the same branch.
+    const readiness = implementationReadinessIsLegacyEquivalent(snapshot.payload)
+      ? null
+      : readImplementationReadiness(snapshot.payload);
+    if (enrolled && !readiness && !implementationReadinessIsLegacyEquivalent(snapshot.payload)) {
       return {
         reason: 'implementation-readiness-unknown',
         detail: `${role} ${snapshot.id} carries malformed or unsupported implementation readiness`,

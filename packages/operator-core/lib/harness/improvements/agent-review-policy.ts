@@ -8,6 +8,8 @@
  * It deliberately has no persistence dependencies. Both the queue implementation and
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
+import { createHash } from 'node:crypto';
+
 import type { OrgSql } from '../../work-items';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import {
@@ -52,19 +54,109 @@ export interface AgentReviewState {
 export const IMPLEMENTATION_READINESS_SCHEMA_VERSION = 'implementation-readiness-v1' as const;
 export const IMPLEMENTATION_READINESS_STATUSES = ['unknown', 'not-ready', 'ready'] as const;
 export type ImplementationReadinessStatus = (typeof IMPLEMENTATION_READINESS_STATUSES)[number];
-export const IMPLEMENTATION_READINESS_SOURCES = ['capture-policy', 'agent-review', 'triage-freshness'] as const;
+/**
+ * `creation-enrollment` (observation-candidate-acceptance-promotion D-009a / D-011):
+ * the issue-family insert seam stamps every new non-observation row that arrived
+ * without a verdict. It is always `unknown` — a producer with no acceptance
+ * evidence can never write `ready`. Until P-007 records the enforcement cutover,
+ * claim floors treat it exactly like the absent-key legacy exception (see
+ * `implementationReadinessIsLegacyEquivalent`), so enrolling producers changes no
+ * claimability on its own; it only makes the intake stage measurable.
+ */
+export const IMPLEMENTATION_READINESS_SOURCES = [
+  'capture-policy',
+  'agent-review',
+  'triage-freshness',
+  'creation-enrollment',
+] as const;
 export type ImplementationReadinessSource = (typeof IMPLEMENTATION_READINESS_SOURCES)[number];
+
+/**
+ * Current acceptance contract (R-4 / R-20 / R-21). It lives INSIDE the existing
+ * readiness evidence object — there is no parallel acceptance store. A producer
+ * may write a partial proposal; only `sealImplementationAcceptance` (an
+ * independent reviewer or an allowlisted existing policy) produces a qualifying
+ * contract, and the contract is bound to the source revision it judged.
+ */
+export const IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION = 'implementation-acceptance-v1' as const;
+
+/**
+ * Existing immediate policies allowed to write acceptance (D-003). Each must
+ * still supply every contract field; the policy only replaces the reviewer as the
+ * authority. Duplicate admission, severity/security tagging, explicit assignment
+ * and confidence are deliberately absent: none of them is acceptance authority.
+ */
+export const IMPLEMENTATION_ACCEPTANCE_POLICIES = ['trusted-tool-failure-promotion'] as const;
+export type ImplementationAcceptancePolicy = (typeof IMPLEMENTATION_ACCEPTANCE_POLICIES)[number];
+
+export type ImplementationAcceptanceAuthority =
+  | { kind: 'agent-review'; reviewer: string; submittedBy: string; round: number }
+  | { kind: 'policy'; policy: ImplementationAcceptancePolicy; actor: string };
+
+/** What a producer or reviewer judges: the concrete, executable claim. */
+export interface ImplementationAcceptanceProposal {
+  problem: string;
+  evidence: string[];
+  outcome: string;
+  scope: string;
+  completionCheck: string;
+}
+
+export interface ImplementationAcceptanceContract extends ImplementationAcceptanceProposal {
+  contractVersion: typeof IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION;
+  authority: ImplementationAcceptanceAuthority;
+  reason: string;
+  sourceRevision: string;
+  acceptedAt: string;
+}
+
+export const IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS = [
+  'problem',
+  'evidence',
+  'outcome',
+  'scope',
+  'completionCheck',
+] as const;
+export const IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS = [
+  'contractVersion',
+  'authority',
+  'reason',
+  'sourceRevision',
+  'acceptedAt',
+] as const;
+export type ImplementationAcceptanceField =
+  | (typeof IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS)[number]
+  | (typeof IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS)[number];
+
+export interface ImplementationAcceptanceSource {
+  /** Storage kind (`item_kind`): bug/change/task/feature. */
+  kind: string;
+  title: string;
+  /** Storage `summary` (the issue body). */
+  summary?: string | null;
+}
+
+const ACCEPTANCE_SOURCE_REVISION_PREFIX = 'src-v1:';
+const ACCEPTANCE_SOURCE_REVISION_SEPARATOR = '\u001f';
+
+/**
+ * Revision of the candidate content an acceptance judged. Any edit to the kind,
+ * title or body yields a different revision, which makes a sealed acceptance
+ * stale (R-21). The SQL twin computes the identical value from the row columns,
+ * so no writer can bypass invalidation by skipping a hook.
+ */
+export function acceptanceSourceRevision(source: ImplementationAcceptanceSource): string {
+  const material = [source.kind, source.title, source.summary ?? ''].join(ACCEPTANCE_SOURCE_REVISION_SEPARATOR);
+  return `${ACCEPTANCE_SOURCE_REVISION_PREFIX}${createHash('sha256').update(material, 'utf8').digest('hex')}`;
+}
 
 export interface ImplementationReadinessEvidence {
   /**
-   * The minimum executable acceptance contract used by the intake-stage
-   * derivation. Later acceptance-policy layers add authority, evidence and
-   * revision binding to this same object rather than creating a second store.
+   * Acceptance proposal or sealed contract. A proposal (no authority/revision)
+   * keeps the row in intake; only a complete, independently authorized,
+   * revision-current contract is qualifying acceptance.
    */
-  acceptance?: {
-    scope: string;
-    completionCheck: string;
-  };
+  acceptance?: Partial<ImplementationAcceptanceContract>;
   review?: {
     submittedBy?: string;
     reviewer?: string;
@@ -136,6 +228,188 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
   };
 }
 
+/**
+ * The visible legacy exception claim floors honour until P-007 records the
+ * enforcement cutover: a row with no readiness key, or one the creation seam
+ * enrolled as `unknown` without acceptance evidence. Neither is acceptance —
+ * `deriveWorkItemIntakeStage` keeps both in intake — they are only the claim
+ * behaviour that existed before producers were enrolled.
+ */
+export function implementationReadinessIsLegacyEquivalent(payload: unknown): boolean {
+  const value = record(payload);
+  if (!Object.prototype.hasOwnProperty.call(value, 'implementationReadiness')) return true;
+  const readiness = readImplementationReadiness(value);
+  return readiness?.status === 'unknown' && readiness.source === 'creation-enrollment';
+}
+
+export type ImplementationAcceptanceState =
+  | 'absent'
+  | 'incomplete'
+  | 'invalid-authority'
+  | 'stale-revision'
+  | 'qualifying';
+
+export interface ImplementationAcceptanceVerdict {
+  state: ImplementationAcceptanceState;
+  /** Contract fields that are missing or empty (only for `incomplete`). */
+  missing: ImplementationAcceptanceField[];
+  /** Present only for `qualifying`. */
+  contract?: ImplementationAcceptanceContract;
+  acceptedRevision?: string;
+  currentRevision?: string | null;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function nonEmptyStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.every(nonEmptyString);
+}
+
+function proposalFieldPresent(acceptance: Record<string, unknown>, field: string): boolean {
+  return field === 'evidence' ? nonEmptyStringArray(acceptance.evidence) : nonEmptyString(acceptance[field]);
+}
+
+/** Read whatever proposal fields a producer/reviewer recorded, trimmed; empty fields are dropped. */
+export function readImplementationAcceptanceProposal(payload: unknown): Partial<ImplementationAcceptanceProposal> {
+  const readiness = readImplementationReadiness(payload);
+  const acceptance = record(readiness?.evidence?.acceptance);
+  const proposal: Partial<ImplementationAcceptanceProposal> = {};
+  for (const field of IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS) {
+    if (!proposalFieldPresent(acceptance, field)) continue;
+    if (field === 'evidence') proposal.evidence = (acceptance.evidence as string[]).map((entry) => entry.trim());
+    else proposal[field] = (acceptance[field] as string).trim();
+  }
+  return proposal;
+}
+
+/**
+ * Independence and allowlist check for the acceptance authority (R-20). An
+ * agent reviewer must differ from the submitter; a policy must be an existing
+ * allowlisted immediate policy. No confidence, grade threshold or dedup verdict
+ * is consulted — confidence never grants authority.
+ */
+export function acceptanceAuthorityValid(value: unknown): value is ImplementationAcceptanceAuthority {
+  const authority = record(value);
+  if (authority.kind === 'agent-review') {
+    return (
+      nonEmptyString(authority.reviewer) &&
+      nonEmptyString(authority.submittedBy) &&
+      authority.reviewer !== authority.submittedBy &&
+      Number.isInteger(authority.round) &&
+      Number(authority.round) >= 1
+    );
+  }
+  if (authority.kind === 'policy') {
+    return (
+      IMPLEMENTATION_ACCEPTANCE_POLICIES.includes(authority.policy as ImplementationAcceptancePolicy) &&
+      nonEmptyString(authority.actor)
+    );
+  }
+  return false;
+}
+
+/**
+ * Evaluate the acceptance recorded on a work-item payload against the current
+ * source. Fail-closed: without the source (title/summary/kind) the revision
+ * cannot be verified, so the verdict is `stale-revision`, never `qualifying`.
+ * Independent of `status`; `deriveWorkItemIntakeStage` combines the two.
+ */
+export function evaluateImplementationAcceptance(
+  payload: unknown,
+  source: ImplementationAcceptanceSource | null | undefined,
+): ImplementationAcceptanceVerdict {
+  const readiness = readImplementationReadiness(payload);
+  const raw = readiness?.evidence?.acceptance;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.keys(raw).length === 0) {
+    return { state: 'absent', missing: [] };
+  }
+  const acceptance = raw as Record<string, unknown>;
+  const missing: ImplementationAcceptanceField[] = [];
+  for (const field of IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS) {
+    if (!proposalFieldPresent(acceptance, field)) missing.push(field);
+  }
+  if (acceptance.contractVersion !== IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION) missing.push('contractVersion');
+  if (!acceptance.authority || typeof acceptance.authority !== 'object') missing.push('authority');
+  if (!nonEmptyString(acceptance.reason)) missing.push('reason');
+  if (!nonEmptyString(acceptance.sourceRevision)) missing.push('sourceRevision');
+  if (
+    typeof acceptance.acceptedAt !== 'string' ||
+    !IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN.test(acceptance.acceptedAt)
+  ) {
+    missing.push('acceptedAt');
+  }
+  if (missing.length > 0) return { state: 'incomplete', missing };
+  if (!acceptanceAuthorityValid(acceptance.authority)) return { state: 'invalid-authority', missing: [] };
+  const acceptedRevision = acceptance.sourceRevision as string;
+  const currentRevision = source ? acceptanceSourceRevision(source) : null;
+  if (currentRevision !== acceptedRevision) {
+    return { state: 'stale-revision', missing: [], acceptedRevision, currentRevision };
+  }
+  const contract: ImplementationAcceptanceContract = {
+    contractVersion: IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
+    ...(readImplementationAcceptanceProposal(payload) as ImplementationAcceptanceProposal),
+    authority: acceptance.authority as ImplementationAcceptanceAuthority,
+    reason: (acceptance.reason as string).trim(),
+    sourceRevision: acceptedRevision,
+    acceptedAt: acceptance.acceptedAt as string,
+  };
+  return { state: 'qualifying', missing: [], contract, acceptedRevision, currentRevision };
+}
+
+export type SealImplementationAcceptanceResult =
+  | { ok: true; contract: ImplementationAcceptanceContract }
+  | { ok: false; refusal: 'incomplete'; missing: ImplementationAcceptanceField[] }
+  | { ok: false; refusal: 'invalid-authority' };
+
+/**
+ * The only constructor of a qualifying contract. Refuses — never defaults — when
+ * any of problem/evidence/outcome/scope/completion check/authority/reason is
+ * missing, and binds the result to the source revision judged.
+ */
+export function sealImplementationAcceptance(input: {
+  proposal: Partial<ImplementationAcceptanceProposal> | null | undefined;
+  authority: ImplementationAcceptanceAuthority;
+  reason: string;
+  source: ImplementationAcceptanceSource;
+  acceptedAt?: string;
+}): SealImplementationAcceptanceResult {
+  const proposal = record(input.proposal);
+  const missing: ImplementationAcceptanceField[] = [];
+  for (const field of IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS) {
+    if (!proposalFieldPresent(proposal, field)) missing.push(field);
+  }
+  if (!nonEmptyString(input.reason)) missing.push('reason');
+  if (!nonEmptyString(input.source?.title)) missing.push('sourceRevision');
+  if (missing.length > 0) return { ok: false, refusal: 'incomplete', missing };
+  if (!acceptanceAuthorityValid(input.authority)) return { ok: false, refusal: 'invalid-authority' };
+  const authority: ImplementationAcceptanceAuthority =
+    input.authority.kind === 'agent-review'
+      ? {
+          kind: 'agent-review',
+          reviewer: input.authority.reviewer,
+          submittedBy: input.authority.submittedBy,
+          round: input.authority.round,
+        }
+      : { kind: 'policy', policy: input.authority.policy, actor: input.authority.actor };
+  return {
+    ok: true,
+    contract: {
+      contractVersion: IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
+      problem: (proposal.problem as string).trim(),
+      evidence: (proposal.evidence as string[]).map((entry) => entry.trim()),
+      outcome: (proposal.outcome as string).trim(),
+      scope: (proposal.scope as string).trim(),
+      completionCheck: (proposal.completionCheck as string).trim(),
+      authority,
+      reason: input.reason.trim(),
+      sourceRevision: acceptanceSourceRevision(input.source),
+      acceptedAt: input.acceptedAt ?? new Date().toISOString(),
+    },
+  };
+}
+
 export const WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION = 'work-item-intake-stage-v1' as const;
 export const WORK_ITEM_INTAKE_PRIMARY_STAGES = ['observation', 'candidate', 'accepted', 'terminal', 'unknown'] as const;
 export type WorkItemIntakePrimaryStage = (typeof WORK_ITEM_INTAKE_PRIMARY_STAGES)[number];
@@ -153,6 +427,12 @@ export interface WorkItemIntakeStageInput {
   payload?: unknown;
   terminalOwner?: string | null;
   terminalCompletionRef?: string | null;
+  /**
+   * Current source content the acceptance revision is checked against. Omitted
+   * ⇒ the revision cannot be verified and acceptance cannot qualify (fail-closed).
+   */
+  title?: string | null;
+  summary?: string | null;
 }
 
 export interface WorkItemIntakeStageDecision {
@@ -166,26 +446,18 @@ export interface WorkItemIntakeStageDecision {
     | 'malformed-readiness-unknown'
     | 'qualifying-acceptance'
     | 'ready-without-executable-acceptance'
+    | 'acceptance-authority-invalid'
+    | 'acceptance-revision-stale'
     | 'awaiting-qualifying-acceptance';
   qualifyingAcceptance: boolean;
+  /** Acceptance-contract verdict, independent of the readiness status. */
+  acceptance: ImplementationAcceptanceState;
+  /**
+   * R-21: a ready decision whose judged source/scope/evidence changed is
+   * invalidated and returned to intake for re-review.
+   */
+  reReviewRequested: boolean;
   countsAsBugWork: boolean;
-}
-
-export interface ImplementationAcceptanceEssentials {
-  scope: string;
-  completionCheck: string;
-}
-
-/**
- * Read the executable minimum of an acceptance record. A `ready` bit alone is
- * not acceptance: the work must say what may be executed and what completes it.
- */
-export function readImplementationAcceptanceEssentials(payload: unknown): ImplementationAcceptanceEssentials | null {
-  const readiness = readImplementationReadiness(payload);
-  const acceptance = record(readiness?.evidence?.acceptance);
-  const scope = typeof acceptance.scope === 'string' ? acceptance.scope.trim() : '';
-  const completionCheck = typeof acceptance.completionCheck === 'string' ? acceptance.completionCheck.trim() : '';
-  return scope && completionCheck ? { scope, completionCheck } : null;
 }
 
 /**
@@ -210,8 +482,17 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
     : !readinessEnrolled
       ? 'legacy-missing'
       : (currentReadiness?.status ?? 'malformed');
-  const qualifyingAcceptance =
-    currentReadiness?.status === 'ready' && readImplementationAcceptanceEssentials(payload) !== null;
+  const acceptance = observation
+    ? ({ state: 'absent', missing: [] } satisfies ImplementationAcceptanceVerdict)
+    : evaluateImplementationAcceptance(
+        payload,
+        typeof input.title === 'string'
+          ? { kind: input.kind, title: input.title, summary: input.summary ?? null }
+          : null,
+      );
+  const qualifyingAcceptance = currentReadiness?.status === 'ready' && acceptance.state === 'qualifying';
+  const reReviewRequested =
+    !observation && !terminal && currentReadiness?.status === 'ready' && acceptance.state === 'stale-revision';
 
   let primaryStage: WorkItemIntakePrimaryStage;
   let reason: WorkItemIntakeStageDecision['reason'];
@@ -233,7 +514,13 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
   } else {
     primaryStage = 'candidate';
     reason =
-      currentReadiness.status === 'ready' ? 'ready-without-executable-acceptance' : 'awaiting-qualifying-acceptance';
+      currentReadiness.status !== 'ready'
+        ? 'awaiting-qualifying-acceptance'
+        : acceptance.state === 'stale-revision'
+          ? 'acceptance-revision-stale'
+          : acceptance.state === 'invalid-authority'
+            ? 'acceptance-authority-invalid'
+            : 'ready-without-executable-acceptance';
   }
 
   return {
@@ -242,6 +529,8 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
     readiness,
     reason,
     qualifyingAcceptance,
+    acceptance: acceptance.state,
+    reReviewRequested,
     countsAsBugWork: input.kind === 'bug' && !observation && qualifyingAcceptance,
   };
 }
@@ -252,7 +541,95 @@ type WorkItemIntakeStageSqlColumns = {
   status?: 'status' | 'wi.status' | 'ei.status';
   terminalOwner?: 'terminal_owner' | 'wi.terminal_owner' | 'ei.terminal_owner';
   terminalCompletionRef?: 'terminal_completion_ref' | 'wi.terminal_completion_ref' | 'ei.terminal_completion_ref';
+  title?: 'title' | 'wi.title' | 'ei.title';
+  /** `summary` on work_items; the engineer_issues view exposes the same column as `body`. */
+  summary?: 'summary' | 'wi.summary' | 'ei.body' | 'body';
 };
+
+/** SQL twin of `acceptanceSourceRevision` (sha256 is built into PostgreSQL ≥ 11). */
+export function acceptanceSourceRevisionSql(
+  sql: OrgSql,
+  columns: Pick<WorkItemIntakeStageSqlColumns, 'itemKind' | 'title' | 'summary'> = {},
+) {
+  const itemKind = sql.unsafe(columns.itemKind ?? 'item_kind');
+  const title = sql.unsafe(columns.title ?? 'title');
+  const summary = sql.unsafe(columns.summary ?? 'summary');
+  return sql`(${ACCEPTANCE_SOURCE_REVISION_PREFIX}::text || encode(sha256(convert_to(
+    ${itemKind} || chr(31) || ${title} || chr(31) || COALESCE(${summary}, ''),
+    'UTF8'
+  )), 'hex'))`;
+}
+
+/** SQL twin of `evaluateImplementationAcceptance(...).state`. */
+export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemIntakeStageSqlColumns = {}) {
+  const payload = sql.unsafe(columns.payload ?? 'payload');
+  const readinessJson = sql`COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness'`;
+  const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
+  const authority = sql`(${acc} -> 'authority')`;
+  const policies = [...IMPLEMENTATION_ACCEPTANCE_POLICIES];
+  const nonEmpty = (path: string) => sql`NULLIF(btrim(${acc} ->> ${path}), '') IS NOT NULL`;
+  const readinessValid = implementationReadinessValidSql(sql, columns.payload ?? 'payload');
+  const proposalComplete = sql`(
+    ${nonEmpty('problem')}
+    AND ${nonEmpty('outcome')}
+    AND ${nonEmpty('scope')}
+    AND ${nonEmpty('completionCheck')}
+    AND jsonb_typeof(${acc} -> 'evidence') = 'array'
+    AND jsonb_array_length(${acc} -> 'evidence') > 0
+    AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(${acc} -> 'evidence') AS entry(value)
+       WHERE jsonb_typeof(entry.value) <> 'string' OR btrim(entry.value #>> '{}') = ''
+    )
+  )`;
+  const sealComplete = sql`(
+    ${acc} ->> 'contractVersion' = ${IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION}
+    AND jsonb_typeof(${authority}) = 'object'
+    AND ${nonEmpty('reason')}
+    AND ${nonEmpty('sourceRevision')}
+    AND COALESCE(${acc} ->> 'acceptedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
+  )`;
+  const authorityValid = sql`(
+    CASE ${authority} ->> 'kind'
+      WHEN 'agent-review' THEN COALESCE(
+        NULLIF(btrim(${authority} ->> 'reviewer'), '') IS NOT NULL
+        AND NULLIF(btrim(${authority} ->> 'submittedBy'), '') IS NOT NULL
+        AND ${authority} ->> 'reviewer' <> ${authority} ->> 'submittedBy'
+        AND jsonb_typeof(${authority} -> 'round') = 'number'
+        AND (${authority} ->> 'round') ~ '^[1-9][0-9]*$',
+        FALSE
+      )
+      WHEN 'policy' THEN COALESCE(
+        ${authority} ->> 'policy' = ANY(${policies}::text[])
+        AND NULLIF(btrim(${authority} ->> 'actor'), '') IS NOT NULL,
+        FALSE
+      )
+      ELSE FALSE
+    END
+  )`;
+  return sql`(CASE
+    WHEN NOT (${readinessValid})
+      OR jsonb_typeof(${acc}) IS DISTINCT FROM 'object'
+      OR ${acc} = '{}'::jsonb THEN 'absent'
+    WHEN NOT (${proposalComplete} AND ${sealComplete}) THEN 'incomplete'
+    WHEN NOT (${authorityValid}) THEN 'invalid-authority'
+    WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${acceptanceSourceRevisionSql(sql, columns)} THEN 'stale-revision'
+    ELSE 'qualifying'
+  END)`;
+}
+
+function implementationReadinessValidSql(sql: OrgSql, payloadColumn: string) {
+  const readinessJson = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb) -> 'implementationReadiness'`;
+  const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
+  const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
+  return sql`(
+    jsonb_typeof(${readinessJson}) = 'object'
+    AND ${readinessJson} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+    AND ${readinessJson} ->> 'status' = ANY(${readinessStatuses}::text[])
+    AND ${readinessJson} ->> 'source' = ANY(${readinessSources}::text[])
+    AND NULLIF(btrim(${readinessJson} ->> 'reason'), '') IS NOT NULL
+    AND COALESCE(${readinessJson} ->> 'updatedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
+  )`;
+}
 
 /** SQL twin of deriveWorkItemIntakeStage for set-based queue projections. */
 export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStageSqlColumns = {}) {
@@ -262,8 +639,6 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
   const terminalOwner = sql.unsafe(columns.terminalOwner ?? 'terminal_owner');
   const terminalCompletionRef = sql.unsafe(columns.terminalCompletionRef ?? 'terminal_completion_ref');
   const terminalStatuses = [...ALL_TERMINAL_STATUSES];
-  const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
-  const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
   const payloadJson = sql`COALESCE(${payload}, '{}'::jsonb)`;
   const readinessJson = sql`${payloadJson} -> 'implementationReadiness'`;
   const observation = sql`COALESCE(${payloadJson} ->> 'lane' = 'observation', FALSE)`;
@@ -272,20 +647,10 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
     OR (${terminalOwner} IS NOT NULL AND ${terminalCompletionRef} IS NOT NULL)
   )`;
   const readinessEnrolled = sql`${payloadJson} ? 'implementationReadiness'`;
-  const readinessValid = sql`(
-    jsonb_typeof(${readinessJson}) = 'object'
-    AND ${readinessJson} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
-    AND ${readinessJson} ->> 'status' = ANY(${readinessStatuses}::text[])
-    AND ${readinessJson} ->> 'source' = ANY(${readinessSources}::text[])
-    AND NULLIF(btrim(${readinessJson} ->> 'reason'), '') IS NOT NULL
-    AND COALESCE(${readinessJson} ->> 'updatedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
-  )`;
-  const qualifyingAcceptance = sql`(
-    ${readinessValid}
-    AND ${readinessJson} ->> 'status' = 'ready'
-    AND NULLIF(btrim(${readinessJson} #>> '{evidence,acceptance,scope}'), '') IS NOT NULL
-    AND NULLIF(btrim(${readinessJson} #>> '{evidence,acceptance,completionCheck}'), '') IS NOT NULL
-  )`;
+  const readinessValid = implementationReadinessValidSql(sql, columns.payload ?? 'payload');
+  const acceptanceState = sql`(CASE WHEN ${observation} THEN 'absent' ELSE ${implementationAcceptanceStateSql(sql, columns)} END)`;
+  const readyNow = sql`(${readinessValid} AND ${readinessJson} ->> 'status' = 'ready')`;
+  const qualifyingAcceptance = sql`(${readyNow} AND ${acceptanceState} = 'qualifying')`;
 
   return sql`jsonb_build_object(
     'schemaVersion', ${WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION}::text,
@@ -309,10 +674,16 @@ export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStage
       WHEN NOT (${readinessEnrolled}) THEN 'legacy-readiness-unknown'
       WHEN NOT (${readinessValid}) THEN 'malformed-readiness-unknown'
       WHEN ${qualifyingAcceptance} THEN 'qualifying-acceptance'
-      WHEN ${readinessJson} ->> 'status' = 'ready' THEN 'ready-without-executable-acceptance'
-      ELSE 'awaiting-qualifying-acceptance'
+      WHEN ${readinessJson} ->> 'status' <> 'ready' THEN 'awaiting-qualifying-acceptance'
+      WHEN ${acceptanceState} = 'stale-revision' THEN 'acceptance-revision-stale'
+      WHEN ${acceptanceState} = 'invalid-authority' THEN 'acceptance-authority-invalid'
+      ELSE 'ready-without-executable-acceptance'
     END,
     'qualifyingAcceptance', ${qualifyingAcceptance},
+    'acceptance', ${acceptanceState},
+    'reReviewRequested', (
+      NOT (${observation}) AND NOT (${terminal}) AND ${readyNow} AND ${acceptanceState} = 'stale-revision'
+    ),
     'countsAsBugWork', (${itemKind} = 'bug' AND NOT (${observation}) AND ${qualifyingAcceptance})
   )`;
 }
@@ -538,8 +909,10 @@ export function agentReviewEligibility(
 
 /**
  * Versioned readiness floor for ordinary self-selection. An absent key is the
- * explicit legacy exception; a present key passes only when this reader knows
- * its schema and it carries an affirmative ready verdict.
+ * explicit legacy exception, and so is a `creation-enrollment` / `unknown` row
+ * (SQL twin of `implementationReadinessIsLegacyEquivalent`) until P-007 bounds
+ * both by the recorded enforcement cutover. Any other present key passes only
+ * when this reader knows its schema and it carries an affirmative ready verdict.
  */
 export function implementationReadinessNormalExclusionSql(
   sql: OrgSql,
@@ -551,6 +924,11 @@ export function implementationReadinessNormalExclusionSql(
     OR (
       COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
       AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'ready'
+    )
+    OR (
+      COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,schemaVersion}' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,status}' = 'unknown'
+      AND COALESCE(${payload}, '{}'::jsonb) #>> '{implementationReadiness,source}' = 'creation-enrollment'
     )
   )`;
 }

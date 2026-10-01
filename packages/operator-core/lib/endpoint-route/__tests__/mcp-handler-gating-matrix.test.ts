@@ -2799,6 +2799,16 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
   });
 
+  it('flag ON: a scoped superuser MAY call memory:get — a scoped-safe user/harness-scoped read', async () => {
+    // memory:get has no caller-selected workspace argument; it resolves only the
+    // caller's user/harness memory pools. It shares memory:*'s crossWorkspace
+    // declaration for the unscoped psu path, so the scoped clamp must let it reach
+    // its handler just like search/list/update/forget.
+    h.scopedClampFlag.value = true;
+    const res = await callTool('memory:get', { id: 'known-memory-id' }, scoped('ws-test'));
+    expect(textOf(res)).not.toContain('workspace_forbidden'); // NOT denied by the clamp
+  });
+
   it('flag ON: a scoped superuser MAY call search:fulltext + sessions:search — scoped-safe read-only recall (session-search-scope-2026-07-05)', async () => {
     // The prose-search family is crossWorkspace only so an unscoped psu gets the
     // admin handle for the host-global operator_turns table (P-062 Phase 4); from a

@@ -1780,6 +1780,35 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         source: memberSource,
       }),
     ).toMatchObject({ state: 'working', reconciliation: { action: 'none', consistent: true } });
+    // D-033 (WI-10004710): the sanctioned fence-preserving widen keeps the plan arm
+    // beside id disjuncts, so it still admits the plan and a live member claim on the
+    // plan's own item is working. Only a spec with no plan arm is a filter to restore.
+    const withFilter = (filter: unknown) => ({
+      ...memberSource,
+      fleet: { ...memberSource.fleet, claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter } } },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'wip'],
+        source: withFilter({ any: [{ field: 'plan', op: '=', value: 'alpha' }, { field: 'id', op: '=', value: 'WI-standalone' }] }),
+      }),
+    ).toMatchObject({
+      state: 'working',
+      fleet: { planScoped: false, planAdmitted: true },
+      reconciliation: { action: 'none', consistent: true },
+    });
+    expect(
+      compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'wip'],
+        source: withFilter({ any: [{ field: 'id', op: 'in', value: ['WI-standalone'] }, { not: { field: 'plan', op: '=', value: 'alpha' } }] }),
+      }),
+    ).toMatchObject({
+      state: 'blocked',
+      fleet: { planScoped: false, planAdmitted: false },
+      reconciliation: { action: 'reconcile-plan-lane-holder', reason: expect.stringContaining('positive plan/plan_item claim filter') },
+    });
     expect(
       compileGoalPlanPlacement({
         ...base,

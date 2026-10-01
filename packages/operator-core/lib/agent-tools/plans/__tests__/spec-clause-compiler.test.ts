@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { compileSpecClauses, type SpecClauseEnrichment } from '../spec-clause-compiler';
+import {
+  compileSpecClauses,
+  specBehaviorNonFalsifiableReason,
+  type SpecClauseEnrichment,
+} from '../spec-clause-compiler';
 
 function plan(...lines: string[]): string {
   return ['- **P-001** `todo` Define the behavior.', ...lines].join('\n');
@@ -251,6 +255,30 @@ describe('compileSpecClauses', () => {
     expect(result.ok).toBe(false);
     expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
       expect.arrayContaining(['behavior-non-atomic', 'behavior-not-falsifiable']),
+    );
+  });
+
+  it('does not mistake an intake source record with an outcome for source-code presence', () => {
+    const behavior = 'Every processed source has an attributable result or an owned next action.';
+    const result = compileSpecClauses(
+      plan('  - **[VAL-demo-source-record]**', '    - **Verify:** ' + behavior),
+      {
+        enrichments: {
+          'VAL-demo-source-record': { behaviorClass: 'happy-path', lifecycleStatus: 'active' },
+        },
+      },
+    );
+
+    expect(specBehaviorNonFalsifiableReason(behavior)).toBeNull();
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).not.toContain('behavior-not-falsifiable');
+  });
+
+  it('still rejects explicit source-code presence claims as non-falsifiable', () => {
+    expect(specBehaviorNonFalsifiableReason('The current source code contains a matching handler.')).toBe(
+      'behavior asserts source-code presence instead of an observable outcome',
+    );
+    expect(specBehaviorNonFalsifiableReason('The expected handler is present in the current source code.')).toBe(
+      'behavior asserts source-code presence instead of an observable outcome',
     );
   });
 

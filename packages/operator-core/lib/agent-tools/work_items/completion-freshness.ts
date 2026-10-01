@@ -147,6 +147,30 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
   return createHash(algorithm).update(header).update(bytes).digest('hex');
 }
 
+/**
+ * WI-10004711: the CURRENT working-tree blob of one declared path, hashed exactly the
+ * way the close-time identity was (`contentIdentity` above: raw bytes, no clean filter),
+ * so a settlement reader compares like with like.
+ *
+ * `null` = the path is not in the working tree. `undefined` = this reader could not
+ * answer (path escapes the root, not a regular readable file) — never a verdict.
+ */
+export function completionWorkingTreeBlobSha(
+  repoRoot: string,
+  rawPath: string,
+  shaLength: number,
+): string | null | undefined {
+  const path = normalizedRepoPath(repoRoot, rawPath);
+  if (!path || path !== rawPath) return undefined;
+  const abs = nodePath.join(repoRoot, path);
+  if (!existsSync(abs)) return null;
+  try {
+    return gitBlobSha(readFileSync(abs), shaLength);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Read exact commit blob identities through the shared nonblocking Git stream. */
 export async function completionHeadBlobMap(
   repoRoot: string,
@@ -529,7 +553,8 @@ export function describeUnprovenContentIdentity(
       `logical change routinely lands across TWO ticks. The git-sync completion-settlement reconciler checks the ` +
       `recorded settlement manifest automatically after each emitted commit and upgrades this close to ` +
       `\`committed\` when those exact blobs land. Do not re-call \`work_items:complete\`, re-verify work that is ` +
-      `already correct, or re-word the evidence.`
+      `already correct, or re-word the evidence.` +
+      SUPERSEDED_BEFORE_COMMIT_EXCEPTION
     );
   }
   if (willSettle.length === 0) {
@@ -539,9 +564,21 @@ export function describeUnprovenContentIdentity(
     head +
     `MIXED — only one half is worth waiting on. ${render(willSettle)} will be checked automatically by the ` +
     `git-sync completion-settlement reconciler on the next sweep, ` +
-    `but ${neverRemedy} Waiting alone leaves this close \`proposed\` indefinitely.`
+    `but ${neverRemedy} Waiting alone leaves this close \`proposed\` indefinitely.` +
+    SUPERSEDED_BEFORE_COMMIT_EXCEPTION
   );
 }
+
+/**
+ * WI-10004711: the one way "waiting settles this" turns false AFTER the close. The verdict
+ * is right when issued; it is falsified only if a path is edited again before git-sync
+ * captures the closed blob. The reconciler detects that and messages the closer, so the
+ * advice names that message as the signal instead of an unconditional "never re-send".
+ */
+const SUPERSEDED_BEFORE_COMMIT_EXCEPTION =
+  ` One exception: if one of those path(s) is edited again before git-sync commits it, the content you ` +
+  `closed with never lands. The settlement reconciler then records \`superseded-before-commit\` and sends ` +
+  `you a coord message; only then, re-check the path and re-send \`work_items:complete\` for this id.`;
 
 export function unprovenContentIdentityPaths(
   stamp: { contentIdentity?: readonly CompletionTreeContentIdentity[] } | undefined | null,

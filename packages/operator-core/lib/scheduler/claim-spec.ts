@@ -377,6 +377,21 @@ export function claimSpecFilterPositivelyTargets(filter: unknown, field: ItemFie
 }
 
 /**
+ * Admission counterpart of {@link claimSpecFilterPositivelyTargets}: AND still
+ * narrows through any targeting conjunct, but ONE OR arm suffices, so the
+ * sanctioned `{ any: [<plan leaf>, {field:'id', ...}] }` widen keeps admitting
+ * the plan. Proves the spec CAN admit the target's items, never that it
+ * targets only them; negation is never positive scope.
+ */
+export function claimSpecFilterAdmitsTarget(filter: unknown, field: ItemField, value: string): boolean {
+  if (!filter || typeof filter !== 'object') return false;
+  const node = filter as Record<string, unknown>;
+  if (Array.isArray(node.all)) return node.all.some((n) => claimSpecFilterAdmitsTarget(n, field, value));
+  if (Array.isArray(node.any)) return node.any.some((n) => claimSpecFilterAdmitsTarget(n, field, value));
+  return claimSpecFilterPositivelyTargets(node, field, value);
+}
+
+/**
  * True when a claim spec's filter tree references `field` anywhere, including
  * below `all` / `any` / `not`. This is intentionally structural: callers that
  * use a field reference as an authorization signal must not re-implement a

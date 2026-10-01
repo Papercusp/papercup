@@ -15,8 +15,10 @@ import {
   laneOfFromSplit,
   laneOfTaskScript,
   laneScopedCandidates,
+  REUSE_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA,
   reuseCandidates,
+  reuseRunnerIdentity,
   reuseSoundnessAlarms,
   selectReusablePasses,
   testReuseAuditRate,
@@ -28,9 +30,16 @@ import {
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import {
   decideReuseSkip,
+  executedSourceRunnerIdentity,
   parseReuseSkipList,
+  REUSE_PROOF_FORMAT as RECORDER_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
+import { builtinModules } from 'node:module';
+import { dirname, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * gate-file-level-test-reuse-2026-09-27 P-008 / D-004: a selected test file is SKIPPED only
@@ -160,12 +169,111 @@ describe('selectReusablePasses', () => {
   });
 });
 
+describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are per-proof inputs', () => {
+  const OC_CFG = 'packages/operator-core/vitest.config.ts';
+  const SEARCH_CFG = 'libs/generic/search/vitest.config.ts';
+  const REPO = realpathSync(fileURLToPath(new URL('../../../../', import.meta.url)));
+
+  it('keeps ROOT runner configs global and scopes nested ones', () => {
+    expect(isGlobalRunnerInput('vitest.config.ts')).toBe(true);
+    expect(isGlobalRunnerInput('vitest.workspace.ts')).toBe(true);
+    expect(isGlobalRunnerInput(OC_CFG)).toBe(false);
+    expect(isGlobalRunnerInput('packages/operator-core/vitest.integration.config.ts')).toBe(false);
+  });
+
+  it('a nested config change voids exactly the proofs that recorded that config as an input', () => {
+    const ocTest = 'packages/operator-core/lib/x.test.ts';
+    const searchTest = 'libs/generic/search/src/y.test.ts';
+    const proofs = new Map([
+      [ocTest, proof(ocTest, { readPaths: ['pkg/fixtures/data.json', OC_CFG] })],
+      [searchTest, proof(searchTest, { readPaths: [SEARCH_CFG] })],
+    ]);
+    const r = run([ocTest, searchTest], proofs, new Set([SEARCH_CFG]));
+    // Before P-001 the search config was global and BOTH ran; the proof that loaded it must still run.
+    expect(r.skip).toEqual([ocTest]);
+    expect(r.summary.inputChanged).toBe(1);
+    expect(r.summary.globalInput).toBe(0);
+  });
+
+  it('the proof format rides in the runner identity, identically on the selector and recorder sides', () => {
+    expect(REUSE_PROOF_FORMAT).toBe(RECORDER_PROOF_FORMAT);
+    expect(reuseRunnerIdentity(' v25.9.0 linux x64\n')).toBe(`${REUSE_PROOF_FORMAT} v25.9.0 linux x64`);
+    expect(reuseRunnerIdentity('')).toBeNull();
+    expect(reuseRunnerIdentity(null)).toBeNull();
+    expect(reuseRunnerIdentity(`${process.version} ${process.platform} ${process.arch}`)).toBe(executedSourceRunnerIdentity());
+  });
+
+  it('an older-format proof (no config input recorded) is never judged under the narrowed rule', () => {
+    const f = 'packages/operator-core/lib/x.test.ts';
+    const r = selectReusablePasses({
+      candidates: [f],
+      proofs: new Map([[f, proof(f, { runnerIdentity: RUNNER })]]),
+      judgedSha: 'new',
+      changedBetween: () => new Set([OC_CFG]),
+      runContext: CTX,
+      runnerIdentity: reuseRunnerIdentity(RUNNER) ?? '',
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+    });
+    expect(r.skip).toEqual([]);
+    expect(r.summary.otherRunner).toBe(1);
+  });
+
+  // Vite records a config's RELATIVE imports in configFileDependencies but externalizes BARE ones,
+  // so a proof never sees a bare import. That is sound only while every bare import of a nested
+  // config resolves into node_modules (package-lock.json is global) or to libs/test-config (global).
+  type SpecClass = 'builtin' | 'relative' | 'test-config' | 'npm' | 'workspace' | 'unresolved';
+  function classify(spec: string, fromFile: string): SpecClass {
+    if (spec.startsWith('node:') || builtinModules.includes(spec)) return 'builtin';
+    if (spec.startsWith('.')) return 'relative';
+    const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+    for (let dir = dirname(`${REPO}/${fromFile}`); ; dir = dirname(dir)) {
+      const candidate = `${dir}/node_modules/${name}`;
+      if (existsSync(candidate)) {
+        const real = realpathSync(candidate);
+        if (real.split(sep).includes('node_modules')) return 'npm';
+        return relative(REPO, real) === 'libs/test-config' ? 'test-config' : 'workspace';
+      }
+      if (dir === REPO || dir === dirname(dir)) return 'unresolved';
+    }
+  }
+
+  it('every nested vitest config imports only what a proof or a global rule covers', () => {
+    const configs = execFileSync('git', ['ls-files', '--recurse-submodules'], { cwd: REPO, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+      .split('\n')
+      .filter((f) => /\/vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(f) && existsSync(`${REPO}/${f}`));
+    const counts: Record<SpecClass, number> = { builtin: 0, relative: 0, 'test-config': 0, npm: 0, workspace: 0, unresolved: 0 };
+    const violations: string[] = [];
+    const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(['"])([^'"]+)\1/gm;
+    for (const f of configs) {
+      const src = readFileSync(`${REPO}/${f}`, 'utf8');
+      for (const m of src.matchAll(SPEC_RE)) {
+        const c = classify(m[2], f);
+        counts[c] += 1;
+        if (c === 'workspace' || c === 'unresolved') violations.push(`${f} imports '${m[2]}' (${c})`);
+      }
+    }
+    // Positive controls: the scan saw the real population, so an empty violation list is not vacuous.
+    expect(configs.length).toBeGreaterThanOrEqual(40);
+    expect(counts['test-config']).toBeGreaterThanOrEqual(40);
+    expect(counts.npm).toBeGreaterThan(0);
+    // Negative control: the classifier CAN report a workspace import.
+    const otherWorkspace = readdirSync(`${REPO}/node_modules/@papercusp`).find(
+      (n) => n !== 'test-config' && !realpathSync(`${REPO}/node_modules/@papercusp/${n}`).split(sep).includes('node_modules'),
+    );
+    expect(otherWorkspace).toBeDefined();
+    expect(classify(`@papercusp/${otherWorkspace}`, 'packages/operator-core/vitest.config.ts')).toBe('workspace');
+    expect(violations).toEqual([]);
+  });
+});
+
 describe('isGlobalRunnerInput', () => {
   it('treats libs/test-config TEST files as ordinary tests, not runner inputs', () => {
     expect(isGlobalRunnerInput('libs/test-config/src/pg-container.test.ts')).toBe(false);
     expect(isGlobalRunnerInput('libs/test-config/src/pg-container.ts')).toBe(true);
     expect(isGlobalRunnerInput('packages/operator-core/package.json')).toBe(false);
-    expect(isGlobalRunnerInput('packages/operator-core/vitest.config.ts')).toBe(true);
+    // P-001: a nested vitest config is a per-proof input (proof-v2 records it), not global.
+    expect(isGlobalRunnerInput('packages/operator-core/vitest.config.ts')).toBe(false);
   });
 
   // WI-10003752: replayed from real commits (592850d, ff4e267, e1cb05e) — each discarded every

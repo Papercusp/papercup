@@ -459,7 +459,13 @@ export const CompletionSettlementManifestSchema = z.object({
   })).min(1).max(60),
   residualPaths: z.array(z.object({
     path: z.string().min(1),
-    reason: z.enum(['identity-unavailable', 'missing-from-commit', 'content-mismatch']),
+    /**
+     * WI-10004711: `superseded-before-commit` = the close-time blob is in neither the
+     * emitted tree nor any commit since the close, AND the working tree has moved off
+     * it, so no sweep can land it. Settles only on a re-sent close. A reason missing
+     * here would fail `safeParse` and turn every such row into an unreadable one.
+     */
+    reason: z.enum(['identity-unavailable', 'missing-from-commit', 'content-mismatch', 'superseded-before-commit']),
   })).max(60).optional(),
 });
 export type CompletionSettlementManifest = z.infer<typeof CompletionSettlementManifestSchema>;

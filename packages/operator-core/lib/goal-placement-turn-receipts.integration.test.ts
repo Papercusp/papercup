@@ -191,14 +191,15 @@ describe('completed eligibility joined on existing activity and cursor stores', 
 
 /** The claim compiler is production code; PG tests below exercise persistence.
  * Canonical fleet/claim writers themselves are covered by the P003 integration. */
-function effectPortfolio(minute: number, workItemId: string | null = 'WI-member'): GoalPortfolioBrief {
+function effectPortfolio(minute: number, workItemId: string | null = 'WI-member',
+  filter: unknown = { field: 'plan', op: '=', value: 'plan' }): GoalPortfolioBrief {
   const placement = compileGoalPlanPlacement({ plan: { harness: 'papercusp', slug: 'plan', ambiguousMatches: 1 },
     status: 'started', itemStatuses: ['wip'], actionableItemId: 'P-001', now: new Date(at(minute)),
     source: { goalHolderOwnerIds: [OWNER],
       claims: [{ itemId: 'P-001', ownerId: 'su-member', fleetSlug: 'plan-fleet', holderLive: true,
         workItemId, expiresAt: at(minute + 10) }],
       fleet: { slug: 'plan-fleet', controlState: 'active', leaderOwnerId: 'su-leader', leaderLive: true, liveMembers: 2, target: 1,
-        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'plan' } } },
+        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter } },
         launchTransaction: { transactionId: 'tx-plan', state: 'verified' } },
     } });
   return {
@@ -235,6 +236,17 @@ describe('first verified effect clock on canonical cursor storage', () => {
     await recordVerifiedGoalPlacementEffects({ ...scope, portfolio: effectPortfolio(3) });
     expect(await recordVerifiedGoalPlacementEffects({ ...scope, portfolio: effectPortfolio(5, 'WI-new-member-work') })).toBe(1);
     expect((await read())['plan:papercusp/plan']?.lastEffect?.at).toBe(at(5));
+  });
+  it('credits the member claim under the sanctioned plan+id widen, never under an id-only spec (D-033)', async () => {
+    const idOnly = effectPortfolio(2, 'WI-member', { field: 'id', op: 'in', value: ['WI-member'] });
+    expect(idOnly.worklist[0]!.placement.state).toBe('blocked');
+    expect(await recordVerifiedGoalPlacementEffects({ ...scope, portfolio: idOnly })).toBe(0);
+    expect((await read())['plan:papercusp/plan']).toBeNull();
+    const widened = effectPortfolio(3, 'WI-member',
+      { any: [{ field: 'plan', op: '=', value: 'plan' }, { field: 'id', op: '=', value: 'WI-standalone' }] });
+    expect(widened.worklist[0]!.placement).toMatchObject({ state: 'working', fleet: { planScoped: false, planAdmitted: true } });
+    expect(await recordVerifiedGoalPlacementEffects({ ...scope, portfolio: widened })).toBe(1);
+    expect((await read())['plan:papercusp/plan']?.lastEffect).toMatchObject({ kind: 'member-claim', at: at(3) });
   });
   it('does not create effects for paused, foreign, degraded or malformed lease observations', async () => {
     for (const change of ['paused', 'foreign', 'degraded', 'bad-lease']) {

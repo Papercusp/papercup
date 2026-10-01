@@ -84,6 +84,7 @@ import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewNormalExclusionSql,
+  createImplementationReadiness,
   agentReviewPendingAdmissionSql,
   isAgentReviewClaimAdmission,
   type AgentReviewClaimAdmission,
@@ -1113,6 +1114,23 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       lastSuccessfulReproductionAt: probation?.directEvidence ? created : null,
       deployBuildIdentity: build.sha ? `${build.sha}@${build.version}` : build.version,
       linkedFixRefs: [],
+    });
+  }
+  // observation-candidate-acceptance-promotion D-009a (P-005): every issue-family
+  // writer funnels through this insert, so this is the producer-enrollment seam.
+  // A row that arrives without a verdict is enrolled `unknown` — never `ready` —
+  // because no acceptance evidence exists yet. Claim floors treat this source as
+  // the visible legacy exception until P-007 records the enforcement cutover.
+  if (
+    (storageKind === 'bug' || storageKind === 'change' || storageKind === 'task') &&
+    inputPayload.lane !== 'observation' &&
+    !Object.prototype.hasOwnProperty.call(inputPayload, 'implementationReadiness')
+  ) {
+    inputPayload.implementationReadiness = createImplementationReadiness({
+      status: 'unknown',
+      source: 'creation-enrollment',
+      reason: 'no-acceptance-evidence-at-creation',
+      updatedAt: created,
     });
   }
   // unified-work-item-ledger P-001: a harness-attributable item must never be

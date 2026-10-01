@@ -12,6 +12,8 @@ import {
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
 import type { PostGoCanaryObservation } from './post-go-canary-observations';
+import type { PhysicalPhaseIInput } from './physical-drill-phase-i';
+import { buildPhysicalPhaseIInput } from './physical-drill-phase-i.fixture';
 
 const CANDIDATE = 'a'.repeat(40);
 const RUN = 'p524-post-go-phase-g-0001';
@@ -21,7 +23,9 @@ const CANARY_FINISH = '2026-08-13T20:00:00.000Z';
 const PHASE_G_START = '2026-08-13T20:00:00.000Z';
 const PHASE_G_OBSERVED = '2026-08-13T20:30:00.000Z';
 const PHASE_G_FINISH = '2026-08-13T21:00:00.000Z';
-const EVALUATED_AT = '2026-08-13T21:01:00.000Z';
+const PHASE_I_START = '2026-08-13T21:00:00.000Z';
+const CHAOS_FINISH = '2026-08-13T22:00:00.000Z';
+const EVALUATED_AT = '2026-08-13T22:01:00.000Z';
 
 const CANARY_HIVE = 'hello-world-3-pot';
 const EGRESS_HEAD = 'd'.repeat(40);
@@ -53,6 +57,7 @@ function hourlyObservations(): PostGoCanaryObservation[] {
 }
 
 let phaseG: PhysicalPhaseGInput;
+let phaseI: PhysicalPhaseIInput;
 
 beforeAll(async () => {
   const tower = generateEd25519KeypairDer();
@@ -75,6 +80,12 @@ beforeAll(async () => {
     },
     result,
   };
+  phaseI = buildPhysicalPhaseIInput({
+    runId: 'p502-post-go-phase-i-0001',
+    towerDeviceKey: tower.pubkeyBase64,
+    vmDeviceKey: vm.pubkeyBase64,
+    startMs: Date.parse(PHASE_I_START),
+  });
 }, 60_000);
 
 function validInput(): PostGoReleaseCanaryInput {
@@ -106,17 +117,9 @@ function validInput(): PostGoReleaseCanaryInput {
     },
     ownerFreezeChaos: {
       candidateSha: CANDIDATE,
-      window: { startedAt: PHASE_G_START, finishedAt: PHASE_G_FINISH },
-      duringOwnerOutage: {
-        protectedEffects: 'frozen',
-        nonOwnerAttempt: 'refused',
-        reason: 'missing-hive-authority',
-      },
-      afterOwnerRecovery: {
-        owningHiveProof: 'restored',
-        protectedEffects: 'resumed',
-      },
+      window: { startedAt: PHASE_G_START, finishedAt: CHAOS_FINISH },
       phaseG: structuredClone(phaseG),
+      phaseI: structuredClone(phaseI),
     },
     evaluatedAt: EVALUATED_AT,
   };
@@ -235,14 +238,44 @@ describe('post-GO public-release canary readiness', () => {
     );
   });
 
-  it('rejects resumption until owning-hive proof is restored', () => {
-    const input = validInput();
-    Object.assign(input.ownerFreezeChaos.afterOwnerRecovery, {
-      owningHiveProof: 'missing',
-      protectedEffects: 'resumed',
+  it('derives the owner-freeze and recovery verdicts from validated Phase I evidence', () => {
+    expect(validatePostGoReleaseCanary(validInput()).result).toMatchObject({
+      ownerFreezeVerified: true,
+      ownerRecoveryVerified: true,
     });
+  });
+
+  it('rejects an outage in which a non-owner protected effect was authorized', () => {
+    const input = validInput();
+    const attempt = input.ownerFreezeChaos.phaseI.steps.outage.tower.attempts[0];
+    attempt.ok = true;
+    attempt.reason = null;
+    const errors = validatePostGoReleaseCanary(input).errors;
+    expect(errors).toContain('owner outage must freeze protected effects and refuse non-owner authority');
+    expect(errors.some((e) => e.startsWith('Phase I: '))).toBe(true);
+  });
+
+  it('rejects resumption when the restored owner is not the same hive key', () => {
+    const input = validInput();
+    input.ownerFreezeChaos.phaseI.owner.restored.hiveId = phaseG.identities.towerDeviceKey;
     expect(validatePostGoReleaseCanary(input).errors).toContain(
       'protected effects may resume only after owning-hive proof is restored',
+    );
+  });
+
+  it('rejects owner-freeze chaos with no Phase I evidence', () => {
+    const input = validInput();
+    delete (input.ownerFreezeChaos as Partial<typeof input.ownerFreezeChaos>).phaseI;
+    const errors = validatePostGoReleaseCanary(input).errors;
+    expect(errors).toContain('Phase I evidence must fall inside the post-canary owner-freeze chaos window');
+    expect(errors).toContain('owner outage must freeze protected effects and refuse non-owner authority');
+  });
+
+  it('rejects Phase I evidence produced outside the owner-freeze chaos window', () => {
+    const input = validInput();
+    input.ownerFreezeChaos.window.finishedAt = PHASE_I_START;
+    expect(validatePostGoReleaseCanary(input).errors).toContain(
+      'Phase I evidence must fall inside the post-canary owner-freeze chaos window',
     );
   });
 });

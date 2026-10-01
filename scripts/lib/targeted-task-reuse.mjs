@@ -52,6 +52,7 @@ import {
   TEST_REUSE_SKIP_LIST_ENV,
   formatTestReuseLine,
   reuseCandidates,
+  reuseRunnerIdentity,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
@@ -131,17 +132,20 @@ function defaultGit(root, args) {
   }
 }
 
-/** The identity of the node the task will spawn (npm → PATH node), resolved under the task's env. */
+/**
+ * The identity of the node the task will spawn (npm → PATH node), resolved under the task's env,
+ * prefixed with the proof format (reuseRunnerIdentity, P-001) so older-format proofs never match.
+ */
 function defaultRunnerIdentity(root, env) {
   try {
-    return (
+    return reuseRunnerIdentity(
       execFileSync("node", ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"], {
         cwd: root,
         env,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 30_000,
-      }).trim() || null
+      }),
     );
   } catch {
     return null;

@@ -35,6 +35,28 @@ export const TEST_REUSE_MAX_AGE_MS_DEFAULT = 24 * 3600 * 1000;
 export const TEST_REUSE_AUDIT_RATE_ENV = "AFFECTED_TEST_REUSE_AUDIT_RATE";
 export const TEST_REUSE_AUDIT_RATE_DEFAULT = 0.05;
 
+/**
+ * Proof format (gate-test-reuse-yield-2026-10-01 P-001, D-002). A `proof-v2` proof carries, in its
+ * readPaths, the vitest config that ran the file plus that config's bundled (relative) imports, so a
+ * NESTED vitest config is an ordinary per-proof input instead of a global one (isGlobalRunnerInput).
+ * It is folded into the runner identity, which rule 1 already compares exactly: an older proof
+ * (no config input recorded) then reads `otherRunner` and is never judged under the narrowed rule.
+ * PINNED equal to libs/test-config/src/test-pass-reuse-skip.ts REUSE_PROOF_FORMAT (the recorder).
+ */
+export const REUSE_PROOF_FORMAT = "proof-v2";
+
+/**
+ * The runner identity a selector compares proofs against: the proof format plus the
+ * `process.version process.platform process.arch` of the node the task will spawn.
+ *
+ * @param {string | null | undefined} nodeIdentity
+ * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
+ */
+export function reuseRunnerIdentity(nodeIdentity) {
+  const node = typeof nodeIdentity === "string" ? nodeIdentity.trim() : "";
+  return node ? `${REUSE_PROOF_FORMAT} ${node}` : null;
+}
+
 const OFF = new Set(["0", "false", "off", "no"]);
 
 /** @param {Record<string, string | undefined>} [env] */
@@ -74,12 +96,18 @@ export function auditDraw(file, judgedSha) {
  * purpose (P-007 measured that "any package.json or libs/test-config file" discards 12 of 38
  * hourly pairs): per-package manifests are handled by the per-module ancestor rule instead, and
  * libs/test-config TEST files are ordinary tests, not runner inputs.
+ *
+ * A NESTED vitest config (`<dir>/vitest*config*`) is NOT global (P-001): a `proof-v2` proof records
+ * the config that ran it, and that config's relative imports, in readPaths (REUSE_PROOF_FORMAT), so
+ * such a change invalidates exactly the proofs that loaded it. Vite externalizes a config's BARE
+ * imports and does not record them; those resolve to node_modules (package-lock.json, global) or to
+ * @papercusp/test-config (libs/test-config, global), and a tree guard in test-pass-reuse.test.ts
+ * fails if a nested config ever imports anything else. Root `vitest.*` stays global.
  */
 export function isGlobalRunnerInput(rel) {
   if (rel === "package-lock.json" || rel === "package.json" || rel === "tsconfig.json") return true;
   if (/^tsconfig\.[^/]*\.json$/.test(rel)) return true;
   if (/^vitest\.[^/]*$/.test(rel)) return true;
-  if (/(^|\/)vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(rel)) return true;
   if (/^libs\/test-config\/(src\/|package\.json|tsconfig)/.test(rel)) {
     if (/\.test\.[cm]?[jt]sx?$/.test(rel)) return false;
     // WI-10003752: fixtures only test-config's own tests read (those tests capture them as

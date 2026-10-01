@@ -12,6 +12,10 @@ import {
   type PhysicalPhaseGInput,
 } from './physical-drill-phase-g';
 import {
+  validatePhysicalPhaseI,
+  type PhysicalPhaseIInput,
+} from './physical-drill-phase-i';
+import {
   validatePostGoCanaryEvidence,
   type PostGoCanaryEvidence,
 } from './post-go-canary-observations';
@@ -50,16 +54,16 @@ export type PostGoReleaseCanaryInput = {
       startedAt: string;
       finishedAt: string;
     };
-    duringOwnerOutage: {
-      protectedEffects: 'frozen';
-      nonOwnerAttempt: 'refused';
-      reason: 'missing-hive-authority';
-    };
-    afterOwnerRecovery: {
-      owningHiveProof: 'restored';
-      protectedEffects: 'resumed';
-    };
     phaseG: PhysicalPhaseGInput;
+    /**
+     * The owner-outage and recovery evidence (WI-10004733). The verdicts
+     * "protected effects froze during the outage" and "they resumed only after
+     * the owning-hive proof was restored" are DERIVED from a validated P-521
+     * Phase I run (live -> lost -> outage -> restored through the production
+     * sinks), never accepted as hand-typed fields: the former
+     * duringOwnerOutage / afterOwnerRecovery strings had no producer.
+     */
+    phaseI: PhysicalPhaseIInput;
   };
   evaluatedAt: string;
 };
@@ -185,17 +189,40 @@ export function validatePostGoReleaseCanary(
       chaosStartedAt >= canaryFinishedAt,
     'owner-freeze chaos cannot execute before the 72-hour canary finishes',
   );
+  const phaseI = chaos?.phaseI;
+  const phaseIStartedAt = timestamp(phaseI?.window?.startedAt);
+  const phaseIFinishedAt = timestamp(phaseI?.window?.finishedAt);
   pushError(
     errors,
-    chaos?.duringOwnerOutage?.protectedEffects === 'frozen' &&
-      chaos?.duringOwnerOutage?.nonOwnerAttempt === 'refused' &&
-      chaos?.duringOwnerOutage?.reason === 'missing-hive-authority',
+    Number.isFinite(phaseIStartedAt) &&
+      Number.isFinite(phaseIFinishedAt) &&
+      phaseIStartedAt >= chaosStartedAt &&
+      phaseIFinishedAt <= chaosFinishedAt,
+    'Phase I evidence must fall inside the post-canary owner-freeze chaos window',
+  );
+  let ownerFreezeVerified = false;
+  let ownerRecoveryVerified = false;
+  try {
+    const phaseIVerdict = validatePhysicalPhaseI(phaseI as PhysicalPhaseIInput);
+    for (const error of phaseIVerdict.errors) errors.push(`Phase I: ${error}`);
+    const assertions = phaseIVerdict.ok ? phaseIVerdict.result?.assertions : undefined;
+    ownerFreezeVerified =
+      assertions?.ownerOutageFrozeBothHostsWithoutFailover === true &&
+      assertions?.authorityLostBetweenPushAttemptsFroze === true;
+    ownerRecoveryVerified = assertions?.restoredOwnerMadeFreshAuthorizedProgress === true;
+  } catch (error) {
+    errors.push(
+      `Phase I evidence is malformed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  pushError(
+    errors,
+    ownerFreezeVerified,
     'owner outage must freeze protected effects and refuse non-owner authority',
   );
   pushError(
     errors,
-    chaos?.afterOwnerRecovery?.owningHiveProof === 'restored' &&
-      chaos?.afterOwnerRecovery?.protectedEffects === 'resumed',
+    ownerRecoveryVerified,
     'protected effects may resume only after owning-hive proof is restored',
   );
 

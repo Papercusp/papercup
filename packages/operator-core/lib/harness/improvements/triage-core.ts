@@ -36,6 +36,7 @@ import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
 import {
   createImplementationReadiness,
+  implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
   type ImplementationReadinessEvidence,
   type ImplementationReadinessState,
@@ -347,7 +348,11 @@ function triageImplementationReadiness(input: {
   citations?: EvidenceCitationInspection;
   deployment?: DeploymentStalenessScreen;
 }): ImplementationReadinessState {
-  const existing = readImplementationReadiness(input.issue.payload);
+  // A creation-enrollment `unknown` stamp is the absent-key legacy case under a
+  // recorded producer (P-005 D-011); triage treats it exactly as it treats absence.
+  const existing = implementationReadinessIsLegacyEquivalent(input.issue.payload)
+    ? null
+    : readImplementationReadiness(input.issue.payload);
   const evidence: ImplementationReadinessEvidence = {};
   if (input.deployment?.screened) {
     evidence.deployment = {
