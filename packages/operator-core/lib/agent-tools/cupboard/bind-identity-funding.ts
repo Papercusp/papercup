@@ -32,9 +32,10 @@ export default defineTool({
     channelId: z.string().min(1).max(200).describe('Hosted payment channel id to bind.'),
   }),
   async handler(args, ctx) {
-    const [{ identityReleaseSkuRef }, io, { activeWorkspaceId }, { getOrgPg }] = await Promise.all([
+    const [{ identityReleaseSkuRef }, io, store, { activeWorkspaceId }, { getOrgPg }] = await Promise.all([
       import('../../cupboard/identity-per-use-offer'),
       import('../../cupboard/identity-activation-gate-io'),
+      import('../../cupboard/identity-release-funding-store'),
       import('../../workspace-registry'),
       import('@papercusp/db-org'),
     ]);
@@ -52,7 +53,7 @@ export default defineTool({
       });
     }
     const workspaceId = ctx?.principal?.workspaceId ?? activeWorkspaceId();
-    await io.bindIdentityReleaseFundingChannel(getOrgPg().sql as never, {
+    await store.bindIdentityReleaseFundingChannel(getOrgPg().sql as never, {
       workspaceId,
       skuRef,
       channelId: channel.value.channelId,

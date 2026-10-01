@@ -10,14 +10,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const io = vi.hoisted(() => ({
-  readHostedPaymentChannel: vi.fn(),
-  bindIdentityReleaseFundingChannel: vi.fn(),
-}));
+const io = vi.hoisted(() => ({ readHostedPaymentChannel: vi.fn() }));
+const store = vi.hoisted(() => ({ bindIdentityReleaseFundingChannel: vi.fn() }));
 const registry = vi.hoisted(() => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
 const sqlHandle = vi.hoisted(() => ({ tag: 'org-sql' }));
 
 vi.mock('../../cupboard/identity-activation-gate-io', () => io);
+vi.mock('../../cupboard/identity-release-funding-store', () => store);
 vi.mock('../../workspace-registry', () => registry);
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -38,7 +37,7 @@ const OWNED = { channelId: 'pch_1', state: 'open', escrowMicros: 5_000_000, comm
 describe('cupboard:bind-identity-funding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    io.bindIdentityReleaseFundingChannel.mockResolvedValue(undefined);
+    store.bindIdentityReleaseFundingChannel.mockResolvedValue(undefined);
   });
 
   it('publishes a harness:write contract that needs identity, version and channel', () => {
@@ -54,7 +53,7 @@ describe('cupboard:bind-identity-funding', () => {
     const out = body(await tool.handler(ARGS, { principal: { workspaceId: 'ws-1' } } as never));
     expect(io.readHostedPaymentChannel).toHaveBeenCalledWith('pch_1');
     expect(out).toMatchObject({ ok: false, error: 'channel-not-found', skuRef: SKU });
-    expect(io.bindIdentityReleaseFundingChannel).not.toHaveBeenCalled();
+    expect(store.bindIdentityReleaseFundingChannel).not.toHaveBeenCalled();
   });
 
   it('refuses when the hosted Cupboard cannot confirm the channel, and stores nothing', async () => {
@@ -66,7 +65,7 @@ describe('cupboard:bind-identity-funding', () => {
       detail: 'the Cupboard channel read answered 503',
       skuRef: SKU,
     });
-    expect(io.bindIdentityReleaseFundingChannel).not.toHaveBeenCalled();
+    expect(store.bindIdentityReleaseFundingChannel).not.toHaveBeenCalled();
   });
 
   it('binds a confirmed channel as explicit funding for the caller workspace', async () => {
@@ -74,8 +73,8 @@ describe('cupboard:bind-identity-funding', () => {
     const out = body(
       await tool.handler(ARGS, { principal: { workspaceId: 'ws-1', slug: 'su-buyer' } } as never),
     );
-    expect(io.bindIdentityReleaseFundingChannel).toHaveBeenCalledTimes(1);
-    expect(io.bindIdentityReleaseFundingChannel).toHaveBeenCalledWith(sqlHandle, {
+    expect(store.bindIdentityReleaseFundingChannel).toHaveBeenCalledTimes(1);
+    expect(store.bindIdentityReleaseFundingChannel).toHaveBeenCalledWith(sqlHandle, {
       workspaceId: 'ws-1',
       skuRef: SKU,
       channelId: 'pch_1',
@@ -89,7 +88,7 @@ describe('cupboard:bind-identity-funding', () => {
   it('falls back to the active workspace and the tool name when no principal is attached', async () => {
     io.readHostedPaymentChannel.mockResolvedValue({ ok: true, value: OWNED });
     const out = body(await tool.handler(ARGS, {} as never));
-    expect(io.bindIdentityReleaseFundingChannel).toHaveBeenCalledWith(
+    expect(store.bindIdentityReleaseFundingChannel).toHaveBeenCalledWith(
       sqlHandle,
       expect.objectContaining({ workspaceId: 'ws-active', boundBy: 'cupboard:bind-identity-funding' }),
     );

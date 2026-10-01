@@ -638,7 +638,7 @@ export async function bindPreflightFunding(
   const bind = context.bindFunding ?? (async (input) => {
     const [{ getOrgPg }, { bindIdentityReleaseFundingChannel }] = await Promise.all([
       import('@papercusp/db-org'),
-      import('./identity-activation-gate-io'),
+      import('./identity-release-funding-store'),
     ]);
     await bindIdentityReleaseFundingChannel(getOrgPg().sql as never, { ...input, source: 'per-use-checkout' });
   });

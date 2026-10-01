@@ -6,8 +6,8 @@ import {
   IDENTITY_PRICING_CACHE_TTL_MS,
   readHostedPaymentChannel,
   type IdentityActivationGateIo,
-  type IdentityReleaseFundingRow,
 } from './identity-activation-gate-io';
+import type { IdentityReleaseFundingRow } from './identity-release-funding-store';
 import { isIdentityActivationRefusedError, type FundingChannelView, type IdentityOfferView } from './identity-activation-gate';
 import { identityPerUseOfferTerms } from './identity-per-use-offer';
 
