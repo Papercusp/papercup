@@ -107,7 +107,7 @@ import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -530,6 +530,13 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
+  if (argValue('--summarize-reference')) {
+    const output = argValue('--out'), python = argValue('--python-reference');
+    if (!output || !python) throw new Error('--summarize-reference requires --python-reference and --out');
+    const summary = summarizeIncumbentReferenceFiles(argValue('--summarize-reference')!, python);
+    fs.writeFileSync(output, JSON.stringify(summary, null, 2), { flag: 'wx', mode: 0o600 });
+    return;
+  }
   if (argValue('--qualify-reference')) {
     const output = argValue('--out');
     if (!output) throw new Error('--qualify-reference requires --out');

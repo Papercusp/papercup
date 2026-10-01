@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 import { gemmaPrompt, harrierPrompt, mrlTruncate, embedViaWorker, embedRequestedExecution,
-  shutdownLocalEmbedder, getWorkerState } from '@papercusp/memory';
+  shutdownLocalEmbedder, getWorkerState, EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 /** Independent pooling oracle for isolated qualification; production recipes
  * and profiles remain untouched. Padding must not contribute to the mean. */
@@ -29,6 +29,123 @@ export const INCUMBENT_REFERENCE_CASES = [
   ['normalization', 'café cafe\u0301'], ['code', 'const x = `${value}`;\nreturn x;'],
   ['special-token', '<image> <bos> <eos>'], ['empty', ''],
 ] as const;
+
+export const CORRECTED_GEMMA_REFERENCE_ID = 'gemma-corrected-rust-768@benchmark-v1';
+export const REFERENCE_PARITY_LIMITS = { minimumCosine: 0.99999, maximumAbsoluteError: 3e-5 } as const;
+
+type ReferenceCase = { id: string; kind: 'query' | 'document'; text: string; promptedText: string;
+  inputIds: number[]; attentionMask: number[]; vector: number[]; shippedVector?: number[] };
+type NativeReferenceArm = { model: 'gemma' | 'harrier'; profileId: string; tokenizerBackend: string;
+  pooling: string; dimensions: number; cases: ReferenceCase[] };
+export type NativeReference = { requestSha256: string; protocolSha256: string;
+  identities: { model: 'gemma' | 'harrier'; profile: { profileId: string; nativeDims: number; pooling: string };
+    files: { locator: string; sha256: string; bytes: number }[] }[];
+  cases: { id: string; kind: 'query' | 'document'; text: string }[]; arms: NativeReferenceArm[] };
+export type PythonReference = { nativeSha256: string; requestSha256: string; executionProvider: string;
+  versions: Record<string, string>; thresholds: typeof REFERENCE_PARITY_LIMITS;
+  arms: { model: string; profileId: string; tokenizerBackend: string;
+    cases: { id: string; referenceTokenIds: number[]; referenceVector: number[] }[] }[] };
+
+function referenceVectorComparison(actual: number[], expected: number[], dims: number) {
+  for (const vector of [actual, expected]) {
+    assertVector(vector, dims, 'reference');
+    if (Math.abs(Math.hypot(...vector) - 1) > 2e-5) throw new Error('reference vector must be normalized');
+  }
+  const cosine = actual.reduce((sum, v, i) => sum + v * expected[i], 0);
+  const maximumAbsoluteError = Math.max(...actual.map((v, i) => Math.abs(v - expected[i])));
+  return { cosine, maximumAbsoluteError, passed: cosine >= REFERENCE_PARITY_LIMITS.minimumCosine
+    && maximumAbsoluteError <= REFERENCE_PARITY_LIMITS.maximumAbsoluteError };
+}
+
+function referenceRanks(arm: NativeReferenceArm, vectors: number[][]) {
+  const docs = arm.cases.flatMap((c, i) => c.kind === 'document' ? [{ id: c.id, vector: vectors[i] }] : []);
+  return arm.cases.flatMap((c, i) => c.kind === 'query' ? [{ queryId: c.id, rankedDocIds: docs.map((d) => ({
+    id: d.id, score: vectors[i].reduce((sum, v, j) => sum + v * d.vector[j], 0),
+  })).sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).map((d) => d.id) }] : []);
+}
+
+/** Evidence joins are strict; measured parity failures remain visible outcomes.
+ * Recompute comparisons from vectors rather than trusting a producer's PASS. */
+export function summarizeIncumbentReferences(native: NativeReference, python: PythonReference) {
+  if (native.requestSha256 !== python.requestSha256 || python.executionProvider !== 'CPUExecutionProvider'
+    || JSON.stringify(python.thresholds) !== JSON.stringify(REFERENCE_PARITY_LIMITS)) throw new Error('reference execution/request contract mismatch');
+  const expectedCases = INCUMBENT_REFERENCE_CASES.flatMap(([id, text]) => ['query', 'document'].map((kind) => ({ id: `${kind}-${id}`, kind, text })));
+  if (JSON.stringify(native.cases) !== JSON.stringify(expectedCases)) throw new Error('reference controlled case coverage/order mismatch');
+  const expectedArms = [
+    { model: 'gemma', profileId: EMBEDDER_DIM_SPECS.gemma.profileId, backend: 'shipped-sdk' },
+    { model: 'gemma', profileId: CORRECTED_GEMMA_REFERENCE_ID, backend: 'corrected-rust' },
+    { model: 'harrier', profileId: EMBEDDER_DIM_SPECS.harrier.profileId, backend: 'shipped-sdk' },
+  ];
+  if (native.identities.length !== 2 || new Set(native.identities.map((i) => i.model)).size !== 2) throw new Error('reference model identity coverage mismatch');
+  for (const model of ['gemma', 'harrier'] as const) {
+    const identity = native.identities.find((i) => i.model === model), spec = EMBEDDER_DIM_SPECS[model];
+    if (!identity || identity.profile.profileId !== spec.profileId || identity.profile.nativeDims !== spec.nativeDims
+      || identity.profile.pooling !== spec.pooling || !['config.json', 'tokenizer.json', 'onnx/model.onnx'].every((name) => identity.files.some((f) => f.locator.endsWith(`/${name}`)))
+      || !identity.files.every((f) => /^cache:(validation|transformers)\//.test(f.locator) && /^[a-f0-9]{64}$/.test(f.sha256) && f.bytes > 0)) throw new Error('reference pinned model asset contract mismatch');
+  }
+  if (!['numpy', 'onnxruntime', 'tokenizers', 'transformers'].every((name) => typeof python.versions[name] === 'string' && python.versions[name].length > 0)) throw new Error('reference runtime versions missing');
+  if (native.arms.length !== 3 || python.arms.length !== 3
+    || new Set(native.arms.map((a) => a.profileId)).size !== 3
+    || new Set(python.arms.map((a) => a.profileId)).size !== 3) throw new Error('reference recipe identity collision/missing arm');
+  const ids = expectedCases.map((c) => c.id);
+  const arms = expectedArms.map((expected) => {
+    const arm = native.arms.find((a) => a.profileId === expected.profileId);
+    const reference = python.arms.find((a) => a.profileId === expected.profileId);
+    const spec = EMBEDDER_DIM_SPECS[expected.model as 'gemma' | 'harrier'];
+    if (!arm || !reference || arm.model !== expected.model || reference.model !== expected.model
+      || arm.tokenizerBackend !== expected.backend || reference.tokenizerBackend !== expected.backend
+      || arm.dimensions !== spec.nativeDims || arm.pooling !== spec.pooling) throw new Error('reference arm recipe mismatch');
+    if (JSON.stringify(arm.cases.map((c) => c.id)) !== JSON.stringify(ids)
+      || JSON.stringify(reference.cases.map((c) => c.id)) !== JSON.stringify(ids)) throw new Error('reference arm case coverage/order mismatch');
+    const cases = arm.cases.map((c, i) => {
+      const frozen = expectedCases[i], ref = reference.cases[i];
+      const prompt = arm.model === 'gemma' ? gemmaPrompt(c.kind, c.text) : harrierPrompt(c.kind, c.text);
+      if (c.kind !== frozen.kind || c.text !== frozen.text || c.promptedText !== prompt) throw new Error('reference prompt recipe mismatch');
+      for (const tokens of [c.inputIds, ref.referenceTokenIds]) if (!tokens.length || !tokens.every((x) => Number.isInteger(x) && x >= 0)) throw new Error('invalid reference token IDs');
+      if (c.attentionMask.length !== c.inputIds.length || !c.attentionMask.every((x) => x === 0 || x === 1)
+        || !c.attentionMask.some(Boolean)) throw new Error('invalid reference attention mask');
+      if ((expected.backend === 'shipped-sdk') !== Boolean(c.shippedVector)) throw new Error('reference shipped worker coverage mismatch');
+      return { id: c.id, tokenIdsEqual: JSON.stringify(c.inputIds) === JSON.stringify(ref.referenceTokenIds),
+        nativeParity: referenceVectorComparison(c.vector, ref.referenceVector, spec.nativeDims),
+        shippedWorkerParity: c.shippedVector ? referenceVectorComparison(c.shippedVector, c.vector, spec.nativeDims) : null };
+    });
+    const ranks = referenceRanks(arm, arm.cases.map((c) => c.vector));
+    const referenceRankings = referenceRanks(arm, reference.cases.map((c) => c.referenceVector));
+    const exactRankAgreements = ranks.filter((r, i) => JSON.stringify(r) === JSON.stringify(referenceRankings[i])).length;
+    return { model: expected.model, profileId: expected.profileId, tokenizerBackend: expected.backend,
+      pooling: arm.pooling, dimensions: arm.dimensions, caseCount: cases.length,
+      tokenMatches: cases.filter((c) => c.tokenIdsEqual).length,
+      minimumCosine: Math.min(...cases.map((c) => c.nativeParity.cosine)),
+      maximumAbsoluteError: Math.max(...cases.map((c) => c.nativeParity.maximumAbsoluteError)),
+      passed: cases.every((c) => c.tokenIdsEqual && c.nativeParity.passed && c.shippedWorkerParity?.passed !== false),
+      rankings: { queryCount: ranks.length, exactRankAgreements, native: ranks, reference: referenceRankings }, cases };
+  });
+  const shipped = native.arms.find((a) => a.profileId === expectedArms[0].profileId)!;
+  const corrected = native.arms.find((a) => a.profileId === CORRECTED_GEMMA_REFERENCE_ID)!;
+  const effects = shipped.cases.map((c, i) => ({ id: c.id,
+    tokensChanged: JSON.stringify(c.inputIds) !== JSON.stringify(corrected.cases[i].inputIds),
+    ...referenceVectorComparison(c.vector, corrected.cases[i].vector, 768) }));
+  return { formatVersion: 1, protocolSha256: native.protocolSha256, requestSha256: native.requestSha256,
+    executionProvider: python.executionProvider, referenceVersions: python.versions, thresholds: REFERENCE_PARITY_LIMITS,
+    arms, correctedGemmaEffect: { population: effects.length, changedTokenCases: effects.filter((c) => c.tokensChanged).map((c) => c.id),
+      minimumCosine: Math.min(...effects.map((c) => c.cosine)), maximumAbsoluteError: Math.max(...effects.map((c) => c.maximumAbsoluteError)),
+      rankingQueriesChanged: arms[0].rankings.native.filter((r, i) => JSON.stringify(r) !== JSON.stringify(arms[1].rankings.native[i])).map((r) => r.queryId), cases: effects },
+    limitation: 'Controlled tokenizer/runtime qualification: eight texts in query/document forms. No corpus-wide defect-absence or relevance claim.' };
+}
+
+export function summarizeIncumbentReferenceFiles(nativeFile: string, pythonFile: string) {
+  const bytes = (p: string) => fs.readFileSync(p), hash = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
+  const nativeBytes = bytes(nativeFile), pythonBytes = bytes(pythonFile), requestBytes = bytes(`${nativeFile}.request.json`);
+  const native = JSON.parse(nativeBytes.toString()), python = JSON.parse(pythonBytes.toString()), request = JSON.parse(requestBytes.toString());
+  if (hash(nativeBytes) !== python.nativeSha256 || hash(requestBytes) !== native.requestSha256) throw new Error('reference raw artifact fingerprint mismatch');
+  for (const key of ['protocolSha256', 'ownerId', 'execution', 'identities', 'cases']) {
+    if (JSON.stringify(native[key]) !== JSON.stringify(request[key])) throw new Error('reference frozen request drift');
+  }
+  if (native.execution.device !== 'cpu' || native.execution.dtype !== 'fp32') throw new Error('reference execution must be explicit CPU/fp32');
+  return { ...summarizeIncumbentReferences(native, python), nativeSha256: hash(nativeBytes), pythonSha256: hash(pythonBytes),
+    assets: native.identities.map((i: NativeReference['identities'][number]) => ({ model: i.model, profile: i.profile,
+      files: i.files.map((f) => ({ locator: f.locator, sha256: f.sha256, bytes: f.bytes })) })) };
+}
 
 /** Portable dossier locators resolve only in the declared local caches. */
 export function referenceAssetPath(locator: string, repo: string, home = os.homedir()): string {
@@ -76,7 +193,7 @@ export async function qualifyIncumbentReferences(protocolFile: string, expectedS
         if (!Number.isInteger(maxLength) || maxLength < 1) throw new Error('invalid declared tokenizer limit');
         await rust.setTruncation(maxLength);
         for (const backend of identity.model === 'gemma' ? ['shipped-sdk', 'corrected-rust'] : ['shipped-sdk']) {
-          const arm: any = { model: identity.model, profileId: backend === 'corrected-rust' ? 'gemma-corrected-rust-768@benchmark-v1' : identity.profile.profileId,
+          const arm: any = { model: identity.model, profileId: backend === 'corrected-rust' ? CORRECTED_GEMMA_REFERENCE_ID : identity.profile.profileId,
             tokenizerBackend: backend, pooling: identity.profile.pooling, dimensions: identity.profile.nativeDims, cases: [] };
           for (const item of cases) {
             const text = identity.model === 'gemma' ? gemmaPrompt(item.kind as 'query' | 'document', item.text) : harrierPrompt(item.kind as 'query' | 'document', item.text);
