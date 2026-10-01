@@ -8,8 +8,11 @@ import {
 import {
   completionBlobHistoryContains,
   completionHeadBlobMap,
+  completionWorkingTreeBlobSha,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
+import { sendMessage } from '../../agent-tools/coordination/messages';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import {
   COMPLETION_SETTLEMENT_HEALTH_KEY,
@@ -21,8 +24,22 @@ const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_CANDIDATES = 200;
 const SETTLEMENT_CONCURRENCY = 8;
 
-export type SettlementResidualReason = 'identity-unavailable' | 'missing-from-commit' | 'content-mismatch';
+/**
+ * `superseded-before-commit` (WI-10004711) is `content-mismatch` with the one fact that
+ * decides the remedy: the close-time blob is in no commit since the close AND the working
+ * tree no longer holds it, so no sweep can ever land it. Plain `content-mismatch` keeps
+ * the cases where waiting can still work (the working tree still holds the blob, or it
+ * could not be read). It is a verdict on the CURRENT state: a later commit that restores
+ * the exact content still settles the row, because every pass re-checks history.
+ */
+export type SettlementResidualReason =
+  | 'identity-unavailable'
+  | 'missing-from-commit'
+  | 'content-mismatch'
+  | 'superseded-before-commit';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
+/** Current working-tree blob of one path: null = absent, undefined = could not read. */
+type CompletionWorkingTreeLookup = (repoRoot: string, path: string, shaLength: number) => string | null | undefined;
 type CompletionHeadBlobLookup = (
   repoRoot: string,
   headSha: string,
@@ -92,6 +109,8 @@ export async function residualPathsForCommit(
   signal?: AbortSignal,
   historyLookup?: CompletionBlobHistoryLookup,
   onHistoryMatch?: (path: string, workingTreeBlobSha: string) => void,
+  /** WI-10004711: opt-in. Without it a mismatch stays `content-mismatch` (never stranded). */
+  workingTreeLookup?: CompletionWorkingTreeLookup,
 ): Promise<SettlementResidualPath[] | undefined> {
   const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
   if (!parsed.success || !SHA_RE.test(commitSha)) return undefined;
@@ -158,15 +177,82 @@ export async function residualPathsForCommit(
       onHistoryMatch?.(path, expectedSha);
       continue;
     }
+    if (foundInHistory === undefined) {
+      residualPaths.push({ path, reason: 'identity-unavailable' });
+      continue;
+    }
+    // WI-10004711: `stranded` needs BOTH halves measured. History must have been
+    // CONSULTED (a skipped history read defaults to false above, which proves nothing),
+    // and the working tree must be READ and differ: if it still holds the close-time blob,
+    // the next sweep lands it (e.g. a path the last commit excluded while it was locked).
+    const current = historyLookup ? workingTreeLookup?.(receipt.repositoryRoot, path, commitSha.length) : undefined;
     residualPaths.push({
       path,
-      reason: foundInHistory === undefined ? 'identity-unavailable' : 'content-mismatch',
+      reason: current !== undefined && current !== expectedSha ? 'superseded-before-commit' : 'content-mismatch',
     });
   }
   return residualPaths;
 }
 
-type CandidateRow = { feature_id: string; harness_slug: string; payload: unknown };
+type CandidateRow = { feature_id: string; harness_slug: string; payload: unknown; terminal_owner?: string | null };
+
+/** WI-10004711: what the closer is told when their close can no longer settle by waiting. */
+export type SettlementStrandedNotice = {
+  workItemId: string;
+  harness: string;
+  workspaceId: string;
+  /** The row's recorded closer; null when the row carries none (the notice is then logged only). */
+  terminalOwner: string | null;
+  strandedPaths: string[];
+  commitSha: string;
+  generation: number;
+};
+
+const SETTLEMENT_SYSTEM_OWNER = 'system:git-sync-completion-settlement';
+
+/**
+ * Production notice: one coord message to the closer. Best-effort by contract — the
+ * caller swallows a failure, because a notice must never fail the settlement pass.
+ */
+export async function notifySettlementStranded(notice: SettlementStrandedNotice): Promise<void> {
+  if (!notice.terminalOwner) {
+    console.warn(
+      `[git-sync-completion-settlement] ${notice.workItemId} is stranded (${notice.strandedPaths.join(', ')}) ` +
+        'but carries no terminal_owner to notify',
+    );
+    return;
+  }
+  const identity: AgentIdentity = {
+    ownerId: SETTLEMENT_SYSTEM_OWNER,
+    ownerLabel: 'system · completion settlement',
+    source: 'principal',
+    workspaceId: notice.workspaceId,
+    userId: null,
+  };
+  const paths = notice.strandedPaths.map((path) => `\`${path}\``).join(', ');
+  await sendMessage(identity, {
+    to: [notice.terminalOwner],
+    harnessSlug: notice.harness,
+    summary:
+      `${notice.workItemId}: your close cannot settle by waiting. ${notice.strandedPaths.length} path(s) changed ` +
+      'again before git-sync committed the content you closed with. Re-verify, then re-send work_items:complete.',
+    body:
+      `Your close of ${notice.workItemId} (harness ${notice.harness}) recorded blobs for ${paths} that never ` +
+      `reached a commit: each path was edited again before git-sync swept it, so the recorded content is in ` +
+      `no commit since your close (checked through ${notice.commitSha.slice(0, 12)}) and no longer in the ` +
+      `working tree. The close stays authority 'proposed', not counted toward burn-down, until you act; ` +
+      `waiting cannot settle it. Check that each path's CURRENT content still carries your change (someone ` +
+      `else may have edited it). If it does, re-call work_items:complete { id: '${notice.workItemId}', ` +
+      `harness: '${notice.harness}' } with your completion evidence: that records the current blobs, and the ` +
+      `next git-sync commit settles it. If your change is gone, reopen the item instead.`,
+    extra: {
+      settlementStranded: true,
+      workItemId: notice.workItemId,
+      generation: notice.generation,
+      strandedPaths: notice.strandedPaths,
+    },
+  });
+}
 
 /**
  * WI-1053550: the treeStamp this reconciler's authority upgrade needs to SURVIVE
@@ -247,6 +333,17 @@ export interface CompletionSettlementReconcilerDeps {
    * `sql` without this seam records nothing, so the pre-existing fixtures stay hermetic.
    */
   recordHealth?: (observation: SettlementFireObservation) => Promise<void>;
+  /**
+   * WI-10004711: current working-tree blob seam. Production reads the checkout; like
+   * `historyLookup`, it is off when only the tree-only `lookup` seam is injected.
+   */
+  workingTreeLookup?: CompletionWorkingTreeLookup;
+  /**
+   * WI-10004711: tells a closer their close can no longer settle by waiting. Production
+   * (no `sql` injected) sends a coord message; injected `sql` without this seam sends
+   * nothing, so hermetic fixtures never reach the real coord log.
+   */
+  notifyStranded?: (notice: SettlementStrandedNotice) => Promise<void>;
 }
 
 type ReconcileResult = {
@@ -256,6 +353,8 @@ type ReconcileResult = {
   unreadable: string[];
   /** Zero residual but the SQL authority floor kept the row 'proposed' — a TS/SQL proof disagreement. */
   floorRejected: string[];
+  /** WI-10004711: rows that newly gained a `superseded-before-commit` path on this pass. */
+  stranded: string[];
 };
 
 /**
@@ -273,20 +372,25 @@ export async function reconcileProposedCompletionsAtCommit(
   if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
     return reconcileProposedCompletionsCore(commitSha, scope, deps);
   }
+  // EI-24758680272435881: stamped BEFORE the candidate SELECT. Only a never-attempted row
+  // last written before this instant was visible to that SELECT (and, tier-first, would
+  // have been among the first rows this pass started). A close that lands mid-pass is
+  // the NEXT pass's to attempt, so it must not count against this one.
+  const passStartedAtMs = Date.now();
   let result: ReconcileResult;
   try {
     result = await reconcileProposedCompletionsCore(commitSha, scope, deps);
   } catch (error) {
     // The pass was cut short (budget / action timeout abort, or a failure), so its per-row
     // stats are unknown — the guard records that as null, never as a fabricated zero.
-    await observeSettlementFire(scope, deps, {
+    await observeSettlementFire(scope, deps, passStartedAtMs, {
       outcome: deps.signal?.aborted ? 'budget-exceeded' : 'error',
       neverAttemptedRemaining: null,
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
-  await observeSettlementFire(scope, deps, {
+  await observeSettlementFire(scope, deps, passStartedAtMs, {
     outcome: 'completed',
     inspected: result.inspected,
     upgraded: result.upgraded.length,
@@ -306,12 +410,16 @@ export async function reconcileProposedCompletionsAtCommit(
 async function observeSettlementFire(
   scope: { installSlug: string; workspaceId: string; repositoryRoot: string },
   deps: CompletionSettlementReconcilerDeps,
+  passStartedAtMs: number,
   observation: SettlementFireObservation,
 ): Promise<void> {
   // Injected `sql` without an injected recorder = an existing hermetic fixture: stay out.
   if (!deps.recordHealth && deps.sql) return;
   try {
-    const neverAttemptedRemaining = await countNeverAttemptedCandidates(scope, { sql: deps.sql }).catch(() => null);
+    const neverAttemptedRemaining = await countNeverAttemptedCandidates(scope, {
+      sql: deps.sql,
+      eligibleBeforeMs: passStartedAtMs,
+    }).catch(() => null);
     const measured = { ...observation, neverAttemptedRemaining } as SettlementFireObservation;
     if (deps.recordHealth) {
       await deps.recordHealth(measured);
@@ -353,13 +461,15 @@ async function reconcileProposedCompletionsCore(
   deps: CompletionSettlementReconcilerDeps,
 ): Promise<ReconcileResult> {
   if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
-    return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [] };
+    return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [], stranded: [] };
   }
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
   // A custom exact-tree lookup is the unit-test seam for the older tree-only
   // contract. Tests opt into history explicitly; production uses the safe Git reader.
   const historyLookup = deps.historyLookup ?? (deps.lookup ? undefined : completionBlobHistoryContains);
+  const workingTreeLookup = deps.workingTreeLookup ?? (deps.lookup ? undefined : completionWorkingTreeBlobSha);
+  const notifyStranded = deps.notifyStranded ?? (deps.sql ? undefined : notifySettlementStranded);
   const emit = deps.emit ?? emitAwaitedEvent;
   // EI-24710716781971154: two-tier selection. A row whose manifest has no `residualPaths`
   // key has NEVER been attempted — it is the only kind a fresh close can be, and the
@@ -371,7 +481,7 @@ async function reconcileProposedCompletionsCore(
   // NULL-safe on purpose: an absent key makes `jsonb_typeof(...) = 'array'` NULL, and
   // NULLs sort LAST ascending, which would have put the fresh rows at the back.
   const rows = await sql<CandidateRow[]>`
-    SELECT feature_id, harness_slug, payload
+    SELECT feature_id, harness_slug, payload, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId}
        AND authority = 'proposed'
@@ -394,6 +504,7 @@ async function reconcileProposedCompletionsCore(
   const unreadableByIndex: Array<string | undefined> = [];
   // Zero residual, UPDATE matched, yet the authority floor kept the row 'proposed'.
   const floorRejectedByIndex: Array<string | undefined> = [];
+  const strandedByIndex: Array<string | undefined> = [];
   let completed = 0;
   const settleRow = async (row: CandidateRow, index: number): Promise<void> => {
     try {
@@ -428,6 +539,7 @@ async function reconcileProposedCompletionsCore(
         deps.signal,
         historyLookup,
         (path, workingTreeBlobSha) => historyMatches.set(path, workingTreeBlobSha),
+        workingTreeLookup,
       );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
       if (!residualPaths) return;
@@ -521,6 +633,39 @@ async function reconcileProposedCompletionsCore(
       if (residualPaths.length === 0 && result[0] && result[0].authority !== 'committed') {
         floorRejectedByIndex[index] = result[0].feature_id;
       }
+      // WI-10004711: tell the closer ONCE, on the transition into stranded. The prior
+      // residue is this same generation's stored manifest, so a later pass that re-derives
+      // the same stranded set stays silent, and a re-sent close (new generation, no stored
+      // residue) starts clean. A missed CAS (result empty) is someone else's write: silent.
+      const priorStranded = new Set(
+        (parsed.data.residualPaths ?? [])
+          .filter((entry) => entry.reason === 'superseded-before-commit')
+          .map((entry) => entry.path),
+      );
+      const newlyStranded = residualPaths
+        .filter((entry) => entry.reason === 'superseded-before-commit' && !priorStranded.has(entry.path))
+        .map((entry) => entry.path);
+      if (result[0] && newlyStranded.length > 0) {
+        strandedByIndex[index] = result[0].feature_id;
+        try {
+          await notifyStranded?.({
+            workItemId: result[0].feature_id,
+            harness: row.harness_slug,
+            workspaceId: scope.workspaceId,
+            terminalOwner: row.terminal_owner ?? null,
+            strandedPaths: residualPaths
+              .filter((entry) => entry.reason === 'superseded-before-commit')
+              .map((entry) => entry.path),
+            commitSha,
+            generation: parsed.data.generation,
+          });
+        } catch (error) {
+          console.warn(
+            `[git-sync-completion-settlement] ${scope.installSlug}: could not notify the closer of stranded ` +
+              `${result[0].feature_id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       if (residualPaths.length === 0 && result[0] && result[0].authority === 'committed') {
         const id = result[0].feature_id;
         upgradedByIndex[index] = id;
@@ -570,7 +715,16 @@ async function reconcileProposedCompletionsCore(
   const upgraded = upgradedByIndex.filter((id): id is string => id !== undefined);
   const unreadable = unreadableByIndex.filter((id): id is string => id !== undefined);
   const floorRejected = floorRejectedByIndex.filter((id): id is string => id !== undefined);
+  const stranded = strandedByIndex.filter((id): id is string => id !== undefined);
   const residualCount = residualByIndex.reduce((sum, count) => sum + count, 0);
+  if (stranded.length > 0) {
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: ${stranded.length} of ${rows.length} ` +
+        'proposed completion(s) became unsettleable by waiting (a declared path was edited again before ' +
+        'any commit captured the close-time blob); their closers were told to re-send: ' +
+        `${stranded.slice(0, 10).join(', ')}${stranded.length > 10 ? ` (+${stranded.length - 10} more)` : ''}`,
+    );
+  }
   if (floorRejected.length > 0) {
     console.warn(
       `[git-sync-completion-settlement] ${scope.installSlug}: ${floorRejected.length} of ${rows.length} ` +
@@ -588,7 +742,7 @@ async function reconcileProposedCompletionsCore(
         `${unreadable.slice(0, 10).join(', ')}${unreadable.length > 10 ? ` (+${unreadable.length - 10} more)` : ''}`,
     );
   }
-  return { inspected: rows.length, upgraded, residual: residualCount, unreadable, floorRejected };
+  return { inspected: rows.length, upgraded, residual: residualCount, unreadable, floorRejected, stranded };
 }
 
 /**
@@ -601,9 +755,23 @@ async function reconcileProposedCompletionsCore(
  */
 export async function countNeverAttemptedCandidates(
   scope: { workspaceId: string; repositoryRoot: string },
-  deps: { sql?: ReturnType<typeof getOrgPg>['sql'] } = {},
+  deps: {
+    sql?: ReturnType<typeof getOrgPg>['sql'];
+    /**
+     * EI-24758680272435881: count only rows last written BEFORE this instant — the fire's
+     * start. Without it the count included closes that landed mid-pass, after the candidate
+     * SELECT, so under steady close traffic the population never read zero and the
+     * consecutive-fires streak grew forever (measured 2026-10-01: a fully healthy pass that
+     * wrote its first row still recorded `failing`, remaining 1, streak 32, because two
+     * fresh closes arrived during it). Omitted = no cutoff (an all-time census).
+     */
+    eligibleBeforeMs?: number;
+  } = {},
 ): Promise<number> {
   const sql = deps.sql ?? getOrgPg().sql;
+  // One parameterized predicate either way (no conditional fragment): the "no cutoff" case
+  // binds a ceiling no millisecond timestamp reaches.
+  const eligibleBeforeMs = deps.eligibleBeforeMs ?? Number.MAX_SAFE_INTEGER;
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n
       FROM harness_shared.work_items
@@ -611,6 +779,7 @@ export async function countNeverAttemptedCandidates(
        AND authority = 'proposed'
        AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'repositoryRoot']}::text[] = ${scope.repositoryRoot}
        AND payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest']}::text[] IS NOT NULL
-       AND jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS DISTINCT FROM 'array'`;
+       AND jsonb_typeof(payload #> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'residualPaths']}::text[]) IS DISTINCT FROM 'array'
+       AND updated_ts < ${eligibleBeforeMs}`;
   return Number(rows[0]?.n ?? 0);
 }

@@ -136,4 +136,69 @@ describe('countNeverAttemptedCandidates', () => {
     const { sql } = fakeSql({ count: () => [] });
     await expect(countNeverAttemptedCandidates(scope, { sql })).resolves.toBe(0);
   });
+
+  // EI-24758680272435881: a close that lands mid-pass is the next pass's to attempt. Counting
+  // it held the streak non-zero under steady close traffic (failing / streak 32 on a pass that
+  // wrote its first row), so the count takes a written-before cutoff.
+  it('counts only rows last written before the cutoff when one is given', async () => {
+    const { sql, queries } = fakeSql({ count: () => [{ n: '2' }] });
+    await expect(countNeverAttemptedCandidates(scope, { sql, eligibleBeforeMs: 1_790_846_000_000 })).resolves.toBe(2);
+    const [, ...values] = vi.mocked(sql).mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(queries[0]).toMatch(/AND updated_ts < \?$/);
+    expect(values[values.length - 1]).toBe(1_790_846_000_000);
+  });
+
+  it('applies no effective cutoff when none is given (all-time census)', async () => {
+    const { sql } = fakeSql({ count: () => [{ n: '28' }] });
+    await expect(countNeverAttemptedCandidates(scope, { sql })).resolves.toBe(28);
+    const [, ...values] = vi.mocked(sql).mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(values[values.length - 1]).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
+
+describe('never-attempted cutoff wiring (EI-24758680272435881)', () => {
+  it('measures the remaining tier against the fire start, stamped before the candidate SELECT', async () => {
+    let selectIssuedAt = 0;
+    const { sql } = fakeSql({
+      select: () => {
+        selectIssuedAt = Date.now();
+        return [];
+      },
+      count: () => [{ n: '0' }],
+    });
+    const before = Date.now();
+    const recordHealth = vi.fn(async (_o: SettlementFireObservation) => {});
+    await reconcileProposedCompletionsAtCommit(SHA, scope, { sql, recordHealth });
+    const countCall = vi
+      .mocked(sql)
+      .mock.calls.find((call) => /count\(\*\)/.test((call[0] as unknown as TemplateStringsArray).join('?')));
+    expect(countCall).toBeDefined();
+    const cutoff = (countCall as unknown as unknown[])[(countCall as unknown as unknown[]).length - 1] as number;
+    expect(cutoff).toBeGreaterThanOrEqual(before);
+    expect(cutoff).toBeLessThanOrEqual(selectIssuedAt);
+    expect(recordHealth.mock.calls[0]![0]).toMatchObject({ outcome: 'completed', neverAttemptedRemaining: 0 });
+  });
+
+  it('passes the same fire-start cutoff when the pass is cut short', async () => {
+    const controller = new AbortController();
+    const { sql } = fakeSql({
+      select: () => {
+        controller.abort(new Error('budget'));
+        return [];
+      },
+      count: () => [{ n: '1' }],
+    });
+    const before = Date.now();
+    const recordHealth = vi.fn(async (_o: SettlementFireObservation) => {});
+    await expect(
+      reconcileProposedCompletionsAtCommit(SHA, scope, { sql, recordHealth, signal: controller.signal }),
+    ).rejects.toThrow('budget');
+    const countCall = vi
+      .mocked(sql)
+      .mock.calls.find((call) => /count\(\*\)/.test((call[0] as unknown as TemplateStringsArray).join('?')));
+    const cutoff = (countCall as unknown as unknown[])[(countCall as unknown as unknown[]).length - 1] as number;
+    expect(cutoff).toBeGreaterThanOrEqual(before);
+    expect(cutoff).toBeLessThanOrEqual(Date.now());
+    expect(recordHealth.mock.calls[0]![0]).toMatchObject({ outcome: 'budget-exceeded', neverAttemptedRemaining: 1 });
+  });
 });
