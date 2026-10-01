@@ -23,7 +23,7 @@ describe('current-build ingestion on a private background runtime', () => {
       import assert from 'node:assert/strict';
       import fs, { readFileSync } from 'node:fs';
       import fsPromises from 'node:fs/promises';
-      import { mkdir, writeFile } from 'node:fs/promises';
+      import { mkdir, rm, utimes, writeFile } from 'node:fs/promises';
       import { syncBuiltinESMExports } from 'node:module';
       import { performance } from 'node:perf_hooks';
       import { Session } from 'node:inspector/promises';
@@ -202,13 +202,14 @@ describe('current-build ingestion on a private background runtime', () => {
           }
           assert.equal(metadataReads.diagnostics.calls, files.length,
             'reuse the resolved transcript identity instead of rereading diagnostics');
-          assert.equal(metadataReads.config.calls, files.length);
+          assert.equal(metadataReads.config.calls, workload.homes,
+            'read only the config selected for each managed adv-session row');
           for (const bucket of Object.values(metadataReads)) {
             assert.equal(bucket.completed, bucket.calls);
             assert.equal(bucket.errors, 0);
           }
           assert.equal(metadataReads.diagnostics.bytes, files.length * diagnosticsBytes);
-          assert.equal(metadataReads.config.bytes, files.length * configBytes);
+          assert.equal(metadataReads.config.bytes, workload.homes * configBytes);
           return { ...stats, discoveryFs: observation, metadataReads,
             cpuProfile, profilerStartMs, profilerStopMs,
             mainLoopMs: { active: loop.active, idle: loop.idle },
@@ -253,6 +254,7 @@ describe('current-build ingestion on a private background runtime', () => {
       const diagnosticsBytes = Buffer.byteLength(diagnosticsText(0));
       const prefix = JSON.stringify({ type: 'session_meta', payload: {} }) + '\n';
       const prefixBytes = Buffer.byteLength(prefix);
+      const fixtureMtime = Date.now() - 60_000;
       assert.ok(prefixBytes > 0); // the production candidate filter excludes empty files
       for (let h = 0; h < workload.homes; h++) {
         const home = join(e.PAPERCUSP_HOME, 'su-codex-homes', 'session-' + (10000 + h));
@@ -265,6 +267,9 @@ describe('current-build ingestion on a private background runtime', () => {
           const id = '019f4fa9-4a09-78c0-8a35-' + index.toString(16).padStart(12, '0');
           const path = join(day, 'rollout-2026-10-01T00-00-00-' + id + '.jsonl');
           await writeFile(path, prefix);
+          // Distinct native ids in one home: selection must follow the actual
+          // candidate mtime order, not creation order or a shared cached id.
+          await utimes(path, (fixtureMtime + index) / 1000, (fixtureMtime + index) / 1000);
           files.push(path);
           ids.push(id);
         }
@@ -312,6 +317,10 @@ describe('current-build ingestion on a private background runtime', () => {
         const migrated = await sql.unsafe('SELECT count(*)::int AS n FROM harness_shared.schema_migrations');
         assert.ok(migrated[0].n > 0);
         await sql.unsafe([
+          'INSERT INTO harness_shared.adv_sessions (id, workspace_id, mode)',
+          "SELECT 10000 + h, $1, 'console' FROM generate_series(0, $2::int - 1) AS h",
+        ].join(' '), [e.PAPERCUSP_WORKSPACE_ID, workload.homes]);
+        await sql.unsafe([
           'INSERT INTO harness_shared.session_ingest_state',
           '(source_kind, file_path, session_id, byte_offset, turn_count, part_count,',
           'counts_backfill_offset, counts_backfilled_at, parts_backfill_offset, parts_backfilled_at)',
@@ -323,6 +332,17 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(baseline.filesScanned, 4800, JSON.stringify(baseline));
         assert.equal(baseline.filesIngested, 0);
         assert.equal(baseline.turnsInserted, 0);
+        const selected = await sql.unsafe([
+          "SELECT id, session_id, launch_spec->>'model' AS model, launch_spec->>'effort' AS effort",
+          'FROM harness_shared.adv_sessions WHERE workspace_id = $1 ORDER BY id',
+        ].join(' '), [e.PAPERCUSP_WORKSPACE_ID]);
+        assert.equal(selected.length, workload.homes);
+        for (let h = 0; h < workload.homes; h++) {
+          assert.equal(Number(selected[h].id), 10000 + h);
+          assert.equal(selected[h].session_id, ids[(h + 1) * workload.filesPerHome - 1]);
+          assert.equal(selected[h].model, 'gpt-6.1-sol');
+          assert.equal(selected[h].effort, 'xhigh');
+        }
         const passes = [];
         const matchedUnchanged = [];
         for (let repeat = 0; repeat < workload.repeats; repeat++) {
@@ -408,12 +428,62 @@ describe('current-build ingestion on a private background runtime', () => {
             singleFileRepairs.push({ explicitIdentity: !!opts.sessionId, repair, reads: metadataReads });
           } finally { observeMetadata(false); }
         }
+        // A sweep-local selection is not a process cache. A malformed newer
+        // rollout must not occupy the home; the first valid native id wins,
+        // missing config stays fail-soft, and the next sweep sees fresh config.
+        const firstHome = join(managedRoot, 'session-10000');
+        const configPath = join(firstHome, 'config.toml');
+        const invalidPath = join(firstHome, 'sessions', '2026', '10', '01', 'rollout-not-a-native-id.jsonl');
+        await writeFile(invalidPath, prefix);
+        const latestMtime = (Date.now() + 1000) / 1000;
+        await utimes(files[0], latestMtime, latestMtime);
+        await utimes(invalidPath, latestMtime + 1, latestMtime + 1);
+        async function resetLaunchMetadata(spec) {
+          await sql.unsafe('UPDATE harness_shared.adv_sessions SET session_id = NULL, launch_spec = $1::jsonb WHERE id = 10000',
+            [spec == null ? null : JSON.stringify(spec)]);
+        }
+        async function metadataRepairSweep() {
+          observeMetadata(true);
+          try {
+            const stats = await runSessionIngestOnce();
+            assert.equal(stats.errors, 0, JSON.stringify(stats));
+            assert.equal(stats.turnsInserted, 0);
+            assert.equal(stats.partsInserted ?? 0, 0);
+            assert.equal(metadataReads.config.calls, workload.homes);
+            const [row] = await sql.unsafe([
+              "SELECT session_id, launch_spec->>'model' AS model, launch_spec->>'effort' AS effort",
+              'FROM harness_shared.adv_sessions WHERE id = 10000',
+            ].join(' '));
+            assert.equal(row.session_id, ids[0], 'invalid newer rollout cannot prevent the first valid native-id repair');
+            return { row, reads: metadataReads };
+          } finally { observeMetadata(false); }
+        }
+        await resetLaunchMetadata(null);
+        await rm(configPath);
+        const missingConfig = await metadataRepairSweep();
+        assert.equal(missingConfig.row.model, null);
+        assert.equal(missingConfig.row.effort, null);
+        assert.equal(missingConfig.reads.config.errors, 1, 'one failed read per selected home, not one per rollout');
+        await writeFile(configPath, 'model = "gpt-5.6-sol"\nmodel_reasoning_effort = "high"\n');
+        await resetLaunchMetadata(null);
+        const freshConfig = await metadataRepairSweep();
+        assert.equal(freshConfig.row.model, 'gpt-5.6-sol');
+        assert.equal(freshConfig.row.effort, 'high');
+        assert.equal(freshConfig.reads.config.errors, 0);
+        await resetLaunchMetadata({ model: 'explicit-launch-model', effort: 'low' });
+        const explicitLaunch = await metadataRepairSweep();
+        assert.equal(explicitLaunch.row.model, 'explicit-launch-model');
+        assert.equal(explicitLaunch.row.effort, 'low');
+        await rm(invalidPath);
+        const configSelection = { selectedRows: selected.length,
+          selectedNativeIdsHash: createHash('sha256').update(JSON.stringify(selected)).digest('hex'),
+          missingConfig, freshConfig, explicitLaunch };
         if (corpusHash) assert.equal(corpusHash,
           createHash('sha256').update(readFileSync(e.TEST_INGEST_CORPUS_PATH)).digest('hex'));
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
         console.log('INGEST_RUNTIME_PROBE ' + JSON.stringify({
           sourceHash, head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-          workload, workloadHash, observerOrder, profilerOrder, metadataControls,
+          workload, workloadHash, observerOrder, profilerOrder, metadataControls, configSelection,
           metadataFixtureHash: createHash('sha256').update(configText + diagnosticsText(0)).digest('hex'),
           baseline, passes, matchedUnchanged, unchanged, singleFileRepairs,
           child: { pid: process.pid, node: process.version, backgroundWorkers: e.PAPERCUSP_BACKGROUND_WORKERS },

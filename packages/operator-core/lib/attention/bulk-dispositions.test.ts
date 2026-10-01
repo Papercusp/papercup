@@ -70,10 +70,58 @@ describe('intake dispositions', () => {
         targetRef: 'WI-9',
         missingInformation: null,
         decidedAt: '2026-10-01T10:00:00.000Z',
+        workKind: null,
+        acceptance: null,
+        sourceRevision: null,
       },
     });
     const owned = parseIntakeDecision({ disposition: 'promote', reason: 'real', owner: 'owner' }, ctx);
     expect(owned.ok && owned.decision.owner).toBe('owner');
+  });
+
+  // P-006 (D-014): the decision carries the kind, a drafted acceptance proposal and
+  // the judged source revision — each scoped to the dispositions that execute it.
+  it('binds workKind to promote, acceptance to promote/investigate, and stamps the judged source revision', () => {
+    const promote = parseIntakeDecision(
+      {
+        disposition: 'promote',
+        reason: 'real defect',
+        workKind: 'fix',
+        acceptance: { problem: ' p ', evidence: [' e1 ', '', '  '], outcome: 'o', scope: '', completionCheck: 'c' },
+      },
+      { ...ctx, sourceRevision: ' sha256:abc ' },
+    );
+    expect(promote).toMatchObject({
+      ok: true,
+      decision: {
+        workKind: 'fix',
+        acceptance: { problem: 'p', evidence: ['e1'], outcome: 'o', completionCheck: 'c' },
+        sourceRevision: 'sha256:abc',
+      },
+    });
+    expect(promote.ok && 'scope' in (promote.decision.acceptance ?? {})).toBe(false);
+
+    const investigate = parseIntakeDecision(
+      { disposition: 'investigate', reason: 'unclear cause', acceptance: { problem: 'p' } },
+      ctx,
+    );
+    expect(investigate).toMatchObject({ ok: true, decision: { acceptance: { problem: 'p' }, workKind: null } });
+
+    expect(parseIntakeDecision({ disposition: 'investigate', reason: 'r', workKind: 'fix' }, ctx)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('promote only'),
+    });
+    expect(parseIntakeDecision({ disposition: 'promote', reason: 'r', workKind: 'feature' }, ctx)).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('workKind must be one of'),
+    });
+    expect(
+      parseIntakeDecision({ disposition: 'reject', reason: 'r', acceptance: { problem: 'p' } }, ctx),
+    ).toMatchObject({ ok: false, error: expect.stringContaining('promote/investigate only') });
+    // An all-blank proposal is no proposal, so it never refuses an otherwise valid decision.
+    expect(
+      parseIntakeDecision({ disposition: 'reject', reason: 'r', acceptance: { problem: '  ', evidence: [''] } }, ctx),
+    ).toMatchObject({ ok: true, decision: { acceptance: null } });
   });
 
   it('projects every disposition onto the existing CHECK-constrained recommendation vocabulary', () => {
@@ -99,9 +147,19 @@ describe('intake dispositions', () => {
       targetRef: null,
       missingInformation: null,
       decidedAt: '2026-10-01T10:00:00.000Z',
+      workKind: null,
+      acceptance: null,
+      sourceRevision: null,
     };
     expect(readIntakeDecision(stored)).toEqual(stored);
     expect(readIntakeDecision(JSON.stringify(stored))).toEqual(stored);
+    // A row written before P-006 has none of the execution fields; it reads as null, not as a refusal.
+    const { workKind: _w, acceptance: _a, sourceRevision: _s, ...preP006 } = stored;
+    expect(readIntakeDecision(preP006)).toEqual(stored);
+    expect(readIntakeDecision({ ...stored, workKind: 'feature' })).toEqual(stored);
+    expect(
+      readIntakeDecision({ ...stored, disposition: 'promote', workKind: 'build', sourceRevision: 'rev-1' }),
+    ).toMatchObject({ workKind: 'build', sourceRevision: 'rev-1' });
     expect(readIntakeDecision(null)).toBeNull();
     expect(readIntakeDecision('{not json')).toBeNull();
     expect(readIntakeDecision({ ...stored, reason: '' })).toBeNull();

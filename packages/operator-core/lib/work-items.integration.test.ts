@@ -2929,9 +2929,11 @@ describe('unified work_items surface (real PG)', () => {
       embedderResolver: resolver,
     });
 
+    // Leg first: an empty item list is ambiguous between "the leg never ran"
+    // and "it ran but filtered the matching row out" (WI-10004426).
+    expect(result.legs.semantic, JSON.stringify(result.legs.semantic)).toMatchObject({ status: 'ran', blocked: null });
     expect(result.items.map((item) => item.id)).toContain(matching.id);
     expect(result.items.map((item) => item.id)).not.toContain(foreign.id);
-    expect(result.legs.semantic.status).toBe('ran');
   });
 
   it('keeps the retry receipt on the mandatory delayed retry while warmup remains in flight', async () => {

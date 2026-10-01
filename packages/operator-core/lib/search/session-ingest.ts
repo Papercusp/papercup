@@ -2866,9 +2866,14 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           // indexed rollout still carries the native id/config needed to repair
           // the adv row used by interval-overlap readers.
           if (adapter.sourceKind === 'codex') {
-            const codexMeta = codexAdvSessionMetadata(cand.path, meta.sessionId);
-            if (codexMeta && !codexMetadataBackfill.has(codexMeta.advSessionId)) {
-              codexMetadataBackfill.set(codexMeta.advSessionId, codexMeta);
+            const home = codexAdvSessionHome(cand.path);
+            // Candidates are newest first; only the first valid rollout's
+            // config can contribute to this adv row. Avoid reading configs
+            // whose metadata would be discarded. This map lasts one sweep,
+            // so later sweeps and single-file repairs still read fresh config.
+            if (home && !codexMetadataBackfill.has(home.advSessionId)) {
+              const codexMeta = codexAdvSessionMetadata(cand.path, meta.sessionId);
+              if (codexMeta) codexMetadataBackfill.set(home.advSessionId, codexMeta);
             }
           }
           phaseMs.metadata += performance.now() - metadataStarted;

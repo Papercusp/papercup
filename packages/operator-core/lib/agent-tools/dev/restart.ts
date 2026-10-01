@@ -67,6 +67,7 @@
 
 import { z } from 'zod';
 import { execFile, spawn } from 'node:child_process';
+import type { Writable } from 'node:stream';
 import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
@@ -159,7 +160,8 @@ async function prepareStagingRestartHandoff(lockPath: string, restartCmd: string
     { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] },
   );
   const readyStream = child.stdio[3];
-  const startStream = child.stdio[4];
+  // Node types every extra fd as Readable | Writable; fd 4 is the parent's write end.
+  const startStream = child.stdio[4] as Writable | null | undefined;
   if (!readyStream || !startStream) {
     child.kill('SIGTERM');
     return { acquired: false, reason: 'handoff-failed', detail: 'lock handoff pipes were unavailable' };

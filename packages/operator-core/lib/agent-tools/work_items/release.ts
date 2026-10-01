@@ -204,7 +204,8 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
  * Keep an affirmative completion phrase attached to the clause that names the
  * item. A message can legitimately contain both "consolidation is complete"
  * and a still-open item that is being released; treating the whole message as
- * one segment makes the former look like a claim about the latter.
+ * one segment makes the former look like a claim about the latter. When one
+ * clause names multiple work items, the nearest reference owns each phrase.
  */
 function completionClauses(segment: string): string[] {
   return segment
@@ -213,14 +214,50 @@ function completionClauses(segment: string): string[] {
     .filter(Boolean);
 }
 
+type TextRange = { start: number; end: number };
+
+function rangeDistance(left: TextRange, right: TextRange): number {
+  if (left.end <= right.start) return right.start - left.end;
+  if (right.end <= left.start) return left.start - right.end;
+  return 0;
+}
+
+function hasItemScopedPattern(clause: string, itemId: string, patterns: readonly RegExp[]): boolean {
+  const references = [...clause.matchAll(/\b(?:WI|EI|F)-\d+\b/gi)].map((match) => ({
+    value: match[0],
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+  const targetRef = escapedRegExp(itemId);
+  const targetReferences = references.filter(({ value }) => targetRef.test(value));
+  const otherReferences = references.filter(({ value }) => !targetRef.test(value));
+  if (!targetReferences.length) return false;
+
+  const matches = patterns.flatMap((pattern) => {
+    const matcher = new RegExp(pattern.source, `${pattern.flags}g`);
+    return [...clause.matchAll(matcher)].map((match) => ({
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + match[0].length,
+    }));
+  });
+
+  return matches.some((match) => {
+    const targetDistance = Math.min(...targetReferences.map((reference) => rangeDistance(match, reference)));
+    const otherDistance = otherReferences.length
+      ? Math.min(...otherReferences.map((reference) => rangeDistance(match, reference)))
+      : Number.POSITIVE_INFINITY;
+    // A tie is ambiguous. Keep the warning conservative and do not attribute a
+    // sibling's status to this item just because both occur in one clause.
+    return targetDistance < otherDistance;
+  });
+}
+
 function assertsCompletionForItem(message: unknown, itemId: string): boolean {
   if (hasStructuredCompletionPremise(message, itemId)) return true;
-  const itemRef = escapedRegExp(itemId);
   return coordMessageText(message).some((segment) => {
     return completionClauses(segment).some((clause) => {
-      if (!itemRef.test(clause)) return false;
-      if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(clause))) return false;
-      return !NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(clause));
+      if (!hasItemScopedPattern(clause, itemId, COMPLETION_ASSERTION_PATTERNS)) return false;
+      return !hasItemScopedPattern(clause, itemId, NON_COMPLETION_PATTERNS);
     });
   });
 }

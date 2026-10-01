@@ -661,7 +661,44 @@ export interface BulkIntakeDecision {
   /** retry: what information is missing before the input can be decided. */
   missingInformation: string | null;
   decidedAt: string;
+  /**
+   * P-006 (D-013): promote only — `fix` → a bug, `build` → a change. Null keeps the
+   * candidate's own kind (an observation defaults to a fix). `investigate` always
+   * executes as an investigation task.
+   */
+  workKind: IntakeWorkKind | null;
+  /**
+   * P-006: promote/investigate only — the acceptance proposal the resolver drafted
+   * (problem/evidence/outcome/scope/completionCheck). Fields here win over the
+   * source's own proposal; completeness is checked when the decision is EXECUTED,
+   * where an incomplete contract refuses rather than defaults.
+   */
+  acceptance: IntakeAcceptanceProposalInput | null;
+  /**
+   * P-006: the source revision (`src-v1:<sha256>`) the decision judged, stamped
+   * server-side when it is recorded. Executing against an edited source refuses.
+   */
+  sourceRevision: string | null;
 }
+
+export const INTAKE_WORK_KINDS = ['fix', 'build'] as const;
+export type IntakeWorkKind = (typeof INTAKE_WORK_KINDS)[number];
+
+/** A resolver-drafted acceptance proposal; shape only — completeness is judged at execution. */
+export interface IntakeAcceptanceProposalInput {
+  problem?: string | null;
+  evidence?: string[] | null;
+  outcome?: string | null;
+  scope?: string | null;
+  completionCheck?: string | null;
+}
+
+/**
+ * The terminal action that EXECUTES a recorded intake decision (P-006). It is not a
+ * card button: the bulk resolver applies it to a row that already carries a
+ * validated `intake_decision`, through the shared terminal dispatcher.
+ */
+export const INTAKE_APPLY_ACTION_ID = 'apply-intake' as const;
 
 /** What a resolver submits; validated by `parseIntakeDecision`. */
 export interface BulkIntakeDecisionInput {
@@ -670,6 +707,8 @@ export interface BulkIntakeDecisionInput {
   owner?: BulkResponsibility | null;
   targetRef?: string | null;
   missingInformation?: string | null;
+  workKind?: string | null;
+  acceptance?: IntakeAcceptanceProposalInput | null;
 }
 
 interface IntakeDispositionSpec {
@@ -750,7 +789,7 @@ function nonBlank(value: unknown): string | null {
  */
 export function parseIntakeDecision(
   input: BulkIntakeDecisionInput,
-  ctx: { decidedBy: string; now?: Date },
+  ctx: { decidedBy: string; now?: Date; sourceRevision?: string | null },
 ): { ok: true; decision: BulkIntakeDecision } | { ok: false; error: string } {
   if (!isBulkIntakeDisposition(input?.disposition)) {
     return {
@@ -776,6 +815,17 @@ export function parseIntakeDecision(
   }
   const owner =
     input.owner && (BULK_RESPONSIBILITIES as readonly string[]).includes(input.owner) ? input.owner : spec.owner;
+  const workKindRaw = nonBlank(input.workKind);
+  if (workKindRaw && spec.disposition !== 'promote') {
+    return { ok: false, error: `workKind applies to promote only (got it on "${spec.disposition}")` };
+  }
+  if (workKindRaw && !(INTAKE_WORK_KINDS as readonly string[]).includes(workKindRaw)) {
+    return { ok: false, error: `workKind must be one of ${INTAKE_WORK_KINDS.join(', ')} (got ${JSON.stringify(workKindRaw)})` };
+  }
+  const acceptance = readAcceptanceProposalInput(input.acceptance);
+  if (acceptance && spec.disposition !== 'promote' && spec.disposition !== 'investigate') {
+    return { ok: false, error: `acceptance applies to promote/investigate only (got it on "${spec.disposition}")` };
+  }
   return {
     ok: true,
     decision: {
@@ -786,8 +836,27 @@ export function parseIntakeDecision(
       targetRef,
       missingInformation,
       decidedAt: (ctx.now ?? new Date()).toISOString(),
+      workKind: (workKindRaw as IntakeWorkKind | null) ?? null,
+      acceptance,
+      sourceRevision: nonBlank(ctx.sourceRevision) ?? null,
     },
   };
+}
+
+/** Trimmed proposal fields; null when nothing usable was supplied. */
+function readAcceptanceProposalInput(raw: unknown): IntakeAcceptanceProposalInput | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  const out: IntakeAcceptanceProposalInput = {};
+  for (const field of ['problem', 'outcome', 'scope', 'completionCheck'] as const) {
+    const value = nonBlank(v[field]);
+    if (value) out[field] = value;
+  }
+  if (Array.isArray(v.evidence)) {
+    const evidence = v.evidence.map(nonBlank).filter((e): e is string => e !== null);
+    if (evidence.length > 0) out.evidence = evidence;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /** Project an intake decision onto the existing disposition/recommendation columns. */
@@ -835,5 +904,10 @@ export function readIntakeDecision(raw: unknown): BulkIntakeDecision | null {
     targetRef: nonBlank(v.targetRef),
     missingInformation: nonBlank(v.missingInformation),
     decidedAt: nonBlank(v.decidedAt) ?? '',
+    workKind: (INTAKE_WORK_KINDS as readonly string[]).includes(String(v.workKind))
+      ? (v.workKind as IntakeWorkKind)
+      : null,
+    acceptance: readAcceptanceProposalInput(v.acceptance),
+    sourceRevision: nonBlank(v.sourceRevision),
   };
 }

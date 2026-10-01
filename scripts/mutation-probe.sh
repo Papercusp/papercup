@@ -367,6 +367,21 @@ mutation_probe_fallback_safe_tool() {
   esac
 }
 
+mutation_probe_ptool() {
+  local token_file="${PAPERCUSP_MCP_TOKEN_FILE:-}"
+  # A managed workspace may set PAPERCUSP_HOME to a workspace-local token
+  # rejected by the selected operator. Match mcp-call's shared host credential
+  # unless the caller supplied an explicit session token file.
+  if [ -z "$token_file" ] && [ -n "${HOME:-}" ] && [ -r "$HOME/.papercusp/superuser-token" ]; then
+    token_file="$HOME/.papercusp/superuser-token"
+  fi
+  if [ -n "$token_file" ]; then
+    PAPERCUSP_MCP_TOKEN_FILE="$token_file" ptool "$@"
+  else
+    ptool "$@"
+  fi
+}
+
 ptool_json() {
   # Surface the tool's own stderr on failure (WI-10002758). Discarding it
   # turned a crisp dispatch refusal (e.g. projection_invalid) into the opaque
@@ -381,7 +396,7 @@ ptool_json() {
   [ -n "$harness_scope" ] || { log "ptool $tool requires an explicit Papercusp harness scope; set PAPERCUSP_TEST_RUN_HARNESS or HARNESS_SLUG"; return 1; }
   ptool_scope=(--workspace="$workspace_scope" --harness="$harness_scope")
   err_file="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-ptool.XXXXXX")" || return 1
-  result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --json - --projection "$projection" 2>"$err_file")"
+  result="$(printf '%s' "$args" | mutation_probe_ptool "${ptool_scope[@]}" "$tool" --json - --projection "$projection" 2>"$err_file")"
   rc=$?
   if [ "$rc" -ne 0 ] &&
     mutation_probe_fallback_safe_tool "$tool" &&
@@ -392,7 +407,7 @@ ptool_json() {
     temp_dir="${TMPDIR:-/tmp}"
     fallback_err_file="$(mktemp "$temp_dir/mutation-probe-ptool-fallback.XXXXXX")" || fallback_err_file=""
     if [ -n "$fallback_err_file" ]; then
-      fallback_result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
+      fallback_result="$(printf '%s' "$args" | mutation_probe_ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
       fallback_rc=$?
       if [ "$fallback_rc" -eq 0 ] && [ -n "$fallback_result" ]; then
         log "ptool $tool timed out on local :3070/:9071; recovered once through staging :3170"
@@ -1619,6 +1634,12 @@ BASE_CMD="${TEST_CMD//\{\}/$FILE}"
 BASELINE_LOG="$SCRATCH/baseline.log"
 MUTANT_LOG="$SCRATCH/mutant.log"
 BASELINE_RC=0
+# Check the in-tree session/lock fence before an expensive baseline can run.
+# Keep the second check immediately before mutation to refresh the lease and
+# catch a lock that changed while the baseline was running.
+if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
+  verify_sweep_fence
+fi
 if run_guard baseline "baseline guard" "$BASE_CMD" "$BASELINE_LOG"; then
   :
 else

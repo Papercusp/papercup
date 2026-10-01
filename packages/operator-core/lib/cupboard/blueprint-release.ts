@@ -458,7 +458,9 @@ export async function snapshotBlueprintReleaseSource(input: {
   };
 }
 
-async function defaultReleaseSigner(): Promise<BlueprintReleaseSigner> {
+/** The local-device release signer. Exported so the self-describing kinds (P-011) sign their
+ * release manifests with the SAME identity path the blueprint kind already uses. */
+export async function defaultReleaseSigner(): Promise<BlueprintReleaseSigner> {
   const { resolveLocalGithubIdentity } = await import('../identity/resolve-local-github-identity');
   const identity = await resolveLocalGithubIdentity();
   if (identity.kind !== 'ok')

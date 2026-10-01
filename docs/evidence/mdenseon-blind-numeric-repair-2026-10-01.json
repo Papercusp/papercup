@@ -45,7 +45,8 @@
     "unitResult": "53 passed (37 judged, 16 candidate); exit0; local dirty test stamp HEAD68a2f5bcca; 2026-10-01T10:00:50Z",
     "actualCollection": "native61202 finished exit0 at2026-10-01T10:13:08.202Z",
     "rawAudit": "Read-only full raw audit native93830 emitted successful proof at2026-10-01T10:15:15.824Z; final process exit0. Verified immutable hashes, original author references, owner/model/system/exact messages, selected source groups, complete numeric chunks, reconstructed aggregate votes and final consensus labels.",
-    "physicalInvocationsVerified": 98,
+    "recordedInvocationsVerified": 98,
+    "invocationCountMeaning": "Distinct collector-generated invocation IDs across 64 author and 34 judge chunk receipts; this is not a count of provider HTTP attempts or retries.",
     "auditPopulation": {
       "authorReceipts": 64,
       "judgeChunkReceipts": 34,

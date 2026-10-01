@@ -303,6 +303,36 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
 
+  it('stays silent when a neighboring item completion shares the same clause', async () => {
+    const sibling = 'EI-24732811620490811';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-neighboring-completion',
+        ts: '2026-08-23T00:30:10.000Z',
+        from: 'me',
+        summary: `${ITEM} remains unresolved and should stay open while the sibling item ${sibling} is done`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('still warns when this item is complete beside an unresolved sibling', async () => {
+    const sibling = 'EI-24732811620490811';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-target-completion-neighbor',
+        ts: '2026-08-23T00:31:10.000Z',
+        from: 'me',
+        summary: `${ITEM} is done while the sibling item ${sibling} remains unresolved and should stay open`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-target-completion-neighbor/);
+  });
+
   it('stays silent for negated or still-in-progress completion language', async () => {
     outboxM.mockResolvedValue([
       {

@@ -3740,3 +3740,80 @@ speedup. Config's repeated per-rollout reads and their freshness/selection
 contract remain a separate possible optimization. The long shared-host sweep
 cause, app impact, adoption and sustained profiler overhead remain unproved.
 **P-008/R-8 stays open; no live acceptance binding or shipment is claimed.**
+
+### Selected-home config reads — October 1, 11:13Z
+
+WI-10002830 confirmed another redundant-read mechanism in the existing Codex
+metadata sweep. `codexMetadataBackfill` retained only the first valid rollout
+per managed home, but `codexAdvSessionMetadata` read config before checking
+whether that row had already been selected. The canonical private-runtime
+regression failed with 4,800 config calls versus the expected 320. Moving the
+read behind the existing map's selection check removes discarded work. No
+process cache, new flag, config key, service or metadata surface was added.
+
+The maintained fixture now gives all 4,800 rollouts distinct native IDs and
+explicit mtimes. It inserts 320 real private `adv_sessions` rows and checks
+that the newest valid rollout in each home supplies the original native ID,
+model and effort. These baseline assertions passed before the pre-fix read-count
+failure and also in both post-fix children. The selected-row hash after the fix
+is `8d449dacf45c2cd93b203b01df5b07f956ab9b8a9417c71a23f433cedf968295`.
+
+| Same 4,800-candidate sweep | Config calls | Config bytes | Diagnostics calls |
+|---|---:|---:|---:|
+| Pre-fix regression | 4,800 | 264,000 | 4,800 |
+| Selected-home reads | 320 | 17,600 | 4,800 |
+
+Every useful and matched unchanged sweep in both children checks these exact
+counts, successful reads and zero read errors. The real filesystem wrapper
+continues to call the original reader. Further private sweeps check that a newer
+malformed native ID does not occupy the home, a missing config permits native-ID
+repair with one failed config read, a recreated config's model/effort are seen
+on the next sweep, and explicit launch settings remain intact. Single-file
+metadata-only repair still reads config freshly and inserts no duplicate turns.
+Each child retains 256 turns and 2,560 parts, removes its private HOME/datadir,
+and verifies the database port refuses connections.
+
+Verification used the five-file command in **Matched metadata read controls**.
+The 11:08Z run passed both private-runtime cases and 55 of 56 unit cases. The
+sole unit failure was the phase fixture's old expected cost of two config reads
+for two rollouts in one home (6 instead of 3 injected wall-time units). After
+correcting that expectation, the exact phase file passed all three tests at
+11:11Z, zero skipped, exit 0. This supplies passing evidence for 58 distinct
+tests across those runs; the five-file invocation itself exited 1. The unchanged
+integration cases were not rerun merely to reconstruct their evidence.
+
+Both children used source `6934df03…`, Node `v25.9.0`, PIDs 2082455 and 2101864,
+and HEAD `50b2351ce345c810db05b6b363928596781ce81f`. The router's start/end HEAD
+stayed fixed, with local fixture edits. This verifies the named source and
+fixture contract; it does not inventory or freeze the entire import graph.
+Final scoped `lint:tsc` covered the source and both edited test files after the
+last test edit: zero type errors, exit 0. Scoped diff validation passed.
+
+| File | SHA-256 |
+|---|---|
+| `session-ingest.ts` | `6934df03e7d3da888bbf30fc63d1493f275bbf5a860edcd69ce965af6fb09871` |
+| runtime fixture | `6b5e1b460479ff96fffb878bf04d1fd2ead0c68e685933dd4c24a155384d54ce` |
+| phase test | `9e8db0391d189b5c404adf4d13ff6c977db7a78e321f18917b7d44a8309b563c` |
+
+Receipts:
+
+- `/tmp/p008-config-red-20261001-r1.log`: SHA
+  `21847bf051d8b46acec85bdd03c3f12926a9d3c378f7b9a72c85b4231a623959`;
+  selected case failed as intended, the other case was excluded.
+- `/tmp/p008-config-matrix-20261001-r1.log`: SHA
+  `49e67c653c10b8713743dc7a65a5c420a60d8aa34509c21183c7da2e6ac205e8`;
+  both runtime cases and 55 unit cases passed, old phase-cost assertion failed.
+- `/tmp/p008-config-phases-20261001-r2.log`: SHA
+  `13e3cdabac209f54d8cf6bdcdc2696ac1e95add675fb824b827ac08ccaf8f5c1`;
+  corrected phase file passed 3/3.
+- `/tmp/p008-config-types-20261001-r1.log`: SHA
+  `8d894dc2db15e6d56ad1ec73ad5f8d5c4efc322d90e66cbdd61e6bfc71220f54`;
+  final scoped typecheck passed with zero diagnostics.
+
+The root cause and recurrence guard are verified for discarded config reads.
+The detector gap was that the earlier fixture checked per-rollout metadata but
+did not exercise real backfill selection over distinct native IDs in one home;
+the maintained private-PG fixture now checks that behavior and sweep freshness.
+This is no measurement of production latency, long shared-host sweep cause,
+shared adoption, or sustained profiler overhead. D-006 remains binding, and
+**P-008/R-8 remains open**.

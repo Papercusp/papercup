@@ -13448,6 +13448,13 @@ impl App {
                 self.should_quit = true;
                 return Action::Quit;
             }
+            // A toast names Esc as its dismiss key and pui toasts never expire,
+            // so every Esc in the message box also clears it, on top of whatever
+            // that Esc does below (WI-10004807: the warning for an unknown
+            // `/command` stayed on screen until N or a tab switch).
+            if code == KeyCode::Esc {
+                self.toast = None;
+            }
             // pui-chat-first-ux P-004: the permission prompt is answered the way
             // Claude Code's is — y/1/Enter allow, n/2/Esc deny — whenever the
             // message box is empty. The prompt occupies the composer's slot, so
@@ -18314,6 +18321,10 @@ mod tests {
             Action::Render
         ));
         assert!(a.chat_input.is_empty(), "Esc dismisses the command");
+        assert!(
+            a.toast.is_none(),
+            "the same Esc dismisses the warning that names /nope (WI-10004807)"
+        );
         // Text with a space is a message, not a command.
         a.chat_input = "/tmp is full".into();
         a.chat_cursor = a.chat_input.len();
@@ -18322,6 +18333,25 @@ mod tests {
             Action::Render
         ));
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/tmp is full");
+    }
+
+    #[test]
+    fn chat_first_esc_in_an_empty_message_box_dismisses_the_toast() {
+        // WI-10004807: toasts have no expiry, so the message box's own Esc
+        // (the branch that leaves compose mode) must clear one too.
+        let mut a = chat_first_app();
+        a.chat_toast("warn", "something to dismiss".into());
+        assert!(a.chat_input.is_empty());
+        assert!(a.toast.is_some());
+        assert!(matches!(
+            a.on_key(KeyCode::Esc, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(
+            !a.chat_composing,
+            "the message box's own Esc branch handled the key"
+        );
+        assert!(a.toast.is_none(), "Esc dismissed the toast");
     }
 
     #[test]

@@ -12,10 +12,32 @@ const lane = { itemId: 'P-001', ownerId: 'su-worker', fleetSlug: 'alpha-fleet', 
 const fleet = { slug: 'alpha-fleet', controlState: 'active', leaderOwnerId: 'su-leader', leaderLive: true,
   liveMembers: 2, target: 2, claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'alpha' } } },
   launchTransaction: { transactionId: 'tx-existing', state: 'verified' } };
+const claimScenarios = ['expired-lease', 'leader-only', 'member-claim-and-lease', 'wrong-member-or-filter'] as const;
+type ClaimScenario = typeof claimScenarios[number];
+const claimControl = process.env.PAPERCUSP_PLACEMENT_CLAIM_CONTROL;
+if (claimControl && !claimScenarios.includes(claimControl as ClaimScenario)) {
+  throw new Error(`Unknown permanent placement claim control: ${claimControl}`);
+}
 function compile(source: Record<string, unknown> = {}) {
+  const observed = { claims: [lane], fleet, goalHolderOwnerIds: ['su-goal'], ...source };
+  // Reuse the lifecycle control protocol below: one faulty claim adapter per
+  // acceptance scenario, selected only in an intentional counterexample run.
+  // Literal assertions remain unchanged and the unresolved-plan calibration
+  // calls the production compiler directly, independently of this adapter.
+  if (claimControl === 'member-claim-and-lease') observed.claims = [];
+  if (claimControl === 'leader-only') {
+    observed.claims = observed.claims.map((claim) => claim.ownerId === fleet.leaderOwnerId
+      ? { ...claim, ownerId: lane.ownerId } : claim);
+  }
+  if (claimControl === 'wrong-member-or-filter') {
+    observed.claims = observed.claims.map((claim) => ({ ...claim, fleetSlug: fleet.slug }));
+  }
+  if (claimControl === 'expired-lease') {
+    observed.claims = observed.claims.map((claim) => ({ ...claim, expiresAt: lane.expiresAt }));
+  }
   return subject.compileGoalPlanPlacement({ plan: { harness: 'fixture', slug: 'alpha', ambiguousMatches: 1 },
     status: 'started', itemStatuses: ['wip'], actionableItemId: 'P-001', now: NOW,
-    source: { claims: [lane], fleet, goalHolderOwnerIds: ['su-goal'], ...source } });
+    source: observed });
 }
 
 const lifecycleScenarios = [

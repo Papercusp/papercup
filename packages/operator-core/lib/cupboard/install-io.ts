@@ -30,6 +30,7 @@ import {
 import type { InstallableUnitRef } from './resolve-and-install';
 import type { TreeDigestEntry } from '@papercusp/artifact-registry';
 import type { InstallSelfDescribingDeps } from './install-self-describing-core';
+import { fetchSelfDescribingArtifact } from './self-describing-release';
 
 /** Shallow `git clone --depth 1 url dest`. Rejects on non-zero exit. */
 export function gitCloneShallow(url: string, dest: string): Promise<void> {
@@ -102,7 +103,15 @@ export async function gitListTreeBlobs(cloneDir: string, sha: string, ref: strin
 
 /** The real git-backed deps every self-describing Cupboard installer shares. */
 export function cupboardGitDeps(): InstallSelfDescribingDeps {
-  return { cloneRepo: gitCloneShallow, fetchAtSha: gitFetchAtSha, listTreeBlobs: gitListTreeBlobs, tmpDir: tmpdir };
+  return {
+    cloneRepo: gitCloneShallow,
+    fetchAtSha: gitFetchAtSha,
+    listTreeBlobs: gitListTreeBlobs,
+    tmpDir: tmpdir,
+    // P-011: prefer the R2 origin's release bytes; the installer verifies their Merkle root.
+    fetchArtifact: (contentHash) =>
+      fetchSelfDescribingArtifact({ baseUrl: resolveCupboardBaseUrl(), contentHash }),
+  };
 }
 
 /** Drop the in-memory plugin-host + api-route caches so a new unit goes live. */

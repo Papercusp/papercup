@@ -3399,7 +3399,10 @@ export interface PromoterPrescreenSample {
 }
 
 export interface PromoterPrescreen {
-  /** Pending/unreviewed rows read (oldest-first) before selection. */
+  /**
+   * Pending/unreviewed rows EXAMINED, oldest-first with guard-blocked rows sorted last — the
+   * prefix the batch was chosen from (plus every self-blocked row seen), not the full over-read.
+   */
   window: number;
   /** Rows selected into this tick's batch. */
   selected: number;

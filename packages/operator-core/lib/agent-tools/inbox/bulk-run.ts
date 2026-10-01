@@ -66,7 +66,9 @@ import {
   BULK_INTAKE_DISPOSITIONS,
   BULK_INTAKE_DISPOSITION_OFFER,
   BULK_RECOMMENDATION_KINDS,
+  INTAKE_APPLY_ACTION_ID,
   INTAKE_ATTENTION_KINDS,
+  INTAKE_WORK_KINDS,
   intakeRecommendationFor,
   isIntakeAttentionKind,
   parseIntakeDecision,
@@ -77,6 +79,7 @@ import {
   type BulkResponsibility,
 } from '../../attention/bulk-dispositions';
 import { readStandingBulkAutomationPolicy, standingAutomationEligibility } from '../../attention/automation-policy';
+import { currentIntakeSourceRevision, executeIntakeDecision } from '../../attention/intake-promotion';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -343,6 +346,14 @@ export function terminalDependencies(input: { call: InnerCall; workspaceId?: str
         refId,
         reason: 'hook_cleared',
       });
+    },
+    // P-006 (D-013): the one execution path for a recorded intake decision. A
+    // refusal throws its actionable detail so the item is recorded as failed —
+    // never as resolved — and nothing was written.
+    async executeIntakeDecision({ sourceId, decision, runId, itemId }) {
+      const result = await executeIntakeDecision({ sourceId, decision, runId, itemId });
+      if (!result.ok) throw new Error(`intake ${decision.disposition} refused (${result.refusal}): ${result.detail}`);
+      return { terminal: true };
     },
     async deliverOwnerReply(args) {
       const result = await deliverInboxOwnerReply({
@@ -671,6 +682,23 @@ export const bulkRunAct = defineTool({
           // Re-read INSIDE the run-row authority window. A manifest read is
           // advisory; this is the last check before the irreversible effect.
           const actions = await liveActionsFor(row.itemId);
+          // P-006: applying a RECORDED intake decision is not a card button — its
+          // authority is the validated decision on this run row (plus the policy
+          // gate above), and the item must still be live.
+          if (args.actionId === INTAKE_APPLY_ACTION_ID) {
+            if (!row.intakeDecision) throw new Error(`${row.itemId} has no recorded intake decision to apply`);
+            if (!actions) throw new Error(`${row.itemId} is no longer live; its intake decision was not applied`);
+            const dispatched = await dispatchAttentionTerminalAction({
+              item,
+              actionId: args.actionId,
+              rationale,
+              intake: { decision: row.intakeDecision, runId },
+              deps: terminalDependencies({ call, workspaceId: run.workspaceId }),
+            });
+            if (!dispatched.resolved) throw new Error(`intake decision for ${row.itemId} did not take effect`);
+            actionDispatched = true;
+            return dispatched;
+          }
           const offered = actions?.find((action) => action.id === args.actionId);
           if (!offered) {
             throw new Error(
@@ -857,6 +885,17 @@ const IntakeDecisionArg = z
     missingInformation: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('retry: what must be supplied before the input can be decided'),
+    workKind: z.enum(INTAKE_WORK_KINDS).optional().describe('promote: fix → bug, build → change'),
+    acceptance: z
+      .object({
+        problem: softText(LIMITS.ANNOTATION).optional(),
+        evidence: z.array(softText(LIMITS.ANNOTATION)).max(20).optional(),
+        outcome: softText(LIMITS.ANNOTATION).optional(),
+        scope: softText(LIMITS.ANNOTATION).optional(),
+        completionCheck: softText(LIMITS.ANNOTATION).optional(),
+      })
+      .optional()
+      .describe('promote/investigate: the acceptance contract you judged; all five fields are needed to execute'),
   })
   .describe(
     'intake inputs only: promote | merge (targetRef) | investigate | retain | reject | retry (missingInformation), each with a reason',
@@ -879,7 +918,14 @@ export type IntakeDecisionArgs = z.infer<typeof IntakeDecisionArg>;
  */
 export function applyIntakeDecision(
   report: BulkOutcomeReport,
-  input: { kind: string | null; intakeDecision?: IntakeDecisionArgs; decidedBy: string; now?: Date },
+  input: {
+    kind: string | null;
+    intakeDecision?: IntakeDecisionArgs;
+    decidedBy: string;
+    now?: Date;
+    /** P-006 — the source revision being judged, stamped onto the decision. */
+    sourceRevision?: string | null;
+  },
 ): BulkOutcomeReport {
   if (!isIntakeAttentionKind(input.kind)) {
     if (input.intakeDecision) {
@@ -900,7 +946,11 @@ export function applyIntakeDecision(
       `${report.itemId}: an intakeDecision is reported with outcome "recommended" (got "${report.outcome}")`,
     );
   }
-  const parsed = parseIntakeDecision(input.intakeDecision, { decidedBy: input.decidedBy, now: input.now });
+  const parsed = parseIntakeDecision(input.intakeDecision, {
+    decidedBy: input.decidedBy,
+    now: input.now,
+    sourceRevision: input.sourceRevision ?? null,
+  });
   if (!parsed.ok) throw new Error(`${report.itemId}: ${parsed.error}`);
   const decision = parsed.decision;
   const projected = intakeRecommendationFor(decision);
@@ -1175,7 +1225,13 @@ export const bulkRunReport = defineTool({
     // typed intake decision or an explicit actionable failure. The run's own
     // snapshot says which rows are intake inputs; ids outside the snapshot are
     // left to the existing `ignored` path below.
-    const kindById = new Map((await getRunItems(runId)).map((row) => [row.itemId, row.kind] as const));
+    const runRows = await getRunItems(runId);
+    const kindById = new Map(runRows.map((row) => [row.itemId, row.kind] as const));
+    // P-006: an intake decision is bound to the source revision judged NOW, so an
+    // edit made before it is executed makes the promotion refuse.
+    const intakeSourceById = new Map(
+      runRows.map((row) => [row.itemId, typeof row.ref.issueId === 'string' ? row.ref.issueId : null] as const),
+    );
 
     // Validate each proposed action id against what the item ACTUALLY offers,
     // before anything is written. One invocation gets one canonical snapshot;
@@ -1217,12 +1273,17 @@ export const bulkRunReport = defineTool({
           retryCondition: clampText(r.retryCondition, LIMITS.ANNOTATION)?.trim() ?? null,
           intakeDecision: null,
         };
+        const intakeKind = kindById.get(r.itemId) ?? null;
         accepted.push(
           kindById.has(r.itemId)
             ? applyIntakeDecision(base, {
-                kind: kindById.get(r.itemId) ?? null,
+                kind: intakeKind,
                 intakeDecision: r.intakeDecision,
                 decidedBy: identity.ownerId,
+                sourceRevision:
+                  r.intakeDecision && isIntakeAttentionKind(intakeKind)
+                    ? await currentIntakeSourceRevision(intakeSourceById.get(r.itemId) ?? null)
+                    : null,
               })
             : base,
         );

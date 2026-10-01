@@ -9,10 +9,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   cacheVerifyArgs,
   lockfileDepFlagOnlyChanges,
+  main,
   publishDependencyGeneration,
   readLockfileText,
   restoreScopedFlagOnlyLockfileRewrite,
@@ -26,6 +28,7 @@ import {
   withPackageCacheReadLease,
   verificationScopeForNpmArgs,
   verifyNpmCache,
+  verifyNpmCacheExclusive,
 } from "./npm-install-safe.mjs";
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from "./lib/fs-mutex.mjs";
 
@@ -594,4 +597,169 @@ test("nested exec-under-lock readers do not reacquire the writer mutex", async (
     }
     rmSync(repoRoot, { recursive: true, force: true });
   }
+});
+
+// WI-10004430: `npm cache verify` ends with `rm -rf <cache>/tmp`, so it must never run
+// while another checkout reifies from the same user-level cache. The repo-keyed install
+// mutex cannot provide that (different checkouts hash to different locks); only the
+// host-wide package-cache lock can.
+
+function setEnv(values) {
+  const previous = {};
+  for (const [key, value] of Object.entries(values)) {
+    previous[key] = process.env[key];
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
+
+function holdPackageCacheReader() {
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  let release;
+  const mayFinish = new Promise((resolve) => {
+    release = resolve;
+  });
+  const done = withPackageCacheReadLease(async () => {
+    started();
+    await mayFinish;
+  });
+  return { ready, release, done };
+}
+
+test("install:safe verifies the npm cache with the package cache held exclusively, then reifies under a shared lease", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-cache-order-"));
+  const binDir = join(root, "bin");
+  const repoRoot = join(root, "repo");
+  const npmLog = join(root, "npm.log");
+  mkdirSync(binDir);
+  mkdirSync(repoRoot);
+  // A fake npm that records, for each call, whether the host-wide package-cache WRITER
+  // lock exists and how many READER leases are held at that instant.
+  writeFileSync(
+    join(binDir, "npm"),
+    [
+      "#!/usr/bin/env bash",
+      'L="$PAPERCUSP_FS_MUTEX_LOCK_DIR"',
+      'w=no; [ -d "$L/package-manager-cache.lock" ] && w=yes',
+      'r=$(ls -A "$L/package-manager-cache.readers" 2>/dev/null | wc -l | tr -d " ")',
+      'echo "$1 writer=$w readers=$r" >> "$FAKE_NPM_LOG"',
+      "exit 0",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const restoreEnv = setEnv({
+    PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "locks"),
+    PATH: `${binDir}:${process.env.PATH ?? ""}`,
+    FAKE_NPM_LOG: npmLog,
+    PAPERCUSP_SKIP_DEP_VERIFY: "1",
+    PAPERCUSP_SKIP_DEP_GENERATION: "1",
+  });
+  try {
+    // NPM_INSTALL_SAFE_SUBJECT lets scripts/mutation-probe.sh point this guard at a copy.
+    const subject = process.env.NPM_INSTALL_SAFE_SUBJECT;
+    const runMain = subject
+      ? (await import(pathToFileURL(subject).href)).main
+      : main;
+    assert.equal(await runMain(["--repo-root", repoRoot, "install"]), 0);
+    assert.deepEqual(readFileSync(npmLog, "utf8").trim().split("\n"), [
+      "cache writer=yes readers=0",
+      "install writer=no readers=1",
+    ]);
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verifyNpmCacheExclusive waits for a concurrent install's cache lease before verifying", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-verify-wait-"));
+  const restoreEnv = setEnv({ PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "locks") });
+  const reader = holdPackageCacheReader();
+  try {
+    await reader.ready;
+    let verifyEntered = false;
+    let waiting = false;
+    const verifying = verifyNpmCacheExclusive({
+      verify: () => {
+        verifyEntered = true;
+        return 0;
+      },
+      waitMs: 5_000,
+      log: (line) => {
+        if (line.includes("waiting for exclusive use")) waiting = true;
+      },
+    });
+    for (let attempt = 0; attempt < 400 && !waiting; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(waiting, true);
+    assert.equal(verifyEntered, false);
+
+    reader.release();
+    await reader.done;
+    assert.equal(await verifying, 0);
+    assert.equal(verifyEntered, true);
+  } finally {
+    reader.release();
+    await reader.done.catch(() => {});
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verifyNpmCacheExclusive skips verify instead of failing the install when the cache stays busy", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-verify-skip-"));
+  const restoreEnv = setEnv({ PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, "locks") });
+  const reader = holdPackageCacheReader();
+  try {
+    await reader.ready;
+    const lines = [];
+    let verifyCalled = false;
+    const status = await verifyNpmCacheExclusive({
+      verify: () => {
+        verifyCalled = true;
+        return 1;
+      },
+      waitMs: 150,
+      log: (line) => lines.push(line),
+    });
+    assert.equal(status, 0);
+    assert.equal(verifyCalled, false);
+    assert.ok(
+      lines.some((line) => line.startsWith("NPM_INSTALL_SAFE_CACHE_VERIFY_SKIPPED")),
+      `expected a loud skip line, got: ${JSON.stringify(lines)}`,
+    );
+  } finally {
+    reader.release();
+    await reader.done.catch(() => {});
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verifyNpmCacheExclusive reports verify's own failure instead of treating it as a skip", async () => {
+  const acquire = async (_name, fn) => fn();
+  assert.equal(
+    await verifyNpmCacheExclusive({ verify: () => 3, acquire, log: () => {} }),
+    3,
+  );
+  await assert.rejects(
+    verifyNpmCacheExclusive({
+      verify: () => {
+        throw new Error("verify crashed");
+      },
+      acquire,
+      log: () => {},
+    }),
+    /verify crashed/,
+  );
 });

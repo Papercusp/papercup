@@ -1021,6 +1021,62 @@ const ACCEPT_SWEEP = '--accept-sweep-race';
 describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   beforeEach(() => { git(dir, ['init', '-q']); });
 
+  it("uses the host token and fails an invalid in-tree auth preflight before baseline", () => {
+    const home = join(dir, "test-home");
+    const hostToken = join(home, ".papercusp", "superuser-token");
+    const isolatedHome = join(dir, "isolated", ".papercusp");
+    const bin = join(dir, "bin");
+    const ptoolLog = join(dir, "ptool-calls");
+    const baselineMarker = join(dir, "baseline-started");
+    mkdirSync(join(home, ".papercusp"), { recursive: true });
+    mkdirSync(isolatedHome, { recursive: true });
+    mkdirSync(bin);
+    writeFileSync(hostToken, "host-token");
+    writeFileSync(join(isolatedHome, "superuser-token"), "workspace-token");
+    writeFileSync(join(bin, "ptool"), [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'tool=""',
+      "for arg in \"$@\"; do",
+      "  case \"$arg\" in coord:presence|locks:queue|locks:heartbeat) tool=\"$arg\" ;; esac",
+      "done",
+      "echo \"$tool|${PAPERCUSP_SID:-}|${PAPERCUSP_MCP_TOKEN_FILE:-}\" >> \"${PROBE_PTOOL_LOG}\"",
+      "echo \"mcp_auth_failed: superuser_invalid_bearer\" >&2",
+      "exit 1",
+    ].join("\n"), { mode: 0o700 });
+
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    env.PATH = bin + ":" + (process.env.PATH ?? "");
+    env.HOME = home;
+    env.PAPERCUSP_HOME = isolatedHome;
+    env.PAPERCUSP_SID = "probe-session";
+    env.PAPERCUSP_WORKSPACE = "probe-workspace";
+    env.PAPERCUSP_TEST_RUN_HARNESS = "probe-harness";
+    env.MUTATION_PROBE_WINDOW_MAX_SEC = "60";
+    env.PROBE_PTOOL_LOG = ptoolLog;
+    delete env.PAPERCUSP_MCP_TOKEN_FILE;
+
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > "' + baselineMarker
+      + '"; fi; grep -q "^beta$" {}';
+    const { code, out } = runProbeIO([
+      "--in-tree",
+      "--sweep-lock-held",
+      "--file",
+      subject,
+      "--mutate",
+      "s/beta/BETA/",
+      "--test",
+      guard,
+    ], env);
+
+    expect(code).toBe(2);
+    expect(out).toContain("mcp_auth_failed: superuser_invalid_bearer");
+    expect(out).toContain("could not read this session's Papercusp owner identity");
+    expect(existsSync(baselineMarker)).toBe(false);
+    expect(read()).toBe(ORIGINAL);
+    expect(readFileSync(ptoolLog, "utf8").trim()).toBe("coord:presence|probe-session|" + hostToken);
+  });
+
   /**
    * EI-24720263797874266: the verified-restore record the testing:run fence reads, so a
    * 'mutation probe' lock that outlives the dirty window stops fencing unrelated tests.

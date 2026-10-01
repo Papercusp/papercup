@@ -1425,6 +1425,10 @@ describe('work-item admission promoter (real Postgres)', () => {
       sql: db.sql,
       llmCall: judgementCall('r-finding-merge'),
       now: () => NOW,
+      // A TARGETED run keeps the historical read, so the model judges the pair and the
+      // persistence guard itself refuses the write. A scheduled tick never asks (WI-10004724;
+      // see 'drops a pair whose counterpart is permanently unresolvable' below).
+      targetItemIds: ['WI-canonical', 'WI-loser'],
     });
     expect(result).toMatchObject({
       promoted: 0,
@@ -1437,6 +1441,132 @@ describe('work-item admission promoter (real Postgres)', () => {
       SELECT status FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
     expect(loser?.status).toBe('open');
   }, 60_000);
+
+  describe('scheduled-tick prescreen (WI-10004724)', () => {
+    const distinctCall = () =>
+      vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'fixture distinct' })) },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      });
+    const promptKeys = (call: ReturnType<typeof distinctCall>, index = 0) =>
+      [...call.mock.calls[index]![0].messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+    const admissionOf = async (id: string) =>
+      (await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]?.admission;
+
+    it('skips an older self-blocked re-review row and refills the batch with the row behind it', async () => {
+      // Before the prescreen the oldest row took the only slot every tick, was refused
+      // (review-gated), and the movable row behind it was never reached.
+      await seedItem({
+        id: 'WI-review-gated',
+        title: 'Old re-review row',
+        admission: 'unreviewed',
+        createdAtMs: NOW - 90_000,
+        vector: '[0,1,0]',
+        payload: {
+          agentReview: { status: 'revision-requested', submittedBy: 'su-author', ledgerIdeaId: 'idea-r', round: 1 },
+        },
+      });
+      await seedItem({ id: 'WI-movable', title: 'Fresh distinct filing', createdAtMs: NOW - 10_000, vector: '[0,0,1]' });
+      const modelCall = distinctCall();
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'prescreen-self-blocked',
+        sql: db.sql,
+        llmCall: modelCall,
+        batchSize: 1,
+        now: () => NOW,
+      });
+
+      expect(modelCall).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ batchSize: 1, promoted: 1, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ selected: 1, selfBlocked: 1, deferred: 0 });
+      expect(result.prescreen?.samples).toContainEqual({
+        itemId: 'WI-review-gated',
+        class: 'self-blocked',
+        reason: 'review-gated',
+        blockedBy: null,
+      });
+      expect(await admissionOf('WI-movable')).toBe('admitted');
+      expect(await admissionOf('WI-review-gated')).toBe('unreviewed');
+      const [run] = await db.sql<Array<{ prescreen: { selfBlocked: number } }>>`
+        SELECT detail->'prescreen' AS prescreen FROM harness_shared.admission_runs WHERE id = 'prescreen-self-blocked'`;
+      expect(run?.prescreen.selfBlocked).toBe(1);
+    }, 60_000);
+
+    it('drops a pair whose counterpart is permanently unresolvable and promotes without a model call', async () => {
+      await seedItem({ id: 'WI-remote-twin', admission: 'admitted', origin: 'remote', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-local', admission: 'pending', createdAtMs: NOW - 10_000 });
+      const modelCall = distinctCall();
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'prescreen-unresolvable',
+        sql: db.sql,
+        llmCall: modelCall,
+        now: () => NOW,
+      });
+
+      expect(modelCall).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ flaggedPairs: 0, promoted: 1, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ unresolvablePairs: 1, protectedPairs: 0, forcedHolds: 0 });
+      expect(await admissionOf('WI-local')).toBe('admitted');
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    }, 60_000);
+
+    it('defers a row whose only twin is protected, holds one with a movable twin, and releases both when the protection lifts', async () => {
+      // alpha: the pending row's ONLY twin is claimed → deferred (no slot, no model).
+      await seedItem({ id: 'WI-alpha-claimed', title: 'alpha finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 50_000 });
+      await seedItem({ id: 'WI-alpha-new', title: 'alpha finding', vector: '[1,0,0]', createdAtMs: NOW - 10_000 });
+      // beta: one claimed twin + one movable twin → judged on the movable pair, then HELD.
+      await seedItem({ id: 'WI-beta-claimed', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', takenBy: 'su-holder', createdAtMs: NOW - 40_000 });
+      await seedItem({ id: 'WI-beta-free', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', createdAtMs: NOW - 30_000 });
+      await seedItem({ id: 'WI-beta-new', title: 'beta finding', vector: '[0,0,1]', createdAtMs: NOW - 5_000 });
+
+      const first = distinctCall();
+      const tick1 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-1', sql: db.sql, llmCall: first, now: () => NOW,
+      });
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(promptKeys(first)).toEqual(['WI-beta-free::WI-beta-new']);
+      expect(tick1).toMatchObject({ promoted: 0, held: 1, guardRefusals: [] });
+      expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
+      expect(await admissionOf('WI-alpha-new')).toBe('pending');
+      expect(await admissionOf('WI-beta-new')).toBe('pending');
+      expect(
+        await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications WHERE a = 'WI-beta-free' AND b = 'WI-beta-new'`,
+      ).toEqual([{ verdict: 'distinct' }]);
+
+      // Unchanged state: both rows are now deferred and the tick spends NO model time.
+      const second = distinctCall();
+      const tick2 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-2', sql: db.sql, llmCall: second, now: () => NOW,
+      });
+      expect(second).not.toHaveBeenCalled();
+      expect(tick2).toMatchObject({ batchSize: 0, promoted: 0, held: 0 });
+      expect(tick2.prescreen).toMatchObject({ selected: 0, deferred: 2 });
+
+      // The claims end: nothing is memoized, so both rows re-enter and are judged at once.
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, updated_ts = updated_ts + 1
+                    WHERE feature_id IN ('WI-alpha-claimed', 'WI-beta-claimed')`;
+      const third = distinctCall();
+      const tick3 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-3', sql: db.sql, llmCall: third, now: () => NOW,
+      });
+      expect(promptKeys(third).sort()).toEqual(['WI-alpha-claimed::WI-alpha-new', 'WI-beta-claimed::WI-beta-new']);
+      expect(tick3).toMatchObject({ promoted: 2, held: 0 });
+      expect(await admissionOf('WI-alpha-new')).toBe('admitted');
+      expect(await admissionOf('WI-beta-new')).toBe('admitted');
+    }, 90_000);
+  });
 
   it('allows a terminal canonical with applicable completion evidence', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000 });
@@ -1460,22 +1590,37 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(loser).toEqual({ status: 'dropped', canonical: 'WI-canonical' });
   }, 60_000);
 
-  it('refuses a merge endpoint that already participates in an active dependency', async () => {
+  it('never merges or judges a loser that already participates in an active dependency', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
     await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
     await db.sql`
       INSERT INTO harness_shared.work_item_deps
         (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
       VALUES (${WS}, 'issue', 'WI-dependent', 'issue', 'WI-loser', 'blocks', 'settled')`;
+    const modelCall = judgementCall('r-finding-merge');
     const result = await runWorkItemAdmissionPromoter({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'promoter-active-dependency',
       sql: db.sql,
-      llmCall: judgementCall('r-finding-merge'),
+      llmCall: modelCall,
       now: () => NOW,
     });
-    expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'active-dependency' }] });
+    // The same endpointProtection branch that refuses the write at persistence now skips the
+    // row before any model call (WI-10004724). The persist-time refusal for a dependency that
+    // appears AFTER judging is covered by 'invalidates the judgement when an incoming dependency…'.
+    expect(modelCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ batchSize: 0, promoted: 0, merged: 0, held: 0, guardRefusals: [] });
+    expect(result.prescreen).toMatchObject({ selfBlocked: 1 });
+    expect(result.prescreen?.samples).toContainEqual({
+      itemId: 'WI-loser',
+      class: 'self-blocked',
+      reason: 'active-dependency',
+      blockedBy: null,
+    });
+    const [loser] = await db.sql<Array<{ status: string; admission: string }>>`
+      SELECT status, admission FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
+    expect(loser).toEqual({ status: 'open', admission: 'pending' });
     expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
   }, 60_000);
 
