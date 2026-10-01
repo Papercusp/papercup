@@ -376,7 +376,8 @@ export function selectOrientationImprovementTriage(
  * read, never by hand-writing a floor query here.
  */
 /**
- * Evidence that this agent's MCP tool surface loaded EMPTY (EI-21308269358666878).
+ * Observed hook activity with no agent-origin calls since the context epoch
+ * (EI-21308269358666878). This is an activity gap, not a registration verdict.
  *
  * A hook/agent-origin call gap describes observed activity only. Zero
  * agent-origin calls cannot distinguish a missing client tool list from an idle
@@ -384,9 +385,9 @@ export function selectOrientationImprovementTriage(
  * signal here, so this observation is informational and must not trigger a
  * restart or heal.
  *
- * ⚠ A raw invocation COUNT does not work and was tried first: the sanctioned
- * `scripts/mcp-call.mjs` fallback and the hooks both write rows, so a toolless
- * agent still logs plenty of invocations. Only the split separates them.
+ * ⚠ A raw invocation COUNT does not distinguish these origins: the sanctioned
+ * `scripts/mcp-call.mjs` fallback and the hooks both write rows. The split says
+ * which origin was observed, but not why agent-origin calls are absent.
  *
  * Present means only that no agent-origin call was observed after many hooks.
  * It does not establish the client tool-list registration state.
@@ -800,31 +801,34 @@ const FACT_DISPLAY_CAP = 2;
 const FACT_KEY_CHARS = 38;
 const IMPROVEMENT_TRIAGE_WINDOW_LIMIT = 100;
 /**
- * Hook-origin calls required before the toolless warning fires (EI-21308269358666878).
+ * Hook-origin calls required before the activity-gap note renders (EI-21308269358666878).
  *
  * MEASURED, not guessed. Among active agent owners with ZERO agent-origin calls since
  * their context epoch, the hook-call distribution has a hard cliff — 355, 96, then 12,
  * 8, 8, 5, 4, 3, 2… — so every threshold in 20..90 selects the same set, and 20 keeps
  * margin above the low-activity noise floor while still firing within a few turns of
- * onset. Live 6h sample: 1 flagged of 243 active agent owners (0.41%).
+ * onset. This is an activity observation, not proof of client registration. Live 6h
+ * sample: 1 flagged of 243 active agent owners (0.41%).
  */
 export const TOOLLESS_HOOK_THRESHOLD = 20;
 
-/** One owner whose call-origin split proves its Papercusp MCP surface loaded
- * empty. Kept beside OrientationToolSurface so every consumer uses the same
- * units, epoch anchor, threshold, and deliberately-unscoped invocation query. */
+/** One owner with hook activity and no observed agent-origin calls since the
+ * context epoch. This does not prove why agent calls are absent. Kept beside
+ * OrientationToolSurface so consumers share the query and its units. */
 export interface OrientationToolSurfaceOwner extends OrientationToolSurface {
   ownerId: string;
 }
 
 /**
- * Read the call-origin split for one or many owners in one bounded SQL shape.
+ * Read the hook/agent activity gap for one or many owners in one bounded SQL shape.
  *
  * This is the shared source of truth for both the turn-start warning and the
  * mcp-dark watchdog's recovery consumer. Keeping the query here prevents the
  * two from drifting on the three load-bearing constraints above: anchor on the
  * current context epoch, require zero agent-origin calls, and NEVER filter by
- * harness/workspace (workspace-global tools legitimately record `*`).
+ * harness/workspace (workspace-global tools legitimately record `*`). The
+ * resulting gap is informational; it does not establish client registration or
+ * a transport failure.
  */
 export async function readOrientationToolSurfaces(
   sql: Sql,
@@ -3506,10 +3510,10 @@ export interface OrientationDeps {
   /** KEYS of never-drop standing facts in this agent's scopes (workspace + owner). */
   neverDropFacts: (ownerId: string, workspaceId: string) => Promise<string[]>;
   /**
-   * Evidence that this agent's MCP tool surface loaded EMPTY, or null for
-   * healthy/unreadable. Takes only `ownerId`: the detector deliberately scopes by
-   * NOTHING else (see the default reader for why a workspace/harness predicate
-   * manufactures false positives here).
+   * Observed hook/agent activity gap, or null when no gap meets its evidence
+   * floor. This does not establish client registration. Takes only `ownerId`:
+   * the reader deliberately scopes by NOTHING else (workspace-global tools
+   * legitimately record `*`).
    */
   toolSurface: (ownerId: string) => Promise<OrientationToolSurface | null>;
   /**
