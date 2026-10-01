@@ -181,6 +181,9 @@ function runPipeline(failDbs: readonly string[]) {
       `dump_one() { printf 'DUMP_ATTEMPT %s\\n' "$1"; case " $STUB_FAIL_DBS " in *" $1 "*) return 1 ;; esac; return 0; }`,
       dumpLoopBlock(),
       `START=$(date +%s); DUMP='${dump}'; STATUS="$DUMP/STATUS.json"; ODDS_OK=false; ODDS_NOTE=''; PSQL=false`,
+      // WI-10004603 state set BETWEEN the dump loop and the tail (neither block
+      // carries it). Without these `set -u` aborts before STATUS.json is written.
+      'TIER_NOT_DUE=(); PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC=9000',
       tailBlock(),
     ].join('\n');
     const run = spawnSync('bash', ['-c', harness], {
