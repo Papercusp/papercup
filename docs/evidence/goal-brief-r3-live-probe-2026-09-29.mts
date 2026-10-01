@@ -156,9 +156,14 @@ const chains = clean.map((d) => {
   // delivered plan (agent_fleets.owner / last_launch_transaction.launcherOwnerId) and that fleet's leader + members.
   // Work on the plan by an unrelated fleet's leaseholders is not caused by this brief (measured 2026-10-01: goal
   // 60d3a8's log-perf items were leased by nonp2p-feature-drain members, WI-10004479), so it is reported, not counted.
-  const holder = lit(d.owner), planLike = d.planSlug ? lit(`%${d.planSlug.slice(0, 24)}%`) : 'NULL';
+  // D-038: a fleet works the delivered plan iff its claim spec has a plan arm for it (the D-033 binding). Its slug is
+  // not evidence: the holder named cache-efficiency-and-accounting's fleet cache-efficiency-accounting-fleet.
+  const holder = lit(d.owner), planSlug = lit(d.planSlug ?? '');
   const holderFleets = `SELECT f.fleet_slug, f.leader_owner_id, f.last_launch_transaction AS tx, f.created_at
-      FROM harness_shared.agent_fleets f WHERE f.workspace_id = ${lit(WS)} AND f.fleet_slug ILIKE ${planLike}
+      FROM harness_shared.agent_fleets f WHERE f.workspace_id = ${lit(WS)}
+        AND EXISTS (SELECT 1 FROM harness_shared.cup_claim_specs s WHERE s.workspace_id = f.workspace_id
+          AND s.bee_id = 'fleet:' || f.fleet_slug
+          AND jsonb_path_exists(s.spec, '$.view.filter.** ? (@.field == "plan" && @.value == $p)', jsonb_build_object('p', ${planSlug})))
         AND (f.owner = ${holder} OR f.last_launch_transaction->>'launcherOwnerId' = ${holder})`;
   const attributable = `(SELECT ${holder} UNION SELECT leader_owner_id FROM (${holderFleets}) hf WHERE leader_owner_id IS NOT NULL
       UNION SELECT jsonb_array_elements_text(coalesce(tx->'openedMemberIds', '[]'::jsonb)) FROM (${holderFleets}) hf)`;
