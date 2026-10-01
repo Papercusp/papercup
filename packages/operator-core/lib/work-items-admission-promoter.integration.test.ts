@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages } from './harness/improvements/agent-review-policy';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -2449,7 +2450,7 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(projection.flow).toMatchObject({
       arrivals: 8,
       terminalInWindow: 1,
-      verifiedCompletionsInWindow: 1,
+      verifiedCompletionsInWindow: 0,
       retainedReopenEventsInWindow: 1,
       reopenedItemsInWindow: 1,
       readyExpectedCost: { coveredRows: 1, totalRows: 2, pricedSubtotalCents: 250, cents: null },
@@ -2471,6 +2472,48 @@ describe('work-item admission promoter (real Postgres)', () => {
         projection.headline.ready +
         projection.headline.unknown,
     ).toBe(projection.headline.population);
+  });
+
+  it('partitions accepted work once and matches the shared classifier without counting legacy or duplicate closes as delivery', async () => {
+    const title = 'Repair trailing token';
+    const summary = 'Parser loses the final token';
+    const sealed = sealImplementationAcceptance({
+      source: { kind: 'bug', title, summary },
+      proposal: { problem: summary, evidence: ['parser.test.ts failure'], outcome: 'Preserve trailing token', scope: 'Parser only', completionCheck: 'Regression passes' },
+      authority: { kind: 'agent-review', reviewer: 'reviewer', submittedBy: 'author', round: 1 },
+      reason: 'independent reviewer accepted', acceptedAt: '2026-08-26T11:00:00.000Z',
+    });
+    if (!sealed.ok) throw new Error('fixture must seal');
+    const ready = createImplementationReadiness({ status: 'ready', source: 'agent-review', reason: 'accepted', updatedAt: '2026-08-26T11:00:00.000Z', evidence: { acceptance: sealed.contract } });
+    const rows = [
+      { id: 'ready', status: 'open', payload: { implementationReadiness: ready } },
+      { id: 'active', status: 'open', assignee: 'worker', payload: { implementationReadiness: ready } },
+      { id: 'blocked', status: 'open', payload: { implementationReadiness: ready, _claimHold: true } },
+      { id: 'failed-retryable', status: 'failed', payload: { implementationReadiness: ready } },
+      { id: 'delivered', status: 'done', completionAuthority: 'committed', payload: { implementationReadiness: ready } },
+      { id: 'duplicate', status: 'deprecated', completionAuthority: 'committed', payload: { implementationReadiness: ready } },
+      { id: 'legacy-close', status: 'done', completionAuthority: 'committed', payload: {} },
+      { id: 'candidate', status: 'open', payload: { implementationReadiness: { ...ready, evidence: {} } } },
+      { id: 'unknown', status: 'open', payload: {} },
+      { id: 'stale', status: 'open', payload: { implementationReadiness: ready }, title: 'Changed problem' },
+    ];
+    for (const row of rows) await seedItem({
+      id: row.id, title: row.title ?? title, summary, itemKind: 'bug', status: row.status,
+      takenBy: row.assignee, payload: row.payload, authority: row.completionAuthority,
+      closedTs: ['done','deprecated'].includes(row.status) ? NOW - 1000 : null, admission: 'admitted',
+    });
+    await seedItem({ id: 'foreign-workspace', title, summary, payload: { implementationReadiness: ready }, workspaceId: 'other' });
+    await seedItem({ id: 'foreign-harness', title, summary, payload: { implementationReadiness: ready }, harness: 'other' });
+    await seedItem({ id: 'observation', payload: { lane: 'observation' }, admission: 'admitted' });
+    await db.sql`UPDATE harness_shared.work_items SET lane = 'observation' WHERE feature_id = 'observation'`;
+    const actual = await readWorkItemReadinessProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, now: () => NOW });
+    const expected = countWorkItemPresentationStages(rows.map(row => ({ ...row, kind: 'bug', title: row.title ?? title, summary })));
+    expect(actual.presentation).toEqual({ ...expected, writer: 'readWorkItemReadinessProjection', classifier: 'deriveWorkItemPresentationStage' });
+    expect(actual.presentation?.population).toBe(actual.headline.population);
+    expect(Object.values(actual.presentation!.counts).reduce((a, b) => a + b, 0)).toBe(rows.length);
+    expect(actual.presentation).toMatchObject({ remainingBugs: 4, verifiedCompletions: 1, counts: { 'terminal-other': 2, candidate: 2, observation: 0 } });
+    expect(actual.flow.verifiedCompletionsInWindow).toBe(1);
+    expect(actual.scope).toMatchObject({ workspaceId: WS, harnessSlug: HARNESS, population: 'root issue-family rows excluding observation-lane records' });
   });
 
   it('keeps workspace-wide readiness set-based, primary-key indexable, and payload-narrow', () => {
