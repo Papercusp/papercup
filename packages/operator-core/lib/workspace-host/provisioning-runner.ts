@@ -44,7 +44,10 @@ import {
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
-import type { GcpWorkspaceHostInventoryRequest } from './gcp-provider';
+import {
+  resolveGcpWorkspaceHostManagedNetworkInventoryNames,
+  type GcpWorkspaceHostInventoryRequest,
+} from './gcp-provider';
 import type { AwsWorkspaceHostInventoryRequest } from './aws-safety';
 import { findWorkspaceHostCensusProfile, workspaceHostCensusProfile } from './census-profiles';
 import { workspaceHostSpecColumns } from './desired-spec-host-row';
@@ -1511,22 +1514,33 @@ function deterministicInventoryRequest(
   target: StoredWorkspaceHostDestroyTarget,
   destroyTargets: readonly WorkspaceHostResourceRef[],
 ): GcpWorkspaceHostInventoryRequest {
-  const names = (kind: string): string[] =>
+  const registeredNames = (kind: string): string[] =>
     destroyTargets
       .filter((resource) => resource.kind === kind)
       .map((resource) => resource.providerId)
       .sort();
-  const networks = names('network');
-  const subnetworks = names('subnetwork');
-  const firewalls = names('firewall');
-  const routers = names('router');
+  const deterministicKinds = ['network', 'subnetwork', 'firewall', 'router', 'nat'];
+  const needsDesiredIdentities = deterministicKinds.some((kind) => registeredNames(kind).length === 0);
+  const desiredNames = needsDesiredIdentities
+    ? resolveGcpWorkspaceHostManagedNetworkInventoryNames(target.desired)
+    : undefined;
+  const names = (kind: string, desired: readonly string[] = []): string[] =>
+    [...new Set([...registeredNames(kind), ...desired])].sort();
+  const networks = names('network', desiredNames?.networks);
+  const subnetworks = names('subnetwork', desiredNames?.subnetworks);
+  const firewalls = names('firewall', desiredNames?.firewalls);
+  const routers = names('router', desiredNames?.routers);
+  const inferredRouterName = destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? routers[0] ?? '';
   const natResources = destroyTargets.filter((resource) => resource.kind === 'nat');
-  const nats = natResources
-    .map((resource) => ({
-      routerName: destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? '',
-      name: resource.providerId,
-    }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+  const natsByIdentity = new Map<string, { routerName: string; name: string }>();
+  for (const resource of natResources) {
+    const entry = { routerName: inferredRouterName, name: resource.providerId };
+    natsByIdentity.set(`${entry.routerName}:${entry.name}`, entry);
+  }
+  for (const entry of desiredNames?.nats ?? []) {
+    natsByIdentity.set(`${entry.routerName}:${entry.name}`, { ...entry });
+  }
+  const nats = [...natsByIdentity.values()].sort((left, right) => left.name.localeCompare(right.name));
   const missing = [
     ['network', networks],
     ['subnetwork', subnetworks],
@@ -1842,8 +1856,10 @@ export async function runWorkspaceHostDestroy(
   if (target.observedState === 'absent') {
     throw new WorkspaceHostProvisioningRequestError(['workspace host is already absent']);
   }
-  if (target.resources.length === 0) {
-    throw new WorkspaceHostProvisioningRequestError(['workspace host has no registered provider resource population']);
+  if (target.resources.length === 0 && input.canary) {
+    throw new WorkspaceHostProvisioningRequestError([
+      'canary destroy requires a non-empty registered resource population for completion evidence',
+    ]);
   }
   // A destroy is only as safe as its terminal census, so it is offered exactly for the providers that
   // have a controller-independent census profile (GCP, AWS), and only when the stored host, its desired
@@ -1892,6 +1908,11 @@ export async function runWorkspaceHostDestroy(
   // the host row to it, so `target.desiredRevision + 1` would name the NEXT revision: a different
   // plan identity than the persisted operation row, refused by beginOperation as a stale fence.
   const persistedPlan = (await baseStore.readOperationPlan(workspaceId, operationId)) as { planId?: unknown } | null;
+  const emptyPopulationCensusOnly =
+    target.resources.length === 0 &&
+    (persistedPlan === null ||
+      (typeof persistedPlan.planId === 'string' &&
+        persistedPlan.planId.startsWith('workspace-host-empty-destroy-census:')));
   const desiredRevision =
     input.desiredRevision ?? workspaceHostPlanDesiredRevision(persistedPlan?.planId) ?? target.desiredRevision + 1;
   const store = controllerDestroyStore(baseStore, controllerAuthority, operationId);
@@ -1917,19 +1938,29 @@ export async function runWorkspaceHostDestroy(
   } as const;
   let plan: WorkspaceHostPlan;
   try {
-    plan = bindWorkspaceHostPlanRevision(await input.provider.plan(
-      {
-        action: 'destroy',
-        operationId,
-        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:destroy`,
-        host,
-        // A backup is already durable and verified above; asking the provider to preserve again
-        // would create an unrelated snapshot and make the recorded backup disposition untrue.
-        disposition: input.disposition === 'backup' ? 'discard' : input.disposition,
-        confirmation: input.confirmation,
-      },
-      context,
-    ), desiredRevision);
+    plan = emptyPopulationCensusOnly
+      ? bindWorkspaceHostPlanRevision({
+          planId: `workspace-host-empty-destroy-census:${operationId}`,
+          operationId,
+          target: target.target,
+          hostId,
+          generatedAt: new Date().toISOString(),
+          steps: [],
+          warnings: ['No resources are registered; only a complete clean provider census can retire this host.'],
+        }, desiredRevision)
+      : bindWorkspaceHostPlanRevision(await input.provider.plan(
+          {
+            action: 'destroy',
+            operationId,
+            idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:destroy`,
+            host,
+            // A backup is already durable and verified above; asking the provider to preserve again
+            // would create an unrelated snapshot and make the recorded backup disposition untrue.
+            disposition: input.disposition === 'backup' ? 'discard' : input.disposition,
+            confirmation: input.confirmation,
+          },
+          context,
+        ), desiredRevision);
   } catch (error) {
     // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
     // the request is invalid, so it stays retryable rather than terminating the workflow.
@@ -2005,7 +2036,12 @@ export async function runWorkspaceHostDestroy(
   }
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
-    const action = nextWorkspaceHostControllerAction(workflow, checkpoints);
+    // The shared workflow oracle deliberately rejects an empty destroy graph. This narrow runner
+    // path is different: it has no provider mutation to confirm and can complete only through the
+    // ordinary finalizer's complete, clean provider census below.
+    const action = emptyPopulationCensusOnly
+      ? ({ kind: 'complete', status: 'succeeded' } as const)
+      : nextWorkspaceHostControllerAction(workflow, checkpoints);
     if (action.kind === 'record-plan') {
       for (const resource of action.resources) {
         const providerResource = resource.deleteOnDestroy
