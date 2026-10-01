@@ -326,7 +326,7 @@ function storedConnectionFields(connection: WorkspaceHostProviderConnection): Co
   const provider = (connection.provider ?? {}) as Record<string, unknown>;
   const fields: ConnectionFields = { credentialRef: connection.cloudCredentialRef.ref };
   if (connection.target === 'aws') {
-    fields.accountId = connection.scope.id;
+    fields.accountId = connection.scope?.id;
     for (const key of ['partition', 'region', 'subnetId', 'imageId', 'kmsKeyArn', 'instanceProfileArn', 'credentialSource'] as const) {
       fields[key] = provider[key];
     }
