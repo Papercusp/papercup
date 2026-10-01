@@ -835,10 +835,15 @@ function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshot
   const reports = snapshot.command.filter(arg => arg.startsWith('--outputFile=')).map(arg => arg.slice('--outputFile='.length));
   if (reports.length !== 1 || !isAbsolute(reports[0]!) || !/^papercusp-testing-run-detached-[\w-]+\.json$/.test(basename(reports[0]!))
     || !row.task_cwd || !isAbsolute(row.task_cwd) || !row.task_harness_slug || !row.task_workspace_id) return [];
-  const selectorIndex = snapshot.command.findIndex(arg => arg === '-t' || arg === '--testNamePattern');
+  const selectorIndex = snapshot.command.findIndex(arg => arg === '-t' || arg === '--testNamePattern'
+    || arg.startsWith('--testNamePattern='));
+  const selectorArgument = snapshot.command[selectorIndex];
+  const testNamePattern = selectorArgument?.startsWith('--testNamePattern=')
+    ? selectorArgument.slice('--testNamePattern='.length)
+    : selectorIndex < 0 ? null : snapshot.command[selectorIndex + 1] ?? null;
   return [{
     reportPath: reports[0]!, root: row.task_cwd,
-    testNamePattern: selectorIndex < 0 ? null : snapshot.command[selectorIndex + 1] ?? null,
+    testNamePattern,
     scope: { harnessSlug: row.task_harness_slug, workspaceId: row.task_workspace_id },
     worktreeBefore: { commit: null, porcelain: null },
   }];
