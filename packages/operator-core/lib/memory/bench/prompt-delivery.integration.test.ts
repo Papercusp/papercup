@@ -38,7 +38,7 @@ import * as recallStats from '../recall-stats';
 import * as corpusRecallIo from '../corpus-recall-io';
 import { buildMemoryContextBlock, pushSearchFloors } from '../injection';
 import { getMemoryBlockBoundedResult, MEMORY_BLOCK_COLD_DEADLINE_MS } from '../injection-block-cache';
-import { withMemoryTimeout } from '../op-deadline';
+import { runWithTrackedMemoryTimeouts, withMemoryTimeout } from '../op-deadline';
 import { buildSidecarAwareEmbedder } from '../embed-sidecar-wiring';
 
 let db: OrgTestDb;
@@ -150,10 +150,12 @@ async function traceWork<T>(phase: string, run: () => Promise<T>): Promise<T> {
 }
 
 function unfinishedWork(row: Reading) {
-  return row.work.filter((span) => !span.outcome).map((span) => ({
-    phase: span.phase,
-    elapsedMs: performance.now() - span.startedMs,
-  }));
+  return row.work
+    .filter((span) => !span.outcome)
+    .map((span) => ({
+      phase: span.phase,
+      elapsedMs: performance.now() - span.startedMs,
+    }));
 }
 
 function summarize(rows: Reading[]) {
@@ -201,23 +203,25 @@ function summarize(rows: Reading[]) {
 
 function diagnosticMisses(rows: Reading[]) {
   const timely = (row: Reading) => row.status === 'ready' && row.callerMs <= MEMORY_BLOCK_COLD_DEADLINE_MS;
-  return rows
-    .filter((row) => row.expected.length > 0 && (!timely(row) || row.relevantDelivered.length === 0))
-    // Keep the causal error first: test-run ledgers retain a bounded failure tail, so an
-    // alphabetically earlier ordinary miss must not push the distinguishing error out.
-    .sort((a, b) => Number(Boolean(b.error)) - Number(Boolean(a.error)) || a.queryId.localeCompare(b.queryId))
-    .slice(0, 12)
-    .map((row) => ({
-      error: row.error?.slice(0, 320),
-      queryId: row.queryId,
-      status: row.status,
-      callerMs: Math.round(row.callerMs),
-      expected: row.expected,
-      retrieved: row.retrieved,
-      delivered: row.delivered,
-      relevantDelivered: row.relevantDelivered,
-      failedWork: row.work.filter((span) => span.outcome !== 'ready'),
-    }));
+  return (
+    rows
+      .filter((row) => row.expected.length > 0 && (!timely(row) || row.relevantDelivered.length === 0))
+      // Keep the causal error first: test-run ledgers retain a bounded failure tail, so an
+      // alphabetically earlier ordinary miss must not push the distinguishing error out.
+      .sort((a, b) => Number(Boolean(b.error)) - Number(Boolean(a.error)) || a.queryId.localeCompare(b.queryId))
+      .slice(0, 12)
+      .map((row) => ({
+        error: row.error?.slice(0, 320),
+        queryId: row.queryId,
+        status: row.status,
+        callerMs: Math.round(row.callerMs),
+        expected: row.expected,
+        retrieved: row.retrieved,
+        delivered: row.delivered,
+        relevantDelivered: row.relevantDelivered,
+        failedWork: row.work.filter((span) => span.outcome !== 'ready'),
+      }))
+  );
 }
 
 function diagnosticSummary(profile: string, rows: Reading[]) {
@@ -244,59 +248,75 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
     relevantDelivered: [],
     work: [],
   };
-  return context.run(row, async () => {
-    const id = `delivery-${process.pid}-${++sequence}`;
-    let build: Promise<string | null> | undefined;
-    const started = performance.now();
-    const result = await getMemoryBlockBoundedResult(
-      workspaceId,
-      id,
-      (deadline) => {
-        blockBuilds += 1;
-        const buildStarted = performance.now();
-        build = buildMemoryContextBlock({
-          deadline: {
-            signal: deadline.signal,
-            run: (start, label, capMs) => traceWork(`deadline:${label}`, () => deadline.run(start, label, capMs)),
-            remainingMs: () => deadline.remainingMs(),
-            close: () => deadline.close(),
-          },
-          workspaceId,
-          harnessSlugs: ['delivery-corpus'],
-          potSlugs: [],
-          queryContext: query.query,
-          // Independent eligible turns, not repeatedly deduped turns of one session.
-          session: { sessionId: id, epoch: 0, port: 'turn-start' },
-        }).finally(() => {
-          row.buildMs = performance.now() - buildStarted;
-        });
-        return build;
-      },
-      { cache: createCache() },
-    );
-    row.callerMs = performance.now() - started;
-    row.status = result.status;
-    const ids = new Set(Array.from((result.block ?? '').matchAll(/\(id=([^\s)]+)\)/g), (m) => m[1]));
-    row.delivered = Object.entries(manifest.ids)
-      .filter(([, memoryIds]) => memoryIds.some((memoryId) => ids.has(memoryId)))
-      .map(([key]) => key);
-    row.corpusDelivered = [...proseKeys]
-      .filter(([ref]) => (result.block ?? '').includes(ref))
-      .map(([, key]) => key);
-    row.delivered = [...new Set([...row.delivered, ...row.corpusDelivered])];
-    row.relevantDelivered = row.delivered.filter((key) => query.expected.includes(key));
-    if (result.status !== 'ready' || row.callerMs > MEMORY_BLOCK_COLD_DEADLINE_MS) {
-      console.log('[P-006 unfinished-work]', JSON.stringify({ queryId: row.queryId, phase,
-        callerStatus: result.status, work: row.work, pending: unfinishedWork(row) }));
-    }
-    // Preserve the caller outcome BEFORE joining late work. Joining drains the
-    // current bounded burst and makes teardown unable to erase its evidence.
-    await build?.catch((error) => {
-      row.error = inspect(error);
-    });
-    attempts.push(row);
-    return row;
-  });
+  const tracked = await runWithTrackedMemoryTimeouts(() =>
+    context.run(row, async () => {
+      const id = `delivery-${process.pid}-${++sequence}`;
+      let build: Promise<string | null> | undefined;
+      const started = performance.now();
+      const result = await getMemoryBlockBoundedResult(
+        workspaceId,
+        id,
+        (deadline) => {
+          blockBuilds += 1;
+          const buildStarted = performance.now();
+          build = buildMemoryContextBlock({
+            deadline: {
+              signal: deadline.signal,
+              run: (start, label, capMs) => traceWork(`deadline:${label}`, () => deadline.run(start, label, capMs)),
+              remainingMs: () => deadline.remainingMs(),
+              close: () => deadline.close(),
+            },
+            workspaceId,
+            harnessSlugs: ['delivery-corpus'],
+            potSlugs: [],
+            queryContext: query.query,
+            // Independent eligible turns, not repeatedly deduped turns of one session.
+            session: { sessionId: id, epoch: 0, port: 'turn-start' },
+          }).finally(() => {
+            row.buildMs = performance.now() - buildStarted;
+          });
+          return build;
+        },
+        { cache: createCache() },
+      );
+      row.callerMs = performance.now() - started;
+      row.status = result.status;
+      const ids = new Set(Array.from((result.block ?? '').matchAll(/\(id=([^\s)]+)\)/g), (m) => m[1]));
+      row.delivered = Object.entries(manifest.ids)
+        .filter(([, memoryIds]) => memoryIds.some((memoryId) => ids.has(memoryId)))
+        .map(([key]) => key);
+      row.corpusDelivered = [...proseKeys].filter(([ref]) => (result.block ?? '').includes(ref)).map(([, key]) => key);
+      row.delivered = [...new Set([...row.delivered, ...row.corpusDelivered])];
+      row.relevantDelivered = row.delivered.filter((key) => query.expected.includes(key));
+      if (result.status !== 'ready' || row.callerMs > MEMORY_BLOCK_COLD_DEADLINE_MS) {
+        console.log(
+          '[P-006 unfinished-work]',
+          JSON.stringify({
+            queryId: row.queryId,
+            phase,
+            callerStatus: result.status,
+            work: row.work,
+            pending: unfinishedWork(row),
+          }),
+        );
+      }
+      // Preserve the caller outcome BEFORE joining late work. Joining drains the
+      // current bounded burst and makes teardown unable to erase its evidence.
+      await build?.catch((error) => {
+        row.error = inspect(error);
+      });
+      attempts.push(row);
+      return row;
+    }),
+  );
+  // The caller deadline is part of the measurement, but the next representative
+  // turn must not start while uncancellable work from this one still occupies
+  // the shared embedding/search pools. Production admission retains its lease
+  // on the same tracked signal; the benchmark joins it so a late query cannot
+  // contaminate every following sample.
+  await tracked.pending;
+  if (!tracked.outcome.ok) throw tracked.outcome.error;
+  return tracked.outcome.value;
 }
 
 describe('P-006 frozen real-corpus prompt delivery', () => {
@@ -307,25 +327,41 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       // wrapper can time out while its provider promise remains unsettled;
       // completed-duration totals alone must never label that as a SQL stall.
       const actualVectorSearch = CanonicalVectorStore.prototype.search;
-      vi.spyOn(CanonicalVectorStore.prototype, 'search').mockImplementation(function (this: CanonicalVectorStore, ...args) {
+      vi.spyOn(CanonicalVectorStore.prototype, 'search').mockImplementation(function (
+        this: CanonicalVectorStore,
+        ...args
+      ) {
         return traceWork(`vector-sql:limit=${args[1] ?? 5}`, () => actualVectorSearch.apply(this, args));
       });
       const actualLexicalSearch = CanonicalVectorStore.prototype.lexicalSearch;
-      vi.spyOn(CanonicalVectorStore.prototype, 'lexicalSearch').mockImplementation(function (this: CanonicalVectorStore, ...args) {
+      vi.spyOn(CanonicalVectorStore.prototype, 'lexicalSearch').mockImplementation(function (
+        this: CanonicalVectorStore,
+        ...args
+      ) {
         return traceWork('lexical-sql', () => actualLexicalSearch.apply(this, args));
       });
       vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockImplementation(async (input) => {
         const row = context.getStore();
-        if (!row?.phase.includes('combined')) return {
-          block: null, lines: [], dropped: [], embedderAvailable: false,
-          candidateCount: 0, outcome: 'disabled', rerank: 'nothing-to-reorder',
-          legs: null, retrievalDepth: 0,
-        };
+        if (!row?.phase.includes('combined'))
+          return {
+            block: null,
+            lines: [],
+            dropped: [],
+            embedderAvailable: false,
+            candidateCount: 0,
+            outcome: 'disabled',
+            rerank: 'nothing-to-reorder',
+            legs: null,
+            retrievalDepth: 0,
+          };
         // Explicitly enable this leg; all retrieval, coverage, selection and
         // rendering stay real, against the same throwaway org database.
-        const result = await traceWork('prose-corpus', () => actualRecallCorpusContext({
-          ...input, skipFlagCheck: true,
-        }));
+        const result = await traceWork('prose-corpus', () =>
+          actualRecallCorpusContext({
+            ...input,
+            skipFlagCheck: true,
+          }),
+        );
         row.corpusOutcome = result.outcome;
         row.corpusEmbedderAvailable = result.embedderAvailable;
         return result;
@@ -379,13 +415,15 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
               const row = context.getStore();
               const start = performance.now();
               try {
-                const entries = await traceWork('hybrid-search', () => target.search(query, {
-                  ...opts,
-                  onLegStats: (legs) => {
-                    if (row) row.legs = legs;
-                    opts.onLegStats?.(legs);
-                  },
-                }));
+                const entries = await traceWork('hybrid-search', () =>
+                  target.search(query, {
+                    ...opts,
+                    onLegStats: (legs) => {
+                      if (row) row.legs = legs;
+                      opts.onLegStats?.(legs);
+                    },
+                  }),
+                );
                 if (row) row.retrieved = entries.map((entry) => String(entry.metadata?.corpus_key ?? entry.id));
                 return entries;
               } catch (error) {
@@ -447,20 +485,42 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       // before each measured profile so it cannot manufacture a warm pass.
       const probe = queries.find((query) => query.id === 'lg-007')!;
       const preflight: Reading = {
-        queryId: probe.id, phase: 'preflight', telemetryCalls: 0, className: probe.class,
-        expected: probe.expected, status: 'unmeasured', callerMs: 0, buildMs: 0,
-        availableMs: 0, searchMs: 0, embedMs: 0, embedCalls: 0,
-        retrieved: [], delivered: [], relevantDelivered: [], work: [],
+        queryId: probe.id,
+        phase: 'preflight',
+        telemetryCalls: 0,
+        className: probe.class,
+        expected: probe.expected,
+        status: 'unmeasured',
+        callerMs: 0,
+        buildMs: 0,
+        availableMs: 0,
+        searchMs: 0,
+        embedMs: 0,
+        embedCalls: 0,
+        retrieved: [],
+        delivered: [],
+        relevantDelivered: [],
+        work: [],
       };
       const controller = new AbortController();
       await context.run(preflight, async () => {
         try {
-          await withMemoryTimeout(backend.search(probe.query, { scope, ...pushSearchFloors(),
-            signal: controller.signal }), 'P-006 search preflight', MEMORY_BLOCK_COLD_DEADLINE_MS, controller);
+          await withMemoryTimeout(
+            backend.search(probe.query, { scope, ...pushSearchFloors(), signal: controller.signal }),
+            'P-006 search preflight',
+            MEMORY_BLOCK_COLD_DEADLINE_MS,
+            controller,
+          );
         } finally {
-          console.log('[P-006 preflight]', JSON.stringify({ queryId: probe.id,
-            work: preflight.work, pending: unfinishedWork(preflight),
-            recallStatsStrict: process.env.PAPERCUSP_P006_RECALL_STATS_STRICT === 'on' }));
+          console.log(
+            '[P-006 preflight]',
+            JSON.stringify({
+              queryId: probe.id,
+              work: preflight.work,
+              pending: unfinishedWork(preflight),
+              recallStatsStrict: process.env.PAPERCUSP_P006_RECALL_STATS_STRICT === 'on',
+            }),
+          );
         }
       });
       const sourcePaths = [
@@ -492,7 +552,8 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
           floors: pushSearchFloors(),
           deadlineMs: MEMORY_BLOCK_COLD_DEADLINE_MS,
           recallStats: process.env.PAPERCUSP_P006_RECALL_STATS === 'off' ? 'off' : 'on',
-          isolation: 'throwaway org DB including hygiene and frozen prose work-items; advisory flags false; prose explicitly enabled only in combined profiles',
+          isolation:
+            'throwaway org DB including hygiene and frozen prose work-items; advisory flags false; prose explicitly enabled only in combined profiles',
           cache: 'cold rendered-block cache per turn; cold client before each profile; warm query immediately primed',
         }),
       );
@@ -513,7 +574,9 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
               if (warm) await measure(queries[index], `${name}-prime`);
               rows[index] = await measure(queries[index], name);
               if (name === 'normal-cold' && index === 0) {
-                expect(rows[index].callerMs, JSON.stringify(rows[index])).toBeLessThanOrEqual(MEMORY_BLOCK_COLD_DEADLINE_MS);
+                expect(rows[index].callerMs, JSON.stringify(rows[index])).toBeLessThanOrEqual(
+                  MEMORY_BLOCK_COLD_DEADLINE_MS,
+                );
                 expect(rows[index].error).toBeUndefined();
               }
             }
@@ -550,8 +613,14 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
           .filter((entry) => entry.calls !== 6);
         console.log(
           '[P-006 telemetry-scheduling]',
-          JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry,
-            missingAttempts: attempts.filter((row) => row.telemetryCalls !== 1) }),
+          JSON.stringify({
+            measuredCalls,
+            blockBuilds,
+            recallStatsCalls,
+            expectedRecallStatsCalls,
+            missingTelemetry,
+            missingAttempts: attempts.filter((row) => row.telemetryCalls !== 1),
+          }),
         );
       }
       expect(
@@ -589,7 +658,11 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
   it('measured every frozen query and preserved failures in every profile', () => {
     expect(setupError, String(setupError)).toBeUndefined();
     expect(profiles.map((p) => p.name)).toEqual([
-      'normal-cold', 'normal-warm', 'burst-cold', 'normal-combined', 'burst-combined',
+      'normal-cold',
+      'normal-warm',
+      'burst-cold',
+      'normal-combined',
+      'burst-combined',
     ]);
     for (const profile of profiles) {
       expect(profile.rows.map((r) => r.queryId)).toEqual(loadGoldSetFixture().queries.map((q) => q.id));
@@ -606,11 +679,22 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
     const combined = profiles.filter((p) => p.name.includes('combined'));
     expect(combined).toHaveLength(2);
     for (const profile of combined) {
-      expect(profile.rows.every((row) => row.corpusOutcome !== undefined), profile.name).toBe(true);
-      expect(profile.rows.some((row) => row.corpusDelivered?.length), profile.name).toBe(true);
-      expect(profile.rows.some((row) => row.corpusEmbedderAvailable), profile.name).toBe(true);
-      expect(summarize(profile.rows).usefulRate,
-        JSON.stringify(diagnosticSummary(profile.name, profile.rows))).toBeGreaterThanOrEqual(0.95);
+      expect(
+        profile.rows.every((row) => row.corpusOutcome !== undefined),
+        profile.name,
+      ).toBe(true);
+      expect(
+        profile.rows.some((row) => row.corpusDelivered?.length),
+        profile.name,
+      ).toBe(true);
+      expect(
+        profile.rows.some((row) => row.corpusEmbedderAvailable),
+        profile.name,
+      ).toBe(true);
+      expect(
+        summarize(profile.rows).usefulRate,
+        JSON.stringify(diagnosticSummary(profile.name, profile.rows)),
+      ).toBeGreaterThanOrEqual(0.95);
     }
   });
 

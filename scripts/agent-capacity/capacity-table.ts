@@ -49,6 +49,8 @@ export function parseRampLog(text: string): StepVerdict[] {
 export interface SessionRow {
   memPeakBytes: number | null;
   cpuUsec: number | null;
+  /** The replay's tool outcomes differed from the recording's (load-driver), so its CPU is not the recorded session's. */
+  toolDiverged?: boolean | null;
 }
 
 export interface CapacityRow {
@@ -66,6 +68,13 @@ export interface CapacityRow {
   coresPerAgent: number | null;
   sliceAnonMbPerAgent: number | null;
   sessionPeakMiB: { p50: number; p95: number } | null;
+  /**
+   * Share of the sessions replayed at the capacity step whose tool outcomes diverged from the
+   * recording (null when there are none). In P-005 this is a fixed set of recordings that diverge
+   * on every run, so a high share means the capacity rests partly on replays that did different
+   * tool work than the real session did.
+   */
+  toolDivergedShare: number | null;
   usdPerHour: number;
   /** null when capacity is 0. An upper bound when `censored`. */
   usdPerAgentMonth: number | null;
@@ -99,6 +108,7 @@ export function capacityRow(
     sliceAnonMbPerAgent = Math.max(0, s.cgroupAnonMb.p95 - t0) / capacity;
   }
   const peaks = atCapacity.sessions.map((r) => r.memPeakBytes).filter((b): b is number => b !== null).map((b) => b / 2 ** 20);
+  const diverged = atCapacity.sessions.filter((r) => r.toolDiverged === true).length;
   return {
     machineType,
     label,
@@ -110,6 +120,7 @@ export function capacityRow(
     coresPerAgent,
     sliceAnonMbPerAgent,
     sessionPeakMiB: best && peaks.length ? { p50: pct(peaks, 50), p95: pct(peaks, 95) } : null,
+    toolDivergedShare: best && atCapacity.sessions.length ? diverged / atCapacity.sessions.length : null,
     usdPerHour,
     usdPerAgentMonth: capacity > 0 ? (usdPerHour * 730) / capacity : null,
   };
@@ -118,11 +129,11 @@ export function capacityRow(
 const f = (x: number | null, d = 2) => (x === null ? '—' : x.toFixed(d));
 
 export function renderMarkdown(rows: readonly CapacityRow[]): string {
-  const head = '| machine | workload | capacity N | saturated at | slowdown at N | cores/agent | anon MB/agent | session peak MiB p50/p95 | $/h | $/agent-month |';
-  const out = [head, '|' + ' --- |'.repeat(10)];
+  const head = '| machine | workload | capacity N | saturated at | slowdown at N | tool-diverged % | cores/agent | anon MB/agent | session peak MiB p50/p95 | $/h | $/agent-month |';
+  const out = [head, '|' + ' --- |'.repeat(11)];
   for (const r of rows) {
     out.push(
-      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} |`,
+      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} |`,
     );
   }
   return out.join('\n');

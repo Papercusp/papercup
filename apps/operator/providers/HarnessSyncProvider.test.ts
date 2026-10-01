@@ -107,12 +107,17 @@ describe('assertIpcCarriesFetch (D-047)', () => {
     expect(hook.result.current).toBe(false);
     const pending = syncMetrics.snapshot().ipcAssertion!;
     expect(pending).toHaveLength(1);
+    expect(pending[0].importReadyAtMs).toBeGreaterThanOrEqual(pending[0].startedAtMs);
+    expect(pending[0].invokeStartedAtMs).toBeGreaterThanOrEqual(pending[0].importReadyAtMs!);
+    expect(pending[0].invokeCompletedAtMs).toBeNull();
     expect(pending[0].completedAtMs).toBeNull();
     await act(async () => { resolve({ client: 'connected' }); });
     expect(hook.result.current).toBe(true);
     const completed = syncMetrics.snapshot().ipcAssertion![0];
     expect(completed.client).toBe('connected');
-    expect(completed.completedAtMs).toBeGreaterThanOrEqual(completed.startedAtMs);
+    expect(completed.invokeCompletedAtMs).toBeGreaterThanOrEqual(completed.invokeStartedAtMs!);
+    expect(completed.completedAtMs).toBeGreaterThanOrEqual(completed.invokeCompletedAtMs!);
+    expect(pending[0].invokeCompletedAtMs).toBeNull();
     expect(pending[0].completedAtMs).toBeNull();
   });
 
@@ -134,6 +139,11 @@ describe('assertIpcCarriesFetch (D-047)', () => {
   it('fails CAPPED when the shell rejects the invoke', async () => {
     invoke.mockRejectedValue(new Error('no such command'));
     await expect(assertIpcCarriesFetch()).resolves.toBe(false);
+    const sample = syncMetrics.snapshot().ipcAssertion![0];
+    expect(sample.invokeStartedAtMs).not.toBeNull();
+    expect(sample.invokeCompletedAtMs).not.toBeNull();
+    expect(sample.completedAtMs).not.toBeNull();
+    expect(sample.client).toBeNull();
   });
 
   it('fails CAPPED on an older shell whose IpcStatus predates the client field', async () => {

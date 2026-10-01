@@ -138,7 +138,14 @@ async function readIpcClient(): Promise<string | null> {
   let client: string | null = null;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    const status = await invoke<{ client?: string }>('endpoint_ipc_status');
+    finish.mark('importReady');
+    finish.mark('invokeStarted');
+    let status: { client?: string };
+    try {
+      status = await invoke<{ client?: string }>('endpoint_ipc_status');
+    } finally {
+      finish.mark('invokeCompleted');
+    }
     client = status?.client ?? null;
     return client;
   } catch {

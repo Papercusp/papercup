@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: c4916de328db96fb67448f7eb77cf52b11d66cb5c5d2331ed9339c7f70029e07
+ * Migration digest: c8b8f3ce082589659bbb5cc5ba0aa9e62b9cd007e914d682939fb8d3d0cc514a
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "c4916de328db96fb67448f7eb77cf52b11d66cb5c5d2331ed9339c7f70029e07";
+  "c8b8f3ce082589659bbb5cc5ba0aa9e62b9cd007e914d682939fb8d3d0cc514a";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -260,6 +260,8 @@ export interface HarnessesRow {
   approved_tree_digest: string | null;
   approved_at: number | null;
   drift: number;
+  authority_unresolved: number | null;
+  authority_unresolved_cause: string | null;
 }
 
 export interface IndexerRunsRow {

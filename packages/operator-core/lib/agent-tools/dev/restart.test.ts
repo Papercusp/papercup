@@ -619,6 +619,7 @@ describe('dev:restart dry run', () => {
     ['bg-host', 'papercusp-bg-host.service', true],
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
+    ['mcp-proxy-staging', 'papercup-mcp-proxy-staging.service', false],
     // WI-10001633: app sidecars run tsx from the tree with no restart-on-change —
     // without a sanctioned target the only way to load an edit was raw systemctl.
     ['email-sidecar', 'papercusp-email-sidecar.service', true],

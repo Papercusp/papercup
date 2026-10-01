@@ -44,6 +44,7 @@ const {
   recordInjectionCoverageMock,
   buildPersonalAmbientContextBlockMock,
   getMemoryBlockBoundedResultMock,
+  withOptionalMemoryAdmissionMock,
   buildTurnStartOrientationBlockMock,
   readSuLaunchSpecByOwnerMock,
   evaluateTurnStartPackageSinkMock,
@@ -62,6 +63,7 @@ const {
   recordInjectionCoverageMock: vi.fn(),
   buildPersonalAmbientContextBlockMock: vi.fn(),
   getMemoryBlockBoundedResultMock: vi.fn(),
+  withOptionalMemoryAdmissionMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
   readSuLaunchSpecByOwnerMock: vi.fn(),
   evaluateTurnStartPackageSinkMock: vi.fn(),
@@ -109,6 +111,9 @@ vi.mock('../../../personal-vault/ambient', () => ({
 vi.mock('../../../memory/injection-block-cache', () => ({
   getMemoryBlockBoundedResult: getMemoryBlockBoundedResultMock,
 }));
+vi.mock('../../../memory/mid-turn-admission', () => ({
+  withOptionalMemoryAdmission: withOptionalMemoryAdmissionMock,
+}));
 vi.mock('../../../turn-start-orientation', () => ({
   buildTurnStartOrientationBlock: buildTurnStartOrientationBlockMock,
 }));
@@ -149,13 +154,26 @@ beforeEach(() => {
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
   buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
-  getMemoryBlockBoundedResultMock.mockReset().mockImplementation(
-    async (_workspaceId: string, _scopeKey: string, build: (deadline: MemoryWorkDeadline) => Promise<string | null>) => {
-      const deadline = createMemoryWorkDeadline(2000);
-      try { return { status: 'ready', block: await build(deadline) }; }
-      finally { deadline.close(); }
-    },
-  );
+  withOptionalMemoryAdmissionMock.mockReset().mockImplementation(async (run: () => Promise<unknown>) => ({
+    admitted: true,
+    value: await run(),
+  }));
+  getMemoryBlockBoundedResultMock
+    .mockReset()
+    .mockImplementation(
+      async (
+        _workspaceId: string,
+        _scopeKey: string,
+        build: (deadline: MemoryWorkDeadline) => Promise<string | null>,
+      ) => {
+        const deadline = createMemoryWorkDeadline(2000);
+        try {
+          return { status: 'ready', block: await build(deadline) };
+        } finally {
+          deadline.close();
+        }
+      },
+    );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
   evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
@@ -172,6 +190,23 @@ afterEach(() => resetReadCursorStore());
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('turn-start-memory admission (F-E: no length floor)', () => {
+  it('shares the host-wide optional-memory admission and preserves orientation when capacity is full', async () => {
+    withOptionalMemoryAdmissionMock.mockResolvedValueOnce({ admitted: false, reason: 'at_capacity' });
+    buildTurnStartOrientationBlockMock.mockResolvedValue({
+      block: '## Orientation\n- continue without optional recall',
+      deliveryToken: null,
+    });
+
+    const out = await post({ owner: 'sess-1', prompt: 'continue', harness: 'papercusp' });
+    await settle();
+
+    expect(withOptionalMemoryAdmissionMock).toHaveBeenCalledOnce();
+    expect(getMemoryBlockBoundedResultMock).not.toHaveBeenCalled();
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
+    expect(out.text).toContain('continue without optional recall');
+  });
+
   it('returns orientation when memory misses its bounded deadline, without recording healthy quiet', async () => {
     getMemoryBlockBoundedResultMock.mockResolvedValue({ status: 'deadline', block: null });
     buildTurnStartOrientationBlockMock.mockResolvedValue({
@@ -184,15 +219,11 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     expect(out.text).toContain('improvement triage: top EI-1');
     expect(out.text).not.toContain('MEM-BLOCK');
-    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith(
-      'ws-test',
-      'turn-start:sess-1',
-      expect.any(Function),
-    );
+    expect(getMemoryBlockBoundedResultMock).toHaveBeenCalledWith('ws-test', 'turn-start:sess-1', expect.any(Function));
     expect(recordInjectionCoverageMock).not.toHaveBeenCalled();
   });
 
-  it('a 23-char prompt REACHES the memory pipeline — the audit\'s founding symptom', async () => {
+  it("a 23-char prompt REACHES the memory pipeline — the audit's founding symptom", async () => {
     // Verbatim length of the owner prompt the old 40-char gate dropped.
     const prompt = 'why is recall empty??!';
     expect(prompt.length).toBeLessThan(40);
@@ -211,7 +242,7 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     });
   });
 
-  it('even a 1-char prompt reaches it — relevance is the floor\'s job, not the length\'s', async () => {
+  it("even a 1-char prompt reaches it — relevance is the floor's job, not the length's", async () => {
     await post({ owner: 'sess-1', prompt: 'y' });
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
   });
@@ -270,7 +301,11 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     expect(recovered.text).toBe('CTRL:mode\n\nSTACK-RECOVERED');
     expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
 
-    const settled = await post({ owner: 'sess-1', prompt: 'after recovery', confirmedDelivery: recovered.deliveryToken });
+    const settled = await post({
+      owner: 'sess-1',
+      prompt: 'after recovery',
+      confirmedDelivery: recovered.deliveryToken,
+    });
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 7, undefined, undefined);
     expect(settled.text).toBe('');
@@ -286,14 +321,21 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     buildMemoryContextBlockMock.mockResolvedValue(null);
     const desired = { specificationRevision: 'spec-new', stateRevision: 'state-new' };
     preparePendingControlTransitionMock.mockResolvedValue({
-      kind: 'mode', generation: 8, state: { activation: { desired } },
+      kind: 'mode',
+      generation: 8,
+      state: { activation: { desired } },
     });
     renderStackTransitionContextResultMock.mockResolvedValue({ text: '', rendered: false });
 
     const out = await post({ owner: 'sess-1', prompt: 'render fails' });
     expect(out.text).toBe('CTRL:mode');
     expect(failControlTransitionActivationMock).toHaveBeenCalledWith(
-      'sess-1', 'ws-test', 8, desired, 'stack transition render failed');
+      'sess-1',
+      'ws-test',
+      8,
+      desired,
+      'stack transition render failed',
+    );
     expect(convergeActivationToLaunchRecordMock).toHaveBeenCalledWith('sess-1', 'ws-test', 8, desired);
     expect(markControlTransitionPreparedMock).not.toHaveBeenCalled();
     expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
@@ -320,7 +362,12 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     });
 
     it('an explicit harness in body WINS over cwd detection — never overridden', async () => {
-      await post({ owner: 'sess-1', prompt: 'a real question', harness: 'papercusp-public-site', cwd: '/some/other/dir' });
+      await post({
+        owner: 'sess-1',
+        prompt: 'a real question',
+        harness: 'papercusp-public-site',
+        cwd: '/some/other/dir',
+      });
       expect(detectHarnessSlugSyncMock).not.toHaveBeenCalled();
       expect(buildMemoryContextBlockMock.mock.calls[0]![0]).toMatchObject({ harnessSlugs: ['papercusp-public-site'] });
     });
@@ -681,7 +728,11 @@ describe('carry-respawn applies at the relaunch, not a turn later (WI-10003459)'
   const desired = { specificationRevision: 'spec-relaunched', stateRevision: 'state-relaunched' };
   const arm = (requiresFreshContext: boolean) => {
     buildMemoryContextBlockMock.mockResolvedValue(null);
-    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 21, state: { activation: { desired } } });
+    preparePendingControlTransitionMock.mockResolvedValue({
+      kind: 'mode',
+      generation: 21,
+      state: { activation: { desired } },
+    });
     renderStackTransitionContextResultMock.mockResolvedValue({ text: 'STACK', rendered: true, requiresFreshContext });
     readSuLaunchSpecByOwnerMock.mockResolvedValue({ specificationRevision: 'spec-relaunched' });
   };
@@ -733,7 +784,11 @@ describe('carry-respawn applies at the relaunch, not a turn later (WI-10003459)'
     await post({ owner: 'sess-1', prompt: 'no activation' });
     expect(applyRelaunchedActivationMock).not.toHaveBeenCalled();
 
-    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 23, state: { activation: { desired } } });
+    preparePendingControlTransitionMock.mockResolvedValue({
+      kind: 'mode',
+      generation: 23,
+      state: { activation: { desired } },
+    });
     renderStackTransitionContextResultMock.mockResolvedValue({ text: '', rendered: false });
     await post({ owner: 'sess-1', prompt: 'render failed' });
     expect(applyRelaunchedActivationMock).not.toHaveBeenCalled();
@@ -744,17 +799,22 @@ describe('control activation waits for host emission (WI-10003297)', () => {
   const desired = { specificationRevision: 'spec-new', stateRevision: 'state-new' };
   beforeEach(() => {
     let pending = true;
-    preparePendingControlTransitionMock.mockImplementation(async () => pending
-      ? { kind: 'stack', generation: 12, state: { activation: { desired } } }
-      : null);
-    acknowledgeControlTransitionMock.mockImplementation(async () => { pending = false; return true; });
+    preparePendingControlTransitionMock.mockImplementation(async () =>
+      pending ? { kind: 'stack', generation: 12, state: { activation: { desired } } } : null,
+    );
+    acknowledgeControlTransitionMock.mockImplementation(async () => {
+      pending = false;
+      return true;
+    });
     renderStackTransitionContextResultMock.mockResolvedValue({ text: 'IDENTITY-LAYER', rendered: true });
     buildMemoryContextBlockMock.mockResolvedValue(null);
   });
 
   const assertNoAcknowledgmentBeforeResponse = async () => {
     let release!: () => void;
-    const delayed = new Promise<null>((resolve) => { release = () => resolve(null); });
+    const delayed = new Promise<null>((resolve) => {
+      release = () => resolve(null);
+    });
     buildPersonalAmbientContextBlockMock.mockReturnValueOnce(delayed);
     const request = post({ owner: 'sess-1', prompt: 'slow response', confirmedDelivery: null });
     try {
@@ -794,7 +854,9 @@ describe('control activation waits for host emission (WI-10003297)', () => {
 
   it('preserves delivery when staging fails and never treats orientation proof as control proof', async () => {
     class UnavailableStore extends InMemoryReadCursorStore {
-      override async stage(): Promise<void> { throw new Error('store unavailable'); }
+      override async stage(): Promise<void> {
+        throw new Error('store unavailable');
+      }
     }
     configureReadCursorStore(new UnavailableStore());
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'orientation-only' });
@@ -805,12 +867,15 @@ describe('control activation waits for host emission (WI-10003297)', () => {
     expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
   });
 
-  it.each([null, 'wrong-token', undefined])('redelivers when the host confirms %s instead of the offered token', async (token) => {
-    await post({ owner: 'sess-1', prompt: 'offer' });
-    const retry = await post({ owner: 'sess-1', prompt: 'unproved', confirmedDelivery: token });
-    expect(retry.text).toContain('IDENTITY-LAYER');
-    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
-  });
+  it.each([null, 'wrong-token', undefined])(
+    'redelivers when the host confirms %s instead of the offered token',
+    async (token) => {
+      await post({ owner: 'sess-1', prompt: 'offer' });
+      const retry = await post({ owner: 'sess-1', prompt: 'unproved', confirmedDelivery: token });
+      expect(retry.text).toContain('IDENTITY-LAYER');
+      expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('shares orientation proof, but never applies another session from its token', async () => {
     buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'shared-token' });

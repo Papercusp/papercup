@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout, type HeldoutQuery } from './candidate-hybrid-bench';
+import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout,
+  selectCandidateSources, candidateSourcePartition, type HeldoutQuery } from './candidate-hybrid-bench';
 import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
   mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
@@ -21,6 +22,29 @@ const queries: HeldoutQuery[] = [
   { id: 't', class: 'exact-identifier', query: 'question b', expected: ['b'], partition: 'test', group: 'b' },
 ];
 describe('candidate hybrid fairness guards', () => {
+  it('freezes larger samples with real-source partitions that survive reordering and expansion', () => {
+    const rows = Array.from({ length: 96 }, (_, i) => ({ key: `key-${i}`, text: `source ${i}`, kind: 'doc',
+      metadata: { cluster: `page-${Math.floor(i / 4)}` } }));
+    const population = { memory: { entries: rows }, prose: { entries: rows } };
+    const options = { seed: 'frozen-population', memoryLimit: 64, proseBudget: 64, maxClusterRows: 4 };
+    const selected = selectCandidateSources(population, options);
+    expect(selected.memory.entries).toHaveLength(64);
+    expect(selected.prose.entries.length).toBeGreaterThanOrEqual(60);
+    expect(selected).toEqual(selectCandidateSources({ memory: { entries: [...rows].reverse() }, prose: { entries: [...rows].reverse() } }, options));
+    const expanded = selectCandidateSources(population, { ...options, memoryLimit: 96, proseBudget: 96 });
+    const expandedPartitions = new Map(expanded.prose.entries.map((e) => [e.key, e.metadata!.partition]));
+    for (const entry of selected.prose.entries) {
+      expect(entry.metadata!.partition).toBe(expandedPartitions.get(entry.key));
+      expect(entry.metadata!.partition).toBe(candidateSourcePartition(String(entry.metadata!.cluster), options.seed));
+      expect(entry.metadata!.textSha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+  it('refuses malformed budgets or unidentifiable source targets before snapshot acquisition', () => {
+    const population = { memory: { entries: [{ ...entries[0], metadata: { cluster: 'a' } }] }, prose: { entries: [] } };
+    for (const memoryLimit of [0, -1, NaN, 1.5, Infinity]) expect(() => selectCandidateSources(population, { memoryLimit })).toThrow('budgets');
+    expect(() => selectCandidateSources({ ...population, memory: { entries } })).toThrow('cluster');
+    expect(() => selectCandidateSources({ ...population, memory: { entries: [...population.memory.entries, ...population.memory.entries] } })).toThrow('duplicate');
+  });
   it('routes precomputed and lexical retrieval to the actual store seam without requiring an extraction client', async () => {
     const backend = canonicalCandidateBackend({
       search: async (_vector, _k, filters) => [{ id: 'actual-id', payload: { data: 'actual text', user_id: filters!.user_id,

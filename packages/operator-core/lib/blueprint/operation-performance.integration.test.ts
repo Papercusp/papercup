@@ -20,8 +20,8 @@ import {
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
 import { createTextCollector } from '../child-output';
-import { P013_HARNESS, P013_WORKSPACE, runP013WorkloadA,
-  type P013Arm, type P013Sample } from './operation-performance-driver';
+import { P013_HARNESS, P013_WORKSPACE, attributeDispatchSteps, runP013WorkloadA,
+  type P013Arm, type P013Sample, type WarmDispatchStepRow } from './operation-performance-driver';
 
 const fixture = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -237,9 +237,17 @@ describe('P-013 workload A fixture', () => {
          * counter delta overlaps a sibling's (concurrency 8): only trial totals are exact. */
         overlappingChildren: number;
       } & PgCounters> = [];
+      // D-047: every warm sample's accepted→dispatched step split, in completion order.
+      // runPairedBenchmark awaits each trial before starting the next, so these rows
+      // split exactly into consecutive per-trial chunks (see attributeDispatchSteps).
+      const warmDispatchSteps: WarmDispatchStepRow[] = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },
-        run: async () => (await runArm(arm, sequence++)).marks,
+        run: async () => {
+          const sample = await runArm(arm, sequence++);
+          warmDispatchSteps.push({ arm, steps: sample.dispatchStepsMs });
+          return sample.marks;
+        },
         coldStart: async () => {
           const childSequence = sequence++;
           // D-022(c): snapshot BEFORE the child exists. This read's own
@@ -395,6 +403,10 @@ describe('P-013 workload A fixture', () => {
       console.info(`P-013 workload A ${modes.join('+')} trials`, JSON.stringify({
         repetitions, repetitionOffset, coldSamples, warmSamples, warmups, modes, concurrencies,
         cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), orgPoolMax: P013_ORG_POOL_MAX, trials }));
+      // D-047: which serial step inside acceptedToDispatch carries any arm difference.
+      // Attribution only; gradePairedBenchmark never reads it.
+      console.info('P-013 workload A dispatch-step attribution (D-047; no grade)',
+        JSON.stringify(attributeDispatchSteps(trials, warmDispatchSteps)));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).

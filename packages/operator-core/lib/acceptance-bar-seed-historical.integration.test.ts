@@ -112,12 +112,19 @@ describe('historical deterministic acceptance BAR rubric collision', () => {
     // The subject's one-shot acceptance rubric is no longer live after shipping.
     // The next seed must classify this exact row from its rubric identity and
     // subject link instead of treating it as an unrelated slug collision.
-    await db.adminSql`
-      UPDATE harness_shared.harness_plans
-         SET status = 'shipped'
-       WHERE workspace_id = ${WORKSPACE}
-         AND harness_slug = ${HARNESS}
-         AND plan_slug = ${planSlug}`;
+    await db.adminSql.begin(async (tx) => {
+      await tx`
+        SELECT set_config('papercusp.plan_shipment_acceptance_gate_receipt', jsonb_build_object(
+          'schemaVersion', 1, 'transactionId', txid_current()::text,
+          'workspaceId', ${WORKSPACE}::text, 'harnessSlug', ${HARNESS}::text, 'planSlug', ${planSlug}::text
+        )::text, true)`;
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET status = 'shipped'
+         WHERE workspace_id = ${WORKSPACE}
+           AND harness_slug = ${HARNESS}
+           AND plan_slug = ${planSlug}`;
+    });
     await db.adminSql`
       UPDATE harness_shared.harness_plans
          SET status = 'superseded'

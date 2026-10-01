@@ -18,8 +18,8 @@
     "expected": "r7-arm-a-goal-local-plan=false, auto-bar-r-7-p-007=false, exitCode 1 (caught)"
   },
   "exitCode": 1,
-  "startedAt": "2026-09-29T17:23:20.426Z",
-  "finishedAt": "2026-09-29T17:23:21.809Z",
+  "startedAt": "2026-10-01T08:31:35.122Z",
+  "finishedAt": "2026-10-01T08:31:36.449Z",
   "summary": "4/7 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-7-P-007.",
   "assertions": [
     {

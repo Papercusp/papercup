@@ -9,8 +9,8 @@
     "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-29T16:59:04.139Z",
-  "finishedAt": "2026-09-29T16:59:05.257Z",
+  "startedAt": "2026-10-01T08:31:32.765Z",
+  "finishedAt": "2026-10-01T08:31:34.167Z",
   "summary": "7/7 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-7-P-007.",
   "assertions": [
     {
@@ -46,7 +46,7 @@
     {
       "id": "auto-bar-r-7-p-007",
       "passed": true,
-      "evidence": "6/6 R-7 sub-assertions passed over both trial lineages (r7-arm-a-goal-local-plan=true, r7-arm-b-adopted-no-clone=true, r7-independent-member-claims=true, r7-organic-terminal-chain=true, r7-negative-controls=true, r7-caps-not-widened=true); 10 residual unknown(s) disclosed"
+      "evidence": "6/6 R-7 sub-assertions passed over both trial lineages (r7-arm-a-goal-local-plan=true, r7-arm-b-adopted-no-clone=true, r7-independent-member-claims=true, r7-organic-terminal-chain=true, r7-negative-controls=true, r7-caps-not-widened=true); 9 residual unknown(s) disclosed"
     }
   ],
   "plan": "goal-brief-to-claimed-plan-work-2026-09-23",
@@ -54,7 +54,6 @@
     "Arm B plan goal attribution now reads finish-shipping-the-duplicate-screening-fix-adop-a88411, not the adopting goal stop-work-item-duplicate-screening-from-admittin-956e4d. Whether the adopting goal ever stamped goal_id (and was later replaced) is not measured here; today the adopting goal is visible only through fleet membership and work-item claims, not on the plan row.",
     "Arm A WI-10003480 was first claimed at 2026-09-27T11:31:21.420388-04:00 by su-f89a4a6a-fe65-4d00-910b-186a47071be7, who held no membership in any Arm A drain fleet at that instant: independent of the holder, but not provably a goal-fleet claim.",
     "Arm A's ship hop (rev 30, 2026-09-29T12:21:50.011-04:00) was authored by the operator su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7, not by a goal fleet (disclosed as goal-brief-to-claimed-plan-work-2026-09-23#D-017). Arm A is therefore NOT an organic end-to-end terminal trace; the organic-chain claim rests on Arm B alone.",
-    "Arm A's goal-local feedback row goal-plan:restore-reliable-hourly-papercusp-postgres-backu-9368ec:papercusp/papercusp-db-backup-invalid-db-2026-09-27 is still outcome=pending after its plan shipped (plan-rail outcome propagation lag, WI-10003894).",
     "Budget kills fire AFTER the breach, not at it: measured overshoot 9368ec +9%, 956e4d +96%. The caps were not raised, but enforcement lag let spend run past them (worst: 96%; tracked as WI-10003507).",
     "Goal-pots spend rollups omit consult forks and orphan sessions. Decision goal-brief-to-claimed-plan-work-2026-09-23#D-016 records real cost of ~$19.44 for Arm A goal 8016e1 against a $15 cap (consult ~$7.19 uncounted) and ~$23.29 of $30 for Arm B goal 81a93e (orphan 2e21e6 ~$8.06 + consult ~$1.98 added by hand). The cap was not widened; the meter under-counted.",
     "Brief exposure for goal ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1 is not exact: the first indexed holder turn is origin=unclassified, 7998 chars (at the 8000-char index cap, so only a prefix is hashed).",
@@ -186,7 +185,7 @@
       },
       "goalLocalIdea": {
         "idea_id": "goal-plan:restore-reliable-hourly-papercusp-postgres-backu-9368ec:papercusp/papercusp-db-backup-invalid-db-2026-09-27",
-        "outcome": "pending",
+        "outcome": "won",
         "rail": "plan",
         "origin": "su-ideate",
         "created_by": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",

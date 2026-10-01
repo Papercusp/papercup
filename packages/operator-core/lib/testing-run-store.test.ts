@@ -550,9 +550,11 @@ describe('durable detached snapshot lifecycle', () => {
     { name: 'failed ledger insert', status: 'running', expected: 'error', writeFailure: true },
     { name: 'lost snapshot CAS', status: 'running', expected: 'running', casLost: true },
     { name: 'legacy command metadata', status: 'running', expected: 'pass', legacy: true },
+    { name: 'legacy inline selector', status: 'running', expected: 'pass', legacy: true, inlineSelector: true },
     { name: 'legacy wrong tenant', status: 'running', expected: 'error', legacy: true, wrongScope: true },
     { name: 'expired legacy snapshot', status: 'error', expected: 'pass', legacy: true, expired: true },
     { name: 'pruned legacy snapshot', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true },
+    { name: 'pruned legacy inline selector', status: 'running', expected: 'pass', legacy: true, expired: true, missing: true, inlineSelector: true },
     { name: 'pruned snapshot wrong tenant', status: 'running', expected: null, legacy: true, expired: true, missing: true, wrongScope: true },
     { name: 'pruned snapshot partial report', status: 'running', expected: null, legacy: true, expired: true, missing: true, partial: true },
     { name: 'pruned snapshot ambiguous task', status: 'running', expected: null, legacy: true, expired: true, missing: true, ambiguous: true },
@@ -562,6 +564,7 @@ describe('durable detached snapshot lifecycle', () => {
       partial?: boolean; writeFailure?: boolean; casLost?: boolean; legacy?: boolean; wrongScope?: boolean;
       expired?: boolean; missing?: boolean;
       ambiguous?: boolean;
+      inlineSelector?: boolean;
     };
     const { status } = options;
     const reportDir = await mkdtemp('/tmp/papercusp-testing-run-recovery-');
@@ -600,7 +603,8 @@ describe('durable detached snapshot lifecycle', () => {
         if (snapshotRead || taskRead) return [{
           run_id: snapshot.runId, task_id: snapshot.taskId, kind: 'vitest', label: 'saved',
           file_path: null, command: options.legacy ? [
-            'node', 'scripts/test-files.mjs', `--outputFile=${reportPath}`, '-t', 'saved assertion',
+            'node', 'scripts/test-files.mjs', `--outputFile=${reportPath}`,
+            ...(options.inlineSelector ? ['--testNamePattern=saved assertion'] : ['-t', 'saved assertion']),
           ] : snapshot.command, status, exit_code: status === 'pass' ? 0 : null,
           started_at: snapshot.startedAt, finished_at: status === 'error' ? snapshot.startedAt + 30 : null,
           output: status === 'error' ? '[detached-recovery] no test verdict was observed.' : '', truncated: false,

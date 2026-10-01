@@ -392,6 +392,36 @@ describe('WI-3880: before_ts deepening past the first RAW_SURFACE_FETCH_CAP wind
     expect(rows).toHaveLength(10);
   });
 
+  it('returns a cursor when the bounded deepening ceiling leaves older raw history', async () => {
+    const ts = (second: number) => `2026-06-23T12:00:${String(second).padStart(2, '0')}.000Z`;
+    const firstPages = Array.from({ length: 10 }, (_, i) => ({
+      rows: [{ id: 100 - i, envelope: env({ msg_id: `m${10 - i}`, ts: ts(10 - i) }) }],
+      exhausted: false,
+    }));
+    setLineRounds({ messages: firstPages });
+    mockLog.readEventsBoundedCursor.mockImplementation(async () => ({ rows: [], exhausted: true }));
+
+    const first = await readCoordFeed({ limit: 50, before_ts: '2026-06-24T00:00:00.000Z' });
+
+    expect(first.rows.map((r) => r.msg_id)).toEqual([
+      'm10', 'm9', 'm8', 'm7', 'm6', 'm5', 'm4', 'm3', 'm2', 'm1',
+    ]);
+    expect(first.total).toBe(10); // shorter than the requested limit; the raw scan is not exhausted
+    expect(first.nextCursor).toBe(ts(1));
+    expect(first.nextCursorMsgId).toBe('m1');
+
+    // The returned time cursor lets the next request reach the older message
+    // that was outside the bounded scan window.
+    setLineRounds({ messages: [{ rows: [{ id: 90, envelope: env({ msg_id: 'm0', ts: ts(0) }) }], exhausted: true }] });
+    const second = await readCoordFeed({
+      limit: 50,
+      before_ts: first.nextCursor!,
+      before_msg_id: first.nextCursorMsgId!,
+    });
+    expect(second.rows.map((r) => r.msg_id)).toEqual(['m0']);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it('never enters the deepening path when before_ts is omitted, even if a surface reports itself unexhausted', async () => {
     mockLog.readLinesBoundedCursor.mockImplementation(async (s: CoordSurface) =>
       s === 'messages'

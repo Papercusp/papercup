@@ -25,7 +25,7 @@ describe('capacity-table', () => {
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  function vm(mt: string, label: string, log: string[], at?: { n: number; cores: number; anonMb: number; peaksMiB: number[] }) {
+  function vm(mt: string, label: string, log: string[], at?: { n: number; cores: number; anonMb: number; peaksMiB: number[]; toolDiverged?: number }) {
     const dir = path.join(root, mt);
     mkdirSync(path.join(dir, 'fp'), { recursive: true });
     writeFileSync(path.join(dir, `ramp-${label}.log`), ['RAMP_STEP_START ignored', ...log, `RAMP_DONE ${label}`].join('\n') + '\n');
@@ -33,8 +33,26 @@ describe('capacity-table', () => {
     const run = `p005-${label}-n${at.n}`;
     writeFileSync(path.join(dir, 'fp', `${run}.jsonl`), capture(at.cores, at.anonMb));
     mkdirSync(path.join(dir, 'runs', run), { recursive: true });
-    writeFileSync(path.join(dir, 'runs', run, 'agents.jsonl'), at.peaksMiB.map((p) => JSON.stringify({ memPeakBytes: p * MiB, cpuUsec: 1 })).join('\n') + '\n');
+    const rows = at.peaksMiB.map((p, i) => JSON.stringify({ memPeakBytes: p * MiB, cpuUsec: 1, toolDiverged: i < (at.toolDiverged ?? 0) }));
+    writeFileSync(path.join(dir, 'runs', run, 'agents.jsonl'), rows.join('\n') + '\n');
   }
+
+  it('reports the share of tool-diverged replays at the capacity step, so a capacity resting on unfaithful replays is visible', () => {
+    vm('e2-standard-8', 'mixed-normal', [end('mixed-normal', 4, 'OK'), end('mixed-normal', 8, 'SATURATED reason=wallSlowdown=1.90')], {
+      n: 4,
+      cores: 2,
+      anonMb: 100,
+      peaksMiB: [512, 512, 1024, 1024],
+      toolDiverged: 1,
+    });
+    const [row] = buildTable(root, 120);
+    expect(row.toolDivergedShare).toBeCloseTo(0.25, 9);
+    expect(renderMarkdown([row])).toMatch(/\| mixed-normal \| 4 \| 8 \(wallSlowdown=1\.90\) \| 1\.40 \| 25 \|/);
+    // No sessions captured at the capacity step: unknown, never 0.
+    vm('e2-standard-4', 'mixed-normal', [end('mixed-normal', 1, 'OK')]);
+    const unknown = buildTable(root, 120).find((r) => r.machineType === 'e2-standard-4');
+    expect(unknown?.toolDivergedShare).toBeNull();
+  });
 
   it('takes capacity from the last step that passed before the first SATURATED one, and measures at that step', () => {
     vm('e2-standard-4', 'mixed-normal', [end('mixed-normal', 1, 'OK'), end('mixed-normal', 2, 'OK'), end('mixed-normal', 4, 'SATURATED reason=wallSlowdown=1.80')], {

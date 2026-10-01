@@ -31,6 +31,42 @@ export interface Snapshot {
   formatVersion: 1; snapshotAt: string; seed: string;
   suites: Record<'memory' | 'prose', { entries: CorpusEntry[] }>;
 }
+export interface CandidateSnapshotOptions {
+  seed?: string; memoryLimit?: number; proseBudget?: number; maxClusterRows?: number; censusOut?: string;
+}
+/** Assign the real source, rather than a query, before any label or inference. */
+export function candidateSourcePartition(cluster: string, seed: string): 'calibration' | 'test' {
+  if (!cluster.trim() || !seed.trim()) throw new Error('source partition requires cluster and seed');
+  return crypto.createHash('sha256').update(`${seed}\0${cluster}`).digest()[0] < 64 ? 'calibration' : 'test';
+}
+export function selectCandidateSources(population: Snapshot['suites'], options: CandidateSnapshotOptions = {}): Snapshot['suites'] {
+  const seed = options.seed ?? 'mdenseon-heldout-2026-10-01';
+  const memoryLimit = options.memoryLimit ?? 48, proseBudget = options.proseBudget ?? 48, maxClusterRows = options.maxClusterRows ?? 4;
+  for (const n of [memoryLimit, proseBudget, maxClusterRows]) {
+    if (!Number.isSafeInteger(n) || n <= 0) throw new Error('snapshot budgets must be positive safe integers');
+  }
+  const annotate = (entry: CorpusEntry): CorpusEntry => {
+    const cluster = String(entry.metadata?.cluster ?? '');
+    return { ...entry, metadata: { ...entry.metadata, partition: candidateSourcePartition(cluster, seed),
+      textSha256: crypto.createHash('sha256').update(entry.text).digest('hex') } };
+  };
+  for (const corpus of ['memory', 'prose'] as const) {
+    if (new Set(population[corpus].entries.map((e) => e.key)).size !== population[corpus].entries.length) throw new Error('duplicate census key');
+    // Validate the whole population, including targets outside the first sample.
+    for (const entry of population[corpus].entries) annotate(entry);
+  }
+  const stable = (entries: CorpusEntry[]) => [...entries].sort((a, b) => {
+    const hash = (e: CorpusEntry) => crypto.createHash('sha256').update(`${seed}\0${e.key}`).digest('hex');
+    return hash(a).localeCompare(hash(b)) || a.key.localeCompare(b.key);
+  });
+  const groups = new Map<string, CorpusEntry[]>();
+  for (const entry of population.prose.entries) {
+    const cluster = String(entry.metadata!.cluster); groups.set(cluster, [...(groups.get(cluster) ?? []), entry]);
+  }
+  const picked = pickClusters([...groups].map(([key, rows]) => ({ key, size: rows.length })), proseBudget, maxClusterRows, seed);
+  return { memory: { entries: stable(population.memory.entries).slice(0, memoryLimit).map(annotate) },
+    prose: { entries: picked.keys.flatMap((key) => stable(groups.get(key)!).slice(0, maxClusterRows)).map(annotate) } };
+}
 export function validateHeldout(entries: CorpusEntry[], queries: HeldoutQuery[]): void {
   const keys = new Set(entries.map((e) => e.key));
   if (keys.size !== entries.length || keys.size === 0) throw new Error('empty or duplicate corpus keys');
@@ -66,8 +102,12 @@ export function calibratedFloor(rows: Array<{ partition: string; expected: strin
   return floor;
 }
 
-export async function takeCandidateSnapshot(file: string): Promise<Snapshot> {
-  const seed = 'mdenseon-heldout-2026-10-01';
+export async function takeCandidateSnapshot(file: string, options: CandidateSnapshotOptions = {}): Promise<Snapshot> {
+  const seed = options.seed ?? 'mdenseon-heldout-2026-10-01';
+  const outputs = [file, ...(options.censusOut ? [options.censusOut] : [])].map((f) => path.resolve(f));
+  if (new Set(outputs).size !== outputs.length || outputs.some((f) => fs.existsSync(f))) throw new Error('snapshot/census output already exists or aliases');
+  // Refuse invalid budgets before opening a live database connection.
+  selectCandidateSources({ memory: { entries: [] }, prose: { entries: [] } }, options);
   const db = new Client({ connectionString: getHarnessAdminUrl() });
   await db.connect();
   try {
@@ -78,25 +118,28 @@ export async function takeCandidateSnapshot(file: string): Promise<Snapshot> {
       FROM harness_shared.memory_canonical WHERE row_kind='memory'
       AND payload->>'user_id'='harness:papercusp' AND invalid_at IS NULL
       AND length(payload->>'data') BETWEEN 100 AND 1600 AND created_at < '2026-09-30T22:18:00Z'
-      ORDER BY md5(id::text || $1) LIMIT 48`, [seed]);
-    const pages = await db.query(`SELECT source_key || ' ' || slug AS key, count(*)::int AS size
+      ORDER BY id`);
+    const rows = await db.query(`SELECT source_key, slug, anchor, title, content
       FROM harness_shared.doc_sections WHERE source_key LIKE 'papercusp%'
-      AND length(content) BETWEEN 100 AND 2000 GROUP BY 1`);
-    const picked = pickClusters(pages.rows, 48, 4, seed);
-    const docs: CorpusEntry[] = [];
-    for (const group of picked.keys) {
-      const split = group.indexOf(' ');
-      const rows = await db.query(`SELECT source_key, slug, anchor, title, content
-        FROM harness_shared.doc_sections WHERE source_key=$1 AND slug=$2
-        AND length(content) BETWEEN 100 AND 2000 ORDER BY anchor LIMIT 4`, [group.slice(0, split), group.slice(split + 1)]);
-      for (const row of rows.rows) docs.push({ key: `doc:${row.source_key}:${row.slug}:${row.anchor}`,
+      AND length(content) BETWEEN 100 AND 2000 ORDER BY source_key, slug, anchor`);
+    const docs: CorpusEntry[] = rows.rows.map((row) => ({ key: `doc:${row.source_key}:${row.slug}:${row.anchor}`,
         text: `${row.title ?? ''}\n${row.content}`.slice(0, 2000), kind: 'doc',
-        metadata: { cluster: group }, description: row.title ?? undefined });
-    }
+        metadata: { cluster: `${row.source_key} ${row.slug}` }, description: row.title ?? undefined }));
     await db.query('COMMIT');
+    const population: Snapshot['suites'] = { memory: { entries: memories.rows.map((row) => ({ key: `memory:${row.id}`,
+      text: row.text, kind: 'fact', metadata: { cluster: row.id } })) }, prose: { entries: docs } };
     const snapshot: Snapshot = { formatVersion: 1, snapshotAt: time.rows[0].snapshot_at.toISOString(), seed,
-      suites: { memory: { entries: memories.rows.map((row) => ({ key: `memory:${row.id}`,
-        text: row.text, kind: 'fact', metadata: { cluster: row.id } })) }, prose: { entries: docs } } };
+      suites: selectCandidateSources(population, options) };
+    if (options.censusOut) {
+      const census = { formatVersion: 1, snapshotAt: snapshot.snapshotAt, seed,
+        selection: { memoryLimit: options.memoryLimit ?? 48, proseBudget: options.proseBudget ?? 48, maxClusterRows: options.maxClusterRows ?? 4 },
+        eligibility: { memory: "active harness:papercusp memory, 100..1600 chars, created before 2026-09-30T22:18:00Z",
+          prose: "papercusp% documentation source, 100..2000 content chars; rendered text capped at 2000" },
+        // Full private source bytes allow later power expansion without re-reading a changing live corpus.
+        population, selectedKeys: { memory: snapshot.suites.memory.entries.map((e) => e.key), prose: snapshot.suites.prose.entries.map((e) => e.key) } };
+      fs.mkdirSync(path.dirname(options.censusOut), { recursive: true });
+      fs.writeFileSync(options.censusOut, JSON.stringify(census, null, 2), { flag: 'wx' });
+    }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(snapshot, null, 2), { flag: 'wx' });
     return snapshot;
@@ -233,7 +276,13 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];
-  const run = process.argv.includes('--snapshot-out') ? takeCandidateSnapshot(arg('--snapshot-out'))
+  const run = process.argv.includes('--snapshot-out') ? takeCandidateSnapshot(arg('--snapshot-out'), {
+    ...(process.argv.includes('--seed') ? { seed: arg('--seed') } : {}),
+    ...(process.argv.includes('--memory-limit') ? { memoryLimit: Number(arg('--memory-limit')) } : {}),
+    ...(process.argv.includes('--prose-budget') ? { proseBudget: Number(arg('--prose-budget')) } : {}),
+    ...(process.argv.includes('--max-cluster-rows') ? { maxClusterRows: Number(arg('--max-cluster-rows')) } : {}),
+    ...(process.argv.includes('--census-out') ? { censusOut: arg('--census-out') } : {}),
+  })
     : runCandidateHybrid({ snapshot: arg('--snapshot'), gold: arg('--gold'), model: arg('--model') as 'mdenseon',
       modelDirectory: arg('--mdenseon-model'), corpus: arg('--corpus') as 'memory', out: arg('--out'),
       manifest: process.argv.includes('--manifest') ? arg('--manifest') : undefined,

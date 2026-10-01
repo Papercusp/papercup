@@ -387,8 +387,9 @@ ptool_json() {
     mutation_probe_fallback_safe_tool "$tool" &&
     mutation_probe_local_green_operator &&
     mutation_probe_ptool_timeout "$err_file"; then
-    temp_dir="$TMPDIR"
-    [ -n "$temp_dir" ] || temp_dir=/tmp
+    # WI-10004679: `set -u` is on, so a bare "$TMPDIR" aborts this fallback when
+    # TMPDIR is unset and the probe dies at its identity check instead of retrying.
+    temp_dir="${TMPDIR:-/tmp}"
     fallback_err_file="$(mktemp "$temp_dir/mutation-probe-ptool-fallback.XXXXXX")" || fallback_err_file=""
     if [ -n "$fallback_err_file" ]; then
       fallback_result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"

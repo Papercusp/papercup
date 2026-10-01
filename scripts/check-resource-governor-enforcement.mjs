@@ -495,14 +495,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/lib/targeted-task-reuse.mjs: its only starts are synchronous `execFileSync` reads, `git` (120 s timeout, 64 MB maxBuffer) to fingerprint a task's inputs and `node -p process.version` (30 s timeout) to resolve the runner identity. Each is awaited to exit, not detached, and holds nothing after exit. It is called only from scripts/affected-tests.mjs, which already runs inside the caller's admission (the green-checkpoint run or a pc-heavy test slot), so it adds no residency or queue of its own (EI-24538088938561684).",
-  },
-  {
-    path: "packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts: `runProbeCommand` spawns one bwrap user-namespace probe (`BWRAP_USERNS_PROBE_ARGS`, a `/bin/true` payload) for the agent-sandbox health check. It is awaited to exit, not detached, SIGKILLed at AGENT_SANDBOX_PROBE_TIMEOUT_MS (30 s), single-flight (concurrent readers share one in-flight probe), and a definitive answer is cached for AGENT_SANDBOX_PROBE_TTL_MS (10 min), so steady state is one ~100 ms child per 10 minutes per operator. It holds nothing after exit and must stay runnable while productive capacity is pressured, because it reports whether agents can sandbox at all (WI-10004649).",
+      "P-016 reviewed bypass disposition for scripts/lib/targeted-task-reuse.mjs: its only starts are synchronous `execFileSync` reads, `git` (120 s timeout, 64 MB maxBuffer) to fingerprint a task's inputs and `node -p process.version` (30 s timeout) to resolve the runner identity. Each is awaited to exit, not detached, and holds nothing after exit. Its callers are green-checkpoint.ts (`armTargetedTaskReuse`, inside the gate run) and scripts/affected-tests.mjs (inside a pc-heavy test slot or the gate run), both already admitted, so it adds no residency or queue of its own (EI-24538088938561684).",
   },
   {
     path: "apps/operator/lib/release/cut-seed-cli.ts",
@@ -2246,6 +2239,14 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "exec is promisify(execFile) for bounded git identity metadata probes in setup-status; failures degrade to status and no queue is retained.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "runProbeCommand spawns one bwrap user-namespace probe (BWRAP_USERNS_PROBE_ARGS, a /bin/true payload) for the agent-sandbox health leg: awaited to exit, not detached, SIGKILLed at AGENT_SANDBOX_PROBE_TIMEOUT_MS (30 s), single-flight, and a definitive answer is cached for AGENT_SANDBOX_PROBE_TTL_MS (10 min). It holds nothing after exit and must stay runnable under pressure because it reports whether agents can sandbox at all (WI-10004649).",
     },
   ],
   [

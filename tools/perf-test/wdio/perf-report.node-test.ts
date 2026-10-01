@@ -24,7 +24,8 @@ test("startup trace separates completed-before-paint requests from later complet
   const values = {
     window: { __wv_lcp: lcp, __sync_metrics__: { snapshot: () => ({
       scheduler: { tasks: [{ label: 'GET /api/bootstrap', state: 'running', enqueuedAtMs: 1, startedAtMs: 2, settledAtMs: null }] },
-      ipcAssertion: [{ startedAtMs: 3, completedAtMs: 50, client: 'connected' }], stages: { recent: [
+      ipcAssertion: [{ startedAtMs: 3, importReadyAtMs: 30, invokeStartedAtMs: 31,
+        invokeCompletedAtMs: 49, completedAtMs: 50, client: 'connected' }], stages: { recent: [
       { stage: 'reactCommit', unit: 'ms', durationMs: 15, measuredAtMs: 185, queryName: 'plans.list', traceId: 'query-plan' },
       { stage: 'updateToScreen', unit: 'ms', durationMs: 25, measuredAtMs: 195, queryName: 'plans.list', traceId: 'query-plan' },
       { stage: 'reactCommit', unit: 'ms', durationMs: 999, measuredAtMs: 999, queryName: 'unrelated', traceId: 'other' },
@@ -59,7 +60,8 @@ test("startup trace separates completed-before-paint requests from later complet
       [{ stage: 'reactCommit', measuredAtMs: 185 }, { stage: 'updateToScreen', measuredAtMs: 195 }]);
     assert.equal(trace.resources[0].endMs, 35);
     assert.equal(trace.ipc.client.kind, 'unavailable');
-    assert.deepEqual(trace.ipc.assertion, [{ startedAtMs: 3, completedAtMs: 50, client: 'connected' }]);
+    assert.deepEqual(trace.ipc.assertion, [{ startedAtMs: 3, importReadyAtMs: 30, invokeStartedAtMs: 31,
+      invokeCompletedAtMs: 49, completedAtMs: 50, client: 'connected' }]);
     assert.deepEqual(trace.scheduler, { tasks: [{ label: 'GET /api/bootstrap', state: 'running', enqueuedAtMs: 1,
       startedAtMs: 2, settledAtMs: null }] });
     const missing = await readPageStartupTrace({ fcpMs: null, lcpMs: null });

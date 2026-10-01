@@ -1308,11 +1308,19 @@ Preserve this plan body.
     // rubric. The distinguishing case begins only after the lifecycle retirement below.
     expect(first.status).toBe(deliberatelyUnguardedAcceptanceProposeStatus());
 
-    await db.adminSql`
-      UPDATE harness_shared.harness_plans
-         SET status = 'shipped'
-       WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
-         AND plan_slug = ${subjectPlan}`;
+    const workspaceId = activeWorkspaceId();
+    await db.adminSql.begin(async (tx) => {
+      await tx`
+        SELECT set_config('papercusp.plan_shipment_acceptance_gate_receipt', jsonb_build_object(
+          'schemaVersion', 1, 'transactionId', txid_current()::text,
+          'workspaceId', ${workspaceId}::text, 'harnessSlug', 'papercusp'::text, 'planSlug', ${subjectPlan}::text
+        )::text, true)`;
+      await tx`
+        UPDATE harness_shared.harness_plans
+           SET status = 'shipped'
+         WHERE workspace_id = ${workspaceId} AND harness_slug = 'papercusp'
+           AND plan_slug = ${subjectPlan}`;
+    });
     expect(await rubrics.retireAcceptanceRubricForPlan(subjectPlan, 'su-shipper')).toBe(rubricId);
     expect((await rubrics.getRubric(rubricId))?.status).toBe('retired');
 

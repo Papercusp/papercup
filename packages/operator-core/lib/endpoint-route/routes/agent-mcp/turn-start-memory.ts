@@ -183,9 +183,7 @@ const turnStartMemory = defineTool({
       const recordCoverage = (outcome: 'recalled' | 'no-recall' | 'no-signal'): void => {
         void (async () => {
           try {
-            const { recordInjectionCoverage } = await import(
-              '../../../memory/injection-delivery-coverage'
-            );
+            const { recordInjectionCoverage } = await import('../../../memory/injection-delivery-coverage');
             await recordInjectionCoverage([
               {
                 port: 'turn-start',
@@ -213,9 +211,7 @@ const turnStartMemory = defineTool({
             applyRelaunchedActivation,
             acknowledgeControlTransition,
             renderControlTransitionContext,
-          } = await import(
-            '../../../agent-tools/coordination/control-anchor'
-          );
+          } = await import('../../../agent-tools/coordination/control-anchor');
           const { ackAndRead, clearReadCursor } = await import('../../../agent-tools/coordination/read-cursors');
           // WI-10003297: rendering is not delivery. Even a legacy hook without
           // a ledger must not acknowledge on arrival: it proves no emission.
@@ -226,9 +222,17 @@ const turnStartMemory = defineTool({
           const confirmed = proof?.committed;
           if (confirmed && typeof confirmed.generation === 'number' && Number.isSafeInteger(confirmed.generation)) {
             const revision = confirmed.activationRevision as ActivationRevision | undefined;
-            if (revision === undefined || (typeof revision?.specificationRevision === 'string' && typeof revision.stateRevision === 'string')) {
-              const acknowledged = await acknowledgeControlTransition(owner, workspaceId, confirmed.generation, undefined, revision)
-                .catch(() => false);
+            if (
+              revision === undefined ||
+              (typeof revision?.specificationRevision === 'string' && typeof revision.stateRevision === 'string')
+            ) {
+              const acknowledged = await acknowledgeControlTransition(
+                owner,
+                workspaceId,
+                confirmed.generation,
+                undefined,
+                revision,
+              ).catch(() => false);
               // Once the authoritative write succeeded there is nothing to retry.
               // Retain committed proof on failures, but avoid another write on every
               // later turn after success. Cleanup failure merely permits a retry.
@@ -279,18 +283,25 @@ const turnStartMemory = defineTool({
             // profile with no guide still reads them against the workspace (harness '' matches
             // no blueprint/slot/role part).
             const packageResources = async () => {
-              const [{ resolveWearerPackageDocKeys }, { sessionPackageDocKeysForRevision }, { appliedIdentityArtifact }] =
-                await Promise.all([
-                  import('../../../blueprint/package-memory-visibility'),
-                  import('../../../blueprint/session-package-resources'),
-                  import('../../../capability-envelope/identity-grants-port'),
-                ]);
+              const [
+                { resolveWearerPackageDocKeys },
+                { sessionPackageDocKeysForRevision },
+                { appliedIdentityArtifact },
+              ] = await Promise.all([
+                import('../../../blueprint/package-memory-visibility'),
+                import('../../../blueprint/session-package-resources'),
+                import('../../../capability-envelope/identity-grants-port'),
+              ]);
               const sql = getOrgPg().sql;
               const before = await resolveWearerPackageDocKeys(sql, { workspaceId, ownerId: owner });
               if (!activationRevision) return { before, after: before };
               if (!launchSpec) throw new Error('launch record unreadable');
-              const after = await sessionPackageDocKeysForRevision(sql, { ownerId: owner, workspaceId,
-                revision: activationRevision, artifact: appliedIdentityArtifact(launchSpec.value, activationRevision) });
+              const after = await sessionPackageDocKeysForRevision(sql, {
+                ownerId: owner,
+                workspaceId,
+                revision: activationRevision,
+                artifact: appliedIdentityArtifact(launchSpec.value, activationRevision),
+              });
               return { before, after };
             };
             const rendered = await renderStackTransitionContextResult(transition, {
@@ -328,12 +339,9 @@ const turnStartMemory = defineTool({
             // does. Converge the authority receipt ONLY (never the delivery
             // watermark) when the gate-selected launch record proves `desired` is
             // what runs; the stack block stays pending for the next turn.
-            await convergeActivationToLaunchRecord(
-              owner,
-              workspaceId,
-              transition.generation,
-              activationRevision,
-            ).catch(() => false);
+            await convergeActivationToLaunchRecord(owner, workspaceId, transition.generation, activationRevision).catch(
+              () => false,
+            );
           }
           // WI-10002021: `requiresFreshContext` means "a successor host must carry this
           // before it is acknowledged" — a WAIT, not a permanent veto. But nothing ends
@@ -355,13 +363,9 @@ const turnStartMemory = defineTool({
           if (stackRequiresFreshContext && activationRevision) {
             try {
               const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
-              const launched = (await readSuLaunchSpecByOwner(owner)) as
-                { specificationRevision?: unknown } | null;
+              const launched = (await readSuLaunchSpecByOwner(owner)) as { specificationRevision?: unknown } | null;
               const revision = launched?.specificationRevision;
-              if (
-                typeof revision === 'string' &&
-                revision === activationRevision.specificationRevision
-              ) {
+              if (typeof revision === 'string' && revision === activationRevision.specificationRevision) {
                 awaitingRelaunch = false;
               }
             } catch {
@@ -376,16 +380,21 @@ const turnStartMemory = defineTool({
             // latest desired was a restart onto this revision AND the launch record
             // carries it; in-place transitions keep waiting for proof. Never touches
             // the delivery watermark, so the prepare/ack below still run as before.
-            await applyRelaunchedActivation(owner, workspaceId, transition.generation, activationRevision)
-              .catch(() => false);
+            await applyRelaunchedActivation(owner, workspaceId, transition.generation, activationRevision).catch(
+              () => false,
+            );
             // A verified successor already runs this launch artifact. Preserve
             // that independently-proven authority while the hook receipt is
             // pending, or the successor's first turn can lose every tool to
             // stale-artifact. This never advances the delivery watermark, and
             // the prepare below keeps delivery status at Prepared until proof.
             if (stackRequiresFreshContext) {
-              await convergeActivationToLaunchRecord(owner, workspaceId, transition.generation, activationRevision)
-                .catch(() => false);
+              await convergeActivationToLaunchRecord(
+                owner,
+                workspaceId,
+                transition.generation,
+                activationRevision,
+              ).catch(() => false);
             }
             activationPrepared = await markControlTransitionPrepared(
               owner,
@@ -394,13 +403,11 @@ const turnStartMemory = defineTool({
               activationRevision,
             ).catch(() => false);
           }
-          if (
-            stackRendered &&
-            !awaitingRelaunch &&
-            activationPrepared &&
-            Number.isSafeInteger(transition.generation)
-          ) {
-            return { text, candidate: { generation: transition.generation, ...(activationRevision ? { activationRevision } : {}) } };
+          if (stackRendered && !awaitingRelaunch && activationPrepared && Number.isSafeInteger(transition.generation)) {
+            return {
+              text,
+              candidate: { generation: transition.generation, ...(activationRevision ? { activationRevision } : {}) },
+            };
           }
           return { text };
         } catch {
@@ -439,9 +446,15 @@ const turnStartMemory = defineTool({
           return '';
         }
         try {
-          const [{ buildMemoryContextBlock }, { getMemoryBlockBoundedResult }, recallInput] = await Promise.all([
+          const [
+            { buildMemoryContextBlock },
+            { getMemoryBlockBoundedResult },
+            { withOptionalMemoryAdmission },
+            recallInput,
+          ] = await Promise.all([
             import('../../../memory/injection'),
             import('../../../memory/injection-block-cache'),
+            import('../../../memory/mid-turn-admission'),
             recallInputPromise,
           ]);
           if (!recallInput) return '';
@@ -461,21 +474,28 @@ const turnStartMemory = defineTool({
           // on the next turn instead of suppressing the concurrently-ready CTRL
           // and orientation sections. Owner is the session/conversation key;
           // cross-session stale recall must never bleed.
-          const bounded = await getMemoryBlockBoundedResult(
-            workspaceId,
-            `turn-start:${owner}`,
-            async (deadline) => {
+          // Turn-start uses the same embedding/PG pools as initialize and
+          // mid-turn recall. Keep it behind their existing host-wide admission
+          // seam as well: the bounded response may return while uncancellable
+          // provider work is still settling, and the guard retains its lease
+          // until that raw work actually exits.
+          const admitted = await withOptionalMemoryAdmission(() =>
+            getMemoryBlockBoundedResult(workspaceId, `turn-start:${owner}`, async (deadline) => {
               // P-044 (F-L): resolve the agent's ACTION signals only when this
               // turn actually builds/revalidates memory. A stale cache hit must
               // return immediately rather than paying these lookups inline.
               let agentSignals;
               try {
                 const { resolveAgentSignalsForOwner } = await import('../../../memory/agent-signals');
-                agentSignals = await deadline.run(() => resolveAgentSignalsForOwner({
-                  ownerId: owner,
-                  workspaceId,
-                  ...(body.cwd ? { cwd: body.cwd } : {}),
-                }), 'agent signals');
+                agentSignals = await deadline.run(
+                  () =>
+                    resolveAgentSignalsForOwner({
+                      ownerId: owner,
+                      workspaceId,
+                      ...(body.cwd ? { cwd: body.cwd } : {}),
+                    }),
+                  'agent signals',
+                );
               } catch {
                 agentSignals = undefined;
               }
@@ -508,8 +528,10 @@ const turnStartMemory = defineTool({
                 budgetChars: TURN_START_BUDGET_CHARS,
                 heading: 'Relevant memory (turn-start delta)',
               });
-            },
+            }),
           );
+          if (!admitted.admitted) return '';
+          const bounded = admitted.value;
           // A deadline/error is NOT healthy quiet. Record nothing so the
           // delivery-coverage detector sees the missing turn; only a completed
           // empty build earns `no-recall`.
@@ -635,18 +657,28 @@ const turnStartMemory = defineTool({
           // unreachable store costs only that sharing, never this turn's context.
           const turns = pgHookTurnStore();
           const evaluate = async () => {
-            const turnId = await turns.begin(owner, workspaceId).then((turn) => turn.turnId, () => randomUUID());
-            const sink = await evaluateTurnStartPackageSink({ ownerId: owner, workspaceId, turnId, signal: detach.signal });
+            const turnId = await turns.begin(owner, workspaceId).then(
+              (turn) => turn.turnId,
+              () => randomUUID(),
+            );
+            const sink = await evaluateTurnStartPackageSink({
+              ownerId: owner,
+              workspaceId,
+              turnId,
+              signal: detach.signal,
+            });
             if (sink.result) {
-              await turns.charge(owner, workspaceId, turnId,
-                { tokens: sink.result.deliveredTokens, ms: sink.result.elapsedMs }).catch(() => undefined);
+              await turns
+                .charge(owner, workspaceId, turnId, { tokens: sink.result.deliveredTokens, ms: sink.result.elapsedMs })
+                .catch(() => undefined);
             }
             return sink;
           };
-          const measured = await withBoundedTimeout(
-            evaluate(),
-            { fallback: null, timeoutMs: PACKAGE_SINK_WALL_MS, label: 'turn-start:package-sink' },
-          );
+          const measured = await withBoundedTimeout(evaluate(), {
+            fallback: null,
+            timeoutMs: PACKAGE_SINK_WALL_MS,
+            label: 'turn-start:package-sink',
+          });
           if (!measured.value) {
             detach.abort();
             return none;
@@ -668,7 +700,8 @@ const turnStartMemory = defineTool({
       let orientationBlock = orientation.block;
       if (packages.classes.length > 0) {
         try {
-          const { appendPackageOrientationRows } = await import('../../../agent-identities/package-orientation-classes');
+          const { appendPackageOrientationRows } =
+            await import('../../../agent-identities/package-orientation-classes');
           orientationBlock = appendPackageOrientationRows(orientation.block, packages.classes).block;
         } catch {
           // The platform block is already staged; it is delivered unchanged.
@@ -678,9 +711,15 @@ const turnStartMemory = defineTool({
         const token = deliveryToken ?? randomUUID();
         try {
           const { stage } = await import('../../../agent-tools/coordination/read-cursors');
-          await stage(owner, PACKAGE_SINK_DELIVERY_SURFACE, {
-            ...packages.receipt, rendered: orientationBlock !== orientation.block,
-          }, { deliveryToken: token });
+          await stage(
+            owner,
+            PACKAGE_SINK_DELIVERY_SURFACE,
+            {
+              ...packages.receipt,
+              rendered: orientationBlock !== orientation.block,
+            },
+            { deliveryToken: token },
+          );
           deliveryToken = token;
         } catch {
           // An unstaged receipt only loses provenance; the rows are still delivered.
