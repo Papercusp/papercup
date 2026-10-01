@@ -8,6 +8,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
+import { channel } from 'node:diagnostics_channel';
+import type { Server } from 'node:http';
+import type { Socket } from 'node:net';
 import { sidecarEmbedBatch, SIDECAR_MAX_TEXT_CHARS, buildGemmaEmbedder, buildHarrierEmbedder, type SidecarEmbedResponse } from '@papercusp/memory';
 import type { EmbedderBuilders } from '../embed-sidecar-server';
 import { assertMeasuredEmbedResponse, hashJson, validateMeasurementManifest, measurementOwner, fingerprintFile,
@@ -24,6 +27,56 @@ export const performanceInputSchema = z.strictObject({
   requests: z.strictObject({ query: z.array(request).min(1), document: z.array(request).min(1) }),
 });
 export type PerformanceInput = z.infer<typeof performanceInputSchema>;
+/** Diagnostic-only observer. It changes neither the pool nor server policy,
+ * logs no text/body/auth headers, and joins client sends to server lifecycle
+ * by TCP ports. An ECONNRESET alone does not identify which actor closed it. */
+export function observeSidecarTransport(server: Server, url: string,
+  record: (event: Record<string, unknown>) => void): () => void {
+  const origin = new URL(url).origin, port = Number(new URL(url).port);
+  let active = true;
+  const emit = (event: string, details: Record<string, unknown>) => {
+    if (active) record({ at: new Date().toISOString(), event, ...details });
+  };
+  const sockets = new Map<Socket, { timeout: () => void; close: () => void; error: (error: Error & { code?: string }) => void }>();
+  const connection = (socket: Socket) => {
+    const ports = { clientPort: socket.remotePort, serverPort: socket.localPort };
+    emit('server-connect', ports);
+    const timeout = () => emit('server-idle-timeout', { ...ports, socketTimeoutMs: socket.timeout,
+      keepAliveTimeoutMs: server.keepAliveTimeout, keepAliveTimeoutBufferMs: server.keepAliveTimeoutBuffer });
+    const close = () => { emit('server-close', ports); sockets.delete(socket); };
+    const error = (error: Error & { code?: string }) => emit('server-error', { ...ports, code: error.code });
+    sockets.set(socket, { timeout, close, error });
+    socket.on('timeout', timeout).once('close', close).on('error', error);
+  };
+  const request = (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+    const ports = { clientPort: req.socket.remotePort, serverPort: req.socket.localPort };
+    emit('server-request', { ...ports, method: req.method, path: (req.url ?? '').split('?')[0] });
+    res.once('finish', () => emit('server-response', { ...ports, status: res.statusCode }));
+  };
+  server.on('connection', connection).on('request', request);
+  type NativeMessage = { socket?: Socket; request?: { origin?: string | URL; method?: string; path?: string };
+    error?: Error & { code?: string; cause?: { code?: string } } };
+  const listeners = [['undici:client:connected', 'client-connect'], ['undici:client:sendHeaders', 'client-send'],
+    ['undici:request:error', 'client-error']].map(([name, event]) => {
+    const listener = (message: unknown) => {
+      const data = message as NativeMessage;
+      if (data.socket ? data.socket.remotePort !== port : String(data.request?.origin ?? '').replace(/\/$/, '') !== origin) return;
+      emit(event, { clientPort: data.socket?.localPort, serverPort: data.socket?.remotePort,
+        method: data.request?.method, path: data.request?.path?.split('?')[0],
+        errorName: data.error?.name, code: data.error?.code, causeCode: data.error?.cause?.code });
+    };
+    const source = channel(name); source.subscribe(listener); return { source, listener };
+  });
+  return () => {
+    active = false;
+    server.off('connection', connection).off('request', request);
+    for (const [socket, handlers] of sockets) {
+      socket.off('timeout', handlers.timeout).off('close', handlers.close).off('error', handlers.error);
+    }
+    sockets.clear();
+    for (const { source, listener } of listeners) source.unsubscribe(listener);
+  };
+}
 /** Supplying candidate builders replaces the sidecar defaults. Keep the two
  * shipped incumbents in the same map so the matching route actually admits
  * every scheduled arm. The native seam lets HTTP tests exercise this exact

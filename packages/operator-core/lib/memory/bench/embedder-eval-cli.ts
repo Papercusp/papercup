@@ -13,6 +13,8 @@
  *     [--vectors-out <path.json>] [--warm-trials <N>]
  *     Performance manifest cells use frozen requests and five randomized
  *     fresh-process blocks; retain cold/warm/batch/cache/resource raw samples.
+ *     --transport-trace adds private socket/client lifecycle evidence to a
+ *     diagnostic cell only; it changes no request/pool/timeout policy.
  *
  * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
  * added leg loads/pools/sizes correctly before paying for a full corpus. Its
@@ -112,7 +114,7 @@ import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentRefer
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
   assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
-import { loadPerformanceInput, collectSidecarPerformance, runPerformanceBlocks, isolatedEvaluationBuilders } from './sidecar-performance';
+import { loadPerformanceInput, collectSidecarPerformance, runPerformanceBlocks, isolatedEvaluationBuilders, observeSidecarTransport } from './sidecar-performance';
 
 const processStartedAtMs = Date.now() - process.uptime() * 1000;
 
@@ -612,10 +614,16 @@ async function main(): Promise<void> {
 
   if (performanceInput && preparedMeasurement && sidecarUrl) {
     const { arm, cell } = preparedMeasurement;
-    const report = await collectSidecarPerformance(sidecarUrl, arm, performanceInput, { processStartedAtMs,
-      onPhase: (phase) => console.log(`[performance] ${cell.id} ${phase}`),
-      onSample: (sample) => fs.appendFileSync(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
-    });
+    const traceFd = process.argv.includes('--transport-trace') ? fs.openSync(`${outPath}.transport.jsonl`, 'wx', 0o600) : undefined;
+    const stopTrace = traceFd !== undefined && isolatedSidecar
+      ? observeSidecarTransport(isolatedSidecar.server, sidecarUrl, (event) => fs.writeSync(traceFd, `${JSON.stringify(event)}\n`)) : undefined;
+    let report: Awaited<ReturnType<typeof collectSidecarPerformance>>;
+    try {
+      report = await collectSidecarPerformance(sidecarUrl, arm, performanceInput, { processStartedAtMs,
+        onPhase: (phase) => console.log(`[performance] ${cell.id} ${phase}`),
+        onSample: (sample) => fs.appendFileSync(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
+      });
+    } finally { stopTrace?.(); if (traceFd !== undefined) fs.closeSync(traceFd); }
     assertMeasuredExecution(arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
     writeMeasurementCell(preparedMeasurement, { ...report, block: cell.parameters.block, order: cell.parameters.order,
       execution: embedExecutionTarget(), threads: ORT_SESSION_OPTIONS, workerState: getWorkerState() });

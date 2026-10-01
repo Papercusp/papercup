@@ -15,24 +15,26 @@ const input: PerformanceInput = { formatVersion: 1, seed: 'synthetic', blocks: 5
   batches: [1, 2], concurrency: [1, 2], cachedSamples: 2, serverConcurrency: 2,
   requests: { query: [{ id: 'q', corpus: 'memory', text: 'query' }], document: [{ id: 'd', corpus: 'prose', text: 'document' }] } };
 describe('performance collector through real HTTP/client/sidecar queue', () => {
-  it('keeps the shared client usable across an idle-boundary event-loop pause without retry', async () => {
+  it('captures client sends and idle socket lifecycle across a response-completion pause without retry', async () => {
     // The real warm128 probe failed on the first POST after a 10s gap. Run
     // the same server/client in a production Node child so pausing its loop
     // cannot stall Vitest or its other tests. Synthetic weights isolate the
     // transport; this is a recurrence guard, not model-performance evidence.
     const serverModule = fileURLToPath(new URL('../embed-sidecar-server.ts', import.meta.url));
     const clientModule = fileURLToPath(new URL('../../../../../libs/generic/memory/src/sidecar-embedder.ts', import.meta.url));
+    const collectorModule = fileURLToPath(new URL('./sidecar-performance.ts', import.meta.url));
     const script = `
       import { createEmbedSidecarServer } from ${JSON.stringify(serverModule)};
       import { sidecarEmbedBatch } from ${JSON.stringify(clientModule)};
+      import { observeSidecarTransport } from ${JSON.stringify(collectorModule)};
       const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 4,
         builders: { harrier: async () => async () => [1, ...Array(1023).fill(0)] }, log: () => {} });
       const events = [];
-      sidecar.server.on('connection', socket => {
-        socket.on('timeout', () => events.push({ event: 'timeout', at: Date.now() }));
-        socket.on('close', () => events.push({ event: 'close', at: Date.now() }));
-      });
+      // Force the observed original idle policy only for this trace guard.
+      // A passed guard does not establish the real-model reset's cause.
+      sidecar.server.keepAliveTimeout = 5000;
       const url = 'http://127.0.0.1:' + await sidecar.listening;
+      const stopTrace = observeSidecarTransport(sidecar.server, url, event => events.push(event));
       const report = { keepAliveTimeout: sidecar.server.keepAliveTimeout,
         headersTimeout: sidecar.server.headersTimeout, completed: 0, error: null, events };
       try {
@@ -53,6 +55,7 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
           cause: error.cause?.message };
       } finally {
         await sidecar.close();
+        stopTrace();
         console.log(JSON.stringify(report));
         process.exit(0);
       }
@@ -74,8 +77,12 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
     const report = JSON.parse(result.stdout.trim().split('\n').at(-1)!);
     expect(report.error, JSON.stringify(report)).toBeNull();
     expect(report.completed).toBe(5);
-    expect(report.keepAliveTimeout, JSON.stringify(report)).toBe(61000);
-    expect(report.headersTimeout).toBeGreaterThan(report.keepAliveTimeout);
+    expect(report.pauseEndedAt - report.pauseStartedAt).toBeGreaterThanOrEqual(10500);
+    expect(report.events.filter((event: { event: string }) => event.event === 'client-send')).toHaveLength(5);
+    expect(report.events.some((event: { event: string }) => event.event === 'server-idle-timeout')).toBe(true);
+    expect(report.events.filter((event: { event: string; clientPort?: number }) => event.event === 'client-send')
+      .every((event: { clientPort?: number }) => Number.isInteger(event.clientPort))).toBe(true);
+    expect(JSON.stringify(report.events)).not.toContain('frozen');
   }, 30000);
   it('retains the actual socket failure cause and frozen request identity in its failure receipt', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-socket-failure-'));
