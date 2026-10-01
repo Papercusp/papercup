@@ -25,7 +25,8 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO = resolve(__dirname, '../../..');
-const SCRIPT = join(REPO, 'scripts/verify-tauri-headless.sh');
+// PROBE_SCRIPT lets scripts/mutation-probe.sh point this guard at a historical copy.
+const SCRIPT = process.env.PROBE_SCRIPT ?? join(REPO, 'scripts/verify-tauri-headless.sh');
 const RESOURCE_PROFILE_DIR = join(REPO, 'libs/generic/resource-profile');
 
 /** The quoted `<<'PGBOOT'` heredoc the shell writes to $WORK/boot-isolated-pg.mjs. */

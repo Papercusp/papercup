@@ -379,6 +379,38 @@ describe('codex bearer kernel adapter', () => {
     expect(started[0]?.status).toBe(429);
   });
 
+  it('WI-10004561: redacts the presented pool credential from a forwarded upstream error body', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], [null]);
+    // The upstream echoes the BARE credential it was sent (no "Bearer " prefix), which the
+    // shape-only scrub cannot see; only exact-value redaction of the presented header catches it.
+    const { options, written, started } = harness(pool, async (_url, init) => {
+      const presented = String(init.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      return upstream(401, { 'content-type': 'application/json' }, sseBody(`{"error":"invalid key ${presented}"}`));
+    });
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(401);
+    expect(started[0]?.status).toBe(401);
+    const relayed = written.join('');
+    expect(relayed).toContain('invalid key');
+    expect(relayed).not.toContain('codex-a-token');
+  });
+
+  it('WI-10004561: leaves a successful body untouched even when it contains the credential text', async () => {
+    const a = account('codex-a');
+    const pool = makePool([a], []);
+    const { options, written } = harness(pool, async () =>
+      upstream(200, { 'content-type': 'application/json' }, sseBody('{"echo":"codex-a-token"}')),
+    );
+
+    await executeGatewayRequestKernel(options);
+
+    // Calibration: the scrub is scoped to error bodies, so a 2xx relays byte-for-byte.
+    expect(written.join('')).toBe('{"echo":"codex-a-token"}');
+  });
+
   it('declines a rotation back onto an already-tried account rather than tripping route-cycle', async () => {
     const a = account('codex-a');
     const b = account('codex-b');

@@ -11,6 +11,7 @@
  * Usage:
  *   npx tsx scripts/goal-escrow-eval.mts --goal <goal-id>        # one goal, full detail
  *   npx tsx scripts/goal-escrow-eval.mts --recent 8              # the 8 most recently updated goals
+ *   npx tsx scripts/goal-escrow-eval.mts --goals id1,id2,id3     # a hand-picked sample
  *   add --json for machine-readable output; --workspace <id> to override papercusp-workspace
  */
 import postgres from 'postgres';
@@ -33,14 +34,25 @@ function arg(name: string): string | undefined {
 const MAX_GRADE_SUBJECTS = 60;
 const GRADE_BATCH = 8;
 
-async function readGrades(subjectRefs: readonly string[]): Promise<EscrowGrade[]> {
-  const refs = [...new Set(subjectRefs)].slice(0, MAX_GRADE_SUBJECTS);
+async function readGrades(subjectRefs: readonly string[]): Promise<{ grades: EscrowGrade[]; gaps: number }> {
+  const all = [...new Set(subjectRefs)];
+  const refs = all.slice(0, MAX_GRADE_SUBJECTS);
   const out: EscrowGrade[] = [];
+  // Subjects beyond the cap were never read: that is a gap too, not an absence.
+  let gaps = all.length - refs.length;
   for (let i = 0; i < refs.length; i += GRADE_BATCH) {
     const batch = refs.slice(i, i + GRADE_BATCH);
-    const pages = await Promise.all(batch.map((subjectRef) => listScorecards({ subjectRef, limit: 20 })));
+    // A read that times out under load is a GAP, never "no grade": count it and go on.
+    const pages = await Promise.all(
+      batch.map((subjectRef) =>
+        listScorecards({ subjectRef, limit: 20 }).catch((): null => {
+          gaps += 1;
+          return null;
+        }),
+      ),
+    );
     pages.forEach((rows, idx) => {
-      for (const row of rows) {
+      for (const row of rows ?? []) {
         out.push({
           id: row.issueId,
           rubricRef: row.rubricRef,
@@ -53,7 +65,7 @@ async function readGrades(subjectRefs: readonly string[]): Promise<EscrowGrade[]
       }
     });
   }
-  return out;
+  return { grades: out, gaps };
 }
 
 function line(result: GoalEscrowResult): string {
@@ -67,7 +79,13 @@ async function main(): Promise<void> {
   const sql = postgres(getHarnessAdminUrl(), { max: 2 });
   try {
     const goalArg = arg('--goal');
-    const goalIds = goalArg ? [goalArg] : await listRecentGoalIds(sql, workspaceId, Number(arg('--recent') ?? 8));
+    // --goals a,b,c evaluates a hand-picked sample (e.g. a mix of achieved / killed / active goals).
+    const goalsArg = arg('--goals');
+    const goalIds = goalArg
+      ? [goalArg]
+      : goalsArg
+        ? goalsArg.split(',').map((g) => g.trim()).filter((g) => g.length > 0)
+        : await listRecentGoalIds(sql, workspaceId, Number(arg('--recent') ?? 8));
     const results: GoalEscrowResult[] = [];
     const missing: string[] = [];
     for (const goalId of goalIds) {

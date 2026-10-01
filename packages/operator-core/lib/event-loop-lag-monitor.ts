@@ -533,12 +533,17 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
       Atomics.store(_publishLagView, SENTINEL_SAB_IDX.LAG_MAX_MS, Math.round(s.maxMs));
     }
     if (s.p95Ms >= warnP95Ms) {
-      log('[event-loop-lag] high loop delay — host is CPU-bound on the main thread', {
+      // The histogram observes scheduling delay, not CPU utilization or its
+      // cause. Preserve the actual window and sample support for attribution.
+      log('[event-loop-lag] high loop delay', {
         p50Ms: s.p50Ms,
         p95Ms: s.p95Ms,
         p99Ms: s.p99Ms,
         maxMs: s.maxMs,
-        windowMs: intervalMs,
+        windowMs: s.windowMs,
+        sampleCount: s.sampleCount,
+        windowMature: s.windowMature,
+        intervalMs,
       });
     }
     const profileTriggered = shouldTriggerLoopProfile(s, profileTriggerP95Ms, profileTriggerMaxMs);

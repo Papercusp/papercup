@@ -22,7 +22,7 @@ describe('replayPath', () => {
   });
 });
 
-function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
+function meta(over: Omit<Partial<SessionMeta>, 'repo'> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
   const repo = over.repo ?? 'r';
   return {
     sessionId: over.id,
@@ -55,6 +55,26 @@ describe('selection and scheduling', () => {
     expect(selectSessions(metas, 'cli=claude', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'claude-b']);
     expect(selectSessions(metas, 'profile=light', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'codex-a']);
     expect(selectSessions(metas, 'cli=claude,cli=codex,profile=light', undefined).map((m) => m.sessionId)).toEqual(['claude-a', 'codex-a']);
+  });
+
+  it('interleaves groups so every window of slots plays a representative mix, whatever N is (WI-10004579)', () => {
+    const corpus: SessionMeta[] = [];
+    for (const cli of ['claude', 'codex'] as const)
+      for (const repo of ['exc', 'mea'])
+        for (const profile of ['light', 'typical'] as const)
+          for (let i = 1; i <= 4; i++) corpus.push(meta({ id: `${cli}-${repo}-${profile}-${i}`, cli, repo, profile }));
+    const sel = selectSessions(corpus, undefined, undefined);
+    expect(sel).toHaveLength(32);
+    const key = (m: SessionMeta) => `${m.cli}|${m.repo.name}|${m.task.profile}`;
+    // n8, first pass: one session from each of the 8 groups. The old sorted order gave 8 claude-exc.
+    expect(new Set(Array.from({ length: 8 }, (_, s) => key(sessionFor(sel, s, 0)))).size).toBe(8);
+    // n2 over a 10-pass window still reaches codex (sorted order needed index >= 16).
+    const n2 = new Set<string>();
+    for (let s = 0; s < 2; s++) for (let it = 0; it < 10; it++) n2.add(sessionFor(sel, s, it).cli);
+    expect([...n2].sort()).toEqual(['claude', 'codex']);
+    // Uneven groups: nothing dropped or duplicated.
+    const uneven = selectSessions([...corpus.slice(0, 3), ...corpus.slice(16, 17)], undefined, undefined);
+    expect(uneven.map((m) => m.sessionId).sort()).toEqual([...corpus.slice(0, 3), ...corpus.slice(16, 17)].map((m) => m.sessionId).sort());
   });
 
   it('takes explicit ids verbatim and rejects unknown ids or keys', () => {

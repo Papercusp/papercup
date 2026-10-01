@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P517 F6 fencing mutation probe (copy-out, r5): submodule non-fast-forward retry must reauthorize (run-git-sync.ts)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+    "--fake-destructive --expect caught",
+    "--mutate 's/await opts\\.beforePush\\(args, cwd\\);/await opts.beforePush(args, cwd).catch(() => undefined);/'",
+    "--test 'D=$(dirname {}); if [ -L \"$D/run-git-sync.test.ts\" ]; then cp --remove-destination <repo>/packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts \"$D/run-git-sync.test.ts\" || exit 3; echo MATERIALIZED_TEST_COPY; fi; cd \"${D%/lib/harness/git-sync}\" && pwd && npx vitest run lib/harness/git-sync/run-git-sync.test.ts -t \"F6: submodule non-fast-forward retry reauthorizes\" --reporter=dot'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T04:18:19Z",
+  "finishedAt": "2026-10-01T04:19:53Z",
+  "summary": "Copy-out (default tier) mutation probe; the tracked tree was never mutated (no file lock or git-sync lease needed). Same parameters as r3. Mutated control: 'F6: submodule non-fast-forward retry reauthorizes before another push'. Real-tree baseline and unmutated-mirror baseline both passed (1 passed, 163 skipped). The mutant swallows a beforePush (publication authority) refusal, so the retry push proceeded after the owner key became unavailable; the test failed on the push count (expected 2 to be 1) and the probe recorded assertion_evidence=vitest-failed-tests, i.e. a real assertion failure, not an exit-code-only verdict. Regenerates binding 16317, stale because run-git-sync.ts and its test changed after r3 (r3 measured 168d89c9/5273c3c6; HEAD is now 44f9e0fe/c0e4f002). r4 (04:13-04:15Z, same parameters) is NOT valid evidence: its mutant suite died at import (ReferenceError PRICING_RULES_REVISION from a peer's mid-edit in libs/generic/model-pricing), yet the probe scored it caught with assertion_evidence=exit-code-only because it did not recognize vitest's 'Tests  no tests'. That detector gap was fixed (WI-10004584) before r5 ran, so r5's caught verdict required assertion-level evidence.",
+  "assertions": [
+    {
+      "id": "baseline-passed",
+      "passed": true,
+      "evidence": "Real-tree baseline ({} = tracked path, no copy step): Tests 1 passed | 163 skipped (164), exit 0."
+    },
+    {
+      "id": "unmutated-mirror-baseline-passed",
+      "passed": true,
+      "evidence": "Unmutated-copy baseline in the repo mirror printed MATERIALIZED_TEST_COPY, then Tests 1 passed | 163 skipped (164), exit 0."
+    },
+    {
+      "id": "reauth-refusal-swallow-caught",
+      "passed": true,
+      "evidence": "Mutant (run-git-sync.ts `await opts.beforePush(args, cwd);` -> `await opts.beforePush(args, cwd).catch(() => undefined);`, blob 44f9e0fe -> changed, copy-out): AssertionError: expected 2 to be 1 // Object.is equality; Tests 1 failed | 163 skipped (164). MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests."
+    },
+    {
+      "id": "tree-integrity",
+      "passed": true,
+      "evidence": "[mutation-probe] tree integrity: VERIFIED — run-git-sync.ts byte-identical to its pre-probe state. PRE (04:18:19Z) and POST (04:19:53Z): HEAD 191219d8 both times; subject blob 44f9e0fe and test blob c0e4f002 equal HEAD and the working tree, git status clean for packages/operator-core/lib/harness/git-sync/."
+    }
+  ],
+  "workItemId": "WI-2144478",
+  "specId": "ENDGAME-P-517-contract",
+  "testFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts",
+  "sourceFile": "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+  "scope": {
+    "planSlug": "p2p-public-release-endgame-2026-09-01",
+    "planItemId": "P-517",
+    "refreshWorkItemId": "WI-10004432",
+    "governingDecision": "p2p-public-release-endgame-2026-09-01#D-091",
+    "replacesBinding": 16317,
+    "probeTier": "copy-out",
+    "superprojectHead": "191219d8c881a676f4d98724fce4430cfbb87147",
+    "subjectBlob": "44f9e0fedb26727fcec8fe03dae86ad382c0301e",
+    "subjectSha256": "6b79285853e32350ec719ddf010129d53719e8a954d23bbf21a6106d75ad7d4f",
+    "testBlob": "c0e4f002a938121d2cc4310077486b11239efdae",
+    "testSha256": "7bc5c0e4af968955176e73923f19c08e25c48a9b8aafb3057d90e5f532fd3585",
+    "subjectCleanAtHead": true,
+    "testCommittedAtRunTime": true,
+    "assertionEvidence": "vitest-failed-tests",
+    "invalidatedRuns": ["r4 2026-10-01T04:13:28Z-04:15:07Z (collection failure scored caught; WI-10004584)"]
+  }
+}

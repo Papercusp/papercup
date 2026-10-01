@@ -191,6 +191,69 @@ test("layout probe observes native-style object properties when a prototype gett
   }
 });
 
+test("render probe preserves native HTML setters and Lute receivers, results, failures and restoration", () => {
+  const names = ['window', 'Element', 'HTMLElement', 'CSSStyleDeclaration', 'performance'] as const;
+  const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
+  let now = 0;
+  let fail = false;
+  class FakeElement {
+    tagName = 'DIV'; id = 'preview'; classList = ['vditor-reset'];
+    getAttribute() { return null; }
+    #html = '';
+    get innerHTML() { return this.#html; }
+    set innerHTML(value: string) {
+      now += 40;
+      if (fail) throw new Error('HTML failure');
+      this.#html = value;
+    }
+  }
+  const instance = {
+    Md2HTML(this: unknown, value: string) {
+      assert.equal(this, instance);
+      now += 25;
+      if (fail) throw new Error('compile failure');
+      return `<p>${value}</p>`;
+    },
+  };
+  const lute = { New(this: unknown, option: string) {
+    assert.equal(this, lute); assert.equal(option, 'original'); now += 15; return instance;
+  } };
+  const originalNew = lute.New;
+  const originalCompile = instance.Md2HTML;
+  const originalHtml = Object.getOwnPropertyDescriptor(FakeElement.prototype, 'innerHTML');
+  const fakeWindow = { Lute: lute, getComputedStyle: () => ({}), setTimeout: () => 1 };
+  const globals = { window: fakeWindow, Element: FakeElement, HTMLElement: FakeElement, CSSStyleDeclaration: class {}, performance: { now: () => now } };
+  for (const name of names) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: globals[name] });
+  try {
+    const installed = installPopupLayoutProbe();
+    assert.ok(installed.observed.includes('innerHTML:set'));
+    assert.ok(installed.observed.includes('Lute.Md2HTML'));
+    const root = new FakeElement();
+    assert.equal(lute.New('original'), instance);
+    root.innerHTML = instance.Md2HTML('ready');
+    assert.equal(root.innerHTML, '<p>ready</p>');
+    fail = true;
+    assert.throws(() => instance.Md2HTML('fail'), /compile failure/);
+    assert.throws(() => { root.innerHTML = 'fail'; }, /HTML failure/);
+    const probe = (window as unknown as { __perfLayoutProbe: { records: Array<{ api: string; ms: number; target?: string }>; restore(): void } }).__perfLayoutProbe;
+    assert.deepEqual(probe.records.map(({ api, ms }) => ({ api, ms })), [
+      { api: 'Lute.New', ms: 15 }, { api: 'Lute.Md2HTML', ms: 25 },
+      { api: 'innerHTML:set', ms: 40 }, { api: 'Lute.Md2HTML', ms: 25 }, { api: 'innerHTML:set', ms: 40 },
+    ]);
+    assert.equal(probe.records[2].target, 'div#preview.vditor-reset');
+    probe.restore(); probe.restore();
+    assert.equal(lute.New, originalNew);
+    assert.equal(instance.Md2HTML, originalCompile);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(FakeElement.prototype, 'innerHTML'), originalHtml);
+  } finally {
+    if (originalHtml) Object.defineProperty(FakeElement.prototype, 'innerHTML', originalHtml);
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+  }
+});
+
 test("native receipt publishing uses the selected operator credential", () => {
   const home = mkdtempSync(path.join(tmpdir(), "wdio-publisher-token-"));
   const scopedHome = path.join(home, "workspace", ".papercusp");

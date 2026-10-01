@@ -32,6 +32,7 @@
  */
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
+import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import {
   GatewayRequestKernelError,
   withPromiseDeadline,
@@ -356,7 +357,11 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
         streaming: shapeOnce(context).shape.streaming,
         transport: BEARER_TRANSPORT,
         metadata: { accountId: account.accountId, headers, pinYieldedFrom },
-        body: upstream.body,
+        // WI-10004561: an upstream error body may echo the bearer this attempt presented.
+        body:
+          upstream.status >= 400 && upstream.body
+            ? scrubbedErrorBody(upstream.body, presentedSecretsFromHeaders(prepared.headers))
+            : upstream.body,
         // 429 is the route-around case; everything else is forwarded as-is
         // so the caller's own client sees the real upstream status.
         retryable: upstream.status === 429,

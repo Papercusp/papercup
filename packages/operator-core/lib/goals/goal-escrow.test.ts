@@ -380,6 +380,39 @@ describe('goal escrow: verdict and status agreement', () => {
   });
 });
 
+describe('goal escrow: a failed read is UNMEASURED, never a finding', () => {
+  it('reports a missing grade as unmeasured when scorecard reads failed', () => {
+    const result = evaluateGoalEscrow(closableSnapshot({ grades: [], gradeReadGaps: 3 }));
+    const grade = result.deposits.find((d) => d.key === 'independent_grade')!;
+    expect(grade.state).toBe('missing');
+    expect(grade.unmeasured).toBe(true);
+    expect(grade.reasons.join(' ')).toContain('UNMEASURED');
+    expect(result.unmeasured).toEqual(['independent_grade']);
+    expect(result.actionable).not.toContain('independent_grade:missing');
+  });
+
+  it('still reports a genuinely absent grade when the read was complete', () => {
+    const result = evaluateGoalEscrow(closableSnapshot({ grades: [], gradeReadGaps: 0 }));
+    expect(result.unmeasured).toEqual([]);
+    expect(result.actionable).toContain('independent_grade:missing');
+  });
+
+  it('a found independent grade outranks a read gap elsewhere (the gap only voids ABSENCE claims)', () => {
+    const result = evaluateGoalEscrow(closableSnapshot({ gradeReadGaps: 2 }));
+    expect(result.deposits.find((d) => d.key === 'independent_grade')!.state).toBe('present');
+    expect(result.unmeasured).toEqual([]);
+  });
+
+  it('withholds falsification while any goal in the sample had an unmeasured deposit', () => {
+    const clean = evaluateGoalEscrow(closableSnapshot());
+    const gapped = evaluateGoalEscrow(closableSnapshot({ grades: [], gradeReadGaps: 1 }));
+    const summary = summarizeGoalEscrowSample([clean, gapped]);
+    expect(summary.goalsWithUnmeasured).toBe(1);
+    expect(summary.goalsWithActionable).toBe(0);
+    expect(summary.falsified).toBe(false);
+  });
+});
+
 describe('goal escrow: sample summary and falsification', () => {
   it('is NOT falsified when the sample reveals missing deposits and an overclaim', () => {
     const results = [

@@ -339,6 +339,11 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         });
         const installed = await browser.execute(installPopupLayoutProbe);
         console.log('[perf] layout/timer probes installed', JSON.stringify(installed));
+        for (const operation of ['innerHTML:set', 'Lute.New', 'Lute.Md2HTML']) {
+          if (!installed.observed.includes(operation)) {
+            throw new Error(`Render diagnostic installation failed: ${operation} is unavailable`);
+          }
+        }
       }
 
       if (process.env.PAPERCUSP_PERF_REACT_MODULE) {

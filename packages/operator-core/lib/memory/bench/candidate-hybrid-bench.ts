@@ -11,7 +11,7 @@ import {
   buildMdenseOnEmbedder, buildGemmaEmbedder, buildHarrierEmbedder,
   shutdownLocalEmbedder, getWorkerState,
   embedExecutionTarget,
-  type EmbedderProfileSpec, type MemoryVectorStorageProfile, type MemoryBackend, type MemoryEntry,
+  type MemoryVectorStorageProfile, type MemoryBackend, type MemoryEntry,
 } from '@papercusp/memory';
 import { reciprocalRank, type CorpusEntry } from '@papercusp/memory/bench';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
@@ -131,6 +131,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
   modelDirectory?: string; corpus: 'memory' | 'prose'; out: string;
   manifest?: string; manifestSha256?: string; cell?: string }) {
   const prepared = opts.manifest ? await prepareMeasurementCell(opts.manifest, opts.manifestSha256 ?? '', opts.cell ?? '') : undefined;
+  try {
   if (prepared) {
     if (prepared.cell.bar !== 'hybrid' || prepared.cell.corpus !== opts.corpus
       || prepared.cell.parameters.route !== 'canonical-lexical-hybrid') throw new Error('runner/cell retrieval route mismatch (entity/decay complete route is a separate measurement)');
@@ -219,11 +220,14 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
     console.log(JSON.stringify({ model: opts.model, corpus: opts.corpus, docs: entries.length, heldout: rows.length, floor, out: opts.out }));
     return report;
   } finally {
-    if (prepared) failMeasurementCell(prepared, new Error('candidate cell exited without a successful receipt'));
     await store?.dispose();
     await releaseBenchSchema(db, schema);
     await db.end();
     await shutdownLocalEmbedder();
+  }
+  } catch (error) {
+    if (prepared) failMeasurementCell(prepared, error);
+    throw error;
   }
 }
 

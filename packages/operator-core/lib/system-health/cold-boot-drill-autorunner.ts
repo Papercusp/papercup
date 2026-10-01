@@ -53,7 +53,7 @@ import {
   type GradeColdBootDrillResult,
 } from '../cold-boot-drill-live';
 import {
-  listLiveHosts,
+  listLiveHostsAsync,
   hostSupports,
   sessionClassForHost,
   type PsuPtyHost,
@@ -81,7 +81,8 @@ export const MAX_DRILLS_BEFORE_GIVEUP = 3;
 export interface ColdBootDrillAutorunDeps {
   readLedger: () => Promise<ColdBootDrillLedgerEvent[]>;
   report: () => Promise<ColdBootDrillReport>;
-  listHosts: () => PsuPtyHost[];
+  /** Production uses the async scan (WI-10004559); a sync array is accepted for fixtures. */
+  listHosts: () => PsuPtyHost[] | Promise<PsuPtyHost[]>;
   startDrill: (input: {
     ownerId: string;
     ownerLabel: string;
@@ -110,7 +111,7 @@ function autorunDeps(overrides: Partial<ColdBootDrillAutorunDeps>): ColdBootDril
   return {
     readLedger: readColdBootDrillLedger,
     report: () => reportColdBootDrills(),
-    listHosts: () => listLiveHosts(),
+    listHosts: () => listLiveHostsAsync(),
     startDrill: (input) =>
       // NO explicit sessionClass ⇒ startColdBootDrill defaults it from
       // sessionClassForHost(host) — the A1 class-vocabulary fix.
@@ -264,7 +265,7 @@ export async function runColdBootDrillAutorunOnce(
       skippedClasses.push({ sessionClass, reason: 'gave-up-carry-insufficient' });
       continue;
     }
-    const host = pickEligibleHost(deps.listHosts(), sessionClass);
+    const host = pickEligibleHost(await deps.listHosts(), sessionClass);
     if (!host) {
       skippedClasses.push({ sessionClass, reason: 'no-eligible-headless-host' });
       continue;

@@ -24,7 +24,12 @@
  * to exactly that call.
  */
 import type { Sql } from 'postgres';
-import { PRICE_TABLE_VERSION, costFromTokens, type CostEstimate, type TokenUsage } from '@papercusp/model-pricing';
+import {
+  PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, costFromTokens, type CostEstimate, type CostOptions, type TokenUsage,
+} from '@papercusp/model-pricing';
+
+/** `costFromTokens`'s shape; tests inject a changed table through it. */
+export type UsagePricer = (model: string, usage: TokenUsage, options?: CostOptions) => CostEstimate;
 
 /** Writers whose usage shape `storedSampleTokenUsage` reconstructs. Any other source is left alone. */
 export const REPRICEABLE_USAGE_SOURCES = ['interactive', 'jsonl', 'headers'] as const;
@@ -51,11 +56,12 @@ export interface StoredUsagePrice {
   costUsd: number | null;
   costSource: 'estimated' | null;
   /**
-   * `'lower'` when the row's cache writes have no TTL split: `costFromTokens` refuses to guess a
-   * tier, so the cost is the 5-minute-rate floor (the true cost lies between it and the 1-hour
-   * rate). Persisted as `usage_provenance.costBound`. Measured 2026-10-01: every sampled
-   * tier-unknown row written before the split existed (opus-4-7/4-8, sonnet-4-6) had been stored
-   * at exactly this floor, so re-deriving it keeps that history instead of nulling it.
+   * `'lower'` when the row cannot establish a price tier and the cost is that tier's floor:
+   * cache writes with no TTL split (5-minute rate, D-019), or an aggregate of a model with a
+   * long-context tier (standard-context rate, D-020). Persisted as `usage_provenance.costBound`.
+   * Measured 2026-10-01: sampled rows of both kinds written before the tier rule existed
+   * (opus-4-7/4-8, sonnet-4-6 writes; 312 gpt-6-astra aggregates) had been stored at exactly
+   * this floor, so re-deriving it keeps that history instead of nulling it.
    */
   costBound: 'lower' | null;
 }
@@ -78,9 +84,9 @@ export function storedSampleTokenUsage(row: StoredUsageSample): TokenUsage | nul
   const cacheRead = count(row.cache_read_tokens);
   const cacheCreation = count(row.cache_creation_tokens);
   if (row.source === 'jsonl' || row.source === 'headers') {
-    // usage-sample-pg.ts / agent-usage-telemetry.ts: costFromTokens(model, usage) over the four
-    // counters, an absent counter priced as zero. A run aggregate has no request size, so a
-    // model with a long-context tier stays unpriced, exactly as at write time.
+    // usage-sample-pg.ts / agent-usage-telemetry.ts: costFromTokens(model, usage,
+    // USAGE_LEDGER_PRICING) over the four counters, an absent counter priced as zero. A run
+    // aggregate has no request size, so a long-context model prices at its standard-tier floor.
     return {
       inputTokens: input ?? undefined,
       outputTokens: output ?? undefined,
@@ -109,23 +115,14 @@ export function storedSampleTokenUsage(row: StoredUsageSample): TokenUsage | nul
 }
 
 /** Price one stored row under the running table (or an injected one, for tests). */
-export function priceStoredUsageSample(
-  row: StoredUsageSample,
-  price: (model: string, usage: TokenUsage) => CostEstimate = costFromTokens,
-): StoredUsagePrice {
+export function priceStoredUsageSample(row: StoredUsageSample, price: UsagePricer = costFromTokens): StoredUsagePrice {
   const usage = storedSampleTokenUsage(row);
   if (!usage || !row.model) return { costUsd: null, costSource: null, costBound: null };
-  const est = price(row.model, usage);
-  if (est.priced) return { costUsd: est.usd, costSource: 'estimated', costBound: null };
-  if (usage.cacheCreationTierUnknown) {
-    // Every write at the cheaper 5-minute tier is the floor of the cost, not a guess at it.
-    const writes = usage.cacheCreationTokens ?? 0;
-    const floor = price(row.model, {
-      ...usage, cacheCreationTierUnknown: undefined, cacheCreation5mTokens: writes, cacheCreation1hTokens: 0,
-    });
-    if (floor.priced) return { costUsd: floor.usd, costSource: 'estimated', costBound: 'lower' };
-  }
-  return { costUsd: null, costSource: null, costBound: null };
+  // A ledger row floors an unknown tier (an aggregate's long-context tier, an unsplit cache
+  // write) and records the bound, rather than erasing measured cost (D-019, D-020).
+  const est = price(row.model, usage, USAGE_LEDGER_PRICING);
+  if (!est.priced) return { costUsd: null, costSource: null, costBound: null };
+  return { costUsd: est.usd, costSource: 'estimated', costBound: est.bound ?? null };
 }
 
 export interface RepriceUsageOptions {
@@ -137,7 +134,7 @@ export interface RepriceUsageOptions {
   maxBatches?: number;
   /** Version to stamp; defaults to the running table. Tests inject a table through `price`. */
   version?: string;
-  price?: (model: string, usage: TokenUsage) => CostEstimate;
+  price?: UsagePricer;
 }
 
 export interface RepriceUsageResult {

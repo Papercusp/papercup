@@ -246,6 +246,18 @@ submit, promotion of the template's items, claim and complete of each item,
 `plans:publish-outputs`, settlement, and a `ready` result. Its `contentHash` is the hash
 of that suite's `p013-fork-join` template, and the docs suite fails if the two drift.
 
+**The template must be startable before any operation can fire it.** A template you
+create with `plans:new` is an ordinary plan under the acceptance-BAR contract, so a
+submit runs the same start gate as `plans:start`. Before you pin it, give it
+`## Requirements` bars, the Design `### Bar-to-work map for this plan`, and an activation
+audit (`plans:audit { phase: "activation" }`), which seeds its BAR set and rubric. Until
+then every submit is refused with
+`not-startable: acceptance BAR contract is not ready for start`, and no run is created.
+An armed plan schedule hits the same gate. Only the run instances a template mints
+(`<template>@run-N`) are exempt. The benchmark's `p013-fork-join` template is a
+pre-contract test fixture seeded directly in the database; no public door creates one
+like it.
+
 ```json runnable=plan-target
 {
   "id": "fork-join",

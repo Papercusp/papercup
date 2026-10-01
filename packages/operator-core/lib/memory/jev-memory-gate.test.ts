@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createCache } from '@papercusp/cache';
 import type { DecisionClient, DecisionOutcome, QuestionMap } from '@papercusp/decision-model';
 
 import {
   JEV_MEMORY_ADMIT_THRESHOLD,
+  JEV_MEMORY_CACHE_TTL_MS,
   JEV_MEMORY_CONSUMER,
   JEV_MEMORY_ENCODING,
+  JEV_MEMORY_NO_WAIT_PORTS,
   JEV_MEMORY_VARIANT,
+  jevMemoryCacheKey,
   runJevMemoryGate,
   type JevMemoryGateDeps,
 } from './jev-memory-gate';
@@ -159,5 +163,86 @@ describe('runJevMemoryGate — On', () => {
     const r = await runJevMemoryGate({ message: 'q', candidates: [{ id: 'blank', text: '  ' }, CANDS[1]] }, h.deps);
     expect(Object.keys(h.decideSpy.mock.calls[0][0].questions)).toEqual(['m1']);
     expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [1, 0.1], keep: [true, false], model: 'jev-1.13.0' });
+  });
+});
+
+describe('runJevMemoryGate — repeat answers are reused (WI-10004485)', () => {
+  function cached(effective: 'shadow' | 'on', decide: DecideFn) {
+    const h = harness(effective, decide);
+    const cache = createCache();
+    return { ...h, deps: { ...h.deps, cache: () => cache } satisfies JevMemoryGateDeps };
+  }
+
+  it('answers an exact repeat from the cache, in any candidate order, without a second call', async () => {
+    const h = cached('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    const first = await runJevMemoryGate({ workspaceId: 'ws', message: 'where does deploy run', candidates: CANDS }, h.deps);
+    const again = await runJevMemoryGate({ workspaceId: 'ws', message: 'where does deploy run', candidates: [CANDS[1], CANDS[0]] }, h.deps);
+    expect(h.decideSpy).toHaveBeenCalledTimes(1);
+    expect(first).toEqual({ effective: 'on', outcome: 'answered', scores: [0.9, 0.1], keep: [true, false], model: 'jev-1.13.0' });
+    // Scores follow the memory, not the position.
+    expect(again).toEqual({ effective: 'on', outcome: 'answered', scores: [0.1, 0.9], keep: [false, true], model: 'jev-1.13.0', cached: true });
+  });
+
+  it('asks again when the message, a memory text, or the workspace differs', async () => {
+    const h = cached('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    await runJevMemoryGate({ workspaceId: 'ws', message: 'where does deploy run', candidates: CANDS }, h.deps);
+    await runJevMemoryGate({ workspaceId: 'ws', message: 'who prefers terse reports', candidates: CANDS }, h.deps);
+    await runJevMemoryGate({ workspaceId: 'ws', message: 'where does deploy run', candidates: [{ ...CANDS[0], text: 'edited text' }, CANDS[1]] }, h.deps);
+    await runJevMemoryGate({ workspaceId: 'other-ws', message: 'where does deploy run', candidates: CANDS }, h.deps);
+    expect(h.decideSpy).toHaveBeenCalledTimes(4);
+    expect(jevMemoryCacheKey('m', CANDS)).toBe(jevMemoryCacheKey('m', [CANDS[1], CANDS[0]]));
+    expect(jevMemoryCacheKey('m', CANDS)).not.toBe(jevMemoryCacheKey('m ', CANDS));
+  });
+
+  it('never caches an inconclusive answer: the next identical turn asks again', async () => {
+    let call = 0;
+    const h = cached('on', async () =>
+      ++call === 1 ? ({ kind: 'inconclusive', reason: 'timeout', latencyMs: 400, attempts: 1 } as DecisionOutcome<QuestionMap>) : answered({ m1: 0.9, m2: 0.9 }),
+    );
+    expect(await runJevMemoryGate({ workspaceId: 'ws', message: 'q', candidates: CANDS }, h.deps)).toEqual({
+      effective: 'on',
+      outcome: 'inconclusive',
+      reason: 'timeout',
+    });
+    expect(await runJevMemoryGate({ workspaceId: 'ws', message: 'q', candidates: CANDS }, h.deps)).toMatchObject({ outcome: 'answered' });
+    expect(h.decideSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('Log only: a repeat sends no request and says so', async () => {
+    const h = cached('shadow', async () => answered({ m1: 0.9, m2: 0.1 }));
+    expect(await runJevMemoryGate({ workspaceId: 'ws', message: 'q', candidates: CANDS }, h.deps)).toEqual({ effective: 'shadow', fired: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await runJevMemoryGate({ workspaceId: 'ws', message: 'q', candidates: CANDS }, h.deps)).toEqual({
+      effective: 'shadow',
+      fired: false,
+      cached: true,
+    });
+    expect(h.decideSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs in production on the operator cache with the documented TTL', () => {
+    expect(JEV_MEMORY_CACHE_TTL_MS).toBe(6 * 60 * 60 * 1000);
+  });
+});
+
+describe('runJevMemoryGate — per-port policy (WI-10004485)', () => {
+  it('runs On as Log only on a no-wait port: the request fires, nothing waits, nothing is dropped', async () => {
+    expect([...JEV_MEMORY_NO_WAIT_PORTS]).toEqual(['mid-turn']);
+    const never = new Promise<DecisionOutcome<QuestionMap>>(() => undefined);
+    const h = harness('on', () => never);
+    const r = await runJevMemoryGate({ message: 'where does deploy run', candidates: CANDS, port: 'mid-turn' }, h.deps);
+    expect(r).toEqual({ effective: 'shadow', fired: true });
+    expect(h.decideSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['turn-start', 'initialize', undefined])('waits for the answer on port %s', async (port) => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, ...(port ? { port } : {}) }, h.deps);
+    expect(r).toMatchObject({ effective: 'on', outcome: 'answered', keep: [true, false] });
+  });
+
+  it('never turns Log only into On on any port', async () => {
+    const h = harness('shadow', async () => answered({ m1: 0.9, m2: 0.1 }));
+    expect(await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start' }, h.deps)).toEqual({ effective: 'shadow', fired: true });
   });
 });

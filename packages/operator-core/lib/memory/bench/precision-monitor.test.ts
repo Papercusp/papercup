@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { QueryOutcome } from '@papercusp/memory/bench';
-import type { JevMemoryGateInput } from '../jev-memory-gate';
+import { JEV_MEMORY_ADMIT_THRESHOLD, type JevMemoryGateInput } from '../jev-memory-gate';
 import {
   gateReplayWithJev,
   jevGatedShape,
@@ -449,9 +449,11 @@ describe('gateReplayWithJev (P-008)', () => {
 
 describe('the gated shape tag (P-008)', () => {
   it('round-trips through parseJevGateShape, which the Learning tab reads', () => {
+    // The threshold is production's operating point (D-004 moved it 0.3 -> 0.35), so
+    // the tag follows the constant; the format around it is what this pins.
     const notes = jevGatedShape('cosine-gated', 'jev-1.13.0');
-    expect(notes).toBe('fusionMode:cosine-gated;jev:jev-1.13.0/instructions@0.3');
-    expect(parseJevGateShape(notes)).toEqual({ model: 'jev-1.13.0', encoding: 'instructions', threshold: 0.3 });
+    expect(notes).toBe(`fusionMode:cosine-gated;jev:jev-1.13.0/instructions@${JEV_MEMORY_ADMIT_THRESHOLD}`);
+    expect(parseJevGateShape(notes)).toEqual({ model: 'jev-1.13.0', encoding: 'instructions', threshold: JEV_MEMORY_ADMIT_THRESHOLD });
   });
 
   it('reads every floor-only and pre-P-008 tag as not gated', () => {

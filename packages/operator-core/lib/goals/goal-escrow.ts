@@ -131,6 +131,13 @@ export interface GoalEscrowSnapshot {
     budgetCents: number | null;
     updatedAtMs: number;
   };
+  /**
+   * How many scorecard subject reads FAILED while collecting `grades` (timeout, pool
+   * exhaustion). Absent/0 means the grade read was complete. A non-zero count makes
+   * "no grade found" a statement about the instrument, not about the goal — the
+   * evaluator reports it as UNMEASURED rather than as a missing deposit.
+   */
+  gradeReadGaps?: number;
   /** Non-observation work-items linked to the goal. */
   workItems: readonly EscrowWorkItem[];
   /** Plans linked to the goal (slug + raw status). */
@@ -171,6 +178,12 @@ export interface GoalEscrowDeposit {
   evidence: string[];
   /** Green-proof only: the deposit is a bounded no-go reason, not a green reading. */
   noGo?: boolean;
+  /**
+   * The state rests on a read that did not complete. An unmeasured deposit is an
+   * instrument gap, never a finding: it is excluded from `actionable` and blocks the
+   * experiment's falsification test from concluding anything.
+   */
+  unmeasured?: boolean;
 }
 
 export interface GoalEscrowResult {
@@ -188,6 +201,8 @@ export interface GoalEscrowResult {
   overclaimsClose: boolean;
   /** Deposits an operator would have to act on, `key:state` — the "actionable ambiguity". */
   actionable: string[];
+  /** Deposits whose state rests on an incomplete read; NOT findings. */
+  unmeasured: GoalEscrowDepositKey[];
 }
 
 const HOUR_MS = 3_600_000;
@@ -315,7 +330,23 @@ function evaluateIndependentGrade(snap: GoalEscrowSnapshot, opts: Required<GoalE
   }
   const independent = snap.grades.filter((grade) => grade.gradedBy !== null && !implementers.has(grade.gradedBy));
   const scored = independent.filter((grade) => grade.score10 !== null);
-  const evidence = [`grades=${snap.grades.length}`, `independent=${independent.length}`, `scored=${scored.length}`];
+  const gaps = snap.gradeReadGaps ?? 0;
+  const evidence = [
+    `grades=${snap.grades.length}`,
+    `independent=${independent.length}`,
+    `scored=${scored.length}`,
+    `readGaps=${gaps}`,
+  ];
+  if (gaps > 0 && scored.length === 0) {
+    // Absence of a grade is only established by a COMPLETE read. Report the gap.
+    return deposit(
+      key,
+      'missing',
+      [`UNMEASURED: ${gaps} scorecard read(s) failed, so the absence of a grade is not established`],
+      evidence,
+      { unmeasured: true },
+    );
+  }
   if (snap.grades.length === 0) return deposit(key, 'missing', ['no scorecard grades this goal or its linked items'], evidence);
   if (independent.length === 0) {
     return deposit(key, 'missing', ['every grade was emitted by an implementer (self-graded only)'], evidence);
@@ -478,8 +509,9 @@ export function evaluateGoalEscrow(snapshot: GoalEscrowSnapshot, options: GoalEs
   // every active goal "ambiguous" and bury the real findings.
   const openGoal = claimedVerdict === null;
   const actionable = deposits
-    .filter((d) => d.state !== 'present' && !(openGoal && d.key === 'closure_verdict'))
+    .filter((d) => d.state !== 'present' && d.unmeasured !== true && !(openGoal && d.key === 'closure_verdict'))
     .map((d) => `${d.key}:${d.state}`);
+  const unmeasured = deposits.filter((d) => d.unmeasured === true).map((d) => d.key);
 
   return {
     schemaVersion: GOAL_ESCROW_SCHEMA_VERSION,
@@ -493,6 +525,7 @@ export function evaluateGoalEscrow(snapshot: GoalEscrowSnapshot, options: GoalEs
     agreement,
     overclaimsClose: claimedVerdict === 'close' && verdict !== 'close',
     actionable,
+    unmeasured,
   };
 }
 
@@ -502,6 +535,8 @@ export interface GoalEscrowSampleSummary {
   byAgreement: Record<GoalEscrowAgreement, number>;
   byVerdict: Record<GoalEscrowVerdict, number>;
   overclaimsClose: number;
+  /** Goals with at least one deposit resting on an incomplete read. Never counted as findings. */
+  goalsWithUnmeasured: number;
   /** Goals whose status matches the escrow verdict AND have nothing actionable. */
   matchesWithoutAmbiguity: number;
   /** `key:state` -> number of goals showing it; the shape of what the sample revealed. */
@@ -528,9 +563,11 @@ export function summarizeGoalEscrowSample(results: readonly GoalEscrowResult[]):
   let goalsWithActionable = 0;
   let overclaimsClose = 0;
   let matchesWithoutAmbiguity = 0;
+  let goalsWithUnmeasured = 0;
   for (const result of results) {
     byAgreement[result.agreement] += 1;
     byVerdict[result.verdict] += 1;
+    if (result.unmeasured.length > 0) goalsWithUnmeasured += 1;
     if (result.actionable.length > 0) goalsWithActionable += 1;
     if (result.overclaimsClose) overclaimsClose += 1;
     if (result.agreement === 'match' && result.actionable.length === 0) matchesWithoutAmbiguity += 1;
@@ -543,9 +580,12 @@ export function summarizeGoalEscrowSample(results: readonly GoalEscrowResult[]):
     byAgreement,
     byVerdict,
     overclaimsClose,
+    goalsWithUnmeasured,
     matchesWithoutAmbiguity,
     depositFindings,
-    falsified: n > 0 && (goalsWithActionable === 0 || matchesWithoutAmbiguity === n),
+    // An incomplete read can only HIDE findings, so it can never support "no findings":
+    // falsification is withheld while any goal in the sample carried an unmeasured deposit.
+    falsified: n > 0 && goalsWithUnmeasured === 0 && (goalsWithActionable === 0 || matchesWithoutAmbiguity === n),
     exemplars: results
       .filter((r) => r.agreement === 'unsupported' || r.agreement === 'divergent' || r.agreement === 'ready-unclosed')
       .map((r) => ({ goalId: r.goalId, agreement: r.agreement, verdict: r.verdict, actionable: r.actionable })),

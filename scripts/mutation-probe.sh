@@ -1259,6 +1259,15 @@ detect_assertion_failure_evidence() {
     return 1
   fi
 
+  # A suite that fails at collection/import (Failed Suites block) prints
+  # `Tests  no tests`: a recognized Vitest run that executed ZERO assertions,
+  # so it is inconclusive, never caught (WI-10004584).
+  if sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
+       | grep -Eq '^[[:space:]]*Tests[[:space:]]+no tests([[:space:]]|$)'; then
+    printf '%s' 'vitest-no-tests-collected'
+    return 1
+  fi
+
   return 2
 }
 

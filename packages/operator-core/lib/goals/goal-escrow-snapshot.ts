@@ -67,10 +67,19 @@ export function normaliseTestResult(text: unknown): 'pass' | 'fail' | 'unknown' 
     .replace(/\bfail(?:ed|ing|ures?|s)?\s*[:=]?\s*0\b/gi, '')
     .replace(/\bno\s+fail(?:ed|ing|ures?|s)?\b/gi, '')
     .replace(/\bwithout\s+fail(?:ed|ing|ures?|s)?\b/gi, '');
-  const hasFail = /\bfail(?:ed|ing|ures?|s)?\b/i.test(cleaned);
+  // A failure needs an EXPLICIT marker: a non-zero count, an uppercase FAIL token, or
+  // status=failed. The bare word "fail" is not one — a close that ADJUDICATED red tests
+  // ("5 of 6 reds proven already-fixed ... still failing") talks about failures without
+  // reporting one, and reading it as a failing result fabricates a contradiction
+  // (measured on WI-10002029, which made a clean standing goal read green=conflicting).
+  const hasFailMarker =
+    /\b[1-9]\d*\s+(?:tests?\s+|files?\s+)?fail(?:ed|ing|ures?|s)?\b/i.test(cleaned) ||
+    /\bfail(?:ed|ing|ures?|s)?\s*[:=]\s*[1-9]/i.test(cleaned) ||
+    /\bstatus=fail(?:ed)?\b/i.test(cleaned) ||
+    /\bFAIL(?:ED)?\b/.test(cleaned);
   const hasPass = /\bpass(?:ed|es|ing)?\b|status=passed|\bgreen\b/i.test(cleaned);
-  if (hasFail && hasPass) return 'unknown';
-  if (hasFail) return 'fail';
+  if (hasFailMarker && hasPass) return 'unknown';
+  if (hasFailMarker) return 'fail';
   if (hasPass) return 'pass';
   return 'unknown';
 }
@@ -154,8 +163,13 @@ export interface ReadGoalEscrowSnapshotArgs {
   workspaceId: string;
   goalId: string;
   nowMs: number;
-  /** Scorecards that graded any of these subjects (work-item ids and plan slugs). */
-  readGrades: (subjectRefs: readonly string[]) => Promise<readonly EscrowGrade[]>;
+  /**
+   * Scorecards that graded any of these subjects (work-item ids and plan slugs).
+   * `gaps` counts subject reads that FAILED (timeout, pool exhaustion) — the caller
+   * must report them, never swallow them, so "no grade" is not claimed on a read
+   * that did not complete.
+   */
+  readGrades: (subjectRefs: readonly string[]) => Promise<{ grades: readonly EscrowGrade[]; gaps: number }>;
   /** The install whose green-checkpoint routine carries the gate health. Default `papercusp`. */
   gateInstallSlug?: string;
 }
@@ -201,7 +215,10 @@ export async function readGoalEscrowSnapshot(args: ReadGoalEscrowSnapshotArgs): 
   `) as unknown as Row[];
   const { gate, noGoReason } = mapGateReading(gateRows[0]?.gate_health);
 
-  const grades = await args.readGrades([...workItems.map((i) => i.id), ...plans.map((p) => p.slug)]);
+  const { grades, gaps: gradeReadGaps } = await args.readGrades([
+    ...workItems.map((i) => i.id),
+    ...plans.map((p) => p.slug),
+  ]);
 
   // Owner reports: any message to the human or escalation after the goal began that
   // names this goal. Diagnosed by the same reader the kickoff gate uses.
@@ -231,6 +248,7 @@ export async function readGoalEscrowSnapshot(args: ReadGoalEscrowSnapshotArgs): 
     gate,
     noGoReason,
     grades,
+    gradeReadGaps,
     spend: mapped.spend,
     ownerReports,
     ownerReportRequired: mapped.ownerReportRequired,

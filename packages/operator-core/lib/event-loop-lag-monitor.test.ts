@@ -47,6 +47,7 @@ describe('event-loop-lag-monitor', () => {
   afterEach(() => {
     handle?.stop();
     handle = undefined;
+    vi.useRealTimers();
   });
 
   it('stays silent on an idle loop (no warning under threshold)', async () => {
@@ -93,6 +94,32 @@ describe('event-loop-lag-monitor', () => {
     expect(typeof s.windowMs).toBe('number');
     expect(s.windowMature).toBe(false); // immediate read of a fresh 10s window
     expect(() => handle?.stop()).not.toThrow();
+  });
+
+  it('logs the observed delay and elapsed window without inferring its cause', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 100,
+      warnP95Ms: 0,
+      profileOnSaturation: false,
+      heapSamplingOnHighRss: false,
+      heapSnapshotOnHighRss: false,
+      log,
+    });
+    // A delayed observation changes the elapsed window without doing CPU work
+    // or supplying any other evidence about the source of the delay.
+    vi.setSystemTime(375);
+    vi.advanceTimersByTime(100);
+    const warning = log.mock.calls.find(([line]) => line.startsWith('[event-loop-lag] high loop delay'));
+    expect(warning).toBeDefined();
+    const [line, detail] = warning!;
+    expect(line).toBe('[event-loop-lag] high loop delay');
+    expect(detail.windowMs).toBe(475);
+    expect(detail.intervalMs).toBe(100);
+    expect(detail.sampleCount).toBe(0);
+    expect(detail.windowMature).toBe(false);
   });
 
   // infra round-4 P-014: the host boots the monitor from BOTH the request plane

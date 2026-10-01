@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
   // Each tagged-template INSERT pushes { text, values } here.
   sqlCalls: [] as { text: string; values: unknown[] }[],
-  costFromTokens: vi.fn((_model: string, _usage: unknown): { usd: number; priced: boolean } => ({
+  costFromTokens: vi.fn((_model: string, _usage: unknown, _options?: unknown): { usd: number; priced: boolean; bound?: 'lower' } => ({
     usd: 0,
     priced: false,
   })),
@@ -22,7 +22,9 @@ const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
 
 // PRICE_TABLE_VERSION must be on the mock: a missing export THROWS on read, and the writer's
 // best-effort try/catch would swallow it and skip the INSERT entirely (WI-10004517).
-vi.mock('@papercusp/model-pricing', () => ({ costFromTokens, PRICE_TABLE_VERSION: 'pt-test' }));
+vi.mock('@papercusp/model-pricing', () => ({
+  costFromTokens, PRICE_TABLE_VERSION: 'pt-test', USAGE_LEDGER_PRICING: { unknownTier: 'floor' },
+}));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   // `sql` is used two ways: as a tagged template (the INSERT) and as a plain
@@ -85,6 +87,7 @@ const COLS = [
   'turn_trigger',
   'account_id',
   'price_table_version',
+  'usage_provenance',
 ] as const;
 
 type Col = (typeof COLS)[number];
@@ -339,7 +342,7 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     const row = lastInsert();
     expect(row.cost_usd).toBeNull();
     expect(row.cost_source).toBeNull();
-    expect(costFromTokens).toHaveBeenCalledWith('mystery-model', expect.any(Object));
+    expect(costFromTokens).toHaveBeenCalledWith('mystery-model', expect.any(Object), { unknownTier: 'floor' });
   });
 
   it("derives 'estimated' only when costUsd null but a known model prices via costFromTokens", async () => {
@@ -362,7 +365,23 @@ describe('recordUsageSample (best-effort persistence + cost honesty)', () => {
     // The estimate prices exactly the four stored counters — the shape the repricer rebuilds.
     expect(costFromTokens).toHaveBeenCalledWith('claude-opus-4', {
       inputTokens: 1000, outputTokens: 500, cacheReadTokens: undefined, cacheCreationTokens: undefined,
+    }, { unknownTier: 'floor' });
+    // An exact estimate carries no bound, so no provenance is written.
+    expect(row.usage_provenance).toBeNull();
+  });
+
+  it('records a floor-priced aggregate as a lower bound (D-020)', async () => {
+    // An aggregate of a long-context model has no request size: the library prices its floor.
+    costFromTokens.mockReturnValue({ usd: 11.472932, priced: true, bound: 'lower' });
+    await recordUsageSample({
+      bucketKey: 'b', provider: 'openai', modelClass: 'gpt', source: 'headers',
+      inputTokens: 366_710, outputTokens: 9_444, cacheReadTokens: 7_333_632, model: 'gpt-6-astra',
     });
+    const row = lastInsert();
+    expect(row.cost_usd).toBe(11.472932);
+    expect(row.cost_source).toBe('estimated');
+    expect(row.price_table_version).toBe('pt-test');
+    expect(JSON.parse(String(row.usage_provenance))).toEqual({ costBound: 'lower' });
   });
 
   it('stamps the price table version on an unpriced row so a later table can price it', async () => {

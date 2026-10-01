@@ -101,7 +101,7 @@ import {
   getWorkerState,
 } from '@papercusp/memory';
 import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
-import { createEmbedSidecarServer, embedResponseMeasuredModel, type EmbedSidecarHandle } from '../embed-sidecar-server';
+import { createEmbedSidecarServer, embedResponseMeasuredModel, EMBED_SIDECAR_RUNTIME, type EmbedSidecarHandle } from '../embed-sidecar-server';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
@@ -544,7 +544,7 @@ async function main(): Promise<void> {
       || legNames[0] !== `sidecar:${preparedMeasurement.arm.model}` || argValue('--vectors') || argValue('--limit')) {
       throw new Error('manifest performance requires one fresh isolated matching HTTP arm and complete declared inputs');
     }
-    await assertCandidateArm(preparedMeasurement.arm, preparedMeasurement.arm.model as 'mdenseon' | 'gemma' | 'harrier', 'local-http-client-worker');
+    await assertCandidateArm(preparedMeasurement.arm, preparedMeasurement.arm.model as 'mdenseon' | 'gemma' | 'harrier', 'local-http-client-worker', EMBED_SIDECAR_RUNTIME);
   }
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
@@ -579,8 +579,7 @@ async function main(): Promise<void> {
   // transfer (prose-embedding-384-untrained-mrl-fix P-001).
   const corpusChoice = (argValue('--corpus') ?? 'memory') as 'memory' | 'prose';
   if (corpusChoice !== 'memory' && corpusChoice !== 'prose') {
-    console.error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
-    process.exit(1);
+    throw new Error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
   }
   const fullCorpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
   const gold = corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture();
@@ -603,8 +602,7 @@ async function main(): Promise<void> {
   const limitArg = argValue('--limit');
   const limit = limitArg === undefined ? undefined : Number(limitArg);
   if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
-    console.error(`--limit must be a positive integer, got '${limitArg}'`);
-    process.exit(1);
+    throw new Error(`--limit must be a positive integer, got '${limitArg}'`);
   }
   const corpus = limit === undefined ? fullCorpus : fullCorpus.slice(0, limit);
   const corpusVersion = limit === undefined ? baseCorpusVersion : `${baseCorpusVersion}+SMOKE-limit${limit}`;
@@ -668,12 +666,11 @@ async function main(): Promise<void> {
       prior.corpusVersion !== corpusVersion ||
       prior.goldSetVersion !== gold.version
     ) {
-      console.error(
+      throw new Error(
         `--compare-with REFUSED: fixture mismatch. this run = ${corpusChoice}/${corpusVersion} gold ${gold.version}; ` +
           `${p} = ${prior.corpus}/${prior.corpusVersion} gold ${prior.goldSetVersion}. ` +
           `Comparing legs scored on different queries is not a comparison.`,
       );
-      process.exit(1);
     }
     priorRuns.push(prior);
   }
@@ -860,16 +857,9 @@ async function main(): Promise<void> {
     console.log(`\n(no paired comparison: --baseline '${baselineName}' did not match a scored leg)`);
   }
 
-  const report = {
-        generatedAt: new Date().toISOString(),
-        corpus: corpusChoice,
-        corpusVersion,
-        goldVersion: gold.version,
-        goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
-        baseline: baselineName,
-        results,
-        comparisons,
-      };
+  const report = { generatedAt: new Date().toISOString(), corpus: corpusChoice, corpusVersion,
+    goldVersion: gold.version, goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
+    baseline: baselineName, results, comparisons };
   if (preparedMeasurement) {
     assertMeasuredExecution(preparedMeasurement.arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
     if (Object.values(results).some((r) => (r as { blocked?: string }).blocked)) throw new Error('failed arm cannot produce an accepted measured receipt');

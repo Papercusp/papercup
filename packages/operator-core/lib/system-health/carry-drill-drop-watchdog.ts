@@ -133,7 +133,7 @@ export interface OrphanedRespawnAlert {
 
 export interface OrphanedRespawnSweepDeps {
   /** mtime-banded candidate owners; see {@link listOrphanCandidateOwners}. */
-  listCandidates: (now: number) => string[];
+  listCandidates: (now: number) => Promise<string[]>;
   readPrior: (ownerId: string, now: number) => Promise<PriorRespawn>;
   /** Liveness of the owner's pty host. Throwing is treated as ALIVE (stay quiet). */
   hostLive: (ownerId: string) => boolean;
@@ -328,27 +328,8 @@ export function listOrphanCandidateOwners(
   dir: string = PSU_PTY_DIR,
   now: number = Date.now(),
   maxAgeMs: number = ORPHANED_RESPAWN_MAX_AGE_MS,
-): string[] {
-  const cutoff = now - maxAgeMs;
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const owners: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(HOST_EVENT_SUFFIX) || entry.name === SHARED_DRILL_LEDGER) {
-      continue;
-    }
-    try {
-      if (statSync(join(dir, entry.name)).mtimeMs < cutoff) continue;
-    } catch {
-      continue;
-    }
-    owners.push(entry.name.slice(0, -HOST_EVENT_SUFFIX.length));
-  }
-  return owners;
+): Promise<string[]> {
+  return listRecentHostEventOwners(dir, now - maxAgeMs);
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -479,7 +460,7 @@ function sweepDeps(overrides: Partial<CarryDrillDropSweepDeps>): CarryDrillDropS
 
 function productionSweepDeps(overrides: Partial<ProductionCarryDeliverySweepDeps>): ProductionCarryDeliverySweepDeps {
   return {
-    readEvents: async (now, windowMs) => readRecentProductionCarryEvents(PSU_PTY_DIR, now, windowMs),
+    readEvents: (now, windowMs) => readRecentProductionCarryEvents(PSU_PTY_DIR, now, windowMs),
     escalate: defaultEscalateProduction,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
@@ -547,7 +528,7 @@ export async function runOrphanedRespawnSweepOnce(
   if (!(await deps.flagEnabled())) return { scanned: 0, alerts: 0, escalated: 0, skipped: true };
 
   const now = deps.now();
-  const owners = deps.listCandidates(now);
+  const owners = await deps.listCandidates(now);
   let alerts = 0;
   let escalated = 0;
 

@@ -15,11 +15,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatNotice, parseToolResult, planBurst } from '../posttooluse-proof-stale-nudge.mjs';
+import { formatNotice, harnessFromEnv, parseToolResult, planBurst } from '../posttooluse-proof-stale-nudge.mjs';
 
 // Overridable so scripts/mutation-probe.sh can point the spawned hook at a mutated COPY
 // (copy-out tier) and never dirty the tracked file.
@@ -28,6 +28,7 @@ const HOOK =
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'posttooluse-proof-stale-nudge.mjs');
 const EDITOR = 'su-editor01-0000-0000-0000-000000000000';
 const PEER = 'su-peer0001-0000-0000-0000-000000000000';
+const HARNESS = 'test-harness';
 const BOUND = 'lib/bound.ts';
 const UNBOUND = 'lib/unbound.ts';
 
@@ -102,6 +103,13 @@ function handle(req: IncomingMessage, res: ServerResponse) {
     const { name, arguments: args } = rpc.params;
     seen.push({ tool: name, args, client: new URL(req.url ?? '/', 'http://x').searchParams.get('client') });
     if (name === 'plans:evidence-measuring-paths') {
+      // The real tool's contract (harnessArg): an operator-scope call WITHOUT `harness` is
+      // refused `harness_required` — 608 such refusals/72h before WI-10004549. Enforcing it
+      // here makes every advisory assertion below prove the hook supplies the harness.
+      if (typeof args.harness !== 'string' || !args.harness) {
+        sse(res, { ok: false, error: 'No harness specified. Pass `harness` or run in a harness-scoped session.' });
+        return;
+      }
       const bound = (args.paths as string[]).includes(BOUND);
       sse(res, bound ? { ok: true, clauses: CLAUSES, totalClauses: 32, holders: HOLDERS } : { ok: true, clauses: [], totalClauses: 0, holders: [] });
     } else if (name === 'coord:send') {
@@ -112,11 +120,18 @@ function handle(req: IncomingMessage, res: ServerResponse) {
   });
 }
 
-function runHook(file: string, opts: { hook?: string; operatorUrl?: string } = {}): Promise<{ code: number | null; out: string }> {
+// `harness: null` runs the hook in a session with NO harness slug in its env.
+function runHook(
+  file: string,
+  opts: { hook?: string; operatorUrl?: string; harness?: string | null } = {},
+): Promise<{ code: number | null; out: string }> {
   return new Promise((resolveRun) => {
     const env = { ...process.env };
     delete env.PAPERCUSP_LOCK_SID;
     delete env.CODEX_HOME;
+    // Pinned, never inherited: the developer's own session exports PAPERCUSP_HARNESS_SLUG.
+    delete env.PAPERCUSP_HARNESS_SLUG;
+    if (opts.harness !== null) env.PAPERCUSP_HARNESS_SLUG = opts.harness ?? HARNESS;
     Object.assign(env, {
       HOME: home,
       PAPERCUSP_SID: EDITOR,
@@ -179,8 +194,20 @@ describe('posttooluse-proof-stale-nudge (real hook process)', () => {
     expect(msg).toContain('plans:bind-spec-evidence {');
     expect(msg).toContain('Holders across all 32 clause(s): su-peer0002 30, su-peer0001 1, su-editor01 (you) 1 (1 BAR).');
     const lookup = seen.find((s) => s.tool === 'plans:evidence-measuring-paths');
-    expect(lookup?.args).toEqual({ paths: [BOUND] });
+    // WI-10004549: the lookup carries the session's harness — without it the real tool refuses.
+    expect(lookup?.args).toEqual({ harness: HARNESS, paths: [BOUND] });
     expect(lookup?.client).toBe(EDITOR);
+  });
+
+  it('a session with NO harness slug skips silently: no operator call, no breaker, no advisory (WI-10004549)', async () => {
+    resetState();
+    const { code, out } = await runHook(BOUND, { harness: null });
+    expect(code).toBe(0);
+    expect(out.trim()).toBe('');
+    // The doomed call was never made, so no `harness_required` tool-call-failure row exists to file.
+    expect(seen).toHaveLength(0);
+    // And the skip is not a failure: it must not trip the operator-fault circuit breaker.
+    expect(existsSync(join(repo, '.papercusp', 'scratch', `proof-stale-nudge.${EDITOR}.json`))).toBe(false);
   });
 
   it('an unbound path yields no advisory and no notice', async () => {
@@ -254,6 +281,16 @@ describe('posttooluse-proof-stale-nudge pure parts', () => {
     // A different file is its own burst: editing it tells the same holder about THAT file.
     const other = planBurst({ state: one.next, holders: HOLDERS, editor: EDITOR, path: 'lib/other.ts', nowMs: NOW + 60_000 });
     expect([...other.notices.keys()]).toEqual([PEER2, PEER]);
+  });
+
+  it('harnessFromEnv reads PAPERCUSP_HARNESS_SLUG and rejects unset / blank / malformed values', () => {
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: 'papercusp' })).toBe('papercusp');
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: '  papercusp  ' })).toBe('papercusp');
+    expect(harnessFromEnv({})).toBeNull();
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: '' })).toBeNull();
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: '   ' })).toBeNull();
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: '../etc' })).toBeNull();
+    expect(harnessFromEnv({ PAPERCUSP_HARNESS_SLUG: 'a b' })).toBeNull();
   });
 
   it('the peer notice fits the 600-char inbox body cap', () => {

@@ -30,7 +30,7 @@ const armSchema = z.strictObject({
   artifacts: z.strictObject({ graph: fingerprint, tokenizer: fingerprint, config: fingerprint }),
   prompts: z.strictObject({ query: z.string(), document: z.string() }),
   tokenizer: z.strictObject({ backend: z.string().min(1), version: z.string().min(1) }),
-  runtime: z.strictObject({ name: z.string().min(1), version: z.string().min(1), source: fingerprint }),
+  runtime: z.strictObject({ name: z.string().min(1), version: z.string().min(1), wire: z.string().min(1), source: fingerprint }),
   execution: z.strictObject({ device: z.enum(['cpu', 'cuda']), dtype: z.literal('fp32'),
     intraOpThreads: z.number().int().positive(), interOpThreads: z.number().int().positive(),
     transport: z.enum(['worker', 'local-http-client-worker', 'python-reference']), cache: z.literal('bypass') }),
@@ -97,7 +97,7 @@ export function candidateProfile(model: 'mdenseon' | 'gemma' | 'harrier'): Embed
 /** Identifies the shipped builders/worker before model construction. Shared
  * here so the self-contained embedder evaluator does not import PG host wiring. */
 export async function assertCandidateArm(arm: MeasurementArm, model: 'mdenseon' | 'gemma' | 'harrier',
-  transport: 'worker' | 'local-http-client-worker'): Promise<void> {
+  transport: 'worker' | 'local-http-client-worker', httpRuntime?: string): Promise<void> {
   const prompt = model === 'mdenseon' ? mdenseOnPrompt : model === 'gemma' ? gemmaPrompt : harrierPrompt;
   if (arm.model !== model) throw new Error('runner/model identity mismatch');
   assertMeasurementArm(arm, { profile: candidateProfile(model), prompts: { query: prompt('query', ''), document: prompt('document', '') },
@@ -107,6 +107,7 @@ export async function assertCandidateArm(arm: MeasurementArm, model: 'mdenseon' 
       intraOpThreads: ORT_SESSION_OPTIONS.intraOpNumThreads, interOpThreads: ORT_SESSION_OPTIONS.interOpNumThreads } });
   const source = await fingerprintFile(fileURLToPath(new URL('../../../../../libs/generic/memory/src/local-embedder-worker.script.mjs', import.meta.url)));
   if (arm.runtime.name !== 'transformers-js-worker' || arm.runtime.version !== measurementPackageVersion('@huggingface/transformers')
+    || arm.runtime.wire !== (transport === 'worker' ? 'worker-in-process' : httpRuntime)
     || source.sha256 !== arm.runtime.source.sha256 || source.bytes !== arm.runtime.source.bytes) throw new Error('actual worker/runtime identity mismatch');
 }
 function unique(values: string[], label: string): void {
@@ -258,7 +259,8 @@ export function assertMeasurementArm(arm: MeasurementArm, actual: Pick<Measureme
   }
 }
 export function assertMeasuredEmbedResponse(arm: MeasurementArm, response: SidecarEmbedResponse, n: number): void {
-  if (response.modelRev !== arm.modelRev || response.dims !== arm.profile.targetDims || response.vectors.length !== n) throw new Error('HTTP model/revision/dimension identity mismatch');
+  if (response.modelRev !== arm.modelRev || response.runtime !== arm.runtime.wire || response.dims !== arm.profile.targetDims
+    || response.vectors.length !== n) throw new Error('HTTP model/revision/runtime/dimension identity mismatch');
   if (response.cache?.hits !== 0 || response.cache.coalesced !== 0 || response.cache.inferred !== n) throw new Error('uncached inference accounting mismatch');
   for (const v of response.vectors) {
     const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));

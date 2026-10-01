@@ -374,6 +374,27 @@ describe('codex OAuth kernel adapter — 401 refresh is a re-attempt, not a fail
     expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
   });
 
+  it('WI-10004561: redacts the presented OAuth access token from the forwarded 401 body', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    // The upstream echoes the BARE access token it was sent on each attempt; the forwarded
+    // body is the post-refresh attempt's, so its token is the refreshed one.
+    const { options, started, written } = harness(
+      async (_url, init) => {
+        const presented = String(init.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+        return upstream(401, {}, sseBody(`{"error":"token ${presented} rejected"}`));
+      },
+      { accounts: [cli('chatgpt-a'), cli('chatgpt-b')], pool },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(401);
+    expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
+    const relayed = written.join('');
+    expect(relayed).toContain('rejected');
+    expect(relayed).not.toContain('chatgpt-a-tok');
+  });
+
   it('quarantines an invalidated refresh token and fails over without retrying a sibling egress', async () => {
     const now = 1_800_000_000_000;
     const quarantineMs = 15 * 60 * 1000;

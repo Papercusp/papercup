@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AUTO-BAR-R-8-P-004 counterexample: the decision check FAILS when D-005 misstates one count (current missed 64/133 altered to 63/133)",
+  "framework": "operational",
+  "command": [
+    "plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-005' } -> body saved to d005-body.txt",
+    "sed 's#| *current\\([^|]*\\)| *64/133 *|#| current\\1| 63/133 |#' d005-body.txt > d005-body-counterexample.txt  (the only change: table row 'current guard', missed duplicates 64/133 -> 63/133)",
+    "python3 .papercusp/scratch/rag-carry/p004-r8-check.py d005-body-counterexample.txt <out.json>   -> prints FAILED, exit 1",
+    "Control: the same script on the unaltered d005-body.txt prints PASSED, exit 0 (docs/evidence/shared-vector-search-libraries-2026-09-29/p004-r8-decision-check.json)."
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-01T04:18:29Z",
+  "finishedAt": "2026-10-01T04:18:29Z",
+  "summary": "Counterexample for AUTO-BAR-R-8-P-004. Input: D-005 body with exactly one number changed, the current guard's missed duplicates 64/133 -> 63/133, so the decision no longer matches the committed comparison. Expected: the check fails on current-counts-stated-and-match-rows and on nothing else. Observed: exit 1; current-counts-stated-and-match-rows FAILED (stated 63/133, recomputed from rows 64/133); the other five assertions passed. The unaltered body passes all six (control). So the check reads the decision's numbers and compares them with the raw rows; a misreported count is caught.",
+  "assertions": [
+    {
+      "id": "decision-states-adoption",
+      "passed": true,
+      "evidence": "D-005 title: 'R-8: semantic-dupe-guard does NOT adopt the library near-duplicate check; it keeps its fixed threshold and title co-signal. The library check is adopted by plans:new only (R-7)'."
+    },
+    {
+      "id": "decision-cites-committed-comparison",
+      "passed": true,
+      "evidence": "D-005 names docs/evidence/shared-vector-search-libraries-2026-09-29/p004-dupe-guard-comparison.json; the file is committed (last commit 541fe0a094, HEAD blob e3f4bd8d66c7, sha256 85eb402f27ef6c85)."
+    },
+    {
+      "id": "at-least-50-real-filings",
+      "passed": true,
+      "evidence": "344 distinct filings across 714 labelled pairs (>= 50); 493 across all 864 rows, matching the file's counts.filingsObserved=493; filings are real work-item ids (e.g. EI-21032952013504206)."
+    },
+    {
+      "id": "current-counts-stated-and-match-rows",
+      "passed": false,
+      "evidence": "D-005 states current: missed 63/133, false merges 32/581; recomputed from rows: missed 64/133, false merges 32/581."
+    },
+    {
+      "id": "library-counts-stated-and-match-rows",
+      "passed": true,
+      "evidence": "D-005 states library: missed 25/133, false merges 251/581; recomputed from rows: missed 25/133, false merges 251/581."
+    },
+    {
+      "id": "hybrid-counts-stated-and-match-rows",
+      "passed": true,
+      "evidence": "D-005 states hybrid: missed 62/133, false merges 33/581; recomputed from rows: missed 62/133, false merges 33/581."
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "specId": "AUTO-BAR-R-8-P-004",
+  "subjectCommit": "541fe0a09429796775a62d8128a4bea5b2b7ae5e",
+  "workItemId": "WI-10004273",
+  "counterexample": {
+    "mutation": "D-005 table row current guard: missed duplicates 64/133 -> 63/133",
+    "expectedFailingAssertion": "current-counts-stated-and-match-rows",
+    "observedFailingAssertions": [
+      "current-counts-stated-and-match-rows"
+    ],
+    "control": "docs/evidence/shared-vector-search-libraries-2026-09-29/p004-r8-decision-check.json (unaltered body, exit 0)"
+  }
+}

@@ -23,8 +23,12 @@
  *
  * Jev only filters; it never reorders and never authorizes anything (D-001).
  */
-import type { DecisionClient } from '@papercusp/decision-model';
+import { createHash } from 'node:crypto';
 
+import type { Cache } from '@papercusp/cache';
+import { JEV_PINNED_MODEL, type DecisionClient } from '@papercusp/decision-model';
+
+import { getOperatorCache } from '../cache/instance';
 import { activeWorkspaceId } from '../workspace-registry';
 import { judgeAdmission, type AdmissionDecide, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
 import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
@@ -50,20 +54,78 @@ export const JEV_MEMORY_ENCODING: AdmissionEncoding = 'instructions';
  */
 export const JEV_MEMORY_VARIANT: AdmissionVariant = 'v2-content';
 
+/**
+ * Ports where the owner's On does NOT wait for Jev: the gate runs Log only there
+ * (WI-10004485). The mid-turn hook gives the whole recall 1,500 ms
+ * (apps/operator/scripts/hooks/inject/ports.mjs) and live mid-turn recalls already
+ * ran past that wall about a quarter of the time before any Jev wait; an awaited
+ * call adds ~200 ms in series. Turn-start (2,500 ms) and initialize keep On.
+ * Measured 2026-10-01 on live Log-only traffic: Jev's mid-turn drops were ~99%
+ * correct, so this is a latency call, not a quality one; revisit once the
+ * in-process timeouts (EI-24748208098755918) are fixed.
+ */
+export const JEV_MEMORY_NO_WAIT_PORTS: ReadonlySet<string> = new Set(['mid-turn']);
+
+/**
+ * How long a Jev answer is reused for an exact repeat (WI-10004485). Measured on
+ * live Log-only traffic 2026-10-01 01:49-04:07Z: 13.7% of answered calls asked
+ * about a (message, candidate set) Jev had already answered, and most repeats came
+ * long after the first answer (118 of 1,097 within 10 minutes, 628 within an hour),
+ * so a short TTL would catch almost none. The answer to a fixed message, memory
+ * text, question wording and model does not change, so the bound is memory, not
+ * staleness. The cache is the operator's per-process L1 (../cache/instance); with
+ * the six :3070 workers serving requests at random it recovers an estimated 10% of
+ * calls, against 13.7% for a shared cache. Only answered results are cached: a
+ * timeout or error is asked again next time.
+ */
+export const JEV_MEMORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
 export interface JevGateCandidate {
   readonly id: string;
   readonly text: string;
 }
 
+/**
+ * The cache key for one Jev question set: everything that determines the answer
+ * (model pin, question variant, encoding, message, and each memory's id AND text)
+ * and nothing else. Candidates are sorted by id, so the same set in a different
+ * retrieval order is a hit; the reused scores are per memory, and D-013 measured
+ * the instructions encoding's order sensitivity at 1.9%.
+ */
+export function jevMemoryCacheKey(message: string, candidates: readonly JevGateCandidate[]): string {
+  const pairs = candidates.map((c) => [c.id, c.text] as const).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const digest = createHash('sha256')
+    .update(JSON.stringify([JEV_PINNED_MODEL, JEV_MEMORY_VARIANT, JEV_MEMORY_ENCODING, message, pairs]))
+    .digest('hex');
+  return `jev-memory:${digest}`;
+}
+
+/** A cached answer: P(yes) per memory id, and the model that gave it. */
+interface JevCachedAnswer {
+  readonly scores: readonly (readonly [string, number])[];
+  readonly model: string;
+}
+
+/** Thrown inside the cache factory so an inconclusive answer is never cached. */
+class JevInconclusive extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
 export type JevMemoryGateResult =
   /** No call was made. */
   | { readonly effective: 'off' }
-  /** Log only: the request was fired and nothing waits for it. */
-  | { readonly effective: 'shadow'; readonly fired: boolean }
+  /**
+   * Log only: nothing waits. `fired` is whether a request went out; a repeat the
+   * cache already answered (`cached`) sends none.
+   */
+  | { readonly effective: 'shadow'; readonly fired: boolean; readonly cached?: true }
   /**
    * On, answered: `keep` is index-aligned with the candidates. `model` is the id
    * the provider says answered (not the pin we asked for), so a served-model
-   * change is visible wherever the verdict is recorded (P-008).
+   * change is visible wherever the verdict is recorded (P-008). `cached` marks an
+   * answer reused from an earlier identical call (no request, no wait).
    */
   | {
       readonly effective: 'on';
@@ -71,6 +133,7 @@ export type JevMemoryGateResult =
       readonly keep: readonly boolean[];
       readonly scores: readonly number[];
       readonly model: string;
+      readonly cached?: true;
     }
   /** On, no verdict: the caller keeps every candidate (fail open). */
   | { readonly effective: 'on'; readonly outcome: 'inconclusive'; readonly reason: string };
@@ -78,6 +141,8 @@ export type JevMemoryGateResult =
 export interface JevMemoryGateDeps {
   readonly resolve: (workspaceId: string) => Promise<Pick<JevMemoryInjectionResolution, 'effective'>>;
   readonly client: () => DecisionClient;
+  /** Where repeat answers are reused ({@link JEV_MEMORY_CACHE_TTL_MS}). Absent: every call asks Jev. */
+  readonly cache?: () => Cache;
 }
 
 const defaultDeps: JevMemoryGateDeps = {
@@ -85,6 +150,7 @@ const defaultDeps: JevMemoryGateDeps = {
   // mode read and never touches the key store.
   resolve: async (workspaceId) => ((await getJevMode(workspaceId)) === 'off' ? { effective: 'off' } : resolveJevMemoryInjection(workspaceId)),
   client: ensureJevDecisionClient,
+  cache: getOperatorCache,
 };
 
 export interface JevMemoryGateInput {
@@ -99,17 +165,26 @@ export interface JevMemoryGateInput {
    * counted as live injection traffic in decision_model_calls.
    */
   readonly consumer?: string;
+  /**
+   * The injection port asking (`initialize` | `turn-start` | `mid-turn`, or absent
+   * for a tool-call surface). On a {@link JEV_MEMORY_NO_WAIT_PORTS} port the
+   * owner's On runs as Log only.
+   */
+  readonly port?: string;
 }
 
 export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemoryGateDeps = defaultDeps): Promise<JevMemoryGateResult> {
+  let workspaceId: string;
   let effective: JevMemoryInjectionResolution['effective'];
   try {
-    effective = (await deps.resolve(input.workspaceId ?? activeWorkspaceId())).effective;
+    workspaceId = input.workspaceId ?? activeWorkspaceId();
+    effective = (await deps.resolve(workspaceId)).effective;
   } catch {
     // An unreadable setting is not consent to call out: behave as Off.
     return { effective: 'off' };
   }
   if (effective === 'off') return { effective: 'off' };
+  if (effective === 'on' && input.port !== undefined && JEV_MEMORY_NO_WAIT_PORTS.has(input.port)) effective = 'shadow';
 
   const candidates = input.candidates.filter((c) => c.text.trim().length > 0);
   if (candidates.length === 0 || !input.message.trim()) {
@@ -120,29 +195,48 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
   // Each request is ledgered against the memories it judges (all of them, or one under `pair`).
   const decide: AdmissionDecide = (request, call) =>
     deps.client().decide(request, { consumer, subjectIds: call.candidates.map((ci) => candidates[ci].id) });
-  const judge = () => judgeAdmission(input.message, candidates, JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT, decide);
+  const ask = async (): Promise<JevCachedAnswer> => {
+    const judgement = await judgeAdmission(input.message, candidates, JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT, decide);
+    const p = judgement.result;
+    if ('failure' in p) throw new JevInconclusive(p.failure);
+    // Scores exist only when every request answered, so a model is always named; the fallback is for the type.
+    return { scores: candidates.map((c, i) => [c.id, p.scores[i]] as const), model: judgement.model ?? 'unknown' };
+  };
+  // `cached` is set synchronously by the cache's outcome hook, before getOrSet's
+  // first await, so the shadow path below can read it right after starting judge().
+  // A caller that joins an in-flight identical call reports 'miss', not a hit.
+  let cached = false;
+  const cache = deps.cache?.();
+  const judge = async (): Promise<JevCachedAnswer> =>
+    cache
+      ? cache.getOrSet(workspaceId, jevMemoryCacheKey(input.message, candidates), ask, {
+          softTtlMs: JEV_MEMORY_CACHE_TTL_MS,
+          hardTtlMs: JEV_MEMORY_CACHE_TTL_MS,
+          onOutcome: (outcome) => {
+            cached = outcome === 'hit';
+          },
+        })
+      : ask();
 
   if (effective === 'shadow') {
     // Fire and forget. decide() never throws for expected failures; the catch is
-    // for the unexpected, so a shadow fault can never reach the turn.
-    void Promise.resolve()
-      .then(judge)
-      .catch(() => undefined);
-    return { effective, fired: true };
+    // for the unexpected (and for JevInconclusive), so a shadow fault can never
+    // reach the turn. judge() is async, so even a synchronous fault inside it
+    // arrives as a rejection here.
+    void judge().catch(() => undefined);
+    return cached ? { effective, fired: false, cached: true } : { effective, fired: true };
   }
 
   try {
-    const judgement = await judge();
-    const p = judgement.result;
-    if ('failure' in p) return { effective, outcome: 'inconclusive', reason: p.failure };
+    const answer = await judge();
     // `candidates` may be shorter than `input.candidates` (empty texts were never
     // asked about); map back so `keep` stays aligned with the caller's list.
-    const byId = new Map(candidates.map((c, i) => [c.id, p.scores[i]]));
+    const byId = new Map(answer.scores);
     const scores = input.candidates.map((c) => byId.get(c.id) ?? 1);
-    // Scores exist only when every request answered, so a model is always named; the fallback is for the type.
-    const model = judgement.model ?? 'unknown';
-    return { effective, outcome: 'answered', scores, keep: scores.map((s) => s >= JEV_MEMORY_ADMIT_THRESHOLD), model };
+    const keep = scores.map((s) => s >= JEV_MEMORY_ADMIT_THRESHOLD);
+    return { effective, outcome: 'answered', scores, keep, model: answer.model, ...(cached ? { cached: true as const } : {}) };
   } catch (e) {
+    if (e instanceof JevInconclusive) return { effective, outcome: 'inconclusive', reason: e.reason };
     return { effective, outcome: 'inconclusive', reason: `error: ${e instanceof Error ? e.message : String(e)}` };
   }
 }

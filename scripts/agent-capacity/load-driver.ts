@@ -101,10 +101,32 @@ export function selectSessions(metas: SessionMeta[], select: string | undefined,
     (want[k] ??= []).push(v);
   }
   const field = (m: SessionMeta, k: string) => (k === 'cli' ? m.cli : k === 'repo' ? m.repo.name : k === 'profile' ? m.task.profile : m.task.id);
-  return metas
-    .filter((m) => m.exitCode === 0 && !m.timedOut)
-    .filter((m) => Object.entries(want).every(([k, vs]) => vs.includes(field(m, k))))
-    .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+  return interleaveSessions(
+    metas
+      .filter((m) => m.exitCode === 0 && !m.timedOut)
+      .filter((m) => Object.entries(want).every(([k, vs]) => vs.includes(field(m, k)))),
+  );
+}
+
+/**
+ * Order sessions round-robin across their (cli, repo, profile) groups, each group sorted by id.
+ * `sessionFor` walks a contiguous window of this list (slot s plays s, s+1, ...), so a sorted
+ * list made a step's workload depend on N: with claude-* sorted before codex-*, no slot below
+ * n16 ever reached a codex session (WI-10004579). Interleaved, any window of G consecutive
+ * entries (G = number of groups) holds one session from every group.
+ */
+export function interleaveSessions(sessions: SessionMeta[]): SessionMeta[] {
+  const groups = new Map<string, SessionMeta[]>();
+  for (const m of [...sessions].sort((a, b) => a.sessionId.localeCompare(b.sessionId))) {
+    const key = `${m.cli}|${m.repo.name}|${m.task.profile}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = []));
+    g.push(m);
+  }
+  const ordered = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, g]) => g);
+  const out: SessionMeta[] = [];
+  for (let i = 0; out.length < sessions.length; i++) for (const g of ordered) if (i < g.length) out.push(g[i]);
+  return out;
 }
 
 /** Which session slot `slot` runs on its `iteration`-th pass: round-robin, offset per slot. */

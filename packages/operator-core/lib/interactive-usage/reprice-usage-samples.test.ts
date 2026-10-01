@@ -4,7 +4,7 @@
  * so a re-priced row means exactly what a freshly written one would.
  */
 import { describe, expect, it } from 'vitest';
-import { costFromTokens, type TokenUsage } from '@papercusp/model-pricing';
+import { costFromTokens, type CostOptions, type TokenUsage } from '@papercusp/model-pricing';
 import { priceStoredUsageSample, storedSampleTokenUsage, type StoredUsageSample } from './reprice-usage-samples';
 
 const row = (over: Partial<StoredUsageSample>): StoredUsageSample => ({
@@ -27,9 +27,13 @@ describe('run-aggregate writers (jsonl = usage-sample-pg.ts, headers = agent-usa
     expect(priceStoredUsageSample(stored).costUsd).toBe(writer.usd);
   });
 
-  it('a long-context model stays unpriced: a run aggregate has no request size', () => {
+  it('a run aggregate of a long-context model prices at its standard-tier floor (D-020)', () => {
     const stored = row({ source: 'jsonl', provider: 'openai', model: 'gpt-6-sol', grain: null });
-    expect(priceStoredUsageSample(stored)).toEqual({ costUsd: null, costSource: null, costBound: null });
+    const usage = storedSampleTokenUsage(stored)!;
+    expect(usage.requestInputTokens).toBeUndefined();
+    expect(costFromTokens('gpt-6-sol', usage).priced).toBe(false);
+    const standard = costFromTokens('gpt-6-sol', { ...usage, requestInputTokens: 0 });
+    expect(priceStoredUsageSample(stored)).toEqual({ costUsd: standard.usd, costSource: 'estimated', costBound: 'lower' });
   });
 });
 
@@ -56,10 +60,12 @@ describe('interactive transcript rows (ingest-claude-transcripts.ts NULL-column 
     expect(priceStoredUsageSample(small).costSource).toBe('estimated');
   });
 
-  it('a file-model-delta row carries no request size, so a long-context model is unpriced', () => {
+  it('a file-model-delta row carries no request size, so a long-context model prices at its floor', () => {
     const stored = row({ provider: 'openai', model: 'gpt-6-sol', grain: 'file-model-delta', cache_creation_5m_tokens: null, cache_creation_1h_tokens: null });
-    expect(storedSampleTokenUsage(stored)!.requestInputTokens).toBeUndefined();
-    expect(priceStoredUsageSample(stored).costUsd).toBeNull();
+    const usage = storedSampleTokenUsage(stored)!;
+    expect(usage.requestInputTokens).toBeUndefined();
+    const standard = costFromTokens('gpt-6-sol', { ...usage, requestInputTokens: 0 });
+    expect(priceStoredUsageSample(stored)).toEqual({ costUsd: standard.usd, costSource: 'estimated', costBound: 'lower' });
   });
 
   it('NULL input means the uncached input was never decomposed: unpriced', () => {
@@ -94,6 +100,26 @@ describe('interactive transcript rows (ingest-claude-transcripts.ts NULL-column 
     expect(priceStoredUsageSample(openai).costSource).toBe('estimated');
   });
 
+  it('an aggregate of a long-context model prices at its standard-tier floor, marked as a lower bound', () => {
+    // D-020: live row 120573 (gpt-6-astra, 2026-09-17) was stored at $11.472932 before the model
+    // gained a long-context tier on 2026-09-23. Under refuse-mode pricing the repricer nulled it.
+    const astra = row({
+      provider: 'openai', model: 'gpt-6-astra', input_tokens: '366710', output_tokens: '9444',
+      cache_read_tokens: '7333632', cache_creation_tokens: '0', cache_creation_5m_tokens: null,
+      cache_creation_1h_tokens: null, grain: null,
+    });
+    expect(costFromTokens('gpt-6-astra', storedSampleTokenUsage(astra)!).priced).toBe(false);
+    const priced = priceStoredUsageSample(astra);
+    expect(priced.costBound).toBe('lower');
+    expect(priced.costUsd).toBeCloseTo(11.472932, 9);
+    // A request-grain row has a size, so it prices exactly with no bound.
+    const request = priceStoredUsageSample({ ...astra, grain: 'request' });
+    expect(request.costBound).toBeNull();
+    expect(request.costUsd).toBeGreaterThan(priced.costUsd!);
+    // The jsonl/headers writers' aggregates take the same floor.
+    expect(priceStoredUsageSample({ ...astra, source: 'jsonl' }).costBound).toBe('lower');
+  });
+
   it('an Anthropic row with zero writes needs no TTL split', () => {
     const stored = row({ cache_creation_tokens: '0', cache_creation_5m_tokens: null, cache_creation_1h_tokens: null });
     expect(priceStoredUsageSample(stored).costSource).toBe('estimated');
@@ -110,8 +136,8 @@ describe('rows the repricer cannot price', () => {
 
 describe('price injection (how the integration test stands in for a changed table)', () => {
   it('uses the injected pricing function', () => {
-    const doubled = (model: string, usage: TokenUsage) => {
-      const est = costFromTokens(model, usage);
+    const doubled = (model: string, usage: TokenUsage, options?: CostOptions) => {
+      const est = costFromTokens(model, usage, options);
       return { ...est, usd: est.usd * 2 };
     };
     expect(priceStoredUsageSample(row({}), doubled).costUsd).toBeCloseTo(priceStoredUsageSample(row({})).costUsd! * 2, 15);

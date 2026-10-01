@@ -24,7 +24,7 @@ export function measurementManifestFixture(privateRoot: string, sourceCommit = '
     id: model, model, profile: candidateProfile(model), modelRev: `${model}-fixture-v1`, artifactRevision: `${model}-fixture-v1`,
     artifacts: { graph: f, tokenizer: f, config: f }, prompts: { query: 'query: ', document: 'document: ' },
     tokenizer: { backend: 'synthetic', version: 'fixture-v1' },
-    runtime: { name: 'synthetic-protocol-worker', version: 'fixture-v1', source: f },
+    runtime: { name: 'synthetic-protocol-worker', version: 'fixture-v1', wire: 'node-onnx-worker', source: f },
     execution: { device: 'cpu', dtype: 'fp32', intraOpThreads: 4, interOpThreads: 1,
       transport: 'local-http-client-worker', cache: 'bypass' },
   }));

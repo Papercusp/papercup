@@ -22,6 +22,17 @@
  *         the declared resultSchema (the real program settlement shape);
  *       – plan-target op: submit → a plan run instance → cancel.
  *
+ * The plan-target template is PROVISIONED, not created here (D-044 on the plan
+ * above). A template is an ordinary post-epoch plan, so an operation can fire it
+ * only once it carries Requirements BARs, the Design Bar-to-work map and an
+ * activation audit (which seeds its BAR set and rubric). An activation audit needs
+ * canonical session_turn sources, so this suite cannot run one itself. Provision a
+ * new template once through the public doors, as the smoke client:
+ * `plans:new { harness: SMOKE_POT, slug: SMOKE_TEMPLATE, content }` with
+ * SMOKE_TEMPLATE_CONTENT below, then `plans:audit { phase: 'activation', classRef,
+ * sourceRanges, mappings, itemProvenance }`. A new template needs a new
+ * SMOKE_HARNESS too, because a reused harness keeps the pin it was created with.
+ *
  * Opt-in: it runs only when P015_DEPLOYED_OPERATOR_URL is set (for example
  * http://127.0.0.1:3070), so the gate never reaches a live host. Evidence from
  * it is bound with details.evidencePlane:'deployed' only for a run against the
@@ -48,21 +59,60 @@ import {
   BlueprintOperationStatusSchema,
   SubmitResultSchema,
 } from './operation-contract';
-import { P013B_OPERATION, P013B_TEMPLATE_CONTENT } from './operation-performance-b-driver';
+import { P013B_OPERATION } from './operation-performance-b-driver';
 
 const BASE = process.env.P015_DEPLOYED_OPERATOR_URL?.replace(/\/+$/, '');
 const EXPECTED_SHA = process.env.P015_EXPECTED_SHA?.trim() || null;
 const WORKSPACE = process.env.P015_SMOKE_WORKSPACE?.trim() || 'papercusp-workspace';
 const CLIENT = process.env.P015_SMOKE_CLIENT?.trim() || process.env.PAPERCUSP_SID?.trim() || 'p015-deployed-smoke';
-const SMOKE_HARNESS = process.env.P015_SMOKE_HARNESS?.trim() || 'p015-smoke-operations';
+// Paired with SMOKE_TEMPLATE: the harness's blueprint pins the template it was created
+// with, so a new template needs a new harness slug (the 2026-09-30 harness pins the
+// pre-D-044 template, which can never start).
+const SMOKE_HARNESS = process.env.P015_SMOKE_HARNESS?.trim() || 'p015-smoke-operations-2026-10-01';
 // Plans are Hive-scoped (resolvePlanScope refuses a harness outside a Hive), so the
 // plan-target operation needs its harness inside a Hive. The in-process suites fake
 // that scope; only this smoke exercises it, through the public pot doors.
 const SMOKE_POT = process.env.P015_SMOKE_POT?.trim() || 'p015-deployed-smoke-pot';
 // The harness's blueprint pins this template at create time and the harness is reused,
 // so the pin must never move: a FIXED slug that already ends in a date (plans:new
-// appends -YYYY-MM-DD to any slug that does not), with fixed content.
-const SMOKE_TEMPLATE = process.env.P015_SMOKE_TEMPLATE?.trim() || 'p015-smoke-fork-join-2026-09-30';
+// appends -YYYY-MM-DD to any slug that does not), with fixed content. It must be
+// provisioned and activation-audited before the suite runs (see the header, D-044).
+const SMOKE_TEMPLATE = process.env.P015_SMOKE_TEMPLATE?.trim() || 'p015-smoke-fork-join-bar-2026-10-01';
+/** The provisioned template's body: the P-013 fork/join graph plus one acceptance BAR. */
+export const SMOKE_TEMPLATE_CONTENT = `# P-015 deployed smoke fork/join template
+
+## Now
+**State:** template, provisioned once for the R-12 deployed smoke (D-044).
+**Next:** run through the documented plan-target blueprint operation.
+
+## Background
+
+The R-12 deployed smoke submits the documented plan-target operation against a deployed operator.
+Under D-044 a plan-target template is an ordinary post-epoch plan, so it must carry acceptance BARs
+and pass an activation audit before an operation can fire it. This template is that fixture: the
+P-013 fork/join item graph (two forks and a join) with one BAR.
+
+## Requirements
+
+**R-1 — Fork/join run settles.**
+\`\`\`requirement
+{"intent":{"request":"A run of this template promotes two fork items and a join that is blocked by both, and settles once the join publishes its output."},"acceptance":{"condition":"Each run instance promotes P-001 and P-002 as claimable, holds P-003 until both forks complete, and settles after P-003 publishes the declared value output.","falsifier":"A run promotes the join before both forks complete, settles without the join's published output, or promotes items other than the three declared.","evidencePlane":"tree","requiredTestLayers":["integration"],"role":"outcome","mandatory":true},"verification":{"method":"Submit the plan-target operation against this template and inspect the instance's promoted items, blocker edges and the run's settlement.","check":{"kind":"requirements"}}}
+\`\`\`
+
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001, P-002, P-003 | tree |
+
+## Phase 1
+
+- **P-001** \`todo\` fork left
+- **P-002** \`todo\` fork right
+- **P-003** \`todo\` join blocked-by: P-001, P-002
+`;
 const SMOKE_PARENT = process.env.P015_SMOKE_PARENT_DIR?.trim() || join(homedir(), '.papercusp', 'smoke-harnesses');
 const PROGRAM_SETTLE_MS = Number(process.env.P015_PROGRAM_SETTLE_MS ?? 180_000);
 
@@ -194,18 +244,16 @@ describe.skipIf(!BASE)('blueprint operations on a DEPLOYED operator (R-12 deploy
     } catch (err) {
       if (!/slug_exists|slug already exists/i.test((err as Error).message)) throw err;
     }
-    // The plan-target template lives in the pot's plan store, and must exist before the
-    // harness whose blueprint pins it. Left in draft: activation needs a conversation
-    // audit, and the run pins revision + content hash, not status.
-    try {
-      await mcp('plans:new', { harness: SMOKE_POT, slug: SMOKE_TEMPLATE, title: 'P-015 smoke fork/join', content: P013B_TEMPLATE_CONTENT });
-    } catch (err) {
-      // plans:new's reuse refusal is the exact code slug_exists (new.ts NewPlanValue).
-      if (!/slug_exists/i.test((err as Error).message)) throw err;
-    }
-    const got = await mcp('plans:get', { harness: SMOKE_POT, slug: SMOKE_TEMPLATE }) as {
-      results?: Array<{ version?: number; contentHash?: string }>;
-    };
+    // The plan-target template lives in the pot's plan store and must exist, BAR-ready,
+    // before the harness whose blueprint pins it. It is provisioned and activation-audited
+    // once (header, D-044); creating a bare one here would only be refused at submit with
+    // `not-startable: acceptance BAR contract is not ready for start`.
+    const got = await mcp('plans:get', { harness: SMOKE_POT, slug: SMOKE_TEMPLATE }).catch((err: Error) => {
+      throw new Error(
+        `plan-target template ${SMOKE_POT}/${SMOKE_TEMPLATE} is not provisioned (${err.message.slice(0, 200)}). ` +
+          'Provision it once with plans:new (SMOKE_TEMPLATE_CONTENT) and plans:audit { phase: "activation" }; see this file\'s header.',
+      );
+    }) as { results?: Array<{ version?: number; contentHash?: string }> };
     const template = got.results?.[0];
     expect(template?.contentHash, `plans:get ${SMOKE_TEMPLATE} returned no contentHash`).toMatch(/^[0-9a-f]{64}$/);
     const pin: TemplatePin = { ref: SMOKE_TEMPLATE, revision: String(template!.version), contentHash: template!.contentHash! };

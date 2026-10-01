@@ -62,7 +62,8 @@
  *     round-robin. The already-resolved account arrives as `initialAccount`, so a
  *     double-advance is structurally impossible rather than merely avoided.
  */
-import { claudeAttemptHeaders, scrubSecrets } from './credential-store';
+import { claudeAttemptHeaders } from './credential-store';
+import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -328,46 +329,6 @@ function headersToObject(headers: ClaudeFetchResponse['headers']): Record<string
  * `peekedHead` + `peekedRest` forward path (gateway.ts:5014-5019), expressed as a
  * single stream so the kernel's downstream relay stays unaware a peek happened.
  */
-/** Past this many bytes an error body is scrubbed chunk by chunk instead of as one buffer. */
-const MAX_BUFFERED_ERROR_BODY_BYTES = 1 << 20;
-
-/**
- * P-005 R-5: an upstream ERROR body is never guaranteed secret-free — an upstream that echoes the
- * presented credential is exactly the 2026-07-03 incident `scrubSecrets` exists for. Forward a
- * non-2xx body through it: buffered whole (so a key can't straddle a chunk boundary) up to
- * MAX_BUFFERED_ERROR_BODY_BYTES, then chunk by chunk. Changing the length is safe: gateway.ts strips
- * content-length/content-encoding on the way back. A 2xx stream is never wrapped.
- */
-function scrubbedErrorBody(
-  body: AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void },
-): AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void } {
-  const scrub = (bytes: Uint8Array): Uint8Array => Buffer.from(scrubSecrets(Buffer.from(bytes).toString('utf8')), 'utf8');
-  return {
-    async *[Symbol.asyncIterator]() {
-      const iterator = body[Symbol.asyncIterator]();
-      const buffered: Uint8Array[] = [];
-      let size = 0;
-      for (;;) {
-        const next = await iterator.next();
-        if (next.done) break;
-        const chunk = next.value as Uint8Array;
-        if (size >= MAX_BUFFERED_ERROR_BODY_BYTES) {
-          yield scrub(chunk);
-          continue;
-        }
-        buffered.push(chunk);
-        size += chunk.length;
-        if (size >= MAX_BUFFERED_ERROR_BODY_BYTES) {
-          yield scrub(Buffer.concat(buffered.map((c) => Buffer.from(c))));
-          buffered.length = 0;
-        }
-      }
-      if (buffered.length) yield scrub(Buffer.concat(buffered.map((c) => Buffer.from(c))));
-    },
-    cancel: () => body.cancel?.(),
-  };
-}
-
 async function peekBody(
   body: AsyncIterable<Uint8Array> & { cancel?(): Promise<void> | void },
   limit: number,
@@ -663,8 +624,9 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         peekedBody = Buffer.from(head).toString('utf8');
         classification = opts.classifyResponse({ status: response.status, headers, body: peekedBody });
       }
-      // P-005 R-5: whatever of an upstream error body reaches the caller has its credentials scrubbed.
-      if (response.status >= 400 && body) body = scrubbedErrorBody(body);
+      // P-005 R-5 / WI-10004561: whatever of an upstream error body reaches the caller has its
+      // credentials scrubbed, including the exact credential this attempt presented.
+      if (response.status >= 400 && body) body = scrubbedErrorBody(body, presentedSecretsFromHeaders(prepared.headers));
 
       return {
         status: response.status,

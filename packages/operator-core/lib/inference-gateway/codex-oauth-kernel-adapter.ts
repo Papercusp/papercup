@@ -41,6 +41,7 @@
  */
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
+import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import { isCodexAuthFailure, type CodexCliAccount } from './codex-cli-bridge';
 import { rewriteCodexRequestModel, type CodexAuth } from './codex-oauth-proxy';
 import {
@@ -592,6 +593,10 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           /* bookkeeping must never break the request */
         }
       }
+
+      // WI-10004561: an upstream error body may echo the OAuth token this attempt presented.
+      // Wrapped AFTER the refusal read above, so classification still sees the raw text.
+      if (upstream.status >= 400 && body) body = scrubbedErrorBody(body, presentedSecretsFromHeaders(prepared.headers));
 
       return {
         // Request-derived, as the live handler's span is: an error response to a

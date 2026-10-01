@@ -1,0 +1,152 @@
+/**
+ * WI-10004559 guard: the PERIODIC sweeps over the shared psu-pty directory must never
+ * touch it synchronously.
+ *
+ * Why this matters: every psu host on the box creates and renames files in that one
+ * directory. When the ext4 journal stalls, a host holds the directory's inode lock while
+ * it waits, and any thread that lists, stats or opens a path there waits in D-state
+ * behind it. On the operator's main thread that froze the whole process for 20s+, and the
+ * event-loop sentinel killed it, dropping every in-flight MCP request (46 of 66 :3070
+ * kills in 24h were blocked in `iterate_dir` on this directory). The async forms move the
+ * wait onto a libuv worker thread, so the event loop keeps serving.
+ *
+ * The spies below are pass-through: behaviour is the real implementation, they only
+ * record which SYNC calls happened. The calibration case proves they see a sync scan, so
+ * the zero-call assertions cannot pass vacuously.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(actual.readdirSync),
+    statSync: vi.fn(actual.statSync),
+    lstatSync: vi.fn(actual.lstatSync),
+    existsSync: vi.fn(actual.existsSync),
+    accessSync: vi.fn(actual.accessSync),
+    readFileSync: vi.fn(actual.readFileSync),
+    openSync: vi.fn(actual.openSync),
+    unlinkSync: vi.fn(actual.unlinkSync),
+  };
+});
+
+import {
+  accessSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  listLiveHosts,
+  listLiveHostsAsync,
+  pruneDeadDiscoveryFilesAsync,
+  readHostEventTailAsync,
+} from './psu-pty-discovery';
+import {
+  listOrphanCandidateOwners,
+  readRecentProductionCarryEvents,
+} from '../../system-health/carry-drill-drop-watchdog';
+
+const SYNC_SPIES = {
+  readdirSync,
+  statSync,
+  lstatSync,
+  existsSync,
+  accessSync,
+  readFileSync,
+  openSync,
+  unlinkSync,
+} as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+/** Every recorded sync fs call whose path argument lies inside `dir`. */
+function syncCallsUnder(dir: string): string[] {
+  const hits: string[] = [];
+  for (const [name, spy] of Object.entries(SYNC_SPIES)) {
+    for (const args of spy.mock.calls) {
+      const p = args[0];
+      if (typeof p === 'string' && p.startsWith(dir)) hits.push(`${name}(${p})`);
+    }
+  }
+  return hits;
+}
+
+const verifyIdentity = () => true;
+let dir: string;
+const NOW = Date.now();
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'psu-pty-async-'));
+  const host = (ownerId: string, sockExists: boolean) => {
+    const sock = join(dir, `${ownerId}.sock`);
+    if (sockExists) writeFileSync(sock, '');
+    writeFileSync(
+      join(dir, `${ownerId}.json`),
+      JSON.stringify({ ownerId, sock, pid: process.pid, startedAt: NOW, advSessionId: null }),
+    );
+  };
+  host('su-live', true);
+  host('su-dead', false); // socket gone → dead host, prunable
+  writeFileSync(join(dir, 'su-corrupt.json'), '{not json');
+  writeFileSync(join(dir, 'su-live.events.jsonl'), `${JSON.stringify({ ts: new Date(NOW).toISOString(), kind: 'respawned' })}\n`);
+  const oldLedger = join(dir, 'su-old.events.jsonl');
+  writeFileSync(oldLedger, `${JSON.stringify({ ts: new Date(NOW).toISOString(), kind: 'respawned' })}\n`);
+  const old = new Date(NOW - 3 * 60 * 60_000);
+  utimesSync(oldLedger, old, old);
+  for (const spy of Object.values(SYNC_SPIES)) spy.mockClear();
+});
+
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('psu-pty directory sweeps never touch the directory synchronously (WI-10004559)', () => {
+  it('calibration: the sync listLiveHosts IS seen by the spies, and the async form agrees with it', async () => {
+    const sync = listLiveHosts(dir, { verifyIdentity });
+    expect(syncCallsUnder(dir).length).toBeGreaterThan(0);
+    expect(sync.map((h) => h.ownerId)).toEqual(['su-live']);
+    expect((await listLiveHostsAsync(dir, { verifyIdentity })).map((h) => h.ownerId)).toEqual(['su-live']);
+  });
+
+  it('listLiveHostsAsync', async () => {
+    const hosts = await listLiveHostsAsync(dir, { verifyIdentity });
+    expect(hosts.map((h) => h.ownerId)).toEqual(['su-live']);
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+
+  it('pruneDeadDiscoveryFilesAsync (the janitor)', async () => {
+    expect(await pruneDeadDiscoveryFilesAsync(dir, { verifyIdentity })).toBe(2); // su-dead + su-corrupt
+    expect(syncCallsUnder(dir)).toEqual([]);
+    // Real effect, checked AFTER the assertion so these sync reads are not counted.
+    expect(existsSync(join(dir, 'su-dead.json'))).toBe(false);
+    expect(existsSync(join(dir, 'su-corrupt.json'))).toBe(false);
+    expect(existsSync(join(dir, 'su-live.json'))).toBe(true);
+  });
+
+  it('readHostEventTailAsync', async () => {
+    expect(await readHostEventTailAsync('su-live', dir)).toEqual([expect.objectContaining({ kind: 'respawned' })]);
+    expect(await readHostEventTailAsync('su-missing', dir)).toEqual([]);
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+
+  it('carry-drill-drop watchdog: production-delivery read (runs every 60s)', async () => {
+    const events = await readRecentProductionCarryEvents(dir, NOW);
+    expect(events).toEqual([expect.objectContaining({ kind: 'respawned' })]); // su-live only; su-old is outside the window
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+
+  it('carry-drill-drop watchdog: orphan candidate listing (runs every 60s)', async () => {
+    expect(await listOrphanCandidateOwners(dir, NOW, 60 * 60_000)).toEqual(['su-live']);
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+});

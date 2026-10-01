@@ -2430,13 +2430,21 @@ export async function readWorkItemReadinessProjection(opts: {
   type ProjectionRow = Record<string, number | string | null>;
   const rows = await sql<ProjectionRow[]>`
       WITH occurrence_counts AS MATERIALIZED (
-        SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)) AS canonical_clusters,
-               count(*) AS raw_occurrences,
-               count(*) FILTER (WHERE report_kind <> 'canonical-created') AS duplicate_occurrences
-          FROM harness_shared.work_item_occurrences
-         WHERE workspace_id = ${opts.workspaceId}
-           AND (${harnessSlug}::text IS NULL OR canonical_harness_slug = ${harnessSlug})
-           AND occurred_at > ${since}::timestamptz
+        -- GROUP BY hashes the clusters; count(DISTINCT (slug, id)) sorted ~180k row
+        -- composites instead (919ms vs 228ms live, 2026-10-01). Both key columns are
+        -- NOT NULL, so the cluster count is identical.
+        SELECT count(*) AS canonical_clusters,
+               COALESCE(sum(cluster.occurrences), 0)::bigint AS raw_occurrences,
+               COALESCE(sum(cluster.duplicates), 0)::bigint AS duplicate_occurrences
+          FROM (
+            SELECT count(*) AS occurrences,
+                   count(*) FILTER (WHERE report_kind <> 'canonical-created') AS duplicates
+              FROM harness_shared.work_item_occurrences
+             WHERE workspace_id = ${opts.workspaceId}
+               AND (${harnessSlug}::text IS NULL OR canonical_harness_slug = ${harnessSlug})
+               AND occurred_at > ${since}::timestamptz
+             GROUP BY canonical_harness_slug, canonical_work_item_id
+          ) cluster
       ), active_dependency_refs AS MATERIALIZED (${activeWorkItemDependencyRefsSql(sql, {
         itemWorkspaceId: opts.workspaceId,
         successfulStates,

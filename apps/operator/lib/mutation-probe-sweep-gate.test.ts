@@ -751,6 +751,27 @@ describe('mutation-probe.sh assertion-evidence gate', () => {
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     expect(out).toContain('assertion_evidence=vitest-failed-tests');
   });
+
+  // WI-10004584: a suite that dies at IMPORT (e.g. a peer's mid-edit in a live-tree
+  // dependency) prints `Tests  no tests` under a Failed Suites block. That is a
+  // recognized Vitest run with ZERO assertions executed, never a caught mutant.
+  it('does not report a Vitest collection failure ("Tests  no tests") as caught', () => {
+    const collectionFailure = [
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf " FAIL  guard.test.ts [ guard.test.ts ]\\nReferenceError: X is not defined\\n Test Files  1 failed (1)\\n      Tests  no tests\\n"; else printf "Tests 1 passed (1)\\n"; fi',
+      'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+    ].join('; ');
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', collectionFailure,
+    ]);
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=inconclusive');
+    expect(out).toContain('assertion_evidence=vitest-no-tests-collected');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
 });
 
 describe('mutation-probe.sh unparseable-mutant gate', () => {

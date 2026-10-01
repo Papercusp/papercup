@@ -1639,6 +1639,8 @@ async function buildBlockInner(
           workspaceId: input.workspaceId,
           message: queryText,
           candidates: pooled.map((hit) => ({ id: hit.id, text: hit.text })),
+          // On waits only where the port's wall can afford it (JEV_MEMORY_NO_WAIT_PORTS).
+          ...(input.session?.port ? { port: input.session.port } : {}),
         }), 'admission');
         if (verdict.effective === 'on' && verdict.outcome === 'answered') {
           const drop = new Set(pooled.filter((_, i) => verdict.keep[i] === false));

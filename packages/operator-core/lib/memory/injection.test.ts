@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as recallStats from './recall-stats';
 import * as corpusRecallIo from './corpus-recall-io';
 import * as coverageGate from '../search/coverage-gate';
+import { resetOperatorCacheForTests } from '../cache/instance';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -323,6 +324,9 @@ beforeEach(() => {
     .mockImplementation(recallCorpusContext);
   vi.mocked(getMemoryBackend).mockReset();
   recordRecallStatsMock.mockClear();
+  // The Jev gate reuses answers through the process-wide operator cache
+  // (WI-10004485); each test mocks its own answers, so start every test empty.
+  resetOperatorCacheForTests();
   jev.mode = 'off';
   jev.decide = null;
   jev.clientBuilt = 0;

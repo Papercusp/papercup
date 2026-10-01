@@ -10,6 +10,9 @@
  * Plan: scheduled-recurring-plans-2026-06-16 (P-007 sub-step 7c).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { BlueprintSchema, compileAgentSpecification, pinPackageInput } from '@papercusp/orchestrator/blueprint';
@@ -1119,6 +1122,48 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'does-not-exist' not found"));
     warn.mockRestore();
+  });
+
+  it('D-044: refuses a post-epoch template with no acceptance BAR contract with the documented refusal, minting nothing', async () => {
+    // A template created through plans:new is stamped post-epoch by migration 1219's
+    // trigger; unlike every other fixture here, this one keeps that stamp.
+    const slug = 'post-epoch-template-no-bars';
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+      VALUES (${WS}, ${HARNESS}, ${slug}, 'Monitor X (post-epoch)', 'active',
+              ${TEMPLATE_CONTENT}, ${hashPlanContent(TEMPLATE_CONTENT)},
+              ${JSON.stringify(ITEMS)}::text::jsonb)
+    `;
+    const stamped = await sql<Array<{ epoch: number | string | null; cohort: string | null }>>`
+      SELECT acceptance_bar_epoch AS epoch, acceptance_bar_cohort AS cohort
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+    `;
+    expect(stamped[0]).toMatchObject({ cohort: 'post-epoch' });
+    expect(Number(stamped[0]!.epoch)).toBe(1);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: slug });
+    warn.mockRestore();
+    expect(res).toMatchObject({
+      started: false, reason: 'not-startable', retryable: false, instanceSlug: '', runId: -1, minted: 0,
+    });
+    const refusal = `${(res as { reason?: string }).reason}: ${(res as { detail?: string }).detail ?? ''}`;
+    expect(refusal).toContain('not-startable: acceptance BAR contract is not ready for start');
+
+    const runs = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.plan_runs
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+    `;
+    expect(runs[0]!.n).toBe(0);
+
+    // The published page documents this exact refusal for a non-activated template, so
+    // the docs and the gate cannot drift apart silently.
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+    const page = readFileSync(
+      resolve(repoRoot, 'apps/operator-docs/src/content/docs/harness/blueprint-operations.mdx'), 'utf8');
+    expect(page).toContain('`not-startable: acceptance BAR contract is not ready for start`');
   });
 
   it('does not recreate chunks from a stale schedule.executorKind', async () => {

@@ -3,7 +3,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CanonicalVectorStore, HybridBackend, LexicalLegBackend, MEMORY_VECTOR_STORAGE_PROFILES, sidecarEmbedBatch } from '@papercusp/memory';
@@ -13,7 +14,7 @@ import { ensureBenchSchema, releaseBenchSchema } from './bench-host';
 import { canonicalCandidateBackend, candidateProfile } from './candidate-hybrid-bench';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 import { fingerprintFile, prepareMeasurementCell, measurementOutputPaths, writeMeasurementCell, assertMeasuredEmbedResponse,
-  type MeasurementManifest, type PreparedMeasurement } from './measurement-manifest';
+  failMeasurementCell, type MeasurementManifest, type PreparedMeasurement } from './measurement-manifest';
 
 describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () => {
   let db: OrgTestDb, client: Client, server: EmbedSidecarHandle, store: CanonicalVectorStore;
@@ -74,16 +75,37 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     const before = inferred;
     fs.appendFileSync(manifest.inputs.labels.path, ' ');
     await expect(prepareMeasurementCell(manifestFile, manifestHash, 'performance', repo)).rejects.toThrow('fingerprint');
+    const run = promisify(execFile);
+    const common = ['--manifest', manifestFile, '--manifest-sha256', manifestHash];
+    const runners = [
+      ['candidate-hybrid-bench.ts', '--cell', 'hybrid', '--snapshot', manifest.inputs.snapshot.path,
+        '--gold', manifest.inputs.labels.path, '--model', 'mdenseon', '--corpus', 'memory', '--out', prepared.rawOutput],
+      ['embedder-eval-cli.ts', '--cell', 'performance', '--legs', 'sidecar:mdenseon', '--isolated-sidecar', '--mdenseon-model', root,
+        '--out', path.join(root, manifest.runId, 'performance.json')],
+    ];
+    for (const [entry, ...args] of runners) {
+      await expect(run(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, entry), ...args, ...common],
+        { cwd: repo, timeout: 20_000 })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('declared file fingerprint mismatch') });
+    }
     fs.writeFileSync(manifest.inputs.labels.path, JSON.stringify({ memory: independentCohortFixture().queries, prose: independentCohortFixture().queries }));
     expect(() => measurementOutputPaths(manifest, manifest.cells.find((c) => c.id === 'hybrid')!, repo)).toThrow('already exists');
     expect(inferred).toBe(before);
     expect((await client.query(`SELECT count(*)::int AS n FROM ${schema}.memory_canonical`)).rows[0].n).toBe(1);
-  });
+  }, 45_000);
   it('does not accept a real HTTP cache hit as a model measurement', async () => {
     const url = `http://127.0.0.1:${await server.listening}`;
     const call = () => sidecarEmbedBatch(url, { model: 'mdenseon', kind: 'query', texts: ['cache protocol'] });
     assertMeasuredEmbedResponse(prepared.arm, await call(), 1);
     const cached = await call(); expect(cached.cache?.hits).toBe(1);
     expect(() => assertMeasuredEmbedResponse(prepared.arm, cached, 1)).toThrow('accounting');
+  });
+  it('retains a phase failure and requires a new attempt instead of overwriting its diagnosis', async () => {
+    const attempt = await prepareMeasurementCell(manifestFile, manifestHash, 'reliability', repo);
+    const error = new Error('injected protocol failure before inference');
+    failMeasurementCell(attempt, error);
+    expect(JSON.parse(fs.readFileSync(`${attempt.rawOutput}.failure.json`, 'utf8'))).toMatchObject({
+      manifestSha256: manifestHash, cellId: 'reliability', error: { message: error.message } });
+    expect(fs.existsSync(attempt.claimPath)).toBe(false);
+    await expect(prepareMeasurementCell(manifestFile, manifestHash, 'reliability', repo)).rejects.toThrow('already owned/failed');
   });
 });

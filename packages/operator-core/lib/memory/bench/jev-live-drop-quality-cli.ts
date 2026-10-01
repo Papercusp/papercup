@@ -31,7 +31,18 @@ import { createCachedJudge } from '../../search/bench/judge-cache';
 import { judgeAdmission } from '../jev-admission-request';
 import { JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT } from '../jev-memory-gate';
 import { ensureJevDecisionClient } from '../jev-settings';
-import { dropQuality, gateStateSha, midTurnQueryOf, pYesByIndex, transcriptBatches, type DropQuality, type GradedCandidate } from './jev-live-drop-quality';
+import { initializeQueryForHarness } from '../mcp-prelude';
+import {
+  dropQuality,
+  gateStateSha,
+  midTurnQueryOf,
+  pYesByIndex,
+  transcriptBatches,
+  transcriptPrompts,
+  turnStartQueryOf,
+  type DropQuality,
+  type GradedCandidate,
+} from './jev-live-drop-quality';
 import { PRECISION_BENCH_JEV_CONSUMER } from './precision-monitor';
 
 function argValue(name: string): string | undefined {
@@ -45,6 +56,15 @@ const CALLS = Number(argValue('--calls') ?? 80);
 const CONCURRENCY = Math.max(1, Number(argValue('--concurrency') ?? 4));
 const WORKSPACE = argValue('--workspace') ?? 'papercusp-workspace';
 const RESCORE_V2 = process.argv.includes('--rescore-v2');
+/**
+ * Which injection port's Jev calls to grade (memory_recall_stats.surface).
+ * mid-turn and turn-start rebuild queries from Claude transcripts; initialize's
+ * query is one fixed string per harness (mcp-prelude initializeQueryForHarness).
+ */
+const SURFACES = ['mid-turn', 'turn-start', 'initialize'] as const;
+type Surface = (typeof SURFACES)[number];
+const SURFACE = (argValue('--surface') ?? 'mid-turn') as Surface;
+if (!SURFACES.includes(SURFACE)) throw new Error(`--surface must be one of ${SURFACES.join(', ')}`);
 /** The live build at measurement time asked v1 at 0.30; the shipped code asks v2-content at 0.35. */
 const THRESHOLDS = [0.3, 0.35];
 /** Batches up to this far outside the window can still match an in-window call. */
@@ -67,7 +87,7 @@ async function mapPool<T, R>(items: readonly T[], width: number, fn: (item: T, i
   return out;
 }
 
-/** Every rebuilt mid-turn query in one owner's transcripts, keyed by its gate state hash. */
+/** Every rebuilt query for SURFACE in one owner's transcripts, keyed by its gate state hash. */
 function queriesForOwner(owner: string, into: Map<string, string>): { files: number; batches: number } {
   const root = path.join(os.homedir(), '.papercusp', 'session-claude', owner, 'projects');
   let files = 0;
@@ -99,11 +119,16 @@ function queriesForOwner(owner: string, into: Map<string, string>): { files: num
           /* a torn last line from a live writer */
         }
       }
-      for (const b of transcriptBatches(entries)) {
-        const at = Date.parse(b.at);
-        if (!(at >= SINCE.getTime() - SLACK_MS && at <= UNTIL.getTime() + SLACK_MS)) continue;
+      const inWindow = (iso: string): boolean => {
+        const at = Date.parse(iso);
+        return at >= SINCE.getTime() - SLACK_MS && at <= UNTIL.getTime() + SLACK_MS;
+      };
+      const rebuilt =
+        SURFACE === 'turn-start'
+          ? transcriptPrompts(entries).filter((p) => inWindow(p.at)).map((p) => turnStartQueryOf(p.text))
+          : transcriptBatches(entries).filter((b) => inWindow(b.at)).map((b) => midTurnQueryOf(b.calls, digest));
+      for (const q of rebuilt) {
         batches += 1;
-        const q = midTurnQueryOf(b.calls, digest);
         if (q) {
           const sha = gateStateSha(q);
           if (!into.has(sha)) into.set(sha, q);
@@ -127,7 +152,7 @@ function line(label: string, q: DropQuality): string {
 
 async function main(): Promise<void> {
   const { sql } = getOrgPg();
-  const runId = `jev-drop-quality-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
+  const runId = `jev-drop-quality-${SURFACE}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
 
   const ledger = (await sql.unsafe(
     `SELECT id::text, state_sha256, subject_ids, answers
@@ -138,33 +163,57 @@ async function main(): Promise<void> {
   )) as { id: string; state_sha256: string; subject_ids: string[]; answers: unknown }[];
   const owners = (await sql.unsafe(
     `SELECT DISTINCT session_id FROM harness_shared.memory_recall_stats
-      WHERE surface = 'mid-turn' AND workspace_id = $1 AND session_id IS NOT NULL
+      WHERE surface = $4 AND workspace_id = $1 AND session_id IS NOT NULL
         AND created_at >= $2 AND created_at < $3`,
-    [WORKSPACE, SINCE.toISOString(), UNTIL.toISOString()],
+    [WORKSPACE, SINCE.toISOString(), UNTIL.toISOString(), SURFACE],
   )) as { session_id: string }[];
 
   const queries = new Map<string, string>();
   let ownersWithTranscript = 0;
   let files = 0;
   let batches = 0;
-  for (const { session_id } of owners) {
-    const r = queriesForOwner(session_id, queries);
-    if (r.files > 0) ownersWithTranscript += 1;
-    files += r.files;
-    batches += r.batches;
+  if (SURFACE === 'initialize') {
+    // No transcript needed: one fixed query per harness. pot_slug names the harness.
+    const slugs = (await sql.unsafe(
+      `SELECT DISTINCT pot_slug FROM harness_shared.memory_recall_stats
+        WHERE surface = 'initialize' AND workspace_id = $1 AND pot_slug IS NOT NULL
+          AND created_at >= $2 AND created_at < $3`,
+      [WORKSPACE, SINCE.toISOString(), UNTIL.toISOString()],
+    )) as { pot_slug: string }[];
+    for (const { pot_slug } of slugs) {
+      const q = initializeQueryForHarness(pot_slug);
+      if (q) queries.set(gateStateSha(q), q);
+    }
+    batches = slugs.length;
+  } else {
+    for (const { session_id } of owners) {
+      const r = queriesForOwner(session_id, queries);
+      if (r.files > 0) ownersWithTranscript += 1;
+      files += r.files;
+      batches += r.batches;
+    }
   }
 
+  // The judged unit. Mid-turn queries are nearly unique, so one row per state
+  // (step B's sample, kept reproducible). Turn-start prompts repeat ("continue")
+  // and initialize has ONE query per harness, so there the unit is the state
+  // plus its candidate set; keying by state alone would collapse every
+  // initialize call into a single sample.
+  const unitKey = (row: (typeof ledger)[number]): string =>
+    SURFACE === 'mid-turn' ? row.state_sha256 : `${row.state_sha256}|${[...row.subject_ids].sort().join(',')}`;
   const firstBySha = new Map<string, (typeof ledger)[number]>();
   let matchedRows = 0;
   for (const row of ledger) {
     if (!queries.has(row.state_sha256)) continue;
     matchedRows += 1;
-    if (!firstBySha.has(row.state_sha256)) firstBySha.set(row.state_sha256, row);
+    const key = unitKey(row);
+    if (!firstBySha.has(key)) firstBySha.set(key, row);
   }
   const recovery = {
     ledgerAnsweredRows: ledger.length,
     ledgerDistinctStates: new Set(ledger.map((r) => r.state_sha256)).size,
-    midTurnOwners: owners.length,
+    surface: SURFACE,
+    surfaceOwners: owners.length,
     ownersWithClaudeTranscript: ownersWithTranscript,
     transcriptFiles: files,
     batchesInWindow: batches,
@@ -253,7 +302,7 @@ async function main(): Promise<void> {
 
   const report = {
     runId,
-    window: { since: SINCE.toISOString(), until: UNTIL.toISOString(), workspace: WORKSPACE },
+    window: { since: SINCE.toISOString(), until: UNTIL.toISOString(), workspace: WORKSPACE, surface: SURFACE },
     judge: { model: JUDGE_AGREEMENT_MODEL, rubricVersion: JUDGE_AGREEMENT_RUBRIC_VERSION, passBar: RELEVANCE_PASS_BAR, failures: judgeFailures, firstError: firstJudgeError, stats: judge.stats() },
     recovery,
     sample: { calls: sample.length, pairsJudged: judged.length, candidatesWithoutText: missingText, v2Rescored: RESCORE_V2, v2Failures },
@@ -266,7 +315,7 @@ async function main(): Promise<void> {
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
 
-  console.log(`recovered ${recovery.matchedDistinctStates} distinct live contexts (${recovery.matchedRows}/${recovery.ledgerAnsweredRows} ledger rows) from ${recovery.ownersWithClaudeTranscript}/${recovery.midTurnOwners} sessions`);
+  console.log(`recovered ${recovery.matchedDistinctStates} distinct live contexts (${recovery.matchedRows}/${recovery.ledgerAnsweredRows} ledger rows) from ${recovery.ownersWithClaudeTranscript}/${recovery.surfaceOwners} ${SURFACE} sessions`);
   console.log(`judged ${judged.length} pairs over ${sample.length} calls (judge failures ${judgeFailures}, no text ${missingText})`);
   for (const q of results.live) console.log(line('live (ledger P(yes))', q));
   if (results.v2) for (const q of results.v2) console.log(line('v2-content rescore', q));

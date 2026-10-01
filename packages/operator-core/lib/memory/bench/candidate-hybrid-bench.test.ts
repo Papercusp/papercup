@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { candidateProfile, canonicalCandidateBackend, calibratedFloor, validateHeldout, type HeldoutQuery } from './candidate-hybrid-bench';
-import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES } from '@papercusp/memory';
+import { validateEmbedderProfile, validateMemoryStorageCompatibility, MEMORY_VECTOR_STORAGE_PROFILES,
+  mdenseOnPrompt, embedRequestedExecution } from '@papercusp/memory';
+import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { fileURLToPath } from 'node:url';
 import { measurementManifestFixture, independentCohortFixture } from './fixtures/measurement-manifest';
 import { validateMeasurementManifest, validateIndependentCohort, validateMeasurementCoverage,
-  assertMeasuredEmbedResponse, assertMeasuredExecution, assertMeasurementArm, hashJson, type CellOutcome } from './measurement-manifest';
+  assertMeasuredEmbedResponse, assertMeasuredExecution, assertMeasurementArm, assertCandidateArm,
+  fingerprintFile, measurementPackageVersion, hashJson, type CellOutcome } from './measurement-manifest';
 
 const entries = [{ key: 'a', text: 'frozen a', kind: 'fact' }, { key: 'b', text: 'frozen b', kind: 'fact' }];
 const queries: HeldoutQuery[] = [
@@ -49,6 +53,18 @@ describe('candidate hybrid fairness guards', () => {
 });
 
 describe('frozen seven-bar measurement contracts (P-001)', () => {
+  it('measures installed worker/tokenizer versions before accepting a runtime identity', async () => {
+    const arm = measurementManifestFixture('/private').arms[0];
+    arm.prompts = { query: mdenseOnPrompt('query', ''), document: mdenseOnPrompt('document', '') };
+    arm.tokenizer = { backend: 'rust', version: measurementPackageVersion('tokenizers') };
+    arm.execution = { ...arm.execution, device: embedRequestedExecution().device, transport: 'worker',
+      intraOpThreads: ORT_SESSION_OPTIONS.intraOpNumThreads, interOpThreads: ORT_SESSION_OPTIONS.interOpNumThreads };
+    arm.runtime = { name: 'transformers-js-worker', version: measurementPackageVersion('@huggingface/transformers'), wire: 'worker-in-process',
+      source: await fingerprintFile(fileURLToPath(new URL('../../../../../libs/generic/memory/src/local-embedder-worker.script.mjs', import.meta.url))) };
+    await expect(assertCandidateArm(arm, 'mdenseon', 'worker')).resolves.toBeUndefined();
+    await expect(assertCandidateArm({ ...arm, runtime: { ...arm.runtime, version: 'wrong' } }, 'mdenseon', 'worker')).rejects.toThrow('runtime identity');
+    await expect(assertCandidateArm({ ...arm, runtime: { ...arm.runtime, source: { ...arm.runtime.source, sha256: '0'.repeat(64) } } }, 'mdenseon', 'worker')).rejects.toThrow('runtime identity');
+  });
   it('accepts a complete declared harness while refusing threshold relaxation and absent cells', () => {
     const manifest = measurementManifestFixture('/private');
     expect(validateMeasurementManifest(manifest).cells).toHaveLength(7);
@@ -81,9 +97,10 @@ describe('frozen seven-bar measurement contracts (P-001)', () => {
   it('refuses wrong HTTP revisions, cache/coalescing, malformed vectors and unverified GPU/worker fallback', () => {
     const arm = measurementManifestFixture('/private').arms[0];
     const unit = [1, ...new Array(767).fill(0)];
-    const response = { vectors: [unit], dims: 768, modelRev: arm.modelRev, runtime: 'fixture', cache: { hits: 0, coalesced: 0, inferred: 1 } };
+    const response = { vectors: [unit], dims: 768, modelRev: arm.modelRev, runtime: arm.runtime.wire, cache: { hits: 0, coalesced: 0, inferred: 1 } };
     expect(() => assertMeasuredEmbedResponse(arm, response, 1)).not.toThrow();
     expect(() => assertMeasuredEmbedResponse(arm, { ...response, modelRev: 'wrong' }, 1)).toThrow('identity');
+    expect(() => assertMeasuredEmbedResponse(arm, { ...response, runtime: 'wrong' }, 1)).toThrow('identity');
     expect(() => assertMeasuredEmbedResponse(arm, { ...response, cache: { hits: 1, coalesced: 0, inferred: 0 } }, 1)).toThrow('accounting');
     expect(() => assertMeasuredEmbedResponse(arm, { ...response, vectors: [[NaN, ...unit.slice(1)]] }, 1)).toThrow('unit vector');
     const threads = { intraOpNumThreads: 4, interOpNumThreads: 1 }, worker = { alive: true, disabled: false };

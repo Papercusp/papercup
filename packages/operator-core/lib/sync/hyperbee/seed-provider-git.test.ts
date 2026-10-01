@@ -272,6 +272,19 @@ describe('git seed provider', () => {
     await expect(
       provider.restore(entry, payload, { targetRepoDir: badTarget, decryptionKey: generateSeedKey() }),
     ).rejects.toThrow();
+    expect(existsSync(badTarget)).toBe(false);
+
+    // Corruption is authenticated before a bundle path is published to git.
+    // The provider must not leave a clone target made from partial plaintext.
+    const sealedPath = join(staging, 'super.bundle');
+    const tampered = readFileSync(sealedPath);
+    tampered[tampered.length - 1] ^= 0xff;
+    writeFileSync(sealedPath, tampered);
+    const corruptTarget = join(tmpDir('gseed-enc-corrupt-'), 'checkout');
+    await expect(
+      provider.restore(entry, payload, { targetRepoDir: corruptTarget, decryptionKey: key }),
+    ).rejects.toThrow(/wrong key or tampered/);
+    expect(existsSync(corruptTarget)).toBe(false);
   });
 
   it('restores an encrypted seed from a READ-ONLY seed dir (packaged /usr/lib layout) and leaves no plaintext behind', async () => {

@@ -76,4 +76,24 @@ describe('the seam', () => {
     };
     expect(await resolveHostedSubscriptionEntitlement(snapshot(), { provider: lying })).toMatchObject({ entitled: false });
   });
+
+  it('fails closed on a malformed answer: no answer, a non-boolean entitled, or a non-billing source', async () => {
+    // Each answer would grant access if passed through: a truthy `entitled` with a bundle key.
+    const malformed: ReadonlyArray<{ id: string; answer: unknown }> = [
+      { id: 'empty', answer: null },
+      { id: 'stringly', answer: { entitled: 'yes', reason: 'active', bundleKey: 'team', patch: null, source: 'billing', providerId: 'stringly' } },
+      { id: 'foreign', answer: { entitled: true, reason: 'active', bundleKey: 'team', patch: null, source: 'metering', providerId: 'foreign' } },
+    ];
+    for (const { id, answer } of malformed) {
+      const provider = { id, entitlementFor: () => answer } as unknown as HostedSubscriptionEntitlementProvider;
+      expect(await resolveHostedSubscriptionEntitlement(snapshot(), { provider })).toEqual({
+        entitled: false,
+        reason: 'inactive',
+        bundleKey: null,
+        patch: null,
+        source: 'billing',
+        providerId: id,
+      });
+    }
+  });
 });

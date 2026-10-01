@@ -124,25 +124,53 @@ export function installPopupLayoutProbe() {
       .map(([name, value]) => `[${name}="${value}"]`).join('');
     return `${element.tagName.toLowerCase()}${id}${testId ? `[data-testid="${testId}"]` : ''}${classes.length ? `.${classes.join('.')}` : ''}${attributes}`.slice(0, 240);
   };
-  const observe = (proto: object, key: string) => {
+  const observe = (proto: object, key: string, accessor: 'get' | 'set' = 'get') => {
     const descriptor = Object.getOwnPropertyDescriptor(proto, key);
     if (!descriptor?.configurable) return;
-    const fn = descriptor.get ?? descriptor.value;
+    const fn = descriptor[accessor] ?? descriptor.value;
     if (typeof fn !== 'function') return;
+    const api = accessor === 'set' ? `${key}:set` : key;
     const wrapped = function (this: object, ...args: unknown[]) {
       const at = performance.now();
       try { return fn.apply(this, args); }
       finally {
         const ms = performance.now() - at;
-        if (ms >= 10) records.push({ api: key, ms, at, target: styleTargets.get(this), stack: new Error().stack?.slice(0, 1600) });
+        if (ms >= 10) records.push({ api, ms, at, target: this instanceof Element ? targetName(this) : styleTargets.get(this), stack: new Error().stack?.slice(0, 1600) });
       }
     };
-    Object.defineProperty(proto, key, descriptor.get ? { ...descriptor, get: wrapped } : { ...descriptor, value: wrapped });
+    Object.defineProperty(proto, key, descriptor[accessor] ? { ...descriptor, [accessor]: wrapped } : { ...descriptor, value: wrapped });
     restores.push(() => Object.defineProperty(proto, key, descriptor));
-    observed.push(key);
+    observed.push(api);
   };
   for (const key of ['getBoundingClientRect', 'getClientRects', 'scrollIntoView', 'clientWidth', 'clientHeight', 'scrollHeight']) observe(Element.prototype, key);
   for (const key of ['offsetWidth', 'offsetHeight', 'focus', 'innerText']) observe(HTMLElement.prototype, key);
+  // Vditor compiles markdown and assigns innerHTML outside React effects.
+  // Measure both without replacing its renderer or moving the completion mark.
+  observe(Element.prototype, 'innerHTML', 'set');
+  const lute = (window as unknown as { Lute?: { New(...args: unknown[]): Record<string, unknown> } }).Lute;
+  if (typeof lute?.New === 'function') {
+    const originalNew = lute.New;
+    lute.New = function (...args: unknown[]) {
+      const at = performance.now();
+      let instance: Record<string, unknown>;
+      try { instance = originalNew.apply(this, args); }
+      finally {
+        records.push({ api: 'Lute.New', ms: performance.now() - at, at });
+      }
+      const originalCompile = instance.Md2HTML;
+      if (typeof originalCompile === 'function') {
+        instance.Md2HTML = function (...compileArgs: unknown[]) {
+          const at = performance.now();
+          try { return originalCompile.apply(this, compileArgs); }
+          finally { records.push({ api: 'Lute.Md2HTML', ms: performance.now() - at, at }); }
+        };
+        restores.push(() => { instance.Md2HTML = originalCompile; });
+      }
+      return instance;
+    };
+    restores.push(() => { lute.New = originalNew; });
+    observed.push('Lute.New', 'Lute.Md2HTML');
+  }
   observe(CSSStyleDeclaration.prototype, 'animationName');
   const proxyAnimationName = !observed.includes('animationName');
   if (proxyAnimationName) observed.push('animationName-proxy');

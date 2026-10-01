@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { PRICE_TABLE_VERSION, costFromTokens, type TokenUsage } from '@papercusp/model-pricing';
+import { PRICE_TABLE_VERSION, costFromTokens, type CostOptions, type TokenUsage } from '@papercusp/model-pricing';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { priceStoredUsageSample, repriceUsageSamples } from './reprice-usage-samples';
 
@@ -93,9 +93,9 @@ describe('repriceUsageSamples', () => {
     const before = (await read(a)).cost_usd!;
 
     // The next table: gpt-5.5 doubles, gpt-4o is withdrawn.
-    const nextTable = (model: string, usage: TokenUsage) => {
+    const nextTable = (model: string, usage: TokenUsage, options?: CostOptions) => {
       if (model === 'gpt-4o') return { usd: 0, priced: false };
-      const est = costFromTokens(model, usage);
+      const est = costFromTokens(model, usage, options);
       return { ...est, usd: est.usd * 2 };
     };
     const result = await repriceUsageSamples(sql, { workspaceId: WS, version: 'next-table', price: nextTable });
