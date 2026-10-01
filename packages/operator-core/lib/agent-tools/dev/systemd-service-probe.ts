@@ -23,12 +23,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import {
-  gitSidecarEnabled,
-  isSidecarInfrastructureFault,
-  noteSidecarFallback,
-  runCommandViaSpawnerSidecar,
-} from '../../fleet/git-via-sidecar';
+import { execFileViaSidecar, type runCommandViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 
 const run = promisify(execFile);
 
@@ -63,27 +58,19 @@ export async function execProbeCommand(
   timeoutMs: number,
   deps: ExecProbeCommandDeps = {},
 ): Promise<{ stdout: string }> {
-  const sidecarEnabled = deps.sidecarEnabled ?? (() => gitSidecarEnabled(SYSTEMD_PROBE_SIDECAR_VAR));
-  if (sidecarEnabled()) {
-    let res: Awaited<ReturnType<typeof runCommandViaSpawnerSidecar>> | null = null;
-    try {
-      res = await (deps.viaSidecar ?? runCommandViaSpawnerSidecar)(command, args, { timeoutMs });
-    } catch (e) {
-      noteSidecarFallback('systemd-service-probe', e);
-    }
-    if (res && isSidecarInfrastructureFault(res)) {
-      noteSidecarFallback('systemd-service-probe', new Error(res.stderr));
-      res = null;
-    }
-    if (res) {
-      if (res.code !== 0) {
-        throw new Error(`${command} ${args.join(' ')} exited ${res.code} (via spawner sidecar): ${res.stderr.trim()}`);
-      }
-      return { stdout: res.stdout };
-    }
-  }
+  // The implementation is the shared seam in fleet/git-via-sidecar.ts (WI-10004975
+  // lifted it there so every short host-side spawn reuses ONE sidecar route).
   const local = deps.local ?? ((c: string, a: string[], o: { timeout: number }) => run(c, a, o));
-  const { stdout } = await local(command, args, { timeout: timeoutMs });
+  const { stdout } = await execFileViaSidecar(
+    command,
+    args,
+    { timeoutMs, subsystem: 'systemd-service-probe', sidecarVar: SYSTEMD_PROBE_SIDECAR_VAR },
+    {
+      ...(deps.sidecarEnabled ? { sidecarEnabled: deps.sidecarEnabled } : {}),
+      ...(deps.viaSidecar ? { viaSidecar: deps.viaSidecar } : {}),
+      local: (c, a, o) => local(c, a, { timeout: o.timeout }),
+    },
+  );
   return { stdout };
 }
 

@@ -32,6 +32,7 @@ import {
 import { probeNamedService } from '../../service-health';
 import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../supervision/give-up-ei';
 import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../supervision/paused-unit-ei';
+import { execFileViaSidecar } from '../../fleet/git-via-sidecar';
 
 const execFileP = promisify(execFile);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
@@ -47,11 +48,21 @@ const SUPERVISION_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
+/** Per-site kill-switch for the reconciler's sidecar route (`0` = force a local spawn). */
+export const SUPERVISION_RECONCILE_SIDECAR_VAR = 'PAPERCUSP_SUPERVISION_RECONCILE_SPAWN_SIDECAR';
+
 /** Real `systemctl --user <args>` exec, 10s timeout (a hung systemctl must never wedge the
  *  60s-cadence tick indefinitely). Rejects on nonzero exit OR spawn failure — the caller
- *  (`reconcileTick`) treats any rejection uniformly as "systemctl unreachable this tick". */
-async function execSystemctlUser(args: string[]): Promise<string> {
-  const { stdout } = await execFileP('systemctl', ['--user', ...args], { timeout: 10_000 });
+ *  (`reconcileTick`) treats any rejection uniformly as "systemctl unreachable this tick".
+ *  Forked by the spawner sidecar where the host has one (WI-10004975: this tick's systemctl
+ *  calls were ~17% of a 13 GB bg-host's spawn samples); a rejection still carries the
+ *  child's `.stdout`, which `readSystemctlShows` recovers (EI-19966318801100410). */
+export async function execSystemctlUser(args: string[]): Promise<string> {
+  const { stdout } = await execFileViaSidecar('systemctl', ['--user', ...args], {
+    timeoutMs: 10_000,
+    subsystem: 'supervision-reconcile',
+    sidecarVar: SUPERVISION_RECONCILE_SIDECAR_VAR,
+  });
   return stdout;
 }
 
@@ -59,11 +70,11 @@ async function execSystemctlUser(args: string[]): Promise<string> {
  * Bounded journald fallback for a failed unit. `systemctl status` can omit the prior failed
  * attempt once `Restart=` has already brought a new process up; the journal retains it.
  */
-async function readSystemdUserJournal(unit: string): Promise<string> {
-  const { stdout } = await execFileP(
+export async function readSystemdUserJournal(unit: string): Promise<string> {
+  const { stdout } = await execFileViaSidecar(
     'journalctl',
     ['--user', '-u', unit, '--since=-10min', '--no-pager', '--lines=200'],
-    { timeout: 10_000 },
+    { timeoutMs: 10_000, subsystem: 'supervision-reconcile', sidecarVar: SUPERVISION_RECONCILE_SIDECAR_VAR },
   );
   return stdout;
 }

@@ -1804,11 +1804,23 @@ export async function resolveOwnServiceUnit(): Promise<string | null> {
   }
 }
 
-async function defaultJournalCanaryExec(args: string[], timeoutMs: number): Promise<{ stdout: string }> {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const run = promisify(execFile);
-  return run('journalctl', args, { timeout: timeoutMs, maxBuffer: 64 * 1024 });
+/** Per-site kill-switch for the journal canary's sidecar route (`0` = force a local spawn). */
+export const JOURNAL_CANARY_SIDECAR_VAR = 'PAPERCUSP_JOURNAL_CANARY_SPAWN_SIDECAR';
+
+/**
+ * The production canary read: `journalctl` forked by the spawner sidecar where this host
+ * has one (WI-10004975 — this per-tick read was ~10% of a 13 GB bg-host's spawn samples;
+ * a local fork costs time proportional to the parent's RSS). Exported for its routing test.
+ */
+export async function defaultJournalCanaryExec(args: string[], timeoutMs: number): Promise<{ stdout: string }> {
+  const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
+  const { stdout } = await execFileViaSidecar('journalctl', args, {
+    timeoutMs,
+    maxBuffer: 64 * 1024,
+    subsystem: 'journal-canary',
+    sidecarVar: JOURNAL_CANARY_SIDECAR_VAR,
+  });
+  return { stdout };
 }
 
 /** Render epoch milliseconds in journalctl's unambiguous `@epoch` grammar — never a

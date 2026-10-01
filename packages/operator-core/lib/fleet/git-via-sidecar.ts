@@ -619,6 +619,112 @@ export function isSidecarInfrastructureFault(res: { code: number; stderr: string
   return res.code === -1 && res.stderr.startsWith('spawner sidecar ');
 }
 
+/** The shape `util.promisify(execFile)` rejects with, which callers already inspect. */
+export interface ExecFileLikeError extends Error {
+  code: number | string | undefined;
+  stdout: string;
+  stderr: string;
+}
+
+export interface ExecFileViaSidecarOptions {
+  /** Kill timeout in ms — the same meaning as execFile's `timeout`. */
+  timeoutMs: number;
+  /**
+   * {@link noteSidecarFallback} label. One per call site, so the fallback census names
+   * WHICH caller is paying the local fork cost rather than an anonymous total.
+   */
+  subsystem: string;
+  /** Per-site override for {@link gitSidecarEnabled} (`0` forces local). */
+  sidecarVar?: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Local-path only: execFile's `maxBuffer`. The sidecar applies its own output bound. */
+  maxBuffer?: number;
+}
+
+export interface ExecFileViaSidecarDeps {
+  sidecarEnabled?: () => boolean;
+  viaSidecar?: typeof runCommandViaSpawnerSidecar;
+  local?: (
+    command: string,
+    args: string[],
+    options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+  ) => Promise<{ stdout: string; stderr?: string }>;
+}
+
+async function defaultLocalExecFile(
+  command: string,
+  args: string[],
+  options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+): Promise<{ stdout: string; stderr: string }> {
+  // Lazy: keeps this module import-safe where node:child_process is stubbed.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { stdout, stderr } = await promisify(execFile)(command, args, { ...options, encoding: 'utf8' });
+  return { stdout: String(stdout), stderr: String(stderr) };
+}
+
+/**
+ * Run one short subprocess with `util.promisify(execFile)` semantics — resolve
+ * `{ stdout, stderr }` on exit 0, REJECT with an error carrying `.code` / `.stdout` /
+ * `.stderr` otherwise — forked by the spawner sidecar wherever this host has one.
+ *
+ * Why (WI-10004975): fork cost scales with the PARENT's RSS (measured on this box:
+ * 2 ms at 0 GB, ~100 ms at 1 GB, ~270 ms at 4 GB of the synchronous spawn), and a
+ * 13 GB bg-host spent 33–73% of its main-thread samples in native spawn for short
+ * diagnostic commands (secret-tool, systemctl, journalctl, gitnexus cypher). The
+ * sidecar is small, so its fork is cheap and the caller pays a socket round-trip.
+ *
+ * This is the one shared seam (lifted from systemd-service-probe's execProbeCommand,
+ * WI-10002709). A transport failure or a sidecar-infrastructure fault falls back to the
+ * local spawn and is COUNTED under `subsystem` (feeding the circuit breaker too), so a
+ * sick sidecar degrades latency, never the command's answer.
+ */
+export async function execFileViaSidecar(
+  command: string,
+  args: string[],
+  opts: ExecFileViaSidecarOptions,
+  deps: ExecFileViaSidecarDeps = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const sidecarEnabled = deps.sidecarEnabled ?? (() => gitSidecarEnabled(opts.sidecarVar));
+  if (sidecarEnabled()) {
+    let res: GitRunResult | null = null;
+    try {
+      res = await (deps.viaSidecar ?? runCommandViaSpawnerSidecar)(command, args, {
+        timeoutMs: opts.timeoutMs,
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.env !== undefined ? { env: opts.env } : {}),
+      });
+    } catch (e) {
+      noteSidecarFallback(opts.subsystem, e);
+    }
+    if (res && isSidecarInfrastructureFault(res)) {
+      noteSidecarFallback(opts.subsystem, new Error(res.stderr));
+      res = null;
+    }
+    if (res) {
+      if (res.code !== 0) {
+        const err = new Error(
+          `Command failed: ${command} ${args.join(' ')} exited ${res.code} (via spawner sidecar)\n${res.stderr}`,
+        ) as ExecFileLikeError;
+        err.code = res.code;
+        err.stdout = res.stdout;
+        err.stderr = res.stderr;
+        throw err;
+      }
+      return { stdout: res.stdout, stderr: res.stderr };
+    }
+  }
+  const local = deps.local ?? defaultLocalExecFile;
+  const { stdout, stderr } = await local(command, args, {
+    timeout: opts.timeoutMs,
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.maxBuffer !== undefined ? { maxBuffer: opts.maxBuffer } : {}),
+  });
+  return { stdout, stderr: stderr ?? '' };
+}
+
 /**
  * Per-process directory for the fd-handoff files (WI-6404).
  *

@@ -67,6 +67,7 @@
  * and analyzeEnv/analyzeNodeArgs for why the budget is split across env and argv.
  */
 import { execFile } from 'node:child_process';
+import { execFileViaSidecar } from '../../fleet/git-via-sidecar';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -2455,36 +2456,59 @@ export function canaryCypherArgv(repoName: string, query: string): string[] {
   return ['cypher', '--repo', repoName, query];
 }
 
-function cypherScalar(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<number | null> {
-  return new Promise((resolvePromise) => {
-    execFile(bin, canaryCypherArgv(repoName, query), { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      // A CRASH (segfault) arrives here as an error with no usable stdout — which is
-      // exactly the condition the canary exists to catch, so it must map to null
-      // ("unreadable"), never to 0 ("empty"). Conflating those two is what made the
-      // original outage look like an empty graph instead of a broken one.
-      if (err) return resolvePromise(null);
-      const m = /\|\s*(\d+)\s*\|/.exec(String(stdout));
-      resolvePromise(m ? Number.parseInt(m[1], 10) : null);
+/** Per-site kill-switch for the canary's sidecar route (`0` = force a local spawn). */
+export const GITNEXUS_CANARY_SIDECAR_VAR = 'PAPERCUSP_GITNEXUS_CANARY_SPAWN_SIDECAR';
+
+/**
+ * One canary `gitnexus cypher` query → its stdout, or `null` when the child failed.
+ * Forked by the spawner sidecar where the host has one (WI-10004975: canary queries were
+ * ~9% of a 13 GB bg-host's spawn samples — each local fork costs time proportional to the
+ * parent's RSS). A CRASH (segfault) arrives as a rejection with no usable stdout — exactly
+ * the condition the canary exists to catch — so it must map to null ("unreadable"), never
+ * to 0 ("empty"). Conflating those two is what made the original outage look like an
+ * empty graph instead of a broken one.
+ */
+export async function runCanaryCypher(
+  bin: string,
+  root: string,
+  repoName: string,
+  query: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const { stdout } = await execFileViaSidecar(bin, canaryCypherArgv(repoName, query), {
+      cwd: root,
+      timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+      subsystem: 'gitnexus-canary',
+      sidecarVar: GITNEXUS_CANARY_SIDECAR_VAR,
     });
-  });
+    return stdout;
+  } catch {
+    return null;
+  }
 }
 
-function cypherFirstString(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<string | null> {
-  return new Promise((resolvePromise) => {
-    execFile(bin, canaryCypherArgv(repoName, query), { cwd: root, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      if (err) return resolvePromise(null);
-      // Rows render as a markdown table; take the first data cell after the separator.
-      const rows = String(stdout).split('\\n');
-      for (const r of rows) {
-        const m = /^\s*\|\s*([^|\s][^|]*?)\s*\|/.exec(r.replace(/\\\\n/g, '\n'));
-        if (m && m[1] !== '---' && !/^-+$/.test(m[1])) {
-          const v = m[1].trim();
-          if (v && v !== 'name' && v !== 'n') return resolvePromise(v);
-        }
-      }
-      resolvePromise(null);
-    });
-  });
+async function cypherScalar(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<number | null> {
+  const stdout = await runCanaryCypher(bin, root, repoName, query, timeoutMs);
+  if (stdout === null) return null;
+  const m = /\|\s*(\d+)\s*\|/.exec(stdout);
+  return m ? Number.parseInt(m[1], 10) : null;
+}
+
+async function cypherFirstString(bin: string, root: string, repoName: string, query: string, timeoutMs: number): Promise<string | null> {
+  const stdout = await runCanaryCypher(bin, root, repoName, query, timeoutMs);
+  if (stdout === null) return null;
+  // Rows render as a markdown table; take the first data cell after the separator.
+  const rows = stdout.split('\\n');
+  for (const r of rows) {
+    const m = /^\s*\|\s*([^|\s][^|]*?)\s*\|/.exec(r.replace(/\\\\n/g, '\n'));
+    if (m && m[1] !== '---' && !/^-+$/.test(m[1])) {
+      const v = m[1].trim();
+      if (v && v !== 'name' && v !== 'n') return v;
+    }
+  }
+  return null;
 }
 
 export const CANARY_PROBE_TIMEOUT_MS = 90_000;
