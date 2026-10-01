@@ -3847,9 +3847,7 @@ fn chat_shortcut_rows(width: usize) -> Vec<String> {
                 let pad = cell_w.saturating_sub(Line::from(left.as_str()).width());
                 let right = cells.get(i + rows).map(String::as_str).unwrap_or("");
                 trunc(
-                    &format!("  {left}{}{right}", " ".repeat(pad))
-                        .trim_end()
-                        .to_string(),
+                    format!("  {left}{}{right}", " ".repeat(pad)).trim_end(),
                     width,
                 )
             })
