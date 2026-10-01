@@ -86,6 +86,18 @@ describe('deriveDrillJourneyEvidence', () => {
     }
   });
 
+  it('fails when the drill recorded a different deb (subject.debSha256) than the one installed', () => {
+    const d = { ...drill(), subject: { debSha256: OTHER } };
+    const docs = deriveDrillJourneyEvidence(input({ drill: d }));
+    for (const { doc } of docs) expect(evidenceVerdict(doc).verdict).toBe('fail');
+  });
+
+  it('passes when the drill recorded the same deb (case-insensitive)', () => {
+    const d = { ...drill(), subject: { debSha256: DEB.toUpperCase() } };
+    const docs = deriveDrillJourneyEvidence(input({ drill: d }));
+    for (const { doc } of docs) expect(evidenceVerdict(doc).verdict).toBe('pass');
+  });
+
   it('refuses an unmapped journey (delegated-seat-lifecycle is LIVE-2, not the drill)', () => {
     expect(() => deriveDrillJourneyEvidence(input({ journeys: ['delegated-seat-lifecycle'] }))).toThrow(/no drill legs/);
   });

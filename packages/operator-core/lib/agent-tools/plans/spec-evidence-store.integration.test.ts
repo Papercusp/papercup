@@ -2101,6 +2101,77 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     expect(await liveRefsAt(3)).toEqual(['surface:GET /events']);
   });
 
+  it('carries proof when only the pinned rubric revision and acceptanceRef advance', async () => {
+    const priorBar = {
+      barKey: 'R-1',
+      barHash: 'a'.repeat(64),
+      barSetHash: 'b'.repeat(64),
+      rubricSlug: 'acceptance-reconnect-plan',
+      rubricRevision: 2,
+      evidencePlane: 'tree' as const,
+    };
+    const nextBar = { ...priorBar, rubricRevision: 3 };
+    const acceptanceRef = (revision: number) => `acceptance-reconnect-plan@${revision}:R-1`;
+
+    await specs.setSpecClause(clause({
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(2),
+      sourceBar: priorBar,
+    }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const advanced = await specs.setSpecClause(clause({
+      expectedRevision: 1,
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(3),
+      sourceBar: nextBar,
+    }));
+    expect(advanced).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
+
+    const [stored] = await db.sql<{
+      acceptance_ref: string;
+      source_bar_key: string;
+      source_bar_hash: string;
+      source_bar_set_hash: string;
+      source_rubric_slug: string;
+      source_rubric_revision: number;
+      evidence_plane: string;
+    }[]>`
+      SELECT acceptance_ref, source_bar_key, source_bar_hash, source_bar_set_hash,
+             source_rubric_slug, source_rubric_revision, evidence_plane
+        FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND revision = 2`;
+    expect(stored).toEqual({
+      acceptance_ref: acceptanceRef(3),
+      source_bar_key: 'R-1',
+      source_bar_hash: 'a'.repeat(64),
+      source_bar_set_hash: 'b'.repeat(64),
+      source_rubric_slug: 'acceptance-reconnect-plan',
+      source_rubric_revision: 3,
+      evidence_plane: 'tree',
+    });
+
+    const changedBarIdentity = {
+      ...nextBar,
+      barHash: 'c'.repeat(64),
+      barSetHash: 'd'.repeat(64),
+      rubricRevision: 4,
+    };
+    const identityChanged = await specs.setSpecClause(clause({
+      expectedRevision: 2,
+      lifecycleStatus: 'active',
+      acceptanceRef: acceptanceRef(4),
+      sourceBar: changedBarIdentity,
+    }));
+    expect(identityChanged).toMatchObject({ status: 'revised', revision: 3 });
+    expect(identityChanged).not.toHaveProperty('evidenceCarriedForward');
+    expect(await liveRefsAt(3)).toEqual([]);
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
+  });
+
   it('differsOnlyInAcceptanceProvenance answers false for any other change', () => {
     const draft = clause({ lifecycleStatus: 'draft' });
     const draftHash = specs.specClauseContentHash(draft);

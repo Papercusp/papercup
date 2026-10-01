@@ -15260,6 +15260,12 @@ export interface CheckpointDependencyPrebuildDeps {
   env?: NodeJS.ProcessEnv;
   /** Whether `<generationRoot>/<identity>` exists (defaults to a real stat). */
   generationPresent?: (generationRoot: string, identity: string) => boolean;
+  /**
+   * The live immutable token of `<generationRoot>/<identity>` in the form the
+   * recorded token uses, or null when unreadable (defaults to
+   * `liveDependencyGenerationToken`). WI-10004826.
+   */
+  liveToken?: (generationRoot: string, identity: string, expectedToken: string) => string | null;
 }
 
 /** Cheap immutable input identity. This reads candidate Git blobs only. */
@@ -15309,6 +15315,36 @@ export async function checkpointDependencyInputFingerprint(
  * the existing install-safe publisher outside the checkpoint serializer; no
  * state-plane failure can relax immutable-generation validation.
  */
+/**
+ * Mirror of dependency-generation.sh's prevalidated-token read (WI-10004826):
+ * `v2:` tokens are the marker's `publication_token=` field; legacy tokens are
+ * `stat %d:%i:%Y:%s` of the generation dir, `|`, then the same for its marker
+ * (or `missing`). Returns null when the generation cannot be read.
+ */
+export function liveDependencyGenerationToken(
+  generationRoot: string,
+  identity: string,
+  expectedToken: string,
+): string | null {
+  const generation = path.join(generationRoot, identity);
+  const marker = path.join(generation, ".papercusp-dependency-generation");
+  try {
+    if (expectedToken.startsWith("v2:")) {
+      const line = readFileSync(marker, "utf8")
+        .split("\n")
+        .find((l) => l.startsWith("publication_token="));
+      return line ? line.slice("publication_token=".length) : null;
+    }
+    const statToken = (p: string) => {
+      const s = statSync(p);
+      return `${s.dev}:${s.ino}:${Math.floor(s.mtimeMs / 1000)}:${s.size}`;
+    };
+    return `${statToken(generation)}|${existsSync(marker) ? statToken(marker) : "missing"}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function selectPersistedCheckpointDependencyGeneration(
   cfg: ReleaseConfig,
   candidate: string,
@@ -15368,6 +15404,26 @@ export async function selectPersistedCheckpointDependencyGeneration(
     log(
       `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} is not in ` +
         `effective generation_root=${effectiveRoot} (published into ${state.generationRoot ?? "unrecorded root"}) ` +
+        `for ${candidate.slice(0, 12)}; joining install-safe fallback`,
+    );
+    return null;
+  }
+  // WI-10004826: presence is not identity. The same content identity can be
+  // republished into the effective store (a root move, or GC + re-publish), and
+  // a LEGACY ready state without a recorded generationRoot then passes the check
+  // above while its token still names the OLD directory. Setup's
+  // dependency_generation_select_prevalidated compares that token and exits 74
+  // ("replaced after validation") with no fallback. Compare the token here, the
+  // same way setup will, and join the install-safe fallback on a mismatch.
+  const liveToken = (deps.liveToken ?? liveDependencyGenerationToken)(
+    effectiveRoot,
+    state.identity,
+    state.token,
+  );
+  if (liveToken === null || liveToken !== state.token) {
+    log(
+      `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} token is stale ` +
+        `in generation_root=${effectiveRoot} (recorded ${state.token}, live ${liveToken ?? "unreadable"}) ` +
         `for ${candidate.slice(0, 12)}; joining install-safe fallback`,
     );
     return null;

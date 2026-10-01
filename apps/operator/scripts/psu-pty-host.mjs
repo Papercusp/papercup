@@ -6599,9 +6599,10 @@ export function injectTurn(sock, text, ownerId) {
  * Only launcher-managed URLs may heal, using the existing provenance marker shared
  * with ptool. An explicit target stays authoritative even when its server is down:
  * a refusal does not authorize moving a current-build session to stable code.
- * A managed pin is replaced only when it REFUSES the connection. A slow or erroring
- * operator stays authoritative. The replacement is the local MCP proxy, and only when it
- * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
+ * A managed pin is replaced only when it refuses connections or its /api/mcp route
+ * is confirmed missing. A slow/erroring service and a live MCP endpoint stay
+ * authoritative. The replacement is the local MCP proxy, and it must answer both
+ * /api/health and /api/mcp. Mutates `env` in place and returns `{ from, to }` when it
  * healed, otherwise null. Never throws.
  *
  * @param {EnvironmentMap} env
@@ -6672,8 +6673,15 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
     const proxy = `http://127.0.0.1:${proxyPort}`;
 
     let refused = false;
+    let pinAnsweredHealth = false;
     try {
-      await fetchImpl(`${pinned}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      const health = await fetchImpl(`${pinned}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      pinAnsweredHealth = true;
+      try {
+        await health?.body?.cancel?.();
+      } catch {
+        /* a small health response is already sufficient */
+      }
     } catch (err) {
       // undici reports a refused connect as TypeError('fetch failed') whose cause
       // carries the socket errno. A timeout surfaces as AbortError/TimeoutError and
@@ -6681,11 +6689,50 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
       const code = err?.cause?.code ?? err?.code;
       refused = code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH';
     }
-    if (!refused) return null;
+    let mcpRouteMissing = false;
+    if (!refused && pinAnsweredHealth) {
+      try {
+        // A stale launcher URL can point at a healthy HTTP service that is not
+        // the operator. GET is side-effect free: a real Streamable HTTP endpoint
+        // may answer 405 (or open its event stream), while a missing route is 404.
+        const route = await fetchImpl(`${pinned}/api/mcp`, {
+          method: 'GET',
+          headers: { accept: 'text/event-stream' },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        mcpRouteMissing = route?.status === 404;
+        try {
+          await route?.body?.cancel?.();
+        } catch {
+          /* releasing a probe stream must not alter the route verdict */
+        }
+      } catch (err) {
+        const code = err?.cause?.code ?? err?.code;
+        refused = code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH';
+      }
+    }
+    if (!refused && !mcpRouteMissing) return null;
 
     try {
       const h = await fetchImpl(`${proxy}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
       if (!h?.ok) return null;
+      try {
+        await h.body?.cancel?.();
+      } catch {
+        /* a small health response is already sufficient */
+      }
+      const mcp = await fetchImpl(`${proxy}/api/mcp`, {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const proxyMcpRouteExists = mcp?.status !== 404;
+      try {
+        await mcp?.body?.cancel?.();
+      } catch {
+        /* releasing a probe stream must not alter the route verdict */
+      }
+      if (!proxyMcpRouteExists) return null;
     } catch {
       return null;
     }
@@ -6694,7 +6741,9 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
     // rediscover (psu-launcher.mjs OPERATOR_URL_PROVENANCE_ENV; a literal because the
     // host cannot import the launcher without an import cycle).
     env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
-    return { from: pinned, to: proxy };
+    return mcpRouteMissing
+      ? { from: pinned, to: proxy, route: 'mcp-route-missing' }
+      : { from: pinned, to: proxy };
   } catch {
     return null;
   }

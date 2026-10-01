@@ -363,6 +363,16 @@ export interface PromoterLiveness {
   thresholdMs: number;
 }
 
+/**
+ * `detail.mode` of a `promoter-tick` admission_runs row.
+ *
+ * `promoter-no-model` is the deterministic pass the fail-open tick runs while the model
+ * promoter is stale or paused (WI-10004725). It is a distinct mode ON PURPOSE: promoter
+ * liveness reads only `mode='promoter'` successes, so a no-model pass can never make a paused
+ * model promoter look healthy and silence its liveness alarm.
+ */
+export type AdmissionTickMode = 'promoter' | 'promoter-no-model' | 'fail-open';
+
 export interface PromoterRunResult {
   runId: string;
   batchSize: number;
@@ -390,6 +400,11 @@ export interface PromoterRunResult {
    * (WI-10004724). Absent on a targeted run, which keeps the exact historical read.
    */
   prescreen?: PromoterPrescreen;
+  /**
+   * No-model pass only (WI-10004725): batch rows with a duplicate candidate that were left
+   * untouched for the model promoter. Also counted in `held`.
+   */
+  deferredToModel?: number;
 }
 
 /**
@@ -434,6 +449,8 @@ export interface FailOpenRunResult {
   scope: AdmissionFailOpenScope;
   liveness: PromoterLiveness;
   reviewDebt?: AdmissionReviewDebt;
+  /** Reviews closed this tick because the item was already terminal (WI-10004725). */
+  reviewMoot?: MootAdmissionReviewsResult;
 }
 
 export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
@@ -1978,7 +1995,7 @@ export async function readPendingBatch(
   harnessSlug: string,
   batchSize: number,
   targetItemIds?: readonly string[],
-  opts: { demoteGuardBlocked?: boolean } = {},
+  opts: { demoteGuardBlocked?: boolean; preferModelFree?: boolean } = {},
 ): Promise<PromoterItem[]> {
   const targets = normalizeAdmissionTargetIds(targetItemIds);
   // demoteGuardBlocked (scheduled window only, WI-10004724): rows the promote guard will
@@ -1986,6 +2003,11 @@ export async function readPendingBatch(
   // remote / claimed / terminal rows cannot occupy the oldest-first head of every window. This
   // is an ORDERING key only — it never excludes a row; endpointProtection stays authoritative.
   const demote = opts.demoteGuardBlocked === true;
+  // preferModelFree (no-model pass only, WI-10004725): a pass that cannot call the model can
+  // only resolve rows WITHOUT duplicate candidates, so those lead the window. Still-pending rows
+  // lead the already-unreviewed ones because they are about to fail open and become new debt.
+  // Ordering only, like `demote`; the pair read stays the authority on what has a candidate.
+  const modelFree = opts.preferModelFree === true;
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -2004,6 +2026,8 @@ export async function readPendingBatch(
           OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
           OR harness_shared.work_item_status_is_terminal(status),
           FALSE)) ASC,
+       (${modelFree} AND admission <> 'pending') ASC,
+       (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
        created_ts ASC NULLS FIRST, feature_id ASC
@@ -2121,6 +2145,8 @@ export async function readPromoterWindow(
     targetItemIds?: readonly string[];
     recentTerminalDays: number;
     nowMs: number;
+    /** No-model pass (WI-10004725): order the window so model-free rows lead it. */
+    noModel?: boolean;
   },
 ): Promise<{
   pendingRows: PromoterItem[];
@@ -2159,7 +2185,7 @@ export async function readPromoterWindow(
     input.harnessSlug,
     input.batchSize * PROMOTER_PRESCREEN_WINDOW_FACTOR,
     undefined,
-    { demoteGuardBlocked: true },
+    { demoteGuardBlocked: true, preferModelFree: input.noModel === true },
   );
   const snapshotsById = await readSnapshots(window.map((item) => item.id));
   // Self-blocked rows are excluded from the pair read itself: their pairs can never persist.
@@ -2302,7 +2328,7 @@ export async function judgedPairsMissingAdjudication(
 
 async function beginRun(
   sql: OrgSql,
-  input: { runId: string; workspaceId: string; harnessSlug: string; mode: 'promoter' | 'fail-open' },
+  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
 ): Promise<void> {
   const detail = JSON.stringify({
     status: 'running',
@@ -4977,9 +5003,19 @@ export async function runWorkItemAdmissionPromoter(opts: {
   beforePersist?: () => Promise<void>;
   /** Test seam; production emits the canonical claimable event after commit. */
   onNewlyAdmitted?: (rows: readonly { id: string; harness: string }[]) => Promise<void>;
+  /**
+   * Deterministic pass that never calls the model (WI-10004725, plan
+   * work-queue-bulk-cleanup-remediation-2026-10-01 P-007). Rows with no duplicate candidate are
+   * promoted exactly as a model tick would promote them; rows with a candidate pair are left
+   * untouched for the model promoter (no hold is written, so the re-review retry watermark only
+   * ever counts real reviews). Recorded as `mode='promoter-no-model'`.
+   */
+  noModel?: boolean;
 }): Promise<PromoterRunResult> {
   // Validate before opening a ledger run or touching policy/DB state.
   const targetItemIds = normalizeAdmissionTargetIds(opts.targetItemIds);
+  const noModel = opts.noModel === true;
+  const mode: AdmissionTickMode = noModel ? 'promoter-no-model' : 'promoter';
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedAt = now();
@@ -5025,7 +5061,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       writerCoverageGap: [],
     };
   }
-  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
+  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode });
   let runModelId: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -5044,6 +5080,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       targetItemIds,
       recentTerminalDays,
       nowMs: startedAt,
+      noModel,
     });
     const pending = pendingRows.map((item) => bindAdmissionMergeSnapshot(item, snapshotsById.get(item.id)));
     const pairs = pairRows.map((pair) => ({
@@ -5052,7 +5089,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       b: bindAdmissionMergeSnapshot(pair.b, snapshotsById.get(pair.b.id)),
     }));
     let judgements: PromoterJudgement[] = [];
-    if (pairs.length > 0) {
+    if (pairs.length > 0 && !noModel) {
       runModelId = model;
       modelCostUsd = null;
       const prompt = buildPromoterPrompt(pairs);
@@ -5082,12 +5119,22 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems.set(pair.a.id, pair.a);
       recurrenceItems.set(pair.b.id, pair.b);
     }
-    const plan = applyPrescreenHolds(
+    const fullPlan = applyPrescreenHolds(
       selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
         onConflict: 'hold',
       }),
       forcedHolds,
     );
+    // A no-model pass has no judgement for any pair, so every paired row plans as a hold. That
+    // hold means "awaits the model", not "reviewed and ambiguous", so it is deferred, not
+    // written: persisting it would advance the fail-open re-review retry watermark for a review
+    // that never happened.
+    const deferredToModel = noModel
+      ? fullPlan.dispositions.filter((disposition) => disposition.action === 'hold').length
+      : 0;
+    const plan: PromoterPlan = noModel
+      ? { ...fullPlan, dispositions: fullPlan.dispositions.filter((disposition) => disposition.action !== 'hold') }
+      : fullPlan;
     await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
@@ -5106,7 +5153,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     );
     const promoted = persisted.promotedIds.length;
     const merged = persisted.mergedIds.length;
-    const held = persisted.held.length;
+    const held = persisted.held.length + deferredToModel;
     // Targeted writer-integrity check, scoped to exactly the pairs THIS tick rendered a final
     // (non-hold) judgement for — immune to concurrent corpus growth and to legitimate holds.
     // See judgedPairsMissingAdjudication for why the raw global census delta cannot be trusted.
@@ -5138,7 +5185,9 @@ export async function runWorkItemAdmissionPromoter(opts: {
       latencyMs,
       detail: {
         status: 'complete',
-        mode: 'promoter',
+        mode,
+        // No-model pass only: paired rows left for the model promoter, not written as holds.
+        ...(noModel ? { deferredToModel } : {}),
         ...(targetItemIds === undefined ? {} : { targetItemIds }),
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
@@ -5163,7 +5212,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       promoted,
       merged,
       held,
-      modelCalled: pairs.length > 0,
+      modelCalled: pairs.length > 0 && !noModel,
       tokensIn,
       tokensOut,
       censusBefore,
@@ -5171,9 +5220,10 @@ export async function runWorkItemAdmissionPromoter(opts: {
       guardRefusals: persisted.guardRefusals,
       writerCoverageGap,
       ...(prescreen ? { prescreen } : {}),
+      ...(noModel ? { deferredToModel } : {}),
     };
   } catch (error) {
-    await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt), {
+    await failRun(sql, runId, mode, error, Math.max(0, now() - startedAt), {
       modelId: runModelId,
       tokensIn,
       tokensOut,
@@ -5181,6 +5231,85 @@ export async function runWorkItemAdmissionPromoter(opts: {
     });
     throw error;
   }
+}
+
+/** `admissionReview.terminalOutcome` for a fail-open review closed because its item is terminal. */
+export const ADMISSION_REVIEW_MOOT_OUTCOME = 'review-moot';
+/** Per-call bound on the moot sweep; the backlog drains across ticks, never in one statement. */
+export const DEFAULT_REVIEW_MOOT_BATCH = 2_000;
+
+export interface MootAdmissionReviewsResult {
+  closed: number;
+  byHarness: Record<string, number>;
+  /** The bound was reached, so more terminal rows may remain for the next tick. */
+  truncatedByLimit: boolean;
+}
+
+/**
+ * Close the re-review owed by fail-open rows whose item is already terminal (WI-10004725, plan
+ * work-queue-bulk-cleanup-remediation-2026-10-01 P-007).
+ *
+ * A fail-open row is admitted `unreviewed` and owes a duplication review. Once the item is
+ * done, dropped or otherwise terminal, that review cannot change anything: a terminal row is
+ * never claimed again, and open rows still pair against recent terminal rows as candidates, so
+ * nothing is lost by not reviewing it. Left open, these rows inflated the review-debt census
+ * (1,084 of 2,176 papercusp rows on 2026-10-01) and sat in the promoter's queue.
+ *
+ * Each row records WHY it was closed (`terminalOutcome='review-moot'` plus `mootReason` naming
+ * the status it had). `admitted_at`/`admitted_by` are kept, so the fail-open provenance stays
+ * readable. No model, no pause dependency: it runs on the fail-open tick.
+ */
+export async function closeMootAdmissionReviews(
+  sql: OrgSql,
+  opts: { workspaceId: string; harnessSlug?: string | null; nowMs: number; limit?: number; actor?: string },
+): Promise<MootAdmissionReviewsResult> {
+  const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_REVIEW_MOOT_BATCH));
+  const harnessSlug = opts.harnessSlug ?? null;
+  const actor = opts.actor ?? FAIL_OPEN_ACTOR;
+  const rows = await sql<Array<{ harness_slug: string }>>`
+    WITH moot AS (
+      SELECT workspace_id, harness_slug, feature_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${opts.workspaceId}
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+         AND admission = 'unreviewed'
+         AND harness_shared.work_item_status_is_terminal(status)
+         -- Same "still owes a review" reading as the review-debt census: an absent state on an
+         -- unreviewed row is pending.
+         AND COALESCE(payload #>> '{admissionReview,state}', 'pending') = 'pending'
+       ORDER BY created_ts ASC NULLS FIRST, feature_id ASC
+       LIMIT ${limit}
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE harness_shared.work_items wi
+       SET admission = 'admitted',
+           payload = COALESCE(wi.payload, '{}'::jsonb) || jsonb_build_object(
+             'admissionReview',
+             COALESCE(wi.payload -> 'admissionReview', '{}'::jsonb) || jsonb_build_object(
+               'state', 'terminal',
+               'reviewedAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+               'reviewedBy', ${actor}::text,
+               'terminalAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+               'terminalOutcome', ${ADMISSION_REVIEW_MOOT_OUTCOME}::text,
+               'mootReason', 'item was already ' || COALESCE(wi.status, 'terminal') ||
+                 ' when its fail-open duplication review came due; a terminal item is never claimed again, so the review cannot change anything',
+               'alert', jsonb_build_object(
+                 'key', ${ADMISSION_REVIEW_ALERT_KEY}::text,
+                 'state', 'cleared',
+                 'emittedAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+                 'reason', 'review moot: item already terminal'
+               )
+             )
+           ),
+           updated_ts = ${opts.nowMs}
+      FROM moot
+     WHERE wi.workspace_id = moot.workspace_id
+       AND wi.harness_slug = moot.harness_slug
+       AND wi.feature_id = moot.feature_id
+     RETURNING wi.harness_slug`;
+  const byHarness: Record<string, number> = {};
+  for (const row of rows) byHarness[row.harness_slug] = (byHarness[row.harness_slug] ?? 0) + 1;
+  return { closed: rows.length, byHarness, truncatedByLimit: rows.length >= limit };
 }
 
 export function evaluatePromoterLiveness(input: {
@@ -5241,7 +5370,7 @@ export function evaluatePromoterLiveness(input: {
   };
 }
 
-async function readPromoterLiveness(
+export async function readPromoterLiveness(
   sql: OrgSql,
   workspaceId: string,
   harnessSlug: string,
@@ -5402,6 +5531,14 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         });
       }
     }
+    // WI-10004725 (P-007): close the reviews made moot by a terminal item BEFORE the debt census,
+    // so the ledger's reviewDebt is the real remaining debt and reviewMoot sits beside it as the
+    // per-tick trend. Same scope as the sweep above: workspace-wide on the production routine.
+    const reviewMoot = await closeMootAdmissionReviews(sql, {
+      workspaceId: opts.workspaceId,
+      harnessSlug: scope === 'workspace' ? null : opts.harnessSlug,
+      nowMs: startedAt,
+    });
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
     const reviewHealth = await readWorkItemAdmissionQueueHealth({ workspaceId: opts.workspaceId, sql });
     const reviewDebt = reviewHealth.reviewDebt ?? {
@@ -5441,9 +5578,10 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         // this harness held, or was nothing ever watching it?" after the fact.
         heldByScope,
         reviewDebt,
+        reviewMoot,
       },
     });
-    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt };
+    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt, reviewMoot };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;

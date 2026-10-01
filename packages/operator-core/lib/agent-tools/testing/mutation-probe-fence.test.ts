@@ -298,6 +298,26 @@ describe('mutationProbeRefusal narrowing', () => {
       probe('apps/operator-public/src/db.ts'))).resolves.toBeNull();
   });
 
+  // EI-24777609977774399: a probe on plans/runner.ts refused a test whose only `runner` token was
+  // its import path '…/migration-runner.js'. The probed filename must sit at a path boundary on
+  // BOTH sides: a hyphen-prefixed sibling and a longer suffix name different files. Every case
+  // above uses a literal that lacks the probed filename entirely, so only this one pins the
+  // boundary checks themselves; the positive control proves the same probe still fences.
+  it('does not mistake a filename that merely contains the probed filename for a reference to it', async () => {
+    const runner = probe('packages/operator-core/lib/agent-tools/plans/runner.ts');
+    const near = checkout({ ...base,
+      'src/loader.ts': "export const paths = ['../embedded-postgres-server/src/migration-runner.ts', 'plans/runner.ts.snap'];\n",
+      'tests/loader.test.ts': "import { paths } from '../src/loader';\nexport default paths;\n" });
+    await expect(mutationProbeRefusal(near, ['tests/loader.test.ts'], runner)).resolves.toBeNull();
+
+    const exact = checkout({ ...base,
+      'src/loader.ts': "export const paths = ['../agent-tools/plans/runner.ts'];\n",
+      'tests/loader.test.ts': "import { paths } from '../src/loader';\nexport default paths;\n" });
+    const refusal = await mutationProbeRefusal(exact, ['tests/loader.test.ts'], runner);
+    expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+    expect(refusal!.hint).toContain('loader.ts names runner.ts');
+  });
+
   it('still fences a statically concatenated complete probed filename', async () => {
     const dir = checkout({ ...base,
       'src/loader.ts': "export const target = 'routes/adv/' + 'sessions' + '.ts';\n",

@@ -17,6 +17,7 @@
  * instead of discovering staleness only after acting on it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const getWorkItem = vi.fn();
@@ -186,14 +187,17 @@ it('resume documents and enforces its standalone contract', () => {
     ((get.args as { shape?: Record<string, { description?: string }> }).shape?.resume?.description ?? ''),
   );
   expect(resumeDescription).toContain('Standalone one-item continuation view');
-  for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs']) {
+  for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs', 'operationalBrief']) {
     expect(resumeDescription).toContain(excluded);
   }
+  const json = z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string };
+  expect(json['x-papercusp-call-constraint']).toContain('operationalBrief');
   expect(() => parse({ ids: ['WI-a', 'WI-b'], resume: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, detail: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, checksOnly: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, threadLimit: 0 })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, priorAttemptRefs: ['WI-b#checkpoint'] })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, operationalBrief: true })).toThrow(/operationalBrief/);
 });
 
 it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {

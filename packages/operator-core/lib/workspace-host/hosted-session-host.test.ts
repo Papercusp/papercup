@@ -159,6 +159,56 @@ describe('hosted customer PTY identity', () => {
   });
 });
 
+describe('membership.report frames (WI-10004257)', () => {
+  function membershipHarness(onMembershipReport?: (report: unknown) => void) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const warnings: string[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: tmpdir(),
+      send: (message) => sent.push(message),
+      onAudit: vi.fn(),
+      onWarning: (message) => warnings.push(message),
+      ...(onMembershipReport ? { onMembershipReport } : {}),
+    });
+    return { adapter, sent, warnings };
+  }
+  const frame = (organizationId: string) => ({
+    type: 'membership.report',
+    organizationId,
+    removedEmails: ['gone@example.test'],
+  });
+
+  it("hands a report for the binding's organization to the sink, opening no channel", async () => {
+    const reports: unknown[] = [];
+    const { adapter, sent } = membershipHarness((report) => reports.push(report));
+    await adapter.accept(frame('org-1'));
+    expect(reports).toEqual([frame('org-1')]);
+    expect(sent).toEqual([]);
+  });
+
+  it('drops a report naming another organization', async () => {
+    const reports: unknown[] = [];
+    const { adapter, warnings } = membershipHarness((report) => reports.push(report));
+    await adapter.accept(frame('org-2'));
+    await adapter.accept({ type: 'membership.report', removedEmails: [] });
+    expect(reports).toEqual([]);
+    expect(warnings).toEqual([
+      'dropped a membership report for another organization',
+      'dropped a membership report for another organization',
+    ]);
+  });
+
+  it('survives a sink that throws, and ignores the frame without a sink', async () => {
+    const throwing = membershipHarness(() => { throw new Error('store down'); });
+    await expect(throwing.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
+    expect(throwing.warnings).toEqual(['membership report failed: store down']);
+    const none = membershipHarness();
+    await expect(none.adapter.accept(frame('org-1'))).resolves.toBeUndefined();
+    expect(none.warnings).toEqual([]);
+  });
+});
+
 describe("hosted 'psu' terminal (D-002)", () => {
   function psuHarness(root: string) {
     const sent: HostedHostOutboundEnvelope[] = [];

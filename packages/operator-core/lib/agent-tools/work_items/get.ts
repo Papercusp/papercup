@@ -209,7 +209,7 @@ async function withWorkItemsGetBudget<T>(
 export const THREAD_WINDOW_MAX = 10;
 
 const RESUME_ARGUMENT_CONSTRAINT =
-  'resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments';
+  'resume requires one item and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments';
 
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
@@ -670,7 +670,7 @@ export default defineTool({
           'return only the stored checkpoint check-row ledger (`checkpointChecks.rows` with caller-facing id/claim identities) plus recency/failure metadata; omit the checkpoint narrative and other enrichments. Use this before building `retireIds` instead of fetching the full checkpoint body.',
         ),
       resume: z.boolean().optional().describe(
-        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Do not combine with detail, checksOnly, threadLimit, or priorAttemptRefs; use a separate read for those enrichments.',
+        'Standalone one-item continuation view: current claim, complete structured next action, saved checks and exact evidence references, with freshness and scoped recovery. Uses checkpoint:{did,left,next} written by work_items:checkpoint; missing/unreadable state remains explicit. Do not combine with detail, checksOnly, threadLimit, priorAttemptRefs, or operationalBrief; use a separate read for those enrichments.',
       ),
       operationalBrief: z.boolean().optional().describe(
         'Add `operationalBrief` per row: claim/state, blockers, last verified evidence, next action and successor residue, projected from this same read. Unmeasured fields are explicit `unknown` with a reason, never zero. Forces a complete read; not with resume or checksOnly.',
@@ -712,11 +712,11 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     })
-    .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
+    .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined && !a.operationalBrief), {
       message: RESUME_ARGUMENT_CONSTRAINT,
     })
-    .refine((a) => !a.operationalBrief || (!a.resume && !a.checksOnly), {
-      message: 'operationalBrief projects the complete row; it cannot be combined with resume or checksOnly',
+    .refine((a) => !a.operationalBrief || !a.checksOnly, {
+      message: 'operationalBrief projects the complete row; it cannot be combined with checksOnly',
     })
     .meta({ 'x-papercusp-call-constraint': RESUME_ARGUMENT_CONSTRAINT }),
   // EI-19447969329510166: without a declared shaper this tool fell through to the

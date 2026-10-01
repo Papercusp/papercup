@@ -9,7 +9,8 @@
  *   npx tsx scripts/agent-capacity/load-driver.ts --agents 8 \
  *     [--select cli=claude,repo=excalidraw,profile=light | --sessions <id,id>] \
  *     [--duration-sec 1800] [--speed 1] [--stagger-ms 2000] [--isolation systemd|none] \
- *     [--corpus ~/.cache/agent-capacity/corpus] [--out ~/.cache/agent-capacity/runs/<runId>]
+ *     [--corpus ~/.cache/agent-capacity/corpus] [--out ~/.cache/agent-capacity/runs/<runId>] \
+ *     [--tasks-file <tasks.json the recordings were made from; default corpus/tasks.json>]
  *
  * Each agent SLOT runs sessions round-robin from the selection; with `--duration-sec` a slot
  * keeps starting its next session until the deadline, so N stays N for the whole window (the
@@ -40,7 +41,7 @@ import path from 'node:path';
 import { assertHostAdmission } from './host-admission';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { finished } from 'node:stream/promises';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
 // Checkouts are copied/removed with SPAWNED native cp/rm (see session-process.ts): the replay
 // server shares this event loop with every running agent's model replies.
 import { parseCgroupStats, prepareWorkdir, removeTree as rm, sessionSpawn, type Isolation, type WorkdirMode } from './session-process';
@@ -429,7 +430,7 @@ function arg(name: string, fallback?: string): string | undefined {
 
 async function main(): Promise<void> {
   assertHostAdmission(__dirname);
-  const corpus = loadCorpus();
+  const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const corpusDir = arg('corpus', path.join(CACHE, 'corpus'))!;
   const metas = loadMetas(corpusDir);
   const sessions = selectSessions(metas, arg('select'), arg('sessions')?.split(',').filter(Boolean));

@@ -45,6 +45,7 @@ const db = vi.hoisted(() => {
     return at < 0 ? { id: null, xmin: null } : { id: values[at], xmin: values[at + 1] };
   };
   const bodyReads: Array<{ advSessionId: unknown; want: unknown }> = [];
+  const BODY_READ_MARKER = 'AS launch_spec, n.launch_spec_xmin';
   // The narrowing is a postgres.js FRAGMENT (narrowedLaunchSpecSql,
   // identity-receipt-narrowing.ts, WI-10004801): built with `sql`…`` and never
   // awaited, then interpolated into the body read as its first value. Modelled
@@ -84,8 +85,13 @@ const db = vi.hoisted(() => {
         (row as Record<string, unknown>).adv_session_id != null &&
         String((row as Record<string, unknown>).adv_session_id) === String(callerAdvSessionId))
       .map((row) => toWire(row, known));
-  });
-  return { rows, sql, bodies, bodyReads, loadOverrides, failClient: false };
+  };
+  const sql = vi.fn((strings: readonly string[], ...values: unknown[]) =>
+    fragment(strings, values) ?? query(strings, values));
+  /** Real queries only: a fragment build is not a round trip to PostgreSQL. */
+  const queryCalls = () => sql.mock.calls.filter(([strings, ...values]) => !fragment(strings, values));
+  const isBodyRead = (template: unknown) => (template as readonly string[]).join(' ').includes(BODY_READ_MARKER);
+  return { rows, sql, queryCalls, isBodyRead, bodies, bodyReads, loadOverrides, failClient: false };
 });
 const grants = vi.hoisted(() => ({ read: vi.fn(), claim: vi.fn(async () => true), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
@@ -301,12 +307,13 @@ describe('control-anchor kernel resolver (D-030)', () => {
     const handle = state?.identityLaunchRecord;
     if (!isLazyIdentityLaunchRecord(handle)) throw new Error('expected a lazy launch record');
     expect(await handle.load()).toEqual({ record: launchRow.launch_spec, rowVersion: '1549' });
-    const [bodyTemplate, ...bodyParams] = db.sql.mock.calls[1] as unknown[];
+    const [bodyTemplate, ...bodyParams] = db.queryCalls()[1] as unknown[];
+    expect(db.isBodyRead(bodyTemplate)).toBe(true);
     const bodySql = (bodyTemplate as readonly string[]).join(' ');
     expect(bodySql).toContain('s.xmin::text AS launch_spec_xmin');
     expect(bodySql).toContain('FROM harness_shared.adv_sessions s');
     // No receipts requested ⇒ `want` is null ⇒ the record is read whole.
-    expect(bodyParams).toEqual([null, 27, 'owner-a', 'ws-a']);
+    expect(bodyParams).toEqual([{ narrowedLaunchSpecFragment: true, want: null }, 27, 'owner-a', 'ws-a']);
   });
 
   // WI-10004801 (#1155): the body read narrows identityHistory to the receipt
@@ -350,8 +357,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
   // 884KB, max 3.9MB) even when identityResolutionCache already held the
   // verdict for that exact row version.
   describe('launch record body is read only on an identity-resolution cache miss (WI-10002721)', () => {
-    const bodyReads = () => db.sql.mock.calls.filter(([template]) =>
-      (template as readonly string[]).join(' ').includes('AS want) AS w')).length;
+    const bodyReads = () => db.queryCalls().filter(([template]) => db.isBodyRead(template)).length;
     const rowAt = (xmin: string, over: Record<string, unknown> = {}) =>
       anchorRow({ activation: appliedActivation() }, { adv_session_id: 31, adv_session_xmin: xmin, ...over });
 
@@ -362,12 +368,15 @@ describe('control-anchor kernel resolver (D-030)', () => {
       await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
       expect(bodyReads()).toBe(1);
       // Two anchor reads + one body read: the hit issued no body query at all.
-      expect(db.sql).toHaveBeenCalledTimes(3);
+      // (Fragment builds are not queries; queryCalls() excludes them.)
+      expect(db.queryCalls()).toHaveLength(3);
       // The body query stays scoped to the anchor's owner and workspace.
-      const bodyCall = db.sql.mock.calls.find(([template]) =>
-        (template as readonly string[]).join(' ').includes('AS want) AS w'))!;
+      const bodyCall = db.queryCalls().find(([template]) => db.isBodyRead(template))!;
       expect(bodyCall.slice(1)).toEqual([
-        JSON.stringify([{ specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision }]),
+        {
+          narrowedLaunchSpecFragment: true,
+          want: JSON.stringify([{ specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision }]),
+        },
         31, 'owner-a', 'ws-a',
       ]);
     });

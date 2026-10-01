@@ -60,12 +60,30 @@ function inMemoryPersistSql() {
   return sql;
 }
 
+/**
+ * The gate read's narrowing is a postgres.js FRAGMENT (narrowedLaunchSpecSql,
+ * identity-receipt-narrowing.ts, WI-10004801): built with `sql`…`` and never
+ * awaited, then interpolated into the read as its first value. It is not a
+ * query, so the fakes below answer it synchronously with a marker carrying the
+ * `want` parameter (null = the record is read whole), record no call and
+ * consume no scripted result.
+ */
+function narrowingFragment(strings: readonly string[], values: unknown[]) {
+  const text = strings.join(' ').trim();
+  if (text === 'n.launch_spec') return { narrowedLaunchSpecFragment: true, want: null };
+  return text.startsWith('CASE') && text.includes('identityHistory')
+    ? { narrowedLaunchSpecFragment: true, want: values[0] }
+    : null;
+}
+
 function sqlReturning<T>(rows: T[]) {
   const calls: Array<{ statement: string; values: unknown[] }> = [];
-  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const query = async (strings: TemplateStringsArray, values: unknown[]) => {
     calls.push({ statement: strings.join(' '), values });
     return rows;
-  }) as unknown as Sql;
+  };
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) =>
+    narrowingFragment(strings, values) ?? query(strings, values)) as unknown as Sql;
   Object.assign(sql as object, {
     begin: async (callback: (tx: Sql) => Promise<unknown>) => callback(sql),
   });
@@ -91,10 +109,12 @@ function transactionalSqlSequence(results: unknown[][]) {
   const calls: Array<{ statement: string; values: unknown[] }> = [];
   let committed = false;
   let rolledBack = false;
-  const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const query = async (strings: TemplateStringsArray, values: unknown[]) => {
     calls.push({ statement: strings.join(' '), values });
     return results.shift() ?? [];
-  }) as unknown as Sql;
+  };
+  const tx = ((strings: TemplateStringsArray, ...values: unknown[]) =>
+    narrowingFragment(strings, values) ?? query(strings, values)) as unknown as Sql;
   const sql = tx;
   Object.assign(sql as object, {
     begin: async (callback: (transaction: Sql) => Promise<unknown>) => {
@@ -553,7 +573,11 @@ describe('compact durable CTRL anchor', () => {
     await expect(acknowledgeControlTransition('su-x', 'ws-test', 9, db.sql, revision)).resolves.toBe(false);
     expect(db.calls).toHaveLength(1);
     expect(db.calls[0]!.statement).toMatch(/ORDER BY/);
-    expect(db.calls[0]!.values).toEqual(['su-x', 'ws-test']);
+    // WI-10004801: the gate read is narrowed to the receipt for the revision
+    // being acknowledged — the only one launchRecordAdmitsApplied consults.
+    expect(db.calls[0]!.values).toEqual([
+      { narrowedLaunchSpecFragment: true, want: JSON.stringify([revision]) }, 'su-x', 'ws-test',
+    ]);
   });
 
   it('still acknowledges a control-only activation (same specification, new state revision)', async () => {

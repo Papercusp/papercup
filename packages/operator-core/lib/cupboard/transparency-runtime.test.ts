@@ -249,6 +249,7 @@ describe('runTransparencyPass (P-044)', () => {
         gateSecretRef: null,
         cupboardUrl: 'http://cupboard.invalid',
         chainRpcUrl: null,
+        safe: { status: 'not-configured' },
       },
       now: () => NOW,
       readEntries: async () => [SEPT_PAY],

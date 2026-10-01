@@ -3919,3 +3919,52 @@ edit, live-gate operation or parallel monitor was performed.
 The remaining claims require those specific operational inputs or a
 distinguishing measurement, not another unchanged private-fixture run.
 **WI-10002830 and R-8 remain open.**
+
+### Gateway/proxy operational marker discrimination — October 1, 12:14Z
+
+The maintained `RESTART_TARGET_UNITS` map names
+`papercup-inference-gateway.service` and `papercup-mcp-proxy.service`.
+The previous read used `papercusp-…` names and returned `unitsUnknown`;
+its empty result did not establish an absence of failures. The corrected
+read kept the same October 1 **11:25–11:45 UTC** interval. Both units were
+recognized, the journal was available, and no journal error was reported.
+
+The combined read reached its 30-row bound: `matched:31` is a lower bound
+from the reader's `limit + 1` probe, not a failure count. The proxy tail
+contains paired `clientError`/`ECONNRESET` socket-reset categories at
+11:44:56.591Z, 11:44:52.769Z and 11:44:52.698Z. The current writer emits
+both categories for the same socket error; timestamps alone do not prove
+request identity, upstream failure or an independently failed user action.
+
+A gateway-only read of the same interval completed without truncation.
+The classifier retained the writer distinctions:
+
+- The six collapsed routing rows at 11:35:00.465Z through 11:36:32.371Z
+  matched the loose `429` search because their **client port numbers**
+  contained that substring. They are `gw-route` records, not evidence of
+  HTTP 429 responses. The writer uses `req.socket.remotePort` for `client`.
+- Resource-governor rows at 11:44:56.899Z, 11:44:48.736Z and
+  11:44:41.591Z report database **lock timeouts**. A colocated service log
+  does not make these inference-request timeout or cancellation evidence.
+- The 11:25:46.743Z error is a distinct upstream `STALLED`/aborted marker.
+  The current writer uses that category for both `ttfb-timeout` and
+  `cancelled` errors. The retained marker has no request ID, so it does
+  not distinguish those mechanisms or establish application impact.
+
+Receipts retain distilled diagnostics and identifiers, without raw logs:
+`/tmp/p008-fire69-gateway-trace.json`
+(`6ba2f37c98c8b020da420ae61efb37a6ca720eb979fa3ef53aa15fb72d17ce67`),
+gateway-only `/tmp/p008-fire69-gateway-only.json`
+(`7dfde0e11d986305b5d961fb862e343249e670731916f9af0da7acc6a5921a50`),
+and writer classification `/tmp/p008-fire69-gateway-classified.json`
+(`b7cf72fbca24f9debffda2f50cd0ad6e382ce239e974a88e2289e6f7935a25f5`).
+The classification receipt has no summary truncation or child failure.
+
+The live plan-acceptance resolver now returns an available verdict rather
+than the earlier unknown state: `satisfied:false`,
+`acceptance_bar_contract_not_ready`, plan revision 60/rubric revision 4.
+R-8 remains blocked by inadequate/stale proof, its unmet live evidence
+plane, and missing grading. No new binding, terminal disposition,
+shared-host restart or shipment is claimed. The next useful correlation
+is the exact 11:25:46.743Z upstream marker with its loaded runtime and
+existing request-stage/cancellation evidence.

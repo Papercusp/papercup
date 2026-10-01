@@ -110,7 +110,14 @@ export function deriveDrillJourneyEvidence(input: DrillJourneyEvidenceInput): Dr
 
   const actual = input.actualDebSha256.toLowerCase();
   const expected = input.expectedDebSha256.toLowerCase();
-  const artifactOk = SHA256_HEX.test(actual) && SHA256_HEX.test(expected) && actual === expected;
+  // Run 3+ drills record the deb they ran on at `subject.debSha256` (su-81ee2033, 2026-10-01).
+  // When present it must name the same bytes, or the drill exercised a different artifact
+  // from the one these docs certify. Absent (older drills) = not checked, not a failure.
+  const drillSubject = isRecord(drill.subject) ? drill.subject : {};
+  const drillDeb = typeof drillSubject.debSha256 === 'string' ? drillSubject.debSha256.toLowerCase() : null;
+  const drillDebOk = drillDeb === null || drillDeb === actual;
+  const artifactOk =
+    SHA256_HEX.test(actual) && SHA256_HEX.test(expected) && actual === expected && drillDebOk;
 
   return rows.map((row) => {
     const scoped = row.legs.map((leg) => {
@@ -131,7 +138,9 @@ export function deriveDrillJourneyEvidence(input: DrillJourneyEvidenceInput): Dr
       {
         id: 'exact-artifact',
         passed: artifactOk,
-        evidence: `DEB sha256 expect=${expected} actual=${actual} (actual computed over ${input.artifact})`,
+        evidence:
+          `DEB sha256 expect=${expected} actual=${actual} (actual computed over ${input.artifact})` +
+          (drillDeb === null ? '; drill subject.debSha256 not recorded' : `; drill subject.debSha256=${drillDeb}`),
       },
       {
         id: `legs-${row.legs.join('')}-pass`,

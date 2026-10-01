@@ -112,10 +112,17 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
           .toEqual(narrowIdentityHistory(spec, revisions));
       }
       expect(await readGateSelectedLaunchSpec(db.adminSql, gateOwner(name), WORKSPACE)).toEqual(spec);
-      // What every narrowed caller does with the record: the receipt it selects is unchanged.
+      // What every narrowed caller does with the record: select a receipt and
+      // replay its specificationArtifact (appliedIdentityArtifact). Compare that,
+      // not the receipt object: when the pair is the record's own, the receipt IS
+      // the record, whose identityHistory the narrowing deliberately shortened.
+      const selected = (record: unknown, pair: typeof A) => {
+        const receipt = selectAppliedReceipt(record, pair);
+        return { found: receipt !== null, artifact: receipt?.specificationArtifact };
+      };
       for (const pair of [A, B, C]) {
         const narrowed = await readGateSelectedLaunchSpec(db.adminSql, gateOwner(name), WORKSPACE, [pair]);
-        expect(selectAppliedReceipt(narrowed, pair)).toEqual(selectAppliedReceipt(spec, pair));
+        expect(selected(narrowed, pair)).toEqual(selected(spec, pair));
       }
     });
   }

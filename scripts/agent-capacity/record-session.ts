@@ -3,7 +3,7 @@
  *
  *   npx tsx scripts/agent-capacity/record-session.ts --cli claude|codex --tasks all|<id,id> \
  *     [--parallel 3] [--out ~/.cache/agent-capacity/corpus] [--upstream http://127.0.0.1:8788] \
- *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work]
+ *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work] [--tasks-file <tasks.json>]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -48,6 +48,19 @@ export interface Corpus {
 export const CORPUS_FILE = path.join(__dirname, 'corpus', 'tasks.json');
 export const OWNER_HEADER_VALUE = 'agent-capacity-corpus';
 const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+
+/**
+ * The task file a CLI run reads: `--tasks-file <path>` when given, else the shipped corpus. P-019
+ * runs real Papercusp backlog items from its own task file through the same recorder and
+ * replayer. (Not `--corpus`: load-driver.ts already uses that for the recordings directory.)
+ */
+export function corpusFileFromArgv(argv: readonly string[]): string {
+  const i = argv.indexOf('--tasks-file');
+  if (i < 0) return CORPUS_FILE;
+  const file = argv[i + 1];
+  if (!file || file.startsWith('--')) throw new Error('--tasks-file needs a path');
+  return path.resolve(file);
+}
 
 export function loadCorpus(file = CORPUS_FILE): Corpus {
   return JSON.parse(readFileSync(file, 'utf8')) as Corpus;
@@ -322,7 +335,7 @@ function arg(name: string, fallback?: string): string | undefined {
 
 async function main(): Promise<void> {
   assertHostAdmission(__dirname);
-  const corpus = loadCorpus();
+  const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const cli = arg('cli') as Cli;
   if (cli !== 'claude' && cli !== 'codex') throw new Error('--cli claude|codex required');
   const sel = arg('tasks', 'all')!;

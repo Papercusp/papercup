@@ -59,6 +59,7 @@ import {
   runCmd,
   runGreenCheckpoint,
   selectPersistedCheckpointDependencyGeneration,
+  liveDependencyGenerationToken,
   retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
   writeCheckpointRunPhase,
@@ -2809,6 +2810,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         log,
         env: {},
         generationPresent: () => true,
+        liveToken: () => FIXTURE_DEPENDENCY_GENERATION_TOKEN,
         awaitState: async () => ({
           schema: 1,
           status: "ready",
@@ -2875,6 +2877,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       env: NodeJS.ProcessEnv,
       present: (root: string, identity: string) => boolean,
       log: (message: string) => void = () => {},
+      liveToken: (root: string, identity: string, expected: string) => string | null = () =>
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
     ) =>
       selectPersistedCheckpointDependencyGeneration(cfg, candidate, exec, {
         target: { workspaceId: "ws-1", installSlug: "papercusp" },
@@ -2882,8 +2886,51 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         log,
         env,
         generationPresent: present,
+        liveToken,
         awaitState: async () => state,
       });
+
+    it("WI-10004826: a legacy marker whose identity was REPUBLISHED in the effective store (stale token) is a miss, not an exit-74 handoff", async () => {
+      const log = vi.fn();
+      const liveToken = vi.fn(() => "66304:2684359471:1790851625:147|66304:2684359477:1790851625:708");
+      const selected = await select(
+        readyState(),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" },
+        () => true,
+        log,
+        liveToken,
+      );
+      expect(selected).toBeNull();
+      expect(liveToken).toHaveBeenCalledWith("/mnt/data/gens", generationId, FIXTURE_DEPENDENCY_GENERATION_TOKEN);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("token is stale"));
+    });
+
+    it("WI-10004826: an unreadable live token is a miss", async () => {
+      const selected = await select(readyState(), { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" }, () => true, () => {}, () => null);
+      expect(selected).toBeNull();
+    });
+
+    it("WI-10004826: liveDependencyGenerationToken matches the shell's `stat -c %d:%i:%Y:%s` token and the v2 publication_token field", () => {
+      const root = mkdtempSync(join(tmpdir(), "dep-gen-token-"));
+      try {
+        const id = `v1-${"a".repeat(64)}`;
+        const generation = join(root, id);
+        mkdirSync(generation);
+        expect(liveDependencyGenerationToken(root, id, "legacy")).toMatch(/^\d+:\d+:\d+:\d+\|missing$/);
+        const marker = join(generation, ".papercusp-dependency-generation");
+        writeFileSync(marker, `identity=${id}\npublication_token=v2:abc123\n`);
+        const shell = spawnSync(
+          "bash",
+          ["-c", 'printf "%s|%s" "$(stat -c %d:%i:%Y:%s "$1")" "$(stat -c %d:%i:%Y:%s "$2")"', "_", generation, marker],
+          { encoding: "utf8" },
+        ).stdout;
+        expect(liveDependencyGenerationToken(root, id, "legacy")).toBe(shell);
+        expect(liveDependencyGenerationToken(root, id, "v2:old")).toBe("v2:abc123");
+        expect(liveDependencyGenerationToken(root, `v1-${"b".repeat(64)}`, "legacy")).toBeNull();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
 
     it("a marker published into the OLD root is a miss after PAPERCUSP_DEPENDENCY_GENERATION_ROOT moves (no exit-74 handoff)", async () => {
       const log = vi.fn();
