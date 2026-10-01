@@ -52,7 +52,11 @@ import {
   type PlanItemStamp,
 } from './plan-items/convert';
 import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
-import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
+import {
+  syncLinkedWorkItemsToPlanLane,
+  type PlanLaneSyncFailure,
+  type PlanLaneSyncStatus,
+} from './plan-items/reconcile-linked-work-items';
 import { planItemTextHash } from './plan-items/text-drift';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
@@ -77,6 +81,8 @@ export interface PromotePlanResult {
   promoted: number;
   /** open items already covered by a work-item (idempotent skips) */
   skipped: number;
+  /** Fail-soft inline plan-lane sync errors, correlated to the minted work-item. */
+  laneGateFailures?: Array<PlanLaneSyncFailure & { itemId: string; workItemId: string }>;
   /** true when the flag is OFF — promotion was a no-op */
   flagOff?: boolean;
   /**
@@ -656,6 +662,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     };
   };
   let promoted = 0;
+  const laneGateFailures: NonNullable<PromotePlanResult['laneGateFailures']> = [];
   /**
    * P-006 PASS 1 — mint every item first, recording `planItemId → workItemId`.
    *
@@ -770,14 +777,31 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     const laneStatus: PlanLaneSyncStatus | null =
       effective?.effectiveStatus === 'blocked' ? 'blocked' : effective?.needsHuman ? 'needs-human' : null;
     if (laneStatus) {
-      await syncLinkedWorkItemsToPlanLane(
-        { planSlug: opts.planSlug, itemId, harnessSlug: opts.harnessSlug },
-        laneStatus,
-      ).catch(() => {
-        // Best-effort — never let a gating hiccup break the mint itself; the
-        // periodic sweep (system:plan-item-orphan-reconcile, every 15min) is the
-        // backstop that eventually parks it if this inline gate fails.
-      });
+      try {
+        const laneSync = await syncLinkedWorkItemsToPlanLane(
+          { planSlug: opts.planSlug, itemId, harnessSlug: opts.harnessSlug },
+          laneStatus,
+        );
+        for (const failure of laneSync.failures ?? []) {
+          laneGateFailures.push({
+            itemId,
+            workItemId: minted.id,
+            stage: failure.stage,
+            message: failure.message,
+          });
+        }
+      } catch (error) {
+        // The reconciler is fail-soft internally; keep minting if its contract
+        // regresses, but make the exceptional rejection visible to the caller.
+        const failure = {
+          itemId,
+          workItemId: minted.id,
+          stage: 'sync-rejection' as const,
+          message: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        };
+        laneGateFailures.push(failure);
+        console.warn(`[plan-promotion] mint-time lane sync failure ${JSON.stringify(failure)}`);
+      }
     }
     mintedByPlanItem.set(itemId, minted.id);
     if (minted.created) {
@@ -891,7 +915,15 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     failOnTransientEdgeFailure: true,
   });
 
-  return { promoted, skipped: openItems.length - promoted, ...edgeCounts, workItems, specQuality, reservationsRebound };
+  return {
+    promoted,
+    skipped: openItems.length - promoted,
+    ...edgeCounts,
+    workItems,
+    specQuality,
+    reservationsRebound,
+    ...(laneGateFailures.length > 0 ? { laneGateFailures } : {}),
+  };
 }
 
 /**

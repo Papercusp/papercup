@@ -50,7 +50,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 import { compileFilter } from './get-next';
-import { observationLaneExclusionSql } from '../work-items';
+import { observationLaneExclusionSql, type OrgSql } from '../work-items';
 import { issuesScopeWorkspace } from '../issues-engineer';
 
 export interface SpecPoolEffect {
@@ -127,37 +127,32 @@ export function specPoolFloors(
   // making its reported `matched`/`pool` disagree with the real claim path for no structural
   // reason (the doc above promises "cannot drift" from `get_next` — this closes that gap).
   const operatorScopeSlug = harness ? `operator:${issuesScopeWorkspace()}` : null;
-  const filter = compileFilter(sql, spec.view.filter);
-  const rows = (await sql`
-    SELECT count(*)::int AS pool,
-           (count(*) FILTER (WHERE ${filter}))::int AS matched
-      FROM harness_shared.work_items wi
-     WHERE wi.workspace_id = ${opts.workspaceId}
-       AND (
-         ${harness}::text IS NULL
-         OR wi.harness_slug = ${harness}
-         OR wi.harness_slug = ${operatorScopeSlug}
-       )
-       -- Keep the storage-boundary compatibility fold identical to claimFloorsWhereSql:
-       -- legacy feature rows at "todo" are admitted when callers request the unified
-       -- claimable token "open", so a plan-scoped recovery preview cannot report 0 for
-       -- work the real claim path would offer. Restrict the fold to the feature family:
-       -- issue-family claims still compare their stored status directly.
-       AND (
-         CASE
-           WHEN wi.item_kind NOT IN ('bug', 'change', 'task') AND wi.status = 'todo' THEN 'open'
-           ELSE wi.status
-         END
-       ) = ANY(${states}::text[])
-       AND wi.taken_by IS NULL
-       -- D-005: observation-lane rows are never claimable — the same NULL-safe floor
-       -- the claim path applies (a raw count without this overstates the pool ~7x).
-       AND ${observationLaneExclusionSql(sql)}
-       -- WI-2797 claim-holds are parked out of self-select; same IS DISTINCT FROM idiom.
-       AND COALESCE(wi.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-  `) as Array<{ pool: number; matched: number }>;
-  const row = rows[0] ?? { pool: 0, matched: 0 };
-  return { matched: row.matched, pool: row.pool, states, harness };
+  // The storage-boundary compatibility fold below is identical to claimFloorsWhereSql's: legacy
+  // feature rows at "todo" are admitted when callers request the unified claimable token "open",
+  // so a plan-scoped recovery preview cannot report 0 for work the real claim path would offer.
+  // The fold is restricted to the feature family — issue-family claims compare their stored
+  // status directly. D-005: observation-lane rows are never claimable (the same NULL-safe floor
+  // the claim path applies; a raw count without it overstates the pool ~7x). WI-2797 claim-holds
+  // are parked out of self-select, with the same IS DISTINCT FROM idiom. (These notes are JS
+  // comments, not SQL ones, on purpose: this text is re-parsed by the partition planner and an
+  // apostrophe inside a SQL comment is exactly what a literal-stripper can misread.)
+  return sql`(
+    workspace_id = ${opts.workspaceId}
+    AND (
+      ${harness}::text IS NULL
+      OR harness_slug = ${harness}
+      OR harness_slug = ${operatorScopeSlug}
+    )
+    AND (
+      CASE
+        WHEN item_kind NOT IN ('bug', 'change', 'task') AND status = 'todo' THEN 'open'
+        ELSE status
+      END
+    ) = ANY(${states}::text[])
+    AND taken_by IS NULL
+    AND ${observationLaneExclusionSql(sql, 'payload')}
+    AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+  )`;
 }
 
 export interface CollapseGuardInput {

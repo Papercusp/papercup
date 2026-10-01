@@ -250,9 +250,11 @@ export async function listDataSourceRecords(
 
 /**
  * Read the owned, credentialed sources a replay-safe provider poller may run.
- * `error`/`disabled` are deliberately excluded: reconnect is required after a
- * terminal auth error, while transient provider failures remain `degraded` and
- * are retried by the next durable routine fire.
+ * `error`/`disabled` rows are normally excluded. A credential-not-connected
+ * error can be retried after a later connection of that same credential by a
+ * sibling source owned by the same user. Other terminal auth errors still need
+ * reconnect, while transient provider failures remain `degraded` and are retried
+ * by the next durable routine fire.
  */
 export async function listPollableExternalTriggerSources(
   sql: postgres.Sql,
@@ -260,21 +262,36 @@ export async function listPollableExternalTriggerSources(
   kind: string,
 ): Promise<ExternalTriggerSourceRow[]> {
   return sql<ExternalTriggerSourceRow[]>`
-    SELECT id::text,
-           workspace_id AS "workspaceId",
-           kind,
-           owner_user_id::text AS "ownerUserId",
-           provider_account_id AS "providerAccountId",
-           credential_ref AS "credentialRef",
-           status,
-           config,
-           cursor
-      FROM harness_shared.data_sources
-     WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
-       AND kind = ${required(kind, 'source_kind')}
-       AND owner_user_id IS NOT NULL
-       AND credential_ref IS NOT NULL
-       AND status IN ('ready', 'connecting', 'connected', 'degraded')
+    SELECT source.id::text,
+           source.workspace_id AS "workspaceId",
+           source.kind,
+           source.owner_user_id::text AS "ownerUserId",
+           source.provider_account_id AS "providerAccountId",
+           source.credential_ref AS "credentialRef",
+           source.status,
+           source.config,
+           source.cursor
+      FROM harness_shared.data_sources AS source
+     WHERE source.workspace_id = ${required(workspaceId, 'workspace_id')}
+       AND source.kind = ${required(kind, 'source_kind')}
+       AND source.owner_user_id IS NOT NULL
+       AND source.credential_ref IS NOT NULL
+       AND (
+         source.status IN ('ready', 'connecting', 'connected', 'degraded')
+         OR (
+           source.status = 'error'
+           AND source.last_error ~* 'oauth.*not[_ -]?connected'
+           AND EXISTS (
+             SELECT 1
+               FROM harness_shared.data_sources AS sibling
+              WHERE sibling.workspace_id = source.workspace_id
+                AND sibling.owner_user_id = source.owner_user_id
+                AND sibling.credential_ref = source.credential_ref
+                AND sibling.id <> source.id
+                AND sibling.last_connected_at > source.updated_at
+           )
+         )
+       )
      ORDER BY id`;
 }
 

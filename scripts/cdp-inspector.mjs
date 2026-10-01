@@ -1,5 +1,6 @@
 import WebSocket from 'ws';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
@@ -11,7 +12,7 @@ const DEFAULT_CLOSE_POLL_MS = 100;
  * @typedef {{ readyState: number, send: (payload: string) => void, close: () => void,
  *   on?: (event: string, handler: (...args: any[]) => void) => unknown,
  *   once?: (event: string, handler: (...args: any[]) => void) => unknown,
- *   addEventListener?: (event: string, handler: (...args: any[]) => void, options?: object) => unknown }} CdpSocket
+ *   addEventListener?: (...args: any[]) => unknown }} CdpSocket
  * @typedef {(url: string, options?: RequestInit) => Promise<{ ok: boolean, json: () => Promise<any> }>} InspectorFetch
  * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
  */
@@ -80,6 +81,96 @@ export async function readProcessMemory(client, { expectedPid } = {}) {
     throw new Error(`Inspector PID mismatch: expected ${expectedPid}, observed ${sample?.pid ?? 'unknown'}`);
   }
   return sample;
+}
+
+/** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
+ *   total: number, observerMs: number, limited: boolean,
+ *   calls: Record<string, { calls: number, stacks: string[] }> }} FunctionCallTrace */
+
+/**
+ * Attribute explicitly selected calls without pausing the target. Conditions
+ * always return false, record no arguments/source bodies, and expire even if
+ * the connection disappears. Counts are capped observations, not a census.
+ * Debugger/profiler settings belonging to other clients are never reset.
+ * The bound covers capture/body time; protocol setup/cleanup has the client's
+ * separate request timeout. This is diagnostic overhead, not allocation bytes.
+ * @template T
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'send' | 'evaluate'>} client
+ * @param {{ expectedPid: number, targets: { name: string, expression: string }[],
+ *   durationMs?: number, maxCalls?: number, maxStacks?: number, maxStackChars?: number }} options
+ * @param {() => Promise<T>} during
+ * @returns {Promise<{ value: T, trace: FunctionCallTrace,
+ *   limits: { durationMs: number, maxCalls: number, maxStacks: number, maxStackChars: number } }>}
+ */
+export async function withFunctionCallTrace(client, {
+  expectedPid, targets, durationMs = 10_000, maxCalls = 128, maxStacks = 4, maxStackChars = 2000,
+}, during) {
+  if (!Number.isInteger(expectedPid) || expectedPid <= 0) throw new TypeError('trace requires a positive expectedPid');
+  for (const { name, value, cap } of [{ name: 'durationMs', value: durationMs, cap: 30_000 },
+    { name: 'maxCalls', value: maxCalls, cap: 512 }, { name: 'maxStacks', value: maxStacks, cap: 8 },
+    { name: 'maxStackChars', value: maxStackChars, cap: 4096 }]) {
+    if (!Number.isInteger(value) || value <= 0 || value > cap) throw new TypeError(`invalid trace ${name}`);
+  }
+  if (!Array.isArray(targets) || !targets.length || targets.length > 8 ||
+    new Set(targets.map(target => target.name)).size !== targets.length ||
+    targets.some(target => !/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(target.name) ||
+      typeof target.expression !== 'string' || !target.expression.length || target.expression.length > 4096) ||
+    typeof during !== 'function') throw new TypeError('invalid trace targets/body');
+  await readProcessMemory(client, { expectedPid });
+  const key = `__papercuspCdpTrace_${randomUUID()}`;
+  const literal = JSON.stringify(key);
+  const breakpointIds = [];
+  let timer;
+  let failure;
+  let failed = false;
+  /** @type {{ value: T, trace: FunctionCallTrace, limits: { durationMs: number, maxCalls: number, maxStacks: number, maxStackChars: number } } | undefined} */
+  let outcome;
+  try {
+    await client.send('Debugger.enable');
+    await client.evaluate(`globalThis[${literal}] = { pid: process.pid, startedAt: Date.now(),
+      until: 0, total: 0, observerMs: 0,
+      calls: Object.fromEntries(${JSON.stringify(targets.map(target => [target.name, { calls: 0, stacks: [] }]))}) }`);
+    for (const target of targets) {
+      const remote = await client.evaluate(target.expression, { objectGroup: key });
+      if (remote.result?.type !== 'function' || !remote.result.objectId) throw new Error(`trace target is not a function: ${target.name}`);
+      const condition = `(() => { const t = globalThis[${literal}];
+        if (!t || Date.now() >= t.until || t.total >= ${maxCalls}) return false;
+        const started = performance.now(), c = t.calls[${JSON.stringify(target.name)}];
+        t.total++; c.calls++;
+        if (c.stacks.length < ${maxStacks}) {
+          const stack = String(new Error().stack).slice(0, ${maxStackChars});
+          if (!c.stacks.includes(stack)) c.stacks.push(stack);
+        }
+        t.observerMs += performance.now() - started; return false; })()`;
+      const result = await client.send('Debugger.setBreakpointOnFunctionCall', { objectId: remote.result.objectId, condition });
+      if (!result.breakpointId) throw new Error(`trace breakpoint missing: ${target.name}`);
+      breakpointIds.push(result.breakpointId);
+    }
+    await client.evaluate(`Object.assign(globalThis[${literal}], { startedAt: Date.now(), until: Date.now() + ${durationMs} })`);
+    /** @type {Promise<never>} */
+    const expired = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`function trace exceeded ${durationMs}ms`)), durationMs);
+    });
+    const value = await Promise.race([Promise.resolve().then(during), expired]);
+    const snapshot = await client.evaluate(`({ ...globalThis[${literal}], endedAt: Date.now(),
+      limited: globalThis[${literal}].total >= ${maxCalls} })`, { returnByValue: true });
+    outcome = { value, trace: snapshot.result.value, limits: { durationMs, maxCalls, maxStacks, maxStackChars } };
+  } catch (error) { failed = true; failure = error; }
+  finally {
+    clearTimeout(timer);
+    // Attempt every cleanup even when one request fails. Removing the target
+    // root makes any surviving conditional breakpoint inert immediately.
+    const cleanup = await Promise.allSettled([
+      ...breakpointIds.map(breakpointId => client.send('Debugger.removeBreakpoint', { breakpointId })),
+      client.evaluate(`delete globalThis[${literal}]`),
+      client.send('Runtime.releaseObjectGroup', { objectGroup: key }),
+    ]);
+    const errors = cleanup.filter(result => result.status === 'rejected').map(result => result.reason);
+    if (errors.length) throw new AggregateError(failed ? [failure, ...errors] : errors, 'function trace cleanup failed');
+  }
+  if (failed) throw failure;
+  if (!outcome) throw new Error('function trace returned no measurement');
+  return outcome;
 }
 
 function addListener(ws, event, handler) {

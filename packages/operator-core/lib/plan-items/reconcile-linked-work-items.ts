@@ -884,7 +884,18 @@ export function decideLaneGate(
   };
 }
 
-type LaneGateAction = 'gated' | 'ungated' | 'skipped-in-flight' | 'skipped-terminal' | 'noop';
+type LaneGateAction =
+  | 'gated'
+  | 'ungated'
+  | 'skipped-in-flight'
+  | 'skipped-terminal'
+  | 'noop'
+  | { failure: string };
+
+function laneSyncFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 1000) || 'unknown_error';
+}
 
 /** Direct-execution contract stamped by canonical plan-run promotion, if this
  * unassigned row belongs to one. Kept on the shared payload reader so settle
@@ -1079,10 +1090,17 @@ async function applyLaneGateToWorkItem(
       await dispatchUngatedAgenticWorkItem(wi, execution, laneItem);
     }
     return 'ungated';
-  } catch {
-    // Best-effort — a per-item lifecycle hiccup must never break the sweep.
-    return 'noop';
+  } catch (error) {
+    // Keep the sweep fail-soft, but let its caller distinguish a failed write from
+    // an intentional no-op decision. The caller records and warns on this result.
+    return { failure: laneSyncFailureMessage(error) };
   }
+}
+
+export interface PlanLaneSyncFailure {
+  stage: 'linked-work-item-read' | 'apply-gate';
+  workItemId?: string;
+  message: string;
 }
 
 export interface PlanLaneSyncResult {
@@ -1103,6 +1121,8 @@ export interface PlanLaneSyncResult {
   skippedDuplicates: string[];
   /** Gated lanes whose linked canonical row was named as their own prerequisite. */
   circularPrerequisites: CircularPrerequisiteFinding[];
+  /** Fail-soft sync errors that used to disappear as empty arrays or `noop`. */
+  failures?: PlanLaneSyncFailure[];
 }
 
 /**
@@ -1126,6 +1146,17 @@ export async function syncLinkedWorkItemsToPlanLane(
     skippedDuplicates: [],
     circularPrerequisites: [],
   };
+  const recordFailure = (failure: PlanLaneSyncFailure) => {
+    (out.failures ??= []).push(failure);
+    console.warn(
+      `[plan-lane-sync] ${JSON.stringify({
+        event: 'plan_lane_sync_failure',
+        planSlug: item.planSlug,
+        itemId: item.itemId,
+        ...failure,
+      })}`,
+    );
+  };
   try {
     const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
@@ -1148,17 +1179,29 @@ export async function syncLinkedWorkItemsToPlanLane(
           continue;
         }
       }
-      const action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
-        planSlug: item.planSlug,
-        itemId: item.itemId,
-      });
+      let action: LaneGateAction;
+      try {
+        action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
+          planSlug: item.planSlug,
+          itemId: item.itemId,
+        });
+      } catch (error) {
+        // An unexpected throw still remains isolated to this linked row.
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: laneSyncFailureMessage(error) });
+        continue;
+      }
+      if (typeof action !== 'string') {
+        recordFailure({ stage: 'apply-gate', workItemId: wi.id, message: action.failure });
+        continue;
+      }
       if (action === 'gated') out.gated.push(wi.id);
       else if (action === 'ungated') out.ungated.push(wi.id);
       else if (action === 'skipped-in-flight') out.skippedInFlight.push(wi.id);
       else if (action === 'skipped-terminal') out.skippedAlreadyTerminal.push(wi.id);
     }
-  } catch {
-    // A DB hiccup — this is a best-effort sweep, never a hard dependency.
+  } catch (error) {
+    // A lookup-level DB hiccup remains best-effort, but is no longer invisible.
+    recordFailure({ stage: 'linked-work-item-read', message: laneSyncFailureMessage(error) });
   }
   return out;
 }

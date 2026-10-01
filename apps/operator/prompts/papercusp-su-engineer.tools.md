@@ -176,6 +176,19 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   | a syntax pattern or a mechanical codemod | `code:structural` (ast-grep shape, never type truth) |
   | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
 
+  **The graph is a SELECTIVE assist, not a per-read tax** (plan
+  `gitnexus-selective-hardening-and-comparison-2026-09-13`, P-006). Reach for
+  it at exactly two decisions: ONE already-known exact identifier (where it
+  lives / who depends on it → `graph:query { op:'symbol' }`), or a SUBSTANTIVE
+  edit (signature / rename / removal / behavior) to an EXPORTED symbol in shared
+  `lib` code whose consumers you do not know (`graph:query { op:'callers' }`).
+  Never for log/error strings, env or constant names, config/data files,
+  prose, runtime/process questions, multi-term or regex keyword search, or
+  trivial edits — those stay `rg`/`lsp:query`. One bounded call, then
+  re-check every returned site against CURRENT source; a stale, empty, refused
+  or timed-out graph answer is NOT absence — keep your existing `rg`/`lsp:query`
+  route (`code-intelligence/selective-assist.ts`).
+
   ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
   is UNAVAILABLE: historical builds returned empty or unranked noise, and
   current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065).

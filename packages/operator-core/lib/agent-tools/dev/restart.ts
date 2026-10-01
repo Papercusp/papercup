@@ -85,7 +85,7 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
 import { probeServiceStart, probeSystemdDaemonReloadNeed, type ServiceStartInfo } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
-import { preflightRestartTarget } from './restart-preflight';
+import { preflightRestartTarget, prepareStagingSchemaForRestart } from './restart-preflight';
 import {
   checkBgHostQuiesce,
   isQuiesceSensitiveTarget,
@@ -1625,6 +1625,26 @@ export default defineTool({
       });
     }
 
+    // EI-24775758523902834: direct target:staging restarts must apply the
+    // target tree's pending migrations while the current API is still serving.
+    // staging-sync already does this before cutover; without the same step here,
+    // dev:restart stopped the only process that could serve while the schema was
+    // still behind. Keep it after all soft preflights but before cooldown or drain.
+    const stagingSchemaPreparation = stagingSync
+      ? await prepareStagingSchemaForRestart(stagingSync.detail.lockPath)
+      : null;
+    if (stagingSchemaPreparation && !stagingSchemaPreparation.ok) {
+      return json({
+        ok: false,
+        target,
+        reason: stagingSchemaPreparation.reason ?? 'staging_migration_preparation_failed',
+        restarted: false,
+        drained: false,
+        staging_schema_preparation: stagingSchemaPreparation,
+        note: `Restart REFUSED before cooldown or drain — ${stagingSchemaPreparation.note}`,
+      });
+    }
+
     // WI-4221 debounce: for a cooldown-bearing target (staging), try to claim
     // the cooldown marker FIRST, before touching the drain-gate at all. If a
     // peer's real restart already holds it (their restart landed within the
@@ -2266,6 +2286,16 @@ export default defineTool({
               : {}),
             ...(gatewayReadiness ? { gatewayReadiness } : {}),
             ...(stagingReadiness ? { stagingReadiness } : {}),
+            ...(stagingSchemaPreparation
+              ? {
+                  staging_schema_preparation: {
+                    prepared: true,
+                    integrationRoot: stagingSchemaPreparation.integrationRoot,
+                    sqlDir: stagingSchemaPreparation.sqlDir,
+                    applied: stagingSchemaPreparation.applied,
+                  },
+                }
+              : {}),
             verifyWith: gatewayReadiness
               ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
                   GATEWAY_RESTART_PID_WAIT_MS / 1000

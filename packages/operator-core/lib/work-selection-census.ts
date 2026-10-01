@@ -37,6 +37,20 @@ export type CensusEvidence =
   /** Grep found no kind predicate; the absence is not yet proven by reading the full path. */
   | 'unverified';
 
+/**
+ * A handler file that reaches the row's decider without a kind decision of its own: it passes an
+ * id or a filter straight through. The completeness scan counts the file as covered by the row,
+ * and the sibling test pins `anchor` in `file` exactly like a row's own anchor.
+ */
+export interface WorkSelectionSite {
+  /** Repo-relative path (from the papercusp superproject root). */
+  file: string;
+  /** Literal substring of `file` at the call into the row's decider. */
+  anchor: string;
+  /** The decider function the site calls. */
+  via: string;
+}
+
 export interface WorkSelectionCensusRow {
   id: string;
   role: CensusRole;
@@ -45,6 +59,10 @@ export interface WorkSelectionCensusRow {
   file: string;
   /** Literal substring of `file` that locates the kind decider. Pinned by the test. */
   anchor: string;
+  /** Handler files that delegate to this row's decider (see WorkSelectionSite). */
+  sites?: readonly WorkSelectionSite[];
+  /** For a `sql` row over a view: the view name (without schema) the SQL-leg scan keys on. */
+  sqlObject?: string;
   /** Item kinds the path admits today, in plain words. */
   admits: string;
   /** Can a non-work or human-audience generic-kind instance (e.g. email-draft-proposal) reach it? */
@@ -67,6 +85,7 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     reachesNonWork: 'no',
     discriminators: ['needs-owner-action exclusion', 'claim floors', 'lane=observation'],
     evidence: 'code',
+    sites: [{ file: 'packages/operator-core/lib/agent-tools/scheduler/get_next.ts', anchor: 'getNextForBee({', via: 'getNextForBee' }],
   },
   {
     id: 'claim-floors-feature',
@@ -137,6 +156,28 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     discriminators: ['admission', 'auto-pickable', 'leaderDispatchAdmission bypass (WI-5826)'],
     evidence: 'code',
     note: '[inferred from code, not executed] email-draft-proposal rows carry admission NULL, lane NULL, needsOwnerAction NULL (measured), so no existing discriminator refuses them. An agent that takes an id from work_items:list can claim one. P-012 must execute this against an isolated DB.',
+    sites: [
+      {
+        file: 'packages/operator-core/lib/agent-tools/coordination/actionable-work-item-dispatch.ts',
+        anchor: 'claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),',
+        via: 'claimWorkItem',
+      },
+      {
+        file: 'packages/operator-core/lib/agent-tools/fleet/place_batch.ts',
+        anchor: 'const claim = await claimWorkItem(task.id, reservedSpawnId',
+        via: 'claimWorkItem',
+      },
+      {
+        file: 'packages/operator-core/lib/agent-tools/loop/arm.ts',
+        anchor: 'const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });',
+        via: 'claimWorkItem',
+      },
+      {
+        file: 'packages/operator-core/lib/agent-tools/release/checkpoint-run.ts',
+        anchor: 'const transferred = await claimWorkItem(ownership.workItem, callerOwnerId, {',
+        via: 'claimWorkItem',
+      },
+    ],
   },
   {
     id: 'diagnose-claim-next-miss',
@@ -161,6 +202,20 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     discriminators: ['includeObservations:false default (lane)'],
     evidence: 'code+live',
     note: 'Live 2026-10-01: work_items:list { notTerminal:true } shows the 129 open email-draft-proposal rows beside real work. This is the surface a drain enumerates from.',
+    sites: [
+      { file: 'packages/operator-core/lib/agent-tools/work_items/list.ts', anchor: 'const rows = await listWorkItems({', via: 'listWorkItems' },
+      { file: 'packages/operator-core/lib/agent-tools/work_items/search.ts', anchor: 'await searchWorkItems(args.query, {', via: 'searchWorkItems' },
+      {
+        file: 'packages/operator-core/lib/agent-tools/work_items/export.ts',
+        anchor: ': await listWorkItems({ ...filter, limit: args.limit });',
+        via: 'listWorkItems',
+      },
+      {
+        file: 'packages/operator-core/lib/agent-tools/pot/get.ts',
+        anchor: "const todo = await listWorkItems({ harness: pot.slug, state: 'open', limit: 500 });",
+        via: 'listWorkItems',
+      },
+    ],
   },
   {
     id: 'issues-list',
@@ -219,6 +274,42 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     evidence: 'code',
     note: 'Through work_items:list (list-search-count) a drain sees email-draft-proposal; through scheduler:get_next it does not; through work_items:claim { id } it can claim one. The P-012 LLM scenario covers this path.',
   },
+  {
+    id: 'walls-needs-human',
+    role: 'listing',
+    surface: 'coord:walls (needs-human items)',
+    file: 'packages/operator-core/lib/agent-tools/coordination/tools/walls.ts',
+    anchor: "AND status = 'needs-human'",
+    admits: 'any kind in status needs-human; no item_kind or lane predicate',
+    reachesNonWork: 'unknown',
+    discriminators: ['status=needs-human', 'harness', 'holder'],
+    evidence: 'code',
+    note: 'Found by the WI-10005121 completeness scan. A needs-human generic-kind row would surface as a wall; not measured live.',
+  },
+  {
+    id: 'drain-flow',
+    role: 'listing',
+    surface: 'work_items drain-flow counters (filed vs terminaled)',
+    file: 'packages/operator-core/lib/agent-tools/work_items/drain-flow.ts',
+    anchor: "AND item_kind = 'bug'",
+    admits: 'bug only',
+    reachesNonWork: 'no',
+    discriminators: ['item_kind=bug', 'harness', 'created_by / terminal_owner'],
+    evidence: 'code',
+    note: 'Found by the WI-10005121 completeness scan.',
+  },
+  {
+    id: 'search-issues',
+    role: 'listing',
+    surface: 'search:* issue source (engineer_issues)',
+    file: 'packages/operator-core/lib/agent-tools/search/sources.ts',
+    anchor: 'FROM harness_shared.engineer_issues ${lex.join}',
+    admits: 'inherits the engineer_issues view: bug, change, task',
+    reachesNonWork: 'no',
+    discriminators: ['engineer_issues view kind filter'],
+    evidence: 'code',
+    note: 'Found by the WI-10005121 completeness scan.',
+  },
   // ── auxiliary ──────────────────────────────────────────────────────────────────────────
   {
     id: 'admission-promoter',
@@ -255,6 +346,18 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     evidence: 'code',
     note: 'D-008: the nature column lands here and in HFC_DDL in the same change.',
   },
+  {
+    id: 'spec-enforcement-latency',
+    role: 'auxiliary',
+    surface: 'plans spec-enforcement latency metric',
+    file: 'packages/operator-core/lib/agent-tools/plans/spec-enforcement-latency.ts',
+    anchor: "AND w.lane IS DISTINCT FROM 'observation'",
+    admits: 'every kind in one harness except lane=observation; reads timestamps for a latency figure',
+    reachesNonWork: 'yes',
+    discriminators: ['lane', 'harness'],
+    evidence: 'code',
+    note: 'Found by the WI-10005121 completeness scan. A metric, not a queue: a non-work row only skews the latency figure.',
+  },
   // ── sql ────────────────────────────────────────────────────────────────────────────────
   {
     id: 'sql-claimable-view',
@@ -262,6 +365,7 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     surface: 'harness_shared.work_items_claimable view',
     file: 'libs/papercusp/libs/db/sql/864-migrate-legacy-human-parks-to-agent-review.sql',
     anchor: 'VIEW harness_shared.work_items_claimable',
+    sqlObject: 'work_items_claimable',
     admits: "item_kind = ANY(bug, change, task); payload lane <> observation; payload needsOwnerAction <> true; zero claim floors",
     reachesNonWork: 'no',
     discriminators: ['payload lane', 'payload needsOwnerAction', 'work_item_claim_floors'],
@@ -278,6 +382,146 @@ export const WORK_SELECTION_CENSUS: readonly WorkSelectionCensusRow[] = [
     reachesNonWork: 'unknown',
     discriminators: [],
     evidence: 'unverified',
+  },
+  {
+    id: 'sql-engineer-issues-view',
+    role: 'sql',
+    surface: 'harness_shared.engineer_issues view (issues:*, search issue source)',
+    file: 'libs/papercusp/libs/db/sql/803-work-item-parent-update.sql',
+    anchor: 'VIEW harness_shared.engineer_issues',
+    sqlObject: 'engineer_issues',
+    admits: 'item_kind = ANY(bug, change, task)',
+    reachesNonWork: 'no',
+    discriminators: ['item_kind list'],
+    evidence: 'code+live',
+    note: 'Definition read live via pg_get_viewdef 2026-10-01 (WI-10005121).',
+  },
+  {
+    id: 'sql-features-consolidated-view',
+    role: 'sql',
+    surface: 'harness_shared.harness_features_consolidated view (feature-family reads)',
+    file: 'libs/papercusp/libs/db/sql/677-work-item-authority-state.sql',
+    anchor: 'VIEW harness_shared.harness_features_consolidated',
+    sqlObject: 'harness_features_consolidated',
+    admits: 'item_kind <> ALL(bug, change, task): feature, chunk and every generic kind',
+    reachesNonWork: 'yes',
+    discriminators: [],
+    evidence: 'code+live',
+    note: 'Definition read live via pg_get_viewdef 2026-10-01 (WI-10005121). The complement of the issue-kind list, so a new generic kind lands here by default.',
+  },
+  {
+    id: 'sql-triage-routed-items-view',
+    role: 'sql',
+    surface: 'harness_shared.triage_routed_items view (Scout routing outcomes)',
+    file: 'libs/papercusp/libs/db/sql/894-triage-corpus-views.sql',
+    anchor: 'VIEW harness_shared.triage_routed_items',
+    sqlObject: 'triage_routed_items',
+    admits: "every kind Scout routed (routed_ref 'wi:%'); no item_kind predicate; exposes non_terminal and non_observation flags",
+    reachesNonWork: 'unknown',
+    discriminators: ['scout routing join'],
+    evidence: 'code+live',
+    note: 'Definition read live via pg_get_viewdef 2026-10-01 (WI-10005121). Reaches a non-work row only if Scout routed one.',
+  },
+];
+
+/**
+ * Why a scanned site is NOT a census row. Each basis means the site neither selects nor counts
+ * the open work population, so a non-work row reaching it cannot be handed to an agent as work.
+ */
+export type ScanExclusionBasis =
+  /** Reads one row by an id it already holds (or validates/records ids); never enumerates. */
+  | 'by-id'
+  /** Reads what a named holder currently holds (taken_by / owner), i.e. presence, not the queue. */
+  | 'holder'
+  /** Finds rows a filer itself created (condition key, identity fingerprint) before minting. */
+  | 'filing-identity'
+  /** Duplicate detection at create time: compares a candidate against existing rows. */
+  | 'dedupe'
+  /** Reads rows by their source plan / plan item to evaluate the plan, not to pick work. */
+  | 'plan-provenance'
+  /** Reads only lane=observation rows (reflections), which are never work. */
+  | 'observation-lane'
+  /** The object no longer exists in that form (a view later replaced by a table). */
+  | 'superseded';
+
+export interface WorkSelectionScanExclusion {
+  /** `agent-tool`: a repo-relative file; `sql-view`: a view name without schema. */
+  leg: 'agent-tool' | 'sql-view';
+  target: string;
+  basis: ScanExclusionBasis;
+  reason: string;
+}
+
+/**
+ * What the completeness scan in work-selection-census.test.ts enumerates. A site is a non-test
+ * .ts file under `agentToolsDir` whose comment-stripped text reads one of the work tables or
+ * calls one of the work deciders, or a view in `sqlDir` whose body reads a work table. Every
+ * site must be a census row (`file`, a `sites` entry, or `sqlObject`) or an exclusion below.
+ */
+export const WORK_SELECTION_SCAN = {
+  agentToolsDir: 'packages/operator-core/lib/agent-tools',
+  sqlDir: 'libs/papercusp/libs/db/sql',
+  tableRead: /\b(?:FROM|JOIN)\s+harness_shared\.(?:work_items|work_items_claimable|engineer_issues)\b/,
+  deciderCall:
+    /\b(?:listWorkItems|searchWorkItems|countWorkItems|countWorkItemsByState|claimWorkItem|getNextForBee|claimFloorsWhereSql|claimNext)\b/,
+  /** Matches one CREATE VIEW statement; group 1 is the (possibly schema-qualified) name. */
+  createView: /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:"?\w+"?\.)?"?\w+"?)\s[\s\S]*?;/gi,
+  viewBodyRead: /\b(?:harness_shared\.)?(?:work_items|work_items_claimable|engineer_issues)\b/,
+} as const;
+
+const AT = 'packages/operator-core/lib/agent-tools/';
+const ex = (target: string, basis: ScanExclusionBasis, reason: string): WorkSelectionScanExclusion => ({
+  leg: 'agent-tool',
+  target: AT + target,
+  basis,
+  reason,
+});
+
+/** Classified 2026-10-01 for WI-10005121 by reading each site's WHERE clause or call context. */
+export const WORK_SELECTION_SCAN_EXCLUSIONS: readonly WorkSelectionScanExclusion[] = [
+  ex('coordination/agent-goal-sources.ts', 'holder', "reads the items an agent holds to derive its goal"),
+  ex('coordination/compaction-staleness.ts', 'holder', "reads the holder's items to judge carry staleness"),
+  ex('coordination/coupled-topic-sources.ts', 'holder', "reads coupled peers' held items for topic context"),
+  ex('coordination/derive-awaiting.ts', 'holder', 'reads held items to derive what an agent awaits'),
+  ex('coordination/presence-tier1.ts', 'holder', 'reads held items for the presence roster'),
+  ex('coordination/rebind-identity.ts', 'holder', 'moves holds from an old identity to a new one'),
+  ex('coordination/tools/glance.ts', 'holder', 'fleet-health glance over current holds'),
+  ex('fleet/fleet-audit.ts', 'holder', "audits fleet members' held items"),
+  ex('fleet/fleet-campaign.ts', 'holder', "reads a campaign's held items"),
+  ex('fleet_registry/pause-holds.ts', 'holder', 'pauses or resumes existing holds'),
+  ex('coordination/blocked-on-status.ts', 'by-id', 'reads the status of named blocker ids'),
+  ex('coordination/directive-effect.ts', 'by-id', 'reads items a directive names'),
+  ex('plans/cited-work-item-refs.ts', 'by-id', 'validates work-item ids cited in plan text'),
+  ex('plans/evidence-measuring-paths.ts', 'by-id', 'reads named items for evidence paths'),
+  ex('plans/spec-evidence-store.ts', 'by-id', 'reads named items for spec evidence'),
+  ex('work_items/complete.ts', 'by-id', 'completes the id it is given'),
+  ex('work_items/expand.ts', 'by-id', 'expands the id it is given'),
+  ex('work_items/rehome.ts', 'by-id', 'rehomes the id it is given'),
+  ex('coordination/coupling-sources.ts', 'observation-lane', 'reads lane=observation reflections only'),
+  ex('improvements/filing-classes.ts', 'filing-identity', 'finds an existing row for a filing class before minting'),
+  ex('plans/acceptance-drain-filing.ts', 'filing-identity', 'finds its own acceptance-drain filing'),
+  ex('plans/acceptance-drain-sweep.ts', 'filing-identity', 'sweeps its own acceptance-drain filings'),
+  ex('plans/spec-triad-filing.ts', 'filing-identity', 'finds its own spec-triad filing'),
+  ex('plans/spec-triad-sweep.ts', 'filing-identity', 'sweeps its own spec-triad filings'),
+  ex('testing/flakiness.ts', 'dedupe', 'finds an existing flaky-test item before filing'),
+  ex('work_items/_create-core.ts', 'dedupe', 'create-time duplicate and identity checks'),
+  ex('work_items/fulltext-lexical-dupe-guard.ts', 'dedupe', 'create-time lexical duplicate guard'),
+  ex('work_items/recent-lexical-dupe-guard.ts', 'dedupe', 'create-time recent-duplicate guard'),
+  ex('work_items/semantic-dupe-guard.ts', 'dedupe', 'create-time semantic duplicate guard'),
+  ex('plans/plan-admission-preflight.ts', 'plan-provenance', "reads a plan's own items before admitting it"),
+  ex('plans/plan-scope-cascade-deps.ts', 'plan-provenance', "reads a plan's items to cascade scope"),
+  ex('scorecards/emit.ts', 'plan-provenance', "reads a subject plan's items while emitting a scorecard"),
+  {
+    leg: 'sql-view',
+    target: 'fleet_assignment',
+    basis: 'holder',
+    reason: 'rows only where taken_by is set: who holds what, not the queue',
+  },
+  {
+    leg: 'sql-view',
+    target: 'work_items',
+    basis: 'superseded',
+    reason: 'the union view of migrations 159/178/358 was replaced by the work_items table',
   },
 ];
 

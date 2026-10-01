@@ -52,8 +52,11 @@ import {
   type CountEvidenceBundle,
   type CountExactness,
 } from '../../count-evidence-contract';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 
-const ISSUE_KINDS = ['bug', 'change', 'task'] as const;
+// P-009 / D-022: the issue-family routing list has ONE definition; this tool only routes
+// by it (the claimability decision is the work predicate inside get-next's issue path).
+const ISSUE_KINDS = ISSUE_FAMILY_ROUTE_KINDS;
 
 export interface ClaimableHarnessScope {
   requested: string;

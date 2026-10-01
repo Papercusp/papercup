@@ -104,6 +104,42 @@ describe('pricing', () => {
     expect(hourlyPriceUsd('e2-highcpu-16', 120, { spot: true })).toBeCloseTo(expected, 8);
     expect(hourlyPriceUsd('e2-highcpu-16', 120, { spot: true })).toBeLessThan(hourlyPriceUsd('e2-highcpu-16', 120));
   });
+
+  it('prices T2D (P-008) from its own read SKUs, standard shape only', () => {
+    expect(parseMachineType('t2d-standard-16')).toEqual({ family: 't2d', vcpus: 16, ramGb: 64 });
+    expect(() => parseMachineType('t2d-highmem-16')).toThrow(/unpriced/);
+    expect(() => parseMachineType('t2d-custom-16-65536')).toThrow(/unpriced/);
+    const spot = 16 * 0.0165 + 64 * 0.002212 + (120 * 0.1) / 730;
+    expect(hourlyPriceUsd('t2d-standard-16', 120, { spot: true })).toBeCloseTo(spot, 8);
+    const onDemand = 16 * 0.027502 + 64 * 0.003686 + (120 * 0.1) / 730;
+    expect(hourlyPriceUsd('t2d-standard-16', 120)).toBeCloseTo(onDemand, 8);
+    // A T2D vCPU is a whole core, so it costs more per vCPU than e2 at the same shape.
+    expect(hourlyPriceUsd('t2d-standard-16', 120, { spot: true })).toBeGreaterThan(
+      hourlyPriceUsd('e2-standard-16', 120, { spot: true }),
+    );
+  });
+
+  it('prices C4A (Arm, P-008) with a Hyperdisk boot disk provisioned to match pd-balanced', () => {
+    expect(parseMachineType('c4a-standard-16')).toEqual({ family: 'c4a', vcpus: 16, ramGb: 64 });
+    expect(parseMachineType('c4a-highcpu-16')).toEqual({ family: 'c4a', vcpus: 16, ramGb: 32 });
+    expect(parseMachineType('c4a-highmem-8')).toEqual({ family: 'c4a', vcpus: 8, ramGb: 64 });
+    // 120 GB pd-balanced performs at 3000 + 6x120 = 3720 IOPS and 140 + 0.28x120 = 174 MiB/s.
+    const diskMonth = 120 * 0.08 + (3720 - 3000) * 0.005 + (174 - 140) * 0.04;
+    const spot = 16 * 0.01387 + 64 * 0.001578 + diskMonth / 730;
+    expect(hourlyPriceUsd('c4a-standard-16', 120, { spot: true })).toBeCloseTo(spot, 8);
+  });
+
+  it('creates C4A on the arm64 image with a provisioned Hyperdisk boot disk; e2 keeps pd-balanced', () => {
+    const c4a = buildCreateArgs({ ...spec, machineType: 'c4a-standard-16', diskGb: 120, spot: true });
+    expect(flagValue(c4a, 'boot-disk-type')).toBe('hyperdisk-balanced');
+    expect(flagValue(c4a, 'boot-disk-provisioned-iops')).toBe('3720');
+    expect(flagValue(c4a, 'boot-disk-provisioned-throughput')).toBe('174');
+    expect(flagValue(c4a, 'image-family')).toBe('ubuntu-2404-lts-arm64');
+    const e2 = buildCreateArgs({ ...spec, machineType: 'e2-standard-16', diskGb: 120 });
+    expect(flagValue(e2, 'boot-disk-type')).toBe('pd-balanced');
+    expect(flagValue(e2, 'boot-disk-provisioned-iops')).toBeUndefined();
+    expect(flagValue(e2, 'image-family')).toBe('ubuntu-2404-lts-amd64');
+  });
 });
 
 function census(instances: Census['instances'], orphanDisks: Census['orphanDisks'] = []): Census {

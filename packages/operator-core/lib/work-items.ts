@@ -269,7 +269,8 @@ export function isDeprecatedWorkItemKind(kind: string): kind is 'chunk' {
 // `task` (collapse-delegate D-001) is an issue-family work_item kind — the operator's
 // delegated-work record. It lives in engineer_issues alongside bug|change but is
 // excluded from the issues:* surface (listIssues default).
-export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ['bug', 'change', 'task'];
+// P-009 / D-022: the single routing list lives in work-nature/agent-work-predicate.ts.
+export const ISSUE_FAMILY_KINDS: readonly IssueStoreKind[] = ISSUE_FAMILY_ROUTE_KINDS;
 
 /**
  * Hard ceiling for a single work-items LIST read (both families). Local desktop
@@ -1737,6 +1738,7 @@ export {
   type TerminalOwnerOriginHealReason,
 } from './work-items-terminal-owner-origin-heal';
 import { trackDetached } from './detached-imports';
+import { ISSUE_FAMILY_ROUTE_KINDS } from './work-nature/agent-work-predicate';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare

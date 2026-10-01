@@ -38,6 +38,21 @@ run's numeric id. The draft tool accepts only that same id; it resolves the reci
 thread, reply headers, and OAuth credential server-side. It creates a Gmail DRAFT and
 never sends.
 
+## Requirements
+
+**R-1 — Draft a reply in the originating thread.**
+\`\`\`requirement
+{"intent":{"request":"Each inbound Gmail message yields one draft reply saved to the thread it arrived on.","constraints":["Create a draft only; never send.","Resolve recipient, thread and credential server-side from the trigger plan run."],"sourceRefs":["P-001","D-001","D-002"]},"acceptance":{"condition":"A run of this template leaves exactly one Gmail draft on the originating thread, created through gmail:create-draft with the run's planRunId.","falsifier":"A run completes with no draft, creates a second draft for the same run, or sends the message instead of drafting it.","requiredScope":["tree"],"evidencePlane":"tree"},"verification":{"method":"Fire a gmail message.received event through the binding engine, then read the run and the draft tool's recorded result.","check":{"kind":"instrument","instrumentKey":"none"},"replication":"Run packages/operator-core/lib/external-triggers/gmail-flagship.integration.test.ts."}}
+\`\`\`
+
+## Design
+
+### Bar-to-work map for this plan
+
+| bar | implementing plan items | evidence plane |
+|---|---|---|
+| R-1 | P-001 | tree |
+
 ## Phase 1 — Draft
 
 - **P-001** \`todo\` Call \`triggers:read-payload\` with \`planRunId=payload.plan_run.runId\` to read the inbound message, compose a concise response, then call \`gmail:create-draft\` with that same \`planRunId\` and the response text. Complete only after the tool reports \`created:true\` or \`alreadyCreated:true\`.

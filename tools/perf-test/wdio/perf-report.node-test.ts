@@ -151,6 +151,102 @@ test('native environment records only explicit diagnostic keys on owned app and 
   assert(env.readCompletedEpochMs >= env.readStartedEpochMs);
 });
 
+test('native output captures only stdout, stderr and the requested debug file with exact descriptor counters', () => {
+  const f = nativeProcFixture();
+  for (const pid of [20, 30]) {
+    f.links.set(`/proc/${pid}/fd/1`, '/dev/null');
+    f.links.set(`/proc/${pid}/fd/2`, '/private/wdio.log');
+    f.links.set(`/proc/${pid}/fd/8`, `/dev/shm/gst.${pid}.log`);
+    f.links.set(`/proc/${pid}/fd/9`, '/unrelated/secret');
+    f.dirs.set(`/proc/${pid}/fd`, ['1', '2', '8', '9']);
+    for (const fd of [1, 2, 8]) f.files.set(`/proc/${pid}/fdinfo/${fd}`,
+      'pos:\t90071992547409930\nflags:\t0100001\nmnt_id:\t42\nino:\t90071992547409931\n');
+  }
+  const sample = collectOwnedWebKitSample({ ...f.options, outputDescriptors: true,
+    debugFile: '/dev/shm/gst.%p.log' }, f.proc);
+  const output = sample.processes[1].output;
+  assert(output);
+  assert.equal(output.debugFileStatus, 'captured');
+  assert.deepEqual(output.descriptors.map((d) => d.fd), [1, 2, 8]);
+  const descriptor = output.descriptors[2];
+  assert(descriptor.status === 'captured');
+  assert.equal(descriptor.target, '/dev/shm/gst.30.log');
+  assert.equal(descriptor.inode, '90071992547409931');
+  assert.equal(descriptor.position, '90071992547409930');
+  assert.equal(descriptor.mountId, '42');
+  assert(!JSON.stringify(sample).includes('secret'));
+  assert(!f.reads.includes('/proc/30/fdinfo/9'));
+  assert(!f.reads.some((file) => file.startsWith('/proc/40/fdinfo/')));
+});
+
+test('native output reads are bounded, optional and do not expose raw failures', () => {
+  const f = nativeProcFixture();
+  const sample = collectOwnedWebKitSample({ ...f.options, outputDescriptors: true }, f.proc);
+  assert.equal(sample.processes[1].output?.descriptors[0].status, 'unavailable');
+  assert(!JSON.stringify(sample.processes[1].output).includes('missing fixture'));
+  const disabled = nativeProcFixture();
+  collectOwnedWebKitSample(disabled.options, disabled.proc);
+  assert(!disabled.reads.some((file) => file.includes('/fdinfo/')));
+  f.links.set('/proc/30/fd/2', '/private/wdio.log');
+  const calls: number[] = [];
+  const output = collectOwnedWebKitSample({ ...f.options, outputDescriptors: true }, {
+    ...f.proc, readBounded: (_file: string, maxBytes: number) => { calls.push(maxBytes); return 'x'.repeat(4097); },
+  }).processes[1].output;
+  assert.equal(output?.descriptors[1].status, 'unavailable');
+  assert(calls.every((bound) => bound === 4096));
+  assert(!JSON.stringify(output).includes('xxxx'));
+});
+
+test('native output rejects reopened descriptors and changed owned lifetimes', () => {
+  for (const change of ['target', 'inode', 'process', 'ancestry']) {
+    const f = nativeProcFixture();
+    f.links.set('/proc/30/fd/2', '/private/wdio.log');
+    f.files.set('/proc/30/fdinfo/2', 'pos: 0\nflags: 0100001\nmnt_id: 42\nino: 7\n');
+    const read = f.proc.read;
+    let infoReads = 0;
+    f.proc.read = (file) => {
+      const value = read(file);
+      if (file === '/proc/30/fdinfo/2' && ++infoReads === 1) {
+        if (change === 'target') f.links.set('/proc/30/fd/2', '/different/output');
+        if (change === 'inode') f.files.set(file, 'pos: 0\nflags: 0100001\nmnt_id: 42\nino: 8\n');
+        if (change === 'process') f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
+        if (change === 'ancestry') f.files.set('/proc/25/stat', f.stat(25, 1));
+      }
+      return value;
+    };
+    const sample = collectOwnedWebKitSample({ ...f.options, outputDescriptors: true }, f.proc);
+    const renderer = sample.processes.find((row) => row.pid === 30);
+    if (change === 'target' || change === 'inode') {
+      assert.deepEqual(renderer?.output?.descriptors[1], { fd: 2, status: 'unavailable', reason: 'descriptor-changed' });
+    } else {
+      assert(!renderer);
+      assert.match(sample.unavailable.join(' '), /identity|ancestry/);
+    }
+  }
+});
+
+test('native debug-file discovery distinguishes not-open, unavailable bounds and descriptor replacement', () => {
+  const f = nativeProcFixture();
+  f.dirs.set('/proc/30/fd', ['7']);
+  f.links.set('/proc/30/fd/7', '/other/file');
+  const options = { ...f.options, outputDescriptors: true, debugFile: '/dev/shm/gst.log' };
+  assert.equal(collectOwnedWebKitSample(options, f.proc).processes[1].output?.debugFileStatus, 'not-open');
+  f.dirs.set('/proc/30/fd', Array.from({ length: 257 }, (_, i) => String(i)));
+  assert.equal(collectOwnedWebKitSample(options, f.proc).processes[1].output?.debugFileStatus, 'unavailable');
+  f.dirs.set('/proc/30/fd', ['7']);
+  f.links.set('/proc/30/fd/7', '/dev/shm/gst.log');
+  const link = f.proc.link;
+  let reads = 0;
+  f.proc.link = (file) => {
+    if (file === '/proc/30/fd/7' && ++reads > 1) return '/changed/file';
+    return link(file);
+  };
+  f.files.set('/proc/30/fdinfo/7', 'pos: 0\nflags: 0100001\nmnt_id: 42\nino: 7\n');
+  const output = collectOwnedWebKitSample(options, f.proc).processes[1].output;
+  assert.equal(output?.debugFileStatus, 'unavailable');
+  assert.deepEqual(output?.descriptors[2], { fd: 7, status: 'unavailable', reason: 'descriptor-changed' });
+});
+
 test('native environment unavailability is explicit and never serializes a raw read error', () => {
   const f = nativeProcFixture();
   const read = f.proc.read;
@@ -347,9 +443,13 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(rows[0].maxSamples, 1200);
     assert.equal(rows[0].persistence, 'buffered-until-finish');
     assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
-    assert.equal(rows[0].schemaVersion, 'native-process-probe-v3');
+    assert.equal(rows[0].schemaVersion, 'native-process-probe-v4');
     assert.equal(rows[0].environment.maxBytes, 128 * 1024);
     assert.equal(rows[0].environment.persistence, 'once-per-pid-identity');
+    assert.equal(rows[0].output.persistence, 'per-sample-buffered');
+    assert.equal(rows[0].output.maxInfoBytes, 4096);
+    assert(rows.filter((row) => row.kind === 'sample').flatMap((row) => row.processes)
+      .some((row) => row.output?.descriptors.some((d: { fd: number; status: string }) => d.fd === 2 && d.status === 'captured')));
     const environments = rows.filter((row) => row.kind === 'sample')
       .flatMap((row) => row.processes).filter((row) => row.environment);
     assert(environments.some((row) => row.environment.status === 'captured'));

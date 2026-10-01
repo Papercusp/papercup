@@ -72,6 +72,16 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   );
   CREATE SEQUENCE IF NOT EXISTS harness_shared.work_item_seq;
   CREATE OR REPLACE FUNCTION harness_shared.next_work_item_id() RETURNS text LANGUAGE sql VOLATILE AS $wiid$ SELECT 'WI-' || nextval('harness_shared.work_item_seq')::text $wiid$;
+  -- migration 1325 (P-009 / D-022): the one work predicate. Body copied from
+  -- 1325-work-item-is-agent-work.sql; work-predicate-lint.test.ts pins the two equal.
+  CREATE OR REPLACE FUNCTION harness_shared.work_item_is_agent_work(
+    p_nature text, p_audience text, p_lane text, p_needs_owner_action boolean
+  ) RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $wiaw$
+    SELECT p_nature = 'work'
+       AND p_audience = 'agent'
+       AND p_lane IS DISTINCT FROM 'observation'
+       AND p_needs_owner_action IS NOT TRUE
+  $wiaw$;
   CREATE TABLE IF NOT EXISTS harness_shared.work_item_release_cooldowns (
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,

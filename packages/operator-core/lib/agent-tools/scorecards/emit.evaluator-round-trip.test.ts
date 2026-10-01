@@ -172,6 +172,11 @@ function bindingRow(
     coverage_evidence_present: true,
     test_run_id: 43,
     test_run_present: true,
+    // The fake durable ledger represents a measured clean run. Missing/dirty
+    // provenance must stay unknown, independently of matching file hashes.
+    test_run_file_path: 'test/reconnect.test.ts',
+    test_run_commit_sha: 'fixture-clean-commit',
+    test_run_worktree_dirty: false,
     details: { adequacy: { ...ADEQUACY, outcome: over.outcome }, currentMeasurement: MEASUREMENT },
     observed_at: '2026-09-20 17:10:00-04',
     binding_fingerprint: `sha256:binding-${over.id}`,
@@ -300,6 +305,16 @@ const emitDraft = (draft: EvaluatorPayload['rows'][number]['scorecardDraft']) =>
   );
 
 describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
+  it.each([true, null])('refuses freshness pass when the durable run cleanliness is %s', async (dirty) => {
+    h.rows = h.rows.map((row) => ({ ...row, test_run_worktree_dirty: dirty }));
+    const live = await runEvaluator({ harness: 'papercusp', slug: PLAN, classRef: 'plan-class-feature-ship', specIds: [SPEC], detail: 'full' });
+    expect(live.rows[0]!.verdict).toBe('unknown');
+    expect(live.rows[0]!.wouldBlock).toContain('freshness');
+    expect(live.rows[0]!.ratings.freshness.evidence).toContain(
+      dirty === true ? 'test-run-worktree-not-clean' : 'test-run-worktree-cleanliness-unproven',
+    );
+  });
+
   it('files the evaluator’s own all-pass card, freshness included, through its own exact replay', async () => {
     const live = await runEvaluator({
       harness: 'papercusp',
@@ -315,8 +330,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(live.rows).toHaveLength(1);
     const [row] = live.rows;
     expect(Object.keys(row!.ratings).sort()).toEqual([...ADEQUACY_CRITERIA].sort());
-    expect(row!.verdict).toBe('pass');
-    expect(row!.ratings.freshness.rating).toBe('pass');
+    expect(row!.verdict, JSON.stringify({ wouldBlock: row!.wouldBlock, freshness: row!.ratings.freshness })).toBe('pass');
+    expect(row!.ratings.freshness.rating, row!.ratings.freshness.evidence).toBe('pass');
     // `disclosed-gap` is legitimately not-applicable when the clause discloses no gap;
     // every other criterion must be a real pass for the card to be all-pass.
     for (const [criterion, rating] of Object.entries(row!.ratings)) {
@@ -353,7 +368,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       specIds: [SPEC],
       detail: 'full',
     });
-    expect(live.rows[0]!.ratings.freshness.rating).toBe('pass');
+    expect(live.rows[0]!.ratings.freshness.rating, live.rows[0]!.ratings.freshness.evidence).toBe('pass');
 
     // The code under proof changes after grading and before filing.
     await writeSubject('export const ackedEventsReplayed = true;\n');

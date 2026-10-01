@@ -358,4 +358,59 @@ describe('chat retrieval units (P-015)', () => {
     expect((await corpusRows()).map((r) => [r.scope, r.pot_slug])).toEqual([['pot', 'research-pot']]);
     expect(await orgSearchAsAlice('feldspar')).toEqual([]);
   });
+
+  // WI-10005117 / migration 1326: a routing change alone must re-queue the source's buckets.
+  it('a routing change with NO new message re-queues every bucket of that source, so the next rollup moves its units', async () => {
+    const other = await makeSource('source-acl');
+    await upsertChatMessages(org.adminSql, WS, sourceId, [
+      msg('13.1', '2026-09-30T10:00:00Z', 'olivine plan', '13.1'),
+      msg('13.9', '2026-09-30T15:00:00Z', 'olivine standup notes'),
+    ]);
+    await upsertChatMessages(org.adminSql, WS, other, [msg('15.1', '2026-09-30T10:00:00Z', 'basalt plan', '15.1')]);
+    await rollupChatUnits(org.adminSql, WS);
+    expect((await corpusRows()).map((r) => r.scope)).toEqual(['organization', 'organization', 'organization']);
+    expect(await queuedBuckets()).toEqual([]);
+
+    await org.adminSql`
+      UPDATE harness_shared.data_sources
+         SET scope = 'pot', scope_ref = 'research-pot', permission_mapping = '{"mode": "owner"}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    // Both bucket kinds of the moved source (thread unit -> thread bucket, window unit -> UTC-day
+    // bucket), and nothing of the untouched source.
+    expect(await queuedBuckets()).toEqual([
+      [sourceId, 'day', '2026-09-30'],
+      [sourceId, 'thread', '13.1'],
+    ]);
+
+    expect(await rollupChatUnits(org.adminSql, WS)).toMatchObject({ documentsWritten: 2 });
+    expect(await queuedBuckets()).toEqual([]);
+    expect((await corpusRows()).map((r) => [r.scope, r.pot_slug, r.text])).toEqual([
+      ['organization', null, 'alice: basalt plan'],
+      ['pot', 'research-pot', 'alice: olivine plan'],
+      ['pot', 'research-pot', 'alice: olivine standup notes'],
+    ]);
+    expect(await orgSearchAsAlice('olivine')).toEqual([]);
+  });
+
+  it('an update that changes no routing column queues nothing', async () => {
+    await upsertChatMessages(org.adminSql, WS, sourceId, [msg('14.1', '2026-09-30T10:00:00Z', 'gabbro', '14.1')]);
+    await rollupChatUnits(org.adminSql, WS);
+    // `scope = scope` names a routing column without changing it: the column trigger fires, its
+    // WHEN clause must not.
+    await org.adminSql`
+      UPDATE harness_shared.data_sources
+         SET config = '{"note": "renamed"}'::jsonb, scope = scope
+       WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    expect(await queuedBuckets()).toEqual([]);
+  });
 });
+
+/** Every queued rollup bucket in the test workspace, as [data_source_id, bucket_kind, bucket_key]. */
+async function queuedBuckets(): Promise<Array<[string, string, string]>> {
+  const rows = await org.adminSql<Array<{ data_source_id: string; bucket_kind: string; bucket_key: string }>>`
+    SELECT data_source_id::text AS data_source_id, bucket_kind, bucket_key
+      FROM harness_shared.chat_rollup_queue
+     WHERE workspace_id = ${WS}
+     ORDER BY data_source_id, bucket_kind, bucket_key`;
+  return rows.map((r) => [r.data_source_id, r.bucket_kind, r.bucket_key]);
+}

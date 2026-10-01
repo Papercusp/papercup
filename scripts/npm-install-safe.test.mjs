@@ -763,3 +763,13 @@ test("verifyNpmCacheExclusive reports verify's own failure instead of treating i
     /verify crashed/,
   );
 });
+
+test("test:file runs Vitest under the repo install reader mutex", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.match(
+    packageJson.scripts["test:file"],
+    /bash scripts\/pc-heavy\.sh node scripts\/npm-install-safe\.mjs --exec-under-lock -- node scripts\/test-files\.mjs$/,
+  );
+});

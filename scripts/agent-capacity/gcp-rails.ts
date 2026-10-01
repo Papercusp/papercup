@@ -51,8 +51,51 @@ export const PRICES_2026_09_30 = {
   e2: { vcpuHour: 0.02181159, gbRamHour: 0.00292353 },
   n2: { vcpuHour: 0.031611, gbRamHour: 0.004237 },
   n2d: { vcpuHour: 0.027502, gbRamHour: 0.003686 },
+  // T2D read 2026-10-01 23:40Z (P-008): SKUs "T2D AMD Instance Core/Ram running in Americas".
+  // One T2D vCPU is a whole core (no SMT), unlike an e2 vCPU (one hyperthread).
+  t2d: { vcpuHour: 0.027502, gbRamHour: 0.003686 },
+  // C4A (Arm, Axion) read 2026-10-01 23:40Z (P-008): "C4A Arm Instance Core/Ram running in Americas".
+  c4a: { vcpuHour: 0.03086, gbRamHour: 0.00351 },
   balancedDiskGbMonth: 0.1,
 } as const;
+
+/**
+ * Hyperdisk Balanced, the only boot disk C4A accepts. us-central1, Cloud Billing Catalog read
+ * 2026-10-01 23:50Z: capacity 0.08 USD/GiB-month; each disk includes 3000 IOPS and 140 MiB/s;
+ * provisioned IOPS above that cost 0.005 USD/IOPS-month and throughput 0.04 USD/MiBps-month.
+ */
+export const HYPERDISK_BALANCED_2026_10_01 = {
+  gbMonth: 0.08,
+  includedIops: 3000,
+  includedMiBps: 140,
+  iopsMonth: 0.005,
+  mibpsMonth: 0.04,
+} as const;
+
+/** Boot disk type per family: C4A takes only Hyperdisk; every other priced family uses pd-balanced. */
+export function bootDiskType(family: Family): 'pd-balanced' | 'hyperdisk-balanced' {
+  return family === 'c4a' ? 'hyperdisk-balanced' : 'pd-balanced';
+}
+
+/**
+ * Hyperdisk performance provisioned to equal a pd-balanced disk of the same size (3000 + 6 IOPS
+ * and 140 + 0.28 MiB/s per GB), so a C4A ramp is not starved or favoured on disk I/O relative to
+ * the e2 ramps it is compared with (P-008).
+ */
+export function hyperdiskMatchingPdBalanced(diskGb: number): { iops: number; mibps: number } {
+  return { iops: 3000 + 6 * diskGb, mibps: Math.round(140 + 0.28 * diskGb) };
+}
+
+function diskHourUsd(family: Family, diskGb: number): number {
+  if (bootDiskType(family) === 'pd-balanced') return (diskGb * PRICES_2026_09_30.balancedDiskGbMonth) / HOURS_PER_MONTH;
+  const h = HYPERDISK_BALANCED_2026_10_01;
+  const { iops, mibps } = hyperdiskMatchingPdBalanced(diskGb);
+  const month =
+    diskGb * h.gbMonth +
+    Math.max(0, iops - h.includedIops) * h.iopsMonth +
+    Math.max(0, mibps - h.includedMiBps) * h.mibpsMonth;
+  return month / HOURS_PER_MONTH;
+}
 
 /**
  * USD, us-central1 SPOT, Cloud Billing Catalog API read 2026-10-01 09:15Z (plan D-015): about 40%
@@ -61,10 +104,16 @@ export const PRICES_2026_09_30 = {
  */
 export const SPOT_PRICES_2026_10_01: Partial<Record<Family, { vcpuHour: number; gbRamHour: number }>> = {
   e2: { vcpuHour: 0.01309, gbRamHour: 0.001754 },
+  // Read 2026-10-01 23:40Z (P-008): "Spot Preemptible T2D AMD Instance Core/Ram running in Americas".
+  t2d: { vcpuHour: 0.0165, gbRamHour: 0.002212 },
+  // Read 2026-10-01 23:40Z (P-008): "Spot Preemptible C4A Arm Instance Core/Ram running in Americas".
+  c4a: { vcpuHour: 0.01387, gbRamHour: 0.001578 },
 };
 const HOURS_PER_MONTH = 730;
 
-export type Family = 'e2' | 'n2' | 'n2d';
+export type Family = 'e2' | 'n2' | 'n2d' | 't2d' | 'c4a';
+/** C4A is Arm: it boots the arm64 build of the same Ubuntu LTS. */
+export const DEFAULT_ARM_IMAGE_FAMILY = 'ubuntu-2404-lts-arm64';
 export interface MachineShape {
   family: Family;
   vcpus: number;
@@ -84,6 +133,19 @@ export function parseMachineType(machineType: string): MachineShape {
     const vcpus = Number(predefined[3]);
     return { family: predefined[1] as Family, vcpus, ramGb: vcpus * GB_PER_VCPU[predefined[2]] };
   }
+  // T2D has only the standard shape (4 GB per vCPU) and no custom shapes.
+  const t2d = /^t2d-standard-(\d+)$/.exec(machineType);
+  if (t2d) {
+    const vcpus = Number(t2d[1]);
+    return { family: 't2d', vcpus, ramGb: vcpus * GB_PER_VCPU.standard };
+  }
+  // C4A's highcpu shape has 2 GB per vCPU (e2/n2 highcpu have 1); no custom shapes.
+  const c4a = /^c4a-(standard|highmem|highcpu)-(\d+)$/.exec(machineType);
+  if (c4a) {
+    const vcpus = Number(c4a[2]);
+    const perVcpu = c4a[1] === 'highcpu' ? 2 : GB_PER_VCPU[c4a[1]];
+    return { family: 'c4a', vcpus, ramGb: vcpus * perVcpu };
+  }
   const custom = /^(e2|n2|n2d)-custom-(\d+)-(\d+)$/.exec(machineType);
   if (custom) {
     return { family: custom[1] as Family, vcpus: Number(custom[2]), ramGb: Number(custom[3]) / 1024 };
@@ -102,8 +164,7 @@ function spotRates(family: Family): { vcpuHour: number; gbRamHour: number } {
 export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
   const shape = parseMachineType(machineType);
   const p = opts.spot ? spotRates(shape.family) : PRICES_2026_09_30[shape.family];
-  const disk = (diskGb * PRICES_2026_09_30.balancedDiskGbMonth) / HOURS_PER_MONTH;
-  return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + disk;
+  return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + diskHourUsd(shape.family, diskGb);
 }
 
 export function worstCaseCents(machineType: string, maxHours: number, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } = {}): number {
@@ -161,15 +222,21 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
   };
   for (const [k, v] of Object.entries(labels)) assertLabelValue(k, v);
   const minutes = Math.round(spec.maxHours * 60);
+  const family = parseMachineType(spec.machineType).family;
+  const diskType = bootDiskType(family);
+  const hyperdisk = diskType === 'hyperdisk-balanced' ? hyperdiskMatchingPdBalanced(diskGb) : null;
   const args = [
     'compute', 'instances', 'create', spec.name,
     `--project=${project}`,
     `--zone=${spec.zone ?? DEFAULT_ZONE}`,
     `--machine-type=${spec.machineType}`,
-    `--image-family=${spec.imageFamily ?? DEFAULT_IMAGE_FAMILY}`,
+    `--image-family=${spec.imageFamily ?? (family === 'c4a' ? DEFAULT_ARM_IMAGE_FAMILY : DEFAULT_IMAGE_FAMILY)}`,
     `--image-project=${spec.imageProject ?? DEFAULT_IMAGE_PROJECT}`,
     `--boot-disk-size=${diskGb}GB`,
-    '--boot-disk-type=pd-balanced',
+    `--boot-disk-type=${diskType}`,
+    ...(hyperdisk
+      ? [`--boot-disk-provisioned-iops=${hyperdisk.iops}`, `--boot-disk-provisioned-throughput=${hyperdisk.mibps}`]
+      : []),
     '--boot-disk-auto-delete',
     `--max-run-duration=${minutes}m`,
     '--instance-termination-action=DELETE',

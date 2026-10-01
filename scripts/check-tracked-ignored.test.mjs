@@ -1,10 +1,41 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   findTrackedScratchPaths,
   isTrackedScratchPath,
+  listTrackedIgnored,
+  listTrackedScratchPaths,
 } from './check-tracked-ignored.mjs';
+
+test('detects a tracked unignored scratch path that the Git ignore scan misses', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'check-tracked-ignored-'));
+  const scratchFile = '.tmp-papercusp-unignored-regression/output.txt';
+
+  try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    execFileSync('git', ['config', 'core.excludesFile', '/dev/null'], { cwd: repo });
+    mkdirSync(join(repo, '.tmp-papercusp-unignored-regression'), { recursive: true });
+    writeFileSync(join(repo, scratchFile), 'temporary output\n');
+    execFileSync('git', ['add', '--', scratchFile], { cwd: repo });
+
+    assert.equal(
+      execFileSync('git', ['ls-files', '--error-unmatch', '--', scratchFile], {
+        cwd: repo,
+        encoding: 'utf8',
+      }).trim(),
+      scratchFile,
+    );
+    assert.equal(listTrackedIgnored(repo).listed, 0);
+    assert.deepEqual(listTrackedScratchPaths(repo), [scratchFile]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
 
 test('detects tracked top-level scratch roots even without a matching ignore rule', () => {
   const tracked = [

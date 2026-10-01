@@ -13,6 +13,44 @@
 export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid }?: {
     expectedPid?: number;
 }): Promise<any>;
+/** @typedef {{ pid: number, startedAt: number, until: number, endedAt: number,
+ *   total: number, observerMs: number, limited: boolean,
+ *   calls: Record<string, { calls: number, stacks: string[] }> }} FunctionCallTrace */
+/**
+ * Attribute explicitly selected calls without pausing the target. Conditions
+ * always return false, record no arguments/source bodies, and expire even if
+ * the connection disappears. Counts are capped observations, not a census.
+ * Debugger/profiler settings belonging to other clients are never reset.
+ * The bound covers capture/body time; protocol setup/cleanup has the client's
+ * separate request timeout. This is diagnostic overhead, not allocation bytes.
+ * @template T
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'send' | 'evaluate'>} client
+ * @param {{ expectedPid: number, targets: { name: string, expression: string }[],
+ *   durationMs?: number, maxCalls?: number, maxStacks?: number, maxStackChars?: number }} options
+ * @param {() => Promise<T>} during
+ * @returns {Promise<{ value: T, trace: FunctionCallTrace,
+ *   limits: { durationMs: number, maxCalls: number, maxStacks: number, maxStackChars: number } }>}
+ */
+export function withFunctionCallTrace<T>(client: Pick<ReturnType<typeof createCdpClient>, "send" | "evaluate">, { expectedPid, targets, durationMs, maxCalls, maxStacks, maxStackChars, }: {
+    expectedPid: number;
+    targets: {
+        name: string;
+        expression: string;
+    }[];
+    durationMs?: number;
+    maxCalls?: number;
+    maxStacks?: number;
+    maxStackChars?: number;
+}, during: () => Promise<T>): Promise<{
+    value: T;
+    trace: FunctionCallTrace;
+    limits: {
+        durationMs: number;
+        maxCalls: number;
+        maxStacks: number;
+        maxStackChars: number;
+    };
+}>;
 /**
  * Render an inspector/browser URL safely for diagnostic output.
  *
@@ -90,7 +128,7 @@ export function closeInspector(client: Pick<ReturnType<typeof createCdpClient>, 
  * @typedef {{ readyState: number, send: (payload: string) => void, close: () => void,
  *   on?: (event: string, handler: (...args: any[]) => void) => unknown,
  *   once?: (event: string, handler: (...args: any[]) => void) => unknown,
- *   addEventListener?: (event: string, handler: (...args: any[]) => void, options?: object) => unknown }} CdpSocket
+ *   addEventListener?: (...args: any[]) => unknown }} CdpSocket
  * @typedef {(url: string, options?: RequestInit) => Promise<{ ok: boolean, json: () => Promise<any> }>} InspectorFetch
  * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
  */
@@ -113,6 +151,19 @@ export class CdpTransportClosedError extends Error {
     constructor(method: any);
     method: any;
 }
+export type FunctionCallTrace = {
+    pid: number;
+    startedAt: number;
+    until: number;
+    endedAt: number;
+    total: number;
+    observerMs: number;
+    limited: boolean;
+    calls: Record<string, {
+        calls: number;
+        stacks: string[];
+    }>;
+};
 /**
  * The client accepts either Node or browser-style event transports. Injected
  * test transports need only these operations, not WebSocket's static constants.
@@ -123,7 +174,7 @@ export type CdpSocket = {
     close: () => void;
     on?: (event: string, handler: (...args: any[]) => void) => unknown;
     once?: (event: string, handler: (...args: any[]) => void) => unknown;
-    addEventListener?: (event: string, handler: (...args: any[]) => void, options?: object) => unknown;
+    addEventListener?: (...args: any[]) => unknown;
 };
 /**
  * The client accepts either Node or browser-style event transports. Injected

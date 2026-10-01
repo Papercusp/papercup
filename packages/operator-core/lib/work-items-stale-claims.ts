@@ -126,6 +126,12 @@ export const STALE_CLAIM_PARKED_GRACE_MS = 30 * 60 * 1000;
  * a never-seen-here holder is possibly-remote → SKIP, unless the claim is
  * anchored (taken_at NOT NULL) and older than this fallback — so a truly
  * abandoned row still frees after the presence-row TTL reap, just slowly.
+ *
+ * WI-10005136: past the fallback the holder must ALSO show no federated sign of
+ * life — no work_items row it holds or terminally owns was claimed or changed
+ * within the same window. Claim age alone let the mac-VM rig reap a LIVE tower
+ * holder's 24h-old claims on 2026-10-01 (WI-10004353 at 18:34Z, WI-10004436 at
+ * 21:29Z), and each reap federated back as a remote write.
  */
 export const STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS = 24 * 3600 * 1000;
 
@@ -487,8 +493,18 @@ export async function reclaimStaleWorkItemClaims(
                    -- (EI-2534 class) — an actively-driven remote item keeps refreshing
                    -- updated_ts via federation, deferring the fallback; a truly
                    -- abandoned one frees once the horizon lapses.
-                   OR (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
-                        > make_interval(secs => ${unknownFallbackSec}) ) )
+                   OR ( (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
+                          > make_interval(secs => ${unknownFallbackSec})
+                        -- WI-10005136: claim AGE alone is not death. A live remote holder
+                        -- that has held one claim for >24h still claims, edits and closes
+                        -- OTHER rows, and those writes federate here; reaping it anyway
+                        -- re-opened the WI-1964 shredder for every long-held claim.
+                        AND NOT EXISTS (
+                          SELECT 1 FROM harness_shared.work_items w
+                           WHERE w.workspace_id = f.workspace_id
+                             AND (w.taken_by = f.taken_by OR w.terminal_owner = f.taken_by)
+                             AND GREATEST(w.taken_at, to_timestamp(w.updated_ts / 1000.0))
+                                   > now() - make_interval(secs => ${unknownFallbackSec}) ) ) ) )
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
            -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
@@ -738,7 +754,15 @@ export async function reclaimStaleIssueClaims(
          -- federate, presence does not — never presume a never-seen-here assignee dead
          -- before the long-horizon fallback.
          AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = e.assignee)
-               OR (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec}) )
+               OR ( (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec})
+                    -- WI-10005136: same federated sign-of-life rule as the feature leg —
+                    -- a holder still claiming / editing / closing rows is not dead.
+                    AND NOT EXISTS (
+                      SELECT 1 FROM harness_shared.work_items w
+                       WHERE w.workspace_id = e.workspace_id
+                         AND (w.taken_by = e.assignee OR w.terminal_owner = e.assignee)
+                         AND GREATEST(w.taken_at, to_timestamp(w.updated_ts / 1000.0))
+                               > now() - make_interval(secs => ${unknownFallbackSec}) ) ) )
          FOR UPDATE OF e SKIP LOCKED
     )
     UPDATE harness_shared.engineer_issues e

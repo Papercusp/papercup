@@ -79,7 +79,10 @@ vi.mock('../../task-manager/cgroup-read', async (importOriginal) => {
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
-vi.mock('./restart-preflight', () => ({ preflightRestartTarget: vi.fn() }));
+vi.mock('./restart-preflight', () => ({
+  preflightRestartTarget: vi.fn(),
+  prepareStagingSchemaForRestart: vi.fn(),
+}));
 vi.mock('./desktop-dev-restart', () => ({
   DESKTOP_DEV_RESOURCE: 'desktop-dev-server',
   resolveDesktopDevListener: vi.fn(),
@@ -121,7 +124,11 @@ import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-servi
 import { probeHttpReachable } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
-import { preflightRestartTarget } from './restart-preflight';
+import {
+  preflightRestartTarget,
+  prepareStagingSchemaForRestart,
+  type StagingSchemaPreparationResult,
+} from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
 import { BUDGET, HARD_CAP, promptWeight } from '../tool-guidance-budget';
@@ -145,6 +152,7 @@ const daemonReloadNeedM = vi.mocked(probeSystemdDaemonReloadNeed);
 const gatewayHealthM = vi.mocked(probeHttpReachable);
 const listeningSocketsM = vi.mocked(listListeningSockets);
 const preflightM = vi.mocked(preflightRestartTarget);
+const stagingSchemaPreparationM = vi.mocked(prepareStagingSchemaForRestart);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
 /** A boot-integrity verdict. Defaults to an inspected, clean tree. */
@@ -161,6 +169,17 @@ const bootVerdict = (over: Record<string, unknown> = {}) =>
     note: 'clean',
     ...over,
   }) as never;
+const preparedStagingSchema = (
+  over: Partial<StagingSchemaPreparationResult> = {},
+): StagingSchemaPreparationResult => ({
+  ok: true,
+  integrationRoot: '/staging-tree',
+  sqlDir: '/staging-tree/libs/papercusp/libs/db/sql',
+  applied: 0,
+  failed: [],
+  note: 'The staging target schema is prepared while the current API remains serving.',
+  ...over,
+});
 const orgPgM = vi.mocked(getOrgPg);
 const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
 const gateCollisionM = vi.mocked(checkGateCollision);
@@ -376,6 +395,7 @@ beforeEach(() => {
   } as never);
   gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
   preflightM.mockResolvedValue(bootVerdict());
+  stagingSchemaPreparationM.mockResolvedValue(preparedStagingSchema());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   auditUnsafeM.mockClear();
@@ -571,6 +591,7 @@ describe('dev:restart dry run', () => {
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~2min/);
+    expect(stagingSchemaPreparationM).not.toHaveBeenCalled();
   });
 
   // EI-13307: bg-host's coalesce window is tuned to its REAL cost (the ~13min
@@ -1420,6 +1441,38 @@ describe('dev:restart staging-sync collision guard', () => {
       restarted: false,
       drained: false,
       staging_sync_collision: { lockHeld: true },
+    });
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('prepares the target schema before cooldown or drain and refuses a failed preparation', async () => {
+    stagingSchemaPreparationM.mockResolvedValue(
+      preparedStagingSchema({
+        ok: false,
+        reason: 'staging_migration_failed',
+        applied: 1,
+        failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+        note: 'The target schema has a failed migration; the service was left running.',
+      }),
+    );
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }));
+
+    expect(stagingSchemaPreparationM).toHaveBeenCalledWith('/tmp/papercup-staging-sync.lock');
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'staging_migration_failed',
+      restarted: false,
+      drained: false,
+      staging_schema_preparation: {
+        ok: false,
+        applied: 1,
+        failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+      },
     });
     expect(acquireM).not.toHaveBeenCalled();
     expect(guardM).not.toHaveBeenCalled();

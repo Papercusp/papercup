@@ -835,9 +835,46 @@ describe('WI-1999 remote-holder guard', () => {
 
   it('a never-seen holder DOES free once the long-horizon fallback lapses (anchored on taken_at)', async () => {
     await seedItem('F-RH3', 'su-remote-abandoned', 30, 'in_progress'); // taken 30 min ago
+    // Abandoned: the row has not changed since the claim either (WI-10005136 — a
+    // recently-changed row is a federated sign of life, see the tests below).
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH3'`;
     // Fallback shrunk to 15 min → the 30-min-old anchor is past it: truly-abandoned rows still free.
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released[0]).toMatchObject({ feature_id: 'F-RH3', reason: 'dead' });
+  });
+
+  // WI-10005136 (2026-10-01): the mac-VM rig reaped a LIVE tower holder's >24h-old
+  // claims as 'reaper:dead' (WI-10004353, WI-10004436) — claim age alone is not death.
+  // Past the fallback, a never-seen holder is only dead when NO work_items row it holds
+  // or terminally owns was claimed or changed within the window (those writes federate).
+  it('WI-10005136: a never-seen holder past the fallback that CLAIMED another row recently is KEPT', async () => {
+    await seedItem('F-RH5', 'su-remote-live-holder', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH5'`;
+    await seedItem('F-RH5b', 'su-remote-live-holder', 2, 'in_progress'); // fresh claim, inside grace
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH5');
+    expect((await statusOf('F-RH5')).taken_by).toBe('su-remote-live-holder');
+  });
+
+  it('WI-10005136: a never-seen holder past the fallback that CLOSED a row recently is KEPT', async () => {
+    await seedItem('F-RH6', 'su-remote-closer', 30, 'in_progress');
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6'`;
+    await seedItem('F-RH6b', null, 0, 'done');
+    await sql`UPDATE harness_shared.work_items SET terminal_owner = 'su-remote-closer', updated_ts = ${Date.now() - 60_000} WHERE feature_id = 'F-RH6b'`;
+    const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH6');
+    // Control: once that close ages past the window too, the long-held claim frees.
+    await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6b'`;
+    const later = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(later.released[0]).toMatchObject({ feature_id: 'F-RH6', reason: 'dead' });
+  });
+
+  it('WI-10005136: issue reaper parity — a never-seen assignee with a recently-changed held row is KEPT past the fallback', async () => {
+    await seedIssue('EI-RH2', 'bug', 'su-remote-issue-live', 30);
+    await seedItem('F-RH7', 'su-remote-issue-live', 2, 'in_progress'); // live elsewhere: fresh claim
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((c) => c.issue_id)).not.toContain('EI-RH2');
+    expect(await assigneeOf('EI-RH2')).toBe('su-remote-issue-live');
   });
 
   it('a never-seen holder with NULL taken_at anchors the fallback on updated_ts (EI-2534 must not re-strand)', async () => {

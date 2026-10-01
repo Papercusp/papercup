@@ -75,6 +75,7 @@ const h = vi.hoisted(() => ({
    * connection under load fails them. Null = pass-through.
    */
   standDownFaults: null as null | { remaining: number; injected: number },
+  laneSyncFailures: new Map<string, string>(),
   /**
    * WI-10004234: hold every condition-marked mint until BOTH concurrent callers have minted,
    * so exactly one of them deterministically loses the migration-741 claim race.
@@ -124,6 +125,28 @@ vi.mock('./dbos/feature-blockers-edges', async (importOriginal) => {
         throw err;
       }
       return actual.syncFeatureBlockEdges(...args);
+    },
+  };
+});
+
+vi.mock('./plan-items/reconcile-linked-work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./plan-items/reconcile-linked-work-items')>();
+  return {
+    ...actual,
+    syncLinkedWorkItemsToPlanLane: async (
+      ...args: Parameters<typeof actual.syncLinkedWorkItemsToPlanLane>
+    ) => {
+      const failure = h.laneSyncFailures.get(args[0].itemId);
+      if (!failure) return actual.syncLinkedWorkItemsToPlanLane(...args);
+      return {
+        gated: [],
+        ungated: [],
+        skippedInFlight: [],
+        skippedAlreadyTerminal: [],
+        skippedDuplicates: [],
+        circularPrerequisites: [],
+        failures: [{ stage: 'apply-gate' as const, message: failure }],
+      };
     },
   };
 });
@@ -326,6 +349,7 @@ beforeEach(async () => {
   h.coverageBarrier = null;
   h.edgeContentionFaults = null;
   h.standDownFaults = null;
+  h.laneSyncFailures.clear();
   h.mintBarrier = null;
   h.plans.clear();
 });
@@ -997,6 +1021,24 @@ created: 2026-08-21
     expect(res.promoted).toBe(1);
     const rows = await features();
     expect(rows[0]!.status).toBe('blocked');
+  });
+
+  it('WI-10003685: reports a failed inline lane gate while keeping mint best-effort', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-FAIL', status: 'blocked', text: 'Blocked lane' }] });
+    h.laneSyncFailures.set('P-FAIL', 'injected: lifecycle write unavailable');
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res.promoted).toBe(1);
+    expect(res.laneGateFailures).toEqual([
+      {
+        itemId: 'P-FAIL',
+        workItemId: expect.any(String),
+        stage: 'apply-gate',
+        message: 'injected: lifecycle write unavailable',
+      },
+    ]);
+    expect((await features())[0]?.status).toBe('open');
   });
 
   it('P-006: an item blocked by a LATER-declared item still gets its edge (the forward reference a single pass drops)', async () => {

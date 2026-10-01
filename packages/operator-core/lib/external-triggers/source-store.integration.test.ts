@@ -154,6 +154,101 @@ describe('external trigger source ownership', () => {
     expect(stored[0].last_connected_at).toBeInstanceOf(Date);
   });
 
+  it('retries a token-not-connected source after a later same-owner sibling connection', async () => {
+    const recoveredCredential = 'google-workspace:recovered';
+    const foreignCredential = 'google-workspace:foreign-owner';
+    const tokenNotConnected = 'oauth: owner-credential not connected';
+    const retry = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-retry',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const calendar = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gcal',
+      ownerUserId: userId,
+      providerAccountId: 'calendar-retry',
+      credentialRef: recoveredCredential,
+      status: 'connected',
+    });
+    const providerRejected = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-provider-rejected',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const staleProof = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-stale-proof',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const noSibling = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-no-sibling',
+      credentialRef: 'google-workspace:no-sibling',
+      status: 'error',
+    });
+    const [otherOwner] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.users (username, display_name)
+      VALUES (${'source-recovery-other-' + Date.now()}, 'Other Source Owner')
+      RETURNING id`;
+    const foreignOwnerGmail = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-foreign-owner',
+      credentialRef: foreignCredential,
+      status: 'error',
+    });
+    const foreignOwnerCalendar = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gcal',
+      ownerUserId: otherOwner.id,
+      providerAccountId: 'calendar-foreign-owner',
+      credentialRef: foreignCredential,
+      status: 'connected',
+    });
+
+    await updateExternalTriggerSourceSyncState(sql, WS, calendar.id, {
+      status: 'connected',
+      lastError: null,
+      connected: true,
+    });
+    await updateExternalTriggerSourceSyncState(sql, WS, foreignOwnerCalendar.id, {
+      status: 'connected',
+      lastError: null,
+      connected: true,
+    });
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = ${tokenNotConnected},
+             updated_at = now() - interval '5 minutes'
+       WHERE id IN (${retry.id}::uuid, ${noSibling.id}::uuid, ${foreignOwnerGmail.id}::uuid)`;
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = 'google_gmail_watch_401:Invalid Credentials',
+             updated_at = now() - interval '5 minutes'
+       WHERE id = ${providerRejected.id}::uuid`;
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = ${tokenNotConnected},
+             updated_at = now() + interval '1 minute'
+       WHERE id = ${staleProof.id}::uuid`;
+
+    const pollable = await listPollableExternalTriggerSources(sql, WS, 'gmail');
+    expect(pollable.map((source) => source.id)).toEqual([retry.id]);
+  });
+
   it('lists one owner safely and disconnects selected kinds without deleting rows', async () => {
     const otherUsers = await sql<Array<{ id: string }>>`
       INSERT INTO harness_shared.users (username, display_name)

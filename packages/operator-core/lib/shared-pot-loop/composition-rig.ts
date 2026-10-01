@@ -1081,6 +1081,10 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     );
   }
   await sql.unsafe(stripPsql(mig1323.replace(viewList, "ARRAY['harness_features_consolidated']")));
+  // P-009 / D-022: the one work predicate, loaded VERBATIM (function + its self-check).
+  // The claim paths the rig drives (get-next's issue path, the frontier placement clause)
+  // call harness_shared.work_item_is_agent_work(...).
+  await sql.unsafe(stripPsql(readFileSync(join(SQL_DIR, '1325-work-item-is-agent-work.sql'), 'utf8')));
 }
 
 /** Per-peer projection apply bound to THIS cell's sql (the Stage-6 seam). */

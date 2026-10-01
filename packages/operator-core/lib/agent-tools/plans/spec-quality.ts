@@ -256,7 +256,6 @@ export function evaluatePlanSpecQuality(input: {
         return (
           source == null ||
           source.rubricSlug !== pin.rubricSlug ||
-          source.rubricRevision !== pin.rubricRevision ||
           source.barKey !== pin.barKey ||
           source.barHash !== pin.barHash ||
           source.barSetHash !== pin.barSetHash ||

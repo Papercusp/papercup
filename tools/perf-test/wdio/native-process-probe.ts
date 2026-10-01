@@ -41,6 +41,8 @@ export interface NativeProbeOptions {
   appPath: string;
   stacks?: boolean;
   environment?: boolean;
+  outputDescriptors?: boolean;
+  debugFile?: string;
 }
 
 // Exact keys, never a prefix allowlist or an inherited process.env snapshot.
@@ -85,6 +87,80 @@ function readNativeEnvironment(pid: number, proc: ProcReader): NativeEnvironment
   }
   return { ...timing(), status: 'captured', values };
 }
+
+const MAX_DESCRIPTOR_BYTES = 4096;
+const MAX_DEBUG_FILE_DESCRIPTORS = 256;
+type NativeOutputDescriptor = { fd: number } & (
+  { status: 'captured'; target: string; inode: string; mountId: string; flags: string; position: string } |
+  { status: 'unavailable'; reason: 'read-failed' | 'invalid-or-oversized' | 'descriptor-changed' }
+);
+
+function readOutputDescriptor(pid: number, fd: number, proc: ProcReader): NativeOutputDescriptor {
+  const base = `/proc/${pid}`;
+  const readInfo = () => {
+    const file = `${base}/fdinfo/${fd}`;
+    const raw = proc.readBounded ? proc.readBounded(file, MAX_DESCRIPTOR_BYTES) : proc.read(file);
+    if (Buffer.byteLength(raw) > MAX_DESCRIPTOR_BYTES) throw new RangeError();
+    const values: Record<string, string> = {};
+    for (const key of ['pos', 'flags', 'mnt_id', 'ino']) {
+      const matches = [...raw.matchAll(new RegExp(`^${key}:\\s*([0-9]+)\\s*$`, 'gm'))];
+      if (matches.length !== 1) throw new RangeError();
+      values[key] = matches[0][1];
+    }
+    if (!/^[0-7]+$/.test(values.flags)) throw new RangeError();
+    return values;
+  };
+  try {
+    const target = proc.link(`${base}/fd/${fd}`);
+    if (!target || Buffer.byteLength(target) > MAX_DESCRIPTOR_BYTES) throw new RangeError();
+    const before = readInfo();
+    const after = readInfo();
+    if (proc.link(`${base}/fd/${fd}`) !== target ||
+        ['ino', 'mnt_id', 'flags'].some((key) => before[key] !== after[key])) {
+      return { fd, status: 'unavailable', reason: 'descriptor-changed' };
+    }
+    // Position may advance while the target writes; preserve the later observation.
+    return { fd, status: 'captured', target, inode: after.ino, mountId: after.mnt_id,
+      flags: after.flags, position: after.pos };
+  } catch (error) {
+    return { fd, status: 'unavailable',
+      reason: error instanceof RangeError ? 'invalid-or-oversized' : 'read-failed' };
+  }
+}
+
+function readNativeOutput(pid: number, debugFile: string | undefined, proc: ProcReader) {
+  const readStartedEpochMs = Date.now();
+  const descriptors = [1, 2].map((fd) => readOutputDescriptor(pid, fd, proc));
+  let debugFileStatus: 'not-requested' | 'captured' | 'not-open' | 'unavailable' = 'not-requested';
+  if (debugFile && debugFile !== '-') {
+    debugFileStatus = 'unavailable';
+    try {
+      // Match only the explicitly requested path; do not serialize unrelated targets.
+      if (!path.isAbsolute(debugFile) || Buffer.byteLength(debugFile) > MAX_DESCRIPTOR_BYTES ||
+          debugFile.includes('%r')) throw new RangeError();
+      const target = debugFile.replaceAll('%p', String(pid));
+      const fds = proc.list(`/proc/${pid}/fd`);
+      if (fds.length > MAX_DEBUG_FILE_DESCRIPTORS) throw new RangeError();
+      debugFileStatus = 'not-open';
+      for (const entry of fds) {
+        if (!/^[0-9]+$/.test(entry) || !Number.isSafeInteger(Number(entry))) continue;
+        try {
+          if (proc.link(`/proc/${pid}/fd/${entry}`) !== target) continue;
+        } catch { continue; }
+        const descriptor = readOutputDescriptor(pid, Number(entry), proc);
+        if (descriptor.status === 'captured' && descriptor.target !== target) {
+          descriptors.push({ fd: Number(entry), status: 'unavailable', reason: 'descriptor-changed' });
+          debugFileStatus = 'unavailable';
+        } else {
+          descriptors.push(descriptor);
+          debugFileStatus = descriptor.status === 'captured' ? 'captured' : 'unavailable';
+        }
+        break;
+      }
+    } catch { /* Bounded/unavailable discovery is separate from stdout/stderr. */ }
+  }
+  return { readStartedEpochMs, readCompletedEpochMs: Date.now(), descriptors, debugFileStatus };
+}
 export function parseSchedstat(value: string) {
   const fields = value.trim().split(/\s+/);
   if (fields.length !== 3 || fields.some((field) => !/^\d+$/.test(field))) {
@@ -121,6 +197,7 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
   const processes: Array<{ pid: number; identity: string; kind: 'app' | 'webkit'; ancestry: Ancestor[];
     appPid: number; appIdentity: string; state: string | null; wchan: string | null;
     environment?: NativeEnvironment;
+    output?: ReturnType<typeof readNativeOutput>;
     schedstat: ReturnType<typeof parseSchedstat>; readStartedEpochMs: number; readCompletedEpochMs: number }> = [];
   const unavailable: string[] = [];
   while (queue.length) {
@@ -160,10 +237,12 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
         validate();
         const environment = options.environment && !capturedEnvironmentIdentities.has(`${node.pid}:${node.identity}`)
           ? readNativeEnvironment(node.pid, proc) : undefined;
-        if (environment) validate();
+        const output = options.outputDescriptors ? readNativeOutput(node.pid, options.debugFile, proc) : undefined;
+        if (environment || output) validate();
         processes.push({ pid: node.pid, identity: node.identity, kind, ancestry: node.ancestry,
           appPid: app.pid, appIdentity: app.identity, state: linuxProcStateFromStat(mainStat), wchan, schedstat,
           ...(environment ? { environment } : {}),
+          ...(output ? { output } : {}),
           readStartedEpochMs: sampleStarted, readCompletedEpochMs: Date.now() });
       }
       const tasks = proc.list(`/proc/${node.pid}/task`);
@@ -292,14 +371,19 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   if (process.platform !== 'linux') throw new Error('Native CPU diagnostic requires Linux /proc');
   const driverIdentity = readProcessIdentity(driverPid);
   if (!driverIdentity) throw new Error('Native CPU diagnostic cannot identify its driver');
-  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, environment: true };
+  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, environment: true,
+    outputDescriptors: true, debugFile: process.env.GST_DEBUG_FILE };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v3',
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v4',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
     environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
       maxValueBytes: MAX_ENVIRONMENT_VALUE_BYTES, persistence: 'once-per-pid-identity',
       source: '/proc/<owned-pid>/environ', limitation: 'initial process environment; later in-process changes may be invisible' },
+    output: { descriptors: [1, 2], debugFile: options.debugFile ?? null,
+      maxInfoBytes: MAX_DESCRIPTOR_BYTES, maxDebugFileDescriptors: MAX_DEBUG_FILE_DESCRIPTORS,
+      persistence: 'per-sample-buffered', source: '/proc/<owned-pid>/fd and fdinfo',
+      limitation: 'descriptor topology, not syscall duration; requested debug path must also match measured native environment' },
     stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
       maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {

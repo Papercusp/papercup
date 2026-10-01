@@ -144,7 +144,15 @@ if [ -n "$CACHE_XFS_GB" ] && [ "${DRY_RUN:-0}" != 1 ]; then
   rm -f "$CACHE/.reflink-probe" "$CACHE/.reflink-probe.clone"
 fi
 
-run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+# The Node tarball must match the machine: Arm shapes (c4a/t2a, P-008) need linux-arm64.
+# MACHINE_ARCH overrides `uname -m` for the dry-run tests only.
+MACHINE_ARCH=${MACHINE_ARCH:-$(uname -m)}
+case "$MACHINE_ARCH" in
+  x86_64) NODE_ARCH=x64 ;;
+  aarch64 | arm64) NODE_ARCH=arm64 ;;
+  *) echo "BOOTSTRAP_FAILED no Node build for machine arch $MACHINE_ARCH" >&2; exit 7 ;;
+esac
+run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
 run sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
 run sudo npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@openai/codex@${CODEX_VERSION}"
 if [ "$CODEX_SKILL_ROOTS" = create ]; then

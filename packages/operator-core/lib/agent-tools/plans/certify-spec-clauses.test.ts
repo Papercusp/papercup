@@ -142,6 +142,9 @@ function bindingRow(
     coverage_evidence_present: true,
     test_run_id: 43,
     test_run_present: true,
+    test_run_file_path: 'test/reconnect.test.ts',
+    test_run_commit_sha: 'fixture-clean-commit',
+    test_run_worktree_dirty: false,
     details: {
       adequacy: {
         fixtureCalibrated: true,
@@ -280,11 +283,19 @@ beforeEach(async () => {
 });
 
 describe('plans:certify-spec-clauses', () => {
+  it.each([true, null])('does not file a passing card from run cleanliness=%s', async (dirty) => {
+    h.rows = h.rows.map((row) => ({ ...row, test_run_worktree_dirty: dirty }));
+    const result = await certify({ specIds: ['SPEC-PASS'] });
+    expect(result.counts).toMatchObject({ passing: 0, filed: 0 });
+    expect(result.clauses![0]!.wouldBlock).toContain('freshness');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('files a terminal card for each passing clause, through the exact replay, and never files a blocked one', async () => {
     const result = await certify({ specIds: ['SPEC-PASS', 'SPEC-BLOCKED'] });
 
     expect(result.ok).toBe(true);
-    expect(result.counts).toEqual({ clauses: 2, passing: 1, filed: 1, unchanged: 0, refused: 0, notPassing: 1 });
+    expect(result.counts, JSON.stringify(result.clauses)).toEqual({ clauses: 2, passing: 1, filed: 1, unchanged: 0, refused: 0, notPassing: 1 });
     const bySpec = Object.fromEntries((result.clauses ?? []).map((c) => [c.specId, c]));
     expect(bySpec['SPEC-PASS']).toMatchObject({ verdict: 'pass', wouldBlock: [], card: { status: 'filed', issueId: 'EI-CERT-1' } });
     expect(bySpec['SPEC-BLOCKED']!.card).toEqual({ status: 'not-passing' });

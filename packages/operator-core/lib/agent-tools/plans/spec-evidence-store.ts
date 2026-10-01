@@ -225,7 +225,7 @@ async function readMutationProbeLocks(resolved: ReadonlyMap<string, ProbePath>):
   await ensureBootstrap();
   const probes: ProbePath[] = [];
   for (const [coordinationDomain, paths] of groups) {
-    const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths] });
+    const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths], includeWaiting: false });
     for (const lock of queue.active_locks) {
       if (String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe') {
         probes.push({ domain: coordinationDomain, repoPath: lock.path });

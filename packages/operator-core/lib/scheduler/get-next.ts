@@ -93,6 +93,7 @@ import {
   stopTheLineExclusionSql,
 } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
+import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
 import { agentReviewNormalExclusionSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
@@ -1225,8 +1226,12 @@ export function issueClaimCandidateSubquery(
   // Keep broad/non-pushed callers unchanged: delta reads need a population wide
   // enough to cover both filters, and unfiltered callers retain their existing
   // SQL shape.
+  // P-009 / D-022: the issue-family ROUTE (which claim mechanism) comes from the one
+  // routing helper, and claimability from the one work predicate (nature/audience +
+  // the observation-lane and needs-owner-action exclusions). Neither is a local list.
   const baseWhere = sql`
-    wi.item_kind IN ('bug', 'change', 'task')
+    ${issueFamilyRouteSql(sql, 'wi')}
+    AND ${agentWorkWhereSql(sql, 'wi')}
     AND wi.workspace_id = ${issueWs}
     AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
     AND wi.status = ANY(${states as string[]}::text[])
