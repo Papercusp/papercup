@@ -34,9 +34,15 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('./workspace-registry', async (orig) => ({
   ...await orig<typeof import('./workspace-registry')>(), activeWorkspaceId: () => 'default',
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({
-  DBOS: { workflowID: undefined, registerWorkflow: (implementation: unknown) => implementation },
-}));
+vi.mock('@dbos-inc/dbos-sdk', () => {
+  class WorkflowQueue {
+    constructor(readonly name: string, readonly options?: unknown) {}
+  }
+  return {
+    WorkflowQueue,
+    DBOS: { workflowID: undefined, registerWorkflow: (implementation: unknown) => implementation },
+  };
+});
 vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
@@ -152,6 +158,14 @@ beforeAll(async () => {
   `);
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'work-item-admission-recovery-chain.integration',
+    extra: [
+      '123-coordination-substrate.sql',
+      '429-coord-entity-subscriptions-allow-fleet-kind.sql',
+      '568-coord-entity-subscriptions-allow-event-kind.sql',
+      '602-work-item-follow-blockers.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
+    ],
+    runtimeTables: ['harness_shared.coord_entity_subscriptions'],
   });
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
