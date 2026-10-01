@@ -1613,6 +1613,25 @@ describe('ptool JSON input', () => {
     expect(() => parseJsonInput('  \n\t')).toThrow();
   });
 
+  it('rejects a double-encoded object before dispatch with a direct correction', () => {
+    const payload = JSON.stringify(JSON.stringify({ did: 'finished the checkpoint' }));
+    let parseError: unknown = null;
+    try {
+      parseJsonInput(payload);
+    } catch (error) {
+      parseError = error;
+    }
+
+    expect(parseError).toBeInstanceOf(TypeError);
+    const message = formatJsonInputError('inline', parseError);
+    expect(message).toContain('must contain an object of tool arguments');
+    expect(message).toContain('remove the extra JSON.stringify/quoting layer');
+  });
+
+  it.each(['null', '[]', '1', 'true'])('rejects non-object MCP args: %s', (payload) => {
+    expect(() => parseJsonInput(payload)).toThrow('tool arguments must decode to a JSON object');
+  });
+
   it('explains how to escape literal backslashes after invalid JSON escapes', () => {
     let parseError: unknown = null;
     try {
