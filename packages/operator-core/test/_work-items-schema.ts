@@ -210,6 +210,15 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     -- JSONB ->> predicates for both boolean true and a legacy string "true".
     claim_hold boolean GENERATED ALWAYS AS ((payload ->> '_claimHold') = 'true') STORED,
     needs_owner_action boolean GENERATED ALWAYS AS ((payload ->> 'needsOwnerAction') = 'true') STORED,
+    -- migration 1308 (P-013, WI-10004929): issue severity materialized so the Work Items
+    -- list/summary (sync-resolver/work-items-list-query.ts) reads wi.severity_projection
+    -- for every in-scope row without detoasting payload. Same expression as production.
+    severity_projection text GENERATED ALWAYS AS (
+      CASE WHEN item_kind = ANY (ARRAY['bug'::text, 'change'::text, 'task'::text])
+           THEN COALESCE(payload -> '_ei' ->> 'severity', 'minor')
+           ELSE NULL
+      END
+    ) STORED,
     -- condition-singleton identity (migration 741 family): the stop-the-line floor
     -- (P-013/D-012, work-items-admission.ts stopTheLineExclusionSql) reads
     -- wi.condition_key on EVERY claim path — a fixture without this column fails the

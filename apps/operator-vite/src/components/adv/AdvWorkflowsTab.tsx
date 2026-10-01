@@ -51,6 +51,7 @@ import {
   buildFacetCounts,
   buildLedgerRows,
   buildNeedsYou,
+  dispatcherDependentWorkflows,
   triggerDispatcherState,
   buildPopulationSummary,
   buildSourceHealth,
@@ -423,9 +424,9 @@ export default function AdvWorkflowsTab() {
   const dispatcher = useMemo(() => {
     const state = triggerDispatcherState(catalog?.routines);
     if (!state) return null;
-    const heldWorkflows = rows.filter((row) => row.kind === 'triggered' && !row.paused).length;
-    return { active: state.active, heldWorkflows };
-  }, [catalog, rows]);
+    // Only workflows with an ARMED event trigger are held; schedule-only plans keep firing.
+    return { active: state.active, heldWorkflows: dispatcherDependentWorkflows(items) };
+  }, [catalog, items]);
   const needsYou = useMemo(
     () => collapseNeedsYou(buildNeedsYou({ sources: landingSources, rows, dispatcher })),
     [landingSources, rows, dispatcher],

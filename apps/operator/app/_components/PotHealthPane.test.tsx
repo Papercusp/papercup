@@ -48,6 +48,9 @@ function defaultGoal(overrides: Record<string, unknown> = {}) {
       { metric: 'installs', label: 'installs', threshold: 20 },
     ],
     budgetCents: 50_000,
+    // With a ceiling set, the ceiling line reads the windowed `spentCents` and never
+    // substitutes lifetime `spendUsd` (goalCeilingSpendUsd) — absent ⇒ "Unmeasured".
+    spentCents: 31_000,
     spendUsd: 310,
     spendRecentUsd: 70,
     spendRecentWindowDays: 7,

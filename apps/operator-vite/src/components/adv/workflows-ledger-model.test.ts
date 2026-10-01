@@ -4,6 +4,7 @@ import {
   buildFacetCounts,
   buildLedgerRows,
   buildNeedsYou,
+  dispatcherDependentWorkflows,
   TRIGGER_DISPATCH_ROUTINE,
   triggerDispatcherState,
   buildPopulationSummary,
@@ -376,6 +377,31 @@ describe('trigger dispatcher pause (WI-10004922)', () => {
     expect(items[0].message).toContain('2 armed workflows');
     // It stays first after collapsing, ahead of the reconnect item.
     expect(collapseNeedsYou(items).rows[0].kind).toBe('dispatch-paused');
+  });
+
+  it('counts only workflows with an ARMED event trigger as held, never schedule-only plans', () => {
+    const external = (armed: boolean | null): AutomationTrigger =>
+      trigger({ id: `external:b-${String(armed)}`, kind: 'external', provider: 'google calendar', armed });
+    const scheduleOnly = item({ id: 'plan:papercusp:nightly', triggers: [trigger({ armed: true })] });
+    const armedEvent = item({ id: 'plan:papercusp:on-meeting', triggers: [external(true)] });
+    const disarmedEvent = item({ id: 'plan:papercusp:on-mail', triggers: [external(false)] });
+    const unknownEvent = item({ id: 'plan:papercusp:on-post', triggers: [external(null)] });
+    const mixed = item({ id: 'plan:papercusp:both', triggers: [trigger({ armed: true }), external(true)] });
+
+    // The false alarm this guards: an armed schedule is a `triggered` ledger row, but a
+    // dispatcher pause does not stop it.
+    expect(buildLedgerRows([scheduleOnly], NOW)[0]).toMatchObject({ kind: 'triggered', paused: false });
+    expect(dispatcherDependentWorkflows([scheduleOnly])).toBe(0);
+    expect(dispatcherDependentWorkflows([armedEvent, mixed])).toBe(2);
+    // Disarmed or unknown-armed event triggers are not counted as held.
+    expect(dispatcherDependentWorkflows([disarmedEvent, unknownEvent])).toBe(0);
+    expect(
+      buildNeedsYou({
+        sources: [],
+        rows: [],
+        dispatcher: { active: false, heldWorkflows: dispatcherDependentWorkflows([scheduleOnly, disarmedEvent]) },
+      }),
+    ).toEqual([]);
   });
 
   it('stays silent when the dispatcher runs, is unknown, or nothing armed depends on it', () => {

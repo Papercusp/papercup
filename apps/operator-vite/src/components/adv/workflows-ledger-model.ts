@@ -126,6 +126,20 @@ export function triggerDispatcherState(
   return { active: rows.some((routine) => routine.active) };
 }
 
+/**
+ * How many workflows a dispatcher pause actually holds: those with at least one ARMED
+ * external (event) trigger. A schedule trigger never passes through
+ * `external-trigger-dispatch` (plan schedules fire on their own path), so a schedule-only
+ * workflow keeps firing during a pause. Counting it — every un-paused `triggered` ledger
+ * row, which includes schedule-only plans — raised a false "event triggers are paused"
+ * alarm over plans that were running normally.
+ */
+export function dispatcherDependentWorkflows(items: readonly AutomationItem[]): number {
+  return items.filter((item) =>
+    item.triggers.some((trigger) => trigger.kind === 'external' && trigger.armed === true),
+  ).length;
+}
+
 export interface NeedsYouItem {
   id: string;
   kind: NeedsYouKind;
