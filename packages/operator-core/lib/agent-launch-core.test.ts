@@ -16,6 +16,7 @@ import {
   MEMBER_BASELINE_RULES,
   buildAgentLaunchCommand,
   claimAgentLaunch,
+  recordAgentLaunchResult,
   composeMemberLaunchContext,
   composeModelSpec,
   defaultLaunchAccountFor,
@@ -79,6 +80,42 @@ describe('member baseline causal-evidence contract', () => {
 beforeEach(() => {
   launchCoreSql.mockReset();
   launchCoreSql.mockResolvedValue([] as unknown[]);
+});
+
+describe('recordAgentLaunchResult durable completion evidence', () => {
+  it('confirms the idempotency row was updated before reporting a durable receipt', async () => {
+    launchCoreSql.mockResolvedValueOnce([{ idempotency_key: 'cached-launch' }]);
+
+    const recorded = await recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: ' cached-launch ',
+      summary: { opened: 2, failed: 0 },
+    });
+
+    expect(recorded).toBe(true);
+    const [query, ...values] = launchCoreSql.mock.calls[0] ?? [];
+    expect(String(query?.join(' '))).toContain('RETURNING idempotency_key');
+    expect(values).toContain('cached-launch');
+  });
+
+  it('does not claim a durable receipt when the update matched no idempotency row', async () => {
+    launchCoreSql.mockResolvedValueOnce([]);
+
+    await expect(recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'missing-launch',
+      summary: { opened: 1, failed: 0 },
+    })).resolves.toBe(false);
+  });
+
+  it('does not claim a durable receipt when no idempotency key was supplied', async () => {
+    await expect(recordAgentLaunchResult({
+      workspaceId: 'ws-test',
+      idempotencyKey: null,
+      summary: { opened: 1, failed: 0 },
+    })).resolves.toBe(false);
+    expect(launchCoreSql).not.toHaveBeenCalled();
+  });
 });
 
 describe('claimAgentLaunch crash recovery', () => {

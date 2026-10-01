@@ -36,6 +36,7 @@ import { join } from 'node:path';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
@@ -119,6 +120,49 @@ import {
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
  *  landing more than seven minutes later, so expiry is never itself a failure. */
 const RESUME_VERIFY_TIMEOUT_MS = 30_000;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function agentLaunchCompletionReceipt(
+  idempotencyKey: string | null | undefined,
+  summaryRecorded: boolean,
+): AbortCompletionReceipt | null {
+  const key = idempotencyKey?.trim();
+  if (!key || !summaryRecorded) return null;
+  return { status: 'recorded', effectRef: `agent-launch:${key}` };
+}
+
+/**
+ * A launch can open processes before its 90-second dispatch deadline. Surface a
+ * late success only when this exact call returned a durable idempotency receipt;
+ * opening a process alone is not enough to make retrying or reporting safe.
+ */
+function agentLaunchAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const key = asRecord(args)?.idempotencyKey;
+  const normalizedKey = typeof key === 'string' ? key.trim() : '';
+  const resultData = asRecord(result.structuredContent);
+  const receipt = asRecord(resultData?.completionReceipt);
+  const expectedEffectRef = normalizedKey ? `agent-launch:${normalizedKey}` : null;
+  if (
+    expectedEffectRef &&
+    receipt?.status === 'recorded' &&
+    receipt.effectRef === expectedEffectRef
+  ) {
+    return { status: 'recorded', effectRef: expectedEffectRef };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'launch-agent did not return a matching durable idempotency receipt',
+    failures: [normalizedKey ? 'missing-completion-receipt' : 'missing-idempotency-key'],
+  };
+}
 
 /**
  * Read the bounded, per-owner psu boot log without allowing this diagnostic
@@ -378,7 +422,7 @@ function splitSavedProfileExtraArgs(extraArgs: readonly string[] | undefined): {
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. For N members on an existing plan use fleet:launch-on-plan. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
+    "Start agents for a fixed ad-hoc `brief`, or resume/fork a prior session — visible/headless, fleet/unfleeted. REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`; it becomes the resumed session's next-turn request. Fresh plan-bound, per-member-with-briefs, and `successor` launches may omit it. For N members on an existing plan use `fleet:launch-on-plan`. A successful spawn proves only that a process opened; read verification before claiming registration, a first turn, or a task claim.",
   guidance: {
     when: 'AD-HOC/RECOVERY AGENT-LAUNCH DOOR: fixed brief, resume, or fork; visible or headless, fleet or unfleeted. Existing-plan N-member work uses fleet:launch-on-plan. Duplicate screening never delays process launch; it governs work-item claims.',
     notWhen:
@@ -427,6 +471,9 @@ export default defineTool({
   // still progressing. Keep this handler budget above that bounded path; the
   // transport derives a matching deadline from the declaration.
   timeoutSec: 90,
+  // Launches are deliberately non-idempotent. A completed handler can still prove
+  // that this attempt's launch summary is durably queryable by its idempotency key.
+  abortCompletionReceipt: agentLaunchAbortCompletionReceipt,
   args: (() => {
     const base = z.object({
       brief: z
@@ -435,7 +482,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          "The agent's requested FIRST TURN (no plan required). Required with `resume`/`fork`, where it becomes the resumed session's next-turn request (\"here's what changed, carry on\"). Delivery is not evidence the turn began or claimed work; read the launch verification. Omit only for a FRESH launch bound to a `plan`.",
+          "The agent's requested FIRST TURN (no plan required). REQUIRED with `resume`/`fork` as the resumed session's next-turn request (\"here's what changed, carry on\"). The top-level field may be omitted for a fresh plan-bound launch, when fresh per-member entries supply briefs, or for a `successor` (which seeds its own carry brief). Delivery is not evidence the turn began or claimed work; read launch verification.",
         ),
       plan: z
         .string()
@@ -1684,6 +1731,9 @@ export default defineTool({
           launch: priorLaunch
             ? { ...priorLaunch, deduped: true }
             : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
+          ...(agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null)
+            ? { completionReceipt: agentLaunchCompletionReceipt(args.idempotencyKey, prior !== null) }
+            : {}),
         },
       };
     }
@@ -2350,17 +2400,23 @@ export default defineTool({
         : {}),
     };
 
+    let launchSummaryRecorded = false;
     if (!launchClaimReleased) {
-      await recordAgentLaunchResult({
+      launchSummaryRecorded = await recordAgentLaunchResult({
         workspaceId,
         idempotencyKey: args.idempotencyKey,
         summary: launchSummary,
       });
     }
+    const completionReceipt = agentLaunchCompletionReceipt(args.idempotencyKey, launchSummaryRecorded);
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
-      data: { deduped: false, launch: launchSummary },
+      data: {
+        deduped: false,
+        launch: launchSummary,
+        ...(completionReceipt ? { completionReceipt } : {}),
+      },
       // Only an OBSERVED failure is an error. `agentStarted === null` and
       // `resumeVerified === null` (unconfirmed — still booting) must NOT set
       // isError: healthy launches can land there inside this bounded window, and

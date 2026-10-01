@@ -1355,18 +1355,21 @@ export async function recordAgentLaunchResult(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
   summary: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<boolean> {
   const key = opts.idempotencyKey?.trim();
-  if (!key) return;
+  if (!key) return false;
   try {
     const { sql } = getOrgPg();
-    await sql`
+    const updated = await sql<Array<{ idempotency_key: string }>>`
       UPDATE harness_shared.agent_launch_idempotency
          SET summary = ${JSON.stringify(opts.summary)}::text::jsonb
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+      RETURNING idempotency_key
     `;
+    return updated.some((row) => row.idempotency_key === key);
   } catch (e) {
     console.warn(`[agent-launch] idempotency result write failed: ${(e as Error)?.message ?? e}`);
+    return false;
   }
 }
 

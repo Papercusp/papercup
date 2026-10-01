@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dispatchProjectedTool, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
@@ -299,7 +300,7 @@ const claimAgentLaunchMock = vi.fn(
     priorLaunchedBy: string | null;
   }> => ({ won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null }),
 );
-const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown): Promise<boolean> => false);
 const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const waitForPtyHostGoneMock = vi.fn(async (_ownerId: unknown) => true);
 vi.mock('../../agent-launch-core', async (orig) => ({
@@ -406,7 +407,7 @@ describe('launch-tool routing guidance', () => {
     expect(launchAgent.guidance?.when).toContain('fleet or unfleeted');
     expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
     expect(launchAgent.guidance?.when).toContain('Duplicate screening never delays process launch');
-    expect(launchAgent.description).toContain('successful spawn proves only that a process opened');
+    expect(launchAgent.description).toMatch(/successful spawn proves only that a process opened/i);
     expect(launchAgent.description).toContain('before claiming registration, a first turn, or a task claim');
     expect(launchAgent.description).not.toContain('starts working immediately');
     expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
@@ -540,6 +541,10 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
 });
 
 describe('published launch args schema', () => {
+  it('publishes the conditional non-empty brief requirement at the tool level', () => {
+    expect(launchAgent.description).toContain('REQUIRED: `resume`/`fork` needs a non-empty top-level `brief`');
+  });
+
   it('rejects plan with resume or successor before handler dispatch', () => {
     expect(launchAgent.args.safeParse({ plan: 'p', resume: { agentId: 'su-a1a71' } }).success).toBe(false);
     expect(launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success).toBe(false);
@@ -2546,6 +2551,99 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
       }),
     );
   });
+});
+
+describe('launch result after the dispatch deadline', () => {
+  const projectLaunchForDispatch = (): ProjectedTool => ({
+    pluginName: 'operator-core',
+    description: 'launch-agent deadline regression fixture',
+    inputSchema: { type: 'object' },
+    capabilities: [],
+    expose: { mcp: { name: 'capability:launch-agent' } },
+    timeoutSec: 0.05,
+    abortCompletionReceipt: launchAgent.abortCompletionReceipt,
+    fn: async (input, dispatchContext) => {
+      const response = await (launchAgent.handler as unknown as (
+        args: unknown,
+        context: UnifiedToolContext,
+      ) => Promise<{ content: ToolResult['content']; data?: unknown; isError?: boolean }>)(input, dispatchContext);
+      return {
+        content: response.content,
+        structuredContent: response.data,
+        ...(response.isError ? { isError: true } : {}),
+      };
+    },
+  });
+
+  const dispatchLaunch = (idempotencyKey: string) => {
+    const dispatchContext = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'su',
+    } as unknown as UnifiedToolContext;
+    return dispatchProjectedTool(
+      projectLaunchForDispatch(),
+      'capability:launch-agent',
+      { brief: 'controlled deadline fixture', count: 2, idempotencyKey },
+      dispatchContext,
+      {},
+    );
+  };
+
+  it('surfaces the cached multi-launch summary when the handler returns after timeout', async () => {
+    const idempotencyKey = 'deadline-crossing-launch-test';
+    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return true;
+    });
+
+    const result = await dispatchLaunch(idempotencyKey);
+
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey,
+        summary: expect.objectContaining({ opened: 2, failed: 0 }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.result?.structuredContent).toMatchObject({
+      deduped: false,
+      launch: { opened: 2, failed: 0 },
+      completionReceipt: { status: 'recorded', effectRef: `agent-launch:${idempotencyKey}` },
+    });
+    expect(result.result?._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recorded',
+      effectRef: `agent-launch:${idempotencyKey}`,
+      attemptId: expect.any(String),
+    });
+  }, 10_000);
+
+  it('keeps the timeout when process openings have no confirmed durable summary', async () => {
+    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return false;
+    });
+
+    const result = await dispatchLaunch('uncached-deadline-crossing-launch-test');
+
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      code: 'timeout',
+      meta: {
+        abortCompletionReceipt: {
+          status: 'recovery-incomplete',
+          failures: ['missing-completion-receipt'],
+          attemptId: expect.any(String),
+        },
+      },
+    });
+  }, 10_000);
 });
 
 describe('failure reporting', () => {
