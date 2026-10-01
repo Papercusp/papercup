@@ -352,6 +352,8 @@ const GIT_WRITING_OPTIONS: WritingOptionSpec = {
     '--exec-path',
     '--move',
     '--output',
+    // Opt-in: runs the program named by diff.external / GIT_EXTERNAL_DIFF.
+    '--ext-diff',
     // `git branch` rewrites config without naming a branch operand.
     '--set-upstream-to',
     '--set-upstream',

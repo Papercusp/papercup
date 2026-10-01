@@ -314,6 +314,8 @@ describe('capability:bash write-capable options replay safety (WI-10005111)', ()
     ['git: --unset-upstream rewrites config', 'git branch --unset-upstream'],
     ['git: abbreviated --edit-description', 'git branch --edit'],
     ['git: abbreviated --output', 'git diff --out=/tmp/x'],
+    ['git: --ext-diff runs the configured external diff program', 'git diff --ext-diff'],
+    ['git: abbreviated --ext-diff', 'git log -p --ext-d'],
     ['git: attached global config', 'git -ccore.pager=sh log'],
     ['git: attached global directory', 'git -C/tmp log'],
     ['a write option in a later pipeline segment', 'cat f | sort -o/tmp/x'],
