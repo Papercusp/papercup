@@ -3,6 +3,21 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const bench = fileURLToPath(new URL('.', import.meta.url));
+it('hashes a JSON-declared asset path as well as a Path without loading model packages', () => {
+  const result = spawnSync('python3', ['-c', `
+import ast, hashlib
+from pathlib import Path
+source = Path('mdenseon-vectors.py')
+tree = ast.parse(source.read_text())
+function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'file_sha256')
+exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'))
+assert file_sha256(str(source)) == hashlib.sha256(source.read_bytes()).hexdigest()
+assert file_sha256(source) == file_sha256(str(source))
+print('asset-path-contract-passed')
+`], { cwd: bench, encoding: 'utf8' });
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout.trim()).toBe('asset-path-contract-passed');
+});
 function apply(snapshot: unknown) {
   const result = spawnSync('python3', ['-c', `
 import json, sys
