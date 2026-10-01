@@ -347,11 +347,11 @@ describe('continuity probe wake replay', () => {
 // refused unjudgeable on most emits and no independent acceptance card could be filed.
 describe('continuity probe dispatch budget', () => {
   const SLOW_READ_MS = 3_000;
-  const slowDispatch = () =>
+  const slowDispatch = (delayMs = SLOW_READ_MS) =>
     vi.fn(
       () =>
         new Promise((resolve) =>
-          setTimeout(() => resolve({ content: [{ type: 'text', text: '{"state":"green"}' }] }), SLOW_READ_MS),
+          setTimeout(() => resolve({ content: [{ type: 'text', text: '{"state":"green"}' }] }), delayMs),
         ),
     );
 
@@ -386,14 +386,14 @@ describe('continuity probe dispatch budget', () => {
     expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
   });
 
-  it('grades a criterion probe slower than the wake budget by default', async () => {
-    expect(CRITERION_PROBE_TIMEOUT_MS).toBeGreaterThan(SLOW_READ_MS);
+  it('uses the full 60s grading budget for criterion probes by default', async () => {
+    expect(CRITERION_PROBE_TIMEOUT_MS).toBe(60_000);
     const pending = evaluateCriterionProbeChecks({
       criteria: [{ key: 'r-9', check: { kind: 'probe', probe: readProbe() } as never }],
       ratings: { 'r-9': { rating: 'pass' } },
-      dispatchTool: slowDispatch(),
+      dispatchTool: slowDispatch(CRITERION_PROBE_TIMEOUT_MS - 1),
     });
-    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    await vi.advanceTimersByTimeAsync(CRITERION_PROBE_TIMEOUT_MS - 1);
     const evaluation = await pending;
     expect(evaluation).toMatchObject({ ok: true, checkRuns: { 'r-9': { verdict: 'pass', status: 'fresh' } } });
   });
