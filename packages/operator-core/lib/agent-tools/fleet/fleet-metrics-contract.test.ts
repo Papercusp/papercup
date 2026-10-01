@@ -144,6 +144,27 @@ function currentSpecExample(): FleetMetricsResult {
 }
 
 describe('fleet metrics v1 contract', () => {
+  it('preserves the scoped intake partition on the parsed fleet wire response and rejects inflated delivery', () => {
+    const example = currentSpecExample();
+    if (!example.ok) throw new Error('fixture must be available');
+    example.snapshot.intakeStages = {
+      population: 5, unit: 'work-item rows', remainingBugs: 1, verifiedCompletions: 1,
+      mutuallyExclusive: true, writer: 'deriveWorkItemPresentationStage',
+      scope: 'current-spec issue-family rows including observation evidence', window: 'current stock at generatedAt',
+      counts: {
+        observation: 1, unknown: 0, candidate: 1, 'accepted-ready': 1,
+        'accepted-active': 0, 'accepted-blocked': 0, 'verified-completion': 1, 'terminal-other': 1,
+      },
+    };
+    const parsed = fleetMetricsResultSchema.parse(example);
+    expect(parsed).toEqual(example);
+    example.snapshot.intakeStages.verifiedCompletions = 2;
+    expect(fleetMetricsResultSchema.safeParse(example).success).toBe(false);
+    example.snapshot.intakeStages.verifiedCompletions = 1;
+    example.snapshot.intakeStages.population = 6;
+    expect(fleetMetricsResultSchema.safeParse(example).success).toBe(false);
+  });
+
   it('accepts a current-spec fleet-lifetime snapshot with explicit units and provenance', () => {
     const parsed = fleetMetricsResultSchema.parse(currentSpecExample());
     expect(parsed.ok).toBe(true);

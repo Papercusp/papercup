@@ -92,6 +92,27 @@ describe('operator-public compile never reaches the operator-core hub graph', ()
     ).toBeNull();
   }, 120_000);
 
+  it('Worker TEST files are roots of the walk (a test import counts exactly like a source import)', () => {
+    // tsc compiles this package's tests under the same zero-error leg, so a test that imports a
+    // PG-backed operator-core module turns it red just as a source file would (EI-24772006759025610).
+    // If the tsconfig ever stops including tests, the guard above silently stops covering them.
+    const { roots } = loadOptions();
+    const rel = roots.map((r) => relative(APP_DIR, r));
+    expect(rel).toContain('src/__tests__/operator-core-import-boundary.test.ts');
+  });
+
+  it('calibration: a PG-backed operator-core wrapper is flagged, its PG-free core is not', () => {
+    // The EI-24772006759025610 incident: a Worker test imported the PG-backed transparency runtime.
+    // The fix split the pass into a PG-free core (transparency-publish.ts) the Worker may import and
+    // a defaults wrapper it may not. If a refactor moves these edges, pick another wrapper/core pair
+    // that genuinely sits on either side of FORBIDDEN.
+    const { options } = loadOptions();
+    const wrapper = walk([join(REPO_ROOT, 'packages/operator-core/lib/cupboard/transparency-runtime.ts')], options);
+    expect(wrapper.firstForbidden).not.toBeNull();
+    const core = walk([join(REPO_ROOT, 'packages/operator-core/lib/cupboard/transparency-publish.ts')], options);
+    expect(core.firstForbidden).toBeNull();
+  }, 120_000);
+
   it('calibration: the same walk DOES flag a module known to reach agent-tools', () => {
     // recipe-authority imports agent-tools/_harness-scope; if a refactor moves that, pick another root
     // that genuinely reaches FORBIDDEN — this case exists so the guard above can never pass vacuously.

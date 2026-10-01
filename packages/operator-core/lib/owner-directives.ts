@@ -425,6 +425,31 @@ export async function getOwnerDirective(id: number, sql?: Sql): Promise<OwnerDir
   return rows[0] ? rowOf(rows[0]) : null;
 }
 
+/**
+ * The newest OWNER-TYPED turn captured in `recordedBy`'s session whose text
+ * contains `token` (case-insensitive), declined rows excluded. Personal Vault
+ * release authority (personal-data-reader-set-labels-2026-10-01 D-005) uses it
+ * to find the turn in which the owner typed a release code.
+ */
+export async function findCapturedDirectiveContaining(
+  input: { workspaceId: string; recordedBy: string; token: string },
+  sql?: Sql,
+): Promise<OwnerDirectiveRow | null> {
+  const token = input.token.trim();
+  if (!token) return null;
+  const rows = await db(sql)<RawRow[]>`
+    SELECT * FROM harness_shared.owner_directives
+     WHERE workspace_id = ${input.workspaceId}
+       AND recorded_by = ${input.recordedBy}
+       AND captured_by_hook = true
+       AND disposition_status IS DISTINCT FROM 'declined'
+       AND strpos(lower(verbatim_text), lower(${token})) > 0
+     ORDER BY id DESC
+     LIMIT 1
+  `;
+  return rows[0] ? rowOf(rows[0]) : null;
+}
+
 export interface ListOwnerDirectivesOpts {
   workspaceId: string;
   /** true → only open rows; false → only dispositioned history; omitted → all. */

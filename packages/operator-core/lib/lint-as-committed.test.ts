@@ -40,7 +40,7 @@ const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
 const mod = await import(scriptPath);
-const { parseArgs, detectorPathsFromCommand, parseGitmodules, summarize, isDirectCliInvocation } = mod as {
+const { parseArgs, detectorPathsFromCommand, parseGitmodules, planLinkExcludes, summarize, isDirectCliInvocation } = mod as {
   parseArgs: (argv: string[]) => {
     help: boolean;
     scripts: string[];
@@ -55,7 +55,8 @@ const { parseArgs, detectorPathsFromCommand, parseGitmodules, summarize, isDirec
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
-  summarize: (results: { script: string; status: string; note?: string }[]) => {
+  planLinkExcludes: (linkedPaths: unknown, submodulePaths: unknown) => Record<string, string[]>;
+  summarize:(results: { script: string; status: string; note?: string }[]) => {
     exitCode: number;
     failedCount: number;
     lines: string[];
@@ -257,6 +258,37 @@ describe('parseGitmodules (EI-21033860565861795 — the submodule-blindness bug)
   });
 });
 
+describe('planLinkExcludes (WI-10004898 — linked node_modules made every extracted tree dirty)', () => {
+  it('routes a top-level link to the superproject exclude, anchored', () => {
+    expect(planLinkExcludes(['node_modules', 'packages/operator-core/node_modules'], [])).toEqual({
+      '': ['/node_modules', '/packages/operator-core/node_modules'],
+    });
+  });
+
+  it('routes a link inside a submodule to THAT submodule, relative to its root', () => {
+    expect(planLinkExcludes(['libs/papercusp/node_modules', 'node_modules'], ['libs/papercusp'])).toEqual({
+      'libs/papercusp': ['/node_modules'],
+      '': ['/node_modules'],
+    });
+  });
+
+  it('picks the DEEPEST containing submodule, and never matches a sibling that merely shares a prefix', () => {
+    const plan = planLinkExcludes(
+      ['libs/papercusp/libs/db/node_modules', 'libs/papercusp-extra/node_modules'],
+      ['libs/papercusp', 'libs/papercusp/libs/db'],
+    );
+    expect(plan).toEqual({
+      'libs/papercusp/libs/db': ['/node_modules'],
+      '': ['/libs/papercusp-extra/node_modules'],
+    });
+  });
+
+  it('is total on junk input', () => {
+    expect(planLinkExcludes(undefined, undefined)).toEqual({});
+    expect(planLinkExcludes(['', 42, 'node_modules'], [null, ''])).toEqual({ '': ['/node_modules'] });
+  });
+});
+
 describe('summarize — fail-closed', () => {
   it('exits 0 only when every lint actually passed', () => {
     const s = summarize([
@@ -411,6 +443,18 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // exact bytes the release gate itself would see. That equality is the whole
       // point of this tool.
       expect(extracted).toBe(committed);
+      // WI-10004898: the extracted tree must be CLEAN to the same `git status` the test-run
+      // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
+      // The linked node_modules are what dirtied it, so first prove the links exist (a tree
+      // with nothing linked would be trivially clean and this assertion vacuous).
+      expect(run.stdout).toMatch(/linked [1-9]\d* node_modules dir\(s\)/);
+      const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(status).toBe('');
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }

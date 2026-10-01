@@ -43,8 +43,16 @@ export function auditDraw(file: string, judgedSha: string): number;
  * lockfile edit that leaves the installed tree identical (packageLockChangeIsInert, asked through
  * the inertGlobalChange seam). A patches/ edit always rewrites an installed package, so it has no
  * inert case.
+ *
+ * P-003 (D-004): given `testConfigMainProcess` (libs/test-config/src/main-process-closure.ts, the
+ * derived set of test-config source files the vitest MAIN process can load), a test-config source
+ * file outside it is NOT global: it runs only in workers, where executedModules records it per
+ * proof. Its package.json and tsconfig stay global. Omitted or null = every source file is global.
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null} [testConfigMainProcess]
  */
-export function isGlobalRunnerInput(rel: any): boolean;
+export function isGlobalRunnerInput(rel: string, testConfigMainProcess?: ReadonlySet<string> | null): boolean;
 /**
  * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
  * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
@@ -134,12 +142,16 @@ export function packageLockChangeIsInert(beforeText: string, afterText: string):
  *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
  *        every global path stays global. Implemented over git by gitInertGlobalChange
  *        (scripts/lib/executed-source-map.mjs).
+ * @param {ReadonlySet<string> | null} [o.testConfigMainProcess] P-003: the test-config source
+ *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to
+ *        per-proof is matched against executedModules, so a proof whose executedModules reached
+ *        EXECUTED_SOURCE_MAP_IMPORT_LIMIT is opaque for that drift. Omitted = all stay global.
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
  *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, testConfigMainProcess, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -150,6 +162,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     maxAgeMs: number;
     auditRate?: number | undefined;
     inertGlobalChange?: ((rel: string, fromSha: string, toSha: string) => boolean) | null | undefined;
+    testConfigMainProcess?: ReadonlySet<string> | null | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;
@@ -318,6 +331,13 @@ export const TEST_REUSE_AUDIT_RATE_DEFAULT: 0.05;
  * PINNED equal to libs/test-config/src/test-pass-reuse-skip.ts REUSE_PROOF_FORMAT (the recorder).
  */
 export const REUSE_PROOF_FORMAT: "proof-v2";
+/**
+ * The cap on vitest's importDurations record, which is where a proof's executedModules come from.
+ * A proof that lists this many modules may have been cut short, so it cannot prove it did NOT load
+ * a worker-side test-config file (P-003): it is opaque whenever such a file is in the drift.
+ * PINNED equal to libs/test-config/src/vitest-config.ts EXECUTED_SOURCE_MAP_IMPORT_LIMIT.
+ */
+export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT: 1000000;
 /** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
 export const REUSE_SKIP_LIST_SCHEMA: 1;
 export type ReuseProof = {

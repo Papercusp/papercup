@@ -28,6 +28,30 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  it.each(['deployment ownership', 'deployment configuration', 'deployment topology', 'deployment source'])(
+    'allows a source prerequisite that inventories %s',
+    (metadata) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Inventory canonical source, ${metadata}, and current test evidence.`,
+        '- **P-002** `todo` Add tenant-bound call routing and run integration tests on current-build. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(['main promotion', 'the deployed host', 'green-checkpoint'])(
+    'retains a genuine %s prerequisite alongside deployment metadata',
+    (releasePlane) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Inventory deployment ownership, then verify ${releasePlane}.`,
+        '- **P-002** `todo` Add tenant-bound call routing and run integration tests on current-build. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+      ]);
+    },
+  );
+
   it('rejects a direct release-plane blocker on ordinary implementation work', () => {
     expect(
       stagingFirstBlockerProblem({

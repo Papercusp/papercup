@@ -59,7 +59,9 @@ export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, inpu
     SELECT profile FROM papercusp_auth.hosted_user_preferences
     WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid FOR UPDATE`;
   if (!row) throw new Error('tutorial_progress_denied');
-  const records = (row.profile.cloudTutorial ?? {}) as Record<string, unknown>;
+  const blob = row.profile.cloudTutorial ?? {};
+  if (typeof blob !== 'object' || blob === null || Array.isArray(blob)) throw new Error('tutorial_progress_invalid');
+  const records = blob as Record<string, unknown>;
   const key = progressKey(scope);
   const current = decode(scope, records[key]);
   if (current.mutationId === patch.mutationId) {
@@ -68,6 +70,7 @@ export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, inpu
     return current;
   }
   if (current.revision !== patch.expectedRevision) throw new TutorialProgressConflict(current);
+  if (current.revision >= Number.MAX_SAFE_INTEGER) throw new Error('tutorial_revision_exhausted');
   const next: TutorialProgressRecord = { revision: current.revision + 1, mutationId: patch.mutationId,
     progress: { scope, lessonId: CLOUD_TUTORIAL_ID, version: CLOUD_TUTORIAL_VERSION, disposition: patch.disposition,
       ...(patch.inspectedResult ? { inspectedResult: patch.inspectedResult } : {}) } };

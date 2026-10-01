@@ -80,6 +80,119 @@ export async function loadPrivacyRules(sql: Db, workspaceId: string, userId: str
   return rows.map((row) => ({ matchKind: row.matchKind, matchValue: row.matchValue, level: row.level }));
 }
 
+export interface PrivacyRuleRow extends PrivacyRule {
+  id: string;
+  createdBy: string;
+  updatedBy: string;
+  updatedAt: Date;
+  /** The owner directive that authorized the last LOOSENING edit, if any. */
+  authorityRef: string | null;
+}
+
+export async function listPrivacyRuleRows(sql: Db, workspaceId: string, userId: string): Promise<PrivacyRuleRow[]> {
+  return sql<PrivacyRuleRow[]>`
+    SELECT id::text, match_kind AS "matchKind", match_value AS "matchValue", level,
+           created_by AS "createdBy", updated_by AS "updatedBy", updated_at AS "updatedAt",
+           authority_ref AS "authorityRef"
+      FROM harness_shared.personal_privacy_rules
+     WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid
+     ORDER BY match_kind, match_value`;
+}
+
+/**
+ * Create or replace the rule for (kind, value). `authorityRef` is set only by a
+ * loosening edit; a tightening edit keeps the last loosening's reference.
+ */
+export async function upsertPrivacyRule(
+  sql: Db,
+  params: {
+    workspaceId: string;
+    userId: string;
+    matchKind: PrivacyRuleMatch;
+    matchValue: string;
+    level: PrivacyLevel;
+    actor: string;
+    authorityRef: string | null;
+  },
+): Promise<PrivacyRuleRow> {
+  const [row] = await sql<PrivacyRuleRow[]>`
+    INSERT INTO harness_shared.personal_privacy_rules
+      (workspace_id, user_id, match_kind, match_value, level, created_by, updated_by, authority_ref)
+    VALUES (${params.workspaceId}, ${params.userId}::uuid, ${params.matchKind}, ${params.matchValue},
+            ${params.level}, ${params.actor}, ${params.actor}, ${params.authorityRef})
+    ON CONFLICT (workspace_id, user_id, match_kind, match_value)
+    DO UPDATE SET level = EXCLUDED.level, updated_by = EXCLUDED.updated_by, updated_at = now(),
+                  authority_ref = COALESCE(EXCLUDED.authority_ref, personal_privacy_rules.authority_ref)
+    RETURNING id::text, match_kind AS "matchKind", match_value AS "matchValue", level,
+              created_by AS "createdBy", updated_by AS "updatedBy", updated_at AS "updatedAt",
+              authority_ref AS "authorityRef"`;
+  return row;
+}
+
+export async function deletePrivacyRule(
+  sql: Db,
+  params: { workspaceId: string; userId: string; matchKind: PrivacyRuleMatch; matchValue: string },
+): Promise<PrivacyRuleRow | null> {
+  const [row] = await sql<PrivacyRuleRow[]>`
+    DELETE FROM harness_shared.personal_privacy_rules
+     WHERE workspace_id = ${params.workspaceId} AND user_id = ${params.userId}::uuid
+       AND match_kind = ${params.matchKind} AND match_value = ${params.matchValue}
+    RETURNING id::text, match_kind AS "matchKind", match_value AS "matchValue", level,
+              created_by AS "createdBy", updated_by AS "updatedBy", updated_at AS "updatedAt",
+              authority_ref AS "authorityRef"`;
+  return row ?? null;
+}
+
+export interface ReleasableDisclosure extends ActiveDisclosure {
+  deliveredAt: Date;
+}
+
+/** This agent's active disclosures, optionally narrowed to `documentIds`, across every user. */
+export async function loadReleasableDisclosures(
+  sql: Db,
+  params: { workspaceId: string; agentOwnerId: string; documentIds: readonly string[] | null },
+): Promise<ReleasableDisclosure[]> {
+  const ids = params.documentIds ? [...params.documentIds] : null;
+  const rows = await sql<Array<{ id: string; documentId: string; level: RestrictedLevel; readerSet: string[]; deliveredAt: Date }>>`
+    SELECT id::text, document_id::text AS "documentId", level, reader_set AS "readerSet", delivered_at AS "deliveredAt"
+      FROM harness_shared.personal_disclosures
+     WHERE workspace_id = ${params.workspaceId}
+       AND agent_owner_id = ${params.agentOwnerId}
+       AND released_at IS NULL
+       AND (${ids}::uuid[] IS NULL OR document_id = ANY(${ids}::uuid[]))
+     ORDER BY delivered_at, id`;
+  return rows.map((row) => ({ ...row, readerSet: row.readerSet ?? [] }));
+}
+
+/**
+ * Release the listed ledger rows. Only rows delivered BEFORE the authorizing
+ * owner turn are touched: a disclosure that landed after the owner typed the
+ * release cannot be what they agreed to release.
+ */
+export async function releaseDisclosures(
+  sql: Db,
+  params: {
+    workspaceId: string;
+    agentOwnerId: string;
+    ids: readonly string[];
+    deliveredBefore: Date;
+    releasedBy: string;
+    releaseRef: string;
+  },
+): Promise<string[]> {
+  if (!params.ids.length) return [];
+  const rows = await sql<Array<{ documentId: string }>>`
+    UPDATE harness_shared.personal_disclosures
+       SET released_at = now(), released_by = ${params.releasedBy}, release_ref = ${params.releaseRef}
+     WHERE workspace_id = ${params.workspaceId}
+       AND agent_owner_id = ${params.agentOwnerId}
+       AND released_at IS NULL
+       AND id = ANY(${[...params.ids]}::uuid[])
+       AND delivered_at < ${params.deliveredBefore}
+    RETURNING document_id::text AS "documentId"`;
+  return rows.map((row) => row.documentId);
+}
+
 export async function loadActiveDisclosures(
   sql: Db,
   params: { workspaceId: string; agentOwnerId: string },

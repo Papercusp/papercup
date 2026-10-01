@@ -130,6 +130,91 @@ export function resolvePrivacyLevel(doc: LabelableDocument, rules: readonly Priv
 }
 
 /**
+ * The stored form of a rule's match value, or null when the value cannot name
+ * what its kind matches. Stored values compare equal to what
+ * `resolvePrivacyLevel` derives from a document, so a rule cannot silently
+ * never match.
+ */
+export function normalizeRuleValue(kind: PrivacyRuleMatch, value: string): string | null {
+  if (kind === 'sender') {
+    const normalized = safeNormalize(value);
+    return normalized && senderDomain(normalized) ? normalized : null;
+  }
+  const trimmed = String(value ?? '').trim().toLowerCase();
+  if (kind === 'sender-domain') {
+    const domain = trimmed.replace(/^@/, '');
+    return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(domain) ? domain : null;
+  }
+  return /^[a-z0-9][a-z0-9_.:-]*$/.test(trimmed) ? trimmed : null;
+}
+
+export type RuleChange =
+  | { op: 'set'; matchKind: PrivacyRuleMatch; matchValue: string; level: PrivacyLevel }
+  | { op: 'delete'; matchKind: PrivacyRuleMatch; matchValue: string };
+
+export type RuleChangeEffect = 'tighten' | 'loosen' | 'noop';
+
+function strictestRule(rules: readonly PrivacyRule[], kind: PrivacyRuleMatch, value: string | null): PrivacyLevel | null {
+  if (!value) return null;
+  let best: PrivacyLevel | null = null;
+  for (const rule of rules) {
+    if (rule.matchKind !== kind || rule.matchValue.trim().toLowerCase() !== value) continue;
+    if (best === null || LEVEL_RANK[rule.level] > LEVEL_RANK[best]) best = rule.level;
+  }
+  return best;
+}
+
+/**
+ * The level the documents a (kind, value) rule governs resolve to under
+ * `rules`, given the level their SOURCE would give them. Mirrors the
+ * specificity order of `resolvePrivacyLevel`: a sender rule falls back to its
+ * domain's rule, and both fall back to whatever their source resolves to.
+ */
+function governedLevel(
+  rules: readonly PrivacyRule[],
+  kind: PrivacyRuleMatch,
+  value: string,
+  sourceLevel: PrivacyLevel,
+): PrivacyLevel {
+  const own = strictestRule(rules, kind, value);
+  if (own) return own;
+  if (kind === 'source') return 'unrestricted';
+  if (kind === 'sender') {
+    const domain = strictestRule(rules, 'sender-domain', senderDomain(value));
+    if (domain) return domain;
+  }
+  return sourceLevel;
+}
+
+/**
+ * Whether a rule change can LOWER the level some document resolves to. Judged
+ * by effect, not by row: a new per-sender rule below its source's level is a
+ * carve-out, and deleting a rule drops its documents to the next match — both
+ * loosen even though neither edits an existing row downward (D-005).
+ *
+ * The documents a sender or domain rule governs can come from any source, so
+ * every source level (and `unrestricted`, for a source with no rule) is a
+ * possible starting point; the change loosens if it lowers any of them.
+ * `value` must already be normalized (`normalizeRuleValue`).
+ */
+export function classifyRuleChange(rules: readonly PrivacyRule[], change: RuleChange): RuleChangeEffect {
+  const value = change.matchValue;
+  const others = rules.filter((rule) => !(rule.matchKind === change.matchKind && rule.matchValue.trim().toLowerCase() === value));
+  const after = change.op === 'set' ? [...others, { matchKind: change.matchKind, matchValue: value, level: change.level }] : others;
+  const sourceLevels = new Set<PrivacyLevel>(['unrestricted']);
+  for (const rule of rules) if (rule.matchKind === 'source') sourceLevels.add(rule.level);
+
+  let tightens = false;
+  for (const sourceLevel of sourceLevels) {
+    const before = LEVEL_RANK[governedLevel(rules, change.matchKind, value, sourceLevel)];
+    const next = LEVEL_RANK[governedLevel(after, change.matchKind, value, sourceLevel)];
+    if (next < before) return 'loosen';
+    if (next > before) tightens = true;
+  }
+  return tightens ? 'tighten' : 'noop';
+}
+
+/**
  * The permitted readers of one document at a given level, from headers only.
  * `sender-only` with no resolvable sender yields an EMPTY set (owner-only):
  * an unknown sender must narrow, never widen.

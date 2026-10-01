@@ -950,7 +950,7 @@ async function main(): Promise<void> {
 
 void main().catch(async (e) => {
   if (preparedMeasurement) failMeasurementCell(preparedMeasurement, e);
-  console.error('embedder-eval failed:', e instanceof Error ? e.message : e);
+  console.error('embedder-eval failed:', e);
   await isolatedSidecar?.close();
   await shutdownLocalEmbedder();
   process.exit(1);

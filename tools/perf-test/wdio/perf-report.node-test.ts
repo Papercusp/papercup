@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { evaluateRequiredPageLoad, readPageStartupTrace, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
+import { collectOwnedWebKitSample, parseSchedstat, schedstatDelta, startNativeProcessProbe,
+  stopNativeProcessProbe } from './native-process-probe';
 
 import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, readPublisherToken, type PerfMeasure } from "./perf-report";
 import {
@@ -16,6 +18,150 @@ import {
   waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
+
+function nativeProcFixture() {
+  const files = new Map<string, string>([['/proc/sys/kernel/random/boot_id', 'boot-A'],
+    ['/proc/sys/kernel/sched_schedstats', '1']]);
+  const dirs = new Map<string, string[]>();
+  const links = new Map<string, string>();
+  const stat = (pid: number, ppid: number, ticks = '100', name = 'WebKit (main)') => {
+    const fields = Array<string>(22).fill('0');
+    fields[0] = 'S'; fields[1] = String(ppid); fields[19] = ticks;
+    return `${pid} (${name}) ${fields.join(' ')}`;
+  };
+  const add = (pid: number, ppid: number, exe: string, children = '', tids = [String(pid)]) => {
+    files.set(`/proc/${pid}/stat`, stat(pid, ppid));
+    files.set(`/proc/${pid}/task/${pid}/stat`, stat(pid, ppid));
+    files.set(`/proc/${pid}/task/${pid}/schedstat`, '1000000 2000000 3');
+    files.set(`/proc/${pid}/task/${pid}/wchan`, 'poll_schedule_timeout');
+    links.set(`/proc/${pid}/exe`, exe);
+    dirs.set(`/proc/${pid}/task`, tids);
+    for (const tid of tids) files.set(`/proc/${pid}/task/${tid}/children`, tid === String(pid) ? children : '');
+  };
+  add(10, 1, '/usr/bin/tauri-driver', '20 40');
+  add(20, 10, '/fixture/papercusp-desktop', '', ['20', '21']);
+  // WebKit spawned by a non-main GLib task, through a sandbox helper.
+  files.set('/proc/20/task/21/children', '25');
+  add(25, 20, '/usr/bin/bwrap', '30');
+  add(30, 25, '/usr/lib/WebKitWebProcess');
+  add(40, 10, '/usr/lib/WebKitWebProcess'); // same driver, outside the app ancestry
+  add(90, 1, '/usr/lib/WebKitWebProcess'); // peer's live desktop
+  const get = <T>(map: Map<string, T>, file: string): T => {
+    const value = map.get(file);
+    if (value === undefined) throw new Error(`missing fixture ${file}`);
+    return value;
+  };
+  const reads: string[] = [];
+  return { files, dirs, links, stat, reads, options: { driverPid: 10,
+    driverIdentity: 'linux:boot-A:100', appPath: '/fixture/papercusp-desktop' },
+    proc: { read: (file: string) => { reads.push(file); return get(files, file); },
+      list: (file: string) => get(dirs, file), link: (file: string) => get(links, file) } };
+}
+
+test('native main-task counters retain exact ns and reject resets/malformed instruments', () => {
+  const before = parseSchedstat('900719925474099300 1000000 1');
+  const after = parseSchedstat('900719925475349300 3500000 2');
+  assert.deepEqual(schedstatDelta(before, after), { cpuMs: 1.25, runqueueMs: 2.5, timeslices: 1 });
+  assert.throws(() => schedstatDelta(after, before), /counter reset/);
+  for (const invalid of ['', '1 2', '1 2 3 4', 'NaN 0 1', '1 -2 3', '1.5 2 3']) {
+    assert.throws(() => parseSchedstat(invalid), /Invalid schedstat/);
+  }
+});
+
+test('native discovery reaches non-main-task children but excludes same-name peers and driver siblings', () => {
+  const f = nativeProcFixture();
+  const sample = collectOwnedWebKitSample(f.options, f.proc);
+  assert.deepEqual(sample.processes.map(({ pid, kind }) => ({ pid, kind })),
+    [{ pid: 20, kind: 'app' }, { pid: 30, kind: 'webkit' }]);
+  const renderer = sample.processes[1];
+  assert.equal(renderer.identity, 'linux:boot-A:100');
+  assert.equal(renderer.appIdentity, 'linux:boot-A:100');
+  assert.deepEqual(renderer.ancestry, [10, 20, 25].map((pid) => ({ pid, identity: 'linux:boot-A:100' })));
+  assert.equal(renderer.wchan, 'poll_schedule_timeout');
+  assert.equal(renderer.state, 'S');
+  assert.equal(sample.counterUnit, 'ns');
+  assert.equal(sample.task, 'main');
+  assert.equal(sample.runqueueMeasured, true);
+  assert.equal(sample.unavailable.length, 0);
+  assert(f.reads.includes('/proc/30/task/30/schedstat'));
+  assert(!f.reads.some((file) => file.startsWith('/proc/90/')));
+  assert(!f.reads.includes('/proc/40/task/40/schedstat'));
+  assert(sample.readCompletedEpochMs >= sample.readStartedEpochMs);
+});
+
+test('native discovery fails closed for a reused driver or changed boot', () => {
+  for (const boot of ['boot-B', 'boot-A']) {
+    const f = nativeProcFixture();
+    f.files.set('/proc/sys/kernel/random/boot_id', boot);
+    if (boot === 'boot-A') f.files.set('/proc/10/stat', f.stat(10, 1, '101'));
+    assert.throws(() => collectOwnedWebKitSample(f.options, f.proc), /driver identity changed/);
+  }
+});
+
+test('native sampling never attributes a reused main task to the earlier WebKit lifetime', () => {
+  const f = nativeProcFixture();
+  f.files.set('/proc/30/task/30/stat', f.stat(30, 25, '101'));
+  const sample = collectOwnedWebKitSample(f.options, f.proc);
+  assert(!sample.processes.some(({ pid }) => pid === 30));
+  assert.match(sample.unavailable.join(' '), /identity changed during sampling/);
+});
+
+test('native sampling rejects a renderer reparented after discovery', () => {
+  const f = nativeProcFixture();
+  const read = f.proc.read;
+  f.proc.read = (file) => {
+    const value = read(file);
+    if (file === '/proc/30/task/30/schedstat') f.files.set('/proc/30/stat', f.stat(30, 1));
+    return value;
+  };
+  const sample = collectOwnedWebKitSample(f.options, f.proc);
+  assert(!sample.processes.some(({ pid }) => pid === 30));
+  assert.match(sample.unavailable.join(' '), /owned ancestry changed/);
+});
+
+test('native sampling marks disabled scheduler-wait accounting and missing counters as unavailable', () => {
+  const f = nativeProcFixture();
+  f.files.set('/proc/sys/kernel/sched_schedstats', '0');
+  assert.equal(collectOwnedWebKitSample(f.options, f.proc).runqueueMeasured, false);
+  f.files.delete('/proc/30/task/30/schedstat');
+  const sample = collectOwnedWebKitSample(f.options, f.proc);
+  assert(!sample.processes.some(({ pid }) => pid === 30));
+  assert.match(sample.unavailable.join(' '), /schedstat/);
+});
+
+test('native diagnostic stops its own child and preserves earlier evidence rather than overwriting it', {
+  skip: process.platform !== 'linux', timeout: 10_000,
+}, async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'native-process-probe-'));
+  const file = path.join(dir, 'sample.jsonl');
+  let child: ReturnType<typeof startNativeProcessProbe> | null = null;
+  try {
+    child = startNativeProcessProbe(process.pid, process.execPath, file);
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 5000;
+      const poll = () => {
+        if (readFileSync(file, 'utf8').includes('"kind":"sample"')) return resolve();
+        if (Date.now() >= deadline) return reject(new Error('native sampler never produced a sample'));
+        setTimeout(poll, 25);
+      };
+      poll();
+    });
+    await stopNativeProcessProbe(child);
+    assert.equal(child.exitCode, 0);
+    const rows = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(rows[0].maxSamples, 1200);
+    assert.equal(rows.at(-1).kind, 'end');
+    assert.equal(rows.at(-1).reason, 'stopped');
+    assert(rows.at(-1).samples >= 1);
+    assert(rows.at(-1).maxReadDurationMs >= 0);
+    const saved = readFileSync(file, 'utf8');
+    assert.throws(() => startNativeProcessProbe(process.pid, process.execPath, file), /EEXIST/);
+    assert.equal(readFileSync(file, 'utf8'), saved);
+  } finally {
+    await stopNativeProcessProbe(child);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("startup trace separates completed-before-paint requests from later completions", async () => {
   const globals = ['window', 'document', 'performance', 'location', 'PerformanceObserver'] as const;
@@ -40,13 +186,15 @@ test("startup trace separates completed-before-paint requests from later complet
         stages: { schedulerWaitMs: 10, resolverMs: 12, transferMs: 20, parseCacheMs: 3 } },
     ] } },
     document: { readyState: 'complete' },
-    performance: { getEntriesByType: () => [{ name: 'papercusp://localhost/assets/main.js', startTime: 5, duration: 30, initiatorType: 'script' }] },
+    performance: { timeOrigin: 1_700_000_000_000, now: () => 250,
+      getEntriesByType: () => [{ name: 'papercusp://localhost/assets/main.js', startTime: 5, duration: 30, initiatorType: 'script' }] },
     location: { href: 'papercusp://localhost/adv' }, PerformanceObserver: { supportedEntryTypes: [] },
   };
   for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, value: values[name] });
   try {
     const trace = await readPageStartupTrace({ fcpMs: 100, lcpMs: 200 });
     assert.equal(trace.lcp, lcp);
+    assert.deepEqual(trace.documentClock, { timeOriginMs: 1_700_000_000_000, capturedAtMs: 250 });
     assert.equal(trace.queryCountCompletedBeforeFcp, 1);
     assert.equal(trace.startedBeforeFcpCompletedLater, 3);
     assert.deepEqual(trace.longestRequestsCompletedBeforeFcp.map((query) => query.name), ['finished-before-fcp']);

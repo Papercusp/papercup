@@ -3977,6 +3977,71 @@ routing lane. R-8 still requires causal operational evidence or an
 evidenced non-defect disposition for each named lead. No acceptance
 binding, final shipment or causal closure is claimed here.
 
+### Published-profile window and neighboring ingestion receipts — October 1, 14:46Z
+
+The cold continuation recovered the post-checkpoint native transcript
+`01a0f7d4-fdf7-7e13-b4ec-26f3b1e99f2d`: the previous turn read the
+completion-history source, but did not complete this journal correlation.
+The current claim remains WI-10002830 / P-008. The refreshed lock-mode
+receipt selects automatic verified hooks, generation `1790863925000`.
+
+The previously inspected profile
+`loop-saturation-1790863645955-pid4099092-p95_617ms.cpuprofile` is now
+absent at its recorded path. Task `0mupn6p1k1aksn6q1ow` returned
+`FileNotFoundError`, exit 1, before reading the journal. This does not
+invalidate its saved SHA-256 and sample attribution, or establish why the
+file disappeared. The profile writer retains a bounded number of files,
+but no deletion receipt was obtained.
+
+The completed bounded native journal task `0mupnaa0i1obhcsrk6z`, exit 0,
+reads October 1 14:01–14:20 UTC and filters PID `4099092`, invocation
+`ceec6e03ddd841b28c50ddd48a6223f2`. It binds the exact profile filename
+to its capture log at **14:07:27.649930Z**, journal monotonic timestamp
+`153326790047` microseconds. Separately journaled detail fields report
+requested duration 3,000 ms, sampling interval 10,000 microseconds,
+profiler start-call cost 0.151393 ms and stop-call cost 7.159455 ms.
+These last two fields measure observer-call costs, not absolute sampling
+timestamps: `LoopCpuRecorder.record` writes differences of
+`performance.now()`. `captureCpuProfile` stamps the filename with
+`Date.now()` after `Profiler.stop`, before writing the file. Subtracting
+the requested duration from the filename cannot recover an exact start.
+
+The same journal window contains these neighboring ingestion receipts:
+
+| Receipt UTC | Scanned | Total wall ms | Discovery ms | Decode ms | Writes ms | Metadata backfill ms |
+|---|---:|---:|---:|---:|---:|---:|
+| 14:01:43.979112 | 7517 | 73473 | 12479.9 | 19982.9 | 35304.2 | 1033.1 |
+| 14:12:49.441406 | 179 | 488749 | 33733.1 | 58132.6 | 107510.3 | 284423 |
+
+Both report zero errors. Subtracting the latter rounded duration from its
+journal receipt gives **14:04:40.692406Z**. The profile publication falls
+inside that receipt-derived sweep envelope. This is a timing correlation,
+not exact sampling-to-phase overlap: the journal timestamps are log
+receipts, and the retained buckets do not carry per-operation start/end
+times. The narrow 14:04–14:11 UTC query, task
+`0mupn8zr9bibgik1ob7`, exit 0, contains the capture and completion-
+settlement markers but no completed ingestion phase receipt. It cannot
+establish that ingestion was inactive. An intermediate reducer failed on
+a null journal `MESSAGE` (task `0mupn8844esw7bo1voc`, exit 1); the final
+reducer handles null messages and returns only identifiers and numeric
+fields, without raw forensic output.
+
+Source inspection resolves the sampled ancestry:
+`residualPathsForCommit` calls `completionBlobHistoryContains` for a
+mismatched path; that resolves each endpoint with
+`completionHistoryLocation`, then performs a bounded Git history read
+through `streamGitFields`. The shared helper uses `child_process.spawn`
+and asynchronous stdout/close handlers. Its sampled `spawn` leaves do
+not establish a synchronous Git execution or prove that process launch
+caused this ingestion delay. Separately, ingestion's metadata-backfill
+bucket awaits `backfillSessionOwners` and, for Codex,
+`backfillCodexAdvSessions`; its 284,423 ms is wall time across those
+operations, including scheduling and database waits. A distinguishing
+measurement still needs the exact operation, wait/CPU mechanism and app
+impact. No shared-host restart, new source fix, unchanged test rerun,
+acceptance binding or shipment occurred in this continuation. P-008 / R-8
+remain open.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

@@ -95,6 +95,7 @@ export default defineTool({
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    const workspaceId = ctx.workspaceId?.trim() || identity.workspaceId?.trim() || null;
     const items: CancelItem[] = [
       ...(args.await_id != null || args.delivery_id != null || args.root_id != null || args.announcement_id != null
         ? [{
@@ -132,19 +133,25 @@ export default defineTool({
             out.dropped_deliveries = cancellation.droppedDeliveries;
             out.in_flight_deliveries = cancellation.inFlightDeliveries;
             if (cancellation.eventKey != null) {
-              try {
-                const recheckScheduled = await rebaseLoopAfterAwaitCancellation({
-                  workspaceId: identity.workspaceId,
-                  targetOwnerId: identity.ownerId,
-                  eventKey: cancellation.eventKey,
-                });
-                if (recheckScheduled > 0) out.loop_recheck_scheduled = recheckScheduled;
-              } catch (error) {
+              if (!workspaceId) {
                 const warning =
-                  `Await cancelled, but the loop recheck could not be scheduled: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`;
+                  'Await cancelled, but the loop recheck could not be scheduled: no concrete workspace ID is available.';
                 out.warning = out.warning ? `${out.warning} ${warning}` : warning;
+              } else {
+                try {
+                  const recheckScheduled = await rebaseLoopAfterAwaitCancellation({
+                    workspaceId,
+                    targetOwnerId: identity.ownerId,
+                    eventKey: cancellation.eventKey,
+                  });
+                  if (recheckScheduled > 0) out.loop_recheck_scheduled = recheckScheduled;
+                } catch (error) {
+                  const warning =
+                    `Await cancelled, but the loop recheck could not be scheduled: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`;
+                  out.warning = out.warning ? `${out.warning} ${warning}` : warning;
+                }
               }
             }
             if (cancellation.inFlightDeliveries > 0) {

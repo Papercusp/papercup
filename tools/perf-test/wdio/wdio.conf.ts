@@ -32,6 +32,9 @@ import {
   type PrivateIpcFixture,
 } from "./perf-report";
 import { SPEC_TIMEOUT_MS } from "./app-mount";
+import { startNativeProcessProbe, stopNativeProcessProbe } from './native-process-probe';
+
+let nativeProcessProbe: ChildProcess | null = null;
 
 /**
  * Allocate a free ephemeral TCP port from the OS: bind to :0, read back what
@@ -333,6 +336,9 @@ let tauriDriver: ChildProcess | null = null;
  * ever reach processes THIS run started.
  */
 function reapDriverTree(): void {
+  // Abrupt launcher exits cannot leave a diagnostic child sampling forever.
+  nativeProcessProbe?.kill('SIGTERM');
+  nativeProcessProbe = null;
   const pid = tauriDriver?.pid;
   tauriDriver = null;
   if (!pid) return;
@@ -664,6 +670,11 @@ export const config: WebdriverIO.Config = {
       detached: true,
     });
     bindDriverReaper();
+    const nativeTraceFile = process.env.PAPERCUSP_PERF_NATIVE_TRACE_FILE;
+    if (nativeTraceFile) {
+      if (!tauriDriver.pid) throw new Error('Native diagnostic driver did not start');
+      nativeProcessProbe = startNativeProcessProbe(tauriDriver.pid, TAURI_APP_PATH, nativeTraceFile);
+    }
   },
   // Publish BEFORE killing the driver so a publish hang can't leave tauri-driver
   // orphaned; the kill is in a finally for the same reason.
@@ -675,6 +686,8 @@ export const config: WebdriverIO.Config = {
       recordHostPressure("end");
       await publishMeasures();
     } finally {
+      await stopNativeProcessProbe(nativeProcessProbe);
+      nativeProcessProbe = null;
       reapDriverTree();
     }
   },

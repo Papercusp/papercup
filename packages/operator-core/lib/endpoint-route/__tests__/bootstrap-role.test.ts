@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../../model-context-budget.mjs';
 
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-role-lc-'));
 process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
@@ -753,7 +754,7 @@ describe('bootstrap-role', () => {
     const json = await visible.json();
     expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+      expect.objectContaining({ model: CODEX_SAFE_DEFAULT_MODEL }),
     );
 
     vi.clearAllMocks();
@@ -780,11 +781,11 @@ describe('bootstrap-role', () => {
     const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001', account: 'codex-main' });
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', 'role-abc', false, 'gpt-5.6-sol:xhigh');
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', 'codex-main', 'codex', 'role-abc', false, CODEX_SAFE_DEFAULT_MODEL);
     expect(json.accountNotice).toMatch(/pinned to Codex account codex-main/i);
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh', codexGatewayAccountId: 'codex-main', codexGatewayPriority: 'worker' }),
+      expect.objectContaining({ model: CODEX_SAFE_DEFAULT_MODEL, codexGatewayAccountId: 'codex-main', codexGatewayPriority: 'worker' }),
     );
   });
 

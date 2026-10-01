@@ -1431,13 +1431,13 @@ export async function dispatchPendingGradingAudits(
           }
         }
 
-        // EI-24126420100989264: a FRESH launch can return a task id and an
-        // unconfirmed kickoff, then exit before the repair receipt is formed.
-        // The dedupe path checks task-manager state above; omitting the same
-        // check here let an already-exited startup failure be reported as
-        // `launched`. A terminal task row is conclusive; a running task with
-        // agentStarted:null remains unconfirmed, not a fabricated failure.
-        if (!terminalFailure && !result.data?.deduped && taskId && kickoffNotPersisted && launchData?.agentStarted !== true) {
+        // EI-24126420100989264: a FRESH launch can return a task id and then
+        // exit during psu bootstrap before it returns any kickoffProof. Check
+        // the durable task row whenever the launch has no positive start
+        // verdict; requiring kickoffNotPersisted here misses that startup path
+        // and leaves the reservation held until its TTL. A terminal failed task
+        // is conclusive; a running task with agentStarted:null remains unknown.
+        if (!terminalFailure && !result.data?.deduped && taskId && launchData?.agentStarted !== true) {
           const freshTask = await readTask(taskId);
           const freshTaskFailed = freshTask && (
             freshTask.state === 'killed' ||

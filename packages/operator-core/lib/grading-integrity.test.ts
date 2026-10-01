@@ -1681,7 +1681,7 @@ describe('dispatchPendingGradingAudits', () => {
       .mockResolvedValueOnce(
         launchResult({
           deduped: false,
-          launch: { tasks: [{ taskId: 'task-recovery-a', logPath: '/tmp/recovery-a.log' }] },
+          launch: { agentStarted: true, tasks: [{ taskId: 'task-recovery-a', logPath: '/tmp/recovery-a.log' }] },
         }),
       )
       .mockResolvedValueOnce(
@@ -1693,7 +1693,7 @@ describe('dispatchPendingGradingAudits', () => {
       .mockResolvedValueOnce(
         launchResult({
           deduped: false,
-          launch: { tasks: [{ taskId: 'task-recovery-b', logPath: '/tmp/recovery-b.log' }] },
+          launch: { agentStarted: true, tasks: [{ taskId: 'task-recovery-b', logPath: '/tmp/recovery-b.log' }] },
         }),
       );
     d.getTask.mockResolvedValue({ state: 'killed' } as Awaited<ReturnType<GetTask>>);
@@ -1794,7 +1794,7 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
-  it('retries a fresh unconfirmed launch when its task-manager row is already terminal', async () => {
+  it('retries a fresh bootstrap proxy failure when its task exits before kickoff proof returns', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-fresh-task-exited')]);
     d.launch
@@ -1807,7 +1807,6 @@ describe('dispatchPendingGradingAudits', () => {
               {
                 taskId: 'task-codex-state-db',
                 logPath: '/tmp/codex-state-db.log',
-                kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' },
               },
             ],
           },
@@ -1822,7 +1821,11 @@ describe('dispatchPendingGradingAudits', () => {
           },
         }),
       );
-    d.getTask.mockResolvedValueOnce({ state: 'exited', exitCode: 1 } as Awaited<ReturnType<GetTask>>);
+    d.getTask.mockResolvedValueOnce({
+      state: 'ended_unobserved',
+      exitCode: 1,
+      exitReason: 'initial terminal command exited with status 1; headless launch exiting.',
+    } as Awaited<ReturnType<GetTask>>);
     const killTask = vi.fn(async (taskId: string) => ({
       ok: false as const,
       taskId,
@@ -1835,7 +1838,9 @@ describe('dispatchPendingGradingAudits', () => {
       {
         ...d,
         killTask,
-        readLogTail: () => "Codex couldn't start because its local database appears to be damaged: failed to open state DB at ~/.papercusp/su-codex-homes/session-30285/state_5.sqlite: pool timed out while waiting for an open connection",
+        readLogTail: () =>
+          'psu: mcp_proxy_upstream_error — upstream silent for 8000ms (no response headers)\n' +
+          '[papercusp] initial terminal command exited with status 1; headless launch exiting.',
         sleep: async () => undefined,
         terminalLogMaxRechecks: 0,
       },

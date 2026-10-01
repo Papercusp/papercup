@@ -557,10 +557,21 @@ async function selectedLaunchCompositionSource(
   const providerInputs: ResolvedAgentInput[] = [];
   const contributionOmissions: EffectiveLaunchSource['contributionOmissions'] = [];
   const usedBindings = new Set<string>();
+  const impliedRefs = new Set(impliedLayers.map((layer) => `${layer.slot}:${layer.id}`));
   for (const [index, layer] of stackBindingFromRefs(compositionStack).layers.entries()) {
     const identity = await getIdentitySource(layer.id, { repoDir: cwd });
     if (!identity.ok || !identity.sourcePath ||
         !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {
+      // WI-10004896: an IMPLIED layer is a record of what the persona render already
+      // composed, never a selection, so it must not be able to fail a launch. On a
+      // vm-release host every first-party identity is an unattested installed-tier copy
+      // that getIdentitySource refuses (attestation-missing); failing here would have
+      // broken every SU launch there. The recording gap is tracked as a trust follow-up.
+      if (impliedRefs.has(`${layer.slot}:${layer.id}`)) {
+        console.warn(`[role-launch-spec] implied ${layer.slot}:${layer.id} not recorded: ` +
+          `${identity.ok ? 'no source path or slot' : JSON.stringify((identity as { error?: unknown }).error ?? 'invalid')}`);
+        continue;
+      }
       throw new Error(`launch stack identity ${JSON.stringify(layer.id)} is unavailable for ${layer.slot} composition`);
     }
     // Fixed and provider-rendered prompt/turn contributions are bound by their
@@ -1448,16 +1459,23 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             });
           }
           if (modeCatalog) {
+            // WI-10004896: read each mode document from the source the catalog SELECTED.
+            // Re-resolving the id here (installed tier first) picked a vm-release host's
+            // plain installed copy, which the catalog had treated as the built-in, and
+            // refused it for a missing attestation: every AUTO launch died at boot.
+            const { readSelectedModeDocument } = await import('./agent-identities/source');
             for (const layer of derived.layers) {
-              if (!modeCatalog.entries.some((entry) => entry.sourceId === layer.id && entry.slot === layer.slot)) continue;
-              const identity = await getIdentitySource(layer.id);
-              if (!identity.ok || !identity.sourcePath) {
-                throw new Error(`selected mode identity ${layer.id} is no longer available`);
+              const entry = modeCatalog.entries.find((candidate) =>
+                candidate.sourceId === layer.id && candidate.slot === layer.slot);
+              if (!entry) continue;
+              let document: { text: string; sourcePath: string };
+              try {
+                document = await readSelectedModeDocument(entry);
+              } catch (e) {
+                throw new Error(`selected mode identity ${layer.id} is no longer available: ${e instanceof Error ? e.message : String(e)}`);
               }
-              const sourcePath = path.join(path.dirname(identity.sourcePath), 'prompts', `${layer.slot}.md`);
               selectedLayerDocs.set(`${layer.slot}:${layer.id}`, {
-                id: layer.id, layer: 'modes', slot: layer.slot,
-                text: await fs.readFile(sourcePath, 'utf8'), sourcePath,
+                id: layer.id, layer: 'modes', slot: layer.slot, ...document,
               });
             }
           }

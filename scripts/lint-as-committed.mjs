@@ -91,7 +91,7 @@
  *    explicitly, so you can see WHY a working-tree run disagreed with this one.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -218,6 +218,37 @@ export function parseGitmodules(text) {
   // A `[submodule "x"]` stanza with no `path =` line is not a real submodule entry —
   // git itself ignores it. Filtering here keeps every caller from having to re-check.
   return out.filter((s) => s.path);
+}
+
+/**
+ * Which clone-local `info/exclude` each linked `node_modules` path belongs in.
+ *
+ * WHY THIS EXISTS (WI-10004898): the extracted tree must be CLEAN to `git status`, because a
+ * test run inside it records `worktree_dirty` from `git status --porcelain
+ * --untracked-files=all`, and spec-evidence currentness rates every dirty run's `testRun`
+ * dimension `unknown`. The linked node_modules made every extracted tree dirty: `.gitignore`
+ * says `node_modules/`, and a trailing-slash pattern matches only a real DIRECTORY, so git
+ * reports a node_modules SYMLINK as `?? node_modules`. The links are infrastructure this tool
+ * adds, never committed content, so they are excluded in the clone's own `.git/info/exclude`.
+ * Neither `.gitignore` nor the shared checkout is touched.
+ *
+ * A link inside a submodule must be excluded by THAT submodule's repository (the superproject
+ * only sees the gitlink, which an untracked file inside it marks modified), so each path is
+ * routed to the deepest submodule that contains it, else to the superproject (key `''`).
+ * Returns `{ [repoRelativeRoot]: ['/<path relative to that repo>', ...] }`; anchored patterns
+ * so an exclusion can never hide a same-named file elsewhere in the tree.
+ */
+export function planLinkExcludes(linkedPaths, submodulePaths) {
+  const subs = [...new Set((Array.isArray(submodulePaths) ? submodulePaths : []).filter((p) => typeof p === 'string' && p))]
+    .sort((a, b) => b.length - a.length);
+  const plan = {};
+  for (const rel of Array.isArray(linkedPaths) ? linkedPaths : []) {
+    if (typeof rel !== 'string' || rel.length === 0) continue;
+    const owner = subs.find((s) => rel.startsWith(`${s}/`)) ?? '';
+    const inner = owner ? rel.slice(owner.length + 1) : rel;
+    (plan[owner] ??= []).push(`/${inner}`);
+  }
+  return plan;
 }
 
 /**
@@ -454,6 +485,7 @@ function main() {
     // header rather than papered over: a lint whose behaviour depends on a dependency
     // version is not made reproducible by this tool.
     let linked = 0;
+    const linkedPaths = [];
     const nmDirs = spawnSync(
       'bash',
       ['-c', `find . -maxdepth 3 -name node_modules -type d -not -path '*/node_modules/*' 2>/dev/null`],
@@ -467,11 +499,20 @@ function main() {
         mkdirSync(dirname(linkPath), { recursive: true });
         symlinkSync(target, linkPath, 'dir');
         linked += 1;
+        linkedPaths.push(rel);
       } catch {
         /* a workspace absent at this ref simply has nowhere to link — fine */
       }
     }
-    console.log(`  linked ${linked} node_modules dir(s) (not installed, not copied)`);
+    // Keep the extracted tree CLEAN to `git status` (WI-10004898, see planLinkExcludes):
+    // a run inside it must be able to record worktree_dirty=false.
+    const excludePlan = planLinkExcludes(linkedPaths, submodules.map((s) => s.path));
+    for (const [repoRel, patterns] of Object.entries(excludePlan)) {
+      const infoDir = join(workRoot, repoRel, '.git', 'info');
+      mkdirSync(infoDir, { recursive: true });
+      appendFileSync(join(infoDir, 'exclude'), `\n# lint-as-committed: linked node_modules (WI-10004898)\n${patterns.join('\n')}\n`);
+    }
+    console.log(`  linked ${linked} node_modules dir(s) (not installed, not copied; excluded from git status)`);
 
     // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
     let refScripts = {};

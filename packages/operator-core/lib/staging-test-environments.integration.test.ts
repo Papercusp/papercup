@@ -196,8 +196,8 @@ describe('current-build execution route contract', () => {
       for (const stream of [host.stdout, host.stderr]) stream.on('data', chunk => {
         const text = chunk.toString(); head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
       });
-      const call = async (route, method = 'GET', body, token) => {
-        const response = await fetch(base + route, {
+      const call = async (route, method = 'GET', body, token, origin = base) => {
+        const response = await fetch(origin + route, {
           method, headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) },
           ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(30000)
         });
@@ -222,11 +222,11 @@ describe('current-build execution route contract', () => {
           method: 'POST', headers: { 'content-type': 'application/json', host: 'localhost' },
           body: JSON.stringify({ workspaceId: process.env.PAPERCUSP_WORKSPACE_ID }), signal: AbortSignal.timeout(30000)
         });
-        if (blockedMint.status !== 403) throw new Error('external ingress admitted desktop mint: ' + blockedMint.status);
+        if (blockedMint.status !== 404) throw new Error('external ingress admitted desktop mint: ' + blockedMint.status);
         const blockedRead = await fetch(ingress + '/api/device/attention', { signal: AbortSignal.timeout(30000) });
         if (![401, 403].includes(blockedRead.status)) throw new Error('external ingress admitted anonymous device read: ' + blockedRead.status);
         const mint = await call('/api/device/desktop/mint-pair-token', 'POST', { workspaceId: process.env.PAPERCUSP_WORKSPACE_ID });
-        paired = await call('/api/device/pair', 'POST', { pairToken: mint.qrPayload.pairToken });
+        paired = await call('/api/device/pair', 'POST', { pairToken: mint.qrPayload.pairToken }, undefined, ingress);
         if (!paired.deviceId || !paired.deviceToken || paired.workspaceId !== process.env.PAPERCUSP_WORKSPACE_ID) throw new Error('pair identity mismatch');
         const paths = ['/api/device/runtime-config', '/api/device/attention', '/api/device/plans', '/api/device/monitoring', '/api/device/devices'];
         for (const route of paths) await call(route, 'GET', undefined, paired.deviceToken);

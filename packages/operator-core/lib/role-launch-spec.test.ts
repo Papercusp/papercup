@@ -1702,6 +1702,47 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     }
   });
 
+  // WI-10004896 (owner #1206): a vm-release workspace host installs EVERY first-party
+  // blueprint as a plain, unattested installed-tier copy (offline-content-bundle-install-io,
+  // P-309 content roots). The mode catalog treats an exact copy of a built-in mode as that
+  // built-in, but the launch re-resolved the id installed-tier first and refused the copy
+  // (attestation-missing), so every AUTO launch died at boot with "selected mode identity
+  // su.mode-auto is no longer available". The implied su static layers (WI-10004747) were
+  // the same trap for EVERY launch. Both must launch from the copies.
+  it('launches AUTO when the host content root holds unattested first-party copies', async () => {
+    const { SU_STATIC_LAYERS, builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+    const { getIdentitySource } = await import('./agent-identities/source');
+    const root = mkdtempSync(join(tmpdir(), 'launch-vm-release-content-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      const copies = ['base', 'su.mode-auto', ...SU_STATIC_LAYERS.map((layer) => layer.id)];
+      for (const id of copies) {
+        cpSync(dirname(builtinBlueprintPath(id)), join(root, 'blueprints', id), { recursive: true });
+      }
+      // The precondition that made the host fail: the copy itself is refused by id.
+      const direct = await getIdentitySource('su.mode-auto');
+      expect(direct.ok, 'an unattested installed copy is refused when resolved by id').toBe(false);
+
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      await buildLaunchSpec({ ...su, modes: ['auto'] });
+      const rendered = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string };
+      expect(rendered.baseText).toContain("AUTO mode — the owner's switch");
+
+      const workspaceDir = mkdtempSync(join(root, 'workspace-'));
+      const artifact = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
+        harnessSlug: null, role: 'su', stack: [], impliedStack: 'su-static',
+        state: { schemaVersion: 1 },
+      });
+      expect(artifact.promptText).toBe('SU KERNEL');
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('two launches in the same pot with different stacks are read with DIFFERENT tokens', async () => {
     await buildLaunchSpec({ ...su, fleetRole: 'leader' });
     await composerFromLastRender()({ text: 'G', source: '/g' });

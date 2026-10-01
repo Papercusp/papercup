@@ -8,13 +8,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const identityState = vi.hoisted(() => ({ workspaceId: 'ws-x' as string | null }));
+
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   SU_ROLES: ['operator'],
 }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'su-canceller', ownerLabel: 'c', source: 'static-client', workspaceId: 'ws-x', userId: null }),
+  resolveAgentIdentity: () => ({ ownerId: 'su-canceller', ownerLabel: 'c', source: 'static-client', workspaceId: identityState.workspaceId, userId: null }),
 }));
 vi.mock('../../events/await/store', () => ({
   cancelAwaitDetailed: vi.fn(),
@@ -30,13 +32,14 @@ import { cancelAwaitDetailed, ackDelivery, retireAnnouncement } from '../../even
 import { rebaseLoopAfterAwaitCancellation } from '../../harness/routines/loop-fire';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof cancel.handler>[1];
-const call = async (args: Record<string, unknown>) => {
-  const res = (await cancel.handler(args as never, ctx)) as { data?: any; content?: Array<{ text: string }> };
+const call = async (args: Record<string, unknown>, context = ctx) => {
+  const res = (await cancel.handler(args as never, context)) as { data?: any; content?: Array<{ text: string }> };
   return res.data ?? JSON.parse(res.content![0].text);
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  identityState.workspaceId = 'ws-x';
   vi.mocked(rebaseLoopAfterAwaitCancellation).mockResolvedValue(0);
 });
 
@@ -93,6 +96,32 @@ describe('events:cancel dual-path result', () => {
       eventKey: 'work-item:claimable',
     });
     expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, loop_recheck_scheduled: 1 });
+  });
+
+  it('uses the concrete handler workspace when the resolved identity has none', async () => {
+    identityState.workspaceId = null;
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
+    vi.mocked(rebaseLoopAfterAwaitCancellation).mockResolvedValue(1);
+
+    const out = await call({ await_id: 7 }, { workspaceId: 'ws-context' } as unknown as Parameters<typeof cancel.handler>[1]);
+
+    expect(rebaseLoopAfterAwaitCancellation).toHaveBeenCalledWith({
+      workspaceId: 'ws-context',
+      targetOwnerId: 'su-canceller',
+      eventKey: 'work-item:claimable',
+    });
+    expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, loop_recheck_scheduled: 1 });
+  });
+
+  it('warns and skips the recheck when no concrete workspace is available', async () => {
+    identityState.workspaceId = null;
+    vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
+
+    const out = await call({ await_id: 7 }, {} as Parameters<typeof cancel.handler>[1]);
+
+    expect(rebaseLoopAfterAwaitCancellation).not.toHaveBeenCalled();
+    expect(out.results[0]).toMatchObject({ ok: true, cancelled: true });
+    expect(out.results[0].warning).toMatch(/no concrete workspace ID is available/);
   });
 
   it('cancel-only miss → ok:false + the not_found reason', async () => {

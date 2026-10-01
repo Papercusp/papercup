@@ -189,14 +189,28 @@ export async function renderStackTransitionContextResult(
     // arbitrary installed/local identity documents through the canonical source
     // catalog so the live channel is not limited to SU's built-in mode/posture set.
     const resolvedLayers = new Map<string, StackDocument>();
-    const [{ getIdentitySource }, path, fs] = await Promise.all([
+    const [{ getIdentitySource, getSelectedModeCatalog, readSelectedModeDocument }, path, fs] = await Promise.all([
       import('./agent-identities/source'),
       import('node:path'),
       import('node:fs/promises'),
     ]);
+    // WI-10004896: a catalog mode is read from the source the catalog SELECTED, exactly as
+    // the launch does. Re-resolving its id (installed tier first) refused a vm-release
+    // host's unattested first-party copy, so a mid-session mode:set failed there too.
+    const modeCatalog = to.layers.some((layer) => bp.slotSpec(layer.slot)?.layer === 'modes')
+      ? await getSelectedModeCatalog() : null;
     await Promise.all(to.layers.map(async (layer) => {
       const spec = bp.slotSpec(layer.slot);
       if (!spec) return;
+      const modeEntry = modeCatalog?.entries.find((entry) =>
+        entry.sourceId === layer.id && entry.slot === layer.slot);
+      if (modeEntry) {
+        const document = await readSelectedModeDocument(modeEntry);
+        resolvedLayers.set(`${layer.slot}:${layer.id}`, {
+          id: layer.id, layer: spec.layer, slot: layer.slot, ...document,
+        });
+        return;
+      }
       const identity = await getIdentitySource(layer.id, { ...(opts.repoDir ? { repoDir: opts.repoDir } : {}) });
       if (!identity.ok || !identity.sourcePath ||
           !identity.identity.slots.some((entry) => entry.slot === layer.slot)) {

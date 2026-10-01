@@ -33,12 +33,12 @@ export interface StagingFirstBlockerProblem {
   detail: string;
 }
 
-// `main` is overloaded: it can mean the release branch, or a browser build
-// artifact (`main bundle`, `main chunk`, ...). Only the former belongs to the
-// staging-first release guard. Keep this lexical fence close to the token so a
-// later gate phrase in the same sentence cannot turn build prose into a wait.
+// `main` can name a browser artifact, and `deployment` can name metadata that
+// source work inventories. Neither means waiting for released code. Fence those
+// nouns at the token; an actual main/deployed-host prerequisite elsewhere in the
+// same text must still be recognized.
 const DEPLOYED_ENV_RE =
-  /(?:\bmain\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
+  /(?:\bmain\b(?!(?:\s+|-)\b(?:bundle|chunk|entry|thread)\b)|:3070\b|\bgreen[- ]checkpoint\b|\b(?:deploy(?:ed|ing)?|deployment(?!(?:\s+|-)\b(?:ownership|configuration|topology|source)\b))\b)/i;
 const STRONG_GATE_RE =
   /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b.{0,40}\b(?:on|until|before|by)\b|\bprerequisite\b|\bonly\s+after\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
 // A bare `until` is ordinary ordering prose. It is a strong gate only when

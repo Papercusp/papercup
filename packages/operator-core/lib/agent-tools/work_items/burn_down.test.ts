@@ -1033,7 +1033,10 @@ describe('work_items:burn_down', () => {
     expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({
       fleetMetrics: {
         ok: true,
-        snapshot: { quality: { exactness: { status: 'truncated' } } },
+        snapshot: {
+          quality: { exactness: { status: 'truncated' } },
+          intakeStages: data.fleetMetrics.snapshot.intakeStages,
+        },
       },
     });
   });

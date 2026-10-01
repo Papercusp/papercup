@@ -532,6 +532,28 @@ describe("buildInboxBulkReviewGroups", () => {
 });
 
 describe("<InboxBulkReport>", () => {
+  it('separates unresolved intake from applied retention without counting unrelated inbox rows', () => {
+    const intake = (itemId: string, over: Partial<BulkRunItem>) => runItem({
+      itemId, kind: 'improvement', ref: { kind: 'improvement', issueId: itemId }, ...over,
+    });
+    const items = [
+      intake('pending-intake', { outcome: 'pending', actionId: null }),
+      intake('failed-intake', { outcome: 'failed', actionId: null }),
+      intake('unapplied-intake', { outcome: 'recommended', actionId: 'apply-intake' }),
+      intake('retained-intake', { outcome: 'auto_resolved', intakeDecision: {
+        disposition: 'retain-evidence', reason: 'Preserve the observation', decidedBy: 'reviewer', owner: 'agent',
+        targetRef: null, missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
+        workKind: null, acceptance: null, sourceRevision: 'src-v1:fixture',
+      } }),
+      intake('rejected-intake', { outcome: 'dismissed' }),
+      runItem({ itemId: 'unrelated-message', outcome: 'pending', actionId: null }),
+    ];
+    render(<InboxBulkReport presentation="settled" run={{ ...run, phase: 'complete', totalItems: items.length }} runItems={items} onClose={vi.fn()} />);
+    expect(screen.getByText(/3 intake still open · 2 intake handled · 1 retained-evidence decisions/)).toBeTruthy();
+    expect(screen.getByText(/not the retained observation ledger or delivered work/)).toBeTruthy();
+    expect(screen.getByTestId('inbox-bulk-report-footer').textContent).toContain('processing an observation does not establish');
+  });
+
   it('keeps failed and unreached intake explicit in a settled report and preserves decision evidence', () => {
     const items = [
       runItem({ itemId: 'triage-failed', outcome: 'failed', actionId: null, error: 'Missing source evidence' }),

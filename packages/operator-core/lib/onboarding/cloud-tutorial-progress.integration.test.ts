@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 import { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRoutes } from '../endpoint-route/routes/hosted-tutorial-progress';
+import { tenantContext } from '../endpoint-route/hosted-browser-context';
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
 import { readTutorialProgress, updateTutorialProgress, TutorialProgressConflict, type TutorialProgressUpdate } from './cloud-tutorial-progress';
 
@@ -43,7 +44,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
   }
   function withScope<T>(selected: typeof scope, fn: (tx: Sql) => Promise<T>) {
     const p = principal({ userId: selected.userId, activeOrganizationId: selected.tenantId, selectedWorkspaceId: selected.workspaceId });
-    return runTenant({ principal: p, selectedWorkspace: { id: selected.workspaceId, organizationId: selected.tenantId } }, fn);
+    return runTenant(tenantContext(p), fn);
   }
   function context(p: HostedPrincipal | undefined = principal()): RouteContext {
     return { principal: p, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
@@ -109,7 +110,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     expect((await post(request({ ...change(), scope: { ...scope, tenantId: tenantB } }), context())).status).toBe(400);
     expect((await post(request({ ...change(), completed: ['task'] }), context())).status).toBe(400);
     expect((await post(request(change()), context(principal({ permissions: [] })))).status).toBe(403);
-    const signedOut = { ...context(), principal: undefined } as RouteContext;
+    const signedOut = { ...context(), principal: undefined } as unknown as RouteContext;
     expect((await post(request(change()), signedOut)).status).toBe(401);
   });
   it('returns current state on stale-tab writes instead of replaying a product action', async () => {

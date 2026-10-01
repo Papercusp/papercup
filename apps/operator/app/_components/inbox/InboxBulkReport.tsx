@@ -1174,6 +1174,17 @@ export default function InboxBulkReport({
   );
 
   const counts = deriveRunCounts(runItems, run);
+  // The persisted improvement discriminant includes both candidate work and
+  // observation evidence. It cannot establish an observation-only population.
+  const intakeItems = runItems.filter(
+    (item) => item.kind === "improvement" && item.ref.kind === "improvement",
+  );
+  const intakeOpen = intakeItems.filter(
+    (item) => item.outcome !== "auto_resolved" && item.outcome !== "dismissed",
+  ).length;
+  const retainedEvidence = intakeItems.filter(
+    (item) => item.outcome === "auto_resolved" && item.intakeDecision?.disposition === "retain-evidence",
+  ).length;
   const partition = useMemo(() => partitionReviewRows(groups), [groups]);
   const runAgeMs = useMemo(() => {
     const settledAt = run.finishedAt ?? run.startedAt ?? run.createdAt;
@@ -1219,10 +1230,14 @@ export default function InboxBulkReport({
             routed · {counts.investigate} investigate
             <br />
             {counts.failed} failed triage · {counts.pending} not reached
+            {intakeItems.length > 0 ? (
+              <><br />{intakeOpen} intake still open · {intakeItems.length - intakeOpen} intake handled · {retainedEvidence} retained-evidence decisions</>
+            ) : null}
             <details><summary>Count scope and definitions</summary>
               Run {run.runId} · {run.harnessSlug ?? 'cross-harness inbox snapshot'} · frozen membership, item rows.
               Writer: deriveRunCounts over persisted attention bulk-run items. Auto-resolved counts actions on intake or inbox rows; it does not count delivered fixes.
               Intake decisions, observation consumption, pair comparisons, duplicate closures and accepted-work completions remain separate measures.
+              Intake counts include candidate and observation inputs in this run; still open includes failed, unreached and unapplied rows. Retained-evidence decisions count successfully applied decisions, not the retained observation ledger or delivered work.
             </details>
           </span>
           {notice ? (

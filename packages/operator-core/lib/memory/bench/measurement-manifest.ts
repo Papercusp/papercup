@@ -370,11 +370,29 @@ export function writeMeasurementCell(prepared: PreparedMeasurement, report: unkn
 }
 
 /** Failure is retained under this attempt, never converted to a model loss. */
+/** Keep non-enumerable Error.cause/code evidence, with bounded depth and cycles.
+ * The SQL bulk-operation serializer cannot be imported into this PG-free CLI. */
+function measurementFailure(error: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (depth >= 8) return '[cause chain truncated]';
+  if (typeof error === 'string') return error.slice(0, 8000);
+  if (typeof error === 'bigint') return String(error);
+  if (error === null || typeof error !== 'object') return error;
+  if (seen.has(error)) return '[circular cause]';
+  seen.add(error);
+  if (Array.isArray(error)) return error.slice(0, 256).map((value) => measurementFailure(value, depth + 1, seen));
+  const source = error as Record<string, unknown>;
+  const keys = error instanceof Error
+    ? ['name', 'message', 'stack', 'code', 'status', 'errno', 'syscall', 'address', 'port', 'socket', 'request', 'cause']
+    : Object.keys(error).slice(0, 32);
+  return Object.fromEntries(keys.filter((key) => source[key] !== undefined)
+    .map((key) => [key, measurementFailure(source[key], depth + 1, seen)]));
+}
+
 export function failMeasurementCell(prepared: PreparedMeasurement, error: unknown): void {
   if (!fs.existsSync(prepared.claimPath)) return;
   fs.writeFileSync(`${prepared.rawOutput}.failure.json`, JSON.stringify({ formatVersion: 1,
     manifestSha256: prepared.manifestSha256, cellId: prepared.cell.id, ownerId: prepared.manifest.ownerId,
-    failedAt: new Date().toISOString(), error: error instanceof Error ? { message: error.message, stack: error.stack } : String(error) }, null, 2),
+    failedAt: new Date().toISOString(), error: measurementFailure(error) }, null, 2),
   { flag: 'wx', mode: 0o600 });
   fs.unlinkSync(prepared.claimPath);
 }

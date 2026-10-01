@@ -214,7 +214,7 @@ afterEach(() => cleanup());
 
 describe("<ObservationsPanel />", () => {
   it('labels observation stock as retained evidence rather than pending triage or delivery', () => {
-    render(<ObservationsPanel />);
+    renderPanel();
     expect(screen.getByText(/Retained evidence · pending triage is tracked in/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'bulk report' }).getAttribute('href')).toBe('/inbox');
   });

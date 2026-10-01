@@ -1,13 +1,44 @@
 import { describe, expect, it } from 'vitest';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createEmbedSidecarServer } from '../embed-sidecar-server';
 import { collectSidecarPerformance, summarizePerformanceReceipts, performanceSchedule, isolatedEvaluationBuilders, type PerformanceInput, type PerformanceReceipt } from './sidecar-performance';
 import { sidecarEmbedBatch } from '@papercusp/memory';
 import { measurementManifestFixture } from './fixtures/measurement-manifest';
+import { failMeasurementCell, type PreparedMeasurement } from './measurement-manifest';
 
 const input: PerformanceInput = { formatVersion: 1, seed: 'synthetic', blocks: 5, warmSamples: 3, rounds: 2,
   batches: [1, 2], concurrency: [1, 2], cachedSamples: 2, serverConcurrency: 2,
   requests: { query: [{ id: 'q', corpus: 'memory', text: 'query' }], document: [{ id: 'd', corpus: 'prose', text: 'document' }] } };
 describe('performance collector through real HTTP/client/sidecar queue', () => {
+  it('retains the actual socket failure cause and frozen request identity in its failure receipt', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'performance-socket-failure-'));
+    const server = http.createServer((req) => req.socket.destroy());
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const manifest = measurementManifestFixture(dir);
+    const prepared = { manifest, manifestSha256: 'a'.repeat(64), arm: manifest.arms[0], cell: manifest.cells[0],
+      rawOutput: path.join(dir, 'out.json'), claimPath: path.join(dir, 'out.running') } as PreparedMeasurement;
+    fs.writeFileSync(prepared.claimPath, 'owned');
+    try {
+      let failure: unknown;
+      try { await collectSidecarPerformance(`http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`, prepared.arm, input); }
+      catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(Error);
+      failMeasurementCell(prepared, failure);
+      const receipt = JSON.parse(fs.readFileSync(`${prepared.rawOutput}.failure.json`, 'utf8'));
+      expect(receipt.error.cause.cause.code).toBe('UND_ERR_SOCKET');
+      expect(receipt.error.request).toMatchObject({ phase: 'cold', kind: 'query', sequence: 0,
+        model: prepared.arm.model, requestIds: ['q'], batchSize: 1, concurrency: 1 });
+      expect(fs.existsSync(prepared.claimPath)).toBe(false);
+      expect(fs.existsSync(prepared.rawOutput)).toBe(false);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('admits all three model arms through the exact isolated CLI builder-map assembler', async () => {
     const arms = measurementManifestFixture('/private').arms;
     const builder = (dims: number) => async () => async () => [1, ...Array(dims - 1).fill(0)];

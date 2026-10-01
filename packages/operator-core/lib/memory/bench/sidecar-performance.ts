@@ -93,7 +93,10 @@ export async function collectSidecarPerformance(url: string, arm: MeasurementArm
     const rows = Array.from({ length: batchSize }, (_, i) => input.requests[kind][(offset + i) % input.requests[kind].length]);
     const startedAt = new Date().toISOString(), start = performance.now(), seq = sequence++;
     const response = await sidecarEmbedBatch(url, { model: arm.model, kind, texts: rows.map((r) => r.text),
-      bypassCache: phase !== 'cached' && phase !== 'cache-prime', timeoutMs: 180000 });
+      bypassCache: phase !== 'cached' && phase !== 'cache-prime', timeoutMs: 180000 }).catch((cause: unknown) => {
+      throw Object.assign(new Error(`performance request failed: ${phase} ${kind} ${batchSize}x${concurrency} sequence=${seq}`, { cause }),
+        { request: { phase, kind, sequence: seq, model: arm.model, requestIds: rows.map((r) => r.id), batchSize, concurrency, startedAt } });
+    });
     // HTTP/client latency stops on the full response, before collector hashing.
     const latencyMs = performance.now() - start;
     validateResponse(arm, response, batchSize, phase === 'cached');

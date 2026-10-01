@@ -1524,6 +1524,22 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       // needs-human push gate uses the same value, but callers also rely on
       // this response field for routine and terminal status updates.
       const importance = itemImportance(current, it.itemId);
+      // A repeated reflection can ask for the status and note the item already has.
+      // Treat byte-identical content as a successful no-op so an idempotent call does
+      // not bump `updated`, the plan version, or the BAR approval subject revision.
+      if (newBody === current) {
+        return {
+          newBody: null,
+          value: {
+            ok: true,
+            oldStatus,
+            newStatus: it.status,
+            itemId: it.itemId,
+            importance,
+            drainedPlan: false,
+          },
+        };
+      }
       let finalBody = bumpUpdatedDate(newBody);
       // Preserve accountability BEFORE releasing the implementation claim. The
       // same parser-owned transition serves direct writes and the backstop;
@@ -1718,13 +1734,15 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   }
   markPhase('autoConvert');
 
-  await emitPlanEventForCaller(ctx, {
-    planSlug: it.slug,
-    event: 'item_status_changed',
-    before: result.value.oldStatus,
-    after: it.status,
-    detail: it.itemId,
-  });
+  if (result.value.oldStatus !== it.status) {
+    await emitPlanEventForCaller(ctx, {
+      planSlug: it.slug,
+      event: 'item_status_changed',
+      before: result.value.oldStatus,
+      after: it.status,
+      detail: it.itemId,
+    });
+  }
 
   // See `shouldFirePlanItemDone` for the edge gate this call depends on.
   // P-105: plan-item:done:<slug>:<id> — wake anyone awaiting this item (a peer's lane,
