@@ -315,8 +315,11 @@ describe("lifecycle-report.sh — nested-CLI guard end-to-end (WI-10003957)", ()
 // Measured: harness_shared.owner_directives held 12 'say ok' rows (the advertised-tools
 // probe prompt) across 4 sessions — the provenance hook captured a nested CLI's `-p`
 // prompt as an OWNER directive of the su. stop-turn-journal filed its turns likewise.
-const PROVENANCE_HOOK = join(HOOK_DIR, "userpromptsubmit-provenance.sh");
-const JOURNAL_HOOK = join(HOOK_DIR, "stop-turn-journal.sh");
+// Overridable so a falsifiability probe can run these cases against an OUT-OF-TREE copy of
+// hooks/cc with the guard stripped (they must then fail) — never mutate the shared tree.
+const GUARDED_DIR = process.env.PC_NESTED_CLI_HOOK_DIR_UNDER_TEST ?? HOOK_DIR;
+const PROVENANCE_HOOK = join(GUARDED_DIR, "userpromptsubmit-provenance.sh");
+const JOURNAL_HOOK = join(GUARDED_DIR, "stop-turn-journal.sh");
 
 /** Every hook that must skip a nested CLI. A new owner-mutating hook joins this list. */
 const NESTED_GUARDED_HOOKS = [
