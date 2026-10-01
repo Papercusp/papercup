@@ -82,6 +82,7 @@ import {
   executedMapRecordingEnabled,
   formatExecutedMapLine,
   gitChangedBetween,
+  gitInertGlobalChange,
   loadExecutedSourceMap,
   loadPassDurations,
   loadReuseProofs,
@@ -5577,6 +5578,8 @@ async function armTestPassReuse(taskList) {
     return off(`pg-unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`);
   }
   const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
+  // gate-test-reuse-yield-2026-10-01 P-002: a scripts-only root package.json change is not global.
+  const inertGlobalChange = gitInertGlobalChange({ repoRoot: ROOT });
   const maxAgeMs = testReuseMaxAgeMs();
   const auditRate = testReuseAuditRate();
   const nowMs = Date.now();
@@ -5644,6 +5647,7 @@ async function armTestPassReuse(taskList) {
         nowMs,
         maxAgeMs,
         auditRate,
+        inertGlobalChange,
       });
       // P-012: the files reuse WOULD have skipped but that run this time; a red among them is a
       // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.

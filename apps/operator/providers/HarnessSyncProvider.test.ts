@@ -132,6 +132,21 @@ describe('assertIpcCarriesFetch (D-047)', () => {
     expect(pending[0].completedAtMs).toBeNull();
   });
 
+  it('translates native snapshot time onto the page clock without folding it into invoke duration', async () => {
+    invoke.mockResolvedValue({ client: 'connected',
+      snapshotStartedAtUnixMs: performance.timeOrigin + 250, snapshotDurationMs: 0.75 });
+    await expect(assertIpcCarriesFetch()).resolves.toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0]).toMatchObject({
+      nativeStartedAtMs: 250, nativeDurationMs: 0.75, client: 'connected',
+    });
+  });
+
+  it('keeps native timing absent for an older shell response', async () => {
+    invoke.mockResolvedValue({ client: 'connected' });
+    await expect(assertIpcCarriesFetch()).resolves.toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].nativeDurationMs).toBeUndefined();
+  });
+
   it('is true ONLY for a connected IPC client', async () => {
     invoke.mockResolvedValue({ client: 'connected' });
     await expect(assertIpcCarriesFetch()).resolves.toBe(true);

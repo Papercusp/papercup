@@ -61,6 +61,8 @@ import PlansCleanupStrip, {
 } from "./PlansCleanupStrip";
 import {
   derivePlanCleanupCounts,
+  parsePlanCleanupCoverage,
+  planCleanupCoverageNotice,
   snapshotPlanSlugs,
   usePlanCleanupOps,
   usePlanCleanupRun,
@@ -202,6 +204,44 @@ describe("usePlanCleanupRun", () => {
       args: {},
       enabled: false,
     });
+  });
+});
+
+describe("plan clean-up coverage (P-005, WI-10004732)", () => {
+  it("parses the start response's coverage triple and rejects malformed values", () => {
+    expect(parsePlanCleanupCoverage({ requested: 750, accepted: 200, truncated: 550 })).toEqual({
+      requested: 750,
+      accepted: 200,
+      truncated: 550,
+    });
+    expect(parsePlanCleanupCoverage({})).toBeUndefined();
+    expect(parsePlanCleanupCoverage({ requested: 3, accepted: -1, truncated: 0 })).toBeUndefined();
+  });
+
+  it('says "first N of M" only when the run carries fewer plans than shown', () => {
+    expect(planCleanupCoverageNotice({ requested: 750, accepted: 200, truncated: 550 })).toBe(
+      "Scanning the first 200 of 750 shown plans (least recently scanned first) — run Clean-up again to cover the other 550.",
+    );
+    expect(planCleanupCoverageNotice({ requested: 12, accepted: 12, truncated: 0 })).toBeNull();
+    expect(planCleanupCoverageNotice(undefined)).toBeNull();
+  });
+
+  it("start() surfaces the server's coverage on the result", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        runId: "run-capped",
+        launched: false,
+        resolverNeeded: false,
+        requested: 750,
+        accepted: 200,
+        truncated: 550,
+      }),
+    });
+    const { result } = renderHook(() => usePlanCleanupOps());
+    const started = await result.current.start(["p-one"], { scope: "all" });
+    expect(started.coverage).toEqual({ requested: 750, accepted: 200, truncated: 550 });
   });
 });
 

@@ -2453,11 +2453,10 @@ export async function readWorkItemReadinessProjection(opts: {
         terminalStates,
       })}),
       scoped_payload AS MATERIALIZED (
-        -- Detoast the large polymorphic payload once per row and retain only the
-        -- four small subdocuments this projection owns. Re-reading nested paths
-        -- from the full payload throughout classification was the dominant live
-        -- workspace cost (millions of shared-buffer hits). The two hot booleans
-        -- already have generated columns maintained by migration 1110.
+        -- Migration 1294 materializes these four payload subdocuments and the
+        -- implementation-readiness key-presence bit as STORED columns. Payload
+        -- remains canonical for writers, while this full-population census reads
+        -- only the narrow projections instead of detoasting it for every row.
         SELECT wi.feature_id,
                wi.status,
                wi.admission,
@@ -2467,11 +2466,11 @@ export async function readWorkItemReadinessProjection(opts: {
                wi.authority,
                wi.expected_cost_cents,
                wi.origin,
-               payload_parts."agentReview" AS agent_review,
-               payload_parts."implementationReadiness" AS implementation_readiness,
-               (wi.payload ? 'implementationReadiness') AS readiness_enrolled,
-               payload_parts."reopenHistory" AS reopen_history,
-               payload_parts."externalBlockers" AS external_blockers,
+               wi.agent_review_projection AS agent_review,
+               wi.implementation_readiness_projection AS implementation_readiness,
+               wi.implementation_readiness_enrolled AS readiness_enrolled,
+               wi.reopen_history_projection AS reopen_history,
+               wi.external_blockers_projection AS external_blockers,
                (
                  wi.status = ANY(${terminalStates}::text[])
                  OR (wi.terminal_owner IS NOT NULL AND wi.terminal_completion_ref IS NOT NULL)
@@ -2484,12 +2483,6 @@ export async function readWorkItemReadinessProjection(opts: {
                COALESCE(wi.claim_hold, FALSE) AS claim_hold,
                COALESCE(wi.needs_owner_action, FALSE) AS owner_action
           FROM harness_shared.work_items wi
-          LEFT JOIN LATERAL jsonb_to_record(COALESCE(wi.payload, '{}'::jsonb)) AS payload_parts(
-            "agentReview" jsonb,
-            "implementationReadiness" jsonb,
-            "reopenHistory" jsonb,
-            "externalBlockers" jsonb
-          ) ON TRUE
          WHERE wi.workspace_id = ${opts.workspaceId}
            AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
            AND wi.item_kind IN ('bug', 'change', 'task')

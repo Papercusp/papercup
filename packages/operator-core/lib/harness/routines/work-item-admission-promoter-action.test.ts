@@ -3,11 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   register: vi.fn(),
   failOpen: vi.fn(),
-  reap: vi.fn(async () => [] as unknown[]),
+  reap: vi.fn(async (_sql: unknown, _input: { workspaceId: string; reaperRunId: string; nowMs: number }) => [] as unknown[]),
   workflowID: 'durable-promoter-test',
 }));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { get workflowID() { return h.workflowID; } } }));
 vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
+// The real getOrgPg() throws without a live operator DB; the production reaper wiring only
+// needs a handle to pass through to the (mocked) reaper, never one that is queried.
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: () => { throw new Error('unit test: no live operator DB'); } }),
+}));
 vi.mock('../../admission-runs-reaper', async (orig) => {
   const actual = await orig<typeof import('../../admission-runs-reaper')>();
   return { ...actual, reapStrandedAdmissionRuns: h.reap };

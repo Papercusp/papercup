@@ -64,7 +64,7 @@ export async function recordCurrentSessionIdentityActivation(input: {
       (workspace_id, owner_id, actor_id, principal_id, session_id,
        adv_session_id, native_session_id, transition_id, control_generation,
        phase, source, specification_revision, state_revision, stack_refs,
-       failure, recorded_at)
+       failure, recorded_at, specification_layer_refs)
     SELECT ${input.workspaceId}, ${input.ownerId},
            b.control_state #>> '{activation,attribution,actorId}',
            b.control_state #>> '{activation,attribution,principalId}',
@@ -74,7 +74,36 @@ export async function recordCurrentSessionIdentityActivation(input: {
            ${input.revision.specificationRevision}, ${input.revision.stateRevision},
            COALESCE(b.control_state->'stack', '[]'::jsonb),
            ${input.phase === 'failed' ? input.failure?.trim() || 'activation failed' : null},
-           COALESCE(${recordedAt}::timestamptz, now())
+           COALESCE(${recordedAt}::timestamptz, now()),
+           -- WI-10004494 gap 3 (migration 1295): stamp the slotted layer set of the artifact for
+           -- EXACTLY this revision now, while it is reachable. The launch record churns its
+           -- revision on every relaunch and caps identityHistory, so a later re-resolution from
+           -- the record loses it. Order: a stamp already taken for the revision (content hash, so
+           -- owner-independent) -> the launch record (current artifact + identityHistory).
+           -- blueprint_specifications is deliberately not consulted: it held 0 of the 4,354
+           -- September revisions missing from launch records. NULL = no artifact reachable;
+           -- '[]' = artifact known, none slotted.
+           COALESCE(
+             (SELECT p.specification_layer_refs
+                FROM harness_shared.session_identity_activation_events p
+               WHERE p.workspace_id = ${input.workspaceId}
+                 AND p.specification_revision = ${input.revision.specificationRevision}
+                 AND p.specification_layer_refs IS NOT NULL
+               LIMIT 1),
+             (SELECT harness_shared.identity_specification_layer_refs(c.artifact)
+                FROM harness_shared.adv_sessions s
+               CROSS JOIN LATERAL (
+                 SELECT s.launch_spec->'specificationArtifact' AS artifact
+                 UNION ALL
+                 SELECT h->'specificationArtifact'
+                   FROM jsonb_array_elements(
+                          CASE WHEN jsonb_typeof(s.launch_spec->'identityHistory') = 'array'
+                               THEN s.launch_spec->'identityHistory' ELSE '[]'::jsonb END) h
+               ) c
+               WHERE s.id = av.id
+                 AND jsonb_typeof(c.artifact) = 'object'
+                 AND c.artifact->>'specificationRevision' = ${input.revision.specificationRevision}
+               LIMIT 1))
       FROM harness_shared.session_briefs b
       LEFT JOIN LATERAL (
         SELECT a.id, a.session_id

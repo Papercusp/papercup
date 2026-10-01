@@ -144,11 +144,18 @@ async function readIpcClient(): Promise<string | null> {
     // positive IPC proof can dispatch before other startup work fills the cap.
     finish.mark('importReady');
     finish.mark('invokeStarted');
-    let status: { client?: string };
+    let status: { client?: string; snapshotStartedAtUnixMs?: number; snapshotDurationMs?: number };
     try {
-      status = await invoke<{ client?: string }>('endpoint_ipc_status');
+      status = await invoke<typeof status>('endpoint_ipc_status');
     } finally {
       finish.mark('invokeCompleted');
+    }
+    // Rust's monotonic duration separates snapshot work from dispatch/reply
+    // delay. Translate its epoch start onto the existing page clock; older
+    // shells omit these fields, so an absent measurement stays absent.
+    if (typeof status?.snapshotStartedAtUnixMs === 'number' &&
+        typeof status.snapshotDurationMs === 'number') {
+      finish.recordNative(status.snapshotStartedAtUnixMs - performance.timeOrigin, status.snapshotDurationMs);
     }
     client = status?.client ?? null;
     return client;

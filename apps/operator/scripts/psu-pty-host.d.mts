@@ -2397,6 +2397,32 @@ export function clearSettleMs(env?: EnvironmentMap): any;
  */
 export function submitVerifyQuietMs(env?: EnvironmentMap): any;
 /**
+ * Complete the existing carry lifecycle after native delivery and mapping are
+ * proven. Codex assigns its id at startup: use the exact isolated rollout from
+ * native proof, never "latest" (which can still be the critical predecessor).
+ * @param {{ownerId: string, agent?: string, nativeId?: string | null,
+ *   proof?: {persisted?: boolean, nativeRef?: string | null} | null,
+ *   alreadyReported?: boolean, report?: (nativeId: string) => any,
+ *   emit?: typeof fireSessionCompactedEvent, timeoutMs?: number}} options
+ */
+export function announceVerifiedCarryRespawn({ ownerId, agent, nativeId, proof, alreadyReported, report, emit, timeoutMs, }: {
+    ownerId: string;
+    agent?: string;
+    nativeId?: string | null;
+    proof?: {
+        persisted?: boolean;
+        nativeRef?: string | null;
+    } | null;
+    alreadyReported?: boolean;
+    report?: (nativeId: string) => any;
+    emit?: typeof fireSessionCompactedEvent;
+    timeoutMs?: number;
+}): Promise<{
+    announced: boolean;
+    nativeId: string | null;
+    reason: string;
+}>;
+/**
  * Fire the server-side `session:compacted:<owner>` event (event-await-discoverability
  * P-103) after a server-requested compaction COMPLETES, so a peer can
  * `events:await { event: "session:compacted:<owner>" }` instead of polling.
@@ -2566,6 +2592,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
@@ -2602,6 +2629,7 @@ export function hostThroughPty(o: {
     ensureCodexHome?: (() => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
+    emitCompacted?: typeof fireSessionCompactedEvent | undefined;
     onReexec?: ((...args: any[]) => any) | null | undefined;
     hostCodeStalenessFn?: (() => any) | undefined;
     healOperatorPin?: ((env: EnvironmentMap) => Promise<{

@@ -39,6 +39,30 @@ export function auditDraw(file: string, judgedSha: string): number;
  */
 export function isGlobalRunnerInput(rel: any): boolean;
 /**
+ * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
+ * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
+ * install lifecycle script.
+ */
+export function isRunnerAffectingScript(name: any): boolean;
+/**
+ * gate-test-reuse-yield-2026-10-01 P-002: is a change to the ROOT package.json inert for pass
+ * proofs? True only when both texts parse to JSON objects, they are equal once `scripts` is
+ * removed (key order ignored), and no runner-affecting script (isRunnerAffectingScript) was
+ * added, removed or changed. Anything else is false, including a parse failure or a non-object
+ * `scripts` (fail closed).
+ *
+ * Why the remaining `scripts` keys are safe (D-002: narrow only where the proof can see the
+ * input): a test that READS package.json records it in readPaths, and selectReusablePasses still
+ * invalidates that proof directly; a test that spawns npm is opaque ('child-process') and is never
+ * reused; and no workspace task script calls a root script. Every other field (workspaces,
+ * dependencies, overrides, type, imports, engines) changes module resolution, so it stays global.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {boolean}
+ */
+export function rootPackageJsonChangeIsInert(beforeText: string, afterText: string): boolean;
+/**
  * @typedef {object} ReuseProof
  * @property {string}   recordedSha
  * @property {number}   recordedAtMs
@@ -61,12 +85,19 @@ export function isGlobalRunnerInput(rel: any): boolean;
  * @param {number}                        o.maxAgeMs
  * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
  *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
+ * @param {((rel: string, fromSha: string, toSha: string) => boolean) | null} [o.inertGlobalChange]
+ *        gate-test-reuse-yield-2026-10-01 P-002: asked for each GLOBAL drift path; returning
+ *        exactly `true` says that change touches nothing a proof cannot see, so it is not global
+ *        and does not reach proofs through the ancestor-config rule (a proof that read the path
+ *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
+ *        every global path stays global. Implemented over git by gitInertGlobalChange
+ *        (scripts/lib/executed-source-map.mjs).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
  *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, inertGlobalChange, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -76,6 +107,7 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     nowMs: number;
     maxAgeMs: number;
     auditRate?: number | undefined;
+    inertGlobalChange?: ((rel: string, fromSha: string, toSha: string) => boolean) | null | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;

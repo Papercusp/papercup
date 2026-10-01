@@ -13,7 +13,9 @@
  *   fills an identity slot, and is reported slot-qualified (`domain:papercusp-engineer`). Layers
  *   are read only from the artifact of the SAME specification revision the span applied: the
  *   launch record's current artifact, or — once the record has moved on — the matching entry of
- *   its `identityHistory` (WI-10004494). With neither, the row keeps its profile but no layers,
+ *   its `identityHistory` (WI-10004494). The event's own `specification_layer_refs` stamp
+ *   (migration 1295, taken at record time) wins over that lookup, because the record churns its
+ *   revision per relaunch and evicts history past 12. With none, the row keeps its profile but no layers,
  *   which prices it as `inferred-profile` (never bill-grade) rather than guessing from a newer
  *   artifact.
  * - `tool_invocations_identity_attribution`: tool calls, reported as counts (priced 0, D-009).
@@ -79,20 +81,11 @@ export async function readShadowUsageAggregates(
     SELECT (s.event_id IS NOT NULL) AS attributed,
            av.launch_spec->>'agent' AS agent,
            av.launch_spec->>'profile' AS profile,
-           CASE
-             WHEN art.artifact IS NOT NULL THEN (
-               SELECT COALESCE(jsonb_agg(DISTINCT (slot->>'slot') || ':' || (i->>'ref')), '[]'::jsonb)
-                 FROM jsonb_array_elements(
-                   CASE WHEN jsonb_typeof(art.artifact->'inputs') = 'array'
-                        THEN art.artifact->'inputs' ELSE '[]'::jsonb END) i
-                 CROSS JOIN LATERAL jsonb_array_elements(
-                   CASE WHEN jsonb_typeof(i->'document'->'slots') = 'array'
-                        THEN i->'document'->'slots' ELSE '[]'::jsonb END) slot
-                WHERE i->>'kind' = 'blueprint-layer'
-                  AND i->>'ref' IS NOT NULL
-                  AND slot->>'slot' IS NOT NULL)
-             ELSE '[]'::jsonb
-           END AS spec_layers,
+           -- Stamp first (migration 1295, taken at record time while the artifact was reachable);
+           -- an unstamped event falls back to re-resolving the artifact from the launch record.
+           COALESCE(e.specification_layer_refs,
+                    harness_shared.identity_specification_layer_refs(art.artifact),
+                    '[]'::jsonb) AS spec_layers,
            COALESCE(s.stack_refs, '[]'::jsonb) AS axis_layers,
            s.cost_source,
            s.cost_usd::text AS cost_usd,
@@ -104,8 +97,10 @@ export async function readShadowUsageAggregates(
       -- that has since moved on keeps its earlier revisions in identityHistory (written beside the
       -- revision it describes, identity-management.ts historyWithCurrent); without this lookup
       -- every such span priced as inferred-profile even though its layers are on record.
+      -- Skipped for a stamped event, so a stamped month never detoasts the launch record.
       LEFT JOIN LATERAL (
         SELECT CASE
+                 WHEN e.specification_layer_refs IS NOT NULL THEN NULL::jsonb
                  WHEN av.launch_spec->>'specificationRevision' = s.revision
                    THEN av.launch_spec->'specificationArtifact'
                  ELSE (

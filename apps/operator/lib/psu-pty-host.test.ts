@@ -76,6 +76,7 @@ const {
   resetWritesForAgent,
   submitVerifyQuietMs,
   fireSessionCompactedEvent,
+  announceVerifiedCarryRespawn,
   SESSION_COMPACTED_EMIT_ENTRY,
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
@@ -1477,6 +1478,76 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
 
   it('the default emit-CLI entry is a sibling .ts of the host script', () => {
     expect(SESSION_COMPACTED_EMIT_ENTRY).toMatch(/scripts[/\\]emit-session-compacted\.ts$/);
+  });
+});
+
+describe('verified carry completion (WI-10004791)', () => {
+  const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
+  const proof = { persisted: true, nativeRef: `/isolated/sessions/2026/10/01/rollout-2026-10-01T10-00-00-${nativeId}.jsonl` };
+
+  it('discovers the late Codex id and awaits reanchor before waking peers', async () => {
+    const order: string[] = [];
+    let confirm!: (value: boolean) => void;
+    const report = vi.fn(() => new Promise<boolean>((resolve) => { confirm = resolve; }));
+    const emit = vi.fn(() => { order.push('emit'); return null; });
+    const done = announceVerifiedCarryRespawn({ ownerId: 'su-carry', agent: 'codex', proof, report, emit });
+    await Promise.resolve();
+    expect(report).toHaveBeenCalledWith(nativeId);
+    expect(emit).not.toHaveBeenCalled();
+    order.push('reanchor');
+    confirm(true);
+    expect(await done).toMatchObject({ announced: true, nativeId });
+    expect(order).toEqual(['reanchor', 'emit']);
+    expect(emit).toHaveBeenCalledWith('su-carry', 'carry-respawn', { nativeId });
+  });
+
+  it.each([false, undefined])('does not announce an unconfirmed mapping (%s)', async (confirmed) => {
+    const emit = vi.fn();
+    expect(await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex', proof, report: async () => confirmed, emit,
+    })).toMatchObject({ announced: false, reason: 'successor-reanchor-unconfirmed' });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not signal or reanchor a spawned-but-unverified successor', async () => {
+    const report = vi.fn();
+    const emit = vi.fn();
+    expect(await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex', nativeId, proof: { persisted: false }, report, emit,
+    })).toMatchObject({ announced: false, reason: 'native-turn-unverified' });
+    expect(report).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('never substitutes a guessed id from a malformed proof path', async () => {
+    const report = vi.fn();
+    const emit = vi.fn();
+    expect(await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex',
+      proof: { persisted: true, nativeRef: '/isolated/old-thread.jsonl' }, report, emit,
+    })).toMatchObject({ announced: false, reason: 'successor-native-id-missing' });
+    expect(report).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('reuses a confirmed mapping for backends with minted native ids', async () => {
+    const report = vi.fn();
+    const emit = vi.fn();
+    expect(await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'claude', nativeId, proof,
+      alreadyReported: true, report, emit,
+    })).toMatchObject({ announced: true, nativeId });
+    expect(report).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
+  it('bounds an unavailable reanchor without falsely completing the carry', async () => {
+    const emit = vi.fn();
+    expect(await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex', proof,
+      report: () => new Promise(() => {}), emit, timeoutMs: 5,
+    })).toMatchObject({ announced: false, reason: 'successor-reanchor-unconfirmed' });
+    expect(emit).not.toHaveBeenCalled();
   });
 });
 

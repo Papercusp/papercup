@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { isGateEnrolled } from "../check-vitest-config-enrollment.mjs";
+import { rootPackageJsonChangeIsInert } from "./test-pass-reuse.mjs";
 
 /** Set to `0`/`false`/`off` to leave the static selection un-pruned (default: pruning ON). */
 export const EXECUTED_MAP_ENV = "AFFECTED_EXECUTED_MAP";
@@ -310,6 +311,37 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
 
 function defaultExec(file, args, opts) {
   return execFileSync(file, args, opts);
+}
+
+/**
+ * Build selectReusablePasses' `inertGlobalChange` seam over a real git checkout
+ * (gate-test-reuse-yield-2026-10-01 P-002). Only the ROOT package.json can be inert: its text at
+ * both shas is read with `git show` and judged by rootPackageJsonChangeIsInert. Every other path,
+ * and any read that fails (a sha missing from this clone, a file absent on one side), answers
+ * false, so the change stays global. Results are cached per (path, from, to).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string }} o
+ * @returns {(rel: string, fromSha: string, toSha: string) => boolean}
+ */
+export function gitInertGlobalChange({ repoRoot, exec = defaultExec }) {
+  /** @type {Map<string, boolean>} */
+  const cache = new Map();
+  const opts = { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 };
+  return (rel, fromSha, toSha) => {
+    if (rel !== "package.json") return false;
+    const key = `${rel}\0${fromSha}\0${toSha}`;
+    if (cache.has(key)) return /** @type {boolean} */ (cache.get(key));
+    let inert = false;
+    try {
+      const before = String(exec("git", ["show", `${fromSha}:${rel}`], opts));
+      const after = String(exec("git", ["show", `${toSha}:${rel}`], opts));
+      inert = rootPackageJsonChangeIsInert(before, after);
+    } catch {
+      inert = false;
+    }
+    cache.set(key, inert);
+    return inert;
+  };
 }
 
 /**

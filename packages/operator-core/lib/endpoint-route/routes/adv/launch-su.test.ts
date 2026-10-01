@@ -331,6 +331,26 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(headless.match(/--headless/g)).toHaveLength(1);
   });
 
+  // WI-10004787: launched_by is the ONLY way a server-side launcher (the
+  // goal-drain-fleet watchdog) can hand bootstrap-su the owner whose goal the new
+  // session inherits. Dropping it again strands every relaunched drain worker
+  // with goal_id NULL on all of its tool calls.
+  it('forwards launched_by as exactly one --launched-by token, and omits it when unset', async () => {
+    await launch({ headless: true, launched_by: 'su-holder-1' });
+    const withLauncher = headlessOneliner();
+    expect(withLauncher.match(/--launched-by=su-holder-1/g)).toHaveLength(1);
+    vi.clearAllMocks();
+    await launch({ headless: true });
+    expect(headlessOneliner()).not.toContain('--launched-by');
+  });
+
+  it.each([['su holder; rm -rf /'], [42]])('rejects a launched_by that is not an owner id (%j)', async (bad) => {
+    const { status, json } = await launch({ headless: true, launched_by: bad });
+    expect(status).toBe(400);
+    expect(String(json.error)).toContain('launched_by');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('a headless spawn FAILURE is reported as an error — never a silent headed fallback', async () => {
     spawnHeadlessMock.mockResolvedValueOnce({
       status: 'error',

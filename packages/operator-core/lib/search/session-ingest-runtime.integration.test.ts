@@ -21,7 +21,7 @@ describe('current-build ingestion on a private background runtime', () => {
     // database, adapters, filesystem, flag read, or phase instrumentation.
     const probe = String.raw`
       import assert from 'node:assert/strict';
-      import { readFileSync } from 'node:fs';
+      import fs, { readFileSync } from 'node:fs';
       import fsPromises from 'node:fs/promises';
       import { mkdir, writeFile } from 'node:fs/promises';
       import { syncBuiltinESMExports } from 'node:module';
@@ -31,7 +31,7 @@ describe('current-build ingestion on a private background runtime', () => {
       import { execFileSync } from 'node:child_process';
       import { join } from 'node:path';
       import { getOrgPg } from '@papercusp/db-org';
-      import { FILE_ADAPTERS, jsonlAtDepth, runSessionIngestOnce } from './packages/operator-core/lib/search/session-ingest.ts';
+      import { FILE_ADAPTERS, codexTranscriptMeta, codexAdvSessionMetadata, jsonlAtDepth, ingestFileNow, runSessionIngestOnce } from './packages/operator-core/lib/search/session-ingest.ts';
 
       const e = process.env;
       assert.equal(e.PAPERCUSP_HOME, join(e.HOME, '.papercusp'));
@@ -107,6 +107,32 @@ describe('current-build ingestion on a private background runtime', () => {
       }
       const managedRoot = join(e.PAPERCUSP_HOME, 'su-codex-homes');
       const originals = { readdir: fsPromises.readdir, stat: fsPromises.stat };
+      const originalRead = fs.readFileSync;
+      let metadataReads = null;
+      function observeMetadata(enabled) {
+        metadataReads = enabled ? {
+          diagnostics: { calls: 0, completed: 0, errors: 0, bytes: 0, wallMs: 0 },
+          config: { calls: 0, completed: 0, errors: 0, bytes: 0, wallMs: 0 },
+        } : null;
+        fs.readFileSync = enabled ? function(path, ...args) {
+          const category = typeof path === 'string' && path.startsWith(managedRoot + '/')
+            ? path.endsWith('/papercusp-diagnostics.json') ? 'diagnostics'
+              : path.endsWith('/config.toml') ? 'config' : null
+            : null;
+          if (!category) return originalRead(path, ...args);
+          const bucket = metadataReads[category];
+          bucket.calls++;
+          const began = performance.now();
+          try {
+            const value = originalRead(path, ...args);
+            bucket.completed++;
+            bucket.bytes += Buffer.byteLength(value);
+            return value;
+          } catch (err) { bucket.errors++; throw err; }
+          finally { bucket.wallMs += performance.now() - began; }
+        } : originalRead;
+        syncBuiltinESMExports();
+      }
       let fsObservation = null;
       function observeDiscovery(enabled) {
         fsObservation = enabled ? { pending: 0, maxPending: 0,
@@ -136,6 +162,9 @@ describe('current-build ingestion on a private background runtime', () => {
       }
       async function measuredSweep(observe, profileCpu) {
         observeDiscovery(observe);
+        // Fixed across useful/unchanged and profiler off/on controls. Reads
+        // still reach the real filesystem; no cached or synthetic return value.
+        observeMetadata(true);
         let profilerActive = false;
         const startBegan = performance.now();
         if (profileCpu) {
@@ -171,13 +200,23 @@ describe('current-build ingestion on a private background runtime', () => {
             assert.ok(observation.readdir.awaitMs + observation.stat.awaitMs <= stats.phaseMs.discovery + 1,
               'non-overlapping discovery spans must fit their production phase');
           }
-          return { ...stats, discoveryFs: observation,
+          assert.equal(metadataReads.diagnostics.calls, files.length,
+            'reuse the resolved transcript identity instead of rereading diagnostics');
+          assert.equal(metadataReads.config.calls, files.length);
+          for (const bucket of Object.values(metadataReads)) {
+            assert.equal(bucket.completed, bucket.calls);
+            assert.equal(bucket.errors, 0);
+          }
+          assert.equal(metadataReads.diagnostics.bytes, files.length * diagnosticsBytes);
+          assert.equal(metadataReads.config.bytes, files.length * configBytes);
+          return { ...stats, discoveryFs: observation, metadataReads,
             cpuProfile, profilerStartMs, profilerStopMs,
             mainLoopMs: { active: loop.active, idle: loop.idle },
             // Includes all process threads; never label this per-phase JS CPU.
             processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 } };
         } finally {
           observeDiscovery(false);
+          observeMetadata(false);
           // Also stop sampling on an assertion/error path; the private runtime
           // exits after this unit and the inspector is disconnected below.
           if (profilerActive) await profiler.post('Profiler.stop');
@@ -208,6 +247,10 @@ describe('current-build ingestion on a private background runtime', () => {
       const workloadHash = createHash('sha256').update(JSON.stringify(workload)).digest('hex');
       const files = [];
       const ids = [];
+      const configText = 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n';
+      const configBytes = Buffer.byteLength(configText);
+      const diagnosticsText = (h) => JSON.stringify({ lockOwnerSid: 'synthetic-owner-' + h.toString().padStart(3, '0') });
+      const diagnosticsBytes = Buffer.byteLength(diagnosticsText(0));
       const prefix = JSON.stringify({ type: 'session_meta', payload: {} }) + '\n';
       const prefixBytes = Buffer.byteLength(prefix);
       assert.ok(prefixBytes > 0); // the production candidate filter excludes empty files
@@ -215,7 +258,8 @@ describe('current-build ingestion on a private background runtime', () => {
         const home = join(e.PAPERCUSP_HOME, 'su-codex-homes', 'session-' + (10000 + h));
         const day = join(home, 'sessions', '2026', '10', '01');
         await mkdir(day, { recursive: true });
-        await writeFile(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n');
+        await writeFile(join(home, 'config.toml'), configText);
+        await writeFile(join(home, 'papercusp-diagnostics.json'), diagnosticsText(h));
         for (let f = 0; f < workload.filesPerHome; f++) {
           const index = h * workload.filesPerHome + f;
           const id = '019f4fa9-4a09-78c0-8a35-' + index.toString(16).padStart(12, '0');
@@ -228,6 +272,41 @@ describe('current-build ingestion on a private background runtime', () => {
       const codex = FILE_ADAPTERS.find(adapter => adapter.sourceKind === 'codex');
       const discovered = await Promise.all(codex.roots().map(spec => jsonlAtDepth(spec.root, spec.dirDepth, spec.descend)));
       assert.equal(discovered.flat().length, files.length, 'fixture must use the production discovery layout');
+      // Isolate the already-resolved-id seam before changing sweep behavior.
+      // Both modes produce the same owner/native-id/model/effort bytes. Keep
+      // sampling off and alternate order; CPU includes all child threads.
+      const metadataControls = [];
+      for (const reuseIdentity of [false, true, true, false]) {
+        observeMetadata(true);
+        const output = createHash('sha256');
+        const cpuBegan = process.cpuUsage();
+        const began = performance.now();
+        try {
+          for (let i = 0; i < files.length; i++) {
+            const meta = codexTranscriptMeta(files[i]);
+            const adv = codexAdvSessionMetadata(files[i], reuseIdentity ? meta.sessionId : undefined);
+            assert.equal(meta.owner, 'synthetic-owner-' + Math.floor(i / workload.filesPerHome).toString().padStart(3, '0'));
+            assert.equal(adv.sessionId, ids[i]);
+            assert.equal(adv.model, 'gpt-6.1-sol');
+            assert.equal(adv.effort, 'xhigh');
+            output.update(JSON.stringify({ meta, adv }));
+          }
+          const cpu = process.cpuUsage(cpuBegan);
+          assert.equal(metadataReads.diagnostics.calls, files.length * (reuseIdentity ? 1 : 2));
+          assert.equal(metadataReads.config.calls, files.length);
+          assert.equal(metadataReads.diagnostics.bytes, diagnosticsBytes * metadataReads.diagnostics.calls);
+          assert.equal(metadataReads.config.bytes, configBytes * files.length);
+          for (const bucket of Object.values(metadataReads)) {
+            assert.equal(bucket.completed, bucket.calls);
+            assert.equal(bucket.errors, 0);
+          }
+          metadataControls.push({ reuseIdentity, profiler: false, wallMs: performance.now() - began,
+            processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 },
+            reads: metadataReads, outputHash: output.digest('hex') });
+        } finally { observeMetadata(false); }
+      }
+      assert.equal(new Set(metadataControls.map(row => row.outputHash)).size, 1);
+      console.log('INGEST_METADATA_CONTROLS ' + JSON.stringify({ metadataControls, diagnosticsBytes, configBytes }));
       const { sql } = getOrgPg();
       try {
         const migrated = await sql.unsafe('SELECT count(*)::int AS n FROM harness_shared.schema_migrations');
@@ -312,12 +391,31 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(unchanged.partsInserted ?? 0, 0);
         assert.equal(unchanged.phaseMs.decode, 0);
         assert.equal(unchanged.phaseMs.writes, 0);
+        const singleFileRepairs = [];
+        for (const opts of [{}, { sessionId: ids[0] }]) {
+          observeMetadata(true);
+          try {
+            const repair = await ingestFileNow(files[0], opts);
+            assert.equal(repair.inserted, 0, 'metadata-only repair must not duplicate turns');
+            assert.equal(metadataReads.diagnostics.calls, 1);
+            assert.equal(metadataReads.config.calls, 1);
+            assert.equal(metadataReads.diagnostics.bytes, diagnosticsBytes);
+            assert.equal(metadataReads.config.bytes, configBytes);
+            for (const bucket of Object.values(metadataReads)) {
+              assert.equal(bucket.completed, 1);
+              assert.equal(bucket.errors, 0);
+            }
+            singleFileRepairs.push({ explicitIdentity: !!opts.sessionId, repair, reads: metadataReads });
+          } finally { observeMetadata(false); }
+        }
         if (corpusHash) assert.equal(corpusHash,
           createHash('sha256').update(readFileSync(e.TEST_INGEST_CORPUS_PATH)).digest('hex'));
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
         console.log('INGEST_RUNTIME_PROBE ' + JSON.stringify({
           sourceHash, head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-          workload, workloadHash, observerOrder, profilerOrder, baseline, passes, matchedUnchanged, unchanged,
+          workload, workloadHash, observerOrder, profilerOrder, metadataControls,
+          metadataFixtureHash: createHash('sha256').update(configText + diagnosticsText(0)).digest('hex'),
+          baseline, passes, matchedUnchanged, unchanged, singleFileRepairs,
           child: { pid: process.pid, node: process.version, backgroundWorkers: e.PAPERCUSP_BACKGROUND_WORKERS },
           privateRows: rows[0].n, privateParts: parts[0].n, home: e.HOME, dbPort: dbUrl.port,
         }));

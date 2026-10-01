@@ -265,6 +265,101 @@ describe('attention bulk-run store (real PG)', () => {
     expect(item?.recommendation?.actionId).toBeNull();
   });
 
+  // observation-candidate-acceptance-promotion-2026-09-30 P-004 (R-3/R-18/R-19),
+  // migration 1296 `intake_decision`.
+  it('persists intake decisions, enforces the reason/target/missing-info CHECK, and resumes only named rows', async () => {
+    const intake = (n: number) => ({
+      itemId: `improvement:intake-${n}`,
+      kind: 'improvement',
+      title: `Observation ${n}`,
+      ref: { kind: 'improvement', id: `EI-${n}` },
+      ownerAgentId: null,
+    });
+    const run = await createRun({ items: [intake(1), intake(2), intake(3)] });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-intake' });
+    const decision = (disposition: string, extra: Record<string, unknown> = {}) => ({
+      disposition,
+      reason: `because ${disposition}`,
+      decidedBy: 'su-intake',
+      owner: 'agent',
+      targetRef: null,
+      missingInformation: null,
+      decidedAt: '2026-10-01T10:00:00.000Z',
+      ...extra,
+    });
+    const reported = await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-intake',
+      outcomes: [
+        {
+          itemId: 'improvement:intake-1',
+          outcome: 'recommended',
+          disposition: 'routed',
+          recommendationKind: 'routed',
+          recommendationLabel: 'Promote to accepted work',
+          responsibility: 'engineering',
+          confidenceLevel: 'high',
+          rationale: 'because promote',
+          intakeDecision: decision('promote', { owner: 'engineering' }) as never,
+        },
+        {
+          itemId: 'improvement:intake-2',
+          outcome: 'recommended',
+          disposition: 'cleanup_candidate',
+          recommendationKind: 'cleanup_candidate',
+          recommendationLabel: 'Merge / link into existing work',
+          responsibility: 'agent',
+          confidenceLevel: 'medium',
+          rationale: 'because merge',
+          intakeDecision: decision('merge', { targetRef: 'WI-9' }) as never,
+        },
+      ],
+    });
+    expect(reported.updated.sort()).toEqual(['improvement:intake-1', 'improvement:intake-2']);
+
+    const rows = await getRunItems(run.runId);
+    const byId = new Map(rows.map((row) => [row.itemId, row]));
+    expect(byId.get('improvement:intake-1')?.intakeDecision).toEqual(decision('promote', { owner: 'engineering' }));
+    expect(byId.get('improvement:intake-2')?.intakeDecision).toMatchObject({ disposition: 'merge', targetRef: 'WI-9' });
+    // R-19: the unreached row stays pending with no decision.
+    expect(byId.get('improvement:intake-3')).toMatchObject({ outcome: 'pending', intakeDecision: null });
+
+    // The CHECK repeats the validator for any non-TypeScript writer (R-3/R-18).
+    const sql = db.adminSql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>;
+    const setRaw = (value: Record<string, unknown>) =>
+      sql`UPDATE harness_shared.attention_bulk_run_items
+             SET intake_decision = ${JSON.stringify(value)}::jsonb
+           WHERE run_id = ${run.runId} AND item_id = 'improvement:intake-3'`;
+    await expect(setRaw(decision('reject', { reason: '  ' }))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('reject', { decidedBy: '' }))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('merge'))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('retry'))).rejects.toThrow(/intake_decision_check/);
+    await expect(setRaw(decision('ignore'))).rejects.toThrow(/intake_decision_check/);
+
+    // An intake input that could not be decided is an explicit, visible failure.
+    await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-intake',
+      outcomes: [{ itemId: 'improvement:intake-3', outcome: 'failed', error: 'evidence link 404s' }],
+    });
+    expect((await getRunItems(run.runId)).find((row) => row.itemId === 'improvement:intake-3')).toMatchObject({
+      outcome: 'failed',
+      intakeDecision: null,
+    });
+
+    // Resume resets only the named rows; earlier decisions survive (R-19).
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-intake' });
+    const resumed = await resumeReviewRun({
+      runId: run.runId,
+      itemIds: ['improvement:intake-2', 'improvement:intake-3'],
+      resolverOwner: 'su-next',
+    });
+    expect(resumed.ok).toBe(true);
+    const after = new Map((await getRunItems(run.runId)).map((row) => [row.itemId, row]));
+    expect(after.get('improvement:intake-1')?.intakeDecision).toMatchObject({ disposition: 'promote' });
+    expect(after.get('improvement:intake-2')).toMatchObject({ outcome: 'pending', intakeDecision: null });
+  });
+
   it('de-dupes repeated ids in the snapshot rather than aborting the seed', async () => {
     const dupe = seed('b');
     const run = await createRun({ items: [...dupe, dupe[0]!] });

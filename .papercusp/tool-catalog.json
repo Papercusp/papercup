@@ -16146,7 +16146,7 @@
           "POST"
         ]
       },
-      "description": "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping.",
+      "description": "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping. Intake inputs carry `intake.dispositions` (the six-way offer) and `intake.decision` once decided.",
       "capabilities": [
         "coord:read"
       ],
@@ -16182,7 +16182,7 @@
           "POST"
         ]
       },
-      "description": "Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived.",
+      "description": "Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived. Intake inputs (manifest `intake`) need `intakeDecision` {disposition, reason, confidenceLevel on the item} or `failed` with an error.",
       "capabilities": [
         "coord:write"
       ],

@@ -157,6 +157,20 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
     out: any;
 }): boolean;
 /**
+ * Build selectReusablePasses' `inertGlobalChange` seam over a real git checkout
+ * (gate-test-reuse-yield-2026-10-01 P-002). Only the ROOT package.json can be inert: its text at
+ * both shas is read with `git show` and judged by rootPackageJsonChangeIsInert. Every other path,
+ * and any read that fails (a sha missing from this clone, a file absent on one side), answers
+ * false, so the change stays global. Results are cached per (path, from, to).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string }} o
+ * @returns {(rel: string, fromSha: string, toSha: string) => boolean}
+ */
+export function gitInertGlobalChange({ repoRoot, exec }: {
+    repoRoot: string;
+    exec?: (file: string, args: string[], opts: object) => string;
+}): (rel: string, fromSha: string, toSha: string) => boolean;
+/**
  * One greppable line per workspace selection, so a run that did not narrow is never silent
  * about why.
  *

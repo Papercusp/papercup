@@ -41,7 +41,7 @@
 import { createRequire } from 'node:module';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as osConstants, homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
@@ -6417,6 +6417,44 @@ export function submitVerifyQuietMs(env = process.env) {
 export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-compacted.ts');
 
 /**
+ * Complete the existing carry lifecycle after native delivery and mapping are
+ * proven. Codex assigns its id at startup: use the exact isolated rollout from
+ * native proof, never "latest" (which can still be the critical predecessor).
+ * @param {{ownerId: string, agent?: string, nativeId?: string | null,
+ *   proof?: {persisted?: boolean, nativeRef?: string | null} | null,
+ *   alreadyReported?: boolean, report?: (nativeId: string) => any,
+ *   emit?: typeof fireSessionCompactedEvent, timeoutMs?: number}} options
+ */
+export async function announceVerifiedCarryRespawn({
+  ownerId, agent, nativeId = null, proof = null, alreadyReported = false,
+  report = () => false, emit = fireSessionCompactedEvent, timeoutMs = 2_000,
+}) {
+  if (!proof?.persisted) return { announced: false, nativeId, reason: 'native-turn-unverified' };
+  if (!nativeId && agent === 'codex' && proof.nativeRef) {
+    nativeId = /^rollout-.*-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i
+      .exec(basename(proof.nativeRef))?.[1] ?? null;
+  }
+  if (!ownerId || !nativeId) return { announced: false, nativeId, reason: 'successor-native-id-missing' };
+  let reported = alreadyReported;
+  let timer;
+  try {
+    if (!reported) {
+      reported = await Promise.race([
+        Promise.resolve().then(() => report(nativeId)),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]) === true;
+    }
+    if (!reported) return { announced: false, nativeId, reason: 'successor-reanchor-unconfirmed' };
+    emit(ownerId, 'carry-respawn', { nativeId });
+    return { announced: true, nativeId, reason: 'native-turn-and-reanchor-verified' };
+  } catch {
+    return { announced: false, nativeId, reason: 'successor-reanchor-or-emit-failed' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Fire the server-side `session:compacted:<owner>` event (event-await-discoverability
  * P-103) after a server-requested compaction COMPLETES, so a peer can
  * `events:await { event: "session:compacted:<owner>" }` instead of polling.
@@ -6729,6 +6767,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
@@ -6767,6 +6806,7 @@ export function hostThroughPty(o) {
       reason: "not-wired",
     }),
     onRespawn = () => {},
+    emitCompacted = fireSessionCompactedEvent,
     // WI-38292: hand the session to a FRESH launcher process instead of respawning
     // the CLI child inside this stale one. Injected like the mints, and for a
     // second reason beyond launcher-agnosticism: only the launcher knows whether
@@ -10346,6 +10386,7 @@ export function hostThroughPty(o) {
       }
       let recycleArgs;
       let nativeId;
+      let respawnReported = false;
       let launchContextPath = null;
       let freshChildOwnerInputGeneration = null;
       try {
@@ -10642,7 +10683,9 @@ export function hostThroughPty(o) {
           let reportTimer;
           let reportTimedOut = false;
           try {
-            const report = Promise.resolve().then(() => onRespawn(nativeId));
+            const report = Promise.resolve().then(() => onRespawn(nativeId)).then((confirmed) => {
+              if (!reportTimedOut) respawnReported = confirmed === true;
+            });
             await Promise.race([
               report,
               new Promise((resolve) => {
@@ -10777,14 +10820,9 @@ export function hostThroughPty(o) {
           personaRefreshed: Boolean(personaFile),
         });
       }
-      // P-022: session:compacted:<owner> used to fire from the /compact handler's
-      // completion path; with native compaction retired, a successful
-      // carry-respawn IS this member's context cut — fire the same event here so
-      // peers' `events:await { event: "session:compacted:<owner>" }` stays a live
-      // surface instead of a key nothing emits anymore.
-      if (respawnMode === 'carry-respawn') {
-        fireSessionCompactedEvent(ownerId, 'carry-respawn', { nativeId });
-      }
+      // Spawn is not a completed carry. Codex has no minted native id yet
+      // and can stay at Starting without accepting its carry. Announcing here
+      // refreshed the predecessor's estimate and woke peers before delivery.
       recycling = false;
       if (!carryText) {
         if (drillId) {
@@ -10916,6 +10954,19 @@ export function hostThroughPty(o) {
           } catch {
             /* diagnostic only */
           }
+        }
+      }
+      if (respawnMode === 'carry-respawn' && !drillId && carryResult.delivered) {
+        const announcement = await announceVerifiedCarryRespawn({
+          ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
+          alreadyReported: respawnReported, report: onRespawn, emit: emitCompacted,
+          timeoutMs: respawnReportTimeoutMs,
+        });
+        if (announcement.nativeId) nativeId = announcement.nativeId;
+        if (!announcement.announced) {
+          appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+            nativeId: nativeId ?? null, reason: announcement.reason,
+          });
         }
       }
       if (!carryResult.delivered) recordCarryDrop();

@@ -82,6 +82,8 @@ export interface StripeBalanceSource {
   readonly metadata?: Readonly<Record<string, string>> | null;
   /** On a charge: the invoice it paid, expanded or as an id. */
   readonly invoice?: string | StripeInvoiceTaxView | null;
+  /** On a charge or refund: the Stripe customer, which is who a payment receipt belongs to (P-046). */
+  readonly customer?: string | { readonly id: string } | null;
 }
 
 export interface StripeInvoiceTaxView {

@@ -2232,6 +2232,82 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
   );
 });
 
+describe('carry completion follows native delivery and reanchor (WI-10004791)', () => {
+  it.each([true, false])('does not confuse a booted Codex with a completed carry (persists=%s)', async (persists) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-carry-completion-'));
+    const codexHome = join(root, 'codex');
+    const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
+    const nativeFile = join(codexHome, 'sessions', '2026', '10', '01', `rollout-2026-10-01T10-00-00-${nativeId}.jsonl`);
+    const ownerId = `su-carry-completion-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+    const { captured, io } = fakeIo();
+    const order: string[] = [];
+    const report = vi.fn(async (id: string) => {
+      expect(id).toBe(nativeId);
+      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      order.push('reanchor');
+      return true;
+    });
+    const emit = vi.fn(() => { order.push('emit'); return null; });
+    const childCode = [
+      "const fs=require('fs'),path=require('path');",
+      "const c=process.env.BOOT_COUNTER,n=fs.existsSync(c)?Number(fs.readFileSync(c,'utf8'))+1:1;fs.writeFileSync(c,String(n));",
+      "const starting=n>1&&process.env.PERSISTS!=='yes';",
+      "process.stdout.write('BOOT:'+process.pid+'\\n'+(starting?'Starting':'Ready')+' · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdin.setEncoding('utf8');let b='';process.stdin.on('data',d=>{b+=d;let at;while((at=b.indexOf('\\n'))>=0){const line=b.slice(0,at);b=b.slice(at+1);if(line==='QUIT')process.exit(0);",
+      "if(n>1&&!starting){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');}",
+      "process.stdout.write('ECHO:'+line+'\\n');}});setTimeout(()=>process.exit(0),8000);",
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: {
+        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: codexHome, BOOT_COUNTER: join(root, 'boots'), NATIVE_FILE: nativeFile,
+        PERSISTS: persists ? 'yes' : 'no', TERM: 'xterm-256color',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+      },
+      ownerId, io, bridgeTty: false, signalSource: new EventEmitter(),
+      mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId: null, launchContextPath: '/test/carry.md' }),
+      onRespawn: report, emitCompacted: emit, nativePersistenceTimeoutMs: 200, onExit: () => {},
+    });
+    try {
+      await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 4000 });
+      await envelopeInject(sock, {
+        mode: 'carry-respawn', ownerId, data: `${marker}\nContinue saved work`,
+        systemPromptAddendum: 'verified carry completion',
+      });
+      await vi.waitFor(() => {
+        const rows = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(rows.some((row) => row.kind === (persists ? 'respawn-carry-delivered' : 'respawn-carry-dropped'))).toBe(true);
+      }, { timeout: 6000 });
+      if (persists) {
+        expect(order).toEqual(['reanchor', 'emit']);
+        expect(report).toHaveBeenCalledOnce();
+        expect(emit).toHaveBeenCalledWith(ownerId, 'carry-respawn', { nativeId });
+      } else {
+        expect(order).toEqual([]);
+        expect(report).not.toHaveBeenCalled();
+        expect(emit).not.toHaveBeenCalled();
+        expect(readFileSync(eventLog, 'utf8')).toContain('"reason":"codex-startup-still-starting"');
+      }
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 12_000);
+});
+
 describe('P-020 carry-respawn drill correlation', () => {
   it(
     'records the fresh native id, carry path, and first-prompt delivery in the durable host event log',

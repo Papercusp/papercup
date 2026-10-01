@@ -294,7 +294,8 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
       snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
         ipcAssertion?: Array<{ startedAtMs: number; importReadyAtMs: number | null;
           invokeStartedAtMs: number | null; invokeCompletedAtMs: number | null;
-          completedAtMs: number | null; client: string | null }>;
+          completedAtMs: number | null; client: string | null; error?: string;
+          nativeStartedAtMs?: number; nativeDurationMs?: number }>;
         stages?: { recent: Array<{ stage: string; unit: 'ms'; durationMs: number; measuredAtMs: number;
           queryName?: string; traceId?: string }> } };
       queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string;

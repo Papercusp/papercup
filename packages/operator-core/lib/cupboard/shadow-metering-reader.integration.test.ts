@@ -19,6 +19,8 @@ const MIGRATIONS = [
   '1149-session-identity-activation-spans.sql',
   '1177-identity-usage-carry-correlation.sql',
   '1275-identity-attribution-indexed-spans.sql',
+  // WI-10004494 gap 3: the activation event's own layer stamp, preferred by the reader.
+  '1295-activation-event-specification-layer-refs.sql',
 ];
 const WS = 'shadow-reader-ws';
 const OTHER_WS = 'shadow-reader-other';
@@ -229,6 +231,44 @@ describe('readShadowStatement (P-003)', () => {
       await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = 110`;
       await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
       await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 3`;
+    }
+  });
+
+  it('prefers the activation event\'s own layer stamp over the launch record (WI-10004494 gap 3)', async () => {
+    const owner = 'su-shadow-reader-stamp';
+    const specStamped = '7'.repeat(64);
+    // The record still carries the revision, with a DIFFERENT layer set, so the assertion can tell
+    // which source answered. Preferring the stamp is what lets a span keep its layers after the
+    // record has churned its revision or evicted it from identityHistory.
+    const record = launchSpec(specStamped, 'claude', [layer('record-engineer', ['domain'])]);
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (4,${WS},${owner},'adv-key-4','2026-08-01T00:00:00Z',NULL,NULL,${JSON.stringify(record)}::text::jsonb)`;
+    await db.sql`
+      INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at,
+         specification_layer_refs)
+      VALUES (${WS},${owner},${owner},'principal-shadow','shadow-p4',4,'native-shadow-4',
+        't-stamp',1,'applied','launch',${specStamped},'state-1','[]'::jsonb,'2026-08-01T00:01:00Z'::timestamptz,
+        '["domain:stamped-engineer"]'::jsonb)`;
+    await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts, cost_usd, cost_source)
+      VALUES (111,${WS},'native-shadow-4',${ms('2026-08-20T00:00:00Z')},5.0,'estimated')`;
+    const layersOfStampedRow = async () => {
+      const rows = await readShadowUsageAggregates(db.sql, { workspaceId: WS, month: MONTH });
+      const stamped = rows.filter((r) => r.attributed && r.costMicros === 5_000_000);
+      expect(stamped).toEqual([expect.objectContaining({ agent: 'claude', samples: 1 })]);
+      return stamped[0]!.specificationLayerRefs;
+    };
+    try {
+      expect(await layersOfStampedRow()).toEqual(['domain:stamped-engineer']);
+      // Positive control: unstamped, the same span falls back to the launch record's artifact.
+      await db.sql`UPDATE harness_shared.session_identity_activation_events
+                      SET specification_layer_refs = NULL WHERE owner_id = ${owner}`;
+      expect(await layersOfStampedRow()).toEqual(['domain:record-engineer']);
+    } finally {
+      await db.sql`DELETE FROM harness_shared.agent_usage_samples WHERE id = 111`;
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 4`;
     }
   });
 

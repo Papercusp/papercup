@@ -83,6 +83,20 @@ describe('codexAdvSessionMetadata', () => {
     });
   });
 
+  it('preserves an explicit native identity and reads fresh config on metadata-only repair', async () => {
+    const filePath = await managedRollout('model = "gpt-5.6-sol"\nmodel_reasoning_effort = "xhigh"');
+    const resolvedId = '019f4fa9-4a09-78c0-8a35-000000000002';
+    expect(codexAdvSessionMetadata(filePath, resolvedId)).toEqual({
+      advSessionId: 15002, sessionId: resolvedId, model: 'gpt-5.6-sol', effort: 'xhigh',
+    });
+
+    await writeFile(join(root!, 'su-codex-homes', 'session-15002', 'config.toml'),
+      'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"');
+    expect(codexAdvSessionMetadata(filePath, resolvedId)).toEqual({
+      advSessionId: 15002, sessionId: resolvedId, model: 'gpt-6.1-sol', effort: 'high',
+    });
+  });
+
   it('does not attribute shared or temporary homes to adv_sessions', async () => {
     const filePath = await managedRollout('model = "gpt-5.6-sol"');
     expect(codexAdvSessionMetadata(filePath.replace('/su-codex-homes/session-15002/', '/.codex/'))).toBeNull();

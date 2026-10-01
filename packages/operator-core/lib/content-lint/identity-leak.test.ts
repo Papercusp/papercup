@@ -172,6 +172,22 @@ describe('identity detector resolves the guarded repository ruleset', () => {
     for (const repo of tempRepos.splice(0)) rmSync(repo, { recursive: true, force: true });
   });
 
+  it('guards an independent application without a copied framework matcher', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'identity-detector-app-'));
+    tempRepos.push(repo);
+    const logs: string[] = [];
+    const offenders = await detectContentOffenders({
+      repoPath: repo,
+      detectors: [identityLeakDetector],
+      runGit: statusRunGit(['?? fixture.txt']),
+      readText: async () => LEAKY,
+      log: (message: string) => logs.push(message),
+    } as never);
+    expect(offenders.map((offender) => offender.detectorKey)).toEqual(['identity-leak']);
+    expect(logs.join('\n')).not.toContain('threw');
+    await expect(findIdentityLeakError('clean.txt', 'portable content\n', repo)).resolves.toBeNull();
+  });
+
   it('does not use the operator bundle checkout rules when the guarded tree differs', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'identity-detector-repo-'));
     tempRepos.push(repo);

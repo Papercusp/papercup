@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -64,6 +64,21 @@ const DDL = `
     condition_key text,
     lane text,
     payload jsonb,
+    agent_review_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'agentReview', 'null'::jsonb)
+    ) STORED,
+    implementation_readiness_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'implementationReadiness', 'null'::jsonb)
+    ) STORED,
+    implementation_readiness_enrolled boolean GENERATED ALWAYS AS (
+      payload ? 'implementationReadiness'
+    ) STORED,
+    reopen_history_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'reopenHistory', 'null'::jsonb)
+    ) STORED,
+    external_blockers_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'externalBlockers', 'null'::jsonb)
+    ) STORED,
     see_also text[],
     origin text NOT NULL DEFAULT 'local',
     completion_ref jsonb,
@@ -2269,16 +2284,101 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(reader).toContain('WITH occurrence_counts AS MATERIALIZED');
     expect(reader).toContain('active_dependency_refs AS MATERIALIZED');
     expect(reader).not.toContain('readIssueOccurrenceCounts(');
+    expect(reader).toContain('wi.agent_review_projection AS agent_review');
+    expect(reader).toContain('wi.implementation_readiness_projection AS implementation_readiness');
+    expect(reader).toContain('wi.implementation_readiness_enrolled AS readiness_enrolled');
+    expect(reader).toContain('wi.reopen_history_projection AS reopen_history');
+    expect(reader).toContain('wi.external_blockers_projection AS external_blockers');
     expect(dependencyReader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
     expect(dependencyReader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
     expect(reader).toContain('LEFT JOIN active_dependency_refs dependency');
-    expect(reader).toContain('LEFT JOIN LATERAL jsonb_to_record');
+    expect(reader).not.toContain('jsonb_to_record');
+    expect(reader).not.toContain('wi.payload');
     expect(reader).toContain('COALESCE(wi.claim_hold, FALSE)');
     expect(reader).toContain('COALESCE(wi.needs_owner_action, FALSE)');
     expect(reader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
     expect(dependencyReader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
     expect(reader).not.toMatch(/^\s*wi\.payload,\s*$/m);
     expect(reader).not.toContain("COALESCE(s.payload, '{}'::jsonb)");
+
+    const draftMigration = new URL(
+      '../../../libs/papercusp/libs/db/sql/1294-work-item-readiness-payload-projections.sql.DRAFT',
+      import.meta.url,
+    );
+    const armedMigration = new URL(
+      '../../../libs/papercusp/libs/db/sql/1294-work-item-readiness-payload-projections.sql',
+      import.meta.url,
+    );
+    const migration = readFileSync(existsSync(draftMigration) ? draftMigration : armedMigration, 'utf8');
+    for (const column of [
+      'agent_review_projection',
+      'implementation_readiness_projection',
+      'implementation_readiness_enrolled',
+      'reopen_history_projection',
+      'external_blockers_projection',
+    ]) {
+      expect(migration).toContain(`ADD COLUMN IF NOT EXISTS ${column}`);
+    }
+    expect(migration).toContain("NULLIF(payload -> 'implementationReadiness', 'null'::jsonb)");
+    expect(migration).toContain("payload ? 'implementationReadiness'");
+  });
+
+  it('keeps stored readiness payload projections synchronized and preserves explicit JSON null presence', async () => {
+    await seedItem({
+      id: 'WI-generated-projections',
+      payload: {
+        agentReview: null,
+        implementationReadiness: null,
+        reopenHistory: null,
+        externalBlockers: null,
+      },
+    });
+
+    const [nullPayload] = await db.sql`
+      SELECT agent_review_projection,
+             implementation_readiness_projection,
+             implementation_readiness_enrolled,
+             reopen_history_projection,
+             external_blockers_projection
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${HARNESS}
+         AND feature_id = 'WI-generated-projections'`;
+    expect(nullPayload).toEqual({
+      agent_review_projection: null,
+      implementation_readiness_projection: null,
+      implementation_readiness_enrolled: true,
+      reopen_history_projection: null,
+      external_blockers_projection: null,
+    });
+
+    const replacementPayload = {
+      agentReview: { status: 'pending' },
+      implementationReadiness: { schemaVersion: 'implementation-readiness-v1', status: 'ready' },
+      reopenHistory: [],
+      externalBlockers: [],
+    };
+    const updatedRows = await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = ${JSON.stringify(replacementPayload)}::text::jsonb
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${HARNESS}
+         AND feature_id = 'WI-generated-projections'
+      RETURNING payload,
+                agent_review_projection,
+                implementation_readiness_projection,
+                implementation_readiness_enrolled,
+                reopen_history_projection,
+                external_blockers_projection`;
+    expect(updatedRows).toHaveLength(1);
+    expect(updatedRows[0]).toEqual({
+      payload: replacementPayload,
+      agent_review_projection: { status: 'pending' },
+      implementation_readiness_projection: replacementPayload.implementationReadiness,
+      implementation_readiness_enrolled: true,
+      reopen_history_projection: [],
+      external_blockers_projection: [],
+    });
   });
 
   it('uses writer status over finished_at and keeps outcome totals unit-separated', async () => {

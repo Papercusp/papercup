@@ -2490,7 +2490,7 @@ export async function ingestFileNow(
     // also the repair path for a paused session whose process interval still
     // overlaps the caller's query window.
     try {
-      const codexMeta = codexAdvSessionMetadata(filePath, opts.sessionId);
+      const codexMeta = codexAdvSessionMetadata(filePath, opts.sessionId?.trim() || meta.sessionId);
       if (codexMeta) await backfillCodexAdvSessions(sql, new Map([[codexMeta.advSessionId, codexMeta]]));
     } catch (err) {
       process.stderr.write(`[session-ingest] codex adv metadata backfill skipped: ${(err as Error).message}\n`);
@@ -2866,7 +2866,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
           // indexed rollout still carries the native id/config needed to repair
           // the adv row used by interval-overlap readers.
           if (adapter.sourceKind === 'codex') {
-            const codexMeta = codexAdvSessionMetadata(cand.path);
+            const codexMeta = codexAdvSessionMetadata(cand.path, meta.sessionId);
             if (codexMeta && !codexMetadataBackfill.has(codexMeta.advSessionId)) {
               codexMetadataBackfill.set(codexMeta.advSessionId, codexMeta);
             }

@@ -122,6 +122,99 @@ export function isGlobalRunnerInput(rel) {
   return false;
 }
 
+/**
+ * The npm scripts that affected-tests runs AS a task (`test`, the lane scripts, `test:integration`,
+ * `lint:el-tools`, `test:el-suite`). Any `test:lane-*` name counts, so a future lane is covered
+ * before it is listed. A guard test pins the lane list against scripts/lib/targeted-task-reuse.mjs.
+ */
+const TASK_SCRIPT_NAMES = new Set([
+  "test",
+  "test:integration",
+  "test:el-suite",
+  "lint:el-tools",
+  "test:lane-pure",
+  "test:lane-stateful",
+]);
+
+/** npm lifecycle scripts that run at install time and can change what lands in node_modules. */
+const INSTALL_LIFECYCLE_SCRIPTS = new Set([
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "prepack",
+  "postpack",
+  "dependencies",
+]);
+
+/**
+ * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
+ * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
+ * install lifecycle script.
+ */
+export function isRunnerAffectingScript(name) {
+  if (INSTALL_LIFECYCLE_SCRIPTS.has(name)) return true;
+  const isTask = (n) => TASK_SCRIPT_NAMES.has(n) || /^test:lane-/.test(n);
+  if (isTask(name)) return true;
+  if (name.startsWith("pre") && isTask(name.slice(3))) return true;
+  if (name.startsWith("post") && isTask(name.slice(4))) return true;
+  return false;
+}
+
+/** JSON text with object keys sorted at every level (array order kept), for order-blind equality. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * gate-test-reuse-yield-2026-10-01 P-002: is a change to the ROOT package.json inert for pass
+ * proofs? True only when both texts parse to JSON objects, they are equal once `scripts` is
+ * removed (key order ignored), and no runner-affecting script (isRunnerAffectingScript) was
+ * added, removed or changed. Anything else is false, including a parse failure or a non-object
+ * `scripts` (fail closed).
+ *
+ * Why the remaining `scripts` keys are safe (D-002: narrow only where the proof can see the
+ * input): a test that READS package.json records it in readPaths, and selectReusablePasses still
+ * invalidates that proof directly; a test that spawns npm is opaque ('child-process') and is never
+ * reused; and no workspace task script calls a root script. Every other field (workspaces,
+ * dependencies, overrides, type, imports, engines) changes module resolution, so it stays global.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {boolean}
+ */
+export function rootPackageJsonChangeIsInert(beforeText, afterText) {
+  let before;
+  let after;
+  try {
+    before = JSON.parse(beforeText);
+    after = JSON.parse(afterText);
+  } catch {
+    return false;
+  }
+  const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  if (!isObject(before) || !isObject(after)) return false;
+  const beforeScripts = before.scripts ?? {};
+  const afterScripts = after.scripts ?? {};
+  if (!isObject(beforeScripts) || !isObject(afterScripts)) return false;
+  const { scripts: _beforeScripts, ...beforeRest } = before;
+  const { scripts: _afterScripts, ...afterRest } = after;
+  if (canonicalJson(beforeRest) !== canonicalJson(afterRest)) return false;
+  for (const name of new Set([...Object.keys(beforeScripts), ...Object.keys(afterScripts)])) {
+    if (canonicalJson(beforeScripts[name]) === canonicalJson(afterScripts[name])) continue;
+    if (isRunnerAffectingScript(name)) return false;
+  }
+  return true;
+}
+
 /** The package.json / tsconfig*.json names that configure every file beneath their directory. */
 const CONFIG_BASENAME_RE = /^(package\.json|tsconfig[^/]*\.json|\.babelrc|babel\.config\.[cm]?js)$/;
 
@@ -132,6 +225,11 @@ const CONFIG_BASENAME_RE = /^(package\.json|tsconfig[^/]*\.json|\.babelrc|babel\
 function invalidates(rel, o) {
   if (o.inputs.has(rel)) return true;
   for (const prefix of o.readDirs) if (rel === prefix.slice(0, -1) || rel.startsWith(prefix)) return true;
+  // P-002: an inert global change (see rootPackageJsonChangeIsInert) still invalidates a proof
+  // that read the file itself (above), but it configures nothing beneath its directory. Without
+  // this, the root package.json would still reach EVERY proof through the rule below, because
+  // "." is an ancestor of every executed module.
+  if (o.inert.has(rel)) return false;
   const base = path.posix.basename(rel);
   if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) return true;
   return false;
@@ -161,6 +259,13 @@ function invalidates(rel, o) {
  * @param {number}                        o.maxAgeMs
  * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
  *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
+ * @param {((rel: string, fromSha: string, toSha: string) => boolean) | null} [o.inertGlobalChange]
+ *        gate-test-reuse-yield-2026-10-01 P-002: asked for each GLOBAL drift path; returning
+ *        exactly `true` says that change touches nothing a proof cannot see, so it is not global
+ *        and does not reach proofs through the ancestor-config rule (a proof that read the path
+ *        itself is still invalidated). Any other result, or a throw, keeps it global. Omitted =
+ *        every global path stays global. Implemented over git by gitInertGlobalChange
+ *        (scripts/lib/executed-source-map.mjs).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
@@ -176,6 +281,7 @@ export function selectReusablePasses({
   nowMs,
   maxAgeMs,
   auditRate = 0,
+  inertGlobalChange = null,
 }) {
   const summary = {
     candidates: 0,
@@ -191,11 +297,14 @@ export function selectReusablePasses({
     inputChanged: 0,
     audited: 0,
     expiredClean: 0,
+    // P-002: proofs that got past the global check only because a global drift path was inert.
+    // Each would have been counted as globalInput before P-002, whatever its outcome is now.
+    inertGlobal: 0,
   };
   const skip = [];
   /** @type {Map<string, "audit" | "expired-clean">} */
   const watch = new Map();
-  /** @type {Map<string, { drift: Set<string> | null, global: boolean }>} */
+  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string> }>} */
   const driftCache = new Map();
   const driftFor = (sha) => {
     if (!driftCache.has(sha)) {
@@ -209,8 +318,27 @@ export function selectReusablePasses({
           drift = null;
         }
       }
-      const global = drift !== null && [...drift].some(isGlobalRunnerInput);
-      driftCache.set(sha, { drift, global });
+      let global = false;
+      const inert = new Set();
+      if (drift !== null) {
+        for (const rel of drift) {
+          if (!isGlobalRunnerInput(rel)) continue;
+          let isInert = false;
+          if (inertGlobalChange) {
+            try {
+              isInert = inertGlobalChange(rel, sha, judgedSha) === true;
+            } catch {
+              isInert = false;
+            }
+          }
+          if (isInert) inert.add(rel);
+          else {
+            global = true;
+            break;
+          }
+        }
+      }
+      driftCache.set(sha, { drift, global, inert });
     }
     return driftCache.get(sha);
   };
@@ -255,7 +383,7 @@ export function selectReusablePasses({
       reject("opaque");
       continue;
     }
-    const { drift, global } = driftFor(p.recordedSha);
+    const { drift, global, inert } = driftFor(p.recordedSha);
     if (drift === null) {
       reject("unknownDrift");
       continue;
@@ -264,6 +392,7 @@ export function selectReusablePasses({
       reject("globalInput");
       continue;
     }
+    if (inert.size > 0 && !expired) summary.inertGlobal += 1;
     const inputs = new Set([file, ...p.executedModules]);
     const readDirs = [];
     for (const r of p.readPaths ?? []) {
@@ -281,7 +410,7 @@ export function selectReusablePasses({
     }
     let changed = false;
     for (const rel of drift) {
-      if (invalidates(rel, { inputs, readDirs, dirs })) {
+      if (invalidates(rel, { inputs, readDirs, dirs, inert })) {
         changed = true;
         break;
       }
@@ -497,6 +626,6 @@ export function formatTestReuseLine(wsName, summary, extra = "") {
     `otherContext=${s.otherContext} otherRunner=${s.otherRunner} expired=${s.expired} ` +
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
-    `expiredClean=${s.expiredClean ?? 0}${extra}`
+    `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0}${extra}`
   );
 }

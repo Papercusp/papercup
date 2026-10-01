@@ -1601,6 +1601,10 @@ export async function defaultRelaunchDrainFleet(
       compactionLimit: leaderPolicy.effective.compactionLimit,
       headless: true,
       fleet: fleetSlug,
+      // WI-10004787: launched ON BEHALF OF the holder, exactly as goals:start
+      // injects `--launched-by=<holder>`. Without it bootstrap-su inherits no
+      // goal and every call this session makes is stamped goal_id NULL.
+      launchedBy: holderOwnerId,
       mode: 'auto',
       label: `goal-drain leader · ${goal.title.slice(0, 34)}`,
       kickoffPrompt:
@@ -1686,6 +1690,9 @@ export async function defaultRelaunchDrainFleet(
     compactionLimit: resolved.effective.compactionLimit,
     headless: true,
     fleet: fleetSlug,
+    // WI-10004787: see the leader launch above — the worker inherits the goal
+    // only through --launched-by.
+    launchedBy: holderOwnerId,
     label: `goal-drain · ${goal.title.slice(0, 40)}`,
   });
   if (!launched.ok || !launched.ownerId || launched.warning) {

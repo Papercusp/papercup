@@ -1,0 +1,131 @@
+/**
+ * plan-cleanup-system-repair-2026-10-01 P-004 (WI-10004728) — the deterministic
+ * recurring plan clean-up. It replaces an LLM plan-run template that never
+ * produced a single cleanup run, so the guard here is: a fire STARTS A RUN through
+ * the shared start path, every skip says why, and a failed run fails the fire.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('./system-actions', () => ({ registerSystemAction: vi.fn() }));
+
+import { makePlanCleanupSweepAction, type PlanCleanupSweepDeps } from './plan-cleanup-sweep-action';
+import { MAX_RUN_PLANS, PLAN_CLEANUP_SWEEP_REQUESTER } from '../../plan-cleanup/start-run';
+import type { SystemActionCtx } from './system-actions';
+
+const CTX: SystemActionCtx = {
+  installSlug: 'papercusp',
+  workspaceId: 'ws-1',
+  triggerConfig: {},
+  payloadTemplate: null,
+};
+
+function deps(overrides: Partial<PlanCleanupSweepDeps> = {}) {
+  const logs: string[] = [];
+  const base: PlanCleanupSweepDeps = {
+    enabled: vi.fn(async () => true),
+    runningRun: vi.fn(async () => null),
+    listPlans: vi.fn(async () => ['plan-a', 'plan-b', 'plan-c']),
+    select: vi.fn(async (input) => ({
+      planSlugs: input.planSlugs.slice(0, 2),
+      requested: input.planSlugs.length,
+      accepted: 2,
+      truncated: input.planSlugs.length - 2,
+    })),
+    readPolicy: vi.fn(async () => ({ mode: 'recommend', minConfidence: 'high' }) as never),
+    start: vi.fn(async () => ({
+      kind: 'settled' as const,
+      runId: 'run-1',
+      phase: 'complete' as const,
+      totalPlans: 2,
+      launched: false,
+      resolverNeeded: false,
+      deterministic: { applied: 3 } as never,
+    })),
+    log: (message) => logs.push(message),
+    ...overrides,
+  };
+  return { deps: base, logs };
+}
+
+describe('system:plan-cleanup-sweep', () => {
+  it('a fire starts a plan-cleanup run through the shared start path', async () => {
+    const { deps: d } = deps();
+    const result = await makePlanCleanupSweepAction(d)(CTX);
+    expect(d.listPlans).toHaveBeenCalledWith({ workspaceId: 'ws-1', harnessSlug: 'papercusp' });
+    expect(d.select).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlugs: ['plan-a', 'plan-b', 'plan-c'],
+      max: MAX_RUN_PLANS,
+    });
+    expect(d.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planSlugs: ['plan-a', 'plan-b'],
+        harness: 'papercusp',
+        workspaceId: 'ws-1',
+        requestedBy: PLAN_CLEANUP_SWEEP_REQUESTER,
+        filter: { source: PLAN_CLEANUP_SWEEP_REQUESTER, requested: 3, accepted: 2, truncated: 1 },
+      }),
+    );
+    expect(result.diagnostics).toMatchObject({
+      outcome: 'started',
+      runId: 'run-1',
+      phase: 'complete',
+      applied: 3,
+      resolverNeeded: false,
+      requested: 3,
+      accepted: 2,
+      truncated: 1,
+    });
+  });
+
+  it('honours a smaller trigger_config.max_plans but never exceeds MAX_RUN_PLANS', async () => {
+    const small = deps();
+    await makePlanCleanupSweepAction(small.deps)({ ...CTX, triggerConfig: { max_plans: 25 } });
+    expect(small.deps.select).toHaveBeenCalledWith(expect.objectContaining({ max: 25 }));
+
+    const huge = deps();
+    await makePlanCleanupSweepAction(huge.deps)({ ...CTX, triggerConfig: { max_plans: 10_000 } });
+    expect(huge.deps.select).toHaveBeenCalledWith(expect.objectContaining({ max: MAX_RUN_PLANS }));
+  });
+
+  it.each([
+    ['flag off', { enabled: vi.fn(async () => false) }, /feature flag is off/],
+    ['a run executing', { runningRun: vi.fn(async () => ({ runId: 'run-0', phase: 'running' })) }, /run=run-0 is running/],
+    ['no open plans', { listPlans: vi.fn(async () => []) }, /no open plans/],
+  ] as const)('every skip says why: %s', async (_label, override, reason) => {
+    const { deps: d, logs } = deps(override as Partial<PlanCleanupSweepDeps>);
+    const result = await makePlanCleanupSweepAction(d)(CTX);
+    expect(result.diagnostics).toMatchObject({ outcome: 'skipped' });
+    expect(String(result.diagnostics?.reason)).toMatch(reason);
+    expect(logs.join('\n')).toMatch(reason);
+    expect(d.start).not.toHaveBeenCalled();
+  });
+
+  it('losing the single-flight race is a logged skip', async () => {
+    const { deps: d } = deps({
+      start: vi.fn(async () => ({
+        kind: 'already-active' as const,
+        error: Object.assign(new Error('busy'), { activeRunId: 'run-9' }) as never,
+      })),
+    });
+    const result = await makePlanCleanupSweepAction(d)(CTX);
+    expect(result.diagnostics).toMatchObject({ outcome: 'skipped', runId: 'run-9' });
+  });
+
+  it('a failed run FAILS the fire (no success-shaped fire for a failed sweep)', async () => {
+    const { deps: d } = deps({
+      start: vi.fn(async () => ({
+        kind: 'settled' as const,
+        runId: 'run-2',
+        phase: 'failed' as const,
+        totalPlans: 2,
+        launched: false,
+        resolverNeeded: true,
+        deterministic: { applied: 0 } as never,
+        launchError: 'spawn refused',
+      })),
+    });
+    await expect(makePlanCleanupSweepAction(d)(CTX)).rejects.toThrow(/run-2 failed: spawn refused/);
+  });
+});

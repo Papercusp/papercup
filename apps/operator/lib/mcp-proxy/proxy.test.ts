@@ -806,6 +806,26 @@ describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
     ).toBe("readonly");
   });
 
+  it("keeps sessions:timeline out of the free-replay class because live refresh writes", () => {
+    const body = Buffer.from(JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "tools:invoke",
+        arguments: { name: "sessions:timeline", args: { owner: "self" } },
+      },
+    }));
+
+    const prepared = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: () => "00000000-0000-4000-8000-000000000000",
+    });
+    expect(READ_ONLY_TOOLS).not.toContain("sessions:timeline");
+    expect(prepared.klass).toBe("keyed");
+    expect(postConnectRetryable(prepared.klass, 0, 1, 100, 5_000)).toBe(false);
+  });
+
   it("EI-23074896897999125: classifies plans:get-specs as replay-safe", () => {
     for (const name of [
       "plans:get-specs",
