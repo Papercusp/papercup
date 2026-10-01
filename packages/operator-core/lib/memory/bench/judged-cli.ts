@@ -14,7 +14,7 @@
 import path from 'node:path';
 
 import { llmCall } from '../../llm-testing/llm-client';
-import { runJudgedTier, writeJudgedReport } from './judged';
+import { collectIndependentCohort, runJudgedTier, writeJudgedReport } from './judged';
 import type { BenchBackendName } from './run-bench';
 
 function argValue(flag: string): string | undefined {
@@ -30,6 +30,15 @@ const doubleScoreN = argValue('--double-score')
 const keep = process.argv.includes('--keep');
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..');
+
+if (process.argv.includes('--label-cohort')) {
+  const snapshot = argValue('--snapshot'), out = argValue('--label-out');
+  if (!snapshot || !out) throw new Error('--label-cohort requires --snapshot and --label-out');
+  const receipt = await collectIndependentCohort({ snapshot, out, llm: llmCall,
+    ...(argValue('--targets-per-partition') ? { targetsPerPartition: Number(argValue('--targets-per-partition')) } : {}),
+    log: (message) => console.log(new Date().toISOString(), message) });
+  console.log(JSON.stringify(receipt)); process.exit(0);
+}
 
 const report = await runJudgedTier({
   llm: llmCall,
