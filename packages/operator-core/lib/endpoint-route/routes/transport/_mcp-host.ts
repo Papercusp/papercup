@@ -664,6 +664,7 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'memory:remember',
   'memory:update',
   'memory:forget',
+  'memory:get',
   // search:* prose recall (session-search-scope-2026-07-05 live-smoke finding) —
   // read-only; crossWorkspace ONLY so an unscoped psu gets the admin handle for
   // the non-workspace-scoped operator_turns table (P-062 Phase 4). From a SCOPED
