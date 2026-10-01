@@ -106,6 +106,7 @@ import type { SnapCacheOutcome } from "@papercusp/operator-core/lib/storage/snap
 import {
   DEPENDENCY_PREBUILD_WAIT_MS,
   awaitDependencyPrebuildState,
+  resolveDependencyGenerationRoot,
   type DependencyPrebuildState,
   type DependencyPrebuildTarget,
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
@@ -15255,6 +15256,10 @@ export interface CheckpointDependencyPrebuildDeps {
   ) => Promise<DependencyPrebuildState | null>;
   waitMs?: number;
   log?: (message: string) => void;
+  /** Env the checkpoint setup will inherit (defaults to process.env). */
+  env?: NodeJS.ProcessEnv;
+  /** Whether `<generationRoot>/<identity>` exists (defaults to a real stat). */
+  generationPresent?: (generationRoot: string, identity: string) => boolean;
 }
 
 /** Cheap immutable input identity. This reads candidate Git blobs only. */
@@ -15342,6 +15347,29 @@ export async function selectPersistedCheckpointDependencyGeneration(
           `for ${candidate.slice(0, 12)} input=${inputFingerprint}; joining install-safe fallback`,
       );
     }
+    return null;
+  }
+  // WI-10004797: the identity only exists inside the store it was published
+  // into. Setup leases from the store THIS process's env resolves to, so a
+  // marker from another store (PAPERCUSP_DEPENDENCY_GENERATION_ROOT moved, or
+  // producer/consumer envs differ) is a cache miss — re-publish via the
+  // fallback rather than hand setup an identity it will fail to lease (exit 74).
+  const effectiveRoot = resolveDependencyGenerationRoot(
+    cfg.integrationRoot,
+    deps.env ?? process.env,
+  );
+  const present =
+    deps.generationPresent ??
+    ((root: string, identity: string) => existsSync(path.join(root, identity)));
+  if (
+    (state.generationRoot !== undefined && state.generationRoot !== effectiveRoot) ||
+    !present(effectiveRoot, state.identity)
+  ) {
+    log(
+      `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} is not in ` +
+        `effective generation_root=${effectiveRoot} (published into ${state.generationRoot ?? "unrecorded root"}) ` +
+        `for ${candidate.slice(0, 12)}; joining install-safe fallback`,
+    );
     return null;
   }
   log(

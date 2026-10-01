@@ -82,6 +82,25 @@ export interface TransparencyPassDeps {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+/** The Cupboard Worker client (signed PUTs, public GETs), or why there is none. Shared by the pass and cupboard:statement-attestation. */
+export async function openTransparencyWorker(
+  deps: Pick<TransparencyPassDeps, 'config' | 'resolveSecret' | 'fetchImpl' | 'now' | 'env'> = {},
+): Promise<{ readonly worker: TransparencyWorker; readonly unavailable: null } | { readonly worker: null; readonly unavailable: string }> {
+  const config = deps.config ?? readReconciliationRuntimeConfig(deps.env ?? process.env);
+  if (!config.gateSecretRef) return { worker: null, unavailable: 'PAPERCUSP_RECONCILIATION_GATE_SECRET_REF is not configured' };
+  try {
+    const resolve =
+      deps.resolveSecret ?? (async (ref: string) => (await import('../inference-gateway/egress-providers/secret-ref')).resolveSecretRef(ref));
+    const secret = await resolve(config.gateSecretRef);
+    return {
+      worker: cupboardTransparencyWorker({ baseUrl: config.cupboardUrl, secret, fetchImpl: deps.fetchImpl, now: deps.now ?? Date.now }),
+      unavailable: null,
+    };
+  } catch (error) {
+    return { worker: null, unavailable: `the reconciliation gate secret could not be resolved: ${errorText(error)}` };
+  }
+}
+
 export async function runTransparencyPass(deps: TransparencyPassDeps = {}): Promise<TransparencyPassResult> {
   const sql = (): Sql => deps.sql ?? getOrgPg().sql;
   const env = deps.env ?? process.env;
@@ -93,16 +112,10 @@ export async function runTransparencyPass(deps: TransparencyPassDeps = {}): Prom
   if (deps.worker !== undefined) {
     worker = deps.worker;
     if (!worker) workerUnavailable = 'no Worker configured';
-  } else if (!config.gateSecretRef) {
-    workerUnavailable = 'PAPERCUSP_RECONCILIATION_GATE_SECRET_REF is not configured';
   } else {
-    try {
-      const resolve =
-        deps.resolveSecret ?? (async (ref: string) => (await import('../inference-gateway/egress-providers/secret-ref')).resolveSecretRef(ref));
-      worker = cupboardTransparencyWorker({ baseUrl: config.cupboardUrl, secret: await resolve(config.gateSecretRef), fetchImpl: deps.fetchImpl, now });
-    } catch (error) {
-      workerUnavailable = `the reconciliation gate secret could not be resolved: ${errorText(error)}`;
-    }
+    const opened = await openTransparencyWorker({ config, resolveSecret: deps.resolveSecret, fetchImpl: deps.fetchImpl, now });
+    worker = opened.worker;
+    workerUnavailable = opened.unavailable;
   }
 
   return publishTransparency({

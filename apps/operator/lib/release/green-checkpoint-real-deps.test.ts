@@ -2807,6 +2807,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         target: { workspaceId: "ws-1", installSlug: "papercusp" },
         waitMs: 1,
         log,
+        env: {},
+        generationPresent: () => true,
         awaitState: async () => ({
           schema: 1,
           status: "ready",
@@ -2838,6 +2840,86 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(log).toHaveBeenCalledWith(
       expect.stringContaining("dependency-prebuild READY"),
     );
+  });
+
+  describe("WI-10004797: a persisted marker is only usable inside the generation store setup will lease from", () => {
+    const candidate = "f".repeat(40);
+    const inputFingerprint = "1".repeat(64);
+    const exec: CheckpointExec = async () => ({
+      code: 0,
+      stdout:
+        `DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${candidate} ` +
+        `input=${inputFingerprint}\n`,
+      stderr: "",
+    });
+    const readyState = (generationRoot?: string) => ({
+      schema: 1 as const,
+      status: "ready" as const,
+      key: `${candidate}:${inputFingerprint}`,
+      candidate,
+      inputFingerprint,
+      attemptId: "attempt-root",
+      queuedAtMs: 1,
+      startedAtMs: 2,
+      updatedAtMs: 3,
+      completedAtMs: 3,
+      producerPid: 4,
+      childPid: 5,
+      identity: generationId,
+      token: FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      reused: true,
+      ...(generationRoot ? { generationRoot } : {}),
+    });
+    const select = (
+      state: ReturnType<typeof readyState>,
+      env: NodeJS.ProcessEnv,
+      present: (root: string, identity: string) => boolean,
+      log: (message: string) => void = () => {},
+    ) =>
+      selectPersistedCheckpointDependencyGeneration(cfg, candidate, exec, {
+        target: { workspaceId: "ws-1", installSlug: "papercusp" },
+        waitMs: 1,
+        log,
+        env,
+        generationPresent: present,
+        awaitState: async () => state,
+      });
+
+    it("a marker published into the OLD root is a miss after PAPERCUSP_DEPENDENCY_GENERATION_ROOT moves (no exit-74 handoff)", async () => {
+      const log = vi.fn();
+      const present = vi.fn(() => true);
+      const selected = await select(
+        readyState("/old/store/dependency-generations"),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/papercusp-dependency-generations" },
+        present,
+        log,
+      );
+      expect(selected).toBeNull();
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "effective generation_root=/mnt/data/papercusp-dependency-generations",
+        ),
+      );
+    });
+
+    it("a legacy marker with no recorded root is a miss when its identity is absent from the effective store", async () => {
+      const present = vi.fn(() => false);
+      const selected = await select(
+        readyState(),
+        { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: "/mnt/data/gens" },
+        present,
+      );
+      expect(selected).toBeNull();
+      expect(present).toHaveBeenCalledWith("/mnt/data/gens", generationId);
+    });
+
+    it("a marker whose recorded root equals the effective (default) root and is present is consumed", async () => {
+      const effective = join(cfg.integrationRoot, ".papercusp/dependency-generations");
+      const present = vi.fn(() => true);
+      const selected = await select(readyState(effective), {}, present);
+      expect(selected).toMatchObject({ identity: generationId, reused: true });
+      expect(present).toHaveBeenCalledWith(effective, generationId);
+    });
   });
 
   it("P-004: a mismatched persisted marker is never accepted as the candidate's dependency proof", async () => {

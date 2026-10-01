@@ -47,7 +47,16 @@ export function parseRampLog(text: string): StepVerdict[] {
     const m = /^RAMP_STEP_END p005-(.+)-n(\d+) n=\d+ rc=-?\d+ (OK|SATURATED reason=(\S*)|UNDERDRIVEN (achieved=\S*))(.*)$/.exec(line.trim());
     if (!m) continue;
     const slow = /wallSlowdown=([\d.]+)/.exec(m[6]);
-    out.push({ label: m[1], n: Number(m[2]), ok: m[3] === 'OK', underdriven: m[5] !== undefined, reason: m[4] ?? m[5] ?? null, wallSlowdown: slow ? Number(slow[1]) : null });
+    const ach = /(?:^|\s)achieved=([\d.]+)\/\d+/.exec(line.trim());
+    out.push({
+      label: m[1],
+      n: Number(m[2]),
+      ok: m[3] === 'OK',
+      underdriven: m[5] !== undefined,
+      reason: m[4] ?? m[5] ?? null,
+      wallSlowdown: slow ? Number(slow[1]) : null,
+      achieved: ach ? Number(ach[1]) : null,
+    });
   }
   return out;
 }
@@ -71,6 +80,11 @@ export interface CapacityRow {
   underdrivenAt: { n: number; reason: string } | null;
   /** Measured at the capacity step (null when there is none). */
   wallSlowdown: number | null;
+  /**
+   * Mean sessions in flight at the capacity step, capped at `capacity`; equals `capacity` when the
+   * log has no `achieved=` field. Every per-agent figure below divides by this, not by N.
+   */
+  activeAgents: number | null;
   coresPerAgent: number | null;
   sliceAnonMbPerAgent: number | null;
   sessionPeakMiB: { p50: number; p95: number } | null;
@@ -117,15 +131,16 @@ export function capacityRow(
   const passed = mine.filter((s) => s.ok && (!firstStop || s.n < firstStop.n));
   const best = passed.at(-1) ?? null;
   const capacity = best?.n ?? 0;
+  const activeAgents = best ? Math.min(capacity, best.achieved ?? capacity) : null;
   const usdPerHour = hourlyPriceUsd(machineType, diskGb);
   const spotPerHour = spotHourlyOrNull(machineType, diskGb);
   let coresPerAgent: number | null = null;
   let sliceAnonMbPerAgent: number | null = null;
-  if (best && atCapacity.capture && atCapacity.capture.samples.length > 1) {
+  if (best && activeAgents && atCapacity.capture && atCapacity.capture.samples.length > 1) {
     const s = summarize(atCapacity.capture);
-    coresPerAgent = s.totalCpuPct.mean / 100 / capacity;
+    coresPerAgent = s.totalCpuPct.mean / 100 / activeAgents;
     const t0 = (atCapacity.capture.samples[0].cg.anon ?? 0) / 2 ** 20;
-    sliceAnonMbPerAgent = Math.max(0, s.cgroupAnonMb.p95 - t0) / capacity;
+    sliceAnonMbPerAgent = Math.max(0, s.cgroupAnonMb.p95 - t0) / activeAgents;
   }
   const peaks = atCapacity.sessions.map((r) => r.memPeakBytes).filter((b): b is number => b !== null).map((b) => b / 2 ** 20);
   const diverged = atCapacity.sessions.filter((r) => r.toolDiverged === true).length;
@@ -137,24 +152,26 @@ export function capacityRow(
     saturatedAt: firstSat ? { n: firstSat.n, reason: firstSat.reason ?? '' } : null,
     underdrivenAt: firstStop?.underdriven ? { n: firstStop.n, reason: firstStop.reason ?? '' } : null,
     wallSlowdown: best?.wallSlowdown ?? null,
+    activeAgents,
     coresPerAgent,
     sliceAnonMbPerAgent,
     sessionPeakMiB: best && peaks.length ? { p50: pct(peaks, 50), p95: pct(peaks, 95) } : null,
     toolDivergedShare: best && atCapacity.sessions.length ? diverged / atCapacity.sessions.length : null,
     usdPerHour,
-    usdPerAgentMonth: capacity > 0 ? (usdPerHour * 730) / capacity : null,
-    usdPerAgentMonthSpot: capacity > 0 && spotPerHour !== null ? (spotPerHour * 730) / capacity : null,
+    usdPerAgentMonth: activeAgents ? (usdPerHour * 730) / activeAgents : null,
+    usdPerAgentMonthSpot: activeAgents && spotPerHour !== null ? (spotPerHour * 730) / activeAgents : null,
   };
 }
 
 const f = (x: number | null, d = 2) => (x === null ? '—' : x.toFixed(d));
 
 export function renderMarkdown(rows: readonly CapacityRow[]): string {
-  const head = '| machine | workload | capacity N | saturated at | slowdown at N | tool-diverged % | cores/agent | anon MB/agent | session peak MiB p50/p95 | $/h | $/agent-month | spot $/agent-month |';
-  const out = [head, '|' + ' --- |'.repeat(12)];
+  const head =
+    '| machine | workload | capacity N | saturated at | slowdown at N | tool-diverged % | cores/agent | anon MB/agent | session peak MiB p50/p95 | active agents at N | $/h | $/agent-month | spot $/agent-month |';
+  const out = [head, '|' + ' --- |'.repeat(13)];
   for (const r of rows) {
     out.push(
-      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} | ${r.usdPerAgentMonthSpot === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonthSpot)}`} |`,
+      `| ${r.machineType} | ${r.label} | ${r.censored ? '≥' : ''}${r.capacity} | ${r.saturatedAt ? `${r.saturatedAt.n} (${r.saturatedAt.reason})` : r.underdrivenAt ? `not measured past ${r.capacity} (underdriven at ${r.underdrivenAt.n}, ${r.underdrivenAt.reason})` : 'never'} | ${f(r.wallSlowdown)} | ${r.toolDivergedShare === null ? '—' : f(r.toolDivergedShare * 100, 0)} | ${f(r.coresPerAgent, 3)} | ${f(r.sliceAnonMbPerAgent, 0)} | ${r.sessionPeakMiB ? `${f(r.sessionPeakMiB.p50, 0)}/${f(r.sessionPeakMiB.p95, 0)}` : '—'} | ${f(r.activeAgents, 1)} | ${f(r.usdPerHour, 3)} | ${r.usdPerAgentMonth === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonth)}`} | ${r.usdPerAgentMonthSpot === null ? '—' : `${r.censored ? '≤' : ''}${f(r.usdPerAgentMonthSpot)}`} |`,
     );
   }
   return out.join('\n');

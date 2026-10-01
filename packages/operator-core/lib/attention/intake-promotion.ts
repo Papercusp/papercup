@@ -18,12 +18,15 @@
  *       (R-29).
  *   retry  → executes nothing: the input stays in intake (refused as not executable).
  *
- * Idempotency: every execution for one source is serialized by a transaction-scoped
- * advisory lock, and a promotion is keyed `intake-exec:<sourceId>:<sourceRevision>`.
- * The key is stored on the promoted item in the same insert that creates it, so a
- * retry, a double accept or an overlapping run looks the key up and converges on the
- * item instead of creating another. Graph edges and the source pointer are completed
- * idempotently on every convergence.
+ * Idempotency: a promotion is keyed `intake-exec:<sourceId>:<sourceRevision>`, and the
+ * key is stored on the promoted row in the same write that promotes it. A UNIQUE
+ * partial index on that key (migration 1298) makes "one row per key" a database
+ * guarantee: a double accept, an overlapping run or a retry racing a slow first
+ * attempt loses with a unique violation and converges on the row that already carries
+ * the key. Executions for one source are additionally serialized by a bounded,
+ * transaction-scoped advisory lock (so merge appends and dispositions do not
+ * interleave), but correctness against duplicate work never depends on that lock.
+ * Graph edges and the source pointer are completed idempotently on every convergence.
  *
  * Staleness: a promote/investigate decision is bound to the source revision the
  * resolver judged (`decision.sourceRevision`, stamped server-side at report time). An
@@ -35,7 +38,20 @@
  */
 import { isDeepStrictEqual } from 'node:util';
 
+// Static on purpose: a lazily `import()`ed DB accessor was observed resolving to two
+// different clients for two concurrent executors (one per first-use import), so their
+// advisory locks never contended. One module record ⇒ one client.
+import { getOrgPg } from '@papercusp/db-org';
+
 import type { BulkIntakeDecision } from './bulk-dispositions';
+import {
+  createIssue,
+  getIssue,
+  issueRef,
+  linkIssue,
+  mergeIssuePayload,
+  setIssueState,
+} from '../issues-engineer';
 import {
   acceptanceSourceRevision,
   createImplementationReadiness,
@@ -125,6 +141,8 @@ export interface IntakePromotionDeps {
   /** Run `fn` while holding transaction-scoped advisory locks on every id. */
   withLocks<T>(ids: readonly string[], fn: () => Promise<T>): Promise<T>;
   getItem(id: string): Promise<IntakeWorkItem | null>;
+  /** The one row carrying this promotion key (unique index, migration 1298). */
+  findByPromotionKey(key: string): Promise<IntakeWorkItem | null>;
   /** Every item whose `payload.intakeSource.id` names this source. */
   findPromotedFromSource(sourceId: string): Promise<IntakeWorkItem[]>;
   /** ONE insert carrying the whole payload (source link + acceptance + receipt). */
@@ -297,26 +315,25 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     const targetKind = intakeTargetKind(decision, source);
     const inPlace = !isObservation(source) && source.kind === targetKind;
 
-    // ── convergence: this exact promotion already happened ──────────────────
-    if (inPlace) {
-      const receipt = readIntakePromotionReceipt(source.payload);
-      if (receipt?.key === key) {
-        const verdict = evaluateImplementationAcceptance(source.payload, {
-          kind: source.kind,
-          title: source.title,
-          summary: source.body,
-        });
-        if (verdict.state === 'qualifying') {
-          return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: source.id, created: false, converged: true, mode: 'in-place' };
-        }
+    // ── convergence: this source revision was already promoted (one row per key) ──
+    const existing = await deps.findByPromotionKey(key);
+    if (existing && existing.id !== source.id) {
+      await completeDistinctPromotion(source, existing, input, key, deps);
+      return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: existing.id, created: false, converged: true, mode: 'distinct' };
+    }
+    if (existing) {
+      const verdict = evaluateImplementationAcceptance(source.payload, {
+        kind: source.kind,
+        title: source.title,
+        summary: source.body,
+      });
+      if (verdict.state === 'qualifying') {
+        return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: source.id, created: false, converged: true, mode: 'in-place' };
       }
-    } else {
+      // Receipt present but the row no longer qualifies: re-seal it under the same key below.
+    }
+    if (!inPlace) {
       const prior = await deps.findPromotedFromSource(source.id);
-      const same = prior.find((item) => readIntakePromotionReceipt(item.payload)?.key === key);
-      if (same) {
-        await completeDistinctPromotion(source, same, input, key, deps);
-        return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: same.id, created: false, converged: true, mode: 'distinct' };
-      }
       const earlier = prior.find((item) => !isTerminal(item) && readIntakePromotionReceipt(item.payload));
       if (earlier) {
         return {
@@ -382,11 +399,18 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         acceptedAt: now,
       });
       if (!sealed.ok) return sealRefusal(sealed, source.id);
-      const merged = await deps.mergePayload(source.id, {
-        implementationReadiness: readyReadiness(source.payload, sealed.contract, authority, now),
-        intakeSource: { id: source.id, mode: 'in-place', revision: sourceRevision },
-        intakePromotion: receipt,
-      });
+      let merged: IntakeWorkItem | null;
+      try {
+        merged = await deps.mergePayload(source.id, {
+          implementationReadiness: readyReadiness(source.payload, sealed.contract, authority, now),
+          intakeSource: { id: source.id, mode: 'in-place', revision: sourceRevision },
+          intakePromotion: receipt,
+        });
+      } catch (error) {
+        const converged = await convergeOnKeyConflict(error, source, input, key, deps);
+        if (converged) return converged;
+        throw error;
+      }
       if (!merged) return { ok: false, refusal: 'source-not-found', detail: `${source.id} disappeared during promotion` };
       return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: source.id, created: false, converged: false, mode: 'in-place' };
     }
@@ -403,28 +427,70 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
       acceptedAt: now,
     });
     if (!sealed.ok) return sealRefusal(sealed, source.id);
-    const created = await deps.createItem({
-      kind: targetKind,
-      title,
-      body,
-      scope: source.scope,
-      severity: source.severity ?? null,
-      createdBy: decision.decidedBy,
-      payload: {
-        implementationReadiness: readyReadiness(undefined, sealed.contract, authority, now),
-        intakeSource: {
-          id: source.id,
-          mode: 'distinct',
-          revision: sourceRevision,
-          observation: isObservation(source),
-          kind: source.kind,
+    let created: IntakeWorkItem;
+    try {
+      created = await deps.createItem({
+        kind: targetKind,
+        title,
+        body,
+        scope: source.scope,
+        severity: source.severity ?? null,
+        createdBy: decision.decidedBy,
+        payload: {
+          implementationReadiness: readyReadiness(undefined, sealed.contract, authority, now),
+          intakeSource: {
+            id: source.id,
+            mode: 'distinct',
+            revision: sourceRevision,
+            observation: isObservation(source),
+            kind: source.kind,
+          },
+          intakePromotion: receipt,
         },
-        intakePromotion: receipt,
-      },
-    });
+      });
+    } catch (error) {
+      const converged = await convergeOnKeyConflict(error, source, input, key, deps);
+      if (converged) return converged;
+      throw error;
+    }
     await completeDistinctPromotion(source, created, input, key, deps);
     return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: created.id, created: true, converged: false, mode: 'distinct' };
   });
+}
+
+/** The unique index that fences one row per promotion key (migration 1298). */
+export const INTAKE_PROMOTION_KEY_INDEX = 'work_items_intake_promotion_key_uniq';
+
+/** Is this (possibly wrapped) error a unique violation of the promotion-key fence? */
+export function isPromotionKeyConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth += 1) {
+    const e = current as { code?: unknown; constraint_name?: unknown; constraint?: unknown; message?: unknown; cause?: unknown };
+    if (e.code === '23505') {
+      const constraint = String(e.constraint_name ?? e.constraint ?? '');
+      if (constraint === INTAKE_PROMOTION_KEY_INDEX || String(e.message ?? '').includes(INTAKE_PROMOTION_KEY_INDEX)) return true;
+    }
+    current = e.cause;
+  }
+  return false;
+}
+
+/** A concurrent executor won the key: converge on its row instead of failing. */
+async function convergeOnKeyConflict(
+  error: unknown,
+  source: IntakeWorkItem,
+  input: IntakeExecutionInput,
+  key: string,
+  deps: IntakePromotionDeps,
+): Promise<IntakeExecutionResult | null> {
+  if (!isPromotionKeyConflict(error)) return null;
+  const winner = await deps.findByPromotionKey(key);
+  if (!winner) return null;
+  if (winner.id === source.id) {
+    return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: source.id, created: false, converged: true, mode: 'in-place' };
+  }
+  await completeDistinctPromotion(source, winner, input, key, deps);
+  return { ok: true, outcome: 'promoted', sourceId: source.id, workItemId: winner.id, created: false, converged: true, mode: 'distinct' };
 }
 
 function sealRefusal(
@@ -665,31 +731,51 @@ function toIntakeWorkItem(issue: {
   };
 }
 
+/**
+ * Bound on WAITING for another executor's lock (never on holding it). The holder pins
+ * one pooled connection for its transaction while its writes use others, so an
+ * unbounded queue of waiters could pin the whole pool; a waiter past this budget fails
+ * with PG 55P03 and its bulk item is recorded as failed and retryable. Duplicate work
+ * is fenced by the unique index regardless (migration 1298).
+ */
+export const INTAKE_LOCK_WAIT_BUDGET_MS = 10_000;
+
 export function defaultIntakePromotionDeps(): IntakePromotionDeps {
-  const issues = () => import('../issues-engineer');
-  const orgSql = async () => (await import('@papercusp/db-org')).getOrgPg().sql;
+  const orgSql = () => getOrgPg().sql;
   return {
     async withLocks(ids, fn) {
-      const sql = await orgSql();
       const keys = [...new Set(ids)].sort();
       // The advisory locks live for this transaction; `fn` runs while it is open,
       // so every executor for an overlapping source waits here and then sees the
       // committed result of the one before it.
       let result!: Awaited<ReturnType<typeof fn>>;
-      await sql.begin(async (tx) => {
+      await orgSql().begin(async (tx) => {
+        await tx`SELECT set_config('lock_timeout', ${String(INTAKE_LOCK_WAIT_BUDGET_MS)}, true)`;
         for (const id of keys) {
           await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`intake-exec:${id}`}, 0))`;
         }
+        await tx`SELECT set_config('lock_timeout', '0', true)`;
         result = await fn();
       });
       return result;
     },
     async getItem(id) {
-      const issue = await (await issues()).getIssue(id);
+      const issue = await getIssue(id);
+      return issue ? toIntakeWorkItem(issue) : null;
+    },
+    async findByPromotionKey(key) {
+      const rows = await orgSql()<{ feature_id: string }[]>`
+        SELECT feature_id
+          FROM harness_shared.work_items
+         WHERE payload ? 'intakePromotion'
+           AND payload -> 'intakePromotion' ->> 'key' = ${key}
+         LIMIT 1`;
+      if (!rows[0]) return null;
+      const issue = await getIssue(rows[0].feature_id);
       return issue ? toIntakeWorkItem(issue) : null;
     },
     async findPromotedFromSource(sourceId) {
-      const sql = await orgSql();
+      const sql = orgSql();
       const rows = await sql<{ feature_id: string }[]>`
         SELECT w.feature_id
           FROM harness_shared.work_items w
@@ -699,16 +785,15 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
            AND w.payload -> 'intakeSource' ->> 'id' = ${sourceId}
            AND w.feature_id <> ${sourceId}
          ORDER BY w.created_ts`;
-      const mod = await issues();
       const items: IntakeWorkItem[] = [];
       for (const row of rows) {
-        const issue = await mod.getIssue(row.feature_id);
+        const issue = await getIssue(row.feature_id);
         if (issue) items.push(toIntakeWorkItem(issue));
       }
       return items;
     },
     async createItem(input) {
-      const created = await (await issues()).createIssue({
+      const created = await createIssue({
         kind: input.kind,
         title: input.title,
         body: input.body,
@@ -720,19 +805,17 @@ export function defaultIntakePromotionDeps(): IntakePromotionDeps {
       return toIntakeWorkItem(created);
     },
     async mergePayload(id, patch) {
-      const merged = await (await issues()).mergeIssuePayload(id, patch);
+      const merged = await mergeIssuePayload(id, patch);
       return merged ? toIntakeWorkItem(merged) : null;
     },
     async link(srcId, dstId, rel, by) {
-      const mod = await issues();
-      await mod.linkIssue(srcId, mod.issueRef(dstId), rel, by);
+      await linkIssue(srcId, issueRef(dstId), rel, by);
     },
     async closeAsDuplicate(id, _targetId, by, reason) {
-      await (await issues()).setIssueState(id, 'dropped', by, reason);
+      await setIssueState(id, 'dropped', by, reason);
     },
     async latestOccurrenceId(id) {
-      const sql = await orgSql();
-      const rows = await sql<{ latest: string | number | null }[]>`
+      const rows = await orgSql()<{ latest: string | number | null }[]>`
         SELECT max(occurrence_id) AS latest
           FROM harness_shared.work_item_occurrences
          WHERE canonical_work_item_id = ${id}`;

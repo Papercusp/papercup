@@ -21,13 +21,18 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/set-plan-status-terminal-clear.integration.test.ts
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import setPlanStatusTool from '../set-plan-status';
 import { getRubric, proposeRubric } from '../../../rubrics';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { runWithWorkspace } from '../../../workspace-als';
 import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
+
+const mocks = vi.hoisted(() => ({ evaluatePlanAcceptanceGate: vi.fn() }));
+vi.mock('../../../plan-acceptance-gate', () => ({
+  evaluatePlanAcceptanceGate: mocks.evaluatePlanAcceptanceGate,
+}));
 
 const HARNESS = `zzz-sps-term-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'zzz-sps-term-plan-2026-06-16';
@@ -93,7 +98,7 @@ async function seedStartedPlan(status: 'draft' | 'ready' | 'superseded' | 'shipp
   await seedPlan(admin, WS, HARNESS, SLUG, planBody(status));
   await admin`
     UPDATE harness_shared.harness_plans
-       SET op_status = 'started', op_started_at = now(), op_updated_at = now()
+       SET status = ${status}, op_status = 'started', op_started_at = now(), op_updated_at = now()
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
   `;
 }
@@ -151,6 +156,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await cleanupAcceptanceRubric().catch(() => {});
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
+  mocks.evaluatePlanAcceptanceGate.mockReset();
+  mocks.evaluatePlanAcceptanceGate.mockResolvedValue({ satisfied: true });
 });
 
 describe('plans:set-plan-status — terminal set clears the started op-row', () => {
@@ -199,7 +206,17 @@ describe('plans:set-plan-status — terminal set clears the started op-row', () 
   });
 
   it('a terminal-NOOP at shipped clears a started row too (other terminal status)', async () => {
-    await seedStartedPlan('shipped');
+    await seedStartedPlan('ready');
+    const shipped = await runSetPlanStatus('shipped');
+    expect(shipped.isError, JSON.stringify(shipped.data)).toBe(false);
+    expect(shipped.data).toMatchObject({ ok: true, changed: true, newStatus: 'shipped' });
+
+    // Recreate the legacy inconsistent op-state after the valid gated ship.
+    await admin`
+      UPDATE harness_shared.harness_plans
+         SET op_status = 'started', op_started_at = now(), op_updated_at = now()
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
     expect(await opStatus()).toBe('started');
 
     const { data, isError } = await runSetPlanStatus('shipped', 'shipped');

@@ -185,12 +185,16 @@ describe('plans:set-plan-status — deprecate emits a learnings observation (B10
     expect(await observationRows()).toHaveLength(0);
   });
 
-  it('learnings on a NON-superseded status (draft→ready) is ignored (deprecate-only)', async () => {
-    await seedPlan(admin, WS, HARNESS, SLUG, planBody('draft'));
+  it('learnings on a NON-superseded status (ready→draft) is ignored (deprecate-only)', async () => {
+    await seedPlan(admin, WS, HARNESS, SLUG, planBody('ready'));
+    await admin`
+      UPDATE harness_shared.harness_plans SET status = 'ready'
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
 
-    const { data, isError } = await runDeprecate({ status: 'ready', learnings: LEARNINGS });
+    const { data, isError } = await runDeprecate({ status: 'draft', learnings: LEARNINGS });
     expect(isError, JSON.stringify(data)).toBe(false);
-    expect(data).toMatchObject({ ok: true, newStatus: 'ready' });
+    expect(data).toMatchObject({ ok: true, newStatus: 'draft' });
     expect(data.learningsObservation).toBeUndefined();
     expect(await observationRows()).toHaveLength(0);
   });

@@ -67,7 +67,13 @@ const db = vi.hoisted(() => {
       }];
     }
     const known = knownFrom(strings, values);
-    return (rows.shift() ?? []).map((row) => toWire(row, known));
+    const selectorAt = strings.findIndex((part) => part.endsWith('::bigint IS NULL OR s.id = '));
+    const callerAdvSessionId = selectorAt < 0 ? null : values[selectorAt];
+    return (rows.shift() ?? [])
+      .filter((row) => callerAdvSessionId == null ||
+        (row as Record<string, unknown>).adv_session_id != null &&
+        String((row as Record<string, unknown>).adv_session_id) === String(callerAdvSessionId))
+      .map((row) => toWire(row, known));
   });
   return { rows, sql, bodies, bodyReads, loadOverrides, failClient: false };
 });
@@ -238,6 +244,39 @@ describe('control-anchor kernel resolver (D-030)', () => {
       executionRevision: REVISION_A,
       policyRevision: 'control:9',
     });
+  });
+
+  it('selects the verified native caller row instead of a newer re-armed predecessor', async () => {
+    db.rows.push([
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 31595, adv_session_xmin: '901',
+      }),
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 32433, adv_session_xmin: '902',
+      }),
+    ]);
+
+    const state = await readControlAnchorKernelState(request({
+      ctx: ctx({ advSessionId: 32433 }),
+    }));
+
+    expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '32433', rowVersion: '902' });
+    const [template, ...values] = db.sql.mock.calls[0] as unknown[];
+    const anchorSql = (template as readonly string[]).join(' ');
+    expect(anchorSql).toContain('OR s.id = ');
+    expect(values).toContain(32433);
+  });
+
+  it('fails closed when the verified native caller row is missing', async () => {
+    db.rows.push([
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 31595, adv_session_xmin: '901',
+      }),
+    ]);
+
+    await expect(controlAnchorKernelResolver(request({
+      ctx: ctx({ advSessionId: 32433 }),
+    }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
   });
 
   it('carries the database-owned launch row version into identity enforcement', async () => {

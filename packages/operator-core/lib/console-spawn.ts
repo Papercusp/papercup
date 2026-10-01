@@ -35,17 +35,19 @@ import {
   closeSync,
   chmodSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
 import type { ColorScheme } from './console-color-schemes';
@@ -594,10 +596,31 @@ export function buildConsoleOneliner(
  * that consumes host resources and hides the real failure from the process
  * liveness probe.
  */
+/**
+ * Mirror only stderr: piping stdout would remove the launcher's real TTY and
+ * change managed-PTY startup. The bounded tail is flushed before the status
+ * sentinel, so the poller cannot observe a footer without the actual refusal.
+ * Keep the capture shell-local and Bash 3.2 compatible (macOS).
+ */
+function greetingWithBootDiagnostics(command: string, receiptPath?: string | null): string {
+  const greeting = `(eval ${shellEscape(command)})`;
+  if (!receiptPath) return greeting;
+  const mirror =
+    `tee >(umask 077; tail -c 16384 >> ${shellEscape(receiptPath)} || cat >/dev/null) >&2; ` +
+    `wait "$!" 2>/dev/null || true`;
+  return [
+    `${greeting} 2> >(${mirror})`,
+    '__papercusp_boot_rc=$?',
+    '__papercusp_boot_tee=$!',
+    'wait "$__papercusp_boot_tee" 2>/dev/null || true',
+    '(exit "$__papercusp_boot_rc")',
+  ].join('; ');
+}
+
 function runCommandAndExit(command: string, opts?: { receiptPath?: string | null }): string {
   const receiptTee = opts?.receiptPath ? ` | tee -a ${shellEscape(opts.receiptPath)}` : '';
   return [
-    `(eval ${shellEscape(command)})`,
+    greetingWithBootDiagnostics(command, opts?.receiptPath),
     `__papercusp_greeting_rc=$?`,
     `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
       `printf '\\n[papercusp] initial terminal command exited with status %s; headless launch exiting.\\n' ` +
@@ -659,7 +682,7 @@ export function keepWindowOpenOnFailure(
   const interactiveScript = [
     terminalPidReceipt,
     opts?.interactivePrelude,
-    `(eval ${shellEscape(command)})`,
+    greetingWithBootDiagnostics(command, opts?.receiptPath),
     banner,
     `exec "\${SHELL:-/bin/bash}" -l`,
   ]
@@ -1484,10 +1507,9 @@ async function pollConsoleBootReceipt(
     const failed = HEADLESS_GREETING_FAILURE_RE.exec(readLog(receiptPath));
     if (failed) {
       const tail = readLog(receiptPath).trim().slice(-800);
-      try {
-        unlinkSync(receiptPath);
-      } catch {
-        /* best-effort */
+      const retained = existsSync(receiptPath);
+      if (!retained && receiptPath.endsWith('/boot.log')) {
+        try { rmdirSync(dirname(receiptPath)); } catch { /* absent/unavailable diagnostic only */ }
       }
       return {
         status: 'error',
@@ -1496,7 +1518,8 @@ async function pollConsoleBootReceipt(
           ' — the one-liner `exec`s a login shell after the greeting regardless, so the window' +
           ' stays open holding a DEAD session and this never surfaced as a process exit' +
           ` (EI-19330040718883562, the visible-path sibling of spawnHeadless's` +
-          ` EI-19311623077693508 boot receipt)${tail ? ` — receipt tail: ${tail}` : ''}`,
+          ` EI-19311623077693508 boot receipt) — boot receipt ${retained ? 'retained' : 'unavailable'}: ${receiptPath}` +
+          `${tail ? ` — receipt tail: ${tail}` : ''}`,
         code: 502,
       };
     }
@@ -1505,6 +1528,9 @@ async function pollConsoleBootReceipt(
   }
   try {
     unlinkSync(receiptPath); // healthy launch (or nothing was ever written) — nothing to keep
+    if (receiptPath.endsWith('/boot.log') && dirname(receiptPath).includes('papercup-console-receipt-')) {
+      rmdirSync(dirname(receiptPath)); // only our empty, private receipt directory
+    }
   } catch {
     /* best-effort */
   }
@@ -1584,10 +1610,7 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   //      null (the default) flows straight through buildConsoleOneliner to an
   //      unmodified banner, so an opted-out caller sees zero behavior change.
   const receiptPath = opts.verifyBootReceipt
-    ? join(
-        tmpdir(),
-        `papercup-console-receipt-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
-      )
+    ? join(mkdtempSync(join(tmpdir(), 'papercup-console-receipt-')), 'boot.log')
     : null;
   const terminalPidReceiptPath = opts.captureTerminalPid
     ? join(

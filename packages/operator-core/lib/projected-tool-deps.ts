@@ -342,6 +342,17 @@ export async function readControlAnchorKernelState(
         : null;
   if (!workspaceId) return null;
 
+  // A native MCP caller may carry the exact adv_sessions row that the host
+  // verified for its native CLI session. Without it, owner/workspace selection
+  // can choose a re-armed dead predecessor whose started_at was refreshed.
+  const requestedAdvSessionId = request.ctx.advSessionId;
+  const callerAdvSessionId =
+    typeof requestedAdvSessionId === 'number' &&
+    Number.isSafeInteger(requestedAdvSessionId) &&
+    requestedAdvSessionId > 0
+      ? requestedAdvSessionId
+      : null;
+
   const { sql } = getOrgPg();
   // WI-10002721: the hot read carries the launch record's HEADER only — its
   // type and the two top-level fields the identity gate keys and checks on —
@@ -356,7 +367,7 @@ export async function readControlAnchorKernelState(
   // moves xmin — so the last header seen for this (owner, workspace) is passed
   // back in, and the CASE guards skip the detoast while the newest row is still
   // that exact (id, xmin) (measured: 16 buffers, 0.12ms).
-  const memoKey = JSON.stringify([ownerId, workspaceId]);
+  const memoKey = JSON.stringify([ownerId, workspaceId, callerAdvSessionId]);
   const knownHeader = launchHeaderMemo.get(memoKey);
   const knownId = knownHeader?.sessionId ?? null;
   const knownXmin = knownHeader?.rowVersion ?? null;
@@ -416,6 +427,7 @@ export async function readControlAnchorKernelState(
                       ELSE s.launch_spec->'acceptedOperation' END AS launch_spec_accepted_operation
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
+             AND (${callerAdvSessionId}::bigint IS NULL OR s.id = ${callerAdvSessionId})
            ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
            LIMIT 1
         ) a ON true
@@ -427,6 +439,17 @@ export async function readControlAnchorKernelState(
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;
     stateRow = undefined;
+  }
+  if (callerAdvSessionId !== null) {
+    const selectedAdvSessionId =
+      stateRow?.adv_session_id == null ? null : String(stateRow.adv_session_id);
+    if (selectedAdvSessionId !== String(callerAdvSessionId)) {
+      // A verified caller row that vanished (or no longer matches this owner
+      // and workspace) is unavailable authority. Do not fall through to the
+      // legacy missing-row recovery path or another session's launch record.
+      controlReadFailed = true;
+      stateRow = undefined;
+    }
   }
 
   let powerUserRevoked = false;

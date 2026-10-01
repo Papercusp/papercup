@@ -30,7 +30,7 @@
  * {@link narrowIdentityHistory} is the JavaScript statement of the same
  * contract. The real-PostgreSQL test holds the SQL to it.
  */
-import type { Sql } from 'postgres';
+import type { Fragment, Sql } from 'postgres';
 
 /** The pair a receipt is selected by (the kernel's `KernelExecutionRevision`). */
 export interface IdentityReceiptRevision {
@@ -75,6 +75,38 @@ export function narrowIdentityHistory(record: unknown, revisions: readonly unkno
 }
 
 /**
+ * The narrowing as ONE SQL fragment over `n.launch_spec`: the caller selects
+ * its launch record into a derived table aliased `n` and interpolates this as
+ * the output column. Both selections (the gate's body read below, and
+ * control-anchor's `readGateSelectedLaunchSpec`) share it, so the SQL that
+ * the real-PostgreSQL test holds to {@link narrowIdentityHistory} is the SQL
+ * every reader runs. `revisions: null`, or a malformed pair, keeps the value
+ * whole.
+ */
+export function narrowedLaunchSpecSql(sql: Sql, revisions: readonly unknown[] | null): Fragment {
+  const want = revisions === null ? null : revisionsParam(revisions);
+  if (want === null) return sql`n.launch_spec`;
+  // `::text::jsonb`, never a bare `::jsonb`: a parameter the server types as
+  // jsonb is JSON-encoded AGAIN by postgres.js, turning the array into a jsonb
+  // string that matches no receipt (the WI-10002717 seeding trap).
+  return sql`CASE
+      WHEN jsonb_typeof(n.launch_spec) = 'object'
+       AND jsonb_typeof(n.launch_spec->'identityHistory') = 'array'
+      THEN jsonb_set(n.launch_spec, '{identityHistory}', COALESCE((
+             SELECT jsonb_agg(e.h ORDER BY e.ord)
+               FROM jsonb_array_elements(n.launch_spec->'identityHistory') WITH ORDINALITY AS e(h, ord)
+              WHERE jsonb_typeof(e.h) = 'object'
+                AND EXISTS (
+                  SELECT 1
+                    FROM jsonb_array_elements(${want}::text::jsonb) AS r(v)
+                   WHERE e.h->'specificationRevision' = r.v->'specificationRevision'
+                     AND e.h->'stateRevision' = r.v->'stateRevision')
+           ), '[]'::jsonb))
+      ELSE n.launch_spec
+    END`;
+}
+
+/**
  * Read one launch record body with identityHistory narrowed to `revisions`, at
  * the row version it was read at. Selection is the identity gate's body read
  * verbatim (row id + owner + workspace). `revisions: null` reads the record whole.
@@ -88,31 +120,13 @@ export async function selectNarrowedLaunchSpecBody(
     revisions: readonly unknown[] | null;
   },
 ): Promise<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>> {
-  const want = input.revisions === null ? null : revisionsParam(input.revisions);
-  // `::text::jsonb`, never a bare `::jsonb`: a parameter the server types as
-  // jsonb is JSON-encoded AGAIN by postgres.js, turning the array into a jsonb
-  // string that matches no receipt (the WI-10002717 seeding trap).
   return sql<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>>`
-    SELECT CASE
-             WHEN w.want IS NULL THEN s.launch_spec
-             WHEN jsonb_typeof(s.launch_spec) = 'object'
-              AND jsonb_typeof(s.launch_spec->'identityHistory') = 'array'
-             THEN jsonb_set(s.launch_spec, '{identityHistory}', COALESCE((
-                    SELECT jsonb_agg(e.h ORDER BY e.ord)
-                      FROM jsonb_array_elements(s.launch_spec->'identityHistory') WITH ORDINALITY AS e(h, ord)
-                     WHERE jsonb_typeof(e.h) = 'object'
-                       AND EXISTS (
-                         SELECT 1
-                           FROM jsonb_array_elements(w.want) AS r(v)
-                          WHERE e.h->'specificationRevision' = r.v->'specificationRevision'
-                            AND e.h->'stateRevision' = r.v->'stateRevision')
-                  ), '[]'::jsonb))
-             ELSE s.launch_spec
-           END AS launch_spec,
-           s.xmin::text AS launch_spec_xmin
-      FROM harness_shared.adv_sessions s
-     CROSS JOIN (SELECT ${want}::text::jsonb AS want) AS w
-     WHERE s.id = ${input.advSessionId} AND s.coord_owner_id = ${input.ownerId} AND s.workspace_id = ${input.workspaceId}
-     LIMIT 1
+    SELECT ${narrowedLaunchSpecSql(sql, input.revisions)} AS launch_spec, n.launch_spec_xmin
+      FROM (
+        SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin
+          FROM harness_shared.adv_sessions s
+         WHERE s.id = ${input.advSessionId} AND s.coord_owner_id = ${input.ownerId} AND s.workspace_id = ${input.workspaceId}
+         LIMIT 1
+      ) AS n
   `;
 }

@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   compareLegs,
+  compareSourceGroupedLegs,
   classesDisagree,
   ALL_ANSWERABLE,
   DECISION_RELEVANT_DELTA_MRR,
@@ -25,6 +26,41 @@ function rows(cls: string, rr: number[], prefix = 'q'): PerQueryRow[] {
     top1Score: 0.5,
   }));
 }
+
+describe('independent source-target comparisons', () => {
+  const entries = ['a', 'b', 'c'].map((key) => ({ key, metadata: { cluster: key } }));
+  const queries = ['lexical-gap', 'exact-identifier', 'session-start-intent'].flatMap((cls) =>
+    ['a', 'b', 'c'].map((group) => ({ id: `${cls}-${group}`, class: cls, group, expected: [group] })));
+  const outcomes = queries.map((q) => ({ ...q, firstRelevantRank: 1, reciprocalRank: 1, top1Score: 0.5 }));
+  it('resamples sources rather than repeated questions, and keeps positive classes separate', () => {
+    const repeated = [...queries, { ...queries[0], id: 'repeat-a' }];
+    const a = [...outcomes, { ...outcomes[0], id: 'repeat-a' }];
+    const b = a.map((r) => ({ ...r, reciprocalRank: r.group === 'a' ? 0 : 1 }));
+    const cmp = compareSourceGroupedLegs('a', a, 'b', b, entries, repeated);
+    expect(cmp.byClass['lexical-gap'].sourceTargets).toBe(3);
+    expect(cmp.byClass['lexical-gap'].queryCount).toBe(4);
+    expect(cmp.byClass['lexical-gap'].comparison.delta.point).toBeCloseTo(-1 / 3);
+    expect(cmp.byClass['exact-identifier'].sourceTargets).toBe(3);
+    expect(cmp.decisionMargin).toBe(0.03);
+  });
+  it('unions co-relevant sources and refuses to resolve power from one source', () => {
+    const joined = queries.map((q) => ({ ...q, expected: ['a', 'b', 'c'] }));
+    const cmp = compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, joined);
+    expect(cmp.byClass.ALL_ANSWERABLE.sourceTargets).toBe(1);
+    expect(cmp.byClass.ALL_ANSWERABLE.marginResolved).toBe(false);
+  });
+  it('rejects omitted, duplicate and misclassified outcomes before bootstrapping', () => {
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', outcomes.slice(1), entries, queries)).toThrow('incomplete');
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', [outcomes[0], ...outcomes.slice(0, -1)], entries, queries)).toThrow('duplicate');
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', outcomes.map((r) => ({ ...r, class: 'hard-negative' })), entries, queries)).toThrow('identity');
+  });
+  it('resolves the frozen margin only with an interval on one side or entirely within it', () => {
+    const better = outcomes.map((r) => ({ ...r, reciprocalRank: 0.5 }));
+    expect(compareSourceGroupedLegs('a', better, 'b', outcomes, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('improvement-above-margin');
+    expect(compareSourceGroupedLegs('a', outcomes, 'b', better, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('loss-above-margin');
+    expect(compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('inside-margin');
+  });
+});
 
 describe('compareLegs', () => {
   it('reports a real degradation as candidate-worse with a CI excluding zero', () => {

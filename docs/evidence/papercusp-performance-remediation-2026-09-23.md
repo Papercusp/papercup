@@ -3817,3 +3817,105 @@ the maintained private-PG fixture now checks that behavior and sweep freshness.
 This is no measurement of production latency, long shared-host sweep cause,
 shared adoption, or sustained profiler overhead. D-006 remains binding, and
 **P-008/R-8 remains open**.
+
+### Current frozen mixed-record replay — October 1, 11:34Z
+
+WI-10002830 refreshed the frozen-tail measurement after the redaction,
+metadata-identity reuse and selected-home config changes. The original ended
+Codex rollout in managed `session-32189` still hashes to
+`daf3b19c556879679f73cc71e49822eda166ac5756cfffb19586787ffd16f4a7`.
+Its last 100 complete JSONL records remain 214,497 bytes, SHA-256
+`aca19605813043b6c1ba7d82bd89344f50c90aee1bddf47bcd51aec0064eb37e`.
+The temporary snapshot had mode 0600, stayed outside the repository, and was
+removed after verification. No transcript text is included in this evidence.
+
+The maintained canonical command was:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp TEST_INGEST_CORPUS_PATH=/tmp/p008-frozen-tail-fire68.jsonl npm run test:file -- packages/operator-core/lib/search/session-ingest-runtime.integration.test.ts
+```
+
+It passed **2/2 tests, zero skipped, exit 0**. Both children exercised the
+existing `--isolated-runtime` route with a private migrated PostgreSQL database,
+HOME and workspace, stripped live credentials, and background workers enabled.
+PIDs were 3496815 and 3524061, Node `v25.9.0`; both recorded HEAD
+`9800a28622a15e6d9b0e86ba582f2087b3947e9f`. Router start and end HEAD agreed;
+the named test file was clean. Source and fixture hashes remained
+`6934df03e7d3da888bbf30fc63d1493f275bbf5a860edcd69ce965af6fb09871`
+and `6b5e1b460479ff96fffb878bf04d1fd2ead0c68e685933dd4c24a155384d54ce`.
+This is named-source provenance, not a frozen inventory of the entire import
+graph.
+
+The current preflight derives 240 turns and 2,160 parts per useful sweep from
+the frozen parser input. Four repeats over 80 changed tails among 4,800
+candidates produce **960 turns and 8,640 parts per child**, verified by private
+database readback. Workload descriptor SHA-256 is
+`4608adf5589cf5b4c494d69b704a60b1c64401e6446fcc09a654f9501f396d58`.
+Matched unchanged sweeps insert zero turns/parts. Every useful and matched
+unchanged sweep reads config 320 times/17,600 bytes and diagnostics 4,800
+times/182,400 bytes. The same fixture also verifies malformed-newer-ID
+selection, missing config, next-sweep config freshness and explicit launch
+settings. Both children verified removal of the private HOME/datadir and
+connection refusal on their database ports, 34285 and 39395.
+
+| Child / useful pass | CPU profiler | Sweep wall ms | Decode wall ms | Write wall ms | Process CPU user + system ms |
+|---|---|---:|---:|---:|---:|
+| 3496815 / 1 | off | 5,083 | 319.7 | 4,359.7 | 1,096.226 |
+| 3496815 / 2 | off | 2,179 | 274.3 | 1,493.9 | 920.218 |
+| 3496815 / 3 | off | 2,423 | 312.3 | 1,692.0 | 907.170 |
+| 3496815 / 4 | off | 6,031 | 295.4 | 5,344.0 | 816.323 |
+| 3524061 / 1 | off | 1,768 | 297.3 | 1,014.1 | 1,108.584 |
+| 3524061 / 2 | on | 6,870 | 299.4 | 6,130.6 | 1,127.614 |
+| 3524061 / 3 | on | 1,711 | 309.8 | 909.0 | 1,001.596 |
+| 3524061 / 4 | off | 3,944 | 357.4 | 2,994.7 | 1,052.447 |
+
+These phase spans include awaited operations; they are not phase CPU
+measurements. Process CPU covers all child threads. Useful-pass sampling
+startup cost was 84.681/97.936 ms, with 47/683 and 44/170 ingestion-source
+samples. The large write-wall variation in both profiler modes does not
+establish a sustained profiler-overhead ratio or its cause. This private
+workload does not reproduce the dated long shared-host sweep, nor identify
+its wait mechanism or application impact.
+
+Receipts:
+
+- `/tmp/p008-frozen-runtime-20261001-fire68.log`, SHA-256
+  `cb278381b518d5ef0a0222fab51187955ffe9f96c76bab00265c18fa15f8b257`.
+- `/tmp/p008-frozen-runtime-20261001-fire68-summary.json`, SHA-256
+  `6658dafbc6dcd44824ae59597157b800b2c4af012ca850c34a240efcd5cc5900`;
+  derived counts, phase costs, private identities and named dependency hashes.
+
+This supersedes the 03:07Z proof's applicability to current ingestion source;
+the dated receipt remains historical evidence. D-006 still forbids a worker
+restart of the shared background host. R-8 revision 4 requires live/operational
+causal closure or an evidenced non-defect disposition for each named lead.
+**P-008/R-8 remains open; no acceptance binding or shipment is claimed.**
+
+### R-8 revision-4 remaining evidence census — October 1, 11:41Z
+
+This census follows the six lead groups named in live BAR `R-8`, hash
+`8b105b4e0b7f664e97ebe433bb15543131b061365f3a004ab97cc6dbf13e83c7`.
+It records the remaining acceptance work; it is not a terminal disposition.
+Existing dated evidence below is retained without rerunning unchanged tests.
+
+| Named lead | Verified evidence retained | Still needed for live/operational disposition |
+|---|---|---|
+| Gateway/proxy failures | Local-shed HTTP regressions distinguish zero upstream attempts from an upstream 429; saved three-file matrix passed 268 tests. The selected paired-reset guard shows that one socket error produces both log categories. | Correlate the named operational failures with request/cancellation IDs and loaded gateway/proxy source. Category counts alone do not establish independent failures or explain app latency. |
+| Portal watchdog timeouts | The failed systemd-notify barrier is a measured precursor in EI-24354725412855158; a nonblocking-watchdog mitigation is not a confirmed root-cause fix. | Re-establish the legitimate Portal driver and its provider/runtime/notifier evidence. The 11:41Z authoritative item read is open with no assignee; earlier leader-held receipts are dated. Portal remains outside this worker's execution route. |
+| Repeated background work / ingestion | WI-10002822 is done with the one-shot boot-gate cause and maintained retry fix; its saved recovery receipt remains dated. Ingestion source guards and the current frozen private replay verify redaction, metadata/config selection, incremental writes and cleanup. | The long shared ingestion sweep still lacks a distinguishing live wait/CPU mechanism and app-impact trace. Private replay did not reproduce it. Shared adoption requires the D-006 coordinated runtime-owner route. Embedding fallback and scheduler warning guards do not establish historical latency causes. |
+| Migration rendezvous waits | Existing backup watchdog tests distinguish growing, stalled and ceiling-limited producers using scaled deadlines. Private-PG migration tests distinguish attempted from inserted reservations while preserving a peer reservation and backup guards. | Retain exact original backup-producer progress and rendezvous correlation, verify any live extension past the production 2,700-second stall floor, and establish relevant loaded-source adoption. A held backup lock alone is not a wedge. |
+| Historical account polling | The exact frozen 1,488-call population lacks a triggering-frame field. Maintained IPC and private-PG tests reproduce unrelated account refreshes and no-op write amplification, and verify their source fixes. | Historical producer mix and its app-latency contribution remain unknown; consumer identity is not emitter attribution. Current PUI and producer adoption require operational evidence. |
+| Expensive diagnostic scans | The native DO launch, full query and shell timeout are archived. Private psql tests distinguish frontend termination from continued backend execution; caller-deadline guards verify rollback of expired continuation. | The original task-to-backend-PID linkage, server bounds and app impact remain unproved. A current ledger miss plus retention policy cannot distinguish deletion from absent registration; active/null-wait labels do not prove CPU consumption or launcher identity. |
+
+The 11:30Z current-build route read reported shared bg-host build
+`50b2351ce3` with `containsChange:false` for the ingestion path, using the
+`start-after-mtime` method. That receipt is scoped to that path and time;
+it does not certify the adoption of other components. The worker sent the
+fleet leader one request to route coordinated shared-host adoption and a
+bounded operational trace, establish Portal's driver, and handle newly
+harvested observation EI-24775735048259377. No shared-host restart, Portal
+edit, live-gate operation or parallel monitor was performed.
+
+The remaining claims require those specific operational inputs or a
+distinguishing measurement, not another unchanged private-fixture run.
+**WI-10002830 and R-8 remain open.**

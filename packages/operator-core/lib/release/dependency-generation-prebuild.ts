@@ -17,7 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -104,7 +104,31 @@ export interface DependencyPrebuildReadyState extends DependencyPrebuildBase {
   identity: string;
   token: string;
   reused: boolean;
+  /**
+   * The generation store the publisher actually wrote `identity` into, resolved
+   * exactly as dependency-generation.sh resolves it. The identity is only
+   * meaningful INSIDE this root: when PAPERCUSP_DEPENDENCY_GENERATION_ROOT moves
+   * (WI-10004797), a consumer whose env points at a different store must treat
+   * the marker as a miss, never hand setup an identity that store lacks
+   * (that surfaced as exit 74 "disappeared before it could be leased").
+   * Absent on states written before this field existed.
+   */
+  generationRoot?: string;
   telemetry?: DependencyPrebuildTelemetry;
+}
+
+/**
+ * Effective dependency-generation store for an integration root — the TS mirror
+ * of dependency-generation.sh / setup-release-checkout.sh
+ * (`${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$integration_root/.papercusp/dependency-generations}`;
+ * bash `:-` treats an empty value as unset, hence `||`).
+ */
+export function resolveDependencyGenerationRoot(
+  integrationRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT?.trim();
+  return resolve(configured || join(integrationRoot, '.papercusp/dependency-generations'));
 }
 
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
@@ -305,6 +329,11 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
     const identity = typeof raw.identity === 'string' ? raw.identity : '';
     const token = typeof raw.token === 'string' ? raw.token : '';
     if (!GENERATION_ID_RE.test(identity) || !token) return null;
+    // Optional for back-compat with pre-WI-10004797 states; a present but
+    // malformed root is malformed state (absence), never "unknown root".
+    const hasGenerationRoot = raw.generationRoot !== undefined && raw.generationRoot !== null;
+    const generationRoot = hasGenerationRoot ? absolutePath(raw.generationRoot) : null;
+    if (hasGenerationRoot && generationRoot === null) return null;
     return {
       ...base,
       status: 'ready',
@@ -312,6 +341,7 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
       identity,
       token,
       reused: raw.reused === true,
+      ...(generationRoot ? { generationRoot } : {}),
       ...(telemetry ? { telemetry } : {}),
     };
   }
@@ -942,6 +972,9 @@ export async function runDependencyGenerationPrebuild(
       completedAtMs,
       updatedAtMs: completedAtMs,
       ...parsed,
+      // The publisher child inherits this process's env, so this is the store
+      // it wrote into (WI-10004797).
+      generationRoot: resolveDependencyGenerationRoot(request.integrationRoot),
       ...(telemetry ? { telemetry } : {}),
     };
     if (await settleState(target, ready)) await emitTerminal(target, ready);

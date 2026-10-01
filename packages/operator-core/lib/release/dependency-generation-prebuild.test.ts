@@ -208,6 +208,48 @@ describe('dependency generation background prebuild', () => {
     // and the producer would look fixed while the evidence still vanished.
     const roundTripped = parseDependencyPrebuildState(JSON.parse(JSON.stringify(persisted)));
     expect(roundTripped).toEqual(persisted);
+    // WI-10004797: the store the identity lives in must survive the round trip,
+    // or a consumer cannot tell a moved root from a valid marker.
+    expect(persisted.generationRoot).toMatch(/^\//);
+    expect(roundTripped && 'generationRoot' in roundTripped && roundTripped.generationRoot).toBe(
+      persisted.generationRoot,
+    );
+  });
+
+  it('WI-10004797: resolves the generation root exactly like dependency-generation.sh and rejects a malformed recorded root', () => {
+    expect(resolveDependencyGenerationRoot('/repo', {})).toBe('/repo/.papercusp/dependency-generations');
+    // bash `${VAR:-default}` treats empty as unset.
+    expect(resolveDependencyGenerationRoot('/repo', { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' })).toBe(
+      '/repo/.papercusp/dependency-generations',
+    );
+    expect(
+      resolveDependencyGenerationRoot('/repo', { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '/mnt/data/gens/' }),
+    ).toBe('/mnt/data/gens');
+
+    const ready = {
+      schema: 1,
+      status: 'ready',
+      key: `${'a'.repeat(40)}:${'b'.repeat(64)}`,
+      candidate: 'a'.repeat(40),
+      inputFingerprint: 'b'.repeat(64),
+      attemptId: 'attempt',
+      queuedAtMs: 1,
+      startedAtMs: 2,
+      updatedAtMs: 3,
+      completedAtMs: 3,
+      producerPid: 4,
+      childPid: null,
+      identity: 'v1-' + 'c'.repeat(64),
+      token: '1:2:3',
+      reused: false,
+    };
+    const legacy = parseDependencyPrebuildState(ready);
+    if (legacy === null) throw new Error('fixture identity must satisfy GENERATION_ID_RE');
+    expect(legacy).not.toHaveProperty('generationRoot');
+    expect(parseDependencyPrebuildState({ ...ready, generationRoot: '/mnt/data/gens' })).toMatchObject({
+      generationRoot: '/mnt/data/gens',
+    });
+    expect(parseDependencyPrebuildState({ ...ready, generationRoot: 'relative/gens' })).toBeNull();
   });
 
   it('P-005: records no telemetry for a re-keyed generation, and drops malformed telemetry without voiding state', async () => {

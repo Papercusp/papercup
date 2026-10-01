@@ -35,6 +35,7 @@ import { z } from 'zod';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 
 import sendTool, { itemSpec } from './send';
+import { compactSchemaForResult } from '../../tools/find';
 import { BODY_MUST_BE_ARRAY_MESSAGE, SECTION_ONLY_FIELDS } from '../message-fields';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 
@@ -87,6 +88,16 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
     expect(summaryDescription).toMatch(/REQUIRED for the single-message form/i);
     expect(summaryDescription).toMatch(/items/);
     expect(summaryDescription).toMatch(/body.*does not replace/i);
+  });
+
+  it('projects single-send required fields into compact tools:find schema output', () => {
+    const schema = z.toJSONSchema(sendTool.args);
+    const compact = compactSchemaForResult(schema) ?? '';
+
+    expect(compact).toContain(
+      'constraint:$ (When `items` is omitted, top-level `to`, `summary`, and `expects` are required; when `items` is used, each item must include its own `to`, `summary`, and `expects`.)',
+    );
+    expect(compact).toContain('summary?:string');
   });
 
   it('teaches the structured why shape on every user-facing schema surface', () => {

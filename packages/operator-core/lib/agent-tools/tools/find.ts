@@ -452,12 +452,12 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     // rerunRecipe.current.supplied is a required decision input. A wide
     // selection object must not push that shape behind the segment tail.
     if (name === 'current' && nested.required.has(name)) return 85;
-    // work_items:get's bounded result row must expose its resumable checkpoint,
-    // item identity, and recent-comment window together. Other diagnostic
-    // fields must not consume the segment before these caller-facing paths.
+    // work_items:get's bounded result row must expose its resumable checkpoint
+    // and recent-comment window together. Let the larger item-identity object
+    // render after those paths so it can degrade to its outer name when needed.
     if (isWorkItemsGetResultRow && name === 'checkpoint') return 90;
-    if (isWorkItemsGetResultRow && name === 'workItem') return 85;
     if (isWorkItemsGetResultRow && name === 'threadWindow') return 80;
+    if (isWorkItemsGetResultRow && name === 'workItem') return 70;
     return 0;
   };
   const orderedProperties = properties
@@ -479,6 +479,13 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     includeNestedFields = true,
   ): string => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
+    // Keep the canonical workItem key visible in the bounded result row after
+    // checkpoint and threadWindow.posts. Its full child schema can consume the
+    // remaining segment and cause the enclosing field itself to be elided.
+    const includeChildFields =
+      includeNestedFields &&
+      name !== 'rootCauseVerification' &&
+      !(isWorkItemsGetResultRow && name === 'workItem');
     // rootCauseVerification publishes its conditional required-field contract
     // through x-papercusp-call-constraint. Rendering its now-wide v2 object in
     // full would consume this entire bounded segment and evict the equally
@@ -488,7 +495,7 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       child,
       depth,
       withDescription,
-      includeNestedFields && name !== 'rootCauseVerification',
+      includeChildFields,
     );
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;

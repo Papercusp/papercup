@@ -17,6 +17,7 @@ import * as nodePty from '@lydell/node-pty';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildConsoleOneliner,
+  keepWindowOpenOnFailure,
   advSessionTitleTag,
   macConsoleInvocation,
   macHasGuiSession,
@@ -345,6 +346,31 @@ describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040
     expect((r as { pid: number | null }).pid).toBe(7003);
   }, 10_000);
 
+  it('retains a private failed receipt and returns its addressable cause', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7005));
+    let path = '';
+    try {
+      const r = await spawnConsole({
+        envelope, desktopEnvProbes: FAKE_DESKTOP_PROBES, verifyBootReceipt: true,
+        bootProbes: {
+          readLog: (receipt) => {
+            path = receipt;
+            writeFileSync(receipt, `PSU_ACTUAL_REFUSAL\n${AUTH_DEATH}`, { mode: 0o600 });
+            return readFileSync(receipt, 'utf8');
+          },
+          sleep: TICK, windowMs: 60,
+        },
+      });
+      expect(r.status).toBe('error');
+      expect((r as { error: string }).error).toContain('PSU_ACTUAL_REFUSAL');
+      expect((r as { error: string }).error).toContain(`boot receipt retained: ${path}`);
+      expect(existsSync(path)).toBe(true);
+      expect(path).toMatch(/papercup-console-receipt-.*\/boot\.log$/);
+    } finally {
+      if (path) rmSync(join(path, '..'), { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it('verifyBootReceipt:true — the sentinel appearing LATE (after the early-exit probe) is still caught', async () => {
     spawnMock.mockImplementation(() => fakeChild(7004));
     let reads = 0;
@@ -364,6 +390,79 @@ describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040
 });
 
 describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
+  it('captures the actual boot refusal before the sentinel, without changing the exit status', () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-detail-'));
+    const receipt = join(root, "quote's boot.log");
+    try {
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        "printf 'PSU_REAL_BOOT_REFUSAL\\n' >&2; exit 2", { receiptPath: receipt },
+      ));
+      const result = spawnSync('bash', ['-c', script], {
+        env: { ...process.env, SHELL: '/bin/true' }, encoding: 'utf8', timeout: 5000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0); // the inspection shell still opens
+      expect(result.stderr).toContain('PSU_REAL_BOOT_REFUSAL');
+      const captured = readFileSync(receipt, 'utf8');
+      expect(captured).toContain('PSU_REAL_BOOT_REFUSAL');
+      expect(captured).toContain('exited with status 2');
+      expect(captured.indexOf('PSU_REAL_BOOT_REFUSAL')).toBeLessThan(captured.indexOf('exited with status 2'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds verbose boot stderr and retains the late failure, rather than only its footer', () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-tail-'));
+    const receipt = join(root, 'boot.log');
+    try {
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        "printf '%25000s' '' >&2; printf '\\nLATE_BOOT_REFUSAL\\n' >&2; exit 2", { receiptPath: receipt },
+      ));
+      const result = spawnSync('bash', ['-c', script], {
+        env: { ...process.env, SHELL: '/bin/true' }, encoding: 'utf8', timeout: 5000,
+      });
+      expect(result.error).toBeUndefined();
+      const captured = readFileSync(receipt, 'utf8');
+      expect(Buffer.byteLength(captured)).toBeLessThan(17000);
+      expect(captured).toContain('LATE_BOOT_REFUSAL');
+      expect(captured).toContain('exited with status 2');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps greeting stdin/stdout on the real PTY while copying only its stderr', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'console-boot-tty-'));
+    const receipt = join(root, 'boot.log');
+    let terminal: ReturnType<typeof nodePty.spawn> | undefined;
+    try {
+      const script = interactiveRcScript(keepWindowOpenOnFailure(
+        '[ -t 0 ] && [ -t 1 ] || { echo TTY_LOST >&2; exit 3; }; ' +
+        'printf "TTY_PRESERVED\\n"; printf "ACTUAL_REFUSAL\\n" >&2; exit 2',
+        { receiptPath: receipt },
+      ));
+      let output = '';
+      terminal = nodePty.spawn('bash', ['-c', script], {
+        cwd: root, env: { ...process.env, SHELL: '/bin/true' }, name: 'xterm-256color',
+      });
+      terminal.onData((data) => { output += data; });
+      const code = await new Promise<number>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('receipt PTY fixture did not exit')), 5000);
+        terminal!.onExit((event) => { clearTimeout(timeout); resolve(event.exitCode); });
+      });
+      expect(code).toBe(0);
+      expect(output).toContain('TTY_PRESERVED');
+      expect(output).not.toContain('TTY_LOST');
+      const captured = readFileSync(receipt, 'utf8');
+      expect(captured).toContain('ACTUAL_REFUSAL');
+      expect(captured).not.toContain('TTY_PRESERVED');
+    } finally {
+      try { terminal?.kill(); } catch { /* already exited */ }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('omitting bootReceiptPath is byte-identical to the pre-fix banner', () => {
     const out = buildConsoleOneliner('/x', {}, 'false', APPEARANCE);
     expect(out).not.toContain('tee -a');
@@ -376,8 +475,10 @@ describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
     const withoutScript = interactiveRcScript(without);
     expect(withReceiptScript).toContain("| tee -a '/tmp/receipt.log'");
     expect(withReceiptScript).toContain('initial terminal command exited with status %s');
-    // Stripping the tee clause should recover the exact unmodified banner.
-    expect(withReceiptScript.replace(" | tee -a '/tmp/receipt.log'", '')).toBe(withoutScript);
+    // The greeting now captures stderr, but the failure banner itself is unchanged.
+    const banner = '__papercusp_greeting_rc=$?';
+    expect(withReceiptScript.slice(withReceiptScript.indexOf(banner)).replace(" | tee -a '/tmp/receipt.log'", ''))
+      .toBe(withoutScript.slice(withoutScript.indexOf(banner)));
   });
 });
 

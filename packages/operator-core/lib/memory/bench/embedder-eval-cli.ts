@@ -106,10 +106,10 @@ import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
-import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
+import { compareLegs, compareSourceGroupedLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
 import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
-  assertCandidateArm, failMeasurementCell, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
+  assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
 
 type EmbedFn = (text: string) => Promise<number[]>;
@@ -553,11 +553,17 @@ async function main(): Promise<void> {
   const mdenseonModel = argValue('--mdenseon-model');
   if (argValue('--manifest')) {
     preparedMeasurement = await prepareMeasurementCell(argValue('--manifest')!, argValue('--manifest-sha256') ?? '', argValue('--cell') ?? '');
-    if (preparedMeasurement.cell.bar !== 'performance' || legNames.length !== 1 || !process.argv.includes('--isolated-sidecar')
-      || legNames[0] !== `sidecar:${preparedMeasurement.arm.model}` || argValue('--vectors') || argValue('--limit')) {
-      throw new Error('manifest performance requires one fresh isolated matching HTTP arm and complete declared inputs');
+    const { cell, arm } = preparedMeasurement;
+    if (!['performance', 'relevance'].includes(cell.bar) || legNames.length !== 1 || argValue('--vectors') || argValue('--limit')) {
+      throw new Error('manifest evaluator requires one matching arm and complete declared inputs');
     }
-    await assertCandidateArm(preparedMeasurement.arm, preparedMeasurement.arm.model as 'mdenseon' | 'gemma' | 'harrier', 'local-http-client-worker', EMBED_SIDECAR_RUNTIME);
+    const http = legNames[0] === `sidecar:${arm.model}`;
+    if (http ? !process.argv.includes('--isolated-sidecar') : (cell.bar !== 'relevance' || legNames[0] !== arm.model
+      || process.argv.includes('--isolated-sidecar') || sidecarUrl)) throw new Error('manifest evaluator arm/transport mismatch');
+    if (cell.bar === 'relevance' && (process.argv.includes('--timing-only') || Number(argValue('--warm-trials') ?? 0) !== 0)) {
+      throw new Error('relevance cannot be a timing-only sample');
+    }
+    await assertCandidateArm(arm, arm.model as 'mdenseon' | 'gemma' | 'harrier', http ? 'local-http-client-worker' : 'worker', EMBED_SIDECAR_RUNTIME);
   }
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
@@ -594,9 +600,11 @@ async function main(): Promise<void> {
   if (corpusChoice !== 'memory' && corpusChoice !== 'prose') {
     throw new Error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
   }
-  const fullCorpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
-  const gold = corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture();
-  const baseCorpusVersion = corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION;
+  const independent = preparedMeasurement?.cell.bar === 'relevance' ? loadIndependentMeasurementInputs(preparedMeasurement, corpusChoice) : undefined;
+  const fullCorpus = independent?.entries ?? (corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture());
+  const gold = independent ? { version: independent.goldVersion, queries: independent.queries }
+    : (corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture());
+  const baseCorpusVersion = independent?.corpusVersion ?? (corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION);
 
   // `--limit N` — a SMOKE pass over the first N docs, for checking that a
   // newly added leg loads, pools and emits the width it claims BEFORE paying
@@ -631,7 +639,7 @@ async function main(): Promise<void> {
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
-  if (preparedMeasurement) {
+  if (preparedMeasurement && !independent) {
     // Fixture files/order are input identities too; versions alone do not pin bytes.
     const declared = preparedMeasurement.cell.inputIds.map((id) => preparedMeasurement!.manifest.inputs[id]);
     const fixtureRoot = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
@@ -691,9 +699,19 @@ async function main(): Promise<void> {
   const results: Record<string, unknown> = {};
 
   const record = (name: string, docVecs: number[][], queryVecs: number[][], meta: Record<string, unknown>): void => {
-    const scored = scoreLeg(corpusKeys, docVecs, gold.queries, queryVecs);
+    if (preparedMeasurement && (docVecs.length !== corpus.length || queryVecs.length !== gold.queries.length
+      || [...docVecs, ...queryVecs].some((v) => v.length !== preparedMeasurement!.arm.profile.nativeDims
+        || v.some((x) => !Number.isFinite(x)) || Math.abs(Math.sqrt(v.reduce((s, x) => s + x * x, 0)) - 1) > 0.001))) {
+      throw new Error('measured relevance vector population/dimensions/normalization mismatch');
+    }
+    const testIndexes = independent?.queries.flatMap((q, i) => q.partition === 'test' ? [i] : []);
+    const scored = scoreLeg(corpusKeys, docVecs, testIndexes ? testIndexes.map((i) => gold.queries[i]) : gold.queries,
+      testIndexes ? testIndexes.map((i) => queryVecs[i]) : queryVecs);
     retainedVectors[name] = { docVectors: docVecs, queryVectors: queryVecs };
-    results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored };
+    const calibrationIndexes = independent?.queries.flatMap((q, i) => q.partition === 'calibration' ? [i] : []);
+    results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored,
+      ...(calibrationIndexes ? { calibration: scoreLeg(corpusKeys, docVecs, calibrationIndexes.map((i) => gold.queries[i]),
+        calibrationIndexes.map((i) => queryVecs[i])) } : {}) };
     const a = scored.byClass.ALL_ANSWERABLE;
     console.log(
       `   ${name}: R@1=${a.recall_at_1} R@3=${a.recall_at_3} R@5=${a.recall_at_5} MRR=${a.mrr_at_10} ` +
@@ -854,7 +872,9 @@ async function main(): Promise<void> {
     for (const [name, leg] of scoredLegs) {
       if (name === baselineName) continue;
       const cmp = compareLegs(baselineName!, baseline[1].perQuery, name, leg.perQuery);
-      comparisons[name] = { ...cmp, classesDisagree: classesDisagree(cmp) };
+      comparisons[name] = { ...cmp, classesDisagree: classesDisagree(cmp), ...(independent ? {
+        sourceGrouped: compareSourceGroupedLegs(baselineName!, baseline[1].perQuery, name, leg.perQuery,
+          independent.entries, independent.queries.filter((q) => q.partition === 'test')) } : {}) };
       console.log(`\n  ${baselineName} -> ${name}`);
       for (const cls of [ALL_ANSWERABLE, 'lexical-gap', 'exact-identifier', 'session-start-intent']) {
         const row = cmp.byClass[cls];
@@ -871,7 +891,10 @@ async function main(): Promise<void> {
   }
 
   const report = { generatedAt: new Date().toISOString(), corpus: corpusChoice, corpusVersion,
-    goldVersion: gold.version, goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
+    goldVersion: gold.version, goldSetVersion: independent ? independent.goldVersion : (corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version),
+    ...(independent ? { labelAuthority: 'independent-blind-before-inference', scoringPartition: 'test',
+      calibrationReportedSeparately: true, heldoutQueries: independent.queries.filter((q) => q.partition === 'test').map((q) => ({ id: q.id, class: q.class, group: q.group, expected: q.expected })),
+      sourceClusters: Object.fromEntries(independent.entries.map((e) => [e.key, String(e.metadata?.cluster)])) } : {}),
     baseline: baselineName, results, comparisons };
   if (preparedMeasurement) {
     assertMeasuredExecution(preparedMeasurement.arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());

@@ -72,6 +72,10 @@ describe('readAppliedWornRules', () => {
     expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(2);
     expect(appliedIdentityArtifactMock).toHaveBeenLastCalledWith({ launch: true },
       { specificationRevision: 'spec-owner-cache', stateRevision: 's2' });
+    // WI-10004801: the launch record is read narrowed to exactly that pair's
+    // receipt, never whole (a whole record reached 13 MB of identityHistory).
+    expect(readGateSelectedLaunchSpecMock).toHaveBeenLastCalledWith(expect.anything(), 'owner-cache', 'ws',
+      [{ specificationRevision: 'spec-owner-cache', stateRevision: 's2' }]);
   });
 
   it('remembers an unreadable revision for 30s, then reads it again', async () => {

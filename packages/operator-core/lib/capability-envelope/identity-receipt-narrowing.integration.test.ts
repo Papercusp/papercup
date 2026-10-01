@@ -9,6 +9,8 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { narrowIdentityHistory, selectNarrowedLaunchSpecBody } from './identity-receipt-narrowing';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { readGateSelectedLaunchSpec } = await import('../agent-tools/coordination/control-anchor');
+const { selectAppliedReceipt } = await import('./identity-grants-port');
 
 const A = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-a' };
 const B = { specificationRevision: 'b'.repeat(64), stateRevision: 'state-b' };
@@ -54,6 +56,14 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
         VALUES (${WORKSPACE}, 'console', ${OWNER}, ${JSON.stringify(spec)}::text::jsonb)
         RETURNING id`;
       ids.set(name, Number(row.id));
+      // The gate-selected read (readGateSelectedLaunchSpec): one owner per shape,
+      // holding the open row plus a NEWER ended decoy the selection must skip.
+      await db.adminSql`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec, started_at, ended_at)
+        VALUES (${WORKSPACE}, 'console', ${gateOwner(name)}, '{"decoy":true}'::jsonb, now(), now())`;
+      await db.adminSql`
+        INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec, started_at)
+        VALUES (${WORKSPACE}, 'console', ${gateOwner(name)}, ${JSON.stringify(spec)}::text::jsonb, now() - interval '1 hour')`;
     }
   }, 180_000);
 
@@ -92,4 +102,30 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
     ]);
     expect(rows.map((r) => r.length)).toEqual([0, 0]);
   });
+
+  // readGateSelectedLaunchSpec shares the SQL fragment; these hold its selection
+  // AND its narrowing to the same contract.
+  for (const [name, spec] of SPECS) {
+    it(`gate-selected read: ${name}`, async () => {
+      for (const revisions of [[A], [A, B], [], [{ specificationRevision: '1', stateRevision: 'state-a' }]]) {
+        expect(await readGateSelectedLaunchSpec(db.adminSql, gateOwner(name), WORKSPACE, revisions))
+          .toEqual(narrowIdentityHistory(spec, revisions));
+      }
+      expect(await readGateSelectedLaunchSpec(db.adminSql, gateOwner(name), WORKSPACE)).toEqual(spec);
+      // What every narrowed caller does with the record: the receipt it selects is unchanged.
+      for (const pair of [A, B, C]) {
+        const narrowed = await readGateSelectedLaunchSpec(db.adminSql, gateOwner(name), WORKSPACE, [pair]);
+        expect(selectAppliedReceipt(narrowed, pair)).toEqual(selectAppliedReceipt(spec, pair));
+      }
+    });
+  }
+
+  it('gate-selected read of an owner with no launch record is undefined, narrowed or not', async () => {
+    expect(await readGateSelectedLaunchSpec(db.adminSql, 'su-no-record', WORKSPACE, [A])).toBeUndefined();
+    expect(await readGateSelectedLaunchSpec(db.adminSql, 'su-no-record', WORKSPACE)).toBeUndefined();
+  });
 });
+
+function gateOwner(name: string): string {
+  return `${OWNER}-gate-${SPECS.findIndex(([specName]) => specName === name)}`;
+}

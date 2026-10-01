@@ -227,6 +227,12 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'work-item-durable-park-audit',
     seedScript: 'seed-work-item-durable-park-audit-routine.ts',
   },
+  // WI-10004722: the bulk dedup only ran on demand and went unrun for weeks; this
+  // driver is the recurring half, so its row going missing must be loud.
+  {
+    name: 'work-item-admission-bulk-dedup-driver',
+    seedScript: 'seed-work-item-admission-bulk-dedup-driver-routine.ts',
+  },
   // WI-2141683: found while fixing EI-22136759189899545 below. Both p2p-perf-tier1 and
   // p2p-perf-tier2 default active per their own doc comment (owner-ratified cadence) but
   // were left out of this registry because their writer used a per-row `activeDefault`

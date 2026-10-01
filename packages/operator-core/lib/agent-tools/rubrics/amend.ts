@@ -34,6 +34,26 @@ import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-a
 const REVIEW_NOT_REQUESTED_NEXT =
   "Post preview.approval once as a work_items:comment, then repeat this dry run with reviewPreviewPost:'thread-post:<that post id>'. The relevance router picks and screens the outside-lineage reviewer; do not pick or message one yourself.";
 
+const NO_LIVE_DISCHARGE_MAPPING_CODE = 'acceptance_bar_amendment_no_live_discharge_mapping';
+const NO_LIVE_DISCHARGE_MAPPING_NEXT =
+  "Add the changed BAR to the subject plan's `## Requirements` section and add a matching row to `## Design` → `### Bar-to-work map for this plan`, mapping it to at least one non-dropped `P-NNN` item. Then retry. The amendment guard exempts a BAR being removed from the discharge-map check.";
+
+function noLiveDischargeMappingRefusal(error: unknown): {
+  ok: false;
+  code: string;
+  error: string;
+  next: string;
+} | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith(`${NO_LIVE_DISCHARGE_MAPPING_CODE}:`)) return null;
+  return {
+    ok: false,
+    code: NO_LIVE_DISCHARGE_MAPPING_CODE,
+    error: message,
+    next: NO_LIVE_DISCHARGE_MAPPING_NEXT,
+  };
+}
+
 /** The amendment fields exactly as requested, so a routed reviewer can reproduce the preview. */
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
   const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes'] as const;
@@ -242,11 +262,12 @@ export default defineTool({
     'Patch one rubric criterion/requirement, complete acceptance criteria, evidence plane, or rubric refs. An approvalRef authorizes a patch but never substitutes for one; include at least one amendment field. Use rubrics:propose for standard rubric criteria, key, or rating changes. A started BAR meaning change needs outside-lineage approval first (guidance.chaining has the steps). Subject Decision, BAR/spec revisions, and rebind commit atomically; old proof/grades remain history and the existing shrink guard applies.',
   guidance: {
     returns:
-      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
+      "{ ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). A missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`) returns { ok:false, code, error, next } as a domain refusal and makes no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
     chaining:
+      "Before adding or meaning-changing a started acceptance BAR, read the subject plan from rubrics:get and its `## Requirements` and `## Design` sections with plans:get. Each changed BAR that remains must appear in Requirements and have a row in `### Bar-to-work map for this plan` mapped to at least one non-dropped P-NNN item; add both entries before calling rubrics:amend. The amendment guard exempts a BAR being removed from the discharge-map check. " +
       "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → if approvalRequired, post preview.approval once as a work_items:comment → re-run dryRun with reviewPreviewPost:'thread-post:<that post id>'; the relevance router picks an outside-lineage reviewer → follow review.next → reviewer answers `approve thread-post:<preview-post-id>` → apply with amend { approvalRef:'thread-post:<answer post id>' }. Posts are immutable and resolved by workspace/id, which avoids hash transcription; server checks preview vs applied delta. A payload needs payloadTier (unreadable in some views); a post is visible on every surface. Never pick or message a reviewer yourself. Do not create a counter-sign work-item for approval.",
     seeAlso: [
       'rubrics:propose (whole-document revision)',
@@ -265,6 +286,9 @@ export default defineTool({
     .object({
       ok: z.boolean(),
       error: z.string().optional(),
+      code: z.string().optional(),
+      next: z.string().optional(),
+      dryRun: z.boolean().optional(),
       rubric: z.record(z.string(), z.unknown()).optional(),
       completeness: z.record(z.string(), z.unknown()).optional(),
       replicationSqlCheck: z.unknown().optional(),
@@ -324,7 +348,14 @@ export default defineTool({
     if (args.dryRun) {
       const receiptKey = 'preview-' + randomUUID();
       const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
-        const preview = await previewAcceptanceBarAmendment(input);
+        let preview: Awaited<ReturnType<typeof previewAcceptanceBarAmendment>>;
+        try {
+          preview = await previewAcceptanceBarAmendment(input);
+        } catch (error) {
+          const refusal = noLiveDischargeMappingRefusal(error);
+          if (refusal) return { ...refusal, dryRun: true };
+          throw error;
+        }
         if (preview === null) {
           return {
             ok: false,
@@ -447,7 +478,14 @@ async function settleWithin<T>(run: Promise<T>, budgetMs: number): Promise<Settl
 
 /** The synchronous amend: apply, then build the response payload. */
 async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise<Record<string, unknown>> {
-  const rubric = await amendRubric(input);
+  let rubric: Awaited<ReturnType<typeof amendRubric>>;
+  try {
+    rubric = await amendRubric(input);
+  } catch (error) {
+    const refusal = noLiveDischargeMappingRefusal(error);
+    if (refusal) return refusal;
+    throw error;
+  }
   if (!rubric) return { ok: false, error: `no rubric '${rubricRef}' — rubrics:list to see refs` };
   const completeness = rubricCompleteness(rubric);
   // EI-10514: schema-validate embedded replication-drill SQL against live PG (non-blocking).

@@ -4117,14 +4117,19 @@ function extractFilterPredicates(rawSql: string, masked: string): string[] {
   return out;
 }
 
-/** Top-level conjuncts of the FIRST WHERE clause, sliced from the raw SQL.
+/** Location of the shallowest WHERE clause, sliced from the raw SQL.
  *
  * The WHERE is located at whatever depth it actually sits at rather than only
  * at depth 0, because `SELECT EXISTS (SELECT 1 FROM t WHERE …)` — one of the two
  * shapes this advisory exists for — carries its predicates one paren deep. The
  * clause ends at the first sibling clause keyword or as soon as depth drops
  * BELOW the WHERE's own, which is the subquery's closing paren. */
-function extractWhereConjuncts(rawSql: string, masked: string): string[] {
+function locateWhereClause(masked: string): {
+  depth: Int32Array;
+  base: number;
+  start: number;
+  end: number;
+} | null {
   const depth = sqlDepthPrefix(masked);
   // Prefer the SHALLOWEST `where`, not the lexically first one. In a census the
   // first `where` token belongs to a `FILTER (WHERE …)` bucket one paren deep,
@@ -4139,7 +4144,7 @@ function extractWhereConjuncts(rawSql: string, masked: string): string[] {
       whereAt = { index: m.index, length: m[0].length };
     }
   }
-  if (!whereAt) return [];
+  if (!whereAt) return null;
   const base = depth[whereAt.index]!;
   const start = whereAt.index + whereAt.length;
 
@@ -4161,6 +4166,21 @@ function extractWhereConjuncts(rawSql: string, masked: string): string[] {
       break;
     }
   }
+
+  return { depth, base, start, end };
+}
+
+/** The complete shared WHERE expression, preserved for the FILTER partition. */
+function extractWhereClause(rawSql: string, masked: string): string {
+  const where = locateWhereClause(masked);
+  return where ? rawSql.slice(where.start, where.end).replace(/;\s*$/, '').trim() : '';
+}
+
+/** Top-level AND/OR-separated predicates of the shallowest WHERE clause. */
+function extractWhereConjuncts(rawSql: string, masked: string): string[] {
+  const where = locateWhereClause(masked);
+  if (!where) return [];
+  const { depth, base, start, end } = where;
 
   const out: string[] = [];
   let last = start;
@@ -4214,7 +4234,7 @@ export interface PredicatePartitionPlan {
   dimensions: string[];
   /** Discriminators beyond the cap, named so the preview cannot imply completeness. */
   droppedDimensions: string[];
-  /** Tenant predicates, kept as WHERE so the partition holds the caller's scope. */
+  /** Caller population predicates kept as WHERE in generated partition SQL. */
   scope: string[];
   touchesJsonb: boolean;
 }
@@ -4262,6 +4282,7 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
 
   const masked = maskSqlNoise(rawSql);
   const filters = extractFilterPredicates(rawSql, masked);
+  const whereClause = extractWhereClause(rawSql, masked);
   const whereConjuncts = extractWhereConjuncts(rawSql, masked);
   // FILTER buckets ARE the caller's dimensions when present; the surrounding
   // WHERE is then a shared scope rather than a discriminator.
@@ -4279,13 +4300,11 @@ export function planPredicatePartition(rawSql: string): PredicatePartitionPlan |
     if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
     else if (!dimensions.includes(text)) dimensions.push(text);
   }
-  // When FILTER buckets supplied the dimensions the WHERE was never consulted,
-  // so its scope predicates would be dropped from the suggested partition.
-  if (filters.length) {
-    for (const predicate of whereConjuncts) {
-      const text = predicate.replace(/\s+/g, ' ').trim();
-      if (NON_SUMMING_SCOPE_RE.test(text)) addScope(text);
-    }
+  // FILTER buckets are measured within the caller's complete WHERE population.
+  // Keeping only tenant-like terms silently drops time bounds and other shared
+  // restrictions, so preserve the original expression intact (including ORs).
+  if (filters.length && whereClause) {
+    addScope(whereClause.replace(/\s+/g, ' ').trim());
   }
   if (!dimensions.length) return null;
 

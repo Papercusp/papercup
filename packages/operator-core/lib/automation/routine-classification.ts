@@ -340,6 +340,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs the reviewed staged corpus dedup pass through bounded strong-model shard judgements',
   },
+  'system:work-item-admission-bulk-dedup-driver': {
+    spend: 'llm',
+    why: 'Arms one stage-bounded system:work-item-admission-bulk-dedup run (strong-model shard judgements) daily unless one is already in flight',
+  },
   'system:work-item-admission-delta-sweep': {
     spend: 'llm',
     why: 'Runs one strong-model call over the hourly admitted-item delta to detect shared-root-cause bursts',

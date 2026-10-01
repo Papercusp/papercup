@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 933,
+  "count": 934,
   "tools": [
     {
       "name": "ablation:report",
@@ -8844,6 +8844,24 @@
         "when": "Finding what's available on the public Cupboard — the user asks what plugins/blueprints/templates/apps/packs exist, or wants to search for one to install.",
         "notWhen": "You already have a listing id and want to INSTALL it (cupboard:install-plugin / cupboard:install-blueprint / templates:new-app / knowledge_packs:install). For the kind-specific browse UIs, blueprint:catalog / knowledge_packs:list / templates:list are narrower views of the same store.",
         "chaining": "Search → take a result id → install with the matching installer (cupboard:install-plugin for plugin/pack, cupboard:install-blueprint for blueprint, templates:new-app for template, knowledge_packs:install for a knowledge-pack)."
+      }
+    },
+    {
+      "name": "cupboard:statement-attestation",
+      "http": {
+        "path": "/api/agent-tools/cupboard/statement-attestation",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Outside-accountant attestations of a closed monthly statement: `record` (month, documentSha256, attestor, attestedOn, scope; dry run unless confirm:true) chains the document hash for anchoring beside the month root; `proof`, `list`, `verify` (proof) against public chain data.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "An accountant has signed off a published monthly statement and the sign-off must be anchored, or someone must check such an attestation.",
+        "notWhen": "Publishing the statement itself (the hourly transparency pass does that); proving a payment (cupboard:payment-receipt).",
+        "chaining": "Needs the month's signed statement already published. `proof` returns `not-yet-anchored` until the next hourly anchor pass."
       }
     },
     {
@@ -28463,7 +28481,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → if approvalRequired, post preview.approval once as a work_items:comment → re-run dryRun with reviewPreviewPost:'thread-post:<that post id>'; the relevance router picks an outside-lineage reviewer → follow review.next → reviewer answers `approve thread-post:<preview-post-id>` → apply with amend { approvalRef:'thread-post:<answer post id>' }. Posts are immutable and resolved by workspace/id, which avoids hash transcription; server checks preview vs applied delta. A payload needs payloadTier (unreadable in some views); a post is visible on every surface. Never pick or message a reviewer yourself. Do not create a counter-sign work-item for approval."
+        "chaining": "Before adding or meaning-changing a started acceptance BAR, read the subject plan from rubrics:get and its `## Requirements` and `## Design` sections with plans:get. Each changed BAR that remains must appear in Requirements and have a row in `### Bar-to-work map for this plan` mapped to at least one non-dropped P-NNN item; add both entries before calling rubrics:amend. The amendment guard exempts a BAR being removed from the discharge-map check. rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → if approvalRequired, post preview.approval once as a work_items:comment → re-run dryRun with reviewPreviewPost:'thread-post:<that post id>'; the relevance router picks an outside-lineage reviewer → follow review.next → reviewer answers `approve thread-post:<preview-post-id>` → apply with amend { approvalRef:'thread-post:<answer post id>' }. Posts are immutable and resolved by workspace/id, which avoids hash transcription; server checks preview vs applied delta. A payload needs payloadTier (unreadable in some views); a post is visible on every surface. Never pick or message a reviewer yourself. Do not create a counter-sign work-item for approval."
       }
     },
     {

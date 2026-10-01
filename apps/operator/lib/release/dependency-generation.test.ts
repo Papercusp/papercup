@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -1950,6 +1951,53 @@ describe('immutable dependency generation', () => {
         ),
       ),
     ).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('keeps a live cross-filesystem sibling pin but prunes one whose checkout was offloaded and went stale (WI-10003695)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const pinsFor = (identity: string) =>
+      existsSync(join(generationRoot, '.pins'))
+        ? readdirSync(join(generationRoot, '.pins')).filter((entry) =>
+            readFileSync(join(generationRoot, '.pins', entry), 'utf8').includes(`identity=${identity}\n`),
+          )
+        : [];
+
+    // The root-offload convention: the checkout lives on another filesystem and
+    // its old path, a direct sibling of the integration root, is a symlink to it.
+    const offloadParent = mkdtempSync('/dev/shm/dependency-generation-offload-');
+    roots.push(offloadParent);
+    const offloaded = join(offloadParent, 'relcut');
+    mkdirSync(join(offloaded, 'node_modules'), { recursive: true });
+    const marker = join(offloaded, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${firstIdentity}\nsource=${firstIdentity.slice(3)}\n`);
+    symlinkSync(offloaded, `${integration}-relcut`);
+    expect(
+      statSync(offloaded).dev,
+      'fixture precondition: the offloaded checkout must be on a different filesystem than the store',
+    ).not.toBe(statSync(generationRoot).dev);
+
+    // A freshly materialized cross-filesystem checkout is live: it stays pinned.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'cross-fs-live\n');
+    const live = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(live.status, live.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(true);
+    expect(pinsFor(firstIdentity)).toHaveLength(1);
+
+    // Four days without a re-materialization: retired. The pin goes, the sibling
+    // scan does not re-write it, and retention prunes the generation.
+    const fourDaysAgo = new Date(Date.now() - 4 * 86_400_000);
+    utimesSync(marker, fourDaysAgo, fourDaysAgo);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'cross-fs-retired\n');
+    const retired = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(retired.status, retired.stderr).toBe(0);
+    expect(retired.stderr).toContain('removing retired cross-filesystem checkout pin');
+    expect(pinsFor(firstIdentity)).toHaveLength(0);
+    expect(existsSync(firstPath)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('protects a live exact-identity selector lease and reclaims it after the reader is gone', () => {

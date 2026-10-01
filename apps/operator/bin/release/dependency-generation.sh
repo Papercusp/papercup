@@ -1022,7 +1022,7 @@ dependency_generation_acquire_selector_lease() {
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   if ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
     dependency_generation_release_publish_lock
-    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased"
+    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased (generation_root=$generation_root)"
     return 74
   fi
   if [ -n "$expected_token" ]; then
@@ -1278,6 +1278,38 @@ dependency_generation_ensure_store_root() {
   return 0
 }
 
+# WI-10003695: a checkout on ANOTHER filesystem than the store cannot share the
+# store's inodes, so its pin only spares a rebuild if that checkout is ever
+# materialized again. The root-offload convention moves a retired checkout to
+# /mnt/data and leaves a symlink, and its pin then kept a ~20 GB generation on the
+# root disk forever (five of them, ~95 GiB, on 2026-10-01). A LIVE cross-filesystem
+# checkout re-materializes, which rewrites its node_modules marker
+# (setup-release-checkout.sh record_node_modules_copy_metadata), so only a marker
+# older than DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS (default 3) counts as
+# retired. Same-filesystem pins are never affected. Any measurement failure keeps
+# the pin: an unreadable checkout is not proof that it is retired.
+dependency_generation_path_dev() {
+  # GNU `stat -f` means FILESYSTEM status (%d = free inodes), so the BSD form is
+  # used only where stat is not GNU.
+  if stat --version >/dev/null 2>&1; then
+    stat -L -c '%d' "$1" 2>/dev/null
+  else
+    stat -L -f '%d' "$1" 2>/dev/null
+  fi
+}
+
+dependency_generation_cross_fs_pin_is_retired() {
+  local generation_root="$1" checkout="$2" marker="$3"
+  local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
+  local store_dev checkout_dev
+  [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
+  store_dev="$(dependency_generation_path_dev "$generation_root")" || return 1
+  checkout_dev="$(dependency_generation_path_dev "$checkout")" || return 1
+  [ -n "$store_dev" ] && [ -n "$checkout_dev" ] || return 1
+  [ "$store_dev" != "$checkout_dev" ] || return 1
+  dependency_generation_path_is_old "$marker" $((max_age_days * 86400))
+}
+
 dependency_generation_refresh_retention_state_locked() {
   local generation_root="$1" integration_root="$2"
   local host pin pin_host identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
@@ -1307,6 +1339,10 @@ dependency_generation_refresh_retention_state_locked() {
       || [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] \
       || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
       dependency_generation_log "removing stale checkout pin $(basename "$pin")"
+      rm -f -- "$pin"
+    elif dependency_generation_cross_fs_pin_is_retired "$generation_root" "$checkout" "$marker"; then
+      dependency_generation_log \
+        "removing retired cross-filesystem checkout pin $(basename "$pin") ($checkout, $identity)"
       rm -f -- "$pin"
     fi
   done
@@ -1346,6 +1382,9 @@ dependency_generation_refresh_retention_state_locked() {
     identity="$(dependency_generation_read_field "$marker" identity)"
     [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
     dependency_generation_marker_matches "$generation_root/$identity" "$identity" || continue
+    # A symlinked sibling resolves to its offload target above; without this
+    # check the pin removed in the loop before would be re-written every refresh.
+    dependency_generation_cross_fs_pin_is_retired "$generation_root" "$sibling" "$marker" && continue
     dependency_generation_write_pin_locked "$generation_root" "$sibling" "$identity" || true
   done
 }

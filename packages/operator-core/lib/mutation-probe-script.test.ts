@@ -1252,6 +1252,46 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(restoredRecord()).toEqual(verifiedOriginal());
   });
 
+  it('clears its admission snapshot when an in-tree no-op mutation is refused', async () => {
+    const root = realpathSync(dir);
+    const admissionDir = join('/tmp', `papercusp-mutation-probe-${process.getuid!()}-${createHash('sha256').update(root).digest('hex')}`);
+    const manifest = join(admissionDir, 'original.manifest');
+    const baselineStarted = join(dir, 'baseline-started');
+    const releaseBaseline = join(dir, 'release-baseline');
+    const guard = 'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then : > '
+      + `${JSON.stringify(baselineStarted)}; while [ ! -e ${JSON.stringify(releaseBaseline)} ]; do sleep 0.01; done; `
+      + 'fi; grep -q "^beta$" {}';
+    const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/nosuchtext/x/', '--test', guard], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const output = createTextCollector();
+    output.attach(child.stdout);
+    output.attach(child.stderr);
+    const closed = new Promise<number>((resolveCode) => child.once('close', (code) => resolveCode(code ?? -1)));
+    let snapshotDir = '';
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(baselineStarted) && Date.now() < deadline) await sleep(25);
+      expect(existsSync(baselineStarted), output.peek()).toBe(true);
+      expect(existsSync(manifest)).toBe(true);
+      snapshotDir = dirname(readFileSync(manifest, 'utf8').split('\0')[2]!);
+
+      writeFileSync(releaseBaseline, '');
+      expect(await Promise.race([closed, sleep(10_000).then(() => -2)])).toBe(2);
+      expect(output.text()).toMatch(/changed NOTHING/i);
+      expect(read()).toBe(ORIGINAL);
+      expect(existsSync(manifest)).toBe(false);
+      expect(existsSync(snapshotDir)).toBe(false);
+      expect(restoredRecord()).toEqual(verifiedOriginal());
+    } finally {
+      writeFileSync(releaseBaseline, '');
+      if (child.exitCode === null && child.signalCode === null) {
+        await Promise.race([closed, sleep(10_000)]);
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }
+      if (snapshotDir && existsSync(snapshotDir)) rmSync(snapshotDir, { recursive: true, force: true });
+    }
+  }, 25_000);
+
   it('preserves a concurrent edit instead of restoring the probe baseline over it', async () => {
     const mutantStarted = join(dir, 'in-tree-mutant-started');
     const command = `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then : > ${JSON.stringify(mutantStarted)}; sleep 4; fi; grep -q "^beta$" {}`;

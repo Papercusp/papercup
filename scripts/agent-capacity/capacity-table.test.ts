@@ -94,9 +94,32 @@ describe('capacity-table', () => {
   it('parses only RAMP_STEP_END lines, keeping the saturation reason and slowdown', () => {
     const steps = parseRampLog(['noise', end('a-b', 8, 'OK'), end('a-b', 16, 'SATURATED reason=driver-rc=1,failed=2')].join('\n'));
     expect(steps).toEqual([
-      { label: 'a-b', n: 8, ok: true, underdriven: false, reason: null, wallSlowdown: 1.8 },
-      { label: 'a-b', n: 16, ok: false, underdriven: false, reason: 'driver-rc=1,failed=2', wallSlowdown: 1.16 },
+      { label: 'a-b', n: 8, ok: true, underdriven: false, reason: null, wallSlowdown: 1.8, achieved: null },
+      { label: 'a-b', n: 16, ok: false, underdriven: false, reason: 'driver-rc=1,failed=2', wallSlowdown: 1.16, achieved: null },
     ]);
+  });
+
+  // D-020: the lever ramp passed n=96 on e2-custom-16-32768 while only 73.2 sessions were ever in
+  // flight and throughput was flat from n=64, and the table priced it at 96 agents. Every
+  // per-agent figure now divides by the sessions actually held in flight.
+  it('prices by the sessions actually held in flight (achieved), never by idle slots', () => {
+    const line = (n: number, achieved: string) =>
+      `RAMP_STEP_END p005-mixed-normal-n${n} n=${n} rc=0 OK runs=341 wallSlowdown=0.88 diverged=0 toolDiverged=0 achieved=${achieved} setupMsP50=155 2026-10-01T11:19:11Z`;
+    vm('e2-custom-16-32768', 'mixed-normal', [line(64, '63.1/64'), line(96, '73.2/96')], { n: 96, cores: 14.64, anonMb: 7320, peaksMiB: [400] });
+    const [row] = buildTable(root, 120);
+    expect(row).toMatchObject({ capacity: 96, censored: true, activeAgents: 73.2, wallSlowdown: 0.88 });
+    expect(row.usdPerAgentMonth).toBeCloseTo((hourlyPriceUsd('e2-custom-16-32768', 120) * 730) / 73.2, 9);
+    expect(row.usdPerAgentMonthSpot).toBeCloseTo((hourlyPriceUsd('e2-custom-16-32768', 120, { spot: true }) * 730) / 73.2, 9);
+    expect(row.coresPerAgent).toBeCloseTo(14.64 / 73.2, 6);
+    expect(row.sliceAnonMbPerAgent).toBeCloseTo(7320 / 73.2, 6);
+    expect(renderMarkdown([row])).toMatch(/\| 400\/400 \| 73\.2 \|/);
+    // A log without the field (older ramps) falls back to N; an achieved above N is capped at N.
+    expect(parseRampLog(line(64, '63.1/64'))[0].achieved).toBe(63.1);
+    vm('e2-standard-8', 'mixed-normal', [end('mixed-normal', 4, 'OK'), line(8, '8.4/8')], { n: 8, cores: 1, anonMb: 80, peaksMiB: [400] });
+    const capped = buildTable(root, 120).find((r) => r.machineType === 'e2-standard-8');
+    expect(capped?.activeAgents).toBe(8);
+    vm('e2-standard-4', 'mixed-normal', [end('mixed-normal', 2, 'OK')], { n: 2, cores: 1, anonMb: 80, peaksMiB: [400] });
+    expect(buildTable(root, 120).find((r) => r.machineType === 'e2-standard-4')?.activeAgents).toBe(2);
   });
 
   // WI-10004672: a step that never held N sessions measured the driver, so it neither passes nor
@@ -112,6 +135,8 @@ describe('capacity-table', () => {
     expect(row).toMatchObject({ capacity: 8, censored: true, saturatedAt: null, underdrivenAt: { n: 16, reason: 'achieved=12.7/16' } });
     const md = renderMarkdown([row]);
     expect(md).toMatch(/\| ≥8 \| not measured past 8 \(underdriven at 16, achieved=12\.7\/16\) \|/);
-    expect(parseRampLog(end('a', 16, 'UNDERDRIVEN achieved=12.7/16'))).toEqual([{ label: 'a', n: 16, ok: false, underdriven: true, reason: 'achieved=12.7/16', wallSlowdown: 1.16 }]);
+    expect(parseRampLog(end('a', 16, 'UNDERDRIVEN achieved=12.7/16'))).toEqual([
+      { label: 'a', n: 16, ok: false, underdriven: true, reason: 'achieved=12.7/16', wallSlowdown: 1.16, achieved: 12.7 },
+    ]);
   });
 });

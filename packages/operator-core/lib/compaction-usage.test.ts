@@ -323,15 +323,17 @@ describe('tokensFromFileSize (WI-3176 base64-image discount)', () => {
   it('uses the injected async filesystem for bounded transcript scans', async () => {
     const p = join(dir, 'async-io.jsonl');
     writeFileSync(p, 'x'.repeat(MB));
-    const fileOps = {
-      stat: vi.fn(fs.promises.stat),
-      open: vi.fn(fs.promises.open),
+    const fileOps: Pick<typeof fs.promises, 'stat' | 'open'> = {
+      stat: fs.promises.stat,
+      open: fs.promises.open,
     };
+    const stat = vi.spyOn(fileOps, 'stat');
+    const open = vi.spyOn(fileOps, 'open');
     const tokens = await tokensFromFileSize(p, fileOps);
 
     expect(tokens).toBeGreaterThan(0);
-    expect(fileOps.stat).toHaveBeenCalledWith(p);
-    expect(fileOps.open).toHaveBeenCalledWith(p, 'r');
+    expect(stat).toHaveBeenCalledWith(p);
+    expect(open).toHaveBeenCalledWith(p, 'r');
   });
 });
 

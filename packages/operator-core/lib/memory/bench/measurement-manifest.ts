@@ -12,6 +12,7 @@ import { validateEmbedderProfile, EMBEDDER_DIM_SPECS, CANDIDATE_DIM_SPECS, MDENS
   gemmaPrompt, harrierPrompt, mdenseOnPrompt, embedRequestedExecution,
   type EmbedderProfileSpec, type SidecarEmbedResponse } from '@papercusp/memory';
 import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import type { CorpusEntry, GoldQuery } from '@papercusp/memory/bench';
 
 export const MEASUREMENT_BARS = ['relevance', 'reference', 'hybrid', 'performance', 'boundaries', 'reliability', 'answers'] as const;
 export const MEASUREMENT_CLASSES = ['exact-identifier', 'lexical-gap', 'session-start-intent', 'hard-negative'] as const;
@@ -226,6 +227,37 @@ export function measurementOutputPaths(m: MeasurementManifest, cell: Measurement
 }
 
 export interface PreparedMeasurement { manifest: MeasurementManifest; manifestSha256: string; cell: MeasurementCell; arm: MeasurementArm; rawOutput: string; claimPath: string }
+/** The relevance runner consumes the independently judged files, never the
+ * legacy pilot fixtures. Recheck the bytes at load time to reject replacement
+ * between preparation and scoring. Versions bind cross-run comparisons to both
+ * the corpus and labels, including their exact order. */
+export function loadIndependentMeasurementInputs(prepared: PreparedMeasurement, corpus: 'memory' | 'prose'): {
+  entries: CorpusEntry[]; queries: Array<GoldQuery & { group: string; partition: string }>;
+  corpusVersion: string; goldVersion: string;
+} {
+  const { manifest, cell } = prepared;
+  if (cell.bar !== 'relevance' || cell.corpus !== corpus) throw new Error('independent relevance corpus/cell mismatch');
+  const dataset = manifest.datasets.find((d) => d.corpus === corpus);
+  if (!dataset) throw new Error('missing independent relevance dataset');
+  const read = (ref: string): unknown => {
+    const declared = manifest.inputs[ref];
+    const bytes = fs.readFileSync(declared.path);
+    if (bytes.length !== declared.bytes || crypto.createHash('sha256').update(bytes).digest('hex') !== declared.sha256) {
+      throw new Error('independent relevance input changed after preparation');
+    }
+    return JSON.parse(bytes.toString('utf8'));
+  };
+  const snapshot = read(dataset.snapshot) as { suites: Record<string, { entries: CorpusEntry[] }> };
+  const labels = read(dataset.labels) as Record<string, Array<GoldQuery & { group: string; partition: string }>>;
+  const receipt = read(dataset.judgments) as Record<string, unknown>;
+  const entries = snapshot.suites[corpus].entries, queries = labels[corpus];
+  if (JSON.stringify(dataset.keys) !== JSON.stringify(entries.map((e) => e.key))
+    || JSON.stringify(dataset.queryIds) !== JSON.stringify(queries.map((q) => q.id))) throw new Error('independent relevance order mismatch');
+  validateIndependentCohort(entries, queries, receipt[corpus], manifest.inputs[dataset.snapshot].sha256,
+    manifest.inputs[dataset.labels].sha256, manifest.frozenAt);
+  return { entries, queries, corpusVersion: `independent-${manifest.inputs[dataset.snapshot].sha256}`,
+    goldVersion: `independent-${manifest.inputs[dataset.labels].sha256}` };
+}
 /** No inference or SQL writes happen until every selected identity is verified. */
 export async function prepareMeasurementCell(file: string, expectedSha256: string, cellId: string,
   repoRoot: string = process.cwd()): Promise<PreparedMeasurement> {
