@@ -65,6 +65,14 @@ describe('bashCanMutate (activity attribution)', () => {
       "sed 's/a/b/w out.txt' a.ts",
       "sed 's/a/b/e' a.ts",
       "sed -n '1e touch x' a.ts",
+      // a script ATTACHED to -e (getopt takes the rest of the cluster; the next token is a file)
+      'sed -ew/tmp/x p a.ts',
+      'sed -nes/a/b/w/tmp/x p a.ts',
+      // GNU getopt_long accepts any unique abbreviation of a long option
+      "sed --in-p 's/a/b/' a.ts",
+      "sed --in 's/a/b/' a.ts",
+      'sed --fi=x.sed a.ts',
+      "sed --no-such-option 's/a/b/' a.ts",
       // plainly mutating commands, alone or after a harmless prefix
       'rm -rf dist',
       "cd /work/repo && rm -rf dist",
@@ -154,6 +162,26 @@ describe('bashCanMutate (activity attribution)', () => {
     ])('dispatcher read => attribution non-mutation: %s', (cmd) => {
       expect(classifyCapabilityBashEffect({ command: cmd }), cmd).toBe('read');
       expect(bashCanMutate(cmd), cmd).toBe(false);
+    });
+  });
+
+  describe('the dispatcher agrees on every sed write vector (WI-10005084)', () => {
+    // The two layers share ONE sed parser (capability/bash-effect.ts `sedIsObservational`). Before
+    // that, the dispatcher refused only the exact tokens `-i` / `--in-place`, so each of these was a
+    // `read` there — and the MCP proxy replays a `read` after a refused upstream.
+    it.each([
+      "sed -i.bak 's/a/b/' a.ts",
+      "sed -ni '1,5p' a.ts",
+      "sed -n 'w out.txt' a.ts",
+      "sed 's/a/b/e' a.ts",
+      'sed -f script.sed a.ts',
+      'sed -ew/tmp/x p a.ts',
+      'sed -nes/a/b/w/tmp/x p a.ts',
+      "sed --in-p 's/a/b/' a.ts",
+      'sed --fi=x.sed a.ts',
+    ])('sed write vector is a write for BOTH layers: %s', (cmd) => {
+      expect(classifyCapabilityBashEffect({ command: cmd }), cmd).toBe('write');
+      expect(bashCanMutate(cmd), cmd).toBe(true);
     });
   });
 });
