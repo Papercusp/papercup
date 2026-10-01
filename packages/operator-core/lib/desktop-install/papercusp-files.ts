@@ -1665,8 +1665,8 @@ export function shimRuntimeOptions(launcherPath: string, explicitLauncherEnv: st
  * installPapercuspFiles last. On a dev box both the green release operator and
  * the staging operator boot, so the shared ~/.papercusp/bin/psu silently
  * changed behavior based on boot order. Runtime resolution makes the active
- * integration/release root win, while the install-time fallback keeps a
- * packaged app usable when no root env is exported.
+ * declared canonical edit tree win before the active integration/release root;
+ * the install-time fallback keeps a packaged app usable when no root env is exported.
  */
 export async function writeShim(
   shimPath: string,
@@ -1699,7 +1699,7 @@ export async function writeShim(
     '    return 0\n' +
     '  fi\n' +
     '  local root rel candidate\n' +
-    '  for root in "${PAPERCUSP_INTEGRATION_ROOT:-}" "${PAPERCUSP_RELEASE_ROOT:-}"; do\n' +
+    '  for root in "${PAPERCUSP_CANONICAL_TREE:-}" "${PAPERCUSP_INTEGRATION_ROOT:-}" "${PAPERCUSP_RELEASE_ROOT:-}"; do\n' +
     '    [ -n "$root" ] || continue\n' +
     '    for rel in \\\n' +
     `      ${relativeLiterals.join(' \\\n      ')}\n` +
