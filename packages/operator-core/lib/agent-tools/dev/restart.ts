@@ -123,6 +123,109 @@ const GATEWAY_RESTART_PID_POLL_MS = 250;
  */
 const STAGING_RESTART_OBSERVE_MS = 10_000;
 const STAGING_RESTART_POLL_MS = 250;
+const STAGING_SYNC_LOCK_HANDOFF_TIMEOUT_MS = 5_000;
+const STAGING_SYNC_LOCK_HANDOFF_READY = 'papercup-staging-sync-lock-acquired';
+
+type StagingRestartHandoff =
+  | { acquired: true; start: () => void; abort: () => void }
+  | {
+      acquired: false;
+      reason: 'lock-busy' | 'handoff-failed';
+      exitCode?: number | null;
+      detail?: string;
+    };
+
+/**
+ * Reserve the staging checkout's read window in the detached systemctl process.
+ * The earlier collision probe is only an observation; staging-sync can acquire
+ * exclusive after it returns. `flock` takes shared+nonblocking after that probe,
+ * reports the acquisition over fd 3, then waits for the parent to release the
+ * one-second systemctl delay over fd 4. Its lock stays held while systemd runs
+ * ExecStartPre, whose bundle read takes the same shared lock.
+ */
+async function prepareStagingRestartHandoff(lockPath: string, restartCmd: string): Promise<StagingRestartHandoff> {
+  const child = spawn(
+    '/usr/bin/flock',
+    [
+      '--shared',
+      '--nonblock',
+      '--conflict-exit-code',
+      '75',
+      lockPath,
+      'sh',
+      '-c',
+      `set -e; printf '${STAGING_SYNC_LOCK_HANDOFF_READY}\\n' >&3; IFS= read -r _ <&4; sleep 1; exec ${restartCmd}`,
+    ],
+    { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] },
+  );
+  const readyStream = child.stdio[3];
+  const startStream = child.stdio[4];
+  if (!readyStream || !startStream) {
+    child.kill('SIGTERM');
+    return { acquired: false, reason: 'handoff-failed', detail: 'lock handoff pipes were unavailable' };
+  }
+
+  return await new Promise<StagingRestartHandoff>((resolve) => {
+    let settled = false;
+    let received = '';
+    const cleanup = (keepStartPipe: boolean) => {
+      clearTimeout(timeout);
+      readyStream.removeAllListeners('data');
+      readyStream.destroy();
+      if (!keepStartPipe) startStream.destroy();
+    };
+    const finish = (result: StagingRestartHandoff) => {
+      if (settled) return;
+      settled = true;
+      cleanup(result.acquired);
+      resolve(result);
+    };
+    const stopChildGroup = () => {
+      if (child.pid === undefined) {
+        child.kill('SIGTERM');
+        return;
+      }
+      try {
+        process.kill(-child.pid, 'SIGTERM');
+      } catch {
+        child.kill('SIGTERM');
+      }
+    };
+    const timeout = setTimeout(() => {
+      finish({ acquired: false, reason: 'handoff-failed', detail: 'timed out waiting for flock acquisition' });
+      stopChildGroup();
+    }, STAGING_SYNC_LOCK_HANDOFF_TIMEOUT_MS);
+
+    readyStream.on('data', (chunk: Buffer | string) => {
+      received += chunk.toString();
+      if (!received.includes(STAGING_SYNC_LOCK_HANDOFF_READY)) return;
+      finish({
+        acquired: true,
+        start: () => {
+          if (startStream.destroyed) throw new Error('staging restart handoff was closed before release');
+          startStream.end('go\n');
+          child.unref();
+        },
+        abort: () => {
+          startStream.destroy();
+          stopChildGroup();
+        },
+      });
+    });
+    child.once('close', (exitCode) => {
+      finish({
+        acquired: false,
+        reason: exitCode === 75 ? 'lock-busy' : 'handoff-failed',
+        exitCode,
+      });
+    });
+    // Keep an error listener after acquisition so a later child-process error
+    // cannot become an unhandled EventEmitter error in the operator host.
+    child.on('error', (error) => {
+      finish({ acquired: false, reason: 'handoff-failed', detail: error.message });
+    });
+  });
+}
 type ExecFileP = (
   command: string,
   args: string[],
@@ -917,6 +1020,8 @@ async function writeRestartAudit(
     /** target:staging: what papercup-staging-sync's checkout lock read when this
      *  restart fired (the final pre-signal re-check wins over the first read). */
     stagingSyncCollision?: { kind: string; lockPath: string; lockHeld: boolean | null } | null;
+    /** The shared lock acquired by the detached command after the final probe. */
+    stagingSyncHandoff?: { lockPath: string; mode: 'shared'; heldThrough: 'systemctl-restart' } | null;
     /** The atomic legacy-resource barrier intentionally left to expire after
      *  systemctl has crossed the delayed handoff. */
     gitSyncBarrier?: { resource: string; expiresAt: string } | null;
@@ -1758,50 +1863,91 @@ export default defineTool({
                 'no restart was scheduled and the cooldown marker was released.',
             });
           }
-          // Audit BEFORE spawning (mirrors process-kill.ts: a record must exist
-          // even if signaling crashes the process tree). Fire-and-forget.
-          void writeRestartAudit(ownerId, {
-            target,
-            unit: cfg.unit,
-            viaEnv: enabledByEnv,
-            viaAuthorizeArg: enabledByArg,
-            reason: args.reason ?? null,
-            fenceSeq: fence.seq,
-            phantomCoalesceBroken: phantomCoalesceBroken !== null,
-            gateCollision: isGateSensitiveTarget(target)
-              ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
-              : null,
-            gitSyncCollision: gitSync
-              ? {
-                  kind: gitSync.kind,
-                  overridden: gitSync.overridden,
-                  resources: gitSync.detail.collidingResources,
-                  pids: gitSync.detail.collidingPids,
-                }
-              : null,
-            stagingSyncCollision: finalStagingSyncCheck
-              ? { kind: finalStagingSyncCheck.kind, ...finalStagingSyncCheck.detail }
-              : stagingSync
-                ? { kind: stagingSync.kind, ...stagingSync.detail }
-                : null,
-            gitSyncBarrier:
-              gitSyncBarrier?.acquired === true
-                ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
-                : null,
-            systemdDaemonReloaded,
-            quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
-          });
-          let child;
-          try {
-            child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
-              detached: true,
-              stdio: 'ignore',
+          const stagingHandoff = finalStagingSyncCheck
+            ? await prepareStagingRestartHandoff(finalStagingSyncCheck.detail.lockPath, scheduledRestartCmd)
+            : null;
+          if (stagingHandoff && !stagingHandoff.acquired) {
+            await releaseGitSyncBarrierOnAbort();
+            await releaseCooldownOnAbort();
+            const collision = stagingHandoff.reason === 'lock-busy';
+            return json({
+              ok: false,
+              target,
+              reason: collision
+                ? 'staging_sync_collision_staging_sync_in_flight'
+                : 'staging_sync_restart_handoff_failed',
+              restarted: false,
+              drained: true,
+              staging_sync_collision: {
+                kind: collision ? 'staging-sync-in-flight' : 'handoff-failed',
+                lockPath: finalStagingSyncCheck.detail.lockPath,
+                lockHeld: collision ? true : null,
+                ...(stagingHandoff.exitCode === undefined ? {} : { exitCode: stagingHandoff.exitCode }),
+                ...(stagingHandoff.detail ? { detail: stagingHandoff.detail } : {}),
+              },
+              note: collision
+                ? `Restart REFUSED — papercup-staging-sync acquired its exclusive checkout lock after the final check (${finalStagingSyncCheck.detail.lockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released. Retry after the sync completes.`
+                : `Restart REFUSED — the detached command could not acquire and transfer the shared staging-sync lock (${finalStagingSyncCheck.detail.lockPath}). The staging-server drain has been released; no restart was scheduled and the cooldown marker was released.`,
             });
+          }
+          try {
+            // The staging child is holding the shared lease and waits on fd 4.
+            // Invoke the audit before releasing that wait, so audit refusal is
+            // never confused with a restart that was actually scheduled.
+            void writeRestartAudit(ownerId, {
+              target,
+              unit: cfg.unit,
+              viaEnv: enabledByEnv,
+              viaAuthorizeArg: enabledByArg,
+              reason: args.reason ?? null,
+              fenceSeq: fence.seq,
+              phantomCoalesceBroken: phantomCoalesceBroken !== null,
+              gateCollision: isGateSensitiveTarget(target)
+                ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
+                : null,
+              gitSyncCollision: gitSync
+                ? {
+                    kind: gitSync.kind,
+                    overridden: gitSync.overridden,
+                    resources: gitSync.detail.collidingResources,
+                    pids: gitSync.detail.collidingPids,
+                  }
+                : null,
+              stagingSyncCollision: finalStagingSyncCheck
+                ? { kind: finalStagingSyncCheck.kind, ...finalStagingSyncCheck.detail }
+                : stagingSync
+                  ? { kind: stagingSync.kind, ...stagingSync.detail }
+                  : null,
+              stagingSyncHandoff: stagingHandoff
+                ? {
+                    lockPath: finalStagingSyncCheck!.detail.lockPath,
+                    mode: 'shared',
+                    heldThrough: 'systemctl-restart',
+                  }
+                : null,
+              gitSyncBarrier:
+                gitSyncBarrier?.acquired === true
+                  ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
+                  : null,
+              systemdDaemonReloaded,
+              quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
+            });
+            if (stagingHandoff?.acquired) {
+              restartScheduled = true;
+              stagingHandoff.start();
+            } else {
+              const child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
+                detached: true,
+                stdio: 'ignore',
+              });
+              child.unref();
+              restartScheduled = true;
+            }
           } catch (error) {
+            restartScheduled = false;
+            if (stagingHandoff?.acquired) stagingHandoff.abort();
             throw error;
           }
-          child.unref();
-          restartScheduled = true;
           const gatewayReadiness =
             target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
           const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
