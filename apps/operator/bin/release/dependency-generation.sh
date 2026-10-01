@@ -2005,6 +2005,7 @@ dependency_generation_copy_changed_tree() {
     fi
   fi
   if [ -n "$found" ]; then
+    rc=0
     dependency_generation_copy_incremental "$src" "$dest" "$predecessor/tree/$rel" \
       "${found#*$'\t'}" "${found%%$'\t'*}" "$live" "$work" || rc=$?
     rm -rf -- "$work"
@@ -2019,6 +2020,11 @@ dependency_generation_copy_changed_tree() {
   fi
   if [ "$rc" -ne 0 ]; then
     rc=0
+    # `cp -a src dest` nests into an existing dest; the full copy needs none.
+    if [ -e "$dest" ]; then
+      chmod -R u+w "$dest" 2>/dev/null || true
+      rm -rf -- "$dest"
+    fi
     if [ -n "$size_ref" ]; then
       dependency_generation_copy_independent "$src" "$dest" "$size_ref" || rc=$?
     else

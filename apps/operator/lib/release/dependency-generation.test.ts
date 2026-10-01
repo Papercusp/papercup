@@ -6,12 +6,15 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   rmSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -43,7 +46,7 @@ type TelemetryRecord = Record<string, string>;
 
 function telemetryRecords(
   stderr: string,
-  kind: 'PHASE' | 'SUMMARY',
+  kind: 'PHASE' | 'SUMMARY' | 'INCREMENTAL',
 ): TelemetryRecord[] {
   const prefix = `[dependency-generation] ${kind} `;
   return stderr
@@ -2849,4 +2852,229 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     expect(result.status, result.stderr).toBe(77);
     expect(result.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
   }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
+// P-012 (WI-10004927): a changed tree is rebuilt from the predecessor's copy plus
+// the paths whose live source record changed, instead of one full copy.
+describe('P-012: incremental copy of a changed dependency tree', () => {
+  const incrementalEnv = (racyWindowSec: string): NodeJS.ProcessEnv => ({
+    DEPENDENCY_GENERATION_WALK_JOBS: '1',
+    DEPENDENCY_GENERATION_RACY_WINDOW_SEC: racyWindowSec,
+    // The fixture filesystem may lack reflink. Plain copy seeding runs the same
+    // delta and verification logic everywhere.
+    DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK: 'auto',
+  });
+  const npmEpoch = new Date('1985-10-26T08:15:00Z');
+
+  // Everything a consumer of the tree can observe, with write bits ignored
+  // because a published generation freezes its files read-only.
+  function treeContents(root: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const walk = (rel: string): void => {
+      for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+        const child = rel ? `${rel}/${entry.name}` : entry.name;
+        const path = join(root, child);
+        if (entry.isSymbolicLink()) {
+          out[child] = `link:${readlinkSync(path)}`;
+        } else if (entry.isDirectory()) {
+          out[child] = `dir:${(statSync(path).mode & 0o777).toString(8)}`;
+          walk(child);
+        } else {
+          const stat = statSync(path);
+          out[child] =
+            `file:${(stat.mode & 0o555).toString(8)}:${stat.mtimeMs}:` +
+            readFileSync(path, 'utf8');
+        }
+      }
+    };
+    walk('');
+    return out;
+  }
+
+  function sourceRecords(generation: string, rel: string) {
+    const recordsDir = join(generation, '.source-records');
+    const indexPath = join(recordsDir, 'index');
+    const lines = readFileSync(indexPath, 'utf8').trim().split('\n');
+    const row = lines.findIndex((line) => line.startsWith(`${rel}\t`));
+    expect(row, `no stored records for ${rel}`).toBeGreaterThanOrEqual(0);
+    const key = lines[row].split('\t')[2];
+    const gz = join(recordsDir, `${key}.gz`);
+    return { indexPath, lines, row, key, gz };
+  }
+
+  it(
+    'copies only changed paths and catches a same-size, same-mtime rewrite by ctime',
+    () => {
+      const integration = makeIntegration();
+      const pkg = join(integration, 'node_modules/pkg');
+      for (let i = 0; i < 20; i += 1) {
+        writeFileSync(join(pkg, `f${i}.js`), `v1-${i}\n`);
+        utimesSync(join(pkg, `f${i}.js`), npmEpoch, npmEpoch);
+      }
+      symlinkSync('index.js', join(pkg, 'link.js'));
+      mkdirSync(join(integration, 'node_modules/gone'));
+      writeFileSync(join(integration, 'node_modules/gone/index.js'), 'gone\n');
+
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const firstPath = publishedPath(first.stdout);
+      expect(
+        readFileSync(join(firstPath, '.source-records/index'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('\t')[0])
+          .sort(),
+      ).toEqual(['node_modules', 'packages/a/node_modules', 'packages/b/node_modules']);
+
+      // npm rewrites a package file with the same size and its fixed tarball
+      // mtime. Only the inode and ctime can show that the bytes changed.
+      writeFileSync(join(pkg, 'f0.js'), 'v2-0\n');
+      utimesSync(join(pkg, 'f0.js'), npmEpoch, npmEpoch);
+      writeFileSync(join(pkg, 'new.js'), 'new\n');
+      rmSync(join(integration, 'node_modules/gone'), { recursive: true });
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        trees_reused: '2',
+        trees_copied: '1',
+        trees_incremental: '1',
+      });
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toEqual([
+        {
+          schema: '1',
+          tree: 'node_modules',
+          kept: '21',
+          copied: '2',
+          removed: '3',
+          copied_bytes: String('v2-0\n'.length + 'new\n'.length),
+        },
+      ]);
+      const secondPath = publishedPath(second.stdout);
+      expect(treeContents(join(secondPath, 'tree/node_modules'))).toEqual(
+        treeContents(join(integration, 'node_modules')),
+      );
+      expect(
+        readFileSync(join(secondPath, 'tree/node_modules/pkg/f0.js'), 'utf8'),
+      ).toBe('v2-0\n');
+      // Reused files are independent copies, never shared inodes.
+      expect(statSync(join(secondPath, 'tree/node_modules/pkg/f1.js')).ino).not.toBe(
+        statSync(join(firstPath, 'tree/node_modules/pkg/f1.js')).ino,
+      );
+      // Reused trees carry their records forward; the rebuilt tree stores new ones.
+      expect(
+        readFileSync(join(secondPath, '.source-records/index'), 'utf8')
+          .trim()
+          .split('\n'),
+      ).toHaveLength(3);
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'never trusts a record captured within the racy window',
+    () => {
+      const integration = makeIntegration();
+      writeFileSync(join(integration, 'node_modules/pkg/stable.js'), 'stable\n');
+      const first = publish(integration, incrementalEnv('3600'));
+      expect(first.status, first.stderr).toBe(0);
+
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+      const second = publish(integration, incrementalEnv('3600'));
+      expect(second.status, second.stderr).toBe(0);
+      // With a zero window stable.js would be kept; inside the window nothing is.
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toMatchObject([
+        { tree: 'node_modules', kept: '0', copied: '2' },
+      ]);
+      expect(
+        treeContents(join(publishedPath(second.stdout), 'tree/node_modules')),
+      ).toEqual(treeContents(join(integration, 'node_modules')));
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'falls back to a full copy when the incremental result does not reproduce the live tree',
+    () => {
+      const integration = makeIntegration();
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const firstPath = publishedPath(first.stdout);
+
+      // Forge a stored record for a directory the predecessor never copied, so
+      // the delta wrongly keeps it. Only the verification step can notice.
+      mkdirSync(join(integration, 'node_modules/pkg/sub'));
+      const forged = execFileSync(
+        'find',
+        [
+          '.',
+          '-mindepth',
+          '1',
+          '-path',
+          './pkg/sub',
+          '-printf',
+          '%P\\t%y\\t%m\\t%U\\t%G\\t%s\\t%T@\\t%i\\t%C@\\t%l\\n',
+        ],
+        { cwd: join(integration, 'node_modules'), encoding: 'utf8' },
+        // Keep the trailing tab: the empty link-target field is the 10th field.
+      ).replace(/\n$/, '');
+      expect(forged.startsWith('pkg/sub\td\t')).toBe(true);
+      const { indexPath, lines, row, key, gz } = sourceRecords(firstPath, 'node_modules');
+      const records = gunzipSync(readFileSync(gz)).toString('utf8').split('\n').filter(Boolean);
+      chmodSync(gz, 0o644);
+      writeFileSync(gz, gzipSync(Buffer.from(`${[...records, forged].sort().join('\n')}\n`)));
+      // Move the capture time past the forged ctime so the record is trusted.
+      const futureNs = String(BigInt(Date.now() + 60_000) * 1_000_000n);
+      lines[row] = [
+        'node_modules',
+        futureNs,
+        key,
+        createHash('sha256').update(readFileSync(gz)).digest('hex'),
+      ].join('\t');
+      writeFileSync(indexPath, `${lines.join('\n')}\n`);
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stderr).toContain(
+        'incremental copy of node_modules did not reproduce the live tree',
+      );
+      expect(lastSummary(second)).toMatchObject({
+        trees_copied: '1',
+        trees_incremental: '0',
+      });
+      expect(
+        treeContents(join(publishedPath(second.stdout), 'tree/node_modules')),
+      ).toEqual(treeContents(join(integration, 'node_modules')));
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'ignores stored records whose digest no longer matches',
+    () => {
+      const integration = makeIntegration();
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const { gz } = sourceRecords(publishedPath(first.stdout), 'node_modules');
+      chmodSync(gz, 0o644);
+      writeFileSync(gz, Buffer.concat([readFileSync(gz), Buffer.from('tampered')]));
+
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toEqual([]);
+      expect(lastSummary(second)).toMatchObject({
+        trees_copied: '1',
+        trees_incremental: '0',
+      });
+      expect(
+        readFileSync(
+          join(publishedPath(second.stdout), 'tree/node_modules/pkg/index.js'),
+          'utf8',
+        ),
+      ).toBe('root-v2\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
 });
