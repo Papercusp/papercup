@@ -698,7 +698,7 @@ const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch
 const CARRY_JUDGED_CONTEXT =
   /\b(?:candidate|judged|canonical(?:\s+(?:test|verification|verdict|run))|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
 const CARRY_NEGATION_BEFORE =
-  /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
+  /\b(?:not(?!\s+only)|don't|never|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
 const CARRY_RETRACTION_AFTER =
   /\b(?:is|are|was|were|has\s+been|have\s+been|must\s+be|will\s+be)\s+(?:wrong|unsafe|invalid|retracted|withdrawn|superseded|rejected|refused|forbidden|blocked)\b/i;
 // A carry row may quote the unsafe wording while explaining why a previous write

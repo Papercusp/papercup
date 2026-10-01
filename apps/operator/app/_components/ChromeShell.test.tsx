@@ -145,6 +145,11 @@ describe('ChromeShell', () => {
 
   it('compacts from the header content box and restores when dock space returns', () => {
     let notifyWidth: ((width: number) => void) | null = null;
+    let frameId = 0;
+    const frames = new Map<number, FrameRequestCallback>();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId; });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
+    const flushFrame = () => act(() => { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback(0)); });
     const observe = vi.fn();
     const disconnect = vi.fn();
     vi.stubGlobal(
@@ -172,11 +177,17 @@ describe('ChromeShell', () => {
     expect(observe).toHaveBeenCalledWith(header);
 
     act(() => notifyWidth?.(640));
+    // Resize delivery must not synchronously mutate the observed element.
+    expect(header.classList.contains('pc-header--compact')).toBe(false);
+    flushFrame();
     expect(header.classList.contains('pc-header--compact')).toBe(true);
     act(() => notifyWidth?.(900));
+    flushFrame();
     expect(header.classList.contains('pc-header--compact')).toBe(false);
 
+    act(() => notifyWidth?.(640));
     unmount();
+    expect(frames.size).toBe(0);
     expect(disconnect).toHaveBeenCalledOnce();
     expect(header.classList.contains('pc-header--compact')).toBe(false);
   });

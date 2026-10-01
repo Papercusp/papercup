@@ -544,6 +544,7 @@ describe('frozen lineage carry policy', () => {
   it.each([
     ['staging', 'Then pin whatever `staging` resolves to at that instant, still never a quoted sha.'],
     ['current-head', 'Create the canonical verification worktree pinned to current HEAD and run the root test.'],
+    ['current-head', 'It is not only selecting current-head as the judged candidate; also run the suite there.'],
     ['integration-branch', 'Use integrationBranch as the judged candidate for the canonical verdict.'],
     ['staging', 'Create the canonical verification worktree on staging and run the root test.'],
   ] as const)('detects a positive %s candidate instruction', (unsafeSource, text) => {
@@ -566,6 +567,7 @@ describe('frozen lineage carry policy', () => {
     'Ordinary staging work remains legal: The policy blocks selecting staging as the judged candidate.',
     'The earlier instruction to pin current staging/current HEAD was wrong and is retracted.',
     'Never derive the judged candidate from staging; use the live repairHead.',
+    'I am NOT selecting current-head as the judged candidate',
     'A checkpoint that instructs a successor to use current HEAD as the judged candidate is rejected.',
     'The policy refuses candidate selection from integrationBranch.',
     'The refusal says staging was selected as the judged candidate; this sentence describes the diagnostic, not a directive.',

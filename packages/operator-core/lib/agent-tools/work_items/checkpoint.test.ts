@@ -400,6 +400,27 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts an explicit plain-not negation of unsafe candidate selection', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+
+    const result = await one({
+      id: 'WI-7',
+      checkpoint: 'I am NOT selecting current-head as the judged candidate',
+    });
+
+    expect(result).toMatchObject({ ok: true, id: 'WI-7' });
+    expect(setWorkItemCheckpointWithPrior).toHaveBeenCalledTimes(1);
+  });
+
   it('teaches that rowsMode controls rows only and gives the complete body+rows replacement recipe', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
       properties?: { rowsMode?: { description?: string } };
