@@ -1393,6 +1393,94 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(stage).toEqual([{ state: 'complete', retries: 1 }]);
   }, 60_000);
 
+  describe('transport-outage ladder (WI-10004942)', () => {
+    // Two pairs at one pair per call: a::b (the canary) succeeds, then c::d meets
+    // a socket outage lasting `outage` consecutive attempts. The short ladder is
+    // [1, 2]; the recorded waits show which ladder each retry used.
+    async function runThroughOutage(runId: string, outage: number, transportRetryBackoffsMs: number[]) {
+      await seed();
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+           item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+           admitted_at, admitted_by)
+        VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+                'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+                '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+      let calls = 0;
+      let failures = 0;
+      const waits: number[] = [];
+      const outcome = await runBulk({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId,
+        sql: db.sql,
+        pairsPerCall: 1,
+        shardConcurrency: 1,
+        batchRetryBackoffsMs: [1, 2],
+        transportRetryBackoffsMs,
+        batchRetryDelay: async (ms) => {
+          waits.push(ms);
+        },
+        census: { chunkCount: 1, targetTokens: 1_000 },
+        llmCall: async (input) => {
+          calls += 1;
+          const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+          if (pairKey === 'c::d' && failures < outage) {
+            failures += 1;
+            throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } });
+          }
+          return {
+            text: '',
+            json: {
+              judgements: [
+                {
+                  pairKey,
+                  verdict: pairKey === 'a::b' ? 'r-finding-merge' : 'distinct',
+                  reason: pairKey === 'a::b' ? 'same failure and remedy' : 'different failure and remedy',
+                },
+              ],
+            },
+            inputTokens: 50,
+            outputTokens: 10,
+          };
+        },
+      }).then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      const [stage] = await db.sql<Array<{ state: string; retries: number | null }>>`
+        SELECT detail->>'status' AS state, (detail->>'modelRetries')::int AS retries
+          FROM harness_shared.admission_runs WHERE id = ${`${runId}-stage-1`}`;
+      return { outcome, waits, calls, stage };
+    }
+
+    it('waits out an outage longer than the short ladder, spending the short ladder first', async () => {
+      const t = await runThroughOutage('bulk-outage-survived', 4, [10, 20, 30]);
+      expect(t.outcome.ok).toBe(true);
+      expect(t.outcome.ok && t.outcome.result).toMatchObject({ converged: true, finalCensus: 0 });
+      expect(t.waits).toEqual([1, 2, 10, 20]);
+      expect(t.calls).toBe(6);
+      expect(t.stage).toEqual({ state: 'complete', retries: 4 });
+    }, 60_000);
+
+    it('still fails the stage once the transport ladder is spent too', async () => {
+      const t = await runThroughOutage('bulk-outage-exhausted', 6, [10, 20, 30]);
+      expect(t.outcome.ok).toBe(false);
+      expect(String(!t.outcome.ok && t.outcome.error)).toMatch(/fetch failed/);
+      expect(t.waits).toEqual([1, 2, 10, 20, 30]);
+      expect(t.stage?.state).toBe('failed');
+    }, 60_000);
+
+    it('CONTROL: with no transport ladder the same 4-attempt outage fails the stage (pre-fix behaviour)', async () => {
+      const t = await runThroughOutage('bulk-outage-control', 4, []);
+      expect(t.outcome.ok).toBe(false);
+      expect(String(!t.outcome.ok && t.outcome.error)).toMatch(/fetch failed/);
+      expect(t.waits).toEqual([1, 2]);
+      expect(t.stage?.state).toBe('failed');
+    }, 60_000);
+  });
+
   it('returns the durable terminal result on a repeated root runId without another census or model call', async () => {
     await seed();
     let modelCalls = 0;
