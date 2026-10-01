@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "kind": "recovered-vitest-report",
+  "workItemId": "WI-1074216",
+  "recoveryWorkItemId": "WI-10004639",
+  "planSlug": "work-on-everything-stewardship-remediation-2026-08-30",
+  "originRunId": "51bbbb87-af15-4ddb-834f-1d5c25a6defa",
+  "runId": "c10c4a38-ed59-441d-b364-ead1e0901fb5",
+  "taskId": "0mup3zepm12nmyzhieq",
+  "sourceReportPath": "/dev/shm/pcv/papercusp-testing-run-detached-e216c51e-1c3c-4b1a-b0d0-d5ff1d40f971.json",
+  "rawReportSha256": "9adb963468cf8c9adbcbe3a833e1ce4be3fb281dfca139e83eaf7889bde07640",
+  "rawReportCopy": "~/.papercusp/evidence/WI-10004639/c10c4a38-original-vitest.json",
+  "trackedReportNormalization": "testResults[].name is repository-relative; all other report fields preserve the parsed original report.",
+  "testNamePattern": "canonical plan lifecycle blocker receipts",
+  "processEvidence": {
+    "state": "exited",
+    "exitCode": 0,
+    "endedAt": "2026-10-01T05:45:24.970701Z"
+  },
+  "recoveryEvidence": {
+    "snapshotStatus": "error",
+    "snapshotExitCode": null,
+    "pendingBindingIdsRetired": [
+      18060,
+      18067
+    ],
+    "ledgerEvidenceBound": false,
+    "note": "The original Vitest report contains three passed assertions and ten skipped assertions. The detached lifecycle snapshot lost the verdict; this artifact preserves the report without rerunning tests. P-006 acceptance remains partial until canonical ledger ingestion and exact evidence binding are repaired."
+  },
+  "report": {
+    "numTotalTestSuites": 3,
+    "numPassedTestSuites": 3,
+    "numFailedTestSuites": 0,
+    "numPendingTestSuites": 0,
+    "numTotalTests": 13,
+    "numPassedTests": 3,
+    "numFailedTests": 0,
+    "numPendingTests": 10,
+    "numTodoTests": 0,
+    "snapshot": {
+      "added": 0,
+      "failure": false,
+      "filesAdded": 0,
+      "filesRemoved": 0,
+      "filesRemovedList": [],
+      "filesUnmatched": 0,
+      "filesUpdated": 0,
+      "matched": 0,
+      "total": 0,
+      "unchecked": 0,
+      "uncheckedKeysByFile": [],
+      "unmatched": 0,
+      "updated": 0,
+      "didUpdate": false
+    },
+    "startTime": 1790833437846,
+    "success": true,
+    "testResults": [
+      {
+        "assertionResults": [
+          {
+            "ancestorTitles": [
+              "canonical plan lifecycle blocker receipts"
+            ],
+            "fullName": "canonical plan lifecycle blocker receipts refuses a persisted draft even with a dependency-free todo item",
+            "status": "passed",
+            "title": "refuses a persisted draft even with a dependency-free todo item",
+            "duration": 14185.091993999999,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical plan lifecycle blocker receipts"
+            ],
+            "fullName": "canonical plan lifecycle blocker receipts names the dependency blocker without opening a launch transaction",
+            "status": "passed",
+            "title": "names the dependency blocker without opening a launch transaction",
+            "duration": 1710.9594240000006,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical plan lifecycle blocker receipts"
+            ],
+            "fullName": "canonical plan lifecycle blocker receipts emits the existing plan-fleet launch call for the persisted eligible control",
+            "status": "passed",
+            "title": "emits the existing plan-fleet launch call for the persisted eligible control",
+            "duration": 38801.329596,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt keeps a verified launch without a member claim admitting and preserves the one fleet",
+            "status": "skipped",
+            "title": "keeps a verified launch without a member claim admitting and preserves the one fleet",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt only reports working after the real member work-item claim and matching TTL lease both exist",
+            "status": "skipped",
+            "title": "only reports working after the real member work-item claim and matching TTL lease both exist",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt does not substitute a claimed self-contained bare item for the required organizing plan",
+            "status": "skipped",
+            "title": "does not substitute a claimed self-contained bare item for the required organizing plan",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt retains one accountable execution owner when another worker competes for the same plan lane",
+            "status": "skipped",
+            "title": "retains one accountable execution owner when another worker competes for the same plan lane",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt does not count the leader claimed work item and lease as independent member pickup",
+            "status": "skipped",
+            "title": "does not count the leader claimed work item and lease as independent member pickup",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt does not count another fleet member even when the claimed work item and lease match",
+            "status": "skipped",
+            "title": "does not count another fleet member even when the claimed work item and lease match",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt requires the work item to name the same plan and item as the lease",
+            "status": "skipped",
+            "title": "requires the work item to name the same plan and item as the lease",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt rechecks the current positive filter rather than trusting the launch transaction",
+            "status": "skipped",
+            "title": "rechecks the current positive filter rather than trusting the launch transaction",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt does not treat the current GOAL holder as the independent leader",
+            "status": "skipped",
+            "title": "does not treat the current GOAL holder as the independent leader",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "canonical delegated-member claim receipt"
+            ],
+            "fullName": "canonical delegated-member claim receipt drops working when the member lease expires without instructing a duplicate launch",
+            "status": "skipped",
+            "title": "drops working when the member lease expires without instructing a duplicate launch",
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          }
+        ],
+        "startTime": 1790833457343,
+        "endTime": 1790833512040.3296,
+        "status": "passed",
+        "message": "",
+        "name": "packages/operator-core/lib/goal-plan-placement-claim.integration.test.ts"
+      }
+    ]
+  }
+}
