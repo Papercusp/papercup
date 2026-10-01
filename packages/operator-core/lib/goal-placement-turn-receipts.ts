@@ -177,6 +177,15 @@ function latestCompletedDecision(session: SelfSession, turns: TranscriptTailTurn
   return latest && completedRef(session, latest) ? latest : null;
 }
 
+/** No-progress age as the provider measured it, plus the anchor instant it was measured from.
+ * An absent age stays absent: an unmeasured row must never read as a zero-age success. */
+export function noProgressAge(ageMs: number | undefined, observedAt: string):
+  { noProgressAgeMs: number; noProgressSince: string } | Record<string, never> {
+  const at = Date.parse(observedAt);
+  if (ageMs == null || !Number.isFinite(ageMs) || ageMs < 0 || !Number.isFinite(at)) return {};
+  return { noProgressAgeMs: ageMs, noProgressSince: new Date(at - ageMs).toISOString() };
+}
+
 /** Sample policy at the native turn-end seam, independently of the next-turn ACK.
  * This is descriptive policy evidence, not a grade or a delivery receipt. Its
  * observedAt remains explicit; a later replay cannot masquerade as timely proof. */
@@ -231,6 +240,10 @@ export async function recordGoalPlacementTurnEnd(input: {
       planRef: row.action?.targetRef?.startsWith('plan:') ? row.action.targetRef : null,
       status: row.status, applicableDemand: row.applicableDemand, actionKind: row.action?.kind ?? null,
       obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
+      // The provider derives ageMs from the scoped progress receipt (last verified effect, else the
+      // first completed eligible opportunity) at read.observedAt, so the anchor is recoverable exactly
+      // and an audit can check that only a canonical effect ever moves it.
+      ...noProgressAge(row.ageMs, read.observedAt),
       // An `unknown` row is only diagnosable with its reason: without the code a
       // no-opportunity trial cannot tell a failed read from a genuinely unplaced plan.
       ...(row.measurementFailure ? { measurementFailure: {
@@ -399,6 +412,7 @@ const turnEndSchema = z.object({ version: z.literal(1), goalId: nonempty, comple
     status: z.enum(['due', 'in-progress', 'blocked', 'satisfied', 'not-applicable', 'unknown']),
     applicableDemand: z.number(), actionKind: z.string().nullable(), obligationId: nonempty,
     sourceGeneration: nonempty, ruleRevision: nonempty,
+    noProgressAgeMs: z.number().nonnegative().optional(), noProgressSince: dateTime.optional(),
     measurementFailure: z.object({ code: nonempty, detail: z.string() }).optional() })),
   admissions: z.array(z.object({ planRef: planRefSchema, admission: admissionSchema })).optional(),
 });

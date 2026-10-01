@@ -52,6 +52,7 @@
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
 import type { Sql } from 'postgres';
+import { agentToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
 import { createHash, randomUUID } from 'node:crypto';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
@@ -839,6 +840,7 @@ export async function readOrientationToolSurfaces(
   ownerIds: string[],
 ): Promise<OrientationToolSurfaceOwner[]> {
   if (ownerIds.length === 0) return [];
+  const agentCallPredicate = agentToolInvocationPredicate(sql, 't');
   const rows = await sql<Array<{ owner_id: string; hook_calls: string | number; window_minutes: string | number }>>`
     WITH anchors AS (
       SELECT session_id AS owner_id, bumped_at
@@ -849,10 +851,10 @@ export async function readOrientationToolSurfaces(
         FROM anchors a
        WHERE NOT EXISTS (
                SELECT 1
-                 FROM harness_shared.tool_invocations t
-                WHERE t.coord_owner_id = a.owner_id
+                FROM harness_shared.tool_invocations t
+               WHERE t.coord_owner_id = a.owner_id
                   AND t.invoked_at >= a.bumped_at
-                  AND t.call_origin = 'agent'
+                  AND ${agentCallPredicate}
              )
     )
     SELECT s.owner_id,
