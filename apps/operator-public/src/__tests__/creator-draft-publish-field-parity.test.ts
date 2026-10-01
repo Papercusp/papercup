@@ -87,6 +87,11 @@ const DRAFTS_DO_NOT_CARRY: Record<string, string> = {
   // stays the publisher's own and is NOT upgraded to a Worker-verified one.
   authority_unresolved: 'Worker-computed from the pinned repo tree; a draft has no repo pin, NULL = not analyzed',
   authority_unresolved_cause: 'Worker-computed from the pinned repo tree; a draft has no repo pin, NULL = not analyzed',
+  // Optional provenance badge (migration 041 / P-010): set from a Sigstore attestation bound
+  // to the PINNED repo tree at direct-publish time. A draft publishes an uploaded artifact
+  // with no repo pin to attest, so it takes the column default 'worker' (the Worker's own
+  // pin + scan is the only verification) — never a fabricated 'attestation'.
+  verified_by: 'Worker-resolved from a Sigstore attestation over the pinned tree; a draft has no pin to attest, so it keeps the default worker',
   // Identity facet (migration 035 / portable-identity-packages P-016): the
   // declared surface is DERIVED from the signed release closure at direct
   // publish. A draft has no signed closure, so creator-drafts refuses

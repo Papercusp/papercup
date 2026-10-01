@@ -110,6 +110,8 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     approved_at: null,
     authority_unresolved: null,
     authority_unresolved_cause: null,
+    // migration 041 (P-010): the optional provenance badge; 'worker' is the NOT NULL default.
+    verified_by: 'worker',
     drift: 0,
     yanked_at: null,
     yanked_reason: null,
