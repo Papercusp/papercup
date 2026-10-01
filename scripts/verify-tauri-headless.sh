@@ -717,7 +717,7 @@ validate_assertion_command_preflight() {
         has_literal_tool = line ~ ("tauri-agent-tools[[:space:]]+" subcommands "([[:space:]]|$)")
         has_tool_alias = 0
         for (name in tool_vars) {
-          if (index(line, "@"DOLLAR@" name) > 0 && has_subcommand) has_tool_alias = 1
+          if (index(line, "$" name) > 0 && has_subcommand) has_tool_alias = 1
         }
 
         if (has_bad_option && has_subcommand) {
@@ -726,9 +726,9 @@ validate_assertion_command_preflight() {
         }
 
         if (has_literal_tool || has_tool_alias) {
-          has_pinned_pid = line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\@"DOLLAR@"VERIFY_TAURI_PID\"([[:space:]]|$)")
+          has_pinned_pid = line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\$VERIFY_TAURI_PID\"([[:space:]]|$)")
           for (name in pid_vars) {
-            if (line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\@"DOLLAR@" name "\"([[:space:]]|$)")) {
+            if (line ~ (subcommands "[[:space:]].*--pid[[:space:]]+\"\\$" name "\"([[:space:]]|$)")) {
               has_pinned_pid = 1
             }
           }
@@ -743,13 +743,13 @@ validate_assertion_command_preflight() {
   case "$invalid" in
     option-order:*)
       invalid="${invalid#option-order:}"
-    echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: tauri-agent-tools --pid/--port must follow its subcommand (for example, eval --pid ...)" >&2
-    echo "       offending command: $invalid" >&2
-    return 2
+      echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: tauri-agent-tools --pid/--port must follow its subcommand (for example, eval --pid ...)" >&2
+      echo "       offending command: $invalid" >&2
+      return 2
       ;;
     unbound-pid:*)
       invalid="${invalid#unbound-pid:}"
-      echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: bridge-targeting tauri-agent-tools assertions must pin --pid to \"\\@"DOLLAR@"VERIFY_TAURI_PID\" after the subcommand" >&2
+      echo "VERIFY_TAURI_ASSERTION_INVALID $source_label: bridge-targeting tauri-agent-tools assertions must pin --pid to \"\$VERIFY_TAURI_PID\" after the subcommand" >&2
       echo "       offending command: $invalid" >&2
       return 2
       ;;
