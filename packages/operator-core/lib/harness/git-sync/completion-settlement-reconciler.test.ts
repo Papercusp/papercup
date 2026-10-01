@@ -948,7 +948,7 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
   const neverCommitted = async () => false as const;
   const tree = (current: string | null | undefined) => (_root: string, path: string) =>
     path === 'a.ts' ? current : 'e'.repeat(40);
-  const verdict = (history: typeof neverCommitted | undefined, current: string | null | undefined) =>
+  const verdict = (history: CompletionSettlementReconcilerDeps['historyLookup'], current: string | null | undefined) =>
     residualPathsForCommit(manifest, SHA, emittedTree, undefined, history, undefined, tree(current));
 
   it('strands a path only when history was consulted AND the working tree moved off the close blob', async () => {
