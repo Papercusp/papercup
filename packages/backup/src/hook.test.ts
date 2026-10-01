@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
     args: string[];
     env?: NodeJS.ProcessEnv;
     detached?: boolean;
+    stdio?: unknown;
   }>,
   // Size returned by the mocked stat() of the temp dump — >=10KiB ⇒ success path.
   dumpSize: 16_384,
@@ -49,6 +50,9 @@ const h = vi.hoisted(() => ({
   hostCoverageCovered: false,
   hostCoverageReason: 'no host-dump receipt',
   statfsCalls: 0,
+  holdGuardOpen: false,
+  pendingGuard: null as EventEmitter | null,
+  pendingGuardReady: null as EventEmitter | null,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -65,6 +69,8 @@ function fakeChild() {
   };
   child.stdout = mkStream();
   child.stderr = mkStream();
+  const guardReady = mkStream();
+  child.stdio = [null, child.stdout, child.stderr, guardReady];
   const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
   stdin.write = vi.fn((chunk: string) => { h.stdinWrites.push(String(chunk)); });
   child.stdin = stdin;
@@ -78,13 +84,22 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn((
     cmd: string,
     args: string[],
-    opts?: { env?: NodeJS.ProcessEnv; detached?: boolean },
+    opts?: { env?: NodeJS.ProcessEnv; detached?: boolean; stdio?: unknown },
   ) => {
     const child = fakeChild();
-    h.spawnCalls.push({ cmd, args, env: opts?.env, detached: opts?.detached });
+    h.spawnCalls.push({ cmd, args, env: opts?.env, detached: opts?.detached, stdio: opts?.stdio });
     // Settle on next tick: each child closes with the configured code. For the
     // broken-pipe regression, the gzip stdin socket errors first (mid-stream).
     queueMicrotask(() => {
+      if (cmd === h.guardBin) {
+        const ready = child.stdio[3] as EventEmitter;
+        if (h.holdGuardOpen) {
+          h.pendingGuard = child;
+          h.pendingGuardReady = ready;
+          return;
+        }
+        ready.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      }
       if (cmd === 'gzip' && h.gzipStdinError) {
         const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE', syscall: 'write', errno: -32 });
         (child.stdin as unknown as EventEmitter).emit('error', err);
@@ -180,6 +195,9 @@ beforeEach(() => {
   h.hostCoverageCovered = false;
   h.hostCoverageReason = 'no host-dump receipt';
   h.statfsCalls = 0;
+  h.holdGuardOpen = false;
+  h.pendingGuard = null;
+  h.pendingGuardReady = null;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -254,6 +272,37 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     ]);
     expect(pgDumpIndex).toBeGreaterThan(-1);
     expect(c.detached).toBe(process.platform !== 'win32');
+    expect(c.env?.KOPIA_BACKUP_GUARD_LOG_STDERR).toBe('1');
+    expect(c.env?.KOPIA_BACKUP_GUARD_READY_FD).toBe('3');
+    expect(c.env?.KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC).toBe('900');
+    expect(h.spawnCalls.find((call) => call.cmd === h.guardBin)?.stdio).toEqual([
+      'ignore', 'pipe', 'pipe', 'pipe',
+    ]);
+  });
+
+  it('starts the 900s pg_dump watchdog only after the guard reports lock readiness', async () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    h.holdGuardOpen = true;
+    try {
+      const pending = runPreSnapshotHook(ctx);
+      for (let i = 0; i < 100 && !h.pendingGuard; i += 1) await Promise.resolve();
+      expect(h.pendingGuard).not.toBeNull();
+
+      const delays = () => timeoutSpy.mock.calls.map(([, delay]) => Number(delay));
+      expect(delays()).toContain(905_000); // separate guard-readiness backstop
+      expect(delays()).not.toContain(900_000); // pg_dump has not acquired the lock
+
+      h.pendingGuardReady!.emit('data', Buffer.from('KOPIA_BACKUP_GUARD_READY\n'));
+      expect(delays()).toContain(900_000);
+      h.pendingGuard!.emit('close', 0);
+      h.pendingGuard = null;
+      await expect(pending).resolves.toMatchObject({ ok: true });
+    } finally {
+      h.pendingGuard?.emit('close', 1);
+      h.pendingGuard = null;
+      h.holdGuardOpen = false;
+      timeoutSpy.mockRestore();
+    }
   });
 
   it('targets the isolated dump process group, not only the guard shell', () => {

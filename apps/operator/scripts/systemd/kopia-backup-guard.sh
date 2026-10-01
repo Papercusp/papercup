@@ -338,7 +338,20 @@ has_live_priority_waiter() {
 }
 
 guard_log() {
-  printf 'KOPIA_BACKUP_GUARD timestamp=%s label=%s %s\n' "$(date -Iseconds)" "$label" "$*"
+  if [ "${KOPIA_BACKUP_GUARD_LOG_STDERR:-0}" = 1 ]; then
+    printf 'KOPIA_BACKUP_GUARD timestamp=%s label=%s %s\n' "$(date -Iseconds)" "$label" "$*" >&2
+  else
+    printf 'KOPIA_BACKUP_GUARD timestamp=%s label=%s %s\n' "$(date -Iseconds)" "$label" "$*"
+  fi
+}
+
+signal_hook_ready() {
+  [ "${KOPIA_BACKUP_GUARD_READY_FD:-}" = 3 ] || return 0
+  if ! printf 'KOPIA_BACKUP_GUARD_READY\n' >&3 2>/dev/null; then
+    guard_log "result=failed mode=wait reason=readiness-signal"
+    return 1
+  fi
+  exec 3>&-
 }
 
 read_full_avg10() {
@@ -702,7 +715,20 @@ if [ "$mode" = scheduled ]; then
 else
   register_priority_request
   guard_log "result=waiting reason=lock"
-  flock 9 || exit 75
+  guard_lock_wait_timeout_sec="${KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC:-900}"
+  is_number "$guard_lock_wait_timeout_sec" || {
+    echo "invalid KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC=$guard_lock_wait_timeout_sec" >&2
+    exit 64
+  }
+  awk -v value="$guard_lock_wait_timeout_sec" 'BEGIN { exit !(value > 0) }' || {
+    echo "invalid KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC=$guard_lock_wait_timeout_sec" >&2
+    exit 64
+  }
+  if ! flock -w "$guard_lock_wait_timeout_sec" 9; then
+    guard_log "result=failed mode=wait reason=lock-timeout timeout_sec=$guard_lock_wait_timeout_sec"
+    exit 75
+  fi
+  signal_hook_ready || exit 74
   # A note left by a sweep that yielded to this wait-mode producer is spent here.
   rm -f "$handoff_note_path" 2>/dev/null || true
   cleanup_priority_request

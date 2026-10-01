@@ -533,6 +533,52 @@ export function issueOwnAuthorWhereSql(sql: OrgSql, workspaceId: string) {
 }
 
 /**
+ * WI-10003565 — is `id` an origin='remote' row authored by one of THIS workspace's own keys?
+ * Read-only twin of {@link selfHealOwnNodeOriginIfStranded}, for a guard that must decide
+ * BEFORE the write path runs (work_items:complete's early remote-authored refusal).
+ * Workspace-scoped; any read failure answers false (fail-closed: the refusal stands).
+ */
+export async function isOwnNodeAuthoredRemoteRow(workspaceId: string, id: string): Promise<boolean> {
+  if (!workspaceId || !id) return false;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ one: number }[]>`
+      SELECT 1 AS one FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${workspaceId} AND wi.feature_id = ${id}
+         AND wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(sql, workspaceId)}
+       LIMIT 1`;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * WI-10003565 — heal an own-node row's mislabelled `origin` so the remote-authored guard stops
+ * stranding it. The claim gate already treats such a row as ours ({@link issueOwnAuthorWhereSql}:
+ * `origin` records how a row ARRIVED, not who wrote it), but every write path refused it as
+ * "remote-authored ... its authoring peer must claim/resolve it" — and the authoring peer IS this
+ * node, so the row could be claimed and never closed. Measured: system-filed rows
+ * (createdBy="system:*") match none of the caller-identity hatches, so they were undrainable.
+ *
+ * Same shape as selfHealAuthorOriginIfStranded: resets `origin` on the BASE table (the
+ * `engineer_issues` view trigger no-ops any write while origin='remote'), and the WHERE clause IS
+ * the identity check — a row whose author key this workspace never wrote locally is untouched.
+ * Returns true iff a row was healed.
+ */
+export async function selfHealOwnNodeOriginIfStranded(workspaceId: string, id: string): Promise<boolean> {
+  if (!workspaceId || !id) return false;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items wi
+       SET origin = 'local'
+     WHERE wi.workspace_id = ${workspaceId} AND wi.feature_id = ${id}
+       AND wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(sql, workspaceId)}
+    RETURNING wi.feature_id`;
+  return rows.length > 0;
+}
+
+/**
  * The issue-family locally-claimable SQL floor, own-node aware — the composable counterpart of
  * {@link isIssueLocallyClaimable}. `(origin local/null OR own-node)`; `workspaceId` omitted ⇒ the
  * own-node leg is dropped (fail-safe: only ever UNDER-admits when unscoped). `wi.`-qualified.

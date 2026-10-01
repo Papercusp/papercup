@@ -397,6 +397,86 @@ describe('Kopia global backup guard', () => {
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
   });
 
+  it('signals lock readiness only after acquisition and keeps guard logs off dump stdout', async () => {
+    const { dir, env } = fixture();
+    const holderReady = join(dir, 'holder-ready');
+    const releaseHolder = join(dir, 'release-holder');
+    const holder = spawn(
+      'bash',
+      ['-c', 'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done'],
+      { env: { ...env, READY: holderReady, RELEASE: releaseHolder }, stdio: 'ignore' },
+    );
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+    let child: ReturnType<typeof spawn> | null = null;
+    let stdout = '';
+    let stderr = '';
+    let readiness = '';
+
+    try {
+      await waitForPath(holderReady);
+      child = spawn(
+        'bash',
+        [guard, '--mode', 'wait', '--label', 'dump-stream', '--', 'bash', '-c', 'printf "SELECT 1;\\n"'],
+        {
+          env: {
+            ...env,
+            KOPIA_BACKUP_GUARD_READY_FD: '3',
+            KOPIA_BACKUP_GUARD_LOG_STDERR: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+        },
+      );
+      const childClosed = new Promise<number | null>((resolve) => child!.once('close', resolve));
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+      child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+      (child.stdio[3] as import('node:stream').Readable)
+        .setEncoding('utf8')
+        .on('data', (chunk: string) => { readiness += chunk; });
+
+      await waitForOutput(() => stderr, 'result=waiting reason=lock');
+      expect(readiness).toBe('');
+      writeFileSync(releaseHolder, 'released');
+
+      expect(await childClosed).toBe(0);
+      expect(await holderClosed).toBe(0);
+      expect(stdout).toBe('SELECT 1;\n');
+      expect(stderr).toContain('result=started mode=wait');
+      expect(readiness).toBe('KOPIA_BACKUP_GUARD_READY\n');
+    } finally {
+      writeFileSync(releaseHolder, 'released');
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+    }
+  });
+
+  it('bounds wait-mode lock acquisition with a distinct lock-timeout result', async () => {
+    const { dir, env } = fixture();
+    const holderReady = join(dir, 'timeout-holder-ready');
+    const releaseHolder = join(dir, 'timeout-release-holder');
+    const marker = join(dir, 'must-not-run-after-lock-timeout');
+    const holder = spawn(
+      'bash',
+      ['-c', 'exec 9>>"$KOPIA_BACKUP_LOCK_PATH"; flock 9; touch "$READY"; while [ ! -e "$RELEASE" ]; do sleep 0.01; done'],
+      { env: { ...env, READY: holderReady, RELEASE: releaseHolder }, stdio: 'ignore' },
+    );
+    const holderClosed = new Promise<number | null>((resolve) => holder.once('close', resolve));
+
+    try {
+      await waitForPath(holderReady);
+      const result = run(
+        ['--mode', 'wait', '--label', 'timeout', '--', 'touch', marker],
+        { ...env, KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC: '1' },
+      );
+      expect(result.status).toBe(75);
+      expect(result.stdout).toContain('result=failed mode=wait reason=lock-timeout timeout_sec=1');
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      writeFileSync(releaseHolder, 'released');
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+    }
+    expect(await holderClosed).toBe(0);
+  });
+
   // WI-10003884. The deferral above is right for a producer whose cadence is far shorter
   // than its recovery-point deadline, and wrong for the hourly db-dump: a successful run
   // leaves the next tick ~2300-2500s after that success, below the 3600s staleness floor,

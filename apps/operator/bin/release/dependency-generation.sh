@@ -1556,16 +1556,181 @@ dependency_generation_apply_retention() {
   return "$rc"
 }
 
-dependency_generation_copy_independent() {
-  local src="$1" dest="$2"
-  mkdir -p "$(dirname "$dest")"
-  # GNU cp uses a CoW clone where available and a regular independent copy
-  # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
-  if dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto; then
+# WI-10004849: a changed root tree is one ~16-18 GB physical copy (ext4 has no
+# reflink), and the old and new trees coexist until the swap. Several of these
+# running at once (gate, deploy, repair precheck) drove root free space under
+# git-sync's 2% fetch reserve. So every physical copy on this host runs under
+# one host-wide flock, and refuses to start without headroom for the copy plus
+# the reserve plus a margin. Both refusals are typed infra exits:
+#   76 = DEPENDENCY_GENERATION_LOCK_TIMEOUT (another copy held the lock too long)
+#   77 = DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT (not enough free space)
+DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=0
+DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+
+dependency_generation_copy_lock_file() {
+  printf '%s\n' \
+    "${DEPENDENCY_GENERATION_COPY_LOCK_FILE:-${TMPDIR:-/tmp}/papercusp-dependency-generation-copy.lock}"
+}
+
+dependency_generation_acquire_copy_lock() {
+  local op="$1" lock fd timeout_sec started now waited next_notice holder
+  if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
+    DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
   fi
-  rm -rf -- "$dest"
-  dependency_generation_copy_with_progress "$src" "$dest"
+  if ! command -v flock >/dev/null 2>&1; then
+    dependency_generation_log 'flock unavailable; physical dependency copies are not serialized on this host'
+    return 0
+  fi
+  timeout_sec="${DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC:-600}"
+  case "$timeout_sec" in ''|*[!0-9]*) timeout_sec=600 ;; esac
+  lock="$(dependency_generation_copy_lock_file)"
+  mkdir -p "$(dirname "$lock")" 2>/dev/null || true
+  exec {fd}>>"$lock" || {
+    dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=0s timeout=${timeout_sec}s holder=unknown op=$op reason=cannot-open-lock lock=$lock"
+    return 76
+  }
+  started="$(date +%s)"
+  next_notice=30
+  while ! flock -n "$fd"; do
+    now="$(date +%s)"
+    waited=$((now - started))
+    holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+    if [ "$waited" -ge "$timeout_sec" ]; then
+      dependency_generation_log "DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=${waited}s timeout=${timeout_sec}s holder=${holder:-unknown} op=$op lock=$lock"
+      exec {fd}>&-
+      return 76
+    fi
+    if [ "$waited" -ge "$next_notice" ]; then
+      dependency_generation_log "still waiting for the host dependency-copy lock after ${waited}s of ${timeout_sec}s (holder ${holder:-unknown})"
+      next_notice=$((waited + 30))
+    fi
+    sleep 0.2
+  done
+  printf 'pid=%s op=%s since=%s\n' "${BASHPID:-$$}" "$op" "$(date +%s)" > "$lock.holder" 2>/dev/null || true
+  DEPENDENCY_GENERATION_COPY_LOCK_FD="$fd"
+  DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=1
+}
+
+dependency_generation_release_copy_lock() {
+  local fd
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ] || return 0
+  DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH - 1))
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -eq 0 ] || return 0
+  fd="$DEPENDENCY_GENERATION_COPY_LOCK_FD"
+  DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+  [ -n "$fd" ] || return 0
+  flock -u "$fd" 2>/dev/null || true
+  exec {fd}>&-
+}
+
+# Pure: the free bytes a copy needs before it may start.
+dependency_generation_headroom_required() {
+  printf '%s\n' "$(( $1 + $2 + $3 ))"
+}
+
+# Prints a statfs quantity in bytes: field %a = available, %b = total.
+dependency_generation_fs_bytes() {
+  local path="$1" field="$2" out blocks size
+  case "$field" in
+    %a) [ -n "${DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES:-}" ] \
+      && { printf '%s\n' "$DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES"; return 0; } ;;
+    %b) [ -n "${DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES:-}" ] \
+      && { printf '%s\n' "$DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES"; return 0; } ;;
+  esac
+  out="$(stat -f -c "$field %S" "$path" 2>/dev/null)" || return 1
+  blocks="${out%% *}"
+  size="${out##* }"
+  case "$blocks$size" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$((blocks * size))"
+}
+
+# Looks up a published tree's recorded size from its generation's .tree-bytes
+# sidecar (`rel<TAB>bytes`). The source path is `<generation>/tree/<rel>`.
+# Never walks the tree (WI-474827: materialization must stay walk-free).
+dependency_generation_tree_bytes_lookup() {
+  local src="$1" generation rel
+  case "$src" in */tree/*) ;; *) return 1 ;; esac
+  generation="${src%%/tree/*}"
+  rel="${src#*/tree/}"
+  [ -f "$generation/.tree-bytes" ] || return 1
+  awk -F '\t' -v rel="$rel" \
+    '$1 == rel && $2 ~ /^[0-9]+$/ { print $2; found = 1; exit } END { exit !found }' \
+    "$generation/.tree-bytes"
+}
+
+# Appends `rel<TAB>bytes` for a tree in a generation being built. A reused tree
+# carries the size its predecessor recorded; anything else is measured once,
+# at publish, while the just-copied tree is still in the page cache.
+dependency_generation_record_tree_bytes() {
+  local build="$1" rel="$2" known_src="${3:-}" bytes=''
+  if [ -n "$known_src" ]; then
+    bytes="$(dependency_generation_tree_bytes_lookup "$known_src" 2>/dev/null || true)"
+  fi
+  if [ -z "$bytes" ]; then
+    bytes="$(du -s -B1 -- "$build/tree/$rel" 2>/dev/null | awk '{ print $1; exit }' || true)"
+  fi
+  case "$bytes" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\t%s\n' "$rel" "$bytes" >> "$build/.tree-bytes"
+}
+
+# Fail-closed headroom check, run under the copy lock. `size_ref` is the path
+# whose recorded size to use; an unknown size checks only reserve + margin.
+dependency_generation_check_headroom() {
+  local size_ref="$1" dest="$2" dir pct margin need size_note total reserve required avail base
+  dir="$(dirname "$dest")"
+  pct="${DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT:-2}"
+  case "$pct" in ''|*[!0-9]*) pct=2 ;; esac
+  margin="${DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES:-10737418240}"
+  case "$margin" in ''|*[!0-9]*) margin=10737418240 ;; esac
+  if need="$(dependency_generation_tree_bytes_lookup "$size_ref" 2>/dev/null)"; then
+    size_note="size=recorded"
+  else
+    need=0
+    size_note="size=unknown"
+  fi
+  if ! total="$(dependency_generation_fs_bytes "$dir" %b)" \
+    || ! avail="$(dependency_generation_fs_bytes "$dir" %a)"; then
+    dependency_generation_log "headroom check skipped: cannot statfs $dir"
+    return 0
+  fi
+  reserve=$((total * pct / 100))
+  required="$(dependency_generation_headroom_required "$need" "$reserve" "$margin")"
+  if [ "$avail" -lt "$required" ]; then
+    base="${dest%.generation-tmp.*}"
+    base="${base%.copy-up.*}"
+    base="${base%.deploy-tmp.*}"
+    dependency_generation_reap_dead_siblings "$base"
+    avail="$(dependency_generation_fs_bytes "$dir" %a)" || avail=0
+  fi
+  if [ "$avail" -lt "$required" ]; then
+    dependency_generation_log "DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=$need avail=$avail reserve=$reserve margin=$margin required=$required $size_note path=$dest"
+    return 77
+  fi
+  return 0
+}
+
+# Publish callers return 1 for any copy failure, except the typed infra exits,
+# which pass through so the gate can classify them.
+dependency_generation_copy_failure_rc() {
+  case "$1" in 76|77) printf '%s\n' "$1" ;; *) printf '1\n' ;; esac
+}
+
+dependency_generation_copy_independent() {
+  local src="$1" dest="$2" size_ref="${3:-$1}" rc=0
+  mkdir -p "$(dirname "$dest")"
+  dependency_generation_acquire_copy_lock "copy ${dest##*/tree/}" || return $?
+  dependency_generation_check_headroom "$size_ref" "$dest" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # GNU cp uses a CoW clone where available and a regular independent copy
+    # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
+    if ! dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto; then
+      rm -rf -- "$dest"
+      dependency_generation_copy_with_progress "$src" "$dest" || rc=$?
+    fi
+  fi
+  dependency_generation_release_copy_lock
+  return "$rc"
 }
 
 # WI-10004094: a changed root tree is one ~16 GB `cp -a` on ext4 (no reflink),
@@ -1666,7 +1831,9 @@ dependency_generation_materialize_tree() {
     fi
   fi
   if [ ! -d "$tmp" ]; then
-    dependency_generation_copy_independent "$src" "$tmp"
+    # Propagate the typed lock/headroom exits (76/77) instead of letting the
+    # missing tmp tree fail later as a generic mv error.
+    dependency_generation_copy_independent "$src" "$tmp" || return $?
   fi
   if [ -e "$dest" ]; then
     mv "$dest" "$old"
@@ -1871,28 +2038,36 @@ dependency_generation_ensure_once() {
       if [ -n "$predecessor_fingerprint" ] \
         && [ "$predecessor_fingerprint" = "$record_fingerprint" ]; then
         dependency_generation_log "reusing dependency tree from $predecessor_identity: $rel"
-        if ! dependency_generation_materialize_tree \
-          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" "$tree/$rel"; then
+        copy_rc=0
+        dependency_generation_materialize_tree \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" "$tree/$rel" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
           dependency_generation_release_selector_lease
           dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
             "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
           dependency_generation_remove_build "$build"
-          return 1
+          return "$(dependency_generation_copy_failure_rc "$copy_rc")"
         fi
         dependency_generation_prune_ephemeral "$tree/$rel"
+        dependency_generation_record_tree_bytes "$build" "$rel" \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel"
         tree_reused=$((tree_reused + 1))
         dependency_generation_log \
           "reused dependency tree from $predecessor_identity: $rel mode=$DEPENDENCY_GENERATION_MATERIALIZE_MODE"
       else
         dependency_generation_log "copying changed dependency tree: $rel"
-        if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+        copy_rc=0
+        dependency_generation_copy_independent "$nm" "$tree/$rel" \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
           dependency_generation_release_selector_lease
           dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
             "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
           dependency_generation_remove_build "$build"
-          return 1
+          return "$(dependency_generation_copy_failure_rc "$copy_rc")"
         fi
         dependency_generation_prune_ephemeral "$tree/$rel"
+        dependency_generation_record_tree_bytes "$build" "$rel"
         tree_copied=$((tree_copied + 1))
         dependency_generation_log "copied changed dependency tree: $rel"
       fi
@@ -1907,13 +2082,16 @@ dependency_generation_ensure_once() {
     while IFS= read -r nm; do
       rel="${nm#"$integration_root"/}"
       dependency_generation_log "copying dependency tree: $rel"
-      if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+      copy_rc=0
+      dependency_generation_copy_independent "$nm" "$tree/$rel" || copy_rc=$?
+      if [ "$copy_rc" -ne 0 ]; then
         dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
           "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
         dependency_generation_remove_build "$build"
-        return 1
+        return "$(dependency_generation_copy_failure_rc "$copy_rc")"
       fi
       dependency_generation_prune_ephemeral "$tree/$rel"
+      dependency_generation_record_tree_bytes "$build" "$rel"
       tree_copied=$((tree_copied + 1))
       dependency_generation_log "copied dependency tree: $rel"
     done < <(dependency_generation_enumerate_node_modules "$integration_root")

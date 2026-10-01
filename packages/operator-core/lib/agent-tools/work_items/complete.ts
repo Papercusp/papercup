@@ -183,7 +183,7 @@ import {
 } from './test-result-binding';
 import { gateRedCompletionClaimVerdict, gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
-import { GATE_RED_STREAK_CONDITION_PREFIX } from '../../work-items-admission';
+import { GATE_RED_STREAK_CONDITION_PREFIX, isOwnNodeAuthoredRemoteRow } from '../../work-items-admission';
 import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionable-conditions';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -3115,7 +3115,13 @@ async function completeOne(
     // terminal close. Fail-closed: a live author, an unrecorded author, or a lookup
     // outage all return null here and the refusal below stands unchanged.
     const orphanedAuthorEndedAt = await lookupRemoteAuthorEndedAt(existing.createdBy);
-    if (!orphanedAuthorEndedAt) {
+    // WI-10003565: an own-node row (author key this workspace has written locally) is healed by
+    // the write path below (selfHealOwnNodeOriginIfStranded) — refusing it here would strand it,
+    // since the "authoring peer" this error names is this node. Fail-closed on a read error.
+    const ownNodeRow =
+      !orphanedAuthorEndedAt &&
+      (await isOwnNodeAuthoredRemoteRow(ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(), it.id));
+    if (!orphanedAuthorEndedAt && !ownNodeRow) {
       return {
         ok: false,
         id: it.id,

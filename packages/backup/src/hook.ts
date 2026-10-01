@@ -123,6 +123,10 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
+const GUARD_LOCK_WAIT_TIMEOUT_SEC = PG_DUMP_TIMEOUT_MS / 1000;
+// Let the guard's own flock timeout report and exit before this backstop fires.
+const GUARD_READINESS_TIMEOUT_MS = PG_DUMP_TIMEOUT_MS + 5_000;
+const GUARD_READY_SIGNAL = 'KOPIA_BACKUP_GUARD_READY\n';
 // Keep the database-side cancellation ahead of the Node watchdog. Killing the
 // client alone can leave pg_dump's backend holding its transaction lock until
 // PostgreSQL notices the broken connection (EI-21363741549000811).
@@ -535,11 +539,20 @@ async function dumpPg(opts: {
   const dumpArgs = guard
     ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--', 'pg_dump', ...pgDumpArgs]
     : pgDumpArgs;
+  if (guard) {
+    // Guard logs must not contaminate the SQL dump on stdout. FD 3 reports when
+    // the shared lock is acquired so the 900s dump watchdog starts at that point.
+    env.KOPIA_BACKUP_GUARD_LOG_STDERR = '1';
+    env.KOPIA_BACKUP_GUARD_READY_FD = '3';
+    env.KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC = String(GUARD_LOCK_WAIT_TIMEOUT_SEC);
+  }
   return new Promise<PreSnapshotHookResult>((resolve) => {
     const dumpDetached = process.platform !== 'win32';
     const dump = spawn(dumpCommand, dumpArgs, {
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: guard
+        ? ['ignore', 'pipe', 'pipe', 'pipe']
+        : ['ignore', 'pipe', 'pipe'],
       // The watchdog owns this entire guard -> pg_dump tree. Without an
       // isolated group, ChildProcess.kill() reaches only the guard shell.
       detached: dumpDetached,
@@ -555,16 +568,26 @@ async function dumpPg(opts: {
 
     const killDumpTree = () => terminateSpawnTree(dump, dumpDetached);
 
-    const t = setTimeout(() => {
-      stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
-      killDumpTree();
-      gz.kill('SIGKILL');
-    }, PG_DUMP_TIMEOUT_MS);
     let settled = false;
+    let dumpWatchdog: NodeJS.Timeout | undefined;
+    let guardReadinessWatchdog: NodeJS.Timeout | undefined;
+    const armDumpWatchdog = () => {
+      if (settled || dumpWatchdog) return;
+      if (guardReadinessWatchdog) {
+        clearTimeout(guardReadinessWatchdog);
+        guardReadinessWatchdog = undefined;
+      }
+      dumpWatchdog = setTimeout(() => {
+        stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
+        killDumpTree();
+        gz.kill('SIGKILL');
+      }, PG_DUMP_TIMEOUT_MS);
+    };
     const finalize = async (ok: boolean) => {
       if (settled) return;
       settled = true;
-      clearTimeout(t);
+      if (dumpWatchdog) clearTimeout(dumpWatchdog);
+      if (guardReadinessWatchdog) clearTimeout(guardReadinessWatchdog);
       if (!out.destroyed) out.end();
       let result: PreSnapshotHookResult;
       if (ok) {
@@ -645,6 +668,35 @@ async function dumpPg(opts: {
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
     });
+
+    if (!guard) {
+      armDumpWatchdog();
+    } else {
+      const readiness = dump.stdio[3] as NodeJS.ReadableStream | null;
+      if (!readiness) {
+        stderr += 'backup guard readiness channel unavailable\n';
+        killDumpTree();
+        try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+        void finalize(false);
+      } else {
+        guardReadinessWatchdog = setTimeout(() => {
+          stderr += `backup guard lock readiness timed out after ${GUARD_READINESS_TIMEOUT_MS}ms\n`;
+          killDumpTree();
+          gz.kill('SIGKILL');
+        }, GUARD_READINESS_TIMEOUT_MS);
+        let readinessBuffer = '';
+        readiness.on('data', (d) => {
+          readinessBuffer = `${readinessBuffer}${d.toString()}`.slice(-GUARD_READY_SIGNAL.length);
+          if (readinessBuffer.includes(GUARD_READY_SIGNAL)) armDumpWatchdog();
+        });
+        readiness.on('error', (e) => {
+          stderr += `backup guard readiness pipe failed: ${e.message}\n`;
+          killDumpTree();
+          try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+          void finalize(false);
+        });
+      }
+    }
 
     let dumpClosed = false;
     let gzipClosed = false;

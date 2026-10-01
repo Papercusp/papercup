@@ -2637,3 +2637,165 @@ describe('WI-10004825: scratch trees stranded by dead runs are reaped', () => {
     expect(readdirSync(parent)).toEqual([]);
   }, NATIVE_SHELL_TIMEOUT_MS);
 });
+
+// WI-10004849: physical dependency copies are serialized host-wide and refuse to
+// start without disk headroom. Exits: 76 = lock timeout, 77 = headroom.
+describe('WI-10004849: dependency copy lock + headroom preflight', () => {
+  function copyFixture(): { root: string; generation: string; source: string } {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-generation-headroom-'));
+    roots.push(root);
+    const generation = join(root, 'generation');
+    const source = join(generation, 'tree/node_modules');
+    mkdirSync(join(source, 'pkg'), { recursive: true });
+    writeFileSync(join(source, 'pkg/index.js'), 'v1\n');
+    return { root, generation, source };
+  }
+
+  function runShell(body: string, env: NodeJS.ProcessEnv): ShellResult {
+    const wrapper = ['set -euo pipefail', 'source "$SCRIPT"', body].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      env: { ...process.env, SCRIPT, ...env },
+      encoding: 'utf8',
+    });
+    return {
+      status: result.status,
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    };
+  }
+
+  const fs = (avail: number) => ({
+    DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(avail),
+    DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '100000',
+    DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+    DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '1000',
+  });
+
+  it('headroom_required is need + reserve + margin', () => {
+    const result = runShell('dependency_generation_headroom_required 5000 2000 1000', {});
+    expect(result.stdout.trim(), result.stderr).toBe('8000');
+  });
+
+  it('refuses with exit 77 when the recorded size does not fit, and copies nothing', () => {
+    const { root, generation, source } = copyFixture();
+    writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+    const dest = join(root, 'out/node_modules');
+    // required = 5000 + 2% of 100000 + 1000 = 8000
+    const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(7999),
+      SOURCE: source,
+      DEST: dest,
+    });
+    expect(refused.status, refused.stderr).toBe(77);
+    expect(refused.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=5000');
+    expect(refused.stderr).toContain('required=8000 size=recorded');
+    expect(existsSync(dest)).toBe(false);
+
+    const allowed = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(8000),
+      SOURCE: source,
+      DEST: dest,
+    });
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('v1\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('an unknown size still enforces reserve + margin', () => {
+    const { root, source } = copyFixture();
+    const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(2999),
+      SOURCE: source,
+      DEST: join(root, 'out/node_modules'),
+    });
+    expect(refused.status, refused.stderr).toBe(77);
+    expect(refused.stderr).toContain('need=0');
+    expect(refused.stderr).toContain('size=unknown');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('materialize_tree propagates the typed headroom exit instead of a generic mv error', () => {
+    const { root, source } = copyFixture();
+    const dest = join(root, 'checkout/node_modules');
+    const result = runShell(
+      'rc=0; dependency_generation_materialize_tree "$SOURCE" "$DEST" || rc=$?; echo "RC=$rc"',
+      { ...fs(10), SOURCE: source, DEST: dest },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=77');
+    expect(existsSync(dest)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('times out with exit 76 while another process holds the host copy lock', async () => {
+    const { root, source } = copyFixture();
+    const lock = join(root, 'copy.lock');
+    writeFileSync(`${lock}.holder`, 'pid=4242 op=copy fixture since=0\n');
+    const holder = spawn('flock', [lock, 'sleep', '30'], { stdio: 'ignore' });
+    try {
+      // Wait until the holder actually owns the lock.
+      for (let i = 0; i < 100; i++) {
+        const probe = spawnSync('flock', ['-n', lock, 'true']);
+        if (probe.status !== 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const result = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        SOURCE: source,
+        DEST: join(root, 'out/node_modules'),
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+      });
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      expect(result.stderr).toContain('holder=pid=4242');
+      expect(existsSync(join(root, 'out/node_modules'))).toBe(false);
+    } finally {
+      holder.kill('SIGKILL');
+    }
+    // Once released, the same copy succeeds and records itself as the holder.
+    await new Promise((r) => holder.once('exit', r));
+    const after = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      SOURCE: source,
+      DEST: join(root, 'out/node_modules'),
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+      DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+    });
+    expect(after.status, after.stderr).toBe(0);
+    expect(readFileSync(`${lock}.holder`, 'utf8')).toMatch(/^pid=\d+ op=copy /);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('the lock is re-entrant within one process', () => {
+    const { root } = copyFixture();
+    const result = runShell(
+      [
+        'dependency_generation_acquire_copy_lock outer',
+        'dependency_generation_acquire_copy_lock inner',
+        'dependency_generation_release_copy_lock',
+        'echo "DEPTH=$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH"',
+        'dependency_generation_release_copy_lock',
+        'echo "DEPTH=$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH"',
+        'flock -n "$DEPENDENCY_GENERATION_COPY_LOCK_FILE" true && echo FREE',
+      ].join('\n'),
+      { DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'reentrant.lock') },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('DEPTH=1\nDEPTH=0\nFREE\n');
+  });
+
+  it('a published generation records every tree size in .tree-bytes', () => {
+    const integration = makeIntegration();
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    const generation = publishedPath(result.stdout);
+    const lines = readFileSync(join(generation, '.tree-bytes'), 'utf8').trim().split('\n');
+    const rels = lines.map((line) => line.split('\t')[0]).sort();
+    expect(rels).toEqual(
+      ['node_modules', 'packages/a/node_modules', 'packages/b/node_modules'].sort(),
+    );
+    for (const line of lines) expect(line).toMatch(/^[^\t]+\t[1-9]\d*$/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('a publish refused for headroom exits 77 and publishes nothing', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(dirname(integration), 'generations');
+    const result = publish(integration, fs(10), generationRoot);
+    expect(result.status, result.stderr).toBe(77);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
