@@ -3,8 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { pathToFileURL } from 'node:url';
 import { Client } from 'pg';
+import { isCliEntry } from '../../util/cli-entry';
 import {
   CanonicalVectorStore, HybridBackend, LexicalLegBackend,
   MEMORY_VECTOR_STORAGE_PROFILES,
@@ -285,7 +285,7 @@ export async function runCandidateHybrid(opts: { snapshot: string; gold: string;
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   const arg = (name: string) => process.argv[process.argv.indexOf(name) + 1];
   const run = process.argv.includes('--snapshot-out') ? takeCandidateSnapshot(arg('--snapshot-out'), {
     ...(process.argv.includes('--seed') ? { seed: arg('--seed') } : {}),

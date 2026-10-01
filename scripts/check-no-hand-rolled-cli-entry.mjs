@@ -154,7 +154,6 @@ export const ALLOW_COUNTS = new Map([
   ['scripts/check-vitest-config-enrollment.mjs|file-url-to-path', 1],
   ['scripts/content-lint-runner.mjs|file-url-to-path', 1],
   ['scripts/gen-declarations.ts|file-url-to-path', 1],
-  ['scripts/next-migration.mjs|file-url-to-path', 1],
   ['scripts/test-files.mjs|file-url-to-path', 1],
   ['scripts/workspace-test.mjs|file-url-to-path', 1],
 ]);

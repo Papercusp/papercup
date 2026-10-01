@@ -16,6 +16,7 @@ const reuseSubject: ReuseSubject = reuseSubjectOverride
 const {
   auditDraw,
   estimateReuseSavings,
+  EXECUTED_SOURCE_MAP_IMPORT_LIMIT,
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
@@ -38,6 +39,7 @@ const {
   testReuseMaxAgeMs,
   TEST_REUSE_AUDIT_RATE_DEFAULT,
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
+  tsconfigUnreadByToolchain,
   writeReuseSkipList,
 } = reuseSubject;
 import {
@@ -47,6 +49,7 @@ import {
   REUSE_PROOF_FORMAT as RECORDER_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
+import { EXECUTED_SOURCE_MAP_IMPORT_LIMIT as RECORDER_IMPORT_LIMIT } from '@papercusp/test-config/vitest-config';
 import { gitInertGlobalChange } from '../../../../scripts/lib/executed-source-map.mjs';
 import { LANE_SCRIPTS } from '../../../../scripts/lib/targeted-task-reuse.mjs';
 import { execFileSync } from 'node:child_process';
@@ -255,7 +258,8 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
   it('every nested vitest config imports only what a proof or a global rule covers', () => {
     const configs = execFileSync('git', ['ls-files', '--recurse-submodules'], { cwd: REPO, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
       .split('\n')
-      .filter((f) => /\/vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(f) && existsSync(`${REPO}/${f}`));
+      .filter((f) => existsSync(`${REPO}/${f}`)) // drop index-lagged deletions before the reads below
+      .filter((f) => /\/vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(f));
     const counts: Record<SpecClass, number> = { builtin: 0, relative: 0, 'test-config': 0, npm: 0, workspace: 0, unresolved: 0 };
     const violations: string[] = [];
     const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(['"])([^'"]+)\1/gm;
@@ -477,6 +481,145 @@ describe('P-002: scripts-only root package.json changes are not global', () => {
  * so any installed-entry change stays global. Measured: 5 of 17 lockfile commits in the 7 days to
  * 2026-10-01 changed only workspace entries, and each one discarded every proof.
  */
+describe('P-003: a test-config file outside the main-process closure is a per-proof input', () => {
+  const MAIN = new Set(['libs/test-config/src/vitest-config.ts', 'libs/test-config/src/executed-source-map-reporter.ts']);
+  const SETUP = 'libs/test-config/src/setup-hermetic-env.ts';
+  const runWith = (proofs: Map<string, Proof>, drift: Set<string>, main: ReadonlySet<string> | null = MAIN) =>
+    selectReusablePasses({
+      candidates: [...proofs.keys()],
+      proofs,
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      testConfigMainProcess: main,
+    });
+
+  it('keeps every test-config source file global without a closure, and main-process ones global with it', () => {
+    expect(isGlobalRunnerInput(SETUP)).toBe(true);
+    expect(isGlobalRunnerInput(SETUP, MAIN)).toBe(false);
+    expect(isGlobalRunnerInput('libs/test-config/src/vitest-config.ts', MAIN)).toBe(true);
+    // The manifest and tsconfig are never narrowed.
+    expect(isGlobalRunnerInput('libs/test-config/package.json', MAIN)).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/tsconfig.json', MAIN)).toBe(true);
+  });
+
+  it('matches a worker-side change per proof: a proof that ran it reruns, one that did not is reused', () => {
+    const ran = 'pkg/src/ran.test.ts';
+    const didNot = 'pkg/src/did-not.test.ts';
+    const proofs = new Map([
+      [ran, proof(ran, { executedModules: [ran, SETUP] })],
+      [didNot, proof(didNot)],
+    ]);
+    const r = runWith(proofs, new Set([SETUP]));
+    expect(r.skip).toEqual([didNot]);
+    expect(r.summary).toMatchObject({ reused: 1, inputChanged: 1, globalInput: 0, testConfigNarrowed: 2 });
+    // Without the closure, the same drift discards both.
+    expect(runWith(proofs, new Set([SETUP]), null).summary).toMatchObject({ reused: 0, globalInput: 2 });
+  });
+
+  it('still discards every proof for a main-process change', () => {
+    const r = runWith(new Map([[T, proof(T)]]), new Set(['libs/test-config/src/executed-source-map-reporter.ts']));
+    expect(r.summary).toMatchObject({ reused: 0, globalInput: 1, testConfigNarrowed: 0 });
+  });
+
+  it('treats a proof whose module record hit the import cap as opaque under a narrowed drift (D-004)', () => {
+    const capped = Array.from({ length: EXECUTED_SOURCE_MAP_IMPORT_LIMIT }, (_, i) => `pkg/src/m${i}.ts`);
+    const proofs = new Map([[T, proof(T, { executedModules: [T, ...capped] })]]);
+    expect(runWith(proofs, new Set([SETUP])).summary).toMatchObject({ reused: 0, opaque: 1 });
+    // The cap only matters when a narrowed path is in the drift.
+    expect(runWith(proofs, new Set(['pkg/unrelated.md'])).summary).toMatchObject({ reused: 1, opaque: 0 });
+  });
+
+  it('pins the import-cap mirror to the recorder', () => {
+    expect(EXECUTED_SOURCE_MAP_IMPORT_LIMIT).toBe(RECORDER_IMPORT_LIMIT);
+  });
+});
+
+describe('P-004: a tsconfig the vitest toolchain never reads is not a runner input (D-007)', () => {
+  // The derived set (libs/test-config/src/toolchain-tsconfigs.ts): what vite + vite-tsconfig-paths read.
+  const READ = new Set(['tsconfig.base.json', 'pkg/tsconfig.json', 'pkg/tsconfig.lib.json']);
+  const UNREAD_ROOT = 'tsconfig.declarations.json';
+  const UNREAD_NESTED = 'pkg/tsconfig.build.json';
+  const runWith = (proofs: Map<string, Proof>, drift: Set<string>, read: ReadonlySet<string> | null = READ) =>
+    selectReusablePasses({
+      candidates: [...proofs.keys()],
+      proofs,
+      judgedSha: 'new',
+      changedBetween: () => drift,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      toolchainTsconfigs: read,
+    });
+
+  it('narrows only tsconfig/jsconfig files outside the set, never an entry name, and nothing without a set', () => {
+    expect(tsconfigUnreadByToolchain(UNREAD_ROOT, READ)).toBe(true);
+    expect(tsconfigUnreadByToolchain(UNREAD_NESTED, READ)).toBe(true);
+    expect(tsconfigUnreadByToolchain('pkg/jsconfig.app.json', READ)).toBe(true);
+    expect(tsconfigUnreadByToolchain('tsconfig.base.json', READ)).toBe(false);
+    // tsconfig.json / jsconfig.json are entry points by name: a deleted one is absent from the
+    // judged-tree set yet changed what the toolchain read, so it is never narrowed.
+    expect(tsconfigUnreadByToolchain('pkg/gone/tsconfig.json', READ)).toBe(false);
+    expect(tsconfigUnreadByToolchain('pkg/gone/jsconfig.json', READ)).toBe(false);
+    expect(tsconfigUnreadByToolchain('pkg/src/a.ts', READ)).toBe(false);
+    expect(tsconfigUnreadByToolchain(UNREAD_ROOT, null)).toBe(false);
+  });
+
+  it('keeps a read root tsconfig global and an unread one not, and every root tsconfig global without a set', () => {
+    expect(isGlobalRunnerInput(UNREAD_ROOT, null, READ)).toBe(false);
+    expect(isGlobalRunnerInput('tsconfig.base.json', null, READ)).toBe(true);
+    expect(isGlobalRunnerInput('tsconfig.json', null, READ)).toBe(true);
+    expect(isGlobalRunnerInput(UNREAD_ROOT)).toBe(true);
+    expect(isGlobalRunnerInput(UNREAD_ROOT, null, null)).toBe(true);
+  });
+
+  it('reuses every proof across an unread root tsconfig change, unless the proof read the file itself', () => {
+    const plain = 'pkg/src/plain.test.ts';
+    const reader = 'pkg/src/reader.test.ts';
+    const proofs = new Map([
+      [plain, proof(plain)],
+      [reader, proof(reader, { readPaths: [UNREAD_ROOT] })],
+    ]);
+    const r = runWith(proofs, new Set([UNREAD_ROOT]));
+    expect(r.skip).toEqual([plain]);
+    expect(r.summary).toMatchObject({ reused: 1, inputChanged: 1, globalInput: 0, tsconfigNarrowed: 1 });
+    // Without the set the same drift discards both (the pre-P-004 rule).
+    expect(runWith(proofs, new Set([UNREAD_ROOT]), null).summary).toMatchObject({ reused: 0, globalInput: 2 });
+  });
+
+  it('still discards every proof for a read root tsconfig change', () => {
+    const r = runWith(new Map([[T, proof(T)]]), new Set(['tsconfig.base.json']));
+    expect(r.summary).toMatchObject({ reused: 0, globalInput: 1, tsconfigNarrowed: 0 });
+  });
+
+  it('exempts an unread nested tsconfig from the ancestor-directory rule, but not a read one', () => {
+    const under = 'pkg/src/under.test.ts';
+    const proofs = new Map([[under, proof(under, { executedModules: [under, 'pkg/src/a.ts'] })]]);
+    const unread = runWith(proofs, new Set([UNREAD_NESTED]));
+    expect(unread.summary).toMatchObject({ reused: 1, inputChanged: 0, tsconfigNarrowed: 1 });
+    expect(runWith(proofs, new Set(['pkg/tsconfig.lib.json'])).summary).toMatchObject({ reused: 0, inputChanged: 1 });
+    // A deleted (or any) tsconfig.json beneath which the proof ran always invalidates it.
+    expect(runWith(proofs, new Set(['pkg/tsconfig.json'])).summary).toMatchObject({ reused: 0, inputChanged: 1 });
+    // Without the set the unread config is an ancestor config like any other.
+    expect(runWith(proofs, new Set([UNREAD_NESTED]), null).summary).toMatchObject({ reused: 0, inputChanged: 1 });
+  });
+
+  it('counts a proof as narrowed only when the narrowed path is what it survived', () => {
+    const r = runWith(new Map([[T, proof(T)]]), new Set([UNREAD_ROOT, 'pkg/src/a.ts']));
+    expect(r.summary).toMatchObject({ reused: 0, inputChanged: 1, tsconfigNarrowed: 0 });
+  });
+
+  it('does not apply the capped-record guard to a tsconfig narrowing (it is matched against readPaths, not modules)', () => {
+    const capped = Array.from({ length: EXECUTED_SOURCE_MAP_IMPORT_LIMIT }, (_, i) => `pkg/src/m${i}.ts`);
+    const proofs = new Map([[T, proof(T, { executedModules: [T, ...capped] })]]);
+    expect(runWith(proofs, new Set([UNREAD_ROOT])).summary).toMatchObject({ reused: 1, opaque: 0 });
+  });
+});
+
 describe('P-005: a lockfile edit that installs nothing different is not global', () => {
   const lock = (over: { packages?: Record<string, unknown>; top?: Record<string, unknown> } = {}) =>
     JSON.stringify({
@@ -616,7 +759,7 @@ describe('env toggles and the report line', () => {
     const r = run([T], new Map([[T, proof(T)]]), new Set());
     const line = formatTestReuseLine('@papercusp/x', r.summary);
     expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
-    expect(line).toMatch(/ audited=0 expiredClean=0 inertGlobal=0$/);
+    expect(line).toMatch(/ audited=0 expiredClean=0 inertGlobal=0 testConfigNarrowed=0 tsconfigNarrowed=0$/);
   });
 
   it('reads the P-012 audit rate: 5% by default, clamped to [0,1], garbage falls back', () => {
