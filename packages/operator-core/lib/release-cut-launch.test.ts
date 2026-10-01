@@ -623,6 +623,61 @@ describe('preflightCut', () => {
     expect(r.checks.some((c) => c.name === 'leg:mac')).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:windows')).toBe(true);
   });
+  describe('native smoke targets (WI-10004346)', () => {
+    const orchestratorRoot = '/orch/papercusp-desktop';
+    const detector = `${orchestratorRoot}/bin/smoke-target-preflight.sh`;
+    const withDetector = (p: string) => allPresent.has(p) || p === detector;
+    const run = (legs: { mac?: boolean; windows?: boolean }, probes: Record<string, { exitCode: number | null; output: string }>) => {
+      const calls: string[] = [];
+      const r = preflightCut(legs, { root, orchestratorRoot }, {
+        ...dependencyReady,
+        home,
+        exists: withDetector,
+        isUnitActive: () => false,
+        runSmokeTargetPreflight: (script, platform) => {
+          expect(script).toBe(detector);
+          calls.push(platform);
+          return probes[platform];
+        },
+      });
+      return { r, calls };
+    };
+    it('probes only the requested legs, and READY is ok', () => {
+      const { r, calls } = run({ mac: true }, { mac: { exitCode: 0, output: 'SMOKE_TARGET_READY mac' } });
+      expect(calls).toEqual(['mac']);
+      expect(r.checks.find((c) => c.name === 'smoke-target:mac')!.ok).toBe(true);
+      expect(r.checks.some((c) => c.name === 'smoke-target:windows')).toBe(false);
+    });
+    it('NOT-READY / STOPPED / unmeasured are surfaced as warnings, never blockers', () => {
+      const { r } = run({ mac: true, windows: true }, {
+        mac: { exitCode: 2, output: 'SMOKE_TARGET_BLOCKER baseline-missing: no 0.0.27 GUI\nSMOKE_TARGET_NOT_READY mac' },
+        windows: { exitCode: 3, output: 'windows VM stopped\nboot: systemctl --user start windows-vm.service' },
+      });
+      expect(r.go).toBe(true);
+      const mac = r.checks.find((c) => c.name === 'smoke-target:mac')!;
+      expect(mac).toMatchObject({ ok: false, warnOnly: true });
+      expect(mac.detail).toMatch(/NOT-READY.*baseline-missing/);
+      const win = r.checks.find((c) => c.name === 'smoke-target:windows')!;
+      expect(win).toMatchObject({ ok: false, warnOnly: true });
+      expect(win.detail).toMatch(/STOPPED.*systemctl --user start windows-vm/);
+
+      const timedOut = run({ mac: true }, { mac: { exitCode: null, output: '' } }).r;
+      expect(timedOut.checks.find((c) => c.name === 'smoke-target:mac')!.detail).toMatch(/UNMEASURED/);
+      expect(timedOut.go).toBe(true);
+    });
+    it('a missing detector is reported as unmeasured, not READY, and nothing is run', () => {
+      const r = preflightCut({ windows: true }, { root, orchestratorRoot }, {
+        ...dependencyReady,
+        home,
+        exists: (p) => allPresent.has(p),
+        isUnitActive: () => false,
+        runSmokeTargetPreflight: () => { throw new Error('must not run'); },
+      });
+      const c = r.checks.find((x) => x.name === 'smoke-target:windows')!;
+      expect(c).toMatchObject({ ok: false, warnOnly: true });
+      expect(c.detail).toMatch(/UNMEASURED/);
+    });
+  });
   it('a per-leg in-flight check looks at that platform\'s OWN unit, not the whole-cut one', () => {
     // The whole-cut unit is active, but we're preflighting the 'mac' LEG — a distinct unit —
     // so this must NOT be blocked by an unrelated whole-cut run.

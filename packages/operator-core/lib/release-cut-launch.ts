@@ -20,7 +20,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
@@ -1158,6 +1158,67 @@ export interface PreflightDeps {
   /** The sha an exact release tag points at on `remote` (null = the tag is absent); throws
    *  when the remote cannot be read. Default: `git ls-remote`. Tests inject. */
   remoteTagSha?: (monorepo: string, tag: string, remote: string) => string | null;
+  /** Run bin/smoke-target-preflight.sh for one native smoke target (WI-10004346).
+   *  Default: a bounded read-only `bash <script> --platform <p>`. Tests inject. */
+  runSmokeTargetPreflight?: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe;
+}
+
+/** Raw result of bin/smoke-target-preflight.sh. exitCode null = it did not finish
+ *  (timeout / spawn failure), which is unmeasured, never READY. */
+export interface SmokeTargetProbe {
+  exitCode: number | null;
+  output: string;
+}
+
+function defaultRunSmokeTargetPreflight(scriptPath: string, platform: 'mac' | 'windows'): SmokeTargetProbe {
+  const res = spawnSync('bash', [scriptPath, '--platform', platform], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 60_000,
+  });
+  return { exitCode: res.status, output: `${res.stdout ?? ''}${res.stderr ?? ''}${res.error ? `\n${res.error.message}` : ''}` };
+}
+
+/**
+ * The native installed-upgrade smoke TARGET check (WI-10004346). Preflight used to
+ * confirm only that the verify SCRIPTS exist; 0.0.26 then burned a full cut before
+ * both native smokes refused on their TARGETS (Mac rig not ready, Windows VM stopped).
+ * This runs the shared read-only detector so that is visible BEFORE the build.
+ * Always warnOnly: the cut can run; the smoke is a downstream ship-gate.
+ */
+export function smokeTargetCheck(
+  platform: 'mac' | 'windows',
+  scriptPath: string,
+  exists: (p: string) => boolean,
+  run: (scriptPath: string, platform: 'mac' | 'windows') => SmokeTargetProbe,
+): PreflightCheck {
+  const name = `smoke-target:${platform}`;
+  if (!exists(scriptPath)) {
+    return { name, ok: false, warnOnly: true, detail: `missing ${scriptPath} — native smoke target readiness is UNMEASURED` };
+  }
+  const probe = run(scriptPath, platform);
+  const blockers = probe.output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('SMOKE_TARGET_BLOCKER'));
+  const tail = blockers.length ? ` — ${blockers.join('; ')}` : '';
+  switch (probe.exitCode) {
+    case 0:
+      return { name, ok: true, warnOnly: true, detail: `${platform} smoke target READY` };
+    case 2:
+      return { name, ok: false, warnOnly: true, detail: `${platform} smoke target NOT-READY${tail}` };
+    case 3: {
+      const hint = probe.output.trim().split('\n').slice(-1)[0] ?? '';
+      return { name, ok: false, warnOnly: true, detail: `${platform} smoke target STOPPED — boot it before the smoke step${hint ? `: ${hint}` : ''}` };
+    }
+    default:
+      return {
+        name,
+        ok: false,
+        warnOnly: true,
+        detail: `${platform} smoke target UNMEASURED (detector exit ${probe.exitCode ?? 'none — timed out or failed to spawn'})${tail}`,
+      };
+  }
 }
 
 /** The public remote the shipped app clones its dogfood hive from. release-local.sh
@@ -1442,6 +1503,13 @@ export function preflightCut(
       detail: 'WITH_WINDOWS requested — built by bin/build-windows-cross.sh, cross-compiled on Linux on this host (no VM or SSH)',
       warnOnly: true,
     });
+  }
+  // The legs cross-build without a VM, but their installed-upgrade SMOKE needs one.
+  // The detector is release machinery, so read it from the current orchestrator tree.
+  const smokeScript = path.join(opts.orchestratorRoot ?? desktopRoot(), 'bin', 'smoke-target-preflight.sh');
+  const runSmoke = deps.runSmokeTargetPreflight ?? defaultRunSmokeTargetPreflight;
+  for (const platform of ['mac', 'windows'] as const) {
+    if (legs[platform]) checks.push(smokeTargetCheck(platform, smokeScript, exists, runSmoke));
   }
 
   const blockers = checks.filter((c) => !c.ok && !c.warnOnly).map((c) => `${c.name}: ${c.detail}`);
