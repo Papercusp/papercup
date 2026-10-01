@@ -13926,6 +13926,41 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     expect(pending).toHaveLength(0);
   });
 
+  it("notifies the carry after an eventual reanchor confirmation exactly once", async () => {
+    const onConfirmed = vi.fn();
+    const reportImpl = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const { pending, sleepImpl, tick } = manualSleep();
+    await expect(reportSessionRespawnedDurably("42", freshId, {
+      reportImpl, retryDelaysMs: [5, 15], sleepImpl, onConfirmed,
+    })).resolves.toBe(false);
+    expect(onConfirmed).not.toHaveBeenCalled();
+    await tick();
+    pending.shift()!.release();
+    await tick();
+    expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(freshId);
+    expect(pending).toHaveLength(0);
+  });
+
+  it("withholds eventual confirmation from a superseded in-flight report", async () => {
+    let acceptOlder!: (accepted: boolean) => void;
+    const olderConfirmed = vi.fn();
+    const newerConfirmed = vi.fn();
+    const reportImpl = vi.fn().mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      acceptOlder = resolve;
+    })).mockResolvedValue(true);
+    const older = reportSessionRespawnedDurably("42", freshId, {
+      reportImpl, retryDelaysMs: [], onConfirmed: olderConfirmed,
+    });
+    await Promise.resolve();
+    await expect(reportSessionRespawnedDurably("42", newerId, {
+      reportImpl, onConfirmed: newerConfirmed,
+    })).resolves.toBe(true);
+    acceptOlder(true);
+    await expect(older).resolves.toBe(false);
+    expect(olderConfirmed).not.toHaveBeenCalled();
+    expect(newerConfirmed).toHaveBeenCalledExactlyOnceWith(newerId);
+  });
+
   it("a newer respawn supersedes an older retry, so a late retry never re-anchors the older id", async () => {
     const reportImpl = vi.fn(async () => false);
     const { pending, sleepImpl, tick } = manualSleep();
@@ -13985,6 +14020,23 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
 
 describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wake)", () => {
   const freshId = "1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f";
+
+  it("announces an eventual reanchor confirmation after the first report fails", async () => {
+    let confirm!: (nativeId: string) => void;
+    const emitImpl = vi.fn();
+    await expect(announceAdoptedCarryRespawn("su-owner", "42", freshId, {
+      reportImpl: vi.fn(async (_adv, _native, options) => {
+        confirm = options.onConfirmed;
+        return false;
+      }),
+      emitImpl,
+    })).resolves.toBe(false);
+    expect(emitImpl).not.toHaveBeenCalled();
+    expect(confirm).toBeTypeOf("function");
+    confirm(freshId);
+    confirm(freshId);
+    expect(emitImpl).toHaveBeenCalledExactlyOnceWith("su-owner", "carry-respawn", { nativeId: freshId });
+  });
 
   it("waits for a successful successor re-anchor before emitting session:compacted", async () => {
     const order: string[] = [];
