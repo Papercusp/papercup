@@ -30,7 +30,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
 
-import * as path from 'node:path';
+import { qualifiesForLazyReceipt } from './sidecar-read-only-git';
 
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import {
@@ -119,70 +119,12 @@ export interface ExecProcessDeps {
 export const SIDECAR_LAZY_RECEIPT_DELAY_MS = 750;
 
 /**
- * Subcommands that read repository state and cannot fire a hook, so a late
- * receipt never loses nested-process lineage worth keeping. `commit`, `push`,
- * `fetch`, `checkout`, `merge`, `status` (fsmonitor hook) and anything unknown
- * stay eager.
+ * The read-only git classification (which subcommands may defer their receipt)
+ * lives in `sidecar-read-only-git.ts` so the CLIENT-side latency sampler shares
+ * one definition without importing this module's resource-governor/PG chain.
+ * Re-exported here so every existing importer keeps working.
  */
-const LAZY_RECEIPT_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  'cat-file',
-  'check-ref-format',
-  'config',
-  'describe',
-  'diff',
-  'diff-files',
-  'diff-index',
-  'diff-tree',
-  'for-each-ref',
-  'log',
-  'ls-files',
-  'ls-remote',
-  'ls-tree',
-  'merge-base',
-  'name-rev',
-  'rev-list',
-  'rev-parse',
-  'show',
-  'show-ref',
-  'symbolic-ref',
-  'var',
-]);
-const GIT_GLOBAL_OPTIONS_WITH_SEPARATE_VALUE: ReadonlySet<string> = new Set([
-  '-C',
-  '-c',
-  '--git-dir',
-  '--work-tree',
-  '--namespace',
-]);
-const GIT_GLOBAL_FLAGS: ReadonlySet<string> = new Set([
-  '--no-pager',
-  '--no-optional-locks',
-  '--no-replace-objects',
-  '--literal-pathspecs',
-  '--bare',
-]);
-
-/** The git subcommand after its global options, or null when the argv is not understood. */
-export function gitSubcommandOf(args: readonly string[]): string | null {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (!arg.startsWith('-')) return arg;
-    if (GIT_GLOBAL_OPTIONS_WITH_SEPARATE_VALUE.has(arg)) {
-      i += 1;
-      continue;
-    }
-    if (/^--(?:git-dir|work-tree|namespace)=/.test(arg) || GIT_GLOBAL_FLAGS.has(arg)) continue;
-    // An option this parser does not know could swallow the next token; do not guess.
-    return null;
-  }
-  return null;
-}
-
-export function qualifiesForLazyReceipt(params: Pick<ExecParams, 'command' | 'args'>): boolean {
-  if (path.basename(params.command) !== 'git') return false;
-  const sub = gitSubcommandOf(params.args ?? []);
-  return sub !== null && LAZY_RECEIPT_GIT_SUBCOMMANDS.has(sub);
-}
+export { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
 
 /** What `execProcess` needs from the durable receipt, whether minted eagerly or late. */
 interface ReceiptHandle {
