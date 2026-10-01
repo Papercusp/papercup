@@ -4111,6 +4111,62 @@ receipts narrow the investigation; historical app impact, R-8 acceptance
 and final shipment remain open. No production SQL mutation or shared
 restart was performed.
 
+### Current owner-backfill access and wait evidence — October 1, 16:00Z
+
+The current relation read returned the composite
+`session_turns_pkey(workspace_id, source_kind, session_id, turn_idx)`.
+EXPLAIN-only SELECT mirrors of the guarded owner UPDATE, using 1, 16 and
+179 currently indexed Claude session IDs, all selected a Nested Loop,
+Function Scan and `session_turns_pkey` Index Scan. Their index conditions
+include workspace, source kind and the resolved session ID; owner
+inequality remains a heap filter. These are current SELECT access plans,
+not the executed UPDATE plan or recovered historical parameters. The
+same current catalogue reports no non-internal row triggers. No missing
+index or trigger-induced delay is established by these reads.
+
+A separate natural recurrence was observed on backend **2451198**,
+application **`pcusp:org-admin:p1649158`**, query ID
+**`-9170796359460262385`**, query start
+**2026-10-01 15:47:59.513131 UTC**. The statement fingerprint checks
+confirmed the UNNEST join and workspace/source/session/owner guards.
+Two active snapshots showed **IO / DataFileRead**, with no blocking
+PIDs; another active snapshot had a null wait event. This directly
+observes data-file waiting at those instants, not a continuous wait
+classification, backend CPU consumption, or the earlier query's cause.
+
+The completed PostgreSQL log record is **15:55:40.233 UTC**,
+duration **460,720.337 ms**, SHA-256
+`90447858bbe79de268e639d1080dea4a97f2cc1806ca27ca2507513e82c6f193`.
+Its paired parameter record identifies **Claude**, SHA-256
+`335a4541f3d6cf3dcc0c4df367f01c584960427597dc87cf3771050393ebac40`.
+Task `0muppzaku195iei01nu`, exit 0, normalized the log's EDT timestamps
+to UTC and retained both matches without omission or parse errors.
+The first two reducers returned no selected-window matches because
+their timestamp handling was wrong; those results do not establish
+record absence. Parameter values were not returned.
+
+The fixed-window journal reducer, task `0mupq0tdj1kffa81cpd`, exit 0,
+retained one corresponding ingestion receipt at timestamp
+`1790870227025482`, PID **1649158**, invocation
+**`a90f90e3e3c5413380b9d59d0905dbd8`**, unit
+`papercusp-bg-host.service`. Its metadataBackfill wall bucket is
+**464,505.2 ms**, while its discovery/decode/writes buckets are
+56,729.8 / 23,065.4 / 77,367.4 ms. Receipt SHA-256:
+`23a80cd88fc760e0b0c64809e5c0dd513b8cd6b3ad04a7f2edd76f8f37b729d9`.
+It has no per-operation `metadataBackfills` field.
+
+The three-second `/proc` assay, task `0muppubgp1abmty84ml`, is deliberately
+**not** used as per-query CPU/I/O evidence: it started at 15:55:40.009496
+UTC and straddled the measured query completion. Its after-query
+identity read did not match the original statement. Process-incarnation
+continuity alone does not make that whole interval attributable.
+
+Thus a current slow Claude owner repair and momentary data-file waits
+are directly observed. The executed UPDATE access path, sustained
+wait mechanism, historical attribution and app impact remain open.
+No shared mutation, host restart, unchanged test rerun, source fix,
+acceptance binding or final-shipment claim was made.
+
 ### R-8 revision-4 remaining evidence census — October 1, 11:41Z
 
 This census follows the six lead groups named in live BAR `R-8`, hash

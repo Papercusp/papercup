@@ -49,7 +49,12 @@ const log = (o: Record<string, unknown>) => console.log(JSON.stringify({ ts: new
 export async function main(argv: readonly string[]): Promise<void> {
   const args = parseDaemonArgs(argv);
   const seed = parseRelaySeedHex(readFileSync(args.seedFile, 'utf8'));
-  const relay = await createBlindRelayServer({ seed, ...(args.port !== undefined ? { port: args.port } : {}) });
+  const relay = await createBlindRelayServer({
+    seed,
+    ...(args.port !== undefined ? { port: args.port } : {}),
+    // A peer resetting its stream is routine; log it, never die of it.
+    onSessionError: (e: unknown) => log({ ev: 'session-error', error: e instanceof Error ? e.message : String(e) }),
+  });
   log({ ev: 'listening', publicKey: relay.publicKey, ...relay.address() });
 
   // A relay that drifts into firewalled:true cannot serve peers behind randomized

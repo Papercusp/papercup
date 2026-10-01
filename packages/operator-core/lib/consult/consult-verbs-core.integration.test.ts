@@ -463,6 +463,42 @@ describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult
     expect(meta[0].kind).toBe('question');
   });
 
+  it('reroutes a requester follow-up only when the answering session is confirmed ended', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.reach = async () => ({ woke: 0, confirmedDead: true });
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'advanced', to: 'resp-2' } });
+    expect(r.cascade).toMatchObject({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
+    expect(r.hint).toContain('advanced to reviewer resp-2');
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-2']);
+    expect(dispatchCalls[0].body).toContain('resp-1 (wake_failed)');
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ state: 'active', responder_id: 'resp-2', cascade_cursor: 1, closed_at: null });
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'wake_failed' },
+    ]);
+  });
+
+  it('leaves the cascade untouched when the wake count is zero but liveness is ambiguous', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.reach = async () => ({ woke: 0 });
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'not_confirmed_dead', to: null } });
+    expect(r.cascade).toBeUndefined();
+    expect(dispatchCalls).toEqual([]);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: RESPONDER, cascade_cursor: 0, closed_at: null });
+  });
+
   it('wakes even when sibling consults on the same origin ref spent what was once the budget', async () => {
     const ref = 'WI-V-BUDGET-2';
     // Sibling consults on the same origin ref carry 4 wakes — the OLD budget

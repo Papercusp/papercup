@@ -315,6 +315,25 @@ describe('tool-error sweep excludes the loop’s own tools (watchdog-robustness 
     expect(signals[0]!.body).toContain('3 distinct sessions');
   });
 
+  it('describes the aggregate span when qualifying timeout windows are merged', () => {
+    const rows = [0, 12].flatMap((hour) =>
+      ['coord:inbox', 'sessions:search', 'work_items:get'].map((tool, index) => ({
+        tool_name: tool,
+        coord_owner_id: `owner-${hour}-${index}`,
+        invoked_at: new Date(Date.UTC(2026, 9, 1, hour, 0, 0)).toISOString(),
+        status: 'timeout',
+      })),
+    );
+
+    const signals = sharedToolStallSignalsFromRows(rows);
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.body).toContain('6 transient timeout-class failures');
+    expect(signals[0]!.body).toContain('across qualifying 5-minute sliding windows');
+    expect(signals[0]!.body).toContain('aggregated observed span 43200s');
+    expect(signals[0]!.body).not.toContain('within a 5-minute window');
+  });
+
   it('does not coalesce a same-tool timeout or a single-session burst', () => {
     expect(sharedToolStallSignalsFromRows([
       { tool_name: 'coord:inbox', coord_owner_id: 'owner-a', invoked_at: '2026-09-05T12:00:00Z', class: 'transient', status: 'timeout' },

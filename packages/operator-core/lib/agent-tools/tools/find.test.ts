@@ -22,6 +22,7 @@ import plansSetSpecs from '../plans/set-specs';
 import bindSpecEvidence from '../plans/bind-spec-evidence';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
+import docsGet from '../docs/get';
 import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
 import workItemsCreate from '../work_items/create';
@@ -340,7 +341,7 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const out = await callHandler({ query: 'work_items:get', limit: 1 });
     const hit = out.hits.find((entry) => entry.tool === 'work_items:get');
     expect(hit?.argSchema).toContain(
-      'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit or priorAttemptRefs; use a separate read for those enrichments)',
+      'constraint:$ (resume requires one item and cannot be combined with detail, checksOnly, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments)',
     );
   });
 
@@ -1085,6 +1086,24 @@ describe('handler — graceful degrade + result shape', () => {
     expect(hit?.argSchema).toContain('body:string(1-4000)');
     expect(hit?.description).toContain('1200 chars are refused');
     expect(hit?.description).toContain('acceptTruncation:true');
+  });
+
+  it('publishes docs:get source/heading exclusion in compact discovery', async () => {
+    expect(docsGet.name).toBe('docs:get');
+    expect(
+      docsGet.args.safeParse({
+        slugs: ['agent-spawning/observability'],
+        source: true,
+        heading: 'Spawn-tree feed',
+      }).success,
+    ).toBe(false);
+
+    const out = await callHandler({ query: 'docs:get', limit: 1 });
+    const hit = out.hits.find((candidate) => candidate.tool === 'docs:get');
+
+    expect(hit?.argSchema).toContain(
+      'constraint:$ (source and heading are mutually exclusive; source reads the entire canonical document, while heading returns a rendered section slice)',
+    );
   });
 
   it('returns null when a matched tool has no declared response shape', async () => {

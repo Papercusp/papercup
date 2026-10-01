@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { InMemoryPlanPartsStore } from './store';
+import { capturePlanParts } from './federation';
 import {
   reconcilePlanParts,
   ensurePlanPartsReconciledOnce,
@@ -25,7 +26,6 @@ function rig(plans: PlanContentRow[]) {
       sql: {} as never,
       loadPlans: async () => plans,
       storeFor: storeFor as never,
-      now: () => 1000,
     },
   };
 }
@@ -33,8 +33,8 @@ function rig(plans: PlanContentRow[]) {
 describe('reconcilePlanParts (P-005 capture / P-007 backfill)', () => {
   it('backfills every plan into per-part rows; the parts recompose to the source', async () => {
     const { stores, deps } = rig([
-      { harness_slug: 'h', plan_slug: 'a', content: PLAN_A },
-      { harness_slug: 'h', plan_slug: 'b', content: PLAN_B },
+      { harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 1000 },
+      { harness_slug: 'h', plan_slug: 'b', content: PLAN_B, content_ts: 1000 },
     ]);
     const r = await reconcilePlanParts(deps);
     expect(r.plansScanned).toBe(2);
@@ -46,7 +46,7 @@ describe('reconcilePlanParts (P-005 capture / P-007 backfill)', () => {
   });
 
   it('is idempotent — a second run over unchanged content writes nothing', async () => {
-    const { deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A }]);
+    const { deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 1000 }]);
     const first = await reconcilePlanParts(deps);
     expect(first.partsWritten).toBeGreaterThan(0);
     const second = await reconcilePlanParts(deps);
@@ -54,13 +54,35 @@ describe('reconcilePlanParts (P-005 capture / P-007 backfill)', () => {
   });
 
   it('captures only the CHANGED part on an edit', async () => {
-    const { deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A }]);
+    const { deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 1000 }]);
     await reconcilePlanParts(deps);
     // Edit one item; re-point loadPlans at the edited content.
     const edited = PLAN_A.replace('`todo` one', '`done` ONE');
-    (deps.loadPlans as unknown) = async () => [{ harness_slug: 'h', plan_slug: 'a', content: edited }];
+    (deps.loadPlans as unknown) = async () => [{ harness_slug: 'h', plan_slug: 'a', content: edited, content_ts: 2000 }];
     const r = await reconcilePlanParts(deps);
     expect(r.partsWritten).toBe(1); // just item:P-001
+  });
+
+  // WI-10004610: the sweep loads every plan up front and reaches each one later. A plan
+  // edited in between is held as its OLD body; stamped with the sweep's clock it beat
+  // the edit's own capture, and the next recompose rewrote the plan with the old body.
+  it('a body loaded before a later edit cannot overwrite that edit\'s parts', async () => {
+    const edited = PLAN_A.replace('`todo` one', '`done` ONE');
+    const { stores, deps } = rig([{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 1000 }]);
+    await reconcilePlanParts(deps); // baseline at the old body's write time
+    const store = stores.get('h')!;
+    // The edit commits AFTER the sweep loaded the old body; with-plan-lock captures it.
+    await capturePlanParts(store, 'a', edited, 2000, 'local');
+
+    // The sweep now reaches the plan still holding the old body (written at 1000).
+    await reconcilePlanParts(deps);
+    expect(joinFederatedParts(await store.getParts('a'))).toBe(edited);
+
+    // Positive control: the same old body, genuinely written AFTER the edit (a real
+    // revert), is captured — so the assertion above can fail, it is not vacuous.
+    (deps.loadPlans as unknown) = async () => [{ harness_slug: 'h', plan_slug: 'a', content: PLAN_A, content_ts: 3000 }];
+    await reconcilePlanParts(deps);
+    expect(joinFederatedParts(await store.getParts('a'))).toBe(PLAN_A);
   });
 
   it('isolates a per-plan failure (loadPlans throw → errors, never throws)', async () => {
@@ -113,7 +135,6 @@ describe('ensurePlanPartsReconciledOnce (flag-gated, once-per-process)', () => {
         return [];
       },
       storeFor: (() => new InMemoryPlanPartsStore()) as never,
-      now: () => 1,
     };
     ensurePlanPartsReconciledOnce(['ws'], seams);
     await firstRun; // the first run provably happened — no timing assumption

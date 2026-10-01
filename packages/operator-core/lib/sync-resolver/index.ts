@@ -116,10 +116,8 @@ import {
 import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
-  isDefaultLearningObservationsPage,
   learningObservationsSummarySelection,
   normalizeLearningObservationsArgs,
-  pageLearningObservationsSnapshot,
   readLearningObservationsPageFromStore,
   readLearningObservationsSummaryFromStore,
   type LearningObservationRow,
@@ -258,6 +256,7 @@ const designFeaturesListArgsSchema = z.object({
 });
 
 const learningObservationsFiltersSchema = z.object({
+  triageStates: z.array(z.enum(['awaiting', 'handled'])).max(2).optional(),
   scopes: z.array(z.string().max(300)).max(500).optional(),
   sourceRoles: z.array(z.string().max(160)).max(200).optional(),
   confidences: z.array(z.string().max(80)).max(100).optional(),
@@ -1064,16 +1063,12 @@ const learningObservationsQueryPair = createCompanionListQueryPair({
   domain: 'learning.observations',
   rowsQueryName: 'learning.observations',
   argsSchema: learningObservationsArgsSchema,
-  backingTables: ['harness_shared.work_items'] as const,
+  backingTables: ['harness_shared.work_items', 'harness_shared.work_item_occurrences'] as const,
   normalizeArgs: (args: LearningObservationsWireArgs) => normalizeLearningObservationsArgs(args),
   buildPredicate: buildLearningObservationsPredicate,
-  readPage: async ({ args, predicate }) => {
-    if (isDefaultLearningObservationsPage(args)) {
-      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
-      await import('../derived-reads/producers');
-      const snapshot = await readDerivedSnapshotRows('learning.observations');
-      return pageLearningObservationsSnapshot(snapshot as LearningObservationRow[], predicate);
-    }
+  // Intake receipts and new occurrences must agree with the companion summary.
+  // The retained-stock snapshot does not carry that live partition.
+  readPage: async ({ predicate }) => {
     const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] = await Promise.all([
       import('@papercusp/db-org'),
       import('../workspace-registry'),

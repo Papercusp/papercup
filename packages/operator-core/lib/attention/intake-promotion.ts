@@ -109,7 +109,9 @@ export type IntakeExecutionRefusal =
   | 'merge-target-not-found'
   | 'merge-target-terminal'
   | 'merge-target-is-source'
-  | 'already-merged-elsewhere';
+  | 'already-merged-elsewhere'
+  /** P-008 / D-020 §4: an investigation needs an accountable owner of its next step. */
+  | 'investigation-unowned';
 
 export type IntakeExecutionResult =
   | {
@@ -329,9 +331,54 @@ export async function executeIntakeDecision(
   return executePromotion(input, deps);
 }
 
+/**
+ * What an investigation task records about itself (P-008 / D-020 §4): the specific
+ * unresolved question, the evidence to collect, the check that ends it and who owns
+ * the next step. Every field comes from the SEALED contract, so it is exactly what
+ * the acceptance authority judged rather than a second, drifting copy.
+ */
+export interface IntakeInvestigation {
+  schemaVersion: typeof INTAKE_EXECUTION_SCHEMA_VERSION;
+  question: string;
+  evidenceToCollect: string[];
+  exitCheck: string;
+  owner: BulkIntakeDecision['owner'];
+  decidedBy: string;
+}
+
+function investigationRecord(
+  contract: ImplementationAcceptanceContract,
+  decision: BulkIntakeDecision,
+): IntakeInvestigation {
+  return {
+    schemaVersion: INTAKE_EXECUTION_SCHEMA_VERSION,
+    question: contract.problem,
+    evidenceToCollect: [...contract.evidence],
+    exitCheck: contract.completionCheck,
+    owner: decision.owner,
+    decidedBy: decision.decidedBy,
+  };
+}
+
+/** The investigation record on a promoted task, when it is a current-version one. */
+export function readIntakeInvestigation(payload: unknown): IntakeInvestigation | null {
+  const stored = record(record(payload).investigation);
+  if (stored.schemaVersion !== INTAKE_EXECUTION_SCHEMA_VERSION || typeof stored.question !== 'string') return null;
+  return stored as unknown as IntakeInvestigation;
+}
+
 async function executePromotion(input: IntakeExecutionInput, deps: IntakePromotionDeps): Promise<IntakeExecutionResult> {
   const { decision } = input;
   const disposition = decision.disposition as 'promote' | 'investigate';
+  // Checked before any lock or read: an investigation nobody owns is not an
+  // accountable next step, so it must not become claimable work (writes nothing).
+  if (disposition === 'investigate' && decision.owner === 'unknown') {
+    return {
+      ok: false,
+      refusal: 'investigation-unowned',
+      detail: `the investigate decision for ${input.sourceId} names no accountable owner; record it again with owner agent, owner or system`,
+    };
+  }
   return deps.withLocks([input.sourceId], async () => {
     const source = await deps.getItem(input.sourceId);
     if (!source) return { ok: false, refusal: 'source-not-found', detail: `${input.sourceId} does not exist` };
@@ -430,6 +477,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
           implementationReadiness: readyReadiness(source.payload, sealed.contract, authority, now),
           intakeSource: { id: source.id, mode: 'in-place', revision: sourceRevision },
           intakePromotion: receipt,
+          ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
         });
       } catch (error) {
         const converged = await convergeOnKeyConflict(error, source, input, key, deps);
@@ -471,6 +519,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
             kind: source.kind,
           },
           intakePromotion: receipt,
+          ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
         },
       });
     } catch (error) {

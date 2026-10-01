@@ -414,6 +414,165 @@ export function codexSignedIn(): boolean {
 }
 
 /**
+ * Whether a backend's login can still authenticate a NEW spawn, judged without a model
+ * call (WI-10004897).
+ *
+ * A hosted workspace host receives copies of the claude/codex logins whose refresh tokens
+ * are deliberately blanked (D-311: no rotating refresh secret crosses to a host; see
+ * WORKSPACE_HOST_*_NEUTRALIZED_REFRESH_TOKEN in the deployment driver). Such a copy works
+ * until its access token expires and then fails every call with a 401. The papercup chat's
+ * failover used to move a capped turn onto exactly such a dead copy, so the turn failed
+ * twice and reported only the second (useless) error.
+ *
+ * The verdict is UNUSABLE only on positive evidence: no credential at all, an unparseable
+ * file, or an access token past its recorded expiry with no refresh token and no API key.
+ * Anything that cannot be judged from local state (a gateway route, an env key, the macOS
+ * keychain, a token with no recorded expiry) is reported usable, which keeps the previous
+ * behavior (try it) rather than inventing a refusal.
+ *
+ * Only booleans and expiry numbers are derived; no credential value is returned or logged.
+ */
+export type AgentCredentialBasis =
+  | 'gateway'
+  | 'env-key'
+  | 'keychain'
+  | 'api-key'
+  | 'refreshable'
+  | 'live-access'
+  | 'no-expiry';
+export type AgentCredentialUnusableReason = 'absent' | 'expired-no-refresh' | 'unreadable';
+export type AgentCredentialVerdict =
+  | { usable: true; basis: AgentCredentialBasis }
+  | { usable: false; reason: AgentCredentialUnusableReason };
+
+export interface AgentCredentialProbeInput {
+  home?: string;
+  env?: Readonly<Record<string, string | undefined>>;
+  now?: number;
+  platform?: NodeJS.Platform;
+}
+
+/** Tokens this close to expiry are treated as expired (mirrors chat-stream's TOKEN_EXPIRY_SKEW_MS). */
+const CREDENTIAL_EXPIRY_SKEW_MS = 60_000;
+
+function nonEmptyString(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().length > 0;
+}
+
+function isLoopbackUrl(raw: string | undefined): boolean {
+  if (!raw?.trim()) return false;
+  try {
+    const host = new URL(raw).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '::1' || /^127\./.test(host);
+  } catch {
+    return false;
+  }
+}
+
+function readJsonObject(path: string): Record<string, unknown> | 'absent' | 'unreadable' {
+  if (!existsSync(path)) return 'absent';
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : 'unreadable';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+function accessVerdict(input: {
+  hasAccess: boolean;
+  hasRefresh: boolean;
+  expiresAtMs: number | null;
+  now: number;
+}): AgentCredentialVerdict {
+  if (!input.hasAccess) return { usable: false, reason: 'absent' };
+  if (input.hasRefresh) return { usable: true, basis: 'refreshable' };
+  if (input.expiresAtMs === null) return { usable: true, basis: 'no-expiry' };
+  return input.expiresAtMs > input.now + CREDENTIAL_EXPIRY_SKEW_MS
+    ? { usable: true, basis: 'live-access' }
+    : { usable: false, reason: 'expired-no-refresh' };
+}
+
+/** The `claude` CLI login the papercup brain spawn uses (`~/.claude/.credentials.json`, symlinked per spawn). */
+export function claudeCredentialVerdict(input: AgentCredentialProbeInput = {}): AgentCredentialVerdict {
+  const env = input.env ?? process.env;
+  const now = input.now ?? Date.now();
+  // A loopback ANTHROPIC_BASE_URL is the inference gateway, which re-auths to its own pool.
+  if (isLoopbackUrl(env.ANTHROPIC_BASE_URL)) return { usable: true, basis: 'gateway' };
+  if (nonEmptyString(env.ANTHROPIC_API_KEY) || nonEmptyString(env.ANTHROPIC_AUTH_TOKEN)) {
+    return { usable: true, basis: 'env-key' };
+  }
+  if (claudeKeychainSignedIn(input.platform ?? process.platform)) return { usable: true, basis: 'keychain' };
+  const file = readJsonObject(join(input.home ?? homedir(), '.claude', '.credentials.json'));
+  if (file === 'absent') return { usable: false, reason: 'absent' };
+  if (file === 'unreadable') return { usable: false, reason: 'unreadable' };
+  const oauth = (file.claudeAiOauth && typeof file.claudeAiOauth === 'object' ? file.claudeAiOauth : {}) as Record<
+    string,
+    unknown
+  >;
+  return accessVerdict({
+    hasAccess: nonEmptyString(oauth.accessToken),
+    hasRefresh: nonEmptyString(oauth.refreshToken),
+    expiresAtMs: typeof oauth.expiresAt === 'number' && Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null,
+    now,
+  });
+}
+
+/** The `exp` claim (seconds) of a JWT, as epoch ms; null when the token is not a decodable JWT. */
+function jwtExpiryMs(token: unknown): number | null {
+  if (typeof token !== 'string') return null;
+  const payload = token.split('.')[1];
+  if (!payload) return null;
+  try {
+    const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    const exp = claims && typeof claims === 'object' ? (claims as { exp?: unknown }).exp : undefined;
+    return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `codex` CLI login the papercup brain spawn uses (`~/.codex/auth.json`, symlinked into CODEX_HOME). */
+export function codexCredentialVerdict(input: AgentCredentialProbeInput = {}): AgentCredentialVerdict {
+  const env = input.env ?? process.env;
+  const now = input.now ?? Date.now();
+  // Mirrors chat-stream's codex spawn: either flag routes codex through the gateway's provider block.
+  if (env.PAPERCUSP_CODEX_GATEWAY === '1' || nonEmptyString(env.PAPERCUSP_ACCOUNT_ID)) {
+    return { usable: true, basis: 'gateway' };
+  }
+  if (nonEmptyString(env.CODEX_API_KEY) || nonEmptyString(env.OPENAI_API_KEY)) return { usable: true, basis: 'env-key' };
+  const file = readJsonObject(join(input.home ?? homedir(), '.codex', 'auth.json'));
+  if (file === 'absent') return { usable: false, reason: 'absent' };
+  if (file === 'unreadable') return { usable: false, reason: 'unreadable' };
+  if (nonEmptyString(file.OPENAI_API_KEY)) return { usable: true, basis: 'api-key' };
+  const tokens = (file.tokens && typeof file.tokens === 'object' ? file.tokens : {}) as Record<string, unknown>;
+  return accessVerdict({
+    hasAccess: nonEmptyString(tokens.access_token),
+    hasRefresh: nonEmptyString(tokens.refresh_token),
+    expiresAtMs: jwtExpiryMs(tokens.access_token),
+    now,
+  });
+}
+
+/**
+ * The verdict for a backend whose login lives in a local credential file; null when not judged here.
+ *
+ * ⚠ It judges the CALLING process's own home (or `input.home`). A caller whose agent CLI
+ * spawns as a DIFFERENT identity (the D-421 hosted customer-identity spawn transform) is
+ * asking about a home this process cannot read, and must not use this verdict for it.
+ */
+export function agentBackendCredentialVerdict(
+  backend: string,
+  input: AgentCredentialProbeInput = {},
+): AgentCredentialVerdict | null {
+  if (backend === 'claude-code') return claudeCredentialVerdict(input);
+  if (backend === 'codex') return codexCredentialVerdict(input);
+  return null;
+}
+
+/**
  * GitHub CLI auth status for the dogfood clone path. A hosts.yml alone is not
  * enough: revoked tokens remain on disk, and without `gh auth setup-git` git
  * cannot authenticate private HTTPS submodules with GIT_TERMINAL_PROMPT=0.

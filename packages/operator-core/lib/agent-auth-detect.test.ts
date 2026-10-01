@@ -28,6 +28,9 @@ import {
   codexSignedIn,
   ompSignedIn,
   ompAuthStatus,
+  claudeCredentialVerdict,
+  codexCredentialVerdict,
+  agentBackendCredentialVerdict,
   safeCredentialShape,
   githubSignedIn,
   anyAgentSignedIn,
@@ -205,6 +208,101 @@ describe('ompAuthStatus', () => {
     expect(ompAuthStatus('/home/u', 1000)).toEqual({
       present: true, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
     });
+  });
+});
+
+// WI-10004897: a hosted workspace host gets claude/codex login copies whose refresh token is
+// blanked to "" (D-311). Once the access token expires the copy 401s; the failover must not run it.
+describe('claudeCredentialVerdict / codexCredentialVerdict / agentBackendCredentialVerdict', () => {
+  const NOW = 10_000_000;
+  const CLAUDE = '/home/u/.claude/.credentials.json';
+  const CODEX = '/home/u/.codex/auth.json';
+  const base = { home: '/home/u', env: {}, now: NOW, platform: 'linux' as const };
+  const claudeFile = (oauth: Record<string, unknown>) => {
+    onlyExist(CLAUDE);
+    readFileSync.mockReturnValue(JSON.stringify({ claudeAiOauth: oauth }));
+  };
+  const jwt = (claims: Record<string, unknown>) =>
+    `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.s`;
+  const codexFile = (body: Record<string, unknown>) => {
+    onlyExist(CODEX);
+    readFileSync.mockReturnValue(JSON.stringify(body));
+  };
+
+  it('claude: the hosted shape (blank refresh, expired access) is unusable', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+    // Inside the expiry skew counts as expired: a spawn started now would land past it.
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW + 30_000 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+  });
+
+  it('claude: a live access token, a refresh token, or no recorded expiry is usable', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW + 3_600_000 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'live-access' });
+    claudeFile({ accessToken: 'a', refreshToken: 'r', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'refreshable' });
+    claudeFile({ accessToken: 'a' });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'no-expiry' });
+  });
+
+  it('claude: missing file or access token is absent; malformed JSON is unreadable', () => {
+    onlyExist();
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    claudeFile({ refreshToken: 'r' });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    onlyExist(CLAUDE);
+    readFileSync.mockReturnValue('not json{');
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'unreadable' });
+  });
+
+  it('claude: a loopback gateway or an env key wins over a dead file (cannot be judged locally)', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788' } })).toEqual({
+      usable: true,
+      basis: 'gateway',
+    });
+    // A NON-loopback base URL is not the gateway: the file still decides.
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }).usable).toBe(
+      false,
+    );
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_API_KEY: 'k' } })).toEqual({
+      usable: true,
+      basis: 'env-key',
+    });
+  });
+
+  it('codex: the hosted shape (refresh_token "", expired JWT access token) is unusable', () => {
+    codexFile({ OPENAI_API_KEY: null, tokens: { access_token: jwt({ exp: (NOW - 1000) / 1000 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+  });
+
+  it('codex: a live JWT, a refresh token, an API key, or an undecodable token is usable', () => {
+    codexFile({ tokens: { access_token: jwt({ exp: (NOW + 3_600_000) / 1000 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'live-access' });
+    codexFile({ tokens: { access_token: jwt({ exp: 1 }), refresh_token: 'r' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'refreshable' });
+    codexFile({ OPENAI_API_KEY: 'sk-x', tokens: { access_token: jwt({ exp: 1 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'api-key' });
+    codexFile({ tokens: { access_token: 'opaque', refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'no-expiry' });
+  });
+
+  it('codex: no auth.json is absent; the gateway route is usable regardless of the file', () => {
+    onlyExist();
+    expect(codexCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    expect(codexCredentialVerdict({ ...base, env: { PAPERCUSP_CODEX_GATEWAY: '1' } })).toEqual({
+      usable: true,
+      basis: 'gateway',
+    });
+    expect(codexCredentialVerdict({ ...base, env: { PAPERCUSP_ACCOUNT_ID: 'acct-1' } }).usable).toBe(true);
+  });
+
+  it('agentBackendCredentialVerdict routes by backend and does not judge other backends', () => {
+    onlyExist();
+    expect(agentBackendCredentialVerdict('claude-code', base)).toEqual({ usable: false, reason: 'absent' });
+    expect(agentBackendCredentialVerdict('codex', base)).toEqual({ usable: false, reason: 'absent' });
+    expect(agentBackendCredentialVerdict('omp', base)).toBeNull();
   });
 });
 

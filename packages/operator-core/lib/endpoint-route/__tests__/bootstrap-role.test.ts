@@ -107,9 +107,9 @@ vi.mock('../../adv-sessions', async (orig) => ({
   markAdvSessionEnded: markAdvSessionEndedMock,
 }));
 vi.mock('../../agent-launch-core', () => ({
-  claimAgentLaunch: (...args: unknown[]) => claimAgentLaunchMock(...args),
-  recordAgentLaunchResult: (...args: unknown[]) => recordAgentLaunchResultMock(...args),
-  releaseAgentLaunchClaim: (...args: unknown[]) => releaseAgentLaunchClaimMock(...args),
+  claimAgentLaunch: (opts: unknown) => claimAgentLaunchMock(opts),
+  recordAgentLaunchResult: (opts: unknown) => recordAgentLaunchResultMock(opts),
+  releaseAgentLaunchClaim: (opts: unknown) => releaseAgentLaunchClaimMock(opts),
 }));
 vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
   resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),

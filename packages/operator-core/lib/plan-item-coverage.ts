@@ -604,8 +604,11 @@ export async function getAllPlanItemCoverage(opts: {
   const fleet = await listFleetAssignments({
     workspaceId: null,
     activeOnly: true,
-    ...(requestedRefs !== undefined
-      ? { planItemRefs: requestedRefs, workItemIds: linkedWorkItemIds }
+    ...(requestedRefs !== undefined || requestedPlan !== undefined
+      ? {
+          ...(requestedRefs !== undefined ? { planItemRefs: requestedRefs } : { planItemPlan: requestedPlan }),
+          workItemIds: linkedWorkItemIds,
+        }
       : {}),
   });
   const sessionStates = await coverageSessionStates(fleet);

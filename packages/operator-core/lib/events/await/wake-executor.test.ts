@@ -773,7 +773,7 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
       wakeHandle: advHandle(),
     });
     const findPty = vi.fn(() => ({ id: 'pty-coalesced' }));
-    const write = vi.fn(() => true);
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
     const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42419', state: 'done', assignee: null, payload: null })) as never;
     const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
 
@@ -851,7 +851,7 @@ describe('executeWake — terminal blocked-item lifecycle binding freshness (EI-
       wakeHandle: advHandle(),
     });
     const findPty = vi.fn(() => ({ id: 'pty-coalesced-bound' }));
-    const write = vi.fn(() => true);
+    const write = vi.fn<NonNullable<ExecuteWakeDeps['write']>>(() => true);
     const getCurrentWorkItem = vi.fn(async (id: string) => ({ id, state: 'done' })) as never;
     const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
 

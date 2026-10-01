@@ -33,6 +33,9 @@ import {
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
+/** Managed Codex default id (the model-less fallback), derived so a deliberate default bump cannot strand these assertions. */
+const DEFAULT_CODEX_ID = CODEX_SAFE_DEFAULT_MODEL.split(':')[0];
 
 interface Upstream {
   server: http.Server;
@@ -590,7 +593,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     const omitted = await postResponses({ input: 'default me' });
     expect(omitted.status).toBe(200);
     expect(JSON.parse(openaiUpstream!.last.body)).toMatchObject({
-      model: 'gpt-5.6-sol',
+      model: DEFAULT_CODEX_ID,
       reasoning: { effort: 'xhigh' },
       input: 'default me',
     });

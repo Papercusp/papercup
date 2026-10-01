@@ -77,7 +77,8 @@ import {
   type ConverseSessionUser,
   type OperatorConverseInput,
 } from './converse-prompt';
-import { brainNoOutputMessage } from './converse-failure';
+import { agentBackendCredentialVerdict } from '../../agent-auth-detect';
+import { brainNoOutputMessage, type BrainAttemptOutcome, type SkippedBrainFailover } from './converse-failure';
 
 const MessageSchema = z.object({
   role: z.union([z.literal('user'), z.literal('assistant'), z.literal('system')]),
@@ -543,7 +544,18 @@ export default defineTool({
     });
     // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
     // with no output can say WHY instead of a fixed "agent backend failure".
-    let lastBackendError: string | null = null;
+    // WI-10004897: EVERY empty attempt is kept (backend, model, its own error), so a turn
+    // that failed over reports the first backend's cause too, not only the last one's.
+    const emptyAttempts: BrainAttemptOutcome[] = [];
+    let skippedFailover: SkippedBrainFailover | null = null;
+    // The failover judges the alternate's login from THIS process's home. With the D-421
+    // customer-identity spawn transform installed, the brain CLI runs as the customer
+    // workspace account, whose credential files this service user cannot read, so a local
+    // probe would report every alternate `absent` and wrongly skip every failover. There the
+    // login cannot be judged here (null): the failover runs as before.
+    const failoverCredentialOf = agentSpawnTransformConfigured()
+      ? () => null
+      : (backend: string) => agentBackendCredentialVerdict(backend);
 
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
@@ -644,7 +656,6 @@ export default defineTool({
             // included) for host-log visibility; fall through to the
             // empty-output retry check below rather than throwing, so a
             // transient backend error still gets a second attempt.
-            lastBackendError = ev.message;
             attemptBackendError = ev.message;
             const detail = ev.stderr
               ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
@@ -663,11 +674,27 @@ export default defineTool({
 
       // Stop once this attempt committed any output, or on abort.
       if (assembled.trim() || emittedToolCall || ctx.signal.aborted) break;
+      emptyAttempts.push({ engine: brainEngine, model: brainModel, error: attemptBackendError });
       if (attempt < MAX_BRAIN_ATTEMPTS) {
         const failover =
           role === 'papercup' && !failedOver
-            ? papercupChatFailover({ engine: brainEngine, failure: classifyChatModelFailure(attemptBackendError) })
+            ? papercupChatFailover({
+                engine: brainEngine,
+                failure: classifyChatModelFailure(attemptBackendError),
+                credentialOf: failoverCredentialOf,
+              })
             : null;
+        if (failover?.kind === 'unavailable') {
+          // WI-10004897: the cap/dead login cannot clear on a same-backend retry, and the
+          // alternate's login is known dead, so a second spawn on either cannot succeed.
+          // Stop now and report both facts instead of spending the retry on a 401.
+          console.error(
+            `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
+              `${attempt}; failover to ${failover.backend} skipped: credential ${failover.credential}.`,
+          );
+          skippedFailover = { engine: failover.backend, model: failover.model, credential: failover.credential };
+          break;
+        }
         if (failover) {
           console.error(
             `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
@@ -692,9 +719,9 @@ export default defineTool({
     // `done` — the route turns a thrown error into `event: error`.
     if (!assembled.trim() && !emittedToolCall && !ctx.signal.aborted) {
       console.error(
-        `[operator:converse] agent backend produced no output after ${MAX_BRAIN_ATTEMPTS} attempts.`,
+        `[operator:converse] agent backend produced no output after ${emptyAttempts.length} attempt(s).`,
       );
-      throw new Error(brainNoOutputMessage({ engine: brainEngine, model: brainModel, lastBackendError }));
+      throw new Error(brainNoOutputMessage({ attempts: emptyAttempts, skippedFailover }));
     }
 
     // WI-5071: output committed on a session-backed turn — bump the marker so

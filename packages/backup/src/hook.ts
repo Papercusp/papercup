@@ -25,10 +25,11 @@
  * Never throws — losing a dump is better than losing the snapshot.
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
 import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { createWriteStream, type Dirent } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { appendFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 
@@ -548,6 +549,9 @@ async function dumpPg(opts: {
   }
   return new Promise<PreSnapshotHookResult>((resolve) => {
     const dumpDetached = process.platform !== 'win32';
+    // Node only specializes child-process stream types for fds 0–2; fd 3 is
+    // the optional guard channel. Both branches guarantee stdin=ignore and
+    // stdout/stderr=pipe, so preserve those known stream types explicitly.
     const dump = spawn(dumpCommand, dumpArgs, {
       env,
       stdio: guard
@@ -556,7 +560,7 @@ async function dumpPg(opts: {
       // The watchdog owns this entire guard -> pg_dump tree. Without an
       // isolated group, ChildProcess.kill() reaches only the guard shell.
       detached: dumpDetached,
-    });
+    }) as ChildProcessByStdio<null, Readable, Readable>;
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 

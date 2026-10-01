@@ -997,7 +997,10 @@ describe('session-port managed seed + native persistence helpers', () => {
   // WI-10004919: Codex v0.159.3 held its footer at `Starting` (MCP servers
   // booting) for 86.2s; the 75s backend-frame budget dropped the kickoff 11s
   // before the Ready frame and the resolver idled at its prompt. Scaled down:
-  // budget = 260ms x 5 = 1.3s from the probe, Ready at ~2.1s.
+  // budget = 260ms x 5 = 1.3s from the probe, Ready at ~4.1s. The margin is
+  // wide on purpose: with Ready at ~2.1s the host sometimes observed the TUI
+  // start late enough that Ready beat the budget, so no extension was needed
+  // and the test failed on a correct run (measured 2026-10-01, WI-10004919).
   it('keeps waiting past the frame budget while the Codex footer still reads Starting', async () => {
     const ownerId = `su-codex-starting-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
@@ -1013,8 +1016,8 @@ describe('session-port managed seed + native persistence helpers', () => {
       "setTimeout(()=>{swallowing=true;process.stdout.write('\\x1b[6n');" +
       "setTimeout(()=>process.stdout.write('\\x1b[1;1H\\u2502 >_ OpenAI Codex (v0.159.3) \\u2502\\n\\u203a Ask Codex to do anything\\n" +
       "\\x1b[23;3HStarting \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left'),50);" +
-      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');},2000);},100);" +
-      'setTimeout(()=>process.exit(0),15000);';
+      "setTimeout(()=>{swallowing=false;process.stdout.write('\\x1b[23;3HReady \\u00b7 GPT-6.1-Sol xhigh \\u00b7 Context 100% left');},4000);},100);" +
+      'setTimeout(()=>process.exit(0),25000);';
     const done = hostThroughPty({
       command: execPath,
       args: ['-e', childCode],
@@ -1024,7 +1027,7 @@ describe('session-port managed seed + native persistence helpers', () => {
         PAPERCUSP_SID: ownerId,
         PAPERCUSP_AGENT: 'codex',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '260',
-        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '4000',
+        PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '8000',
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
         PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
         PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
@@ -1039,7 +1042,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       onExit: () => undefined,
     });
     try {
-      await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-STARTING'), { timeout: 8000 });
+      await vi.waitFor(() => expect(captured()).toContain('ECHO:KICKOFF-AFTER-STARTING'), { timeout: 14000 });
       expect(captured()).not.toContain('SWALLOWED:');
       const hostEvents = () =>
         readFileSync(eventLogPathForOwner(ownerId), 'utf8')
@@ -1062,7 +1065,7 @@ describe('session-port managed seed + native persistence helpers', () => {
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
       await done;
     }
-  }, 20_000);
+  }, 35_000);
 
   it('waits for a Codex Ready footer before sending a resumed launch kickoff', async () => {
     const ownerId = 'su-codex-resume-ready-itest-' + process.pid + '-' + Math.floor(performance.now());

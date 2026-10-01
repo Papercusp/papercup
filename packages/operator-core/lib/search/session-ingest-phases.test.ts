@@ -38,7 +38,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       }]);
     }
     return Promise.resolve([]);
-  }, { array: (values: unknown[]) => values });
+  }, {
+    array: (values: unknown[]) => values,
+    begin: async <T>(fn: (tx: unknown) => Promise<T>) => fn(sql),
+  });
   return { ...actual, getOrgPg: () => ({ sql }) };
 });
 vi.mock('@papercusp/flags/server', () => ({

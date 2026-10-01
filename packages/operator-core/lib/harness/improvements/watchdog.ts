@@ -1779,7 +1779,8 @@ export function analyzeSharedToolStallsFromRows(
   rows: SharedToolStallTelemetryRow[],
   opts: CollectOptions = {},
 ): SharedToolStallAnalysis {
-  const windowMs = Math.max(1, opts.sharedStallWindowMinutes ?? 5) * 60_000;
+  const windowMinutes = Math.max(1, opts.sharedStallWindowMinutes ?? 5);
+  const windowMs = windowMinutes * 60_000;
   const minTools = Math.max(2, opts.sharedStallMinTools ?? 3);
   const minSessions = Math.max(2, opts.sharedStallMinSessions ?? 2);
   const minFailures = Math.max(minTools, opts.sharedStallMinFailures ?? 3);
@@ -1854,8 +1855,8 @@ export function analyzeSharedToolStallsFromRows(
       body:
         `Watchdog signal (shared-resource stall): ${correlatedRows.length} transient timeout-class ` +
         `failures from ${tools.length} distinct tools and ${sessions.length} distinct sessions ` +
-        `within a ${Math.max(1, opts.sharedStallWindowMinutes ?? 5)}-minute window ` +
-        `(observed span ${spanSeconds}s). This shape points to a shared dependency/resource ` +
+        `across qualifying ${windowMinutes}-minute sliding windows ` +
+        `(aggregated observed span ${spanSeconds}s). This shape points to a shared dependency/resource ` +
         `rather than ${tools.length} independent tool defects; per-tool transient captures ` +
         `for these tools were suppressed.\n\nTools: ${tools.join(', ') || '(unknown)'}` +
         `\nSamples: ${samples.join(', ') || '(none)'}`,

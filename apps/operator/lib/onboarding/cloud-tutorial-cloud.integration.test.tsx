@@ -61,7 +61,7 @@ describe("Cloud Guide mounted on the maintained hosted Cloud surface", () => {
   });
   it("recovers a missing real target by navigation, preserving confirmed prerequisites and user input", async () => {
     data.rows = [connection];
-    mount("/cloud-workspaces?step=operate");
+    mount("/cloud-workspaces?step=connect");
     const guide = await screen.findByRole("region", { name: "First agent guide" });
     await within(guide).findByRole("heading", { name: "Review configuration and cost" });
     expect(document.querySelector('[data-tutorial-target="cloud-configuration"]')).toBeNull();

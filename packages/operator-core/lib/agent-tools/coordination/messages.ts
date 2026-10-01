@@ -46,6 +46,7 @@ import {
 import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } from './derived-plan-slug';
 import { shouldDeriveWhyGoal, deriveWhyGoal, WHY_GOAL_DERIVED_PROVENANCE } from './derived-why-goal';
 import { noteIntentDeclared, readAgentStateStamp } from '../../agent-state-stamp';
+import { sealCoordEnvelope } from '../../personal-vault/sealed-contents';
 
 export type { InboxOptions };
 
@@ -261,7 +262,7 @@ export async function sendMessage(
       opts = { ...opts, extra: { ...opts.extra, [CUE_AUTHORITY_FIELD]: stamp } };
     }
   }
-  const env: CoordEnvelope = {
+  let env: CoordEnvelope = {
     ts: new Date().toISOString(),
     msg_id: opts.msgId ?? newMsgId(),
     from: identity.ownerId,
@@ -441,6 +442,17 @@ export async function sendMessage(
       const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
       env.fieldProvenance = { ...existing, why: WHY_GOAL_DERIVED_PROVENANCE };
     }
+  }
+  // personal-data-reader-set-labels P-006 / D-006: a sender holding a restricted
+  // Personal Vault disclosure has what it authored moved to the sealed store, and
+  // only the stub is parked, persisted and federated. Runs after every stamp
+  // above and before the first write below, so no copy leaves unsealed. Skipped
+  // only where nothing is persisted to Postgres (the in-memory test seam) or the
+  // sender has no concrete workspace, which is also where no disclosure can be
+  // recorded. A ledger failure throws disclosure_ledger_unavailable.
+  const sealWorkspaceId = identity.workspaceId?.trim();
+  if (coordHasPgFastPath() && sealWorkspaceId && sealWorkspaceId !== '*') {
+    env = await sealCoordEnvelope(coordSql(), { workspaceId: sealWorkspaceId, env });
   }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).

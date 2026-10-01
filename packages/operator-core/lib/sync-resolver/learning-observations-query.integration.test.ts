@@ -251,31 +251,6 @@ describe('learning.observations + summary real-PG contract', () => {
         if (q) expect(expanded).toBeGreaterThan(0);
         else expect(expanded).toBe(0);
         if (!q) {
-          // Reintroduce only the old unused projection into the captured REAL
-          // query. Both variants use the same predicates, facets, fixture and
-          // connection; this is a controlled SQL benchmark, not a route p95.
-          const currentQuery = captured!.query;
-          const legacyQuery = withUnusedObservationProjection(currentQuery);
-          expect(legacyQuery).not.toBe(currentQuery);
-          const parameters = captured!.parameters;
-          const canonical = (result: readonly object[]) => result.map((row) => JSON.stringify(row)).sort();
-          const reference = canonical(await sql.unsafe(currentQuery, parameters));
-          const timings: Record<'legacy' | 'current', number[]> = { legacy: [], current: [] };
-          for (let sample = 0; sample < 100; sample += 1) {
-            const order = sample % 2 === 0 ? ['legacy', 'current'] as const : ['current', 'legacy'] as const;
-            for (const variant of order) {
-              const started = performance.now();
-              const result = await sql.unsafe(variant === 'legacy' ? legacyQuery : currentQuery, parameters);
-              timings[variant].push(performance.now() - started);
-              expect(canonical(result)).toEqual(reference);
-            }
-          }
-          const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * p) - 1];
-          console.info('OBSERVATION_SUMMARY_BENCHMARK', JSON.stringify({
-            rows: ROWS, callsPerVariant: 100, cacheState: 'warm',
-            p50Ms: { legacy: percentile(timings.legacy, 0.5), current: percentile(timings.current, 0.5) },
-            p95Ms: { legacy: percentile(timings.legacy, 0.95), current: percentile(timings.current, 0.95) },
-          }));
           const burst = await Promise.all(Array.from({ length: 8 }, () => summaryFor({})));
           for (const summary of burst) expect(summary).toEqual(burst[0]);
           expect(burst[0]).toMatchObject({ total: ROWS, matched: ROWS });
@@ -293,6 +268,56 @@ describe('learning.observations + summary real-PG contract', () => {
       // One ref per fixture row: only the bounded page plus its next-page
       // sentinel needs display refs, not every row in the observation corpus.
       expect(expandedRows(pagePlan[0]!['QUERY PLAN'][0]!.Plan)).toBeLessThanOrEqual(201);
+    } finally {
+      await recordingSql.end();
+    }
+  }, 120_000);
+
+  // Keep the 100 alternating samples per variant, but give the structural
+  // guard and each bounded batch their own deadline. One 200-query task used
+  // to time out and keep executing into subsequent tests.
+  const warmTimings: Record<'legacy' | 'current', number[]> = { legacy: [], current: [] };
+  it.for([0, 1, 2, 3, 4])('measures warm summary parity and latency in bounded batch %i', async (batch, { signal }) => {
+    let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;
+    const recordingSql = postgres(db.url, {
+      max: 1,
+      debug: (_connection, query, parameters) => { captured = { query, parameters }; },
+    });
+    try {
+      await readLearningObservationsSummaryFromStore(
+        recordingSql, workspaceId,
+        buildLearningObservationsPredicate(normalizeLearningObservationsArgs({})),
+      );
+      expect(captured).toBeDefined();
+      const currentQuery = captured!.query;
+      const legacyQuery = withUnusedObservationProjection(currentQuery);
+      expect(legacyQuery).not.toBe(currentQuery);
+      const parameters = captured!.parameters;
+      const canonical = (result: readonly object[]) => result.map((row) => JSON.stringify(row)).sort();
+      const reference = canonical(await sql.unsafe(currentQuery, parameters));
+      for (let offset = 0; offset < 20; offset += 1) {
+        const sample = batch * 20 + offset;
+        const order = sample % 2 === 0 ? ['legacy', 'current'] as const : ['current', 'legacy'] as const;
+        for (const variant of order) {
+          signal.throwIfAborted();
+          const started = performance.now();
+          const result = await sql.unsafe(variant === 'legacy' ? legacyQuery : currentQuery, parameters);
+          signal.throwIfAborted();
+          warmTimings[variant].push(performance.now() - started);
+          expect(canonical(result)).toEqual(reference);
+        }
+      }
+      console.info('OBSERVATION_SUMMARY_BENCHMARK_BATCH', JSON.stringify({ batch, callsPerVariant: 20 }));
+      if (batch === 4) {
+        expect(warmTimings.legacy).toHaveLength(100);
+        expect(warmTimings.current).toHaveLength(100);
+        const percentile = (values: number[], p: number) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * p) - 1];
+        console.info('OBSERVATION_SUMMARY_BENCHMARK', JSON.stringify({
+          rows: ROWS, callsPerVariant: 100, cacheState: 'warm',
+          p50Ms: { legacy: percentile(warmTimings.legacy, 0.5), current: percentile(warmTimings.current, 0.5) },
+          p95Ms: { legacy: percentile(warmTimings.legacy, 0.95), current: percentile(warmTimings.current, 0.95) },
+        }));
+      }
     } finally {
       await recordingSql.end();
     }

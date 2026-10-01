@@ -168,6 +168,10 @@ const argsSchema = z.preprocess(
       message:
         'source and heading are mutually exclusive — a heading slice is not the document. Drop `heading` to read the whole source, or drop `source` to read that section rendered.',
       path: ['source'],
+    })
+    .meta({
+      'x-papercusp-call-constraint':
+        'source and heading are mutually exclusive; source reads the entire canonical document, while heading returns a rendered section slice',
     }),
 );
 

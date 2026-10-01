@@ -21,6 +21,12 @@ export interface BlindRelayServerOpts {
   bootstrap?: Array<{ host: string; port: number }>;
   /** Fixed UDP port for the DHT node (so a firewall rule can open it). Omitted → any free port. */
   port?: number;
+  /**
+   * Called when a relay session errors (a peer resetting its stream is routine).
+   * The error is always contained either way: an unhandled session 'error'
+   * would crash the whole process (WI-10004904 — it killed the VM daemon).
+   */
+  onSessionError?: (err: unknown) => void;
 }
 
 export interface BlindRelayServer {
@@ -57,9 +63,13 @@ interface DhtModule {
   };
 }
 
+interface BlindRelaySession {
+  on(ev: 'error', cb: (e: unknown) => void): unknown;
+}
+
 interface BlindRelayModule {
   Server: new (o: { createStream: (so: Record<string, unknown>) => unknown }) => {
-    accept(socket: RelaySocket, o: { id: Buffer }): unknown;
+    accept(socket: RelaySocket, o: { id: Buffer }): BlindRelaySession;
     close(): Promise<void>;
     stats: unknown;
   };
@@ -110,7 +120,16 @@ export async function createBlindRelayServer(opts: BlindRelayServerOpts): Promis
     socket.on('error', () => {
       /* sessions tear down on their own */
     });
-    relayServer.accept(socket, { id: socket.remotePublicKey });
+    // blind-relay re-emits every relayed stream's error (ECONNRESET when a peer
+    // drops) on the session. With no listener Node throws it as uncaught.
+    const session = relayServer.accept(socket, { id: socket.remotePublicKey });
+    session.on('error', (err) => {
+      try {
+        opts.onSessionError?.(err);
+      } catch {
+        /* a reporting hook must not take the relay down either */
+      }
+    });
   });
   try {
     await server.listen(keyPair);

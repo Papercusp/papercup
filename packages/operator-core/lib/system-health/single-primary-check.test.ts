@@ -14,6 +14,7 @@ import {
   openSinglePrimaryConditions,
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';
+import { readCutStatus } from '../release-cut-launch';
 
 // EI-20517156511202200 fixture: `systemctl --user is-active` for the CUT unit. Node's
 // execFileSync throws on a non-zero exit but still captures stdout on the thrown error —
@@ -150,6 +151,11 @@ describe('D-026 Corestore quiescence evidence', () => {
         calls.push(unit);
         return unit === 'papercup-release-cut' || unit === D026_RESTORE_UNIT;
       },
+      // Hermetic: the real readCutStatus reads this host's cut-started marker, and a marker
+      // carrying a taskId re-targets the probe to a per-task unit. So after any real cut on
+      // the box, this case read cutActive:false. Pin "no marker on disk" so the probe
+      // targets the default unit this case asserts.
+      readCutStatus: (d) => readCutStatus({ ...d, existsSync: () => false }),
     });
 
     expect(evidence).toEqual({ cutActive: true, restoreActive: true });

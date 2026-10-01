@@ -28,6 +28,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
 import { readStandingBulkAutomationPolicy } from '../../attention/automation-policy';
 import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
+import { UNATTENDED_INTAKE_REQUESTER } from '../../attention/bulk-run-owner-digest';
 import {
   BulkRunAlreadyActiveError,
   createRun,
@@ -49,7 +50,8 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export const INTAKE_TRIAGE_DRAIN = 'intake-triage-drain';
 export const INTAKE_TRIAGE_DRAIN_CAP = 200;
-export const INTAKE_TRIAGE_REQUESTER = `system:${INTAKE_TRIAGE_DRAIN}`;
+/** One constant with the owner digest, which recognizes this requester as unattended (R-27). */
+export const INTAKE_TRIAGE_REQUESTER = UNATTENDED_INTAKE_REQUESTER;
 export const INTAKE_TRIAGE_RUN_KIND = 'intake-triage' as const;
 
 /** The intake population: observation-lane bug/change rows, minus scorecard rows. */
@@ -129,7 +131,11 @@ export interface IntakeTriageDrainDeps {
   /** `pending`/`running` intake-triage run only; a `review` run waits on the owner. */
   runningRun: (workspaceId: string) => Promise<{ runId: string; phase: string } | null>;
   readAwaitingIntake: (workspaceId: string, cap: number) => Promise<AwaitingIntakeRow[]>;
-  /** The saved intake-triage launch profile, falling back to the Inbox profile. */
+  /**
+   * The owner's saved Inbox resolver profile. Intake triage has no pane of its own,
+   * so a separate profile key would only ever hold the default (the system login),
+   * which is the launch route WI-10004887 found failing at its session limit (D-021).
+   */
   readLaunchProfile: () => Promise<Partial<BulkResolverLaunchProfile> | null>;
   recentNeverBeat: (workspaceId: string) => Promise<{ consecutive: number; newestCreatedAt: string | null }>;
   readAutomationPolicy: (workspaceId: string) => Promise<ReturnType<typeof bulkAutomationSnapshot>>;
@@ -159,10 +165,7 @@ export function makeIntakeTriageDrainAction(overrides: Partial<IntakeTriageDrain
     enabled: () => getFlag(FLAGS.INBOX_BULK_RESOLVE, INTAKE_TRIAGE_REQUESTER).catch(() => false),
     runningRun: (workspaceId) => getRunningRun(workspaceId, INTAKE_TRIAGE_RUN_KIND),
     readAwaitingIntake,
-    readLaunchProfile: async () => {
-      const profiles = (await readAgentConfig()).resolverProfiles;
-      return profiles?.[INTAKE_TRIAGE_RUN_KIND] ?? profiles?.['inbox-resolve'] ?? null;
-    },
+    readLaunchProfile: async () => (await readAgentConfig()).resolverProfiles?.['inbox-resolve'] ?? null,
     recentNeverBeat: (workspaceId) =>
       readConsecutiveNeverBeatRuns({ workspaceId, kind: INTAKE_TRIAGE_RUN_KIND, requestedBy: INTAKE_TRIAGE_REQUESTER }),
     readAutomationPolicy: async (workspaceId) => bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(workspaceId)),

@@ -548,6 +548,32 @@ const decisionLedgerGcWorkflow = idempotentRegisterWorkflow('decisionLedgerGc', 
 );
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
 
+// Every 15 min: payload retention for harness_shared.trigger_deliveries (WI-10004921,
+// migration 1306). Strips the payload — never the row, which is each sink's dedupe
+// identity — from delivered non-event-bus rows (no reader at all) and from any finished
+// row past the 30-day replay horizon. Batch-limited, so the ~330k-row legacy backlog
+// (7.4 GB, each event stored once per sink) drains over a few hours instead of in one
+// long UPDATE on a table ingestion writes constantly. Detail in delivery-retention.ts.
+async function triggerDeliveryRetentionTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      const { pruneTriggerDeliveryPayloads } = await import('../external-triggers/delivery-retention');
+      return pruneTriggerDeliveryPayloads();
+    },
+    { name: 'trigger-delivery-payload-retention' },
+  );
+}
+const triggerDeliveryRetentionWorkflow = idempotentRegisterWorkflow('triggerDeliveryRetention', () =>
+  DBOS.registerWorkflow(triggerDeliveryRetentionTick, {
+    name: 'triggerDeliveryRetention',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(triggerDeliveryRetentionWorkflow, {
+  name: 'triggerDeliveryRetention',
+  crontab: '0 */15 * * * *',
+});
+
 // Hourly @:05: retention GC for the `fleet-logs/` directories headless-spawn
 // launch paths write to (WI-224710 cause #2 — "fleet-logs grows without
 // bound"). Measured live 2026-08-30: 25G / 2,946 files in ONE such directory

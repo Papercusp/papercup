@@ -642,6 +642,94 @@ export function isIntakeAttentionKind(kind: unknown): boolean {
   return typeof kind === 'string' && (INTAKE_ATTENTION_KINDS as readonly string[]).includes(kind);
 }
 
+/**
+ * Bulk-run kinds whose items are NOT attention-feed members, so feed membership
+ * cannot be their liveness check (observation-candidate plan P-008 / D-020). An
+ * intake-triage item is an observation-lane row, and the feed admits improvement
+ * rows only when they are flagged for a human, so a feed-membership gate would
+ * refuse every intake-triage application. Their liveness is the source row's own
+ * state, which `executeIntakeDecision` re-reads under its row lock
+ * (`source-not-found` / `source-terminal` refusals write nothing).
+ */
+export function isSourceLivenessRunKind(kind: unknown): boolean {
+  return kind === 'intake-triage';
+}
+
+/**
+ * P-008 / D-020 §4: an uncertain report cannot become accepted fix work. A promote
+ * whose confidence is `low` or `insufficient` is refused when it is REPORTED, so it
+ * never reaches application; the resolver records investigate or retry instead.
+ * Returns the refusal text, or null when the decision may be recorded.
+ */
+export function intakeConfidenceRefusal(disposition: string, confidenceLevel: string | null | undefined): string | null {
+  if (disposition !== 'promote') return null;
+  if (confidenceLevel !== 'low' && confidenceLevel !== 'insufficient') return null;
+  return (
+    `a ${confidenceLevel}-confidence report cannot become accepted work: promote needs confidenceLevel high or medium. ` +
+    'Record investigate (the open question, evidence to collect and exit check) or retry (with the missing information) instead'
+  );
+}
+
+/** One run row as the intake-drain summary reads it. */
+export interface IntakeDrainRow {
+  outcome: string;
+  actionId: string | null;
+  intakeDecision: BulkIntakeDecision | null;
+  /** The accepted item's delivery state, when the caller has read it. */
+  promoted?: { state: string; completionAuthority?: string | null } | null;
+}
+
+export interface IntakeDrainSummary {
+  /** Intake dispositions: what was DECIDED about each input. */
+  intake: {
+    total: number;
+    decided: number;
+    undecided: number;
+    failed: number;
+    applied: number;
+    byDisposition: Record<BulkIntakeDisposition, number>;
+  };
+  /** Accepted-work delivery: a separate question from the decision. */
+  delivery: { accepted: number; delivered: number; notDelivered: number };
+}
+
+/**
+ * P-008 / D-020 §5 (R-27): summarize an intake drain with dispositions SEPARATE from
+ * implementation delivery. An applied promote/investigate counts as accepted, and
+ * only as delivered once its item is terminal `done` with committed completion
+ * authority, so "accepted" can never read as "shipped". Intake never feeds the run's
+ * resolved counters; this summary is the only place its outcomes are counted.
+ */
+export function summarizeIntakeDrain(rows: readonly IntakeDrainRow[]): IntakeDrainSummary {
+  const byDisposition = Object.fromEntries(BULK_INTAKE_DISPOSITIONS.map((d) => [d, 0])) as Record<
+    BulkIntakeDisposition,
+    number
+  >;
+  const summary: IntakeDrainSummary = {
+    intake: { total: rows.length, decided: 0, undecided: 0, failed: 0, applied: 0, byDisposition },
+    delivery: { accepted: 0, delivered: 0, notDelivered: 0 },
+  };
+  for (const row of rows) {
+    const decision = row.intakeDecision;
+    if (!decision) {
+      if (row.outcome === 'failed') summary.intake.failed += 1;
+      else summary.intake.undecided += 1;
+      continue;
+    }
+    summary.intake.decided += 1;
+    byDisposition[decision.disposition] += 1;
+    const applied = row.outcome === 'auto_resolved' && row.actionId === INTAKE_APPLY_ACTION_ID;
+    if (!applied) continue;
+    summary.intake.applied += 1;
+    if (decision.disposition !== 'promote' && decision.disposition !== 'investigate') continue;
+    summary.delivery.accepted += 1;
+    const delivered = row.promoted?.state === 'done' && row.promoted.completionAuthority === 'committed';
+    if (delivered) summary.delivery.delivered += 1;
+    else summary.delivery.notDelivered += 1;
+  }
+  return summary;
+}
+
 export function isBulkIntakeDisposition(value: unknown): value is BulkIntakeDisposition {
   return typeof value === 'string' && (BULK_INTAKE_DISPOSITIONS as readonly string[]).includes(value);
 }

@@ -9,14 +9,14 @@
 // registry in apps/operator/lib/tool-delivery-floors.ts. Editing this file
 // changes nothing durable: the next generator run overwrites it.
 //
-// Catalog measured: 934 tools.
+// Catalog measured: 936 tools.
 
 /** claude: 0 full + 63 compact = 99934 B of 100000 B. */
 export const CLAUDE_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
   spentBytes: 99934,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 871 }),
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 873 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -222,7 +222,7 @@ export const CODEX_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
   spentBytes: 99934,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 871 }),
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 873 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
@@ -428,7 +428,7 @@ export const OMP_TOOL_DELIVERY = Object.freeze({
   budgetBytes: 100000,
   spentBytes: 99934,
   budgetOverrun: 0,
-  counts: Object.freeze({ full: 0, compact: 63, deferred: 871 }),
+  counts: Object.freeze({ full: 0, compact: 63, deferred: 873 }),
   /** name -> "full" | "compact". A name absent here is DEFERRED. */
   tiers: Object.freeze({
     "build:typecheck": "compact",
