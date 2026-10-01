@@ -148,7 +148,9 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
     'libs/generic/memory/src/embed-device.ts'].map((file) => fingerprintFile(path.join(repo, file))));
   const identity = { requestSha256: expectedSha, referenceSummarySha256: referenceSummarySha, device, sources, references,
     execution: { dtype: 'fp32', ...ORT_SESSION_OPTIONS }, nativeTransport: 'shipped-worker-single-text',
-    providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker' };
+    providerProof: 'worker-session-construction-report', computeKernelProfiling: 'not-exposed-by-shipped-worker',
+    tokenIdsProof: 'qualification-process Rust tokenizer; worker uses the same pinned recipe',
+    actualWorkerTokenTrace: 'not-exposed-by-shipped-worker' };
   fs.writeFileSync(`${output}.request.json`, JSON.stringify(identity), { flag: 'wx', mode: 0o600 });
   const rows: NativeBoundaryRow[] = [], batches: unknown[] = [];
   let activeCell = 'tokenizer-load';
@@ -184,7 +186,7 @@ export async function qualifyMdenseOnBoundaries(requestFile: string, expectedSha
       console.log('native boundary request group', batch.id, 'single-text worker', result.passed);
     }
     const measured = summarizeNativeBoundaries(request, rows, device);
-    fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile',
+    fs.writeFileSync(output, JSON.stringify({ ...identity, ...measured, batches, notChecked: ['native worker compute-kernel profile', 'native worker input tensor trace',
       'native padded/mixed ONNX tensors: worker accepts one text per call'] }), { flag: 'wx', mode: 0o600 });
   } catch (error) {
     fs.writeFileSync(`${output}.failure.json`, JSON.stringify({ ...identity, activeCell, completedSingles: rows.map((r) => r.id),

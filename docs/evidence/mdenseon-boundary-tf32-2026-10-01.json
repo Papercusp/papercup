@@ -1,0 +1,520 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "item": "P-006",
+  "workItem": "WI-10004540",
+  "defect": "EI-24794784159846761",
+  "status": "paired TF32 cause, ten CPU cells, six corrected CUDA short cells and padded CUDA diagnostic verified; native and full CUDA acceptance incomplete",
+  "model": "lightonai/mDenseOn",
+  "revision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
+  "runtime": { "torch": "2.14.1+cpu", "transformers": "4.57.6", "onnxruntime": "1.23.2", "tokenizers": "0.22.2" },
+  "request": {
+    "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-request-v2.json",
+    "sha256": "7fbfac87beafc5709269e8a22eb5abbeb025d4cea9813c2e4f2b7e5bcae4c243",
+    "cell": "single-short-query",
+    "tokenLength": 6,
+    "identicalInputIds": true,
+    "identicalReferenceVectors": true,
+    "identicalRequestPin": true,
+    "v1InputContractPreserved": true,
+    "v2Refresh": "Only the helper source asset pin changed; cases, batches, thresholds, execution, snapshot, export and other asset pins remained identical."
+  },
+  "fixedGates": { "minimumCosine": 0.99999, "maximumAbsoluteError": 0.00003, "ranking": "exact" },
+  "arms": [
+    {
+      "recipe": "python-ort-cuda-fp32-tf32-1",
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/cuda-tf32-on-v2",
+      "effectiveUseTf32": "1",
+      "cudaComputeVerifiedByProfile": true,
+      "minimumCosine": 0.9999997019767761,
+      "maximumAbsoluteError": 0.00010596215724945068,
+      "passedFixedVectorGates": false,
+      "receiptSha256": "61902d6c0708ed334021a9143eeef97b03c521ca9932dd6063f93abd910fbb3d",
+      "referenceSha256": "00e070a263aa4b44598ff3b2ace9decadab9723340ac725efc173b76b2262052",
+      "summarySha256": "aa9da9147539a7cc4fca7fe857ecf14175de8ea0725ea204f8654759c351ad24",
+      "profileSha256": "62c6e92e1c33d2e0659fb706ec876be68f5846be5ccc2378bb3a4bf30f90132f"
+    },
+    {
+      "recipe": "python-ort-cuda-fp32-tf32-0",
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/cuda-tf32-off-v2",
+      "effectiveUseTf32": "0",
+      "cudaComputeVerifiedByProfile": true,
+      "minimumCosine": 1.0,
+      "maximumAbsoluteError": 0.00000025331974029541016,
+      "passedFixedVectorGates": true,
+      "receiptSha256": "072ada255d1d8d7b37042587fa56f20d2db87f5a49d4afca0a712dd0d7d12375",
+      "referenceSha256": "6d3c055dabe5410078752292df6de8ddc8c74532130e8f44396f80c6ea145f37",
+      "summarySha256": "895c9180e32fb503911f0ae23c35356fa2abcc183182998ed60d2907e356cdf1",
+      "profileSha256": "dc7b55c20fe74a6eeb47e22fc8c1d8c185979287b12a2e0c822ff448710ebe10"
+    }
+  ],
+  "rootCauseVerification": {
+    "hypothesis": "CUDA TF32 arithmetic causes the measured short-query vector drift.",
+    "alternativeHypothesis": "The pinned exported graph or CUDA runtime differs from the reference independently of TF32.",
+    "distinguishingTest": "Run the same frozen single-short-query cell twice, changing only declared CUDA use_tf32 from 1 to 0; compare effective provider options, request and token/reference identities, vector metrics and executed CUDA compute profile.",
+    "predictedObservations": {
+      "hypothesis": "TF32-on fails maximum absolute error <=3e-5; TF32-off passes it.",
+      "alternativeHypothesis": "The maximum absolute error failure persists with TF32-off."
+    },
+    "actualObservation": "TF32-on maximum error 0.00010596215724945068 failed; TF32-off 0.00000025331974029541016 passed. Request pins, input IDs and reference vectors were identical, and both profiles proved CUDA compute.",
+    "limitation": "This distinguishes the cause for one six-token cell. It does not establish other-input, full-length, batch, ranking or native Node worker compatibility."
+  },
+  "durableFix": "Extend the existing Python boundary helper to submit explicit use_tf32=0 by default and reject runtime fallback, missing precision options or options differing from the declared recipe; preserve explicit use_tf32=1 as a separately named arm.",
+  "recurrenceGuard": "packages/operator-core/lib/memory/bench/mdenseon-config.test.ts checks default CUDA session submission and rejects a runtime that ignores the precision recipe or falls back.",
+  "correctedRun": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-v3",
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "helperSourceSha256": "c812b246fc016a70a99b80480ca07aa84dc16e1f00101e36a5ab5db1963c2e5b",
+    "recipe": "python-ort-cuda-fp32-tf32-0",
+    "precisionOption": "default CLI option; runtime acknowledged use_tf32=0",
+    "executedCudaComputeSequenceLengths": [5, 6, 7, 11, 16, 28, 8192],
+    "cells": [
+      {"cell": "single-short-query", "receiptSha256": "fb6d7b20fdea4535f2b6c9317aaeb88019a37e8d3689433bf03d0f7671390650", "maximumAbsoluteError": 0.00000025331974029541016, "passedFixedVectorGates": true},
+      {"cell": "single-short-document", "receiptSha256": "3e4ab7e589c195d3976dd710ef8dfac8bb921fbc5861425ca2c6da29bca3e94a", "maximumAbsoluteError": 0.00000032782554626464844, "passedFixedVectorGates": true},
+      {"cell": "single-unicode", "receiptSha256": "2fd2722ab3abc890d6ae3644488db7295f78bb1c3add553e5d65e40b6c32f975", "maximumAbsoluteError": 0.0000005513429641723633, "passedFixedVectorGates": true},
+      {"cell": "single-code", "receiptSha256": "2abd42f3ce9564fe68a3f6277fce98bac55218467f34dad3b879847b49a66c00", "maximumAbsoluteError": 0.00000013038516044616699, "passedFixedVectorGates": true},
+      {"cell": "single-whitespace", "receiptSha256": "9096e9f570ace86e1c2698a87b71547603644d8d5e8ea6f9714fb32184e226eb", "maximumAbsoluteError": 0.0000001019798219203949, "passedFixedVectorGates": true},
+      {"cell": "single-empty", "receiptSha256": "223bd8b568db2e4748afaadb1a9f06775742c8b08d77e067e336234be16a99f9", "maximumAbsoluteError": 0.00000014901161193847656, "passedFixedVectorGates": true}
+    ],
+    "full8192": {
+      "status": "inference-failed",
+      "actual8192Completed": false,
+      "inputShape": [1, 8192],
+      "requiredAllocationBytes": 3221225472,
+      "failingNode": "/layers.0/attn/Add_2",
+      "precedingProfiledScoreShape": [1, 12, 8192, 8192],
+      "freeMiBBeforeInference": 3798,
+      "freeMiBAfterFailure": 110,
+      "memoryEvidenceScope": "Timed snapshots from this attempt; no claim about historical v1 memory pressure.",
+      "failureSha256": "f2396afb95af74252a8a8d8476cb0e63a6a04ed01918e2294df1729cc1e21cdf",
+      "referenceSha256": "2b914d3be0d1dbd7c6e258df49268dbb93fbd680316aabebcaca0a4642d3eaf9",
+      "profileSha256": "824e0c25e88a38a53b442c7cc7cf73c4abe5b62025178144db00a2762572a26e",
+      "independentReferenceDimensions": 768,
+      "independentReferenceSquaredNorm": 1.0000000216382907
+    }
+  },
+  "guardVerification": {
+    "redLog": "cache:validation/mdenseon-boundary-WI10004540-20261001/tf32-guard-red-v3.log",
+    "redResult": "Two new precision-contract tests failed before the helper fix.",
+    "greenLog": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-guards-v4.log",
+    "greenResult": "16 tests passed in the conventional Vitest suite, including precision submission/acknowledgment and retained failure/reference/profile/memory evidence."
+  },
+  "cpuBoundaryRun": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cpu-v3",
+    "recipe": "python-ort-cpu-fp32-tf32-default",
+    "requestSha256": "f2861a121295833de4829cda626d1883cb27b57d5bef8b15ac94786549fc2a95",
+    "summarySha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+    "profile": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cpu-v3/ort-profile_2026-10-01_13-16-58.json",
+      "sha256": "403a74c932cb2062d28b5623be1b7ca07ae245cbf849d1448088262284cb390d"
+    },
+    "actualProviderVerifiedByProfile": true,
+    "rankingsEqual": true,
+    "fullPopulationCompatible": true,
+    "diagnosticOnly": false,
+    "notChecked": [],
+    "independentTokenizerIdentity": true,
+    "overLimitUntruncatedTokens": 8256,
+    "peakProcessRssMiB": 24785.10546875,
+    "rssScope": "Combined reference and candidate process; not production sidecar memory cost.",
+    "cells": [
+      {
+        "cell": "single-short-query",
+        "tokenLengths": [
+          6
+        ],
+        "inputShape": [
+          1,
+          6
+        ],
+        "receiptSha256": "1d8810b7c6846b7b6f74d01ae47b1b60861f5ad9843a4296cf0ae56561f9a6df",
+        "referenceSha256": "b402de8c46abbcddb50570ed37b0e5ca8033f64cf61c206af5931e3f69e04201",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 4.76837158203125e-07,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 4.76837158203125e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-short-document",
+        "tokenLengths": [
+          7
+        ],
+        "inputShape": [
+          1,
+          7
+        ],
+        "receiptSha256": "d075374e26fdc8bf05d70497f3bfe2f520c59fad19e9f22adc54e07ba20a15d4",
+        "referenceSha256": "588c9566a32beddf5d5d5c8bd7e0ae19c0da74b29cbe5285e76e37f74f5c6cba",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 2.086162567138672e-07,
+          "worstCosineLabel": "short-document",
+          "worstAbsoluteErrorLabel": "short-document",
+          "cases": [
+            {
+              "label": "short-document",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 2.086162567138672e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-unicode",
+        "tokenLengths": [
+          16
+        ],
+        "inputShape": [
+          1,
+          16
+        ],
+        "receiptSha256": "8a418a52439a7aa17f7b061d5a34e1baa1aff208072454b3260332e7bb65fb22",
+        "referenceSha256": "a80795428617071f44b015ad6c05161ece61e0cbc8b54af3187b126cf6676a17",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 1.417938619852066e-07,
+          "worstCosineLabel": "unicode",
+          "worstAbsoluteErrorLabel": "unicode",
+          "cases": [
+            {
+              "label": "unicode",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.417938619852066e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-code",
+        "tokenLengths": [
+          28
+        ],
+        "inputShape": [
+          1,
+          28
+        ],
+        "receiptSha256": "3b4223b2f4ba225b2cc062ca01c047c32ef3cb99aba9e1706c19df088d53da2f",
+        "referenceSha256": "806891153426f3d456a0f1738f08da8a7f6b2db860a9efe2ca88e9995e2b3132",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 5.960464477539062e-07,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "code",
+          "cases": [
+            {
+              "label": "code",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 5.960464477539062e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-whitespace",
+        "tokenLengths": [
+          11
+        ],
+        "inputShape": [
+          1,
+          11
+        ],
+        "receiptSha256": "a4e9242e2236fc78ec54e9b79eff5904cf7040439c1808b685eb7d86a173cec8",
+        "referenceSha256": "08c8dc2c6e689e11b1544742694dc50376961b2ace8fcbd3fafc814ad07c331f",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 5.662441253662109e-07,
+          "worstCosineLabel": "whitespace",
+          "worstAbsoluteErrorLabel": "whitespace",
+          "cases": [
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.662441253662109e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-empty",
+        "tokenLengths": [
+          5
+        ],
+        "inputShape": [
+          1,
+          5
+        ],
+        "receiptSha256": "ff1730e289d06800c4d49e9f95a57874038339eb8f00257c4fcf0a2871159db6",
+        "referenceSha256": "e1d9e4716510b62fe7f0530f06d9c2dfd7450c054e1868d529b23e62096bbf4e",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 5.364418029785156e-07,
+          "worstCosineLabel": "empty",
+          "worstAbsoluteErrorLabel": "empty",
+          "cases": [
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.364418029785156e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-full-8192",
+        "tokenLengths": [
+          8192
+        ],
+        "inputShape": [
+          1,
+          8192
+        ],
+        "receiptSha256": "1b75ffba42ce7f3946a85cd79cb25d5314cbc7ce67a7aab4bdd8eb47e6125f1a",
+        "referenceSha256": "89385fd0d2d2ea178e6107573473362e6b5ffc097300d113c2b5029f57887f60",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 6.556510925292969e-07,
+          "worstCosineLabel": "full-8192",
+          "worstAbsoluteErrorLabel": "full-8192",
+          "cases": [
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 6.556510925292969e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "single-over-limit",
+        "tokenLengths": [
+          8192
+        ],
+        "inputShape": [
+          1,
+          8192
+        ],
+        "receiptSha256": "2391fc59bc9b52f9b420bbdaaf208e2253fb0471bf9438f16871e333dc593d35",
+        "referenceSha256": "1145d027654a8420b097a79d94bd8b4e68dbd23ddfa68cb07e02c2575b9a3769",
+        "referenceParity": {
+          "count": 1,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 8.642673492431641e-07,
+          "worstCosineLabel": "over-limit",
+          "worstAbsoluteErrorLabel": "over-limit",
+          "cases": [
+            {
+              "label": "over-limit",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 8.642673492431641e-07
+            }
+          ]
+        },
+        "singleBatchParity": null
+      },
+      {
+        "cell": "padded",
+        "tokenLengths": [
+          6,
+          16,
+          28,
+          11,
+          5
+        ],
+        "inputShape": [
+          5,
+          28
+        ],
+        "receiptSha256": "234380c5c7d241e6ec6bd8840b917500fb9f7f98473bc13ac551609b7bd6483a",
+        "referenceSha256": "8732a82231e2f44a67a484dcfede5197e67df9f276d9eccdf68d555ff5029e0e",
+        "referenceParity": {
+          "count": 5,
+          "minimumCosine": 0.9999999403953552,
+          "maximumAbsoluteError": 5.960464477539062e-07,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "code",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.6391277313232422e-07
+            },
+            {
+              "label": "unicode",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.417938619852066e-07
+            },
+            {
+              "label": "code",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 5.960464477539062e-07
+            },
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 5.662441253662109e-07
+            },
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 3.2782554626464844e-07
+            }
+          ]
+        },
+        "singleBatchParity": {
+          "count": 5,
+          "minimumCosine": 0.9999998807907104,
+          "maximumAbsoluteError": 0.0,
+          "worstCosineLabel": "code",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "unicode",
+              "cosine": 0.9999999403953552,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "code",
+              "cosine": 0.9999998807907104,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "whitespace",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "empty",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "cell": "mixed-length",
+        "tokenLengths": [
+          6,
+          8192
+        ],
+        "inputShape": [
+          2,
+          8192
+        ],
+        "receiptSha256": "44d6a352ff30675ed46173000f329d62e4aaa998f1896b19dbdf3f0e10d6c115",
+        "referenceSha256": "967b43f38579a3c63a7382fce412ba935a01099826eeb6946d99d76b09df0aac",
+        "referenceParity": {
+          "count": 2,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 6.556510925292969e-07,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "full-8192",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 1.6391277313232422e-07
+            },
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 6.556510925292969e-07
+            }
+          ]
+        },
+        "singleBatchParity": {
+          "count": 2,
+          "minimumCosine": 1.0,
+          "maximumAbsoluteError": 0.0,
+          "worstCosineLabel": "short-query",
+          "worstAbsoluteErrorLabel": "short-query",
+          "cases": [
+            {
+              "label": "short-query",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            },
+            {
+              "label": "full-8192",
+              "cosine": 1.0,
+              "maximumAbsoluteError": 0.0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "correctedCudaPadded": {
+    "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-durable",
+    "taskId": "0mupuqzyqdp0rey8cv6",
+    "exitCode": 0,
+    "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+    "summarySha256": "435ec8421cea5101d6d5d17e8d9666f5c8b6076326ee0b3ce9e392cd27726df8",
+    "paddedSha256": "fe0d7e25e6b09ff141798406a38316c04417e8db1a0c5365ad89bc10cf5ccc33",
+    "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+    "effectiveUseTf32": "0",
+    "inputShapeActuallyInferred": [5, 28],
+    "tokenLengths": [6, 16, 28, 11, 5],
+    "referenceParity": { "minimumCosine": 0.9999999403953552, "maximumAbsoluteError": 3.2782554626464844e-7 },
+    "singleBatchParity": { "minimumCosine": 1, "maximumAbsoluteError": 4.470348358154297e-7 },
+    "profile": {
+      "path": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-durable/ort-profile_2026-10-01_14-28-28.json",
+      "sha256": "73eab31a441fcda34ae31ed59dad608eb26a06a3cc20f0c3998c766705db589f",
+      "executedCudaComputeEvents": 798
+    },
+    "cells": ["single-short-query", "single-unicode", "single-code", "single-whitespace", "single-empty", "padded"],
+    "rankingsEqualWithinDiagnosticSubset": true,
+    "diagnosticOnly": true,
+    "fullPopulationCompatible": false,
+    "notCheckedByThisAttempt": ["single-short-document", "single-full-8192", "single-over-limit", "mixed-length"],
+    "abortedPredecessor": {
+      "root": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4",
+      "log": "cache:validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-padded-v4-command.log",
+      "status": "undetermined",
+      "reason": "pc-heavy caller-exited at managed carry",
+      "exitCode": 143,
+      "defect": "EI-24801380876942742",
+      "limitation": "Harness-aborted attempt; no model verdict. Partial files remain immutable."
+    }
+  },
+  "nativeHarnessGuards": {
+    "runner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --qualify-boundaries",
+    "source": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+    "runGroupId": "b53ac7c4-4c46-417d-a459-fca29f3cde06",
+    "testRunIds": [20426623, 20427374],
+    "passed": 33,
+    "failed": 0,
+    "skipped": 0,
+    "tests": ["packages/operator-core/lib/memory/bench/candidate-embedders.test.ts", "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts"],
+    "limitation": "Harness qualification only; actual native boundary inference needs its own retained results. Native batch calls use one text per worker inference; they cannot prove a padded native ONNX tensor or compute-kernel profile."
+  },
+  "notChecked": ["successful GPU single-full-8192 vector parity", "single-over-limit", "mixed-length", "full-population rankings", "native Node CPU/GPU boundary inference"],
+  "separateOpenDefect": "EI-24795092971119894: actual8192 CUDA allocation failure and lost-reference detector; no successful GPU8192 inference is claimed."
+}
