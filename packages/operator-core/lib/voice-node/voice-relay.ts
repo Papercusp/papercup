@@ -58,11 +58,21 @@ export interface RelayKeyScope {
    * there: they could only ever produce a not-found warning.
    */
   dhtBootstrap: readonly unknown[] | undefined;
+  /**
+   * The operator declared a private DHT (`PAPERCUSP_DHT_BOOTSTRAP` or its file is set), but it
+   * resolved to no usable node, so the swarm silently falls back to the PUBLIC DHT (swarm.ts
+   * `resolveDhtUniverseState` → `'misconfigured'`). The defaults stay out here as well, failing
+   * closed: an operator who asked for a private universe is never routed through Papercusp's
+   * public relay because of a config typo (plan public-blind-relay-2026-10-01 D-002, R-4).
+   * Required, so every caller has to answer it.
+   */
+  bootstrapMisconfigured: boolean;
 }
 
-/** Whether a swarm built with `dhtBootstrap` should fall back through {@link DEFAULT_RELAY_KEYS}. */
+/** Whether a swarm built with `scope` should fall back through {@link DEFAULT_RELAY_KEYS}. */
 export function defaultRelayKeysApply(scope: RelayKeyScope, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.PAPERCUSP_RELAY_DEFAULTS?.trim() === '0') return false;
+  if (scope.bootstrapMisconfigured) return false;
   return !scope.dhtBootstrap || scope.dhtBootstrap.length === 0;
 }
 

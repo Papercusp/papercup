@@ -16,8 +16,9 @@ const t0 = Date.now();
 const log = (o: Record<string, unknown>) =>
   console.log(JSON.stringify({ t: ((Date.now() - t0) / 1000).toFixed(1), role, ...o }));
 
-// Public DHT (no bootstrap), exactly as the shared sync swarm resolves it: env ∪ PG ∪ shipped defaults.
-const keys = await resolveSyncRelayKeys(syncRelayKeyReader(undefined));
+// Public DHT (no bootstrap, none declared), exactly as the shared sync swarm resolves it: env ∪ PG ∪
+// shipped defaults.
+const keys = await resolveSyncRelayKeys(syncRelayKeyReader(undefined, false));
 log({ ev: 'relay-config', keys: keys.map((k) => k.toString('hex').slice(0, 8)), desc: describeSyncRelayFallback(keys) });
 const swarm = new Hyperswarm({ ...syncRelayThroughOption(keys) });
 

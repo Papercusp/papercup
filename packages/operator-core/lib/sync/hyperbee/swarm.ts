@@ -3604,6 +3604,13 @@ export function resolveDhtUniverseState(envBootstrapRaw: string | undefined): Dh
   return { mode: 'misconfigured', envValue: trimmed };
 }
 
+/** Whether this process's effective DHT bootstrap (env, then file) was declared but resolved to
+ * no usable node — the `'misconfigured'` universe. Relay-key callers outside the shared swarm
+ * (the voice node) pass this as `RelayKeyScope.bootstrapMisconfigured`. */
+export function dhtBootstrapMisconfigured(): boolean {
+  return resolveDhtUniverseState(readEffectiveDhtBootstrapRaw()).mode === 'misconfigured';
+}
+
 /** Result of comparing this process's resolved {@link DhtUniverseState}
  * against the operator's DECLARED expectation (see
  * {@link readExpectedDhtBootstrap}). `ok:true` also covers "no expectation
@@ -4111,7 +4118,9 @@ async function buildSharedSwarm(): Promise<HyperswarmLike> {
   // the voice blind-relay set; hyperswarm uses it only after a direct connect
   // fails (sync-relay.ts). Read once per process: a relay added later takes
   // effect on the next restart.
-  const relayKeys = await resolveSyncRelayKeys(syncRelayKeyReader(opts.bootstrap));
+  const relayKeys = await resolveSyncRelayKeys(
+    syncRelayKeyReader(opts.bootstrap, dhtUniverse.mode === 'misconfigured'),
+  );
   console.info(describeSyncRelayFallback(relayKeys));
   // P-003: the firewall runs BEFORE the Noise handshake completes — it cheaply
   // rejects banned keys without spending handshake CPU. Hyperswarm only hands

@@ -22,8 +22,10 @@ import { DEFAULT_RELAY_KEYS, defaultRelayKeysApply, getVoiceRelayKeys, readVoice
 const KEY_A = 'a'.repeat(64);
 const KEY_B = 'b'.repeat(64);
 /** A custom bootstrap list: an isolated rig, which cannot reach a public-DHT relay. */
-const ISOLATED = { dhtBootstrap: [{ host: '172.31.44.1', port: 49838 }] };
-const PUBLIC = { dhtBootstrap: undefined };
+const ISOLATED = { dhtBootstrap: [{ host: '172.31.44.1', port: 49838 }], bootstrapMisconfigured: false };
+const PUBLIC = { dhtBootstrap: undefined, bootstrapMisconfigured: false };
+/** PAPERCUSP_DHT_BOOTSTRAP was set but parsed to nothing: the swarm lands on the public DHT anyway. */
+const MISCONFIGURED = { dhtBootstrap: undefined, bootstrapMisconfigured: true };
 const hex = (keys: Buffer[]) => keys.map((b) => b.toString('hex'));
 
 afterEach(() => {
@@ -67,7 +69,9 @@ describe('getVoiceRelayKeys — shipped default relay keys', () => {
   });
 
   it('treats an empty bootstrap list as the public DHT (hyperdht falls back to its own nodes)', async () => {
-    expect(hex(await getVoiceRelayKeys({ dhtBootstrap: [] }))).toEqual([...DEFAULT_RELAY_KEYS]);
+    expect(hex(await getVoiceRelayKeys({ dhtBootstrap: [], bootstrapMisconfigured: false }))).toEqual([
+      ...DEFAULT_RELAY_KEYS,
+    ]);
   });
 
   it('puts configured keys first and dedupes a default that is also configured', async () => {
@@ -82,6 +86,14 @@ describe('getVoiceRelayKeys — shipped default relay keys', () => {
     const keys = hex(await getVoiceRelayKeys(ISOLATED));
     expect(keys).toEqual([KEY_A]);
     for (const k of DEFAULT_RELAY_KEYS) expect(keys).not.toContain(k);
+  });
+
+  it('never gives a misconfigured-DHT swarm the defaults, though it lands on the public DHT', async () => {
+    process.env.PAPERCUSP_VOICE_RELAY_KEYS = KEY_A;
+    const keys = hex(await getVoiceRelayKeys(MISCONFIGURED));
+    expect(keys).toEqual([KEY_A]);
+    for (const k of DEFAULT_RELAY_KEYS) expect(keys).not.toContain(k);
+    expect(defaultRelayKeysApply(MISCONFIGURED, {})).toBe(false);
   });
 
   it('PAPERCUSP_RELAY_DEFAULTS=0 opts a public swarm out', async () => {

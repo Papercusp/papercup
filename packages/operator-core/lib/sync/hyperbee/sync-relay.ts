@@ -37,10 +37,14 @@ export function syncRelayThroughOption(keys: readonly Buffer[]): { relayThrough?
 /**
  * The reader the shared sync swarm uses: the voice relay set (env
  * PAPERCUSP_VOICE_RELAY_KEYS ∪ PG voice_relay.relayKeys ∪ the shipped defaults
- * when `dhtBootstrap` means the public DHT).
+ * when `dhtBootstrap` means the public DHT and the operator did not declare a
+ * private DHT that failed to parse — `bootstrapMisconfigured`, see RelayKeyScope).
  */
-export function syncRelayKeyReader(dhtBootstrap: readonly unknown[] | undefined): () => Promise<Buffer[]> {
-  return () => getVoiceRelayKeys({ dhtBootstrap });
+export function syncRelayKeyReader(
+  dhtBootstrap: readonly unknown[] | undefined,
+  bootstrapMisconfigured: boolean,
+): () => Promise<Buffer[]> {
+  return () => getVoiceRelayKeys({ dhtBootstrap, bootstrapMisconfigured });
 }
 
 /**

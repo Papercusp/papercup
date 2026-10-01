@@ -34,7 +34,7 @@ import {
 import { getOpusCodec, VOICE_FRAME_SAMPLES } from './codec';
 import { createMicDsp, micDspConfigFromPrefs, type MicDspStatus } from './mic-dsp';
 import { ensureVideoChannel, resolveVoiceChannel, type VoiceChannel } from './registry';
-import { swarmConstructorOpts } from '../sync/hyperbee/swarm';
+import { dhtBootstrapMisconfigured, swarmConstructorOpts } from '../sync/hyperbee/swarm';
 
 export interface VoiceStatus {
   channel: VoiceChannel | null;
@@ -109,7 +109,10 @@ async function ensureNode(): Promise<VoiceNode> {
     // blind — the Noise stream is peer↔peer, so D-012's E2E guarantee holds).
     const { getVoiceRelayKeys } = await import('./voice-relay');
     const ctorOpts = swarmConstructorOpts();
-    const relayKeys = await getVoiceRelayKeys({ dhtBootstrap: ctorOpts.bootstrap });
+    const relayKeys = await getVoiceRelayKeys({
+      dhtBootstrap: ctorOpts.bootstrap,
+      bootstrapMisconfigured: dhtBootstrapMisconfigured(),
+    });
     swarm = new mod.default({
       ...(ctorOpts as Record<string, unknown>),
       ...(relayKeys.length > 0 ? { relayThrough: relayKeys } : {}),
