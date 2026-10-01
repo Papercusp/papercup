@@ -42,9 +42,16 @@ export async function execTimed(cmd: string, args: readonly string[], opts: Exec
   const t0 = performance.now();
   try {
     return await new Promise<ExecResult>((resolve) => {
+      // GNU `timeout` (NOT execFile's own `timeout`) enforces the deadline: it runs the command in
+      // its own process group and, on expiry, signals the WHOLE group (then SIGKILLs after -k), so a
+      // wrapped analyzer/indexer cannot survive as an orphan. execFile's timeout kills only its direct
+      // child (`/usr/bin/time`) — measured on this bench: an `analyze --force` grandchild outlived its
+      // 30-min deadline, kept writing into the arm tree, and contaminated the next phase. The execFile
+      // timeout stays only as a longer backstop for `timeout` itself. Exit 124 = deadline (137 = needed KILL).
+      const deadlineMs = opts.timeoutMs ?? 900_000;
       execFile(
-        '/usr/bin/time', ['-v', '-o', timeFile, cmd, ...args],
-        { cwd: opts.cwd, env: { ...process.env, ...opts.env }, timeout: opts.timeoutMs ?? 900_000, maxBuffer: 256 * 1024 * 1024 },
+        '/usr/bin/timeout', ['-k', '30', String(deadlineMs / 1000), '/usr/bin/time', '-v', '-o', timeFile, cmd, ...args],
+        { cwd: opts.cwd, env: { ...process.env, ...opts.env }, timeout: deadlineMs + 120_000, maxBuffer: 256 * 1024 * 1024 },
         async (err, stdout, stderr) => {
           const wallMs = performance.now() - t0;
           let peakRssKb: number | null = null;
@@ -70,7 +77,7 @@ const phaseOf = (r: ExecResult, deps: ArmDeps, okOverride?: boolean): PhaseCost 
   wallMs: r.wallMs,
   peakRssKb: r.peakRssKb,
   ok: okOverride ?? r.code === 0,
-  error: (okOverride ?? r.code === 0) ? null : `exit ${r.code}: ${r.stderr.trim().slice(-300)}`,
+  error: (okOverride ?? r.code === 0) ? null : `exit ${r.code}${r.code === 124 || r.code === 137 ? ' (deadline: process group killed)' : ''}: ${r.stderr.trim().slice(-300)}`,
   loadAvg1: deps.loadAvg1(),
 });
 
