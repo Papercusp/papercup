@@ -939,7 +939,7 @@ describe('processes:list structured output', () => {
       live: Record<string, unknown>;
     };
     expect(structured.live).toMatchObject({
-      unaccounted: 38,
+      unaccountedCount: 38,
       diagnosticsOmitted: 'global process groups omitted because a task selector is active',
     });
     expect(structured.live).not.toHaveProperty('unaccountedGroups');

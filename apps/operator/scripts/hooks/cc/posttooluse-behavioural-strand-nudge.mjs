@@ -531,8 +531,13 @@ async function selfTest() {
   check('skips node_modules', !isCandidateFile('packages/x/node_modules/y/a.ts'));
   check('skips dist', !isCandidateFile('packages/x/dist/a.ts'));
   check('skips the release checkout', !isCandidateFile('papercup-release/packages/x/a.ts'));
-  check('skips non-TS', !isCandidateFile('packages/x/a.js'));
+  check('skips .d.mts', !isCandidateFile('scripts/lib/a.d.mts'));
+  check('skips non-source', !isCandidateFile('packages/x/README.md'));
   check('accepts .mts', isCandidateFile('packages/x/a.mts'));
+  // JS holds shared seams too — scripts/*.mjs and this hook layer (WI-10004906).
+  check('accepts .js', isCandidateFile('packages/x/a.js'));
+  check('accepts .mjs', isCandidateFile('scripts/lib/a.mjs'));
+  check('skips a .mjs test file', !isCandidateFile('scripts/__tests__/a.test.mjs'));
   check('accepts a submodule source file', isCandidateFile('libs/generic/search/src/hybrid.ts'));
 
   if (failures.length) {

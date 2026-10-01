@@ -24,6 +24,7 @@
  * agents learn to ignore, which is how a working detector stops working.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
@@ -333,6 +334,14 @@ describe('behavioural-strand nudge — candidate filter', () => {
     for (const p of paths) {
       expect(hook.isCandidateFile(p), p).toBe(detector.candidateSkipReason(p) === null);
     }
+  });
+
+  it('the shipped --self-test passes (the installed hook is self-consistent)', () => {
+    // The installed copy runs `--self-test`, not this suite. WI-10004906 widened the filter
+    // and left a stale 'skips non-TS' self-test case red while every vitest case was green;
+    // nothing in the gate ran it. The required-field sibling already pins its own this way.
+    const out = execFileSync(process.execPath, [HOOK, '--self-test'], { encoding: 'utf8' });
+    expect(out).toContain('self-test passed');
   });
 });
 
