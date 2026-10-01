@@ -3241,6 +3241,15 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
     })).toBe(false);
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'fresh-child-owner-input' })).toBe(false);
     expect(shouldRetryCarryOnFreshEpoch({ reason: 'never-settled', drillId: 'drill-1' })).toBe(false);
+    // WI-10005106: a child stuck at the Codex `Starting` footer is replaced,
+    // within the same bound.
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'codex-startup-still-starting' })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'codex-startup-still-starting',
+      retryCount: 1,
+      maxRetries: 1,
+    })).toBe(false);
+    expect(shouldRetryCarryOnFreshEpoch({ reason: 'codex-startup-still-starting', drillId: 'drill-1' })).toBe(false);
     expect(shouldRetryCarryOnFreshEpoch({
       reason: 'never-settled',
       retryCount: 1,

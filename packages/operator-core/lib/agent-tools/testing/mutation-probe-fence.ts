@@ -1,11 +1,10 @@
 /** Read the active file-lock lease that marks an in-tree mutation window. */
-import { execFile } from 'node:child_process';
+import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Worker } from 'node:worker_threads';
+import { terminateSpawnTree } from '@papercusp/backup/hook';
 import { createHash } from 'node:crypto';
 import { env as processEnv, getuid } from 'node:process';
 import { promisify } from 'node:util';
@@ -54,20 +53,25 @@ const TEST_SIDE_FILE = /(^|[\\/])(__tests__|tests?|fixtures?)[\\/]|\.(test|spec)
 /**
  * A closure build owns its compiler service. Its Go heap and protocol buffers
  * must not survive in a long-lived HTTP worker, and a deadline must stop work.
- * Worker isolates have separate esbuild module state, so stopping this service
+ * Compiler processes have separate esbuild module state, so stopping this service
  * cannot interrupt transforms or another simultaneous closure in the caller.
  */
 export async function testImportClosures(root: string, tests: string[],
   options: { workerPath?: string; budgetMs?: number } = {},
 ): Promise<Closure> {
-  let worker: Worker;
+  let worker: ChildProcess;
   const here = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
   const bundled = join(dirname(here), 'mutation-probe-closure.worker.mjs');
   const workerPath = options.workerPath ?? (existsSync(bundled) ? bundled : join(dirname(here), 'mutation-probe-closure.worker.ts'));
   const budgetMs = options.budgetMs ?? CLOSURE_BUDGET_MS;
-  try { worker = new Worker(workerPath, { workerData: { root, tests }, execArgv: [] }); }
+  const detached = process.platform !== 'win32';
+  try { worker = fork(workerPath, [], { serialization: 'advanced', execArgv: [], silent: true, detached }); }
   catch (error) { return { status: 'incomplete', reason: String(error).slice(0, 200) }; }
+  let stderr = '';
+  worker.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(0, 1000); });
+  worker.stdout?.resume();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const exited = new Promise<void>(resolve => { worker.once('exit', () => resolve()); worker.once('error', () => resolve()); });
   try {
     return await new Promise<Closure>(resolve => {
       timer = setTimeout(() => resolve({ status: 'incomplete', reason: `closure exceeded ${budgetMs}ms` }), budgetMs);
@@ -77,11 +81,22 @@ export async function testImportClosures(root: string, tests: string[],
         else resolve({ status: 'incomplete', reason: 'compiler worker returned an invalid closure' });
       });
       worker.once('error', error => resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }));
-      worker.once('exit', code => resolve({ status: 'incomplete', reason: `compiler worker exited before returning a closure (${code})` }));
+      worker.once('exit', code => {
+        const cause = stderr.split(/\r?\n/).find(line => /^[A-Za-z]*Error(?: \[[^\]]+\])?:/.test(line));
+        resolve({ status: 'incomplete', reason: (cause ?? stderr.trim()).slice(0, 200) || `compiler worker exited before returning a closure (${code})` });
+      });
+      worker.send({ root, tests }, error => { if (error) resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }); });
     });
   } finally {
     clearTimeout(timer);
-    await worker.terminate();
+    // Thread termination alone leaves spawned esbuild children alive (the real
+    // deadline guard caught it). Reuse the owned-process-group kill mechanism.
+    if (!detached && worker.pid) await new Promise<void>(resolve => {
+      execFile('taskkill', ['/PID', String(worker.pid), '/T', '/F'], () => resolve());
+    });
+    terminateSpawnTree(worker, detached);
+    await exited;
+    worker.stdout?.destroy(); worker.stderr?.destroy();
   }
 }
 

@@ -1296,6 +1296,25 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
   };
 }
 
+/**
+ * Recover the deterministic names of a GCP-managed network from durable desired state.
+ * Legacy host rows can predate resource registration, so destroy census cannot rely on the
+ * resource ledger as its only source for these identities.
+ */
+export function resolveGcpWorkspaceHostManagedNetworkInventoryNames(
+  desired: WorkspaceHostDesiredSpec,
+): GcpWorkspaceHostInventoryRequest['deterministicNames'] | undefined {
+  const { network } = readSettings(desired);
+  if (network.mode !== 'managed') return undefined;
+  return {
+    networks: [network.networkName],
+    subnetworks: [network.subnetworkName],
+    firewalls: [network.firewallName],
+    routers: [network.routerName],
+    nats: [{ routerName: network.routerName, name: network.natName }],
+  };
+}
+
 function labels(desired: WorkspaceHostDesiredSpec, workspaceId: string): Readonly<Record<string, string>> {
   const entries = new Map<string, string>();
   for (const [key, value] of Object.entries(desired.labels ?? {})) {

@@ -1682,7 +1682,10 @@ export function shouldRetryCarryOnFreshEpoch({
   if (drillId || retryCount >= maxRetries) return false;
   if (reason === 'never-settled' ||
       reason === 'no-startup-ready-marker' ||
-      reason === 'no-startup-ready-marker-last-resort-failed') return true;
+      reason === 'no-startup-ready-marker-last-resort-failed' ||
+      // WI-10005106: a Codex child stuck at its `Starting` footer is a per-child
+      // state; a fresh child usually boots in seconds.
+      reason === 'codex-startup-still-starting') return true;
   return reason === 'turn-start-unverified' &&
     (proofReason === 'native-turn-marker-timeout' || proofReason === 'native-turn-prompt-timeout');
 }
@@ -1824,6 +1827,19 @@ const RECYCLE_CARRY_RETRY_BACKOFF_MS =
  *  attempt, not from the end of the ordinary budget. Env-overridable. */
 const CODEX_STARTING_KICKOFF_HOLD_CEILING_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS) || 1_800_000;
+/** WI-10005106: how long a recycle CARRY child may sit at the Codex `Starting`
+ *  footer before the host stops waiting on it and retries the carry on a fresh
+ *  child epoch (only while such a retry remains; the last attempt holds like a
+ *  launch kickoff instead). Measured 2026-10-01 from ~/.papercusp/psu-pty event
+ *  logs: over 3,368 Codex boots, footer-to-frame was p50 3s, p99 296s; of the 41
+ *  boots slower than 120s, 28 were slower than 600s, so a child that is still
+ *  `Starting` after a few minutes is usually stuck. A fresh successor booted at
+ *  p50 1s, p90 3s (42 of 43 under 300s). Every one of the 59 carry/kickoff drops
+ *  had at least 3 other sessions' Codex children booting in under 60s inside the
+ *  same window, so the stuck state belongs to the child, not to a shared outage:
+ *  replacing the child fixes it, while waiting cost 10-50 minutes. Env-overridable. */
+const CODEX_CARRY_STARTING_STUCK_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS) || 180_000;
 /** Native transcript proof can lag a freshly painted TUI even after the
  *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
  *  whole submission before recording a terminal drop. This is intentionally
@@ -7931,6 +7947,12 @@ export function hostThroughPty(o) {
     // budget expires while the Codex footer still reads `Starting` is HELD for
     // the session frame up to this ceiling instead of being dropped.
     codexStartingHoldCeilingMs = null,
+    // WI-10005106: when set (ms, measured from this call), give up EARLY on a
+    // child whose Codex footer still reads `Starting` at this point, with the
+    // ordinary `codex-startup-still-starting` drop. For a caller that can retry
+    // on a fresh child epoch (the recycle carry-note), so a stuck child is
+    // replaced in minutes instead of being waited on for the whole budget.
+    codexStartingStuckMs = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
@@ -7956,6 +7978,35 @@ export function hostThroughPty(o) {
       !codexMarkerKickoffRequiresFrame() &&
       !codexStartupExplicitlyStarting() &&
       childStartupFallbackElapsed();
+    // WI-10005106: the `Starting` stuck threshold (see codexStartingStuckMs).
+    // Only a positive `Starting` footer on the SAME child counts; a child that
+    // never painted a footer keeps the ordinary budget and drop reasons.
+    const codexStartingStuckAt =
+      Number(codexStartingStuckMs) > 0 ? injectStartedAt + Number(codexStartingStuckMs) : 0;
+    let codexStartingStuckReported = false;
+    const codexStartingStuck = () => {
+      if (
+        codexStartingStuckAt <= 0 ||
+        !requireInitialOutput ||
+        codexStartingHeldAt > 0 ||
+        Date.now() < codexStartingStuckAt ||
+        child !== injectChild ||
+        freshChildWasInterrupted() ||
+        !codexStartupExplicitlyStarting()
+      ) {
+        return false;
+      }
+      if (!codexStartingStuckReported) {
+        codexStartingStuckReported = true;
+        appendHostEvent(ownerId, 'codex-starting-stuck-early-drop', {
+          label,
+          elapsedMs: Math.max(0, Date.now() - injectStartedAt),
+          stuckMs: Number(codexStartingStuckMs),
+          budgetMs,
+        });
+      }
+      return true;
+    };
     let codexFrameWaitExtendedReported = false;
     const codexBackendFrameWaitExpired = () => {
       if (!codexMarkerKickoffRequiresFrame() || childBackendFirstFrameAt > 0) return false;
@@ -8033,6 +8084,7 @@ export function hostThroughPty(o) {
         !freshChildWasInterrupted() &&
         !startupFallbackCanAuthorize() &&
         !codexBackendFrameWaitExpired() &&
+        !codexStartingStuck() &&
         !(codexStartingHeldAt > 0 && hostCleanedUp) &&
         (Date.now() < deadline || holdForCodexStartingFooter())
       ) {
@@ -11227,6 +11279,25 @@ export function hostThroughPty(o) {
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
         freshChildOwnerInputGeneration,
+        // WI-10005106: a child stuck at the Codex `Starting` footer is replaced
+        // early while a fresh-epoch retry remains; the LAST attempt holds for the
+        // frame instead (the WI-10004943 (d) launch-kickoff behaviour), because
+        // dropping it there leaves the session idle without its carry.
+        ...(!drillId && carryProofRetryCount < carryProofRetryMax
+          ? {
+              codexStartingStuckMs: positiveNumber(
+                env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
+                CODEX_CARRY_STARTING_STUCK_MS,
+              ),
+            }
+          : !drillId
+            ? {
+                codexStartingHoldCeilingMs: positiveNumber(
+                  env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+                  CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+                ),
+              }
+            : {}),
         // Decide whether a failed fresh epoch is retryable before recording a
         // terminal carry drop; a retry must not increment the drop counter.
         onDrop: () => {},

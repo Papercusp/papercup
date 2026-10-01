@@ -344,15 +344,39 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
     async buildSourceCommit(repairHead, paths) {
       if (!SHA_RE.test(repairHead)) throw new Error(`repairHead is not a full sha: ${repairHead}`);
       const scratch = mkdtempSync(join(tmpdir(), "papercusp-gen-check-heal-"));
-      try {
-        const indexEnv = { GIT_INDEX_FILE: join(scratch, "index") };
-        gitOk(["read-tree", repairHead], input.integrationRoot, indexEnv);
-        for (const p of paths) {
-          const abs = join(input.checkpointRoot, p);
+      const identity = {
+        GIT_AUTHOR_NAME: "papercusp-gate",
+        GIT_AUTHOR_EMAIL: "gate@papercusp.invalid",
+        GIT_COMMITTER_NAME: "papercusp-gate",
+        GIT_COMMITTER_EMAIL: "gate@papercusp.invalid",
+      };
+      let indexes = 0;
+      const commitTree = (repo: string, tree: string, parent: string, title: string, staged: readonly string[]): string => {
+        const message = `${title} ${parent.slice(0, 12)}\n\npaths:\n` + staged.map((p) => `- ${p}`).join("\n") + "\n";
+        const commit = gitOk(["commit-tree", tree, "-p", parent, "-m", message], repo, identity).trim();
+        if (!SHA_RE.test(commit)) throw new Error(`commit-tree in ${repo} produced no sha`);
+        return commit;
+      };
+      // `repo` is the integration-side repository whose object store receives the commit;
+      // `checkout` is the matching verification-tree directory the writer ran in.
+      const stageTree = (repo: string, checkout: string, base: string, staged: readonly string[]): string => {
+        const indexEnv = { GIT_INDEX_FILE: join(scratch, `index-${indexes++}`) };
+        gitOk(["read-tree", base], repo, indexEnv);
+        for (const p of staged) {
+          const abs = join(checkout, p);
           // A writer may DELETE a stale artifact; that is a removal in the source commit.
           const exists = existsSync(abs);
           if (!exists) {
-            gitOk(["update-index", "--force-remove", "--", p], input.integrationRoot, indexEnv);
+            gitOk(["update-index", "--force-remove", "--", p], repo, indexEnv);
+            continue;
+          }
+          // git status reports a writer delta INSIDE a submodule as the gitlink path itself,
+          // and hash-object cannot hash a directory. Commit the submodule's own delta on its
+          // pin and stage that commit as the gitlink.
+          const pin = /^160000 commit ([0-9a-f]{40})\t/.exec(gitOk(["ls-tree", base, "--", p], repo))?.[1];
+          if (pin) {
+            const sub = submoduleCommit(join(repo, p), abs, pin);
+            gitOk(["update-index", "--add", "--replace", "--cacheinfo", `160000,${sub},${p}`], repo, indexEnv);
             continue;
           }
           // The only consumer is the 100755-vs-100644 cacheinfo mode below, which git
@@ -361,29 +385,37 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
           // per artifact). `lint:resource-governor-enforcement` requires every start to
           // route through Governor.admit; the cheapest compliance is not to start.
           const isExec = (statSync(abs).mode & 0o111) !== 0;
-          const blob = gitOk(["hash-object", "-w", "--path", p, "--", abs], input.integrationRoot).trim();
+          const blob = gitOk(["hash-object", "-w", "--path", p, "--", abs], repo).trim();
           if (!SHA_RE.test(blob)) throw new Error(`hash-object ${p} produced no sha`);
           gitOk(
             ["update-index", "--add", "--replace", "--cacheinfo", `${isExec ? "100755" : "100644"},${blob},${p}`],
-            input.integrationRoot,
+            repo,
             indexEnv,
           );
         }
-        const tree = gitOk(["write-tree"], input.integrationRoot, indexEnv).trim();
-        if (!SHA_RE.test(tree)) throw new Error("write-tree produced no sha");
-        const message =
-          `gen:*:check self-heal source on ${repairHead.slice(0, 12)}\n\npaths:\n` +
-          paths.map((p) => `- ${p}`).join("\n") +
-          "\n";
-        const identity = {
-          GIT_AUTHOR_NAME: "papercusp-gate",
-          GIT_AUTHOR_EMAIL: "gate@papercusp.invalid",
-          GIT_COMMITTER_NAME: "papercusp-gate",
-          GIT_COMMITTER_EMAIL: "gate@papercusp.invalid",
-        };
-        const commit = gitOk(["commit-tree", tree, "-p", repairHead, "-m", message], input.integrationRoot, identity).trim();
-        if (!SHA_RE.test(commit)) throw new Error("commit-tree produced no sha");
+        const tree = gitOk(["write-tree"], repo, indexEnv).trim();
+        if (!SHA_RE.test(tree)) throw new Error(`write-tree in ${repo} produced no sha`);
+        return tree;
+      };
+      const submoduleCommit = (repo: string, checkout: string, pin: string): string => {
+        // Only the writer's delta may ride on the pin; a moved submodule HEAD is not one.
+        const head = gitOk(["rev-parse", "HEAD"], checkout).trim();
+        if (head !== pin) {
+          throw new Error(`submodule ${checkout} is at ${head.slice(0, 12)}, not its pin ${pin.slice(0, 12)}`);
+        }
+        const inner = parsePorcelainZ(
+          gitOk(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], checkout),
+        ).sort();
+        if (inner.length === 0) throw new Error(`submodule ${checkout} reported dirty but has no changed paths`);
+        const commit = commitTree(repo, stageTree(repo, checkout, pin, inner), pin, "gen:*:check self-heal submodule source on", inner);
+        // The verification checkout clones each submodule from this repository, and gc
+        // would prune an unreferenced commit before the lineage is promoted.
+        gitOk(["update-ref", `refs/papercusp/gen-heal/${commit}`, commit], repo);
         return commit;
+      };
+      try {
+        const tree = stageTree(input.integrationRoot, input.checkpointRoot, repairHead, paths);
+        return commitTree(input.integrationRoot, tree, repairHead, "gen:*:check self-heal source on", paths);
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }

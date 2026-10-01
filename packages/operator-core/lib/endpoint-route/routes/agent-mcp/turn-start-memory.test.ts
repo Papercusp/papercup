@@ -43,7 +43,7 @@ const {
   detectHarnessSlugSyncMock,
   resolveAgentSignalsMock,
   recordInjectionCoverageMock,
-  buildPersonalAmbientContextBlockMock,
+  buildGrantedSourcesContextBlockMock,
   getMemoryBlockBoundedResultMock,
   withOptionalMemoryAdmissionMock,
   buildTurnStartOrientationBlockMock,
@@ -62,7 +62,7 @@ const {
   detectHarnessSlugSyncMock: vi.fn(),
   resolveAgentSignalsMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
-  buildPersonalAmbientContextBlockMock: vi.fn(),
+  buildGrantedSourcesContextBlockMock: vi.fn(),
   getMemoryBlockBoundedResultMock: vi.fn(),
   withOptionalMemoryAdmissionMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
@@ -106,8 +106,11 @@ vi.mock('../../../memory/agent-signals', () => ({
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
 }));
-vi.mock('../../../personal-vault/ambient', () => ({
-  buildPersonalAmbientContextBlock: buildPersonalAmbientContextBlockMock,
+// enterprise-data-sources P-017: the route's fourth leg is the granted-sources
+// builder (Personal Vault + subscribed organization sources + pot), which wraps
+// the vault's ambient leg. Its own suites own the per-leg authorization.
+vi.mock('../../../data-sources/granted-sources-injection', () => ({
+  buildGrantedSourcesContextBlock: buildGrantedSourcesContextBlockMock,
 }));
 vi.mock('../../../memory/injection-block-cache', () => ({
   getMemoryBlockBoundedResult: getMemoryBlockBoundedResultMock,
@@ -154,7 +157,7 @@ beforeEach(() => {
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
   resolveAgentSignalsMock.mockReset().mockResolvedValue(undefined);
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
-  buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
+  buildGrantedSourcesContextBlockMock.mockReset().mockResolvedValue(null);
   withOptionalMemoryAdmissionMock.mockReset().mockImplementation(async (run: () => Promise<unknown>) => ({
     admitted: true,
     value: await run(),
@@ -456,9 +459,9 @@ describe('agent signals reach the query (context-injection-audit-2026-07-28 P-04
   });
 });
 
-describe('granted-only Personal Vault ambient leg', () => {
-  it('renders granted personal context as a separate block after general memory', async () => {
-    buildPersonalAmbientContextBlockMock.mockResolvedValue('VAULT-BLOCK');
+describe('granted-sources leg (Personal Vault + subscribed sources + pot)', () => {
+  it('renders granted source context as a separate block after general memory', async () => {
+    buildGrantedSourcesContextBlockMock.mockResolvedValue('VAULT-BLOCK');
 
     const out = await post({
       owner: 'meeting-prep-run-1',
@@ -467,7 +470,7 @@ describe('granted-only Personal Vault ambient leg', () => {
     });
 
     expect(out.text).toBe('MEM-BLOCK\n\nVAULT-BLOCK');
-    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledWith({
+    expect(buildGrantedSourcesContextBlockMock).toHaveBeenCalledWith({
       ownerId: 'meeting-prep-run-1',
       userId: 'u-1',
       workspaceId: 'ws-test',
@@ -477,12 +480,12 @@ describe('granted-only Personal Vault ambient leg', () => {
 
   it('injects nothing when authorization refuses the caller', async () => {
     buildMemoryContextBlockMock.mockResolvedValue(null);
-    buildPersonalAmbientContextBlockMock.mockResolvedValue(null);
+    buildGrantedSourcesContextBlockMock.mockResolvedValue(null);
 
     const out = await post({ owner: 'coding-agent-1', prompt: 'search the owner vault' });
 
     expect(out.text).toBe('');
-    expect(buildPersonalAmbientContextBlockMock).toHaveBeenCalledTimes(1);
+    expect(buildGrantedSourcesContextBlockMock).toHaveBeenCalledTimes(1);
   });
 
   it('does not even invoke personal recall when turn-start memory is disabled', async () => {
@@ -493,7 +496,7 @@ describe('granted-only Personal Vault ambient leg', () => {
     });
 
     expect(out.text).toBe('');
-    expect(buildPersonalAmbientContextBlockMock).not.toHaveBeenCalled();
+    expect(buildGrantedSourcesContextBlockMock).not.toHaveBeenCalled();
   });
 });
 
@@ -825,7 +828,7 @@ describe('control activation waits for host emission (WI-10003297)', () => {
     const delayed = new Promise<null>((resolve) => {
       release = () => resolve(null);
     });
-    buildPersonalAmbientContextBlockMock.mockReturnValueOnce(delayed);
+    buildGrantedSourcesContextBlockMock.mockReturnValueOnce(delayed);
     const request = post({ owner: 'sess-1', prompt: 'slow response', confirmedDelivery: null });
     try {
       await vi.waitFor(() => expect(markControlTransitionPreparedMock).toHaveBeenCalled());

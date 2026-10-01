@@ -15,7 +15,7 @@ import {
   createWorkspaceHostProvisionRoute,
   type WorkspaceHostProvisionRouteDependencies,
 } from '../endpoint-route/routes/workspace-hosts/provision';
-import type { GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
+import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, type GcpManagedWorkspaceHostResourceObservation } from './gcp-safety';
 import {
   runWorkspaceHostDestroy,
@@ -60,6 +60,20 @@ const desired: WorkspaceHostDesiredSpec = {
   labels,
 };
 
+const desiredWithManagedNetwork: WorkspaceHostDesiredSpec = {
+  ...desired,
+  provider: {
+    network: {
+      mode: 'managed',
+      networkName: 'pc-host-net',
+      subnetworkName: 'pc-host-subnet',
+      firewallName: 'pc-host-iap',
+      routerName: 'pc-host-router',
+      natName: 'pc-host-nat',
+    },
+  },
+};
+
 const connection: WorkspaceHostProviderConnection = {
   target: 'gcp',
   cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
@@ -88,23 +102,21 @@ const resources: readonly WorkspaceHostResourceRef[] = [
   { target: 'gcp', kind: 'network', providerId: 'pc-host-net', parentProviderId: 'project-1' },
 ];
 
-function steps(): WorkspaceHostPlanStep[] {
-  const ordered = ['vm', 'disk', 'firewall', 'nat', 'router', 'subnetwork', 'network'];
-  return ordered.map((kind, index) => {
-    const resource = resources.find((entry) => entry.kind === kind)!;
+function steps(knownResources: readonly WorkspaceHostResourceRef[] = resources): WorkspaceHostPlanStep[] {
+  const ordered = ['vm', 'disk', 'firewall', 'nat', 'router', 'subnetwork', 'network'].flatMap((kind) =>
+    knownResources.filter((resource) => resource.kind === kind),
+  );
+  return ordered.map((resource, index) => {
+    const prior = ordered[index - 1];
+    const id = `delete-${resource.kind}-${resource.providerId}`;
     return {
-      id: `delete-${kind}-${resource.providerId}`,
+      id,
       action: 'destroy',
       resourceKind: resource.kind,
-      dependsOn:
-        index === 0
-          ? []
-          : [
-              `delete-${ordered[index - 1]}-${resources.find((entry) => entry.kind === ordered[index - 1])!.providerId}`,
-            ],
-      idempotencyKey: `destroy:${kind}`,
+      dependsOn: prior ? [`delete-${prior.kind}-${prior.providerId}`] : [],
+      idempotencyKey: `destroy:${resource.kind}`,
       destructive: true,
-      input: { op: `delete-${kind}`, resourceName: resource.providerId },
+      input: { op: `delete-${resource.kind}`, resourceName: resource.providerId },
     };
   });
 }
@@ -126,8 +138,11 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
       },
     };
   });
-  const inventoryManagedResources = vi.fn<() => Promise<GcpWorkspaceHostInventorySnapshot>>(async () => {
+  const inventoryManagedResources = vi.fn(async (
+    request: GcpWorkspaceHostInventoryRequest,
+  ): Promise<GcpWorkspaceHostInventorySnapshot> => {
     if (options.inventoryError) throw options.inventoryError;
+    const names = request.deterministicNames;
     return {
       complete: true as const,
       observed: [],
@@ -138,19 +153,19 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
           kind: 'firewall' as const,
           strategy: 'deterministic-name' as const,
           providerEvidenceRef: 'gcp://inventory/firewall',
-          deterministicNames: ['pc-host-iap'],
+          deterministicNames: names.firewalls,
         },
         {
           kind: 'subnetwork' as const,
           strategy: 'deterministic-name' as const,
           providerEvidenceRef: 'gcp://inventory/subnetwork',
-          deterministicNames: ['pc-host-subnet'],
+          deterministicNames: names.subnetworks,
         },
         {
           kind: 'network' as const,
           strategy: 'deterministic-name' as const,
           providerEvidenceRef: 'gcp://inventory/network',
-          deterministicNames: ['pc-host-net'],
+          deterministicNames: names.networks,
         },
         {
           kind: 'snapshot' as const,
@@ -161,40 +176,42 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
           kind: 'router' as const,
           strategy: 'deterministic-name' as const,
           providerEvidenceRef: 'gcp://inventory/router',
-          deterministicNames: ['pc-host-router'],
+          deterministicNames: names.routers,
         },
         {
           kind: 'nat' as const,
           strategy: 'deterministic-name' as const,
           providerEvidenceRef: 'gcp://inventory/nat',
-          deterministicNames: ['pc-host-nat'],
+          deterministicNames: names.nats.map(({ name }) => name),
         },
       ],
     };
   });
+  const plan = vi.fn(async (request: Parameters<WorkspaceHostProvider['plan']>[0]) => ({
+    planId: 'plan-destroy-1',
+    operationId: request.operationId,
+    target: 'gcp' as const,
+    hostId: 'host-1',
+    generatedAt: NOW,
+    steps: steps(request.host.resources),
+    warnings: [],
+  }));
   const provider = makeFakeWorkspaceHostProvider({
     target: 'gcp',
     validateConnection: vi.fn(async () => ({ ok: true, checkedAt: NOW, warnings: [], errors: [] })),
-    plan: vi.fn(async (request) => ({
-      planId: 'plan-destroy-1',
-      operationId: request.operationId,
-      target: 'gcp' as const,
-      hostId: 'host-1',
-      generatedAt: NOW,
-      steps: steps(),
-      warnings: [],
-    })),
+    plan,
     apply,
     reconcile: vi.fn<WorkspaceHostProvider['reconcile']>(),
     observe: vi.fn<WorkspaceHostProvider['observe']>(),
     inventoryManagedResources,
   });
-  return { provider, apply, inventoryManagedResources };
+  return { provider, apply, plan, inventoryManagedResources };
 }
 
 function storeHarness(
   targetDesired: WorkspaceHostDesiredSpec = desired,
   recoverability?: { kind: 'snapshot' | 'backup' | 'none'; label: string; updatedAt?: string },
+  targetResources: readonly WorkspaceHostResourceRef[] = resources,
 ) {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = [];
   const updateHostState = vi.fn<WorkspaceHostDestroyStore['updateHostState']>();
@@ -211,7 +228,7 @@ function storeHarness(
       observedRevision: 1,
       ...(recoverability ? { recoverability } : {}),
       desired: targetDesired,
-      resources: resources.map((resource) => ({ resource, registeredAt: NOW })),
+      resources: targetResources.map((resource) => ({ resource, registeredAt: NOW })),
     })),
     readOperationPlan: vi.fn(async () => null),
     beginOperation: vi.fn(async () => {}),
@@ -348,6 +365,55 @@ describe('runWorkspaceHostDestroy', () => {
       state: 'absent',
       recoverability: expect.objectContaining({ kind: 'none' }),
     }));
+  });
+
+  it('fills missing legacy GCP network census identities from the stored managed-network settings', async () => {
+    const registeredResources = resources.filter((resource) => resource.kind === 'vm' || resource.kind === 'disk');
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    const { store, updateHostState } = storeHarness(desiredWithManagedNetwork, undefined, registeredResources);
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('succeeded');
+    expect(apply).toHaveBeenCalledTimes(registeredResources.length);
+    expect(inventoryManagedResources).toHaveBeenCalledOnce();
+    expect(inventoryManagedResources.mock.calls[0]?.[0].deterministicNames).toEqual({
+      networks: ['pc-host-net'],
+      subnetworks: ['pc-host-subnet'],
+      firewalls: ['pc-host-iap'],
+      routers: ['pc-host-router'],
+      nats: [{ routerName: 'pc-host-router', name: 'pc-host-nat' }],
+    });
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it('retires an empty ordinary GCP host only after a complete clean provider census', async () => {
+    const { provider, plan, apply, inventoryManagedResources } = providerHarness();
+    const { store, updateHostState } = storeHarness(desiredWithManagedNetwork, undefined, []);
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.plan.steps).toEqual([]);
+    expect(plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(inventoryManagedResources).toHaveBeenCalledOnce();
+    expect(inventoryManagedResources.mock.calls[0]?.[0].deterministicNames.networks).toEqual(['pc-host-net']);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it('keeps an empty ordinary GCP host nonterminal when the complete census still observes its resource', async () => {
+    const { provider, plan, apply, inventoryManagedResources } = providerHarness();
+    const { store, updateHostState } = storeHarness(desiredWithManagedNetwork, undefined, []);
+    const vm = legacyInventorySnapshot().observed.find(({ resource }) => resource.kind === 'vm')!;
+    inventoryManagedResources.mockResolvedValue(legacyInventorySnapshot([vm]));
+
+    const result = await runWorkspaceHostDestroy({ ...ordinaryInput(provider, store), censusSettleMs: 0 });
+
+    expect(result.status).toBe('failed');
+    expect(plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
   });
 
   it('completes ordinary teardown while another labelled host remains in the same workspace', async () => {

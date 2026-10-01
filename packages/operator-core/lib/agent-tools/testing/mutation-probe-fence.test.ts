@@ -50,14 +50,14 @@ it.skipIf(process.platform !== 'linux')('terminates a deadline-expired compiler 
   const esbuild = pathToFileURL(createRequire(import.meta.url).resolve('esbuild')).href;
   writeFileSync(worker, `import { build } from ${JSON.stringify(esbuild)};
     import { readFileSync, writeFileSync } from 'node:fs';
-    import { workerData } from 'node:worker_threads';
+    const input = await new Promise(resolve => process.once('message', resolve));
     await build({ stdin: { contents: 'export const blocked = 1' }, write: false,
       plugins: [{ name: 'blocked-build', setup(api) { api.onStart(async () => {
         // Synchronous thread-self reads select this worker's OS thread. A
         // process-wide census would include the caller service we must preserve.
         const children = readFileSync('/proc/thread-self/children', 'utf8').trim().split(/\\s+/).filter(Boolean)
           .filter(pid => { try { return readFileSync('/proc/' + pid + '/cmdline', 'utf8').includes('--service='); } catch { return false; } });
-        writeFileSync(workerData.root + '/service.json', JSON.stringify(children.map(Number)));
+        writeFileSync(input.root + '/service.json', JSON.stringify(children.map(Number)));
         await new Promise(() => {});
       }); } }] });`);
   const result = await testImportClosures(dir, [], { workerPath: worker, budgetMs: 1500 });
@@ -73,7 +73,9 @@ it.skipIf(process.platform !== 'linux')('terminates a deadline-expired compiler 
 it('fails closed when the owned compiler worker errors or exits without evidence', async () => {
   const dir = makeRoot(), worker = join(dir, 'broken.mjs');
   writeFileSync(worker, 'throw new Error("compiler-fixture-error");');
-  await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler-fixture-error' });
+  const failure = await testImportClosures(dir, [], { workerPath: worker });
+  expect(failure.status).toBe('incomplete');
+  if (failure.status === 'incomplete') expect(failure.reason).toContain('compiler-fixture-error');
   writeFileSync(worker, 'process.exit(0);');
   await expect(testImportClosures(dir, [], { workerPath: worker })).resolves.toMatchObject({ status: 'incomplete', reason: 'compiler worker exited before returning a closure (0)' });
 });

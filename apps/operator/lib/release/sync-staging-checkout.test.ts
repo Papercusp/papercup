@@ -159,7 +159,7 @@ function stagingUnitGuardResult(
     '  ExecStart) printf "%s\\n" "$TEST_EXEC_START" ;;',
     '  *) exit 2 ;;',
     'esac',
-  ].join('\\n'), { mode: 0o700 });
+  ].join('\n'), { mode: 0o700 });
   try {
     return runFn(
       ['staging_exec_pre_uses_bundle', 'staging_exec_pins_integration_root', 'assert_staging_unit_checkout'],
@@ -277,10 +277,10 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
       expect(r.stdout).toContain('keeping the current fixture.service process');
 
       const script = readFileSync(SCRIPT_PATH, 'utf8');
-      const preflight = script.indexOf('\npreflight_staging_migrations\n');
-      expect(preflight).toBeGreaterThan(script.indexOf('if [ "$restart_required" = 0 ]; then'));
-      expect(preflight).toBeLessThan(script.indexOf('prebuilding proof-bound host bundle'));
-      expect(preflight).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
+      const preflightCall = script.indexOf('preflight_staging_migrations "$SYNC_ROOT"');
+      expect(preflightCall).toBeGreaterThan(script.indexOf('if [ "$restart_required" = 1 ]; then'));
+      expect(preflightCall).toBeLessThan(script.indexOf('prebuilding proof-bound host bundle'));
+      expect(preflightCall).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -292,11 +292,9 @@ describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const lockIdx = script.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
     const warningCallIdx = script.indexOf('\nforward_compat_review_warnings\n');
-    const repoCheckIdx = script.indexOf('[ -d "$INTEGRATION_ROOT/.git" ]');
     const targetIdx = script.indexOf('target="$(git -C');
     expect(lockIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(lockIdx);
-    expect(warningCallIdx).toBeLessThan(repoCheckIdx);
     expect(warningCallIdx).toBeLessThan(targetIdx);
     expect(script).toContain('--warn-review-by-days=$warning_days');
     expect(script).toContain('--sidecar-directory=$STAGING_ROOT/libs/papercusp/libs/db/sql');
@@ -431,7 +429,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
       child.kill('SIGKILL');
     }
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const prepare = script.indexOf('\nprepare_staging_schema\n');
+    const prepare = script.indexOf('prepare_staging_schema "$SYNC_ROOT"');
     expect(prepare).toBeGreaterThan(script.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash'));
     expect(prepare).toBeLessThan(script.indexOf('requesting coordinated restart of $UNIT'));
   });

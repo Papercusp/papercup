@@ -249,14 +249,27 @@ describe('bundle-host.sh last-known-good fallback', () => {
   // down ~9 min although its drop-in opts in and a good worker sat on disk.
   // The failure is injected through the embed worker's source override (a path
   // that does not exist), so no file in the shared tree is touched.
-  const WORKER_OUTPUTS = [
-    'local-embedder-worker.script.mjs',
-    'cpu-task-worker.script.mjs',
-    'local-reranker-worker.script.mjs',
-    'event-loop-sentinel.worker.mjs',
-    'snapshot-fold.worker.mjs',
-  ];
+  // DERIVED from the script's own HOST_WORKER_OUTPUTS, never restated here: a
+  // hand-kept copy went stale the moment mutation-probe-closure.worker.mjs was
+  // added (2033cf9106), and every worker case then failed on a fixture that no
+  // longer staged all previous outputs (WI-10005113 found it 2026-10-01 22:27Z).
+  const WORKER_OUTPUTS = (() => {
+    const common = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), 'utf8');
+    const body = /^HOST_WORKER_OUTPUTS=\(\n([\s\S]*?)\n\)/m.exec(common)?.[1] ?? '';
+    return body
+      .split('\n')
+      .map((line) => line.replace(/#.*$/, '').trim())
+      .filter((line) => line.length > 0);
+  })();
   const GOOD_WORKER = 'export const lastKnownGoodWorker = true;\n';
+
+  it('derives the worker list from bundle-host-common.sh (positive control)', () => {
+    // An unparseable array must fail HERE, not vacuously pass the cases below.
+    expect(WORKER_OUTPUTS.length).toBeGreaterThanOrEqual(5);
+    expect(WORKER_OUTPUTS).toContain('snapshot-fold.worker.mjs');
+    expect(WORKER_OUTPUTS).toContain('event-loop-sentinel.worker.mjs');
+    expect(WORKER_OUTPUTS.every((w) => /^[\w.-]+\.mjs$/.test(w))).toBe(true);
+  });
 
   function stageWorkerFailure(previousOutputs: string[]): { entry: string; env: Record<string, string> } {
     execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
