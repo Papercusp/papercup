@@ -299,6 +299,43 @@ export async function asCommittedTestPath(
   return null;
 }
 
+/**
+ * WI-10004978: which repository a clean copy-out row's commit belongs to. The copy-out mirror is
+ * gone and names no repository, so the explicit `canonicalTestPath` is the only anchor: a probe
+ * of a SUBMODULE file records that submodule's commit, which the superproject's object store
+ * does not hold. The harness repository wins whenever it holds the commit (its gitlinks are
+ * descended by `blobAtCommit`); otherwise the deepest leading directory of the path that is a
+ * repository ROOT containing `<commit>:<rest>` does. '' when nothing matches, so the content
+ * check still refuses — naming the repository it looked in.
+ */
+export async function canonicalAsCommittedPrefix(
+  root: string,
+  canonicalTestPath: string,
+  commitSha: string,
+  git: GitRunner = defaultGitRunner,
+): Promise<string> {
+  try {
+    await git(resolve(root), ['cat-file', '-e', `${commitSha}^{commit}`]);
+    return '';
+  } catch {
+    // Not a superproject commit: look for the submodule checkout that holds it.
+  }
+  const dirs = canonicalTestPath.split('/').slice(0, -1);
+  for (let k = dirs.length; k >= 1; k -= 1) {
+    const repoPrefix = dirs.slice(0, k).join('/');
+    const repo = resolve(root, repoPrefix);
+    try {
+      const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim();
+      if (!(await sameDirectory(top, repo))) continue;
+      await git(repo, ['cat-file', '-e', `${commitSha}:${canonicalTestPath.slice(repoPrefix.length + 1)}`]);
+      return repoPrefix;
+    } catch {
+      // Not a repository root here, or the commit / file is not in it.
+    }
+  }
+  return '';
+}
+
 /** Resolve `rel` at `commit` in `repo`, descending through any submodule gitlink the commit pins. */
 async function blobAtCommit(
   repo: string,
@@ -349,7 +386,10 @@ async function verifyAsCommittedContent(
     }
     const rel = mapping.repoPrefix ? path.slice(mapping.repoPrefix.length + 1) : path;
     const committed = await blobAtCommit(repo, mapping.commitSha, rel, git);
-    if (!committed) return { ok: false, path, reason: `is absent at ${at}` };
+    if (!committed) {
+      const where = mapping.repoPrefix ? `the ${mapping.repoPrefix} repository` : 'the harness repository';
+      return { ok: false, path, reason: `is absent at ${at} (looked up in ${where})` };
+    }
     let current = '';
     try {
       current = (await git(committed.repo, ['hash-object', '--', committed.rel])).trim();
@@ -687,7 +727,11 @@ export async function expandTestRunBinding(
     // holds at bind time (measured: a peer's later bulk-run-store.ts edit pinned onto a mutant
     // that mutated the committed blob). Dirty or commit-less rows keep the checkout pin.
     if (row.worktree_dirty === false && row.commit_sha && FULL_SHA_RE.test(row.commit_sha)) {
-      asCommitted = { testPath: input.canonicalTestPath, repoPrefix: '', commitSha: row.commit_sha };
+      asCommitted = {
+        testPath: input.canonicalTestPath,
+        repoPrefix: await canonicalAsCommittedPrefix(root, input.canonicalTestPath, row.commit_sha, deps.git),
+        commitSha: row.commit_sha,
+      };
     }
   }
   if (!testPath && !input.canonicalTestPath) {

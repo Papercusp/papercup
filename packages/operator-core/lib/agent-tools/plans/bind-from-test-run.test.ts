@@ -493,6 +493,49 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
         await writeFile(file, 'export const x = 1;\n');
       }
     });
+
+    describe('WI-10004978: a copy-out probe of a SUBMODULE file carries the submodule commit', () => {
+      const subMirrorRow = (over: Partial<TestRunEvidenceRow> = {}) =>
+        mirrorRow({
+          root: path.join(tmpdir(), `mutation-probe-gone${process.pid}`, 'mirror', SUB),
+          file_path: 'src/s.test.ts',
+          commit_sha: subCommit,
+          ...over,
+        });
+      const subCanonical = () =>
+        input({ canonicalTestPath: `${SUB}/src/s.test.ts`, sourcePaths: [`${SUB}/src/s.ts`] });
+
+      it('resolves the commit in the submodule checkout, not the superproject', async () => {
+        const bound = await expandTestRunBinding(subCanonical(), SCOPE, binder(subMirrorRow()));
+        expect(bound).toMatchObject({ ok: true, binding: { evidenceKind: 'mutation' } });
+        if (!bound.ok) return;
+        expect(bound.binding.details.testRun).toMatchObject({
+          canonicalTestPathOverride: `${SUB}/src/s.test.ts`,
+          asCommitted: { commitSha: subCommit, repoPrefix: SUB, contentVerified: true },
+        });
+      });
+
+      it('still refuses when the submodule subject drifted from the commit the mutant ran', async () => {
+        const file = path.join(harness, SUB, 'src/s.ts');
+        await writeFile(file, 'export const s = 2;\n');
+        try {
+          const refused = await expandTestRunBinding(subCanonical(), SCOPE, binder(subMirrorRow()));
+          expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+          expect(refused.ok ? '' : refused.message).toContain(`${SUB}/src/s.ts differs from its content at`);
+        } finally {
+          await writeFile(file, 'export const s = 1;\n');
+        }
+      });
+
+      it('a superproject commit still resolves through the gitlink it pins', async () => {
+        const bound = await expandTestRunBinding(subCanonical(), SCOPE, binder(subMirrorRow({ commit_sha: superCommit })));
+        expect(bound).toMatchObject({ ok: true });
+        if (!bound.ok) return;
+        expect(bound.binding.details.testRun).toMatchObject({
+          asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+        });
+      });
+    });
   });
 });
 
