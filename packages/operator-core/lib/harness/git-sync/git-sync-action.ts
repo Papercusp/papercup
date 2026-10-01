@@ -3005,6 +3005,13 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // makes a persistent reap-loop a durable, queryable signal for the
   // git-sync-stall-watchdog. P-008 runtime gate: ineligible rows no-op (logged +
   // recorded), never escalate.
+  //
+  // WI-10004472: whether THIS execution ran the step body. DBOS replays a recorded
+  // step from its operation_output without calling the body, so `false` here means
+  // this is a recovery replay of a fire that had already passed eligibility. The lock
+  // phase below is deliberately NOT a step, so such a replay can be refused a lock the
+  // original held; see the abandon branch there.
+  let eligibilityRanLive = false;
   const gate = await runCheckpointedStep(
     'git-sync:eligibility',
     async (): Promise<
@@ -3014,6 +3021,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         repoPath?: string;
       }
     > => {
+      eligibilityRanLive = true;
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
@@ -3145,6 +3153,37 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         ? 'an in-flight git-sync auto-commit'
         : 'a peer';
       console.log(`[git-sync] ${slug}: ${holderDescription} holds ${lock.blockedOn} — skipping this tick`);
+    }
+    // WI-10004472: a REPLAYED eligibility step means DBOS is recovering a fire that
+    // already got this far. If that original run held these locks, it recorded its
+    // post-lock sub-steps (git-sync:submodules, :pointer-bump, …), and this skip
+    // branch cannot reproduce them: the routine engine's next step would land on a
+    // function id recorded under another name and DBOS would fail the whole workflow
+    // ("git-sync:pointer-bump was recorded when system:git-sync:settle was
+    // expected", observed 2026-10-01 00:52:32Z on four recovered fires after a
+    // bg-host restart). Re-acquiring live on replay is deliberate (see above), so the
+    // refusal itself is legitimate: end the replay WITHOUT any further DBOS operation
+    // and let the next scheduled tick redo the work. No lock-retry event either: it
+    // is fire-and-forget work started inside this workflow's context.
+    if (!eligibilityRanLive && ctx.workflowId) {
+      console.warn(
+        `[git-sync] ${slug}: recovery replay of ${ctx.workflowId} refused ${lock.blockedOn ?? 'its locks'} ` +
+          `(${reason}) — abandoning the replay instead of diverging from its recorded steps`,
+      );
+      await patchRoutineMetadata(slug, workspaceId, {
+        last_status: 'skipped',
+        local_sync_status: 'skipped',
+        last_skip_reason: `replay_abandoned:${reason}`,
+        last_skipped_at: Date.now(),
+        last_skipped_paths: [],
+      });
+      return {
+        status: 'skipped',
+        reason,
+        replayAbandoned: true,
+        ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
+        ...(lock.holders ? { holders: lock.holders } : {}),
+      };
     }
     // A held_exclusive refusal means the peer's resource row is still live. The
     // release/grant cascade owns the truthful wake for that row; emitting here
