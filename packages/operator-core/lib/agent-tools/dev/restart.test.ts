@@ -11,8 +11,10 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/restart.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 
 vi.mock('../locks/identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -33,7 +35,23 @@ vi.mock('../locks/su-lock-store', () => ({
 vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(() => ({ unref: vi.fn() })) };
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  return {
+    ...actual,
+    spawn: vi.fn(() => {
+      const acquired = new PassThrough();
+      const release = new PassThrough();
+      const child = Object.assign(new EventEmitter(), {
+        unref: vi.fn(),
+        kill: vi.fn(),
+        pid: undefined,
+        stdio: [null, null, null, acquired, release],
+      });
+      queueMicrotask(() => acquired.write('papercup-staging-sync-lock-acquired\n'));
+      return child as unknown as ReturnType<typeof actual.spawn>;
+    }),
+  };
 });
 // EI-11137: the systemd truth-check that decides genuine-vs-phantom coalesce.
 vi.mock('./systemd-service-probe', () => ({
@@ -1395,6 +1413,64 @@ describe('dev:restart staging-sync collision guard', () => {
     expect(auditUnsafeM).not.toHaveBeenCalled();
     expect(releaseM).toHaveBeenCalledTimes(1);
   });
+
+  it('refuses when staging-sync takes exclusive after the final probe but before the flock handoff', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-HANDOFF-RACE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 24,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(24)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
+    const lockBusyChild = Object.assign(new EventEmitter(), {
+      unref: vi.fn(),
+      kill: vi.fn(),
+      pid: undefined,
+      stdio: [null, null, null, new PassThrough(), new PassThrough()],
+    });
+    spawnM.mockImplementationOnce(() => {
+      queueMicrotask(() => lockBusyChild.emit('close', 75, null));
+      return lockBusyChild as never;
+    });
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }));
+
+    expect(stagingSyncCollisionM).toHaveBeenCalledTimes(2);
+    expect(spawnM).toHaveBeenCalledWith(
+      '/usr/bin/flock',
+      [
+        '--shared',
+        '--nonblock',
+        '--conflict-exit-code',
+        '75',
+        '/tmp/papercup-staging-sync.lock',
+        'sh',
+        '-c',
+        expect.stringContaining('papercup-staging-sync-lock-acquired'),
+      ],
+      expect.objectContaining({ detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] }),
+    );
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'staging_sync_collision_staging_sync_in_flight',
+      restarted: false,
+      drained: true,
+      staging_sync_collision: {
+        kind: 'staging-sync-in-flight',
+        lockPath: '/tmp/papercup-staging-sync.lock',
+        lockHeld: true,
+        exitCode: 75,
+      },
+    });
+    expect(releaseM).toHaveBeenCalledTimes(1);
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(stagingReadinessM).not.toHaveBeenCalled();
+  });
 });
 
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging', () => {
@@ -1422,7 +1498,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     });
     spawnM.mockImplementationOnce(() => {
       expect(leaseHeld).toBe(false);
-      return { unref: vi.fn() } as never;
+      const acquired = new PassThrough();
+      const release = new PassThrough();
+      const child = Object.assign(new EventEmitter(), {
+        unref: vi.fn(),
+        kill: vi.fn(),
+        pid: undefined,
+        stdio: [null, null, null, acquired, release],
+      });
+      queueMicrotask(() => acquired.write('papercup-staging-sync-lock-acquired\n'));
+      return child as never;
     });
     stagingReadinessM.mockImplementationOnce(async () => {
       expect(leaseHeld).toBe(false);
@@ -1469,17 +1554,36 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b.verifyWith).toMatch(/MainPID=0.*ActiveState=activating|ActiveState=activating.*MainPID=0/);
     expect(b).not.toHaveProperty('phantomCoalesceBroken');
     expect(spawnM).toHaveBeenCalledWith(
-      'sh',
-      ['-c', expect.stringContaining('papercusp-staging-api.service')],
-      expect.anything(),
+      '/usr/bin/flock',
+      [
+        '--shared',
+        '--nonblock',
+        '--conflict-exit-code',
+        '75',
+        '/tmp/papercup-staging-sync.lock',
+        'sh',
+        '-c',
+        expect.stringContaining('systemctl --user restart papercusp-staging-api.service'),
+      ],
+      expect.objectContaining({ detached: true, stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] }),
     );
-    expect(spawnM.mock.calls[0]?.[1]?.[1] as string).not.toContain('reset-failed');
+    expect(spawnM.mock.calls[0]?.[1]?.[7] as string).not.toContain('reset-failed');
     // Left to expire, not released — the debounce depends on this.
     expect(releaseM).not.toHaveBeenCalled();
     // EI-18198340374286980: a real restart is ALWAYS audited, even via the env route.
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
-    expect(details).toMatchObject({ target: 'staging', viaEnv: true, viaAuthorizeArg: false, reason: null });
+    expect(details).toMatchObject({
+      target: 'staging',
+      viaEnv: true,
+      viaAuthorizeArg: false,
+      reason: null,
+      stagingSyncHandoff: {
+        lockPath: '/tmp/papercup-staging-sync.lock',
+        mode: 'shared',
+        heldThrough: 'systemctl-restart',
+      },
+    });
   });
 
   it('retries transient workspace contention while acquiring the staging cooldown marker', async () => {
@@ -1551,7 +1655,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       restarted: true,
       resetFailedBeforeRestart: true,
     });
-    const shell = spawnM.mock.calls[0]?.[1]?.[1] as string;
+    const shell = spawnM.mock.calls[0]?.[1]?.[7] as string;
     const reset = `systemctl --user reset-failed papercusp-staging-api.service`;
     const restart = `systemctl --user restart papercusp-staging-api.service`;
     expect(shell).toContain(`${reset} && ${restart}`);
@@ -1586,7 +1690,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       resetFailedBeforeRestart: true,
       stagingReadiness: { ready: true, observed: true, outcome: 'ready' },
     });
-    expect(spawnM.mock.calls[0]?.[1]?.[1] as string).toContain(
+    expect(spawnM.mock.calls[0]?.[1]?.[7] as string).toContain(
       'systemctl --user reset-failed papercusp-staging-api.service && systemctl --user restart papercusp-staging-api.service',
     );
   });
