@@ -53,6 +53,110 @@ function verdicts(...vs: LivenessVerdict[]): Map<string, LivenessVerdict> {
   return new Map(vs.map((v) => [v.ownerId, v]));
 }
 
+// WI-1074216/P-006: permanent wrong subjects for the holder contract. An explicit
+// control run selects one specimen; ordinary CI checks the real resolver AND
+// that its independent oracle rejects every specimen. Production stays intact.
+type HolderResolution = ReturnType<typeof resolveGoalHoldersFromRows>;
+type HolderContractObservation = {
+  liveness: HolderResolution['liveness'];
+  elected: string | null;
+  live: string[];
+  overlap: HolderResolution['overlap']['status'];
+};
+const observeHolderContract = (result: HolderResolution): HolderContractObservation => ({
+  liveness: result.liveness,
+  elected: result.elected?.ownerId ?? null,
+  live: result.live.map((holder) => holder.ownerId),
+  overlap: result.overlap.status,
+});
+const predecessor = row('predecessor', { goalLeaseEpoch: 1 });
+const successor = row('successor', {
+  setAtMs: 2_000,
+  goalLeaseEpoch: 2,
+  goalHandoffFromOwnerId: 'predecessor',
+  goalHandoffExpiresAtMs: NOW + 60_000,
+});
+const liveHandoffVerdicts = verdicts(
+  verdict({ ownerId: 'predecessor' }), verdict({ ownerId: 'successor' }), verdict({ ownerId: 'third' }),
+);
+const holderContractCases: Array<{
+  scenario: string;
+  rows: GoalHolderRow[];
+  oracle: Map<string, LivenessVerdict>;
+  expected: Partial<HolderContractObservation>;
+  wrong: (result: HolderResolution) => Partial<HolderContractObservation>;
+}> = [
+  {
+    scenario: 'one-elected-holder', rows: [row('first'), row('second')],
+    oracle: verdicts(verdict({ ownerId: 'first' }), verdict({ ownerId: 'second' })),
+    expected: { elected: 'first', live: ['first'], overlap: 'violation' },
+    wrong: (result) => ({ live: result.allLive.map((holder) => holder.ownerId) }),
+  },
+  {
+    scenario: 'elected-lost-historical-live',
+    rows: [row('historical', { goalLeaseEpoch: 1 }), row('elected', { goalLeaseEpoch: 2 })],
+    oracle: verdicts(verdict({ ownerId: 'historical' }), verdict({ ownerId: 'elected', sessionState: 'ended' })),
+    expected: { elected: 'elected', liveness: 'lost', live: [] },
+    wrong: (result) => ({ liveness: 'held', live: result.allLive.map((holder) => holder.ownerId) }),
+  },
+  {
+    scenario: 'named-bounded-handoff', rows: [predecessor, successor], oracle: liveHandoffVerdicts,
+    expected: { elected: 'successor', live: ['successor'], overlap: 'handoff' },
+    wrong: () => ({ overlap: 'violation' }),
+  },
+  {
+    scenario: 'expired-handoff',
+    rows: [predecessor, { ...successor, goalHandoffExpiresAtMs: NOW - 1 }], oracle: liveHandoffVerdicts,
+    expected: { elected: 'successor', overlap: 'violation' },
+    wrong: () => ({ overlap: 'handoff' }),
+  },
+  {
+    scenario: 'third-holder', rows: [predecessor, successor, row('third')], oracle: liveHandoffVerdicts,
+    expected: { elected: 'successor', overlap: 'violation' },
+    wrong: () => ({ overlap: 'handoff' }),
+  },
+  {
+    scenario: 'unresolved-elected-holder', rows: [row('unresolved')], oracle: verdicts(),
+    expected: { elected: 'unresolved', liveness: 'unknown', live: [] },
+    wrong: () => ({ liveness: 'lost' }),
+  },
+  {
+    scenario: 'confirmed-loss-control', rows: [row('dead')],
+    oracle: verdicts(verdict({ ownerId: 'dead', sessionState: 'ended' })),
+    expected: { elected: 'dead', liveness: 'lost', live: [] },
+    wrong: () => ({ liveness: 'unknown' }),
+  },
+];
+
+describe('holder contract causal controls', () => {
+  const selectedControl = process.env.PAPERCUSP_GOAL_HOLDER_CONTROL;
+  if (selectedControl && !holderContractCases.some(({ scenario }) => scenario === selectedControl)) {
+    throw new Error(`Unknown permanent holder control: ${selectedControl}`);
+  }
+  const assertContract = (actual: HolderContractObservation, expected: Partial<HolderContractObservation>, id: string) =>
+    expect(actual, `holder-contract:${id}`).toMatchObject(expected);
+
+  it('calibration: a real lone live holder remains effective', () => {
+    const result = resolveGoalHoldersFromRows(G, WS, [row('lone')], verdicts(verdict({ ownerId: 'lone' })), NOW);
+    expect(result.liveness).toBe('held');
+    expect(result.elected?.ownerId).toBe('lone');
+    expect(result.live.map((holder) => holder.ownerId)).toEqual(['lone']);
+  });
+
+  it.each(holderContractCases)('repaired holder contract: $scenario', ({ scenario, rows, oracle, expected, wrong }) => {
+    const result = resolveGoalHoldersFromRows(G, WS, rows, oracle, NOW);
+    const actual = observeHolderContract(result);
+    assertContract(selectedControl === scenario ? { ...actual, ...wrong(result) } : actual, expected, scenario);
+  });
+
+  it.each(holderContractCases)('detects permanent wrong holder: $scenario', ({ scenario, rows, oracle, expected, wrong }) => {
+    const result = resolveGoalHoldersFromRows(G, WS, rows, oracle, NOW);
+    assertContract(observeHolderContract(result), expected, scenario);
+    expect(() => assertContract({ ...observeHolderContract(result), ...wrong(result) }, expected, scenario))
+      .toThrow(`holder-contract:${scenario}`);
+  });
+});
+
 /**
  * WI-2140573 (measured 2026-09-01): the fold must carry the RAW heartbeat so
  * a supervisor can tell a dead PROCESS from a live process whose SESSION is

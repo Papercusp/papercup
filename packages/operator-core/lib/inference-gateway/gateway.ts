@@ -1434,6 +1434,34 @@ export interface GatewayCacheCounts {
   coverage: { requests: number; readKnown: number; writeKnown: number; uncachedInputKnown: number; inputTotalKnown: number; tokenRateRequests: number };
 }
 
+/** How a served Claude request was billed (P-009): the flat-rate subscription allowance, subscription
+ *  usage credits (overage, per token at API rates), or API credits (an api-key account, per token). */
+export type GatewayBillingClass = 'included' | 'usage-credits' | 'api-credits';
+/** Requests served in one billing class and the token usage they reported. Only KNOWN counts are added:
+ *  `usageKnown` = requests whose input-side usage was read, `outputKnown` = requests whose final output
+ *  count was read (a stream cut before its closing `message_delta` reports no output count). */
+export interface GatewayBillingTally {
+  requests: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  usageKnown: number;
+  outputKnown: number;
+}
+/** One Claude account's billing view (P-009). `state` is its CURRENT billing state from the latest
+ *  upstream response (`api-credits` for an api-key account; `unknown` before any response); `stateUntil`
+ *  is the allowance reset that response named. `meteredNow` = billed per token right now. */
+export interface GatewayAccountBilling {
+  state: ClaudeBillingStateKind | 'api-credits' | 'unknown';
+  stateUntil?: number;
+  meteredNow: boolean;
+  authMode: 'oauth' | 'api-key';
+  meteredPolicy: 'overflow' | 'never';
+  classes: Partial<Record<GatewayBillingClass, GatewayBillingTally>>;
+  metered: GatewayBillingTally;
+}
+
 export interface GatewayStats {
   accountId: string;
   upstreamBase: string;
@@ -1711,6 +1739,13 @@ export interface GatewayStats {
     /** AUTO-ROUTE SESSION AFFINITY (WI-2140943): how unpinned requests were routed since boot. `nokey` is
      *  the population still on per-request round-robin (no owner header, no per-session metadata). */
     affinity: { hits: number; cold: number; nokey: number; yields: number; enabled: boolean; ttlMs: number };
+  };
+  /** METERED SPEND VISIBILITY (anthropic-credits-gateway-2026-09-30 P-009). One row per Claude pool
+   *  account: its CURRENT billing state and the requests + tokens it served per billing class since boot.
+   *  `metered` sums the per-token-billed classes (usage-credits + api-credits), per account and pool-wide. */
+  billing: {
+    byAccount: Record<string, GatewayAccountBilling>;
+    metered: GatewayBillingTally;
   };
   /** DURABLE-PATH health (EI-19303809952284205). The gateway's DB-touching side-paths (usage-window
    *  projection, pool reload, rate hints, scale observer) are all fire-and-forget by design, so when
@@ -3274,6 +3309,57 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Billed per token right now: an api-key account, or a subscription serving from usage credits. */
   const isMeteredNow = (account: ActiveAccount, at: number): boolean =>
     account.authMode === 'api-key' || inUsageCredits(account, at);
+  /** P-009: the billing class a request served by `account` right now falls in. */
+  const billingClassOf = (account: ActiveAccount, at: number): GatewayBillingClass =>
+    account.authMode === 'api-key' ? 'api-credits' : inUsageCredits(account, at) ? 'usage-credits' : 'included';
+  const newBillingTally = (): GatewayBillingTally => ({
+    requests: 0, inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0, usageKnown: 0, outputKnown: 0,
+  });
+  /** P-009: per-account, per-billing-class served requests + token usage since boot. */
+  const billingTallyByAccount = new Map<string, Map<GatewayBillingClass, GatewayBillingTally>>();
+  const billingTally = (accountId: string, cls: GatewayBillingClass): GatewayBillingTally => {
+    let byClass = billingTallyByAccount.get(accountId);
+    if (!byClass) billingTallyByAccount.set(accountId, (byClass = new Map()));
+    let t = byClass.get(cls);
+    if (!t) byClass.set(cls, (t = newBillingTally()));
+    return t;
+  };
+  const addBillingTally = (into: GatewayBillingTally, t: GatewayBillingTally): void => {
+    into.requests += t.requests;
+    into.inputTokens += t.inputTokens;
+    into.cacheReadTokens += t.cacheReadTokens;
+    into.cacheCreationTokens += t.cacheCreationTokens;
+    into.outputTokens += t.outputTokens;
+    into.usageKnown += t.usageKnown;
+    into.outputKnown += t.outputKnown;
+  };
+  function billingSnapshot(): GatewayStats['billing'] {
+    const now = Date.now();
+    const byAccount: Record<string, GatewayAccountBilling> = {};
+    const poolMetered = newBillingTally();
+    const known = new Map<string, ActiveAccount>((pool.entries?.() ?? []).map((a) => [a.accountId, a]));
+    for (const id of new Set([...known.keys(), ...billingTallyByAccount.keys()])) {
+      const account = known.get(id);
+      const recorded = claudeBillingByAccount.get(id);
+      const classes: GatewayAccountBilling['classes'] = {};
+      const metered = newBillingTally();
+      for (const [cls, t] of billingTallyByAccount.get(id) ?? []) {
+        classes[cls] = { ...t };
+        if (cls !== 'included') addBillingTally(metered, t);
+      }
+      addBillingTally(poolMetered, metered);
+      byAccount[id] = {
+        state: account?.authMode === 'api-key' ? 'api-credits' : (recorded?.state ?? 'unknown'),
+        ...(recorded?.until !== undefined && account?.authMode !== 'api-key' ? { stateUntil: recorded.until } : {}),
+        meteredNow: account ? isMeteredNow(account, now) : false,
+        authMode: account?.authMode ?? 'oauth',
+        meteredPolicy: account?.meteredPolicy ?? 'overflow',
+        classes,
+        metered,
+      };
+    }
+    return { byAccount, metered: poolMetered };
+  }
 
   /** The ONE gateway adaptation into accountLoadKey. Claude supplies its live per-account governor;
    *  Codex supplies the same durable capacity/burn hints plus shared transport state. Keeping the
@@ -3946,9 +4032,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
     /** The route key (`affinityKey ?? wantOwner`) whose entry receives the exact usage reading. */
     routeKey?: string,
     stageSpan?: GatewayRequestSpan,
+    /** P-009: the billing class this request was served in — its usage is tallied under it. */
+    billedClass?: GatewayBillingClass,
   ): void {
     let buf = '';
     let done = false;
+    // P-009: output tokens are only known at the END of a stream (the closing `message_delta` carries the
+    // cumulative count), so after `message_start` a line-split watcher keeps reading — O(chunk) per chunk,
+    // never buffering the body — and the LAST count seen is tallied once when the stream ends.
+    let lineCarry = '';
+    let outputTokens: number | null = null;
+    let settled = false;
+    const onDelta = (chunk: Buffer | string) => {
+      const lines = (lineCarry + chunk.toString()).split('\n');
+      lineCarry = lines.pop() ?? '';
+      // A giant unterminated line is a content delta, never the small message_delta event.
+      if (lineCarry.length > 65_536) lineCarry = '';
+      for (const line of lines) {
+        if (!line.startsWith('data: {"type":"message_delta"')) continue;
+        try {
+          const n = observedCount((JSON.parse(line.slice(6)) as { usage?: { output_tokens?: number } }).usage?.output_tokens);
+          if (n !== null) outputTokens = n;
+        } catch {
+          /* malformed message_delta — ignore; never break the stream */
+        }
+      }
+    };
+    const settleOutput = () => {
+      if (settled || !billedClass) return;
+      settled = true;
+      stream.off('data', onDelta);
+      if (lineCarry) onDelta('\n');
+      if (outputTokens === null) return;
+      const t = billingTally(accountId, billedClass);
+      t.outputTokens += outputTokens;
+      t.outputKnown++;
+    };
     const onData = (chunk: Buffer) => {
       if (done) return;
       buf += chunk.toString('utf8');
@@ -3956,6 +4075,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (m) {
         done = true;
         stream.off('data', onData);
+        if (billedClass) {
+          stream.on('data', onDelta);
+          stream.once('end', settleOutput);
+          stream.once('close', settleOutput);
+          onDelta(buf.slice((m.index ?? 0) + m[0].length));
+        }
         try {
           const message = (
             JSON.parse(m[1]) as {
@@ -3977,6 +4102,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const inputTotal = inputTokens !== null && cacheRead !== null && cacheCreate !== null
               ? inputTokens + cacheRead + cacheCreate : null;
             recordCacheUsage(accountId, inputTokens, cacheRead, cacheCreate, inputTotal, didFailover);
+            if (billedClass && inputTokens !== null) {
+              const t = billingTally(accountId, billedClass);
+              t.inputTokens += inputTokens;
+              t.cacheReadTokens += cacheRead ?? 0;
+              t.cacheCreationTokens += cacheCreate ?? 0;
+              t.usageKnown++;
+            }
             if (inputTokens !== null && cacheRead !== null) stageSpan?.recordCacheUsage(inputTokens, cacheRead, cacheCreate ?? undefined, message?.id);
             // Never lower the observed prompt floor using an incomplete total.
             if (inputTotal !== null && inputTokens !== null && cacheRead !== null && cacheCreate !== null) {
@@ -4291,6 +4423,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       pausedUntil: snap.pausedUntil,
       pausedActuallyEnforced: snap.pausedUntil > now,
       cache: cacheSnapshot(),
+      billing: billingSnapshot(),
     };
   }
 
@@ -5473,6 +5606,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         recordClaudeRoutingPick();
         totalRequests++;
         shedAllThrottled++;
+        markRequestShed(req);
         recordOwnerOutcome(wantOwner, 'shed', { detail: 'all-throttled fail-fast' }); // P-008 ledger
         // P-002: the whole pool is out of budget until `soonestPaused` — record a stall candidate so the
         // waker can wake this bee then (only if it identified itself + its CLI doesn't recover on its own).
@@ -5524,6 +5658,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const at = Date.now();
       recordClaudeRoutingPick();
       totalRequests++;
+      markRequestShed(req);
       recordOwnerOutcome(wantOwner, 'shed', { detail: 'metered-never wall' });
       const wallUntil = claudeBillingByAccount.get(active.accountId)?.until;
       const retryAfterSec = Math.min(
@@ -5572,6 +5707,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (!release) {
       recordClaudeRoutingPick();
       queued429++;
+      // This 429 originates before an upstream attempt. Preserve the same
+      // attribution in the request timeline as in the owner outcome ledger.
+      markRequestShed(req);
       recordOwnerOutcome(wantOwner, 'shed', { account: active.accountId, detail: 'admission timeout' }); // P-008 ledger
       const retryAfterSec = Math.min(
         BEE_RETRY_AFTER_CAP_S,
@@ -6713,7 +6851,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   cacheProbe = new PassThrough();
                   cacheProbe.on('data', () => undefined);
                   cacheProbe.on('error', () => undefined);
-                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1, affinityKey ?? wantOwner, stageSpan);
+                  // P-009: every served Claude request is counted in the billing class it was served in
+                  // (decided by this response's own billing headers, recorded just above); its usage is
+                  // added by the observer as the body streams.
+                  const servedAccount = (pool.entries?.() ?? []).find((a) => a.accountId === metadata.accountId);
+                  const servedClass: GatewayBillingClass = servedAccount
+                    ? billingClassOf(servedAccount, Date.now())
+                    : 'included';
+                  billingTally(metadata.accountId, servedClass).requests++;
+                  observeCacheUsage(cacheProbe, metadata.accountId, attemptsUsed > 1, affinityKey ?? wantOwner, stageSpan, servedClass);
                 } else if (status === 429 || status === 529) {
                   // The DOMINANT "nothing goes through" exit. Record a stall so the
                   // stall-waker re-wakes an IDENTIFIED bee when this account recovers

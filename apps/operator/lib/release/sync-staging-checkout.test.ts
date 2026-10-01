@@ -821,7 +821,7 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const downgrade = script.lastIndexOf('flock -s 9');
     const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
-    const assignment = script.indexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
+    const assignment = script.lastIndexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
     expect(downgrade).toBeGreaterThan(assignment);
     expect(restart).toBeGreaterThan(downgrade);
     expect(script.slice(downgrade, downgrade + 200)).toContain('could not downgrade');

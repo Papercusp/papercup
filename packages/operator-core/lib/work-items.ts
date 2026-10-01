@@ -9838,8 +9838,10 @@ export type GoalStartWorkItemStampResult =
   | { ok: false; reason: 'not_found' | 'wrong_harness' | 'already_attributed' | 'changed' };
 
 /** Attribute a goal's explicit source item before its goal-drain fleet is minted.
- * The caller supplies the same transaction used to insert the goal. This deliberately
- * refuses cross-harness links and never reparents an item already owned by another goal. */
+ * The caller supplies its goal SQL handle; the conditional UPDATE is the actual
+ * compare-and-set, so concurrent autocommit callers cannot both claim a NULL goal_id.
+ * This deliberately refuses cross-harness links and never reparents an item already
+ * owned by another goal. */
 export async function stampWorkItemGoalAtStart(
   tx: GoalSqlTag,
   opts: { id: string; workspaceId: string; harness: string; goalId: string },

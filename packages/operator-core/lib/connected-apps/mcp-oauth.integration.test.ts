@@ -50,6 +50,7 @@ const { PostgresDeviceGrantStore } = await import('./device-grants');
 const { MCP_OAUTH_WELL_KNOWN } = await import('./mcp-oauth-discovery');
 const { createAppKey, resolveAppKeyScopes, rotateAppKey, verifyAppKey } = await import('./store');
 const { isAppKeyShaped } = await import('./key');
+const { cspAdmitsFormTarget } = await import('./consent-csp');
 const { resolveAppKeyPrincipal } = await import('./principal');
 const { enforceAppKeyScope } = await import('./enforce');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -321,7 +322,16 @@ describe('MCP OAuth on a local install (real PG + real RLS)', () => {
       }).toString(),
     });
     expect(decided.status).toBe(303);
-    const params = callbackParams(await wire(`${LOCAL}${decided.headers.get('location')}`), redirect);
+    const continueHop = `${LOCAL}${decided.headers.get('location')}`;
+    const lastHop = await wire(continueHop);
+    // WI-10004470: a browser enforces the consent page's form-action on EVERY hop of the form's
+    // redirect chain (decision → continue → the client). Under 'self' alone it never reaches the client.
+    const csp = page.headers.get('content-security-policy') ?? '';
+    const pageUrl = String(client.authorizationUrl);
+    for (const hop of [continueHop, lastHop.headers.get('location')!]) {
+      expect(cspAdmitsFormTarget(csp, pageUrl, hop), `${hop} under ${csp}`).toBe(true);
+    }
+    const params = callbackParams(lastHop, redirect);
     expect(params.get('iss')).toBe(LOCAL);
 
     expect(await auth(client, { serverUrl, authorizationCode: params.get('code')!, fetchFn: wire })).toBe('AUTHORIZED');

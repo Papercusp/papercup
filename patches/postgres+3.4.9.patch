@@ -135,7 +135,7 @@ index 8e79170..4e46011 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/src/index.js
-index ffbe7ae..33caa30 100644
+index ffbe7ae..5ce6bf1 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
 @@ -108,13 +108,23 @@ function Postgres(a, b) {
@@ -181,7 +181,27 @@ index ffbe7ae..33caa30 100644
      }
    }
  
-@@ -491,6 +501,8 @@ function parseOptions(a, b) {
+@@ -215,6 +225,11 @@ function Postgres(a, b) {
+     c.reserved = () => queue.length
+       ? c.execute(queue.shift())
+       : move(c, reserved)
++    c.reserved.onclose = e => {
++      // The connection error path cannot see queries parked in this private queue.
++      while (queue.length)
++        queue.shift().reject(e)
++    }
+     c.reserved.release = true
+ 
+     const sql = Sql(handler)
+@@ -421,6 +436,7 @@ function Postgres(a, b) {
+ 
+   function onclose(c, e) {
+     move(c, closed)
++    c.reserved && c.reserved.onclose && c.reserved.onclose(e)
+     c.reserved = null
+     c.onclose && (c.onclose(e), c.onclose = null)
+     options.onclose && options.onclose(c.id)
+@@ -491,6 +507,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -327,7 +347,7 @@ index 07f6716..c8b3b87 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/src/index.js
-index f09c61c..2711402 100644
+index f09c61c..ef21658 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -373,7 +393,27 @@ index f09c61c..2711402 100644
      }
    }
  
-@@ -490,6 +500,8 @@ function parseOptions(a, b) {
+@@ -214,6 +224,11 @@ function Postgres(a, b) {
+     c.reserved = () => queue.length
+       ? c.execute(queue.shift())
+       : move(c, reserved)
++    c.reserved.onclose = e => {
++      // The connection error path cannot see queries parked in this private queue.
++      while (queue.length)
++        queue.shift().reject(e)
++    }
+     c.reserved.release = true
+ 
+     const sql = Sql(handler)
+@@ -420,6 +435,7 @@ function Postgres(a, b) {
+ 
+   function onclose(c, e) {
+     move(c, closed)
++    c.reserved && c.reserved.onclose && c.reserved.onclose(e)
+     c.reserved = null
+     c.onclose && (c.onclose(e), c.onclose = null)
+     options.onclose && options.onclose(c.id)
+@@ -490,6 +506,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -519,7 +559,7 @@ index 1b1cccd..19e97b7 100644
        }
      } else if (errorResponse) {
 diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/index.js
-index c7fba3d..0dce660 100644
+index c7fba3d..8652354 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
 @@ -107,13 +107,23 @@ function Postgres(a, b) {
@@ -565,7 +605,27 @@ index c7fba3d..0dce660 100644
      }
    }
  
-@@ -490,6 +500,8 @@ function parseOptions(a, b) {
+@@ -214,6 +224,11 @@ function Postgres(a, b) {
+     c.reserved = () => queue.length
+       ? c.execute(queue.shift())
+       : move(c, reserved)
++    c.reserved.onclose = e => {
++      // The connection error path cannot see queries parked in this private queue.
++      while (queue.length)
++        queue.shift().reject(e)
++    }
+     c.reserved.release = true
+ 
+     const sql = Sql(handler)
+@@ -420,6 +435,7 @@ function Postgres(a, b) {
+ 
+   function onclose(c, e) {
+     move(c, closed)
++    c.reserved && c.reserved.onclose && c.reserved.onclose(e)
+     c.reserved = null
+     c.onclose && (c.onclose(e), c.onclose = null)
+     options.onclose && options.onclose(c.id)
+@@ -490,6 +506,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,

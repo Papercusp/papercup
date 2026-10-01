@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import scorecardEmitTool, {
   attachScorecardCompletionReceipt,
   cleanupAcceptanceGraderTasks,
@@ -111,6 +112,96 @@ describe('dedicated acceptance judge lifecycle', () => {
 });
 
 describe('scorecard abort completion receipts', () => {
+  it('preserves distinct force-write receipts when outer cancellation follows the nested commit', async () => {
+    const committed = new Map<string, unknown>();
+    const runAttempt = async (issueId: string) => {
+      const caller = new AbortController();
+      const ctx: UnifiedToolContext = {
+        log: vi.fn(),
+        signal: caller.signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+      };
+      const tool: ProjectedTool = {
+        pluginName: 'scorecard-receipt-fixture',
+        description: 'Exercise the production scorecard receipt through the real dispatcher.',
+        inputSchema: { type: 'object' },
+        capabilities: [],
+        expose: { mcp: { name: 'scorecards:emit' } },
+        idempotent: scorecardEmitTool.idempotent,
+        abortCompletionReceipt: (_args, result, attempt) =>
+          scorecardEmitTool.abortCompletionReceipt?.({} as never, result, attempt),
+        fn: async () => {
+          const data = attachScorecardCompletionReceipt({ ok: true, created: true, issueId });
+          committed.set(issueId, data);
+          // The write already landed when the caller's enclosing orchestration aborts.
+          caller.abort();
+          return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+        },
+      };
+      return dispatchProjectedTool(tool, 'scorecards:emit', { force: true }, ctx, {});
+    };
+
+    const first = await runAttempt('EI-forced-first');
+    const second = await runAttempt('EI-forced-second');
+
+    expect([...committed.keys()]).toEqual(['EI-forced-first', 'EI-forced-second']);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(first.result?._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recorded',
+      effectRef: 'EI-forced-first',
+      attemptId: expect.any(String),
+    });
+    expect(second.result?._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recorded',
+      effectRef: 'EI-forced-second',
+      attemptId: expect.any(String),
+    });
+    expect(first.result?._meta?.abortCompletionReceipt?.attemptId).not.toBe(
+      second.result?._meta?.abortCompletionReceipt?.attemptId,
+    );
+  });
+
+  it('fails closed through the dispatcher when a committed write lacks its scorecard receipt', async () => {
+    const caller = new AbortController();
+    let committed = false;
+    const tool: ProjectedTool = {
+      pluginName: 'scorecard-receipt-fixture',
+      description: 'A committed fixture write whose completion receipt was lost.',
+      inputSchema: { type: 'object' },
+      capabilities: [],
+      expose: { mcp: { name: 'scorecards:emit' } },
+      idempotent: scorecardEmitTool.idempotent,
+      abortCompletionReceipt: (_args, result, attempt) =>
+        scorecardEmitTool.abortCompletionReceipt?.({} as never, result, attempt),
+      fn: async () => {
+        committed = true;
+        caller.abort();
+        return { content: [{ type: 'text', text: '{"ok":true,"issueId":"EI-missing-receipt"}' }] };
+      },
+    };
+    const result = await dispatchProjectedTool(tool, 'scorecards:emit', { force: true }, {
+      log: vi.fn(),
+      signal: caller.signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+    }, {});
+
+    expect(committed).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      code: 'timeout',
+      meta: {
+        abortCompletionReceipt: {
+          status: 'recovery-incomplete',
+          failures: ['missing-completion-receipt'],
+          attemptId: expect.any(String),
+        },
+      },
+    });
+  });
+
   it('identifies both a newly-created card and an unchanged-evidence replay by durable issue id', () => {
     expect(attachScorecardCompletionReceipt({ ok: true, created: true, issueId: 'EI-new' })).toMatchObject({
       completionReceipt: { status: 'recorded', effectRef: 'EI-new' },

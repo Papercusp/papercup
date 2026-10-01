@@ -74,7 +74,15 @@ A `cgroup.procs` file containing only `0` means at least one process exists in t
 
 `capability:bash` loopback traffic is proxied. A request to an unused port can return HTTP 502 rather than `ECONNREFUSED` (`curl` exit 7); the 502 comes from the proxy path and proves neither that the target answered nor that it is absent. Do not turn any of these shell readings into a death verdict.
 
-For current host-side liveness, use `processes:list` with an exact `scopeUnit` and `live:true`, inspect `live.exactScopeUnitMatches`, and use `dev:listening_ports` when the question is whether a specific host port is bound. A lifecycle candidate's `processLifecycleCandidate.liveness` is a timestamped host observation: `present` means the healthy task-reconcile scan saw it at `observedAt`; it is not proof that the process is present now. `unknown` means no such safe observation was established and does not mean dead.
+When diagnosing a bash-side probe, report `readlink /proc/self/ns/pid`, the visible numeric /proc PID count, and `$` in the same call. If `$` is tiny or only a few PIDs are visible, treat every `/proc/<host-pid>` absence from that call as namespace-blind and discard it; these local readings calibrate the shell but do not prove host absence.
+
+For current host-side liveness, use `processes:list` with an exact `scopeUnit` and `live:true`, and inspect only `live.exactScopeUnitMatches` entries with kind "unaccounted". An empty exact-scope read is not proof. Require a known-present same-kind unaccounted control from an unfiltered live census. Read the control twice and confirm `tasks[].ageSec` advances by elapsed wall time so one transient scan cannot pose as the control.
+
+The unfiltered census is usable only when `live.degraded=false`, `live.ownedTruncated=false`, and `live.foreignTruncated=false`; `live.unaccounted` must equal `live.unaccountedGroups.length`, and `live.unaccountedPids` must equal the PIDs listed in the complete groups. Any missing or inconsistent field leaves absence unknown. On the host, non-zero `pids.current` and the count of `cgroup.procs` entries can corroborate cgroup presence; under the shell namespace, ignore the PID values themselves.
+
+`unaccounted` describes bookkeeping, not abandonment. In particular, `confined:false` does not prove abandonment: a sidecar may legitimately lack a managed owner row. A kill verdict needs positive evidence of abandonment, such as a dead spawner and a stale rig; `unaccounted` alone is insufficient.
+
+Use `dev:listening_ports` when the question is whether a specific host port is bound. A lifecycle candidate's `processLifecycleCandidate.liveness` is a timestamped host observation: `present` means the healthy task-reconcile scan saw it at `observedAt`; it is not proof that the process is present now. `unknown` means no such safe observation was established and does not mean dead.
 
 ## It IS burning CPU — now what is it burning it ON?
 

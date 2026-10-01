@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Agent } from 'undici';
 import { afterEach, expect, it } from 'vitest';
-import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt,
   type GatewayCarryTrialBinding } from './gateway';
@@ -193,6 +193,80 @@ async function recentTimeline(port: number) {
   const stages = stats.requestStages!;
   return { stages, timeline: stages.recent[0]! };
 }
+
+it.each([false, true])('classifies a pre-upstream local 429 as shedding, not an upstream rejection (hard pin %s)', async hardPin => {
+  let upstreamCalls = 0;
+  upstream = http.createServer((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({
+    accountId: 'paced-telemetry',
+    token: async () => 'test-token',
+    upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    maxQueueWaitMs: 50,
+    requestAbsorbMs: 0,
+    selfHeal: { enabled: false },
+  });
+  const port = await gateway.listen(0);
+  getGovernor('anthropic', 'opus', undefined, 'paced-telemetry').penalize({ retryAfterMs: 60_000 });
+  const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-papercusp-owner': 'su-local-shed',
+      ...(hardPin ? { 'x-papercusp-account': 'paced-telemetry', 'x-papercusp-account-pin': 'hard' } : {}),
+    },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'fixture' }] }),
+  });
+  expect(response.status).toBe(429);
+  await response.text();
+  const { stages, timeline } = await recentTimeline(port);
+  expect(upstreamCalls).toBe(0);
+  expect(timeline).toMatchObject({ ownerId: 'su-local-shed', attempts: 0, finalStatus: 429, outcome: 'shed' });
+  expect(timeline.upstreamWrites.calls).toEqual([]);
+  expect(stages.outcomes['upstream-429']).toBe(0);
+  expect(stages.outcomes.shed).toBe(1);
+  const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=su-local-shed`)).json();
+  expect(report.ledger.sheds).toBe(1);
+  expect(report.ledger.upstream429).toBe(0);
+  expect(report.stageTelemetry.recent[0].outcome).toBe('shed');
+});
+
+it('keeps an actual upstream HTTP 429 distinct from pre-upstream shedding', async () => {
+  let upstreamCalls = 0;
+  upstream = http.createServer((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '3600' });
+    res.end('{"type":"error","error":{"type":"rate_limit_error","message":"fixture rejected"}}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({
+    accountId: 'rejected-telemetry',
+    token: async () => 'test-token',
+    upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    maxQueueWaitMs: 50,
+    requestAbsorbMs: 0,
+    selfHeal: { enabled: false },
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'su-upstream-rejected' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'fixture' }] }),
+  });
+  expect(response.status).toBe(429);
+  await response.text();
+  const { stages, timeline } = await recentTimeline(port);
+  // The existing retry policy may make more than one real upstream attempt.
+  // Join the timeline to the actual writes rather than assuming a single send.
+  expect(upstreamCalls).toBeGreaterThan(0);
+  expect(timeline).toMatchObject({ attempts: upstreamCalls, finalStatus: 429, outcome: 'upstream-429' });
+  expect(stages.outcomes['upstream-429']).toBe(1);
+  expect(stages.outcomes.shed).toBe(0);
+});
 
 it.each([false, true])('retains native request correlation and the served CLI account (oversized fingerprint body %s)', async large => {
   const port = await bootCliBridge(async () => ({ text: 'BRIDGED', inputTokens: 7, outputTokens: 3 }));

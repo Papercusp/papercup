@@ -1572,6 +1572,7 @@ function minimalCodeRunSummaryProjection(
     // `omittedItems: 0`, actively denying that anything had been cut. Keep a bounded prefix so
     // the caller still sees the shape of their data, and COUNT what did not fit.
     const projected: unknown[] = [];
+    const entryStats: CodeRunSummaryProjectionStats[] = [];
     const entryOptions: CodeRunSummaryProjectionOptions = {
       arrayLimit: 1,
       stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
@@ -1584,7 +1585,7 @@ function minimalCodeRunSummaryProjection(
       const candidate = projectCodeRunSummaryValue(entry, `summary[${projected.length}]`, 0, entryOptions, scratch);
       if (codeRunSummarySerializedChars([...projected, candidate]) > budget) break;
       projected.push(candidate);
-      mergeCodeRunSummaryStats(stats, scratch);
+      entryStats.push(scratch);
     }
     const dropped = value.length - projected.length;
     if (dropped > 0) {
@@ -1592,11 +1593,35 @@ function minimalCodeRunSummaryProjection(
       stats.omittedItems += dropped;
       noteCodeRunSummaryPath(stats, 'summary');
     }
+    // Keep the baseline prefix, then spend spare budget growing strings inside its retained
+    // entries. This preserves array breadth while avoiding the fixed 80-character cap when it
+    // would leave useful output space unused.
+    for (let index = 0; index < projected.length; index++) {
+      if (
+        entryStats[index]?.stringsTruncated === 0 ||
+        codeRunSummarySerializedChars(projected) >= budget * 0.9
+      ) {
+        continue;
+      }
+      const grown = growCodeRunSummaryToBudget(
+        value[index],
+        entryOptions,
+        budget,
+        `summary[${index}]`,
+        (candidate) => projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
+      );
+      if (grown) {
+        projected[index] = grown.value;
+        entryStats[index] = grown.stats;
+      }
+    }
+    for (const scratch of entryStats) mergeCodeRunSummaryStats(stats, scratch);
     return projected;
   }
   if (!isCodeRunSummaryRecord(value)) return String(value);
 
   const projected: Record<string, unknown> = {};
+  const retainedEntries: Array<{ key: string; value: unknown; stats: CodeRunSummaryProjectionStats }> = [];
   const entries = Object.entries(value);
   // Keep scalar marker fields first in the last-resort shape. These are the values a monitor
   // uses to interpret the bounded nested collection (markerCount, lineCount, etc.).
@@ -1615,27 +1640,55 @@ function minimalCodeRunSummaryProjection(
   }
   for (const [key, entry] of entries.filter(([, candidate]) => !isCodeRunSummaryScalar(candidate))) {
     const scratch = newCodeRunSummaryProjectionStats();
+    const entryOptions: CodeRunSummaryProjectionOptions = {
+      arrayLimit: 1,
+      stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
+      maxDepth: 1,
+    };
     const candidate = projectCodeRunSummaryValue(
       entry,
       `summary.${key}`,
       0,
-      {
-        arrayLimit: 1,
-        stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
-        maxDepth: 1,
-      },
+      entryOptions,
       scratch,
     );
     const withCandidate = { ...projected, [key]: candidate };
     if (codeRunSummarySerializedChars(withCandidate) <= budget) {
       projected[key] = candidate;
-      mergeCodeRunSummaryStats(stats, scratch);
+      retainedEntries.push({ key, value: entry, stats: scratch });
     } else {
       stats.valuesTruncated++;
       stats.omittedItems++;
       noteCodeRunSummaryPath(stats, `summary.${key}`);
     }
   }
+  // Preserve the minimal projection's field selection and ordering, then grow strings only in
+  // fields that survived that selection. The remaining budget is measured against the whole
+  // summary, so the last-resort shape uses its space without displacing retained marker fields.
+  for (const retained of retainedEntries) {
+    if (
+      retained.stats.stringsTruncated === 0 ||
+      codeRunSummarySerializedChars(projected) >= budget * 0.9
+    ) {
+      continue;
+    }
+    const grown = growCodeRunSummaryToBudget(
+      retained.value,
+      {
+        arrayLimit: 1,
+        stringChars: CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS,
+        maxDepth: 1,
+      },
+      budget,
+      `summary.${retained.key}`,
+      (candidate) => ({ ...projected, [retained.key]: candidate }),
+    );
+    if (grown) {
+      projected[retained.key] = grown.value;
+      retained.stats = grown.stats;
+    }
+  }
+  for (const retained of retainedEntries) mergeCodeRunSummaryStats(stats, retained.stats);
   return projected;
 }
 
@@ -1671,6 +1724,8 @@ function growCodeRunSummaryToBudget(
   summary: unknown,
   options: CodeRunSummaryProjectionOptions,
   budget: number,
+  path = 'summary',
+  wrapCandidate: (candidate: unknown) => unknown = (candidate) => candidate,
 ): { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined {
   let best: { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined;
   let low = options.stringChars + 1;
@@ -1679,8 +1734,8 @@ function growCodeRunSummaryToBudget(
   while (low <= high) {
     const mid = Math.floor((low + high) / 2);
     const stats = newCodeRunSummaryProjectionStats();
-    const candidate = projectCodeRunSummaryValue(summary, 'summary', 0, { ...options, stringChars: mid }, stats);
-    if (codeRunSummarySerializedChars(candidate) <= budget) {
+    const candidate = projectCodeRunSummaryValue(summary, path, 0, { ...options, stringChars: mid }, stats);
+    if (codeRunSummarySerializedChars(wrapCandidate(candidate)) <= budget) {
       best = { value: candidate, stats };
       low = mid + 1;
     } else {

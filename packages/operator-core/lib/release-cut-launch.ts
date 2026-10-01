@@ -407,10 +407,10 @@ export function buildCutArgv(
   // `STARTED:<epoch>` stays the FIRST line so a marker written by an older launcher, or
   // read by an older parser, still resolves.
   const operationId = env.PAPERCUSP_RELEASE_OPERATION_ID;
-  const taskId = env.PAPERCUSP_RELEASE_TASK_ID;
+  const markerTaskId = env.PAPERCUSP_RELEASE_TASK_ID;
   const startedMarker =
-    operationId && taskId
-      ? `printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n' "$(date +%s)" ${shellSingleQuote(operationId)} ${shellSingleQuote(taskId)} > ${started}; `
+    operationId && markerTaskId
+      ? `printf 'STARTED:%s\\nOPERATION:%s\\nTASK:%s\\n' "$(date +%s)" ${shellSingleQuote(operationId)} ${shellSingleQuote(markerTaskId)} > ${started}; `
       : `printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; `;
   const inner =
     `exec 9>${shellSingleQuote(lock)}; flock -n 9 || { echo 'release_cut_slot_busy' >&2; exit 73; }; ` +

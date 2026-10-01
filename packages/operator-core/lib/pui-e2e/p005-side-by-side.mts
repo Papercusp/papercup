@@ -10,7 +10,14 @@
 import { spawn, type IPty } from '@lydell/node-pty';
 import xtermHeadless from '@xterm/headless';
 import {
-  chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+  codexHomeControlSocketPath,
+  codexHomeFitsControlSocket,
+  codexStartupAction,
+  codexTaskCompleted,
+  isCodexPromptReady,
+} from './p005-codex-readiness.js';
+import {
+  chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,7 +64,12 @@ type Cli = {
 // ChatGPT refresh tokens are single-use and rotating, so a refresh inside a copy
 // would invalidate ~/.codex/auth.json. If Codex replaces the link with a
 // refreshed file, finishCodexHome() carries that login back.
-const codexHome = path.join(out, 'codex-home');
+const codexHome = cliName === 'codex'
+  ? mkdtempSync(path.join(os.tmpdir(), 'p5c-'))
+  : path.join(out, 'codex-home');
+if (cliName === 'codex' && !codexHomeFitsControlSocket(codexHome)) {
+  throw new Error(`CODEX_HOME is too long for the app-server socket: ${codexHomeControlSocketPath(codexHome)}`);
+}
 const realCodexAuth = path.join(process.env.CODEX_REAL_HOME ?? path.join(os.homedir(), '.codex'), 'auth.json');
 let realCodexAuthAtStart: Buffer | null = null;
 function prepareCodexHome(): Record<string, string> {
@@ -99,14 +111,7 @@ const CLIS: Record<string, Cli> = {
     launch: ['codex'], resume: ['codex', 'resume', '--last'], exit: '/quit',
     busy: /esc to interrupt|Working \(/i,
     approve: { when: /Would you like to (run|make)|Allow command|Yes, proceed/i, key: 'y' },
-    startup: [
-      // Only the update DIALOG (Update now / Skip). codex-cli 0.159 also shows a
-      // passive "Update available!" banner above the composer, which needs no answer.
-      { when: /Update available[\s\S]*Skip/, keys: '\x1b[B\r' },
-      { when: /(ask me to approve|Require approval)/i, keys: '\x1b[B\r' },
-      // codex-cli 0.159 asks "Trust this folder?" with "1. Trust and continue" selected.
-      { when: /allow Codex to work|Do you trust|Trust this folder\?/i, keys: '\r' },
-    ],
+    startup: [],
   },
   pui: {
     launch: [arg('pui-bin', 'pui')!], resume: [arg('pui-bin', 'pui')!], exit: '/exit',
@@ -123,12 +128,16 @@ if (!cli) throw new Error('--cli must be claude|codex|pui');
 const proj = path.join(out, 'proj');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(proj, { recursive: true });
-if (cliName === 'codex') cli.env = { ...(cli.env ?? {}), ...prepareCodexHome() };
+if (cliName === 'codex') {
+  symlinkSync(codexHome, path.join(out, 'codex-home'), 'dir');
+  cli.env = { ...(cli.env ?? {}), ...prepareCodexHome() };
+}
 writeFileSync(path.join(proj, 'calc.js'), 'function add(a, b) {\n  return a + b;\n}\n\nfunction mul(a, b) {\n  return a * b;\n}\n\nmodule.exports = { add, mul };\n');
 writeFileSync(path.join(proj, 'calc.test.js'), "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n");
 writeFileSync(path.join(proj, 'package.json'), JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
 
 const log: Record<string, unknown>[] = [];
+if (cliName === 'codex') log.push({ label: 'codex-home', path: codexHome, controlSocketPath: codexHomeControlSocketPath(codexHome), pathBytes: Buffer.byteLength(codexHomeControlSocketPath(codexHome)) });
 let term!: InstanceType<typeof Terminal>;
 let pty!: IPty;
 let exited = false;
@@ -175,6 +184,19 @@ function start(argv: string[]) {
 }
 
 const puiInternalStateSeen = new Set<string>();
+function assertStockScreen(label: string, now: string) {
+  const contaminated = cliName === 'pui'
+    ? /owner directive|Directive #\d|coord:(orient|send|declare)/i
+    : /papercusp|coord:|owner directive|Directive #\d/i;
+  if (cliName === 'pui' && contaminated.test(now)) {
+    if (!puiInternalStateSeen.has(label)) { puiInternalStateSeen.add(label); frame(`${label}.FINDING-internal-state`); }
+  } else if (contaminated.test(now)) {
+    frame(`${label}.CONTAMINATED`);
+    try { pty.kill(); } catch { /* gone */ }
+    throw new Error(`${cliName} is not a stock install (papercusp vocabulary on screen during ${label})`);
+  }
+}
+
 async function settle(label: string, maxMs: number, opts: { approve?: boolean } = {}) {
   const t0 = Date.now();
   let last = screen();
@@ -185,24 +207,7 @@ async function settle(label: string, maxMs: number, opts: { approve?: boolean } 
   while (Date.now() - t0 < maxMs && !exited) {
     await sleep(500);
     const now = screen();
-    // Stock-install guard: any papercusp vocabulary on a reviewed CLI's screen
-    // means it loaded this box's customisation, so its behaviour is not the
-    // comparison we want and it may be acting on shared state. Stop at once.
-    // The PUI legitimately shows its own brand, so it is held to the narrower
-    // "an internal agent is acting on the workspace's owner directives" test —
-    // on the PUI that is itself a finding, and the leg stops before the engine acts.
-    const contaminated = cliName === 'pui'
-      ? /owner directive|Directive #\d|coord:(orient|send|declare)/i
-      : /papercusp|coord:|owner directive|Directive #\d/i;
-    // On the PUI the engine is a fresh session of its own (not the driver's
-    // identity), so the match is recorded as a finding and the leg continues.
-    if (cliName === 'pui' && contaminated.test(now)) {
-      if (!puiInternalStateSeen.has(label)) { puiInternalStateSeen.add(label); frame(`${label}.FINDING-internal-state`); }
-    } else if (contaminated.test(now)) {
-      frame(`${label}.CONTAMINATED`);
-      try { pty.kill(); } catch { /* gone */ }
-      throw new Error(`${cliName} is not a stock install (papercusp vocabulary on screen during ${label})`);
-    }
+    assertStockScreen(label, now);
     const popup = cli.dismiss?.find((d) => d.when.test(now));
     if (popup) {
       frame(`${label}.dismissed`);
@@ -231,7 +236,7 @@ async function send(text: string) {
   pty.write('\r');
 }
 
-async function task(label: string, prompt: string, maxMs = 240_000) {
+async function task(label: string, prompt: string, maxMs = 240_000, expected?: RegExp) {
   // A popup that arrived after the last settle would swallow the prompt text.
   for (let i = 0; i < 3; i += 1) {
     const popup = cli.dismiss?.find((d) => d.when.test(screen()));
@@ -242,9 +247,14 @@ async function task(label: string, prompt: string, maxMs = 240_000) {
   }
   await send(prompt);
   const r = await settle(label, maxMs, { approve: true });
+  const finalScreen = screen();
   frame(label);
-  log.push({ label, prompt, ...r, exited });
+  const completed = cliName !== 'codex' || !expected || codexTaskCompleted(finalScreen, prompt, expected);
+  log.push({ label, prompt, ...r, exited, ...(expected ? { taskCompleted: completed } : {}) });
   if (exited) throw new Error(`${cliName} exited during ${label}; see ${label}.txt`);
+  if (cliName === 'codex' && expected && !completed) {
+    throw new Error(`Codex did not complete ${label}; inspect ${label}.txt (the screen must show the prompt, expected answer, and idle composer)`);
+  }
 }
 
 async function answerStartup(prefix: string) {
@@ -258,19 +268,49 @@ async function answerStartup(prefix: string) {
   }
 }
 
+async function waitForCodexPrompt(prefix: string, maxMs: number, allowFirstTask: boolean) {
+  const t0 = Date.now();
+  const actionCounts = new Map<string, number>();
+  while (!exited && Date.now() - t0 < maxMs) {
+    const now = screen();
+    assertStockScreen(prefix, now);
+    const startup = codexStartupAction(now, allowFirstTask);
+    if (startup) {
+      const count = (actionCounts.get(startup.kind) ?? 0) + 1;
+      if (count > 4) throw new Error(`Codex repeated startup screen ${startup.kind}; see ${prefix}-startup-*.txt`);
+      actionCounts.set(startup.kind, count);
+      frame(`${prefix}-startup-${count}`);
+      log.push({ label: `${prefix}-startup-${count}`, prompt: startup.kind });
+      pty.write(startup.keys);
+      await sleep(800);
+      continue;
+    }
+    if (isCodexPromptReady(now)) return { firstChangeMs: Date.now() - t0, totalMs: Date.now() - t0, approvals: 0, timedOut: false };
+    await sleep(500);
+  }
+  frame(`${prefix}.NOT_READY`);
+  throw new Error(`Codex did not reach an interactive prompt within ${maxMs}ms; see ${prefix}.NOT_READY.txt`);
+}
+
 try {
   start(cli.launch);
-  const boot = await settle('00-launch', 90_000);
+  const boot = cliName === 'codex'
+    ? await waitForCodexPrompt('00', 90_000, true)
+    : await settle('00-launch', 90_000);
   frame('00-launch');
-  await answerStartup('00');
+  if (cliName !== 'codex') await answerStartup('00');
   frame('00-ready');
   log.push({ label: '00-launch', ...boot, exited });
   if (exited) throw new Error(`${cliName} exited during startup; see 00-*.txt`);
 
-  await task('01-greeting', 'hi');
-  await task('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
-  await task('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
-  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.');
+  await task('01-greeting', 'hi', 240_000, /what can i help you with|how can i help/i);
+  await task('02-read-explain', 'Read calc.js and explain what it does in two sentences.', 240_000, /calc\.js defines two functions|add\(a,\s*b\)|mul\(a,\s*b\)/i);
+  await task('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.', 240_000, /add\(a,\s*b,\s*c\s*=\s*0\)|optional third number/i);
+  if (cliName === 'codex' && !/function add\(a, b, c = 0\)/.test(readFileSync(path.join(proj, 'calc.js'), 'utf8'))) {
+    frame('03-edit.FILE_ASSERTION_FAILED');
+    throw new Error('Codex did not write the requested optional third argument to calc.js');
+  }
+  await task('04-run-tests', 'Run the tests with npm test and tell me whether they pass.', 240_000, /npm test passed|1 test passed|# pass\s+1/i);
   writeFileSync(path.join(out, 'scrollback-before-exit.txt'), scrollback());
   await send(cli.exit);
   const t = Date.now();
@@ -281,8 +321,10 @@ try {
   try { pty.kill(); } catch { /* already gone */ }
 
   start(cli.resume);
-  const rb = await settle('05b-relaunch', 90_000);
-  await answerStartup('05b');
+  const rb = cliName === 'codex'
+    ? await waitForCodexPrompt('05b', 90_000, false)
+    : await settle('05b-relaunch', 90_000);
+  if (cliName !== 'codex') await answerStartup('05b');
   frame('05b-relaunch');
   log.push({ label: '05b-relaunch', ...rb });
   for (const step of cli.afterResume ?? []) {
@@ -293,11 +335,17 @@ try {
     await settle('05c-resume-picked', 30_000);
     frame('05c-resume-picked');
   }
-  await task('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.');
+  await task('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, /optional third number|third parameter|c\s*=\s*0/i);
   await send(cli.exit);
   await sleep(3000);
   try { pty.kill(); } catch { /* gone */ }
+} catch (error) {
+  log.push({ label: 'fatal', error: String(error) });
+  throw error;
 } finally {
+  if (pty && !exited) {
+    try { pty.kill(); } catch { /* already gone */ }
+  }
   if (cliName === 'codex' && realCodexAuthAtStart) {
     const login = finishCodexHome();
     log.push({ label: 'codex-login', login });

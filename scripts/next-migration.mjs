@@ -18,6 +18,7 @@
  * Usage:
  *   node scripts/next-migration.mjs --name add-foo-index [--intent "what it does"] [--by label] [--dry-run]
  *   npm run db:next-migration -- --name add-foo-index --intent "..."
+ *   npx tsx scripts/next-migration.mjs --arm <path.sql.DRAFT>
  *
  * On success prints the reserved number + a DRAFT path to write the file at:
  *   libs/papercusp/libs/db/sql/<NNN>-<slug>.sql.DRAFT   (NOT the gitignored sidecar mirror)
@@ -29,9 +30,9 @@
  * 727). This closes the window where editing an unapplied migration on disk
  * (including a deliberate temporary both-ways guard-test mutation) races the
  * operator's boot-time auto-apply and can execute half-finished SQL against
- * the live DB. Write + iterate at the `.DRAFT` path; ARM it only once ready by
- * stripping the suffix (`mv <path>.DRAFT <path>`) — the printed `note` gives
- * the exact command.
+ * the live DB. Write + iterate at the .DRAFT path; arm it with the printed
+ * command, which runs the shared pre-apply checks and publishes the linted SQL
+ * atomically without overwriting an existing migration.
  *
  * Exits non-zero (without reserving) when PG is unreachable — a number handed out
  * without a ledger row would re-introduce the very race this prevents.
@@ -96,7 +97,13 @@ function quotePosixArgument(value) {
   return "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
 }
 
-function armCommandFor(draftPath) {
+/**
+ * Build the shell-safe command for the shared linted CLI arm executor.
+ *
+ * @param {string} draftPath Repository-relative or absolute .sql.DRAFT path.
+ * @returns {string}
+ */
+export function armCommandFor(draftPath) {
   return 'npx tsx scripts/next-migration.mjs --arm ' + quotePosixArgument(draftPath);
 }
 
@@ -232,11 +239,9 @@ export async function armMigration({ draftPath, sqlDir = ARM_SQL_DIR }) {
 }
 
 /**
- * Pure — builds the JSON payload printed on success. Exported (and unit
- * tested, no DB required) so the `.DRAFT`-suffix contract (EI-19366138707071397)
- * can't silently regress: `path` must be the DRAFT write-target, `arm_path`
- * the eventual armed `.sql` name, and `arm_command` the exact rename between
- * them — see the module-level docstring for why the suffix matters.
+ * Pure — builds the JSON payload printed on success. Exported and unit tested
+ * without a DB so the DRAFT write-target, eventual armed SQL path, and linted
+ * no-clobber arm command cannot silently diverge.
  *
  * @param {object} args
  * @param {number} args.next          The reserved migration number.
@@ -258,6 +263,7 @@ export function buildAllocationResult({
 }) {
   const armPath = `${canonicalDir}/${filename}`;
   const draftPath = `${armPath}.DRAFT`;
+  const armCommand = armCommandFor(draftPath);
   return {
     ok: true,
     number: next,
@@ -265,7 +271,7 @@ export function buildAllocationResult({
     filename,
     path: draftPath,
     arm_path: armPath,
-    arm_command: armCommandFor(draftPath),
+    arm_command: armCommand,
     reserved_by: reservedBy,
     ...(redundancyWarning ? { redundancy_warning: redundancyWarning } : {}),
     // Authoring-time reminder for the forward-compat guard (EI-19462877357083817).
@@ -288,7 +294,7 @@ export function buildAllocationResult({
       'later migration. Check with: npm run lint:migration-forward-compat',
     note: dryRun
       ? 'DRY RUN — nothing reserved. Re-run without --dry-run to claim this number.'
-      : `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix — NOT the sidecar mirror). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it (including any deliberate temporary both-ways guard-test mutation). Once it's ready and tested, ARM it for auto-apply with: mv ${draftPath} ${armPath}`,
+      : 'Reserved. Write + iterate the migration at ' + draftPath + ' (a ".DRAFT" suffix — NOT the sidecar mirror). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it (including any deliberate temporary both-ways guard-test mutation). Once it is ready and tested, arm it for auto-apply with: ' + armCommand,
   };
 }
 
@@ -297,9 +303,20 @@ async function main() {
   if (args.help) {
     console.log(
       'Usage: node scripts/next-migration.mjs --name <slug> [--intent "..."] [--by <label>] [--dry-run] [--force]\n' +
+        '       npx tsx scripts/next-migration.mjs --arm <path.sql.DRAFT>\n' +
         '  --force   reserve even when a near-identical migration was just reserved or already applied (WI-38353).',
     );
     process.exit(0);
+  }
+  if (args.armRequested) {
+    try {
+      const result = await armMigration({ draftPath: args.armPath });
+      console.log(JSON.stringify(result, null, 2));
+    } catch (e) {
+      console.error('db:next-migration ARM FAILED — ' + (e?.message ?? e));
+      process.exitCode = 1;
+    }
+    return;
   }
   const slug = slugify(args.name);
   if (!slug) {

@@ -35,6 +35,16 @@ import {
   createHostedAuthRoutes,
 } from './routes/hosted-auth';
 
+// The billing runtime rides in this module's portal prebundle (one bundle, one
+// dynamic import). It mounts its own pinned surface; the four auth routes below
+// stay exactly as pinned (stripe-subscription-signup-2026-10-01 P-005).
+export {
+  createHostedBillingRuntime,
+  readHostedBillingRuntimeConfiguration,
+  type HostedBillingRuntime,
+  type HostedBillingRuntimeDependencies,
+} from './hosted-billing-runtime';
+
 export const HOSTED_AUTH_RUNTIME_MOUNTED_ROUTE_KEYS = HOSTED_AUTH_ROUTES.map(
   (route) => `${route.method} ${route.path}`,
 );

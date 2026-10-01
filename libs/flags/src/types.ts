@@ -86,6 +86,13 @@ export const FLAGS = {
   // and audience, and returns that echo with `withheld` set — only the outbound
   // call is withheld. So OFF is a publish kill-switch, not a hidden feature.
   SOCIAL_AUTO_PUBLISH: "papercusp-social-auto-publish",
+  // stripe-subscription-signup-2026-10-01 P-004 (owner directive #1102): LIVE-MODE
+  // Stripe charging for hosted organization subscriptions. DEFAULT OFF in DARK_FLAGS
+  // (owner-authority), the same category as GMAIL_AUTO_SEND: a live key charges real
+  // cards. Test-mode subscription signup (checkout, portal, webhooks, state) is live
+  // and unflagged; with this OFF the hosted billing runtime refuses an sk_live_/rk_live_
+  // key and reports `live_mode_not_allowed`, so OFF withholds ONLY real charging.
+  HOSTED_BILLING_LIVE_MODE: "papercusp-hosted-billing-live-mode",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived
@@ -3232,6 +3239,14 @@ export const DARK_FLAGS: ReadonlyMap<
       case: "owner-authority",
       reason:
         "social-platform-integrations-2026-08-23 P-006 / D-004(b): create-shaped publishing to the owner's real public social identity. A public post differs from a mail send in KIND, not degree — unbounded in audience, permanently indexable, attributed to the owner, and not correctable by a follow-up; and its inbound corpus is untrusted text authored by strangers at volume with an incentive to manipulate. OFF withholds ONLY the outbound call: social:reply (rail 1, bounded blast radius) is unaffected and unflagged, and social:post itself still runs both rails and returns the resolved account + audience echo, so flipping this ON is one owner decision over a fully-built, fully-tested verb rather than a hand-off of unfinished work.",
+    },
+  ],
+  [
+    FLAGS.HOSTED_BILLING_LIVE_MODE,
+    {
+      case: "owner-authority",
+      reason:
+        "stripe-subscription-signup-2026-10-01 / papercusp-monetization-2026-09-04 D-004+D-010: live-mode Stripe charging of hosted organizations is an outward-facing money movement the owner authorizes, after P-003 pricing and the P-009 pilot-readiness gate. Test-mode signup ships ON and unflagged; OFF refuses only a live key.",
     },
   ],
   [

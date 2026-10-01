@@ -883,6 +883,53 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shaped.summaryNotice.truncated).toBe(true);
   });
 
+  it('uses spare summary budget for long nested evidence in the minimal code:run result', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const summary = {
+      criterion: { text: `scorecard evidence start ${'e'.repeat(7_900)} [EVIDENCE-END]` },
+      ...Object.fromEntries(
+        Array.from({ length: 30 }, (_, index) => [`sibling${index}`, `sibling-${index}-${'x'.repeat(120)}`]),
+      ),
+    };
+    const res = await tool.fn(
+      { script: `return ${JSON.stringify(summary)};` },
+      {
+        log: () => {},
+        workspaceId: 'ws-test',
+        harnessSlug: 'alpha',
+        role: 'su',
+        isSuperuser: true,
+        uiClientId: 'su-test',
+      } as never,
+    );
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    const summaryChars = JSON.stringify(payload.summary).length;
+
+    expect(payload.ok).toBe(true);
+    expect(payload.summary.criterion.text.length).toBeGreaterThan(80);
+    expect(summaryChars).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    expect(summaryChars).toBeGreaterThan(CODE_RUN_SUMMARY_CHAR_BUDGET * 0.9);
+    expect(payload.summaryNotice.returnedChars).toBe(summaryChars);
+    expect(payload.summaryNotice.stringsTruncated).toBe(31);
+    expect(Object.keys(payload.summary).filter((key) => key.startsWith('sibling'))).toHaveLength(30);
+
+    const arrayRow = {
+      evidence: `array scorecard evidence start ${'a'.repeat(7_900)} [ARRAY-EVIDENCE-END]`,
+      ...Object.fromEntries(
+        Array.from({ length: 29 }, (_, index) => [`arraySibling${index}`, `sibling-${index}-${'y'.repeat(120)}`]),
+      ),
+    };
+    const arrayPayload = shapeCodeRunSummary({ summary: [arrayRow] }) as {
+      summary: Array<{ evidence: string }>;
+    };
+    const arraySummaryChars = JSON.stringify(arrayPayload.summary).length;
+
+    expect(arrayPayload.summary[0]?.evidence.length).toBeGreaterThan(80);
+    expect(arraySummaryChars).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    expect(arraySummaryChars).toBeGreaterThan(CODE_RUN_SUMMARY_CHAR_BUDGET * 0.9);
+  });
+
   it('marks a populated nested result when depth bounding omits its fields, while preserving a truly empty object', () => {
     const results = Array.from({ length: 8 }, (_, index) => ({
       outputPayload: index === 0 ? {} : {

@@ -25,6 +25,7 @@ import {
   type PortalMcpOAuthDependencies,
 } from './portal-mcp-oauth';
 import type { AppRelayServiceRunner } from '../workspace-host/hosted-app-relay';
+import { cspAdmitsFormTarget } from './consent-csp';
 
 const PORTAL = 'https://app.papercusp.com';
 const WS = 'ws-1';
@@ -287,6 +288,35 @@ describe('portal MCP OAuth flow (P-325)', () => {
     expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
     expect(location.searchParams.get('code')).toBeTruthy();
     expect(location.searchParams.get('state')).toBe('st-1');
+  });
+
+  it('serves the consent form under a form-action that admits where its Allow and Deny answers send the browser (WI-10004470)', async () => {
+    // A browser enforces form-action on every hop of the submission's redirect chain, so a page
+    // that answers with a redirect to the client but allows only 'self' never delivers the code.
+    const consentPage = async (h: Harness, handle: string) => {
+      const url = `${ISSUER}/oauth/consent?request=${encodeURIComponent(handle)}`;
+      const res = await h.call(`/api/workspaces/${WS}/oauth/consent?request=${encodeURIComponent(handle)}`, { headers: { cookie: 'session=me' } });
+      expect(res.status).toBe(200);
+      return { url, csp: res.headers.get('content-security-policy') ?? '' };
+    };
+    for (const decision of ['approve', 'deny'] as const) {
+      const h = harness();
+      const handle = await authorize(h, await register(h));
+      const page = await consentPage(h, handle);
+      const answer = await consent(h, handle, { decision, tools: 'plans:get', harnesses: 'papercusp' });
+      expect(answer.status).toBe(302);
+      const target = answer.headers.get('location')!;
+      expect(target.startsWith(REDIRECT)).toBe(true);
+      expect(cspAdmitsFormTarget(page.csp, page.url, target), `${decision}: ${page.csp}`).toBe(true);
+      // Still narrow: only this request's redirect origin, never an arbitrary one.
+      expect(cspAdmitsFormTarget(page.csp, page.url, 'https://attacker.example/collect')).toBe(false);
+    }
+    // The re-rendered form after a refused scope answers the same way, so it needs the same allowance.
+    const h = harness();
+    const handle = await authorize(h, await register(h));
+    const refused = await consent(h, handle, { decision: 'approve', tools: 'plans:get work_items:delete', harnesses: 'papercusp' });
+    expect(refused.status).toBe(400);
+    expect(cspAdmitsFormTarget(refused.headers.get('content-security-policy') ?? '', `${ISSUER}/oauth/consent`, `${REDIRECT}?code=x`)).toBe(true);
   });
 
   it('lets the approver narrow the grant but never widen it, or empty a list the app restricted', async () => {

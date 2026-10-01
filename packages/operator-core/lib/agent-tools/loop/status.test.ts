@@ -56,7 +56,7 @@ import { readLatestLoopTransition } from '../../harness/routines/loop-transition
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
-import statusTool from './status';
+import statusTool, { deriveActiveAwaitSuppression } from './status';
 
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
 const readLatestLoopTransitionMock = readLatestLoopTransition as unknown as ReturnType<typeof vi.fn>;
@@ -428,7 +428,75 @@ describe('loop:status latest transition diagnostics (EI-21573850378423298)', () 
     const out = await run();
 
     expect(out.lastTransition).toBeNull();
+    expect(out.awaitSuppression).toBeNull();
     expect(readLatestLoopTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-10004466: states a currently-withheld wake at top level with its driving await', async () => {
+    const until = new Date(Date.now() + 55 * 60_000).toISOString();
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id',
+      active: true,
+      ownerId: 'su-caller-own-id',
+      harnessSlug: 'papercusp',
+      intervalSec: 120,
+      firesSinceArm: 3,
+      nextFireAt: until,
+    });
+    readLatestLoopTransitionMock.mockResolvedValue({
+      status: 'found',
+      transition: {
+        at: new Date().toISOString(),
+        event: 'rearmed',
+        actor: 'await-suppression',
+        newNextFireAt: until,
+        intervalSec: 120,
+        detail: { via: 'await-suppression', drivingEventKey: 'plan-item:done:x:P-008' },
+      },
+      cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: 'test-basis' },
+    });
+
+    const out = await run();
+
+    expect(out.awaitSuppression).toMatchObject({
+      suppressedUntil: until,
+      drivingEventKey: 'plan-item:done:x:P-008',
+    });
+    expect(String((out.awaitSuppression as { summary: string }).summary)).toContain('events:cancel');
+  });
+});
+
+describe('deriveActiveAwaitSuppression (WI-10004466)', () => {
+  const now = Date.parse('2026-10-01T00:30:00.000Z');
+  const until = '2026-10-01T01:20:34.000Z';
+  const found = (over: Record<string, unknown> = {}) => ({
+    status: 'found' as const,
+    transition: {
+      at: '2026-10-01T00:24:32.000Z',
+      event: 'rearmed',
+      actor: 'await-suppression',
+      newNextFireAt: until,
+      intervalSec: 120,
+      detail: { drivingEventKey: 'k' },
+      ...over,
+    },
+    cycle: { phase: 'settled', turnInFlightSec: null, lastTurn: null, basis: 'b' },
+  });
+
+  it('is active while the suppression re-arm still owns a future schedule', () => {
+    expect(deriveActiveAwaitSuppression(found() as never, until, now)).toMatchObject({
+      suppressedUntil: until,
+      drivingEventKey: 'k',
+    });
+    expect(deriveActiveAwaitSuppression(found() as never, new Date(until), now)).not.toBeNull();
+  });
+
+  it('is null once the target passed, a different actor wrote last, or a later arm moved the schedule', () => {
+    expect(deriveActiveAwaitSuppression(found() as never, until, Date.parse(until) + 1)).toBeNull();
+    expect(deriveActiveAwaitSuppression(found({ actor: 'loop-arm' }) as never, until, now)).toBeNull();
+    expect(deriveActiveAwaitSuppression(found() as never, '2026-10-01T00:32:00.000Z', now)).toBeNull();
+    expect(deriveActiveAwaitSuppression({ status: 'unknown' }, until, now)).toBeNull();
+    expect(deriveActiveAwaitSuppression(null, until, now)).toBeNull();
   });
 });
 

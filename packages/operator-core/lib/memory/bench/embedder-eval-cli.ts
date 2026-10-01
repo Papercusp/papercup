@@ -91,6 +91,7 @@ import {
   isTrainedDim,
   dimSpecFor,
   GEMMA_TARGET_DIMS,
+  embedExecutionTarget,
   buildMdenseOnEmbedder,
   readMdenseOnExport,
   MDENSEON_MODEL,
@@ -171,7 +172,7 @@ function sidecarLeg(url: string, model: string): Leg {
     // Verify rather than trust the flag: an older sidecar bundle accepts
     // `bypassCache` as an unknown field, ignores it, and answers 200 from the
     // LRU. That response is indistinguishable from a real one except here.
-    const measured = embedResponseMeasuredModel(j, 1);
+    const measured = embedResponseMeasuredModel({ cache: j.cache }, 1);
     if (!measured.ok) {
       throw new Error(
         `sidecar_embed_not_measured: ${measured.reason} — the timings from this leg would be a throughput figure for the cache, so the run is stopped instead of reported.`,
@@ -534,6 +535,8 @@ async function main(): Promise<void> {
   const mdenseonModel = argValue('--mdenseon-model');
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
+  const timingOnly = process.argv.includes('--timing-only');
+  if (timingOnly && warmTrials === 0) throw new Error('--timing-only requires --warm-trials');
   if (!Number.isInteger(warmTrials) || warmTrials < 0 || warmTrials > 20) throw new Error('--warm-trials must be an integer from 0 to 20');
   if (process.argv.includes('--isolated-sidecar')) {
     if (sidecarUrl) throw new Error('--isolated-sidecar cannot target an existing sidecar');
@@ -698,11 +701,19 @@ async function main(): Promise<void> {
     const base = members[0];
     const baseDims = base.mrl!.dims;
     const widths = members.map((m) => m.mrl!.dims);
+    if (timingOnly) {
+      await base.doc(corpusTexts[0]); await base.query(queryTexts[0]);
+      const repeatedWarm = await warmTimings(base, corpusTexts, queryTexts, warmTrials);
+      for (const member of members) results[member.name] = { ...member.metadata, repeatedWarm,
+        execution: embedExecutionTarget(), workerState: getWorkerState(), timingOnly: true };
+      continue;
+    }
     console.log(`\n== ${family} MRL family ${widths.join('/')}: ONE pass at ${baseDims}, narrower widths derived ==`);
     const rssBeforeMB = rssMB();
     try {
       const doc = await embedAll(base.doc, corpusTexts, `${family}@${baseDims}/doc`);
       const query = await embedAll(base.query, queryTexts, `${family}@${baseDims}/query`);
+      const repeatedWarm = warmTrials ? await warmTimings(base, corpusTexts, queryTexts, warmTrials) : undefined;
       const spec = dimSpecFor(family);
       for (const m of members) {
         const d = m.mrl!.dims;
@@ -714,6 +725,7 @@ async function main(): Promise<void> {
             // Whether the model was actually TRAINED at this width — read from
             // the declared spec, never restated here (D-001).
             trainedDim: spec ? isTrainedDim(spec, d) : null,
+            repeatedWarm,
             model: spec?.model ?? null,
             sharedPass: `${family}@${baseDims}`,
             derived: d !== baseDims,
@@ -740,6 +752,12 @@ async function main(): Promise<void> {
   }
 
   for (const leg of standalone) {
+    if (timingOnly) {
+      await leg.doc(corpusTexts[0]); await leg.query(queryTexts[0]);
+      results[leg.name] = { ...leg.metadata, repeatedWarm: await warmTimings(leg, corpusTexts, queryTexts, warmTrials),
+        execution: embedExecutionTarget(), workerState: getWorkerState(), timingOnly: true };
+      continue;
+    }
     console.log(`\n== ${leg.name}: embedding ==`);
     const rssBeforeMB = rssMB();
     try {

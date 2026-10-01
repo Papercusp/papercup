@@ -19,6 +19,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 
 // Capture every useSyncQuery call so we can assert queryName/args/enabled, and
 // drive its returned rows. A disabled query yields no data (mirror real impl).
@@ -192,6 +193,32 @@ describe('usePlan — read-only (live) vs editor (one-shot) split', () => {
     ).toBe("WI-1");
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(syncCalls.every((call) => call.enabled === false)).toBe(true);
+  });
+
+  it('dispatches the editor read before a preceding sibling flushes computed styles in a passive effect', async () => {
+    const events: string[] = [];
+    let requestSignal: AbortSignal | undefined;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      requestSignal = init?.signal ?? undefined;
+      events.push('request');
+      return new Response(JSON.stringify({ slug: 'p1', raw: '# Body' }));
+    });
+    function PresenceEffect() {
+      useEffect(() => {
+        // Radix Presence reads a live computed style here. This synchronous
+        // work must not be a prerequisite for starting the plan request.
+        events.push('style-read');
+      }, []);
+      return null;
+    }
+
+    const view = render(<><PresenceEffect /><HookProbe slug="p1" sink={() => {}} /></>);
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    expect(events).toEqual(['request', 'style-read']);
+    expect(requestSignal?.aborted).toBe(false);
+    view.unmount();
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   it('null slug: live path stays quiet (disabled) and returns null data', () => {

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { drive, selectSessions, sessionFor, summarize, toolOutcomesDiverge } from './load-driver';
+import { drive, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
 
 function meta(over: Partial<SessionMeta> & { id: string; profile?: 'light' | 'typical' | 'heavy'; repo?: string }): SessionMeta {
   const repo = over.repo ?? 'r';
@@ -60,6 +60,22 @@ describe('selection and scheduling', () => {
     expect(toolOutcomesDiverge({ results: 6, errors: 0 }, { results: 5, errors: 0 })).toBe(true);
     // No recorded CLI log: nothing to compare against.
     expect(toolOutcomesDiverge(null, { results: 5, errors: 2 })).toBe(false);
+  });
+
+  it('names each CLI whose installed build is not one the sessions were recorded with', () => {
+    const sessions = [
+      { cli: 'claude' as const, cliVersion: '2.1.284 (Claude Code)' },
+      { cli: 'codex' as const, cliVersion: 'codex-cli 0.159.2' },
+      { cli: 'codex' as const, cliVersion: 'codex-cli 0.159.2' },
+    ];
+    const installed = (v: Record<string, string>) => (cli: string) => v[cli] ?? 'missing';
+    expect(versionMismatches(sessions, installed({ claude: '2.1.284 (Claude Code)', codex: 'codex-cli 0.159.2' }))).toEqual([]);
+    expect(versionMismatches(sessions, installed({ claude: '2.1.284 (Claude Code)', codex: 'codex-cli 0.157.1' }))).toEqual([
+      { cli: 'codex', have: 'codex-cli 0.157.1', want: ['codex-cli 0.159.2'] },
+    ]);
+    expect(versionMismatches(sessions, installed({ codex: 'codex-cli 0.159.2' }))).toEqual([
+      { cli: 'claude', have: 'missing', want: ['2.1.284 (Claude Code)'] },
+    ]);
   });
 });
 

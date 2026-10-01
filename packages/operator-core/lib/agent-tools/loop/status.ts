@@ -11,12 +11,52 @@ import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercus
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { getLoopStatus } from '../../harness/routines/loop';
-import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
+import {
+  readLatestLoopTransition,
+  type LatestLoopTransitionRead,
+} from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta, shortCarryHash } from '../../carry-note';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import type { LivePushChannels } from './arm';
 import { classifyLoopNextWake } from './next-wake';
+
+/** WI-10004466: a currently-withheld loop wake, derived from the latest transition. */
+export interface ActiveAwaitSuppression {
+  suppressedUntil: string;
+  drivingEventKey: string | null;
+  summary: string;
+}
+
+/**
+ * WI-10004466: the loop's next wake is being WITHHELD by await suppression right now when
+ * the newest transition is loop-fire's `await-suppression` re-arm, its target is still in
+ * the future, and the loop's schedule is still the one that re-arm wrote (a later arm or
+ * re-arm supersedes it). Pure; null whenever any of that cannot be shown.
+ */
+export function deriveActiveAwaitSuppression(
+  lastTransition: LatestLoopTransitionRead | null,
+  nextFireAt: Date | string | null | undefined,
+  nowMs: number,
+): ActiveAwaitSuppression | null {
+  if (!lastTransition || lastTransition.status !== 'found') return null;
+  const t = lastTransition.transition;
+  if (t.actor !== 'await-suppression' || t.event !== 'rearmed' || !t.newNextFireAt) return null;
+  const untilMs = Date.parse(t.newNextFireAt);
+  if (!Number.isFinite(untilMs) || untilMs <= nowMs) return null;
+  const nextMs = nextFireAt instanceof Date ? nextFireAt.getTime() : nextFireAt ? Date.parse(nextFireAt) : NaN;
+  if (!Number.isFinite(nextMs) || Math.abs(nextMs - untilMs) > 1_000) return null;
+  const key = typeof t.detail?.drivingEventKey === 'string' ? t.detail.drivingEventKey : null;
+  const until = new Date(untilMs).toISOString();
+  return {
+    suppressedUntil: until,
+    drivingEventKey: key,
+    summary:
+      `Routine wakes are withheld until ${until} because you hold an active await` +
+      `${key ? ` (${key})` : ''}; the loop is not firing on its interval. If you have other ` +
+      'work, cancel that await (events:cancel) or set the waiting item blocked (work_items:set_blocker).',
+  };
+}
 
 export default defineTool({
   name: 'loop:status',
@@ -245,6 +285,12 @@ export default defineTool({
                 })()
               : null,
             lastTransition,
+            // WI-10004466: the withheld-wake state, stated at top level. `rewake` reads
+            // guaranteed during an await suppression (a wake IS scheduled, just late), and
+            // the cadence fields reflect the delay without naming it.
+            awaitSuppression: status
+              ? deriveActiveAwaitSuppression(lastTransition, status.nextFireAt, Date.now())
+              : null,
             carryNote,
             reachability: reachabilityOut,
             pendingAwaits: pendingAwaitsOut,

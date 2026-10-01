@@ -3,6 +3,13 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/next-migration.mjs and regenerate.
 /**
+ * Build the shell-safe command for the shared linted CLI arm executor.
+ *
+ * @param {string} draftPath Repository-relative or absolute .sql.DRAFT path.
+ * @returns {string}
+ */
+export function armCommandFor(draftPath: string): string;
+/**
  * Lint a DRAFT with the same per-file pre-apply gate used by boot and db:migrate,
  * then atomically publish a separate, no-clobber .sql copy.
  *
@@ -22,11 +29,9 @@ export function armMigration({ draftPath, sqlDir }: {
     warning?: string;
 }>;
 /**
- * Pure — builds the JSON payload printed on success. Exported (and unit
- * tested, no DB required) so the `.DRAFT`-suffix contract (EI-19366138707071397)
- * can't silently regress: `path` must be the DRAFT write-target, `arm_path`
- * the eventual armed `.sql` name, and `arm_command` the exact rename between
- * them — see the module-level docstring for why the suffix matters.
+ * Pure — builds the JSON payload printed on success. Exported and unit tested
+ * without a DB so the DRAFT write-target, eventual armed SQL path, and linted
+ * no-clobber arm command cannot silently diverge.
  *
  * @param {object} args
  * @param {number} args.next          The reserved migration number.

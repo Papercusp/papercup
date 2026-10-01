@@ -123,9 +123,11 @@ beforeAll(async () => {
       applied_at timestamptz NOT NULL DEFAULT now(),
       sha256     text NOT NULL
     )`);
-  // The canonical-tree leg reads PAPERCUSP_INTEGRATION_ROOT at call time — keep
-  // it inert (dev boxes export it) until the canonical-tree test points it at a
-  // controlled temp root, so fsMax stays deterministic.
+  // The canonical-tree leg reads both environment overrides at call time —
+  // keep them inert (dev boxes export them) until the canonical-tree test
+  // points PAPERCUSP_INTEGRATION_ROOT at a controlled temp root, so fsMax stays
+  // deterministic.
+  vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '');
   vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '');
 
   // A POOLED connection (max>1) so concurrent sql.begin() calls in the handler
@@ -272,7 +274,8 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(r.path).toMatch(/\.sql\.DRAFT$/);
     expect(r.path?.endsWith('.sql')).toBe(false);
     expect(r.arm_path).toMatch(/\.sql$/);
-    expect(r.arm_command).toBe(`mv ${r.path} ${r.arm_path}`);
+    expect(r.arm_command).toBe("npx tsx scripts/next-migration.mjs --arm '" + r.path + "'");
+    expect(r.note).toContain(r.arm_command);
   });
 
   it('EI-6852: the filesystem max is read INSIDE the advisory lock — a peer file written DURING the lock window is still respected (no stale-fsMax TOCTOU collision)', async () => {

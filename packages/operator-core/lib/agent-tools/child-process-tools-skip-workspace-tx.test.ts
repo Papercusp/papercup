@@ -117,6 +117,12 @@ export function violatesIdleTxInvariant(src: string): boolean {
  */
 const INDIRECT_SHELL_OUT: ReadonlyMap<string, string> = new Map([
   [
+    'goals/start.ts',
+    'Calls spawnConsole/spawnHeadless through ../../console-spawn. Goal setup uses getOrgPg().sql ' +
+      'autocommit statements so a caller timeout cannot roll the committed goal row back after ' +
+      'the holder process has launched (EI-24555745085688381).',
+  ],
+  [
     'dev/pipeline_position.ts',
     'Imports gitPipelinePosition (../../git-pipeline-position), which shells out to git ' +
       'via execFile for status/rev-list/ls-remote plus the release + systemd probes. Never ' +

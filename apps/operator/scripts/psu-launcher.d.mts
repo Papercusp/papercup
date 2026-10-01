@@ -304,6 +304,22 @@ export function ompResponsesCompatibilityEnv(agent: any, model: any, env?: NodeJ
 } | {
     PI_OPENROUTER_RESPONSES: string;
 };
+/**
+ * A visible fresh launch inherits the user's native model configuration before
+ * bootstrap. That choice is not the operator's compiled configured default:
+ * preserving its provenance lets a newer launcher use an older operator
+ * without rejecting or replacing the user's configured model.
+ * Explicit choices and unattended missing-model checks remain authoritative.
+ * Read the machine's native home, not a parent agent's isolated CODEX_HOME.
+ * @param {string} agent
+ * @param {any} args
+ * @param {{ home?: string, readConfig?: (path: string, encoding: string) => string }} [options]
+ * @returns {any}
+ */
+export function inheritFreshCodexConfiguredModel(agent: string, args: any, { home, readConfig }?: {
+    home?: string;
+    readConfig?: (path: string, encoding: string) => string;
+}): any;
 export function modelArgsFor(agent: any, model: any): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the

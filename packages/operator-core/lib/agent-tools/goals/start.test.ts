@@ -1,5 +1,5 @@
 /**
- * goals:start — the ATOMICITY contract (goals-tab-improvement-2026-08-09 P-015).
+ * goals:start — the durable-before-spawn contract (goals-tab-improvement-2026-08-09 P-015).
  *
  * What is pinned here is not "does it insert a row" but the three properties a
  * three-call client-side version cannot have, each of which has a real failure
@@ -11,8 +11,9 @@
  *      goal-mode sessions coexisting with nothing joining them.
  *   2. The spawned command carries the SAME pre-pinned owner id the stamp names.
  *      A stamp on some other id is indistinguishable from no stamp at all.
- *   3. A failed spawn ROLLS BACK both writes. A goal with no agent is worse than
- *      no goal: it reads as an outcome being pursued while nothing pursues it.
+ *   3. A reported launch failure runs compensating cleanup. The dispatcher
+ *      transaction must not span an awaited spawn, where caller cancellation
+ *      could otherwise roll back the row behind a live holder.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/goals/start.test.ts
  */
@@ -21,9 +22,10 @@ import type { SpawnConsoleResult } from '../../console-spawn';
 import type { GoalPortfolioBrief } from '../../goal-launch-settings';
 import type { GoalHistoryContext } from '../../prior-attempt-context';
 
+const orgSql = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: {} }),
+  getOrgPg: () => ({ sql: orgSql as never }),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', async (orig) => ({
@@ -166,38 +168,43 @@ const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
 /** SQL the handler actually issued, as (text, values) pairs. */
 const sql: Array<{ text: string; values: unknown[] }> = [];
 let currentGoalArgs: Record<string, unknown> = {};
+const runSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const text = strings.join(' ? ');
+  sql.push({ text, values });
+  order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
+  if (text.includes('SELECT title, body, kill_criterion, standing,')) {
+    return Promise.resolve([{
+      title: currentGoalArgs.title,
+      body: currentGoalArgs.body ?? null,
+      kill_criterion: currentGoalArgs.killCriterion ?? null,
+      standing: currentGoalArgs.standing === true,
+      launch_settings: null,
+      budget_cents: currentGoalArgs.budgetCents ?? null,
+      budget_window_sec: currentGoalArgs.budgetWindowSec ?? null,
+      spent_cents: null,
+      spent_cents_breakdown: null,
+      spent_cents_at: null,
+      spent_cents_source: null,
+      drain_fleet: null,
+    }]);
+  }
+  if (text.includes('WITH goal_row AS')) {
+    return Promise.resolve([{
+      status: 'active', tripwires: currentGoalArgs.tripwires ?? [],
+      pots: [], plans: [], queue: {}, drain_fleet: null,
+    }]);
+  }
+  return Promise.resolve([]);
+};
+orgSql.mockImplementation(runSql);
+const forbiddenWorkspaceTx = vi.fn(() => {
+  throw new Error('goals:start must use the autocommit org SQL handle, not ctx.tx');
+});
 const ctx = {
   workspaceId: 'ws-test',
   harnessSlug: 'papercusp',
   role: 'su',
-  tx: (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.join(' ? ');
-    sql.push({ text, values });
-    order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
-    if (text.includes('SELECT title, body, kill_criterion, standing,')) {
-      return Promise.resolve([{
-        title: currentGoalArgs.title,
-        body: currentGoalArgs.body ?? null,
-        kill_criterion: currentGoalArgs.killCriterion ?? null,
-        standing: currentGoalArgs.standing === true,
-        launch_settings: null,
-        budget_cents: currentGoalArgs.budgetCents ?? null,
-        budget_window_sec: currentGoalArgs.budgetWindowSec ?? null,
-        spent_cents: null,
-        spent_cents_breakdown: null,
-        spent_cents_at: null,
-        spent_cents_source: null,
-        drain_fleet: null,
-      }]);
-    }
-    if (text.includes('WITH goal_row AS')) {
-      return Promise.resolve([{
-        status: 'active', tripwires: currentGoalArgs.tripwires ?? [],
-        pots: [], plans: [], queue: {}, drain_fleet: null,
-      }]);
-    }
-    return Promise.resolve([]);
-  },
+  tx: forbiddenWorkspaceTx,
 } as never;
 
 const ARGS = {
@@ -303,6 +310,8 @@ describe('goals:start — the happy path', () => {
     const res = await call();
     expect(isError(res)).toBe(false);
     expect(stampPrecedesSpawn(order)).toBe(true);
+    expect(orgSql).toHaveBeenCalled();
+    expect(forbiddenWorkspaceTx).not.toHaveBeenCalled();
     expect(order.filter((o) => o === 'insert')).toHaveLength(1);
     expect(order).not.toContain('delete');
   });
@@ -582,7 +591,7 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
 
     expect(isError(res)).toBe(false);
     const goalId = dataOf(res).id;
-    expect(sourceWorkItemStamp.stamp).toHaveBeenCalledWith(expect.any(Function), {
+    expect(sourceWorkItemStamp.stamp).toHaveBeenCalledWith(orgSql, {
       id: sourceWorkItemId,
       workspaceId: 'ws-test',
       harness: 'papercusp',
@@ -639,7 +648,7 @@ describe('goals:start — the standing drain fleet (P-001)', () => {
     expect(isError(res)).toBe(true);
     expect(teardownMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', fleetSlug: 'goal-drain-test' });
     const goalId = (sourceWorkItemStamp.stamp.mock.calls[0]?.[1] as { goalId: string } | undefined)?.goalId;
-    expect(sourceWorkItemStamp.clear).toHaveBeenCalledWith(expect.any(Function), {
+    expect(sourceWorkItemStamp.clear).toHaveBeenCalledWith(orgSql, {
       id: 'EI-source',
       workspaceId: 'ws-test',
       harness: 'papercusp',

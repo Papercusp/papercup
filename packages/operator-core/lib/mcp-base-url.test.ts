@@ -12,8 +12,10 @@ import {
 } from './mcp-base-url';
 
 const KEY = 'PAPERCUSP_MCP_PROXY_BASE';
+const STAGING_PROXY_PORT_KEY = 'PAPERCUSP_MCP_STAGING_PROXY_PORT';
 afterEach(() => {
   delete process.env[KEY];
+  delete process.env[STAGING_PROXY_PORT_KEY];
 });
 
 describe('resolveAgentMcpBaseUrl', () => {
@@ -34,6 +36,23 @@ describe('resolveAgentMcpBaseUrl', () => {
     expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3170/')).toBe('http://127.0.0.1:3170');
     expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://localhost:3271');
     expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3295/')).toBe('http://127.0.0.1:3295');
+  });
+
+  it('routes only a local staging operator through its configured same-vintage proxy', () => {
+    process.env[KEY] = 'http://127.0.0.1:9071';
+    process.env[STAGING_PROXY_PORT_KEY] = '9171';
+    expect(resolveAgentMcpBaseUrl('http://localhost:3170')).toBe('http://127.0.0.1:9171');
+    expect(resolveAgentMcpBaseUrl('http://127.0.0.1:3170/')).toBe('http://127.0.0.1:9171');
+    expect(resolveAgentMcpBaseUrl('http://localhost:3271')).toBe('http://localhost:3271');
+    expect(resolveAgentMcpBaseUrl('http://example.com:3170')).toBe('http://example.com:3170');
+    expect(resolveAgentMcpBaseUrl('https://localhost:3170')).toBe('https://localhost:3170');
+  });
+
+  it('keeps local staging direct when the staging proxy port is invalid', () => {
+    for (const port of ['0', '3170', '65536', '91/../../']) {
+      process.env[STAGING_PROXY_PORT_KEY] = port;
+      expect(resolveAgentMcpBaseUrl('http://localhost:3170')).toBe('http://localhost:3170');
+    }
   });
 
   it('env set to whitespace/empty → falls back to operator base (no accidental break)', () => {

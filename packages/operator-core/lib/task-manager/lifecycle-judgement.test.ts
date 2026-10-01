@@ -14,6 +14,7 @@ import {
   LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS,
   enforceLifecycleVerdicts,
   evaluateLifecycleCandidates,
+  lifecycleCandidatePayload,
   lifecycleCandidateSummary,
   lifecycleJudgeBrief,
   lifecycleCandidateConditionKey,
@@ -303,6 +304,34 @@ describe('evaluateLifecycleCandidates', () => {
     expect(mature.candidates.map((candidate) => candidate.kinds)).toEqual([['unaccounted-residue']]);
   });
 
+  it('serializes a timestamped host-observed positive and keeps the unknown control unknown', () => {
+    const observedAt = new Date(NOW).toISOString();
+    const confirmedLive = evaluate({
+      rows: [row({ taskId: 'confirmed-live', rootTaskId: 'confirmed-live', state: 'unaccounted' })],
+      residue: ['confirmed-live'],
+    }).candidates[0]!;
+    expect(lifecycleCandidatePayload(confirmedLive, observedAt)).toMatchObject({
+      taskId: 'confirmed-live',
+      liveness: {
+        status: 'present',
+        source: 'healthy-task-reconcile',
+        observedAt,
+      },
+    });
+
+    const unconfirmed = evaluate({
+      rows: [row({ taskId: 'unconfirmed', rootTaskId: 'unconfirmed' })],
+      launchers: [['su-launcher', 'live']],
+      logMtimeMs: NOW - LIFECYCLE_IDLE_QUIET_MS - 1,
+    }).candidates[0]!;
+    expect(unconfirmed.kinds).toContain('old-and-idle');
+    expect(lifecycleCandidatePayload(unconfirmed, observedAt).liveness).toEqual({
+      status: 'unknown',
+      source: 'not-established',
+      observedAt: null,
+    });
+  });
+
   it('gives unaccounted residue a discriminating exact-scope verification recipe', () => {
     const candidate = evaluate({
       rows: [row({ taskId: 'unaccounted', state: 'unaccounted', scopeUnit: 'pc-unaccounted.scope' })],
@@ -312,8 +341,14 @@ describe('evaluateLifecycleCandidates', () => {
     const summary = lifecycleCandidateSummary(candidate);
     expect(summary).toContain('processes:list { scopeUnit:"pc-unaccounted.scope", live:true }');
     expect(summary).toContain('live.exactScopeUnitMatches');
-    expect(summary).toContain('taskId-filtered read cannot prove absence');
-    expect(summary).toContain('known-present positive control');
+    expect(summary).toContain('An empty result is not proof by itself');
+    expect(summary).toContain('only live.exactScopeUnitMatches entries with kind "unaccounted"');
+    expect(summary).toContain('same-kind unaccounted control from an unfiltered live census');
+    expect(summary).toContain('Do not infer death from these shell readings');
+    expect(summary).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in the same call');
+    expect(summary).toContain('if $$ is tiny or only a few PIDs are visible, discard every /proc absence');
+    expect(summary).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(summary).toContain('confined:false does not prove abandonment');
     expect(summary).toContain('Timestamped cgroup CPU activity');
 
     const escaped = lifecycleCandidateSummary({ ...candidate, scopeUnit: 'pc-"quoted.scope' });
@@ -328,8 +363,19 @@ describe('evaluateLifecycleCandidates', () => {
     const brief = lifecycleJudgeBrief([{ id: 'WI-1', taskId: 'unaccounted', harnessSlug: 'papercusp' }]);
     expect(brief).toContain('live.exactScopeUnitMatches');
     expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
-    expect(brief).toContain('known-present positive control');
+    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
+    expect(brief).toContain('known-present same-kind unaccounted control from the unfiltered census');
+    expect(brief).toContain('live.ownedTruncated=false');
+    expect(brief).toContain('live.unaccountedPids matching the listed PIDs');
     expect(brief).toContain('usage_usec changed between its timestamps');
+    expect(brief).toContain('unknown is not dead');
+    expect(brief).toContain('cgroup.procs containing only 0 means at least one task is in the cgroup but hidden from that PID namespace');
+    expect(brief).toContain('pids.current counts kernel tasks (including threads), not task-manager process rows');
+    expect(brief).toContain('HTTP 502 is not ECONNREFUSED (curl exit 7)');
+    expect(brief).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call');
+    expect(brief).toContain('Read the control twice and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(brief).toContain('confined:false does not prove abandonment');
   });
 
   it('excludes agent sessions and human-terminal auto-reap exemptions', () => {
@@ -514,6 +560,99 @@ describe('runLifecycleJudgementSweep', () => {
     expect(current).toMatch(/^process-lifecycle-judge:v2:ws-1:/);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS - 1)).toBe(current);
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
+  });
+
+  it('preclaims candidates before spawn so the next hourly sweep skips them', async () => {
+    const candidate = {
+      id: 'WI-open',
+      taskId: 'task-open',
+      harnessSlug: 'papercusp',
+      takenBy: null,
+      assignee: null,
+    };
+    const order: string[] = [];
+    let claimedBy: string | null = null;
+    const claim = vi.fn(async (
+      items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0],
+      assignee: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[1],
+    ) => {
+      order.push('claim');
+      claimedBy = assignee;
+      return items.map((item) => ({ ...item, takenBy: assignee, assignee }));
+    });
+    const spawn = vi.fn(async (input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) => {
+      order.push('spawn');
+      return { ok: true, spawnId: input.spawnId };
+    });
+    const deps = depsForRunner({
+      listOpenCandidateItems: async () => [{ ...candidate, takenBy: claimedBy, assignee: claimedBy }],
+      claimOpenCandidateItems: claim,
+      spawnJudge: spawn,
+    });
+
+    const first = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      deps,
+    );
+    const nextHour = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_INTERVAL_MS },
+      deps,
+    );
+
+    const spawnId = spawn.mock.calls[0]![0].spawnId;
+    expect(order).toEqual(['claim', 'spawn']);
+    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
+    expect(claim.mock.calls[0]![1]).toBe(spawnId);
+    expect(first.openItems).toEqual(['WI-open']);
+    expect(first.judge.attempted).toBe(true);
+    expect(nextHour.openItems).toEqual([]);
+    expect(nextHour.judge.attempted).toBe(false);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('compare-and-releases its preclaim when child spawn fails', async () => {
+    const candidate = {
+      id: 'WI-open',
+      taskId: 'task-open',
+      harnessSlug: 'papercusp',
+      takenBy: null,
+      assignee: null,
+    };
+    const order: string[] = [];
+    const claim = vi.fn(async (
+      items: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[0],
+      assignee: Parameters<LifecycleJudgementDeps['claimOpenCandidateItems']>[1],
+    ) => {
+      order.push('claim');
+      return items.map((item) => ({ ...item, takenBy: assignee, assignee }));
+    });
+    const spawn = vi.fn(async (_input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) => {
+      order.push('spawn');
+      return { ok: false, spawnId: null, error: 'child boot failed' };
+    });
+    const release = vi.fn(async (
+      _items: Parameters<LifecycleJudgementDeps['releaseCandidateItems']>[0],
+      _expectedAssignee: Parameters<LifecycleJudgementDeps['releaseCandidateItems']>[1],
+    ) => {
+      order.push('release');
+    });
+    await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW },
+      depsForRunner({
+        listOpenCandidateItems: async () => [candidate],
+        claimOpenCandidateItems: claim,
+        releaseCandidateItems: release,
+        spawnJudge: spawn,
+      }),
+    );
+
+    const spawnId = spawn.mock.calls[0]![0].spawnId;
+    expect(order).toEqual(['claim', 'spawn', 'release']);
+    expect(claim).toHaveBeenCalledWith([candidate], spawnId);
+    expect(release).toHaveBeenCalledWith(
+      [{ ...candidate, takenBy: spawnId, assignee: spawnId }],
+      spawnId,
+    );
   });
 
   it('does not launch a second judge across an interval boundary for candidates claimed in either work-item family', async () => {

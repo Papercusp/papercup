@@ -1,0 +1,188 @@
+/**
+ * Narrow production composition for hosted subscription billing at
+ * app.papercusp.com — the sibling of `hosted-auth-runtime.ts`, re-exported from
+ * it so the portal's prebundled hosted-auth package carries both (one bundle,
+ * one dynamic import). Kept equally light: no route registry, no agent tools,
+ * no flags/PostHog client (the composition injects the live-mode flag reading).
+ *
+ * Billing is OPTIONAL infrastructure: with no Stripe configuration the runtime
+ * still mounts, `/plans` reports `configured:false`, and mutating routes answer
+ * 503 — sign-in and the rest of the portal are unaffected.
+ *
+ * Configuration (all injected; secrets are references, never values):
+ *   PAPERCUSP_HOSTED_PUBLIC_ORIGIN            shared with hosted auth
+ *   PAPERCUSP_STRIPE_SECRET_KEY_REF           env:/file: ref to sk_test_… (sk_live_… needs the flag)
+ *   PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF       env:/file: ref to the endpoint's whsec_…
+ *   PAPERCUSP_HOSTED_BILLING_PLANS            JSON [{ planKey, priceId, label, description? }]
+ *
+ * stripe-subscription-signup-2026-10-01 P-005.
+ */
+import { withHostedServiceContext } from '@papercusp/db-org/tenant-context';
+import { Hono } from 'hono';
+import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
+import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
+import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
+import { createStripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
+import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
+import { resolveSecretRef } from '../inference-gateway/egress-providers/secret-ref';
+import {
+  HOSTED_BILLING_ROUTES,
+  createHostedBillingRoutes,
+  type HostedBillingPlan,
+  type HostedBillingRoute,
+  type HostedBillingStripe,
+} from './routes/hosted-billing';
+
+export const HOSTED_BILLING_RUNTIME_MOUNTED_ROUTE_KEYS = HOSTED_BILLING_ROUTES.map(
+  (route) => `${route.method} ${route.path}`,
+);
+
+export interface HostedBillingRuntimeConfiguration {
+  readonly publicOrigin: string;
+  readonly stripeSecretKeyRef: string | null;
+  readonly stripeWebhookSecretRef: string | null;
+  readonly plans: readonly HostedBillingPlan[];
+}
+
+const PLAN_KEY = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const PRICE_ID = /^price_[A-Za-z0-9]+$/;
+
+/** Parse the plan list; a malformed list is a configuration error, never silently empty. */
+export function parseHostedBillingPlans(raw: string | undefined): HostedBillingPlan[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS');
+  }
+  if (!Array.isArray(parsed)) throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS');
+  const seen = new Set<string>();
+  return parsed.map((entry, index) => {
+    const e = (entry ?? {}) as Record<string, unknown>;
+    const planKey = typeof e.planKey === 'string' ? e.planKey.trim() : '';
+    const priceId = typeof e.priceId === 'string' ? e.priceId.trim() : '';
+    const label = typeof e.label === 'string' ? e.label.trim() : '';
+    if (!PLAN_KEY.test(planKey) || !PRICE_ID.test(priceId) || !label || label.length > 80 || seen.has(planKey)) {
+      throw new TypeError(`hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS[${index}]`);
+    }
+    seen.add(planKey);
+    const description = typeof e.description === 'string' && e.description.trim() ? e.description.trim().slice(0, 280) : null;
+    return { planKey, priceId, label, description };
+  });
+}
+
+const optionalRef = (value: string | undefined): string | null =>
+  typeof value === 'string' && value.trim() ? value.trim() : null;
+
+export function readHostedBillingRuntimeConfiguration(
+  env: NodeJS.ProcessEnv = process.env,
+): HostedBillingRuntimeConfiguration {
+  const publicOrigin = env.PAPERCUSP_HOSTED_PUBLIC_ORIGIN?.trim();
+  if (!publicOrigin) throw new TypeError('hosted_billing_runtime_configuration_missing:PAPERCUSP_HOSTED_PUBLIC_ORIGIN');
+  return {
+    publicOrigin,
+    stripeSecretKeyRef: optionalRef(env.PAPERCUSP_STRIPE_SECRET_KEY_REF),
+    stripeWebhookSecretRef: optionalRef(env.PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF),
+    plans: parseHostedBillingPlans(env.PAPERCUSP_HOSTED_BILLING_PLANS),
+  };
+}
+
+export interface HostedBillingRuntimeDependencies {
+  /** The hosted-auth runtime's resolver — billing never re-implements session authority. */
+  readonly resolvePrincipal: HostedPrincipalResolver;
+  readonly resolveSecret?: (reference: string) => Promise<string>;
+  readonly runService?: HostedServiceContextRunner;
+  readonly store?: HostedBillingStore;
+  readonly fetchImpl?: typeof fetch;
+  /**
+   * The `papercusp-hosted-billing-live-mode` flag (default OFF, owner-authority).
+   * Absent = live mode refused: a composition that cannot read the flag must
+   * not be able to charge real cards.
+   */
+  readonly liveModeAllowed?: () => Promise<boolean>;
+  readonly entitlementProvider?: HostedSubscriptionEntitlementProvider;
+  readonly clock?: () => Date;
+}
+
+export interface HostedBillingRuntime {
+  readonly app: Hono;
+  readonly mounted: readonly HostedBillingRoute[];
+  readonly configured: boolean;
+  readonly unavailableReason: string | null;
+}
+
+async function resolveStripe(
+  configuration: HostedBillingRuntimeConfiguration,
+  dependencies: HostedBillingRuntimeDependencies,
+): Promise<{ stripe: HostedBillingStripe | null; reason: string | null }> {
+  if (!configuration.stripeSecretKeyRef || !configuration.stripeWebhookSecretRef) {
+    return { stripe: null, reason: 'billing_not_configured' };
+  }
+  if (configuration.plans.length === 0) return { stripe: null, reason: 'no_plans_configured' };
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
+  const [secretKey, webhookSecret] = await Promise.all([
+    resolveSecret(configuration.stripeSecretKeyRef),
+    resolveSecret(configuration.stripeWebhookSecretRef),
+  ]);
+  if (!/^whsec_[A-Za-z0-9]+$/.test(webhookSecret)) return { stripe: null, reason: 'invalid_webhook_secret' };
+  const liveModeAllowed = dependencies.liveModeAllowed ? await dependencies.liveModeAllowed().catch(() => false) : false;
+  const built = createStripeBillingClient({
+    secretKey,
+    fetchImpl: dependencies.fetchImpl ?? fetch,
+    liveModeAllowed,
+  });
+  if (!built.ok) return { stripe: null, reason: built.code };
+  return { stripe: { client: built.client, webhookSecret }, reason: null };
+}
+
+function denial(status: 401 | 403 | 503, message: string): Response {
+  const code = status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'authority_unavailable';
+  return Response.json({ ok: false, error: { code, message } }, { status });
+}
+
+export async function createHostedBillingRuntime(
+  configuration: HostedBillingRuntimeConfiguration,
+  dependencies: HostedBillingRuntimeDependencies,
+): Promise<HostedBillingRuntime> {
+  const { stripe, reason } = await resolveStripe(configuration, dependencies);
+  const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
+  const routes = createHostedBillingRoutes({
+    publicOrigin: configuration.publicOrigin,
+    plans: configuration.plans,
+    store,
+    stripe,
+    unavailableReason: reason,
+    entitlementProvider: dependencies.entitlementProvider,
+    clock: dependencies.clock,
+  });
+  const mounted = routes.map((route) => `${route.method} ${route.path}`);
+  if (
+    mounted.length !== HOSTED_BILLING_RUNTIME_MOUNTED_ROUTE_KEYS.length
+    || mounted.some((key, index) => key !== HOSTED_BILLING_RUNTIME_MOUNTED_ROUTE_KEYS[index])
+  ) throw new Error(`hosted_billing_runtime_surface_mismatch:${JSON.stringify(mounted)}`);
+
+  const app = new Hono().basePath('/api');
+  for (const route of routes) {
+    const required = route.auth === 'public' ? [] : route.auth.capabilities;
+    if (route.auth !== 'public' && required.length === 0) {
+      throw new Error(`hosted_billing_runtime_invalid_authority:${route.method} ${route.path}`);
+    }
+    app.on(route.method, route.path, async (context) => {
+      if (route.auth === 'public') return route.handler(context.req.raw, { principal: null });
+      const resolution = await dependencies.resolvePrincipal(context.req.raw.headers);
+      if (!resolution.ok) {
+        const status = resolution.reason === 'authority_unavailable' ? 503
+          : resolution.reason === 'membership_not_active'
+            || resolution.reason === 'session_organization_mismatch'
+            || resolution.reason === 'workspace_not_in_organization' ? 403 : 401;
+        return denial(status, resolution.reason);
+      }
+      if (required.some((permission) => !resolution.principal.capabilities.has(permission))) {
+        return Response.json({ ok: false, error: { code: 'forbidden', message: 'permission_missing' } }, { status: 403 });
+      }
+      return route.handler(context.req.raw, { principal: resolution.principal });
+    });
+  }
+  return { app, mounted: routes, configured: stripe !== null, unavailableReason: reason };
+}

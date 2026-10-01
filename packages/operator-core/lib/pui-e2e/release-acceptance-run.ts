@@ -154,6 +154,57 @@ export async function runCloudDeviceStartSmoke(origin = 'https://app.papercusp.c
   return result;
 }
 
+/**
+ * A 5xx, or no usable answer at all, says the public ingress was not serving at
+ * that moment. It says nothing about whether the cloud refuses device starts:
+ * WI-10004247 run 13 lost every leg to a single HTTP 502 at 01:12Z, and the same
+ * endpoint answered 200 three times at 01:24Z. A 4xx or a malformed grant is a
+ * measured refusal and stays one.
+ */
+export function cloudDeviceStartTransient(result: CloudDeviceStartResult): boolean {
+  return !result.ok && (result.status === null || result.status >= 500);
+}
+
+/** Only a measured refusal skips the legs; the verdict refuses either way. */
+export function cloudDeviceStartBlocksLegs(result: CloudDeviceStartResult): boolean {
+  return !result.ok && !cloudDeviceStartTransient(result);
+}
+
+export const CLOUD_DEVICE_START_ATTEMPTS = 3;
+const CLOUD_DEVICE_START_PAUSE_MS = 20_000;
+
+/** Run the smoke, asking again after a pause while the failure is transient. */
+export async function measureCloudDeviceStart(
+  smoke: () => Promise<CloudDeviceStartResult> = () => runCloudDeviceStartSmoke(),
+  attempts = CLOUD_DEVICE_START_ATTEMPTS,
+  pauseMs = CLOUD_DEVICE_START_PAUSE_MS,
+): Promise<CloudDeviceStartResult[]> {
+  const history: CloudDeviceStartResult[] = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await smoke();
+    history.push(result);
+    if (!cloudDeviceStartTransient(result) || attempt === attempts) break;
+    await new Promise((resolve) => setTimeout(resolve, pauseMs));
+  }
+  return history;
+}
+
+/**
+ * Measure a transient failure once more, after the legs, as the stock smoke is.
+ * The verdict judges the latest measurement; every attempt stays in the record.
+ */
+export async function remeasureCloudDeviceStart(
+  history: CloudDeviceStartResult[], measure: () => Promise<CloudDeviceStartResult[]> = () => measureCloudDeviceStart(),
+): Promise<CloudDeviceStartResult[]> {
+  const latest = history[history.length - 1];
+  return latest && cloudDeviceStartTransient(latest) ? [...history, ...await measure()] : history;
+}
+
+/** Whether a precheck taken before the legs should stop them. */
+export function legsBlocked(stockMachines: StockMachineResult[], cloudDeviceStart: CloudDeviceStartResult): boolean {
+  return stockMachinesBlockLegs(stockMachines) || cloudDeviceStartBlocksLegs(cloudDeviceStart);
+}
+
 const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
 /**
  * Per-attempt budget. It must separate a SLOW launch from a WEDGED one. On the
@@ -396,7 +447,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   };
   const sourceSha = provenance.source.commit;
   let stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
-  const cloudDeviceStart = await runCloudDeviceStartSmoke();
+  let cloudDeviceStartHistory = await measureCloudDeviceStart();
 
   const home = path.join(work, 'home');
   mkdirSync(path.join(home, 'tmp'), { recursive: true });
@@ -425,9 +476,12 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   // When the stage itself runs under vitest (its R-12 test), the outer worker's
   // VITEST_* markers must not leak into the suites' own run.
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('VITEST')));
-  // A binary that cannot start on stock Linux cannot earn PTY evidence. Keep
-  // writing the acceptance verdict, but avoid launching expensive live legs.
-  const legsToRun = !cloudDeviceStart.ok || stockMachinesBlockLegs(stockMachines)
+  // A binary that cannot start on stock Linux, or a cloud that measurably refuses
+  // device starts, cannot earn a passing verdict. Keep writing the verdict, but
+  // avoid launching expensive live legs. A precheck the host or the ingress
+  // could not answer (Docker stall, 5xx) does not stop them: it is measured again
+  // after the legs instead.
+  const legsToRun = legsBlocked(stockMachines, cloudDeviceStartHistory[cloudDeviceStartHistory.length - 1])
     ? [] : [null, ...(options.real ?? [])];
   const acceptancePg = legsToRun.length ? await startAcceptancePg(work) : { env: {}, stop: async () => {} };
   try {
@@ -470,6 +524,8 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   const contract = committed(sourceSha, 'apps/tui/PUBLIC_RELEASE_UX.md');
   const matrixText = committed(sourceSha, 'apps/tui/release/acceptance-matrix.json');
   const extra: string[] = [];
+  cloudDeviceStartHistory = await remeasureCloudDeviceStart(cloudDeviceStartHistory);
+  const cloudDeviceStart = cloudDeviceStartHistory[cloudDeviceStartHistory.length - 1];
   if (!cloudDeviceStart.ok) extra.push(`public cloud device-start smoke failed: ${cloudDeviceStart.problem}`);
   if (!contract) extra.push(`candidate ${sourceSha} carries no apps/tui/PUBLIC_RELEASE_UX.md`);
   if (!matrixText) extra.push(`candidate ${sourceSha} carries no apps/tui/release/acceptance-matrix.json`);
@@ -496,7 +552,10 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   writeFileSync(out, `${JSON.stringify({
     schemaVersion: 1,
     checkedAt: new Date().toISOString(),
-    runner: { head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, cloudDeviceStart, suiteProvenance, work },
+    runner: {
+      head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, cloudDeviceStart, cloudDeviceStartHistory,
+      suiteProvenance, work,
+    },
     ...verdict,
   }, null, 2)}\n`);
   return { verdict, out, legs, stockMachines, cloudDeviceStart, suiteProvenance };

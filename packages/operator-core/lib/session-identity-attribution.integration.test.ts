@@ -61,6 +61,13 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_archives (
       adv_session_id bigint, session_id text NOT NULL
     );
+    -- The key paths of 1275 look sessions up by session_id. Production indexes that on
+    -- adv_sessions (adv_sessions_session_id_idx) and reaches it on session_archives through
+    -- its (workspace_id, source_kind, session_id) primary key, which this two-column
+    -- fixture stands in for. Without them the WI-10004477 cost guard measures a join
+    -- order production never runs.
+    CREATE INDEX adv_sessions_session_id_idx ON harness_shared.adv_sessions (session_id);
+    CREATE INDEX session_archives_session_idx ON harness_shared.session_archives (session_id);
     CREATE TABLE harness_shared.session_turns (
       workspace_id text NOT NULL, source_kind text NOT NULL,
       session_id text NOT NULL, owner text
@@ -341,6 +348,98 @@ describe('P-009 activation span views', () => {
       // Positive control for the plan assertion: the predecessor does window per row.
       expect(await planOf()).toContain('WindowAgg');
       expect(await read()).toEqual(indexed);
+    } finally {
+      await applyMigrationForTest(db.sql, indexedSpansMigration);
+    }
+  });
+
+  // WI-10004477, the recurrence guard for WI-10004451. The case above pins the plan of a
+  // one-row read and the window construct 1177 used. This pins the COST CLASS, for the
+  // shape the shadow-metering reader actually runs (a workspace time range, grouped by
+  // span): attributing a sample must not read activation events of OTHER owners. 1177 did,
+  // once per sample, which is why one production hour (7,689 samples) passed 30s; 1275
+  // reads it in ~1.7s. Measured as rows the plan touches on the events table, so it holds
+  // whatever SQL construct a regression uses and does not depend on wall-clock speed.
+  // The fixture is sized so production's plan is also the cheapest one here: at ~100 events
+  // the planner rightly hash-joins whole tables (measured 2026-10-01: every event read per
+  // sample under 1275, though production's 11,727 events cost 57.5 rows per sample).
+  it('reads no other owner\'s activation events to attribute a sample (WI-10004477)', async () => {
+    const ws = 'identity-attribution-scale';
+    const owner = 'su-scale-target';
+    const otherOwners = 300;
+    const eventsPerOwner = 10;
+    const sampleCount = 40;
+    const base = ms('2026-09-12T00:00:00Z');
+    await db.sql`
+      INSERT INTO harness_shared.session_identity_activation_events
+        (workspace_id,owner_id,actor_id,principal_id,session_id,native_session_id,
+         transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+      SELECT ${ws}, 'su-scale-other-' || o, 'su-scale-other-' || o, 'principal-scale', 'scale-other-' || o,
+             'scale-other-native-' || o, 'scale-other-' || o || '-' || e, e + 1, 'applied', 'control', ${SPEC_A},
+             'state-scale-other-' || o || '-' || e, '[]',
+             to_timestamp((${base}::bigint + e * 600000)::double precision / 1000.0)
+        FROM generate_series(0, ${otherOwners - 1}) o CROSS JOIN generate_series(0, ${eventsPerOwner - 1}) e`;
+    for (let e = 0; e < 4; e++) {
+      await db.sql`
+        INSERT INTO harness_shared.session_identity_activation_events
+          (workspace_id,owner_id,actor_id,principal_id,session_id,native_session_id,
+           transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+        VALUES (${ws},${owner},${owner},'principal-scale','scale-target','scale-target-native',
+          ${`scale-target-${e}`},${e + 1},'applied','control',${SPEC_A},${`state-scale-target-${e}`},'[]',
+          to_timestamp(${base + e * 600_000}::double precision / 1000.0))`;
+    }
+    await db.sql`INSERT INTO harness_shared.session_turns VALUES (${ws},'claude','scale-target-native',${owner})`;
+    for (let i = 0; i < sampleCount; i++) {
+      await db.sql`INSERT INTO harness_shared.agent_usage_samples (id, workspace_id, session_id, ts, cost_source, cost_usd)
+        VALUES (${9000 + i},${ws},'scale-target-native',${base + 30_000 + i * 60_000},'reported',0.01)`;
+    }
+    // Production statistics come from autovacuum; a fresh fixture has none, and the planner
+    // then guesses join orders production never runs.
+    await db.sql`ANALYZE harness_shared.session_identity_activation_events, harness_shared.agent_usage_samples,
+      harness_shared.adv_sessions, harness_shared.session_archives, harness_shared.session_turns`;
+    const otherEvents = otherOwners * eventsPerOwner;
+    const examined = async () => db.sql.begin(async (tx) => {
+      const [row] = await tx.unsafe(`
+        EXPLAIN (ANALYZE, FORMAT JSON)
+        SELECT identity_activation_event_id, identity_specification_revision, identity_stack_refs,
+               cost_source, sum(cost_usd), count(*)
+          FROM harness_shared.agent_usage_samples_identity_attribution
+         WHERE workspace_id = '${ws}' AND ts >= ${base} AND ts < ${base + 3_600_000}
+         GROUP BY 1, 2, 3, 4`);
+      // Rows touched per node = (emitted + filtered out) per loop, times loops. The node
+      // list rides in the assertion message so a regression names the scan that grew.
+      const nodes: Array<{ node: string; index: unknown; loops: number; rows: number }> = [];
+      const walk = (node: Record<string, unknown>) => {
+        if (node['Relation Name'] === 'session_identity_activation_events') {
+          const perLoop = Number(node['Actual Rows'] ?? 0) + Number(node['Rows Removed by Filter'] ?? 0)
+            + Number(node['Rows Removed by Index Recheck'] ?? 0);
+          const loops = Number(node['Actual Loops'] ?? 0);
+          nodes.push({ node: String(node['Node Type']), index: node['Index Name'] ?? null, loops, rows: perLoop * loops });
+        }
+        for (const child of (node.Plans as Array<Record<string, unknown>> | undefined) ?? []) walk(child);
+      };
+      walk((row as unknown as { 'QUERY PLAN': Array<{ Plan: Record<string, unknown> }> })['QUERY PLAN'][0]!.Plan);
+      return { rows: nodes.reduce((sum, n) => sum + n.rows, 0), nodes: JSON.stringify(nodes) };
+    });
+    // Non-vacuous: every sample is attributed through the owner path to a target span.
+    const attributed = await db.sql<Array<{ owner: string | null; n: number }>>`
+      SELECT identity_owner_id AS owner, count(*)::int AS n
+        FROM harness_shared.agent_usage_samples_identity_attribution
+       WHERE workspace_id = ${ws} GROUP BY 1`;
+    expect(attributed).toEqual([{ owner, n: sampleCount }]);
+
+    // Budget: half of what reading every other owner's events once per sample costs.
+    const budget = (sampleCount * otherEvents) / 2;
+    const indexed = await examined();
+    expect(indexed.rows, indexed.nodes).toBeGreaterThan(0);
+    expect(indexed.rows, indexed.nodes).toBeLessThan(budget);
+
+    await applyMigrationForTest(db.sql, migration);
+    await applyMigrationForTest(db.sql, carryMigration);
+    try {
+      // Positive control: the predecessor rule reads other owners' events per sample.
+      const predecessor = await examined();
+      expect(predecessor.rows, predecessor.nodes).toBeGreaterThanOrEqual(budget);
     } finally {
       await applyMigrationForTest(db.sql, indexedSpansMigration);
     }

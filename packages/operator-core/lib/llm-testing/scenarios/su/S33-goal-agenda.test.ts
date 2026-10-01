@@ -16,12 +16,20 @@ async function call(world: ReturnType<typeof makeS33World>, tool: string, args =
 function run(records: unknown[], text = '', sameResponse = false): RunSummary {
   return { turns: [{
     assistantText: text || 'The isolated action is recorded; acceptance remains pending.',
-    toolCalls: records.map((_, index) => ({ name: 'tools:invoke', input: {}, responseIndex: sameResponse ? 0 : index })),
+    toolCalls: records.map((value, index) => {
+      const record = value as Record<string, unknown>;
+      return {
+        name: typeof record.callName === 'string' ? record.callName : 'tools:invoke',
+        input: record.callInput && typeof record.callInput === 'object' ? record.callInput : {},
+        responseIndex: sameResponse ? 0 : index,
+      };
+    }),
     toolResults: records.map((value) => {
       const record = value as Record<string, unknown>;
       const payload = record.phase === 'exposure' ? { obligationObservation: { goalId: 'goal-agenda-fixture', ...record } }
         : record.phase === 'effect' ? { effectReceipt: { goalId: 'goal-agenda-fixture', ...record } }
-          : { ok: false, error: 'not_applicable', tool: record.tool };
+          : record.phase === 'call' ? { ok: true }
+            : { ok: false, error: 'not_applicable', tool: record.tool };
       return { output: JSON.stringify(payload) };
     }),
   }] } as unknown as RunSummary;
@@ -83,7 +91,11 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(engineer).not.toContain(reportRail);
     expect(report).toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
     expect(report).toContain('RECEIPTS BOUND THE REPORT.');
+    expect(report).toContain('A complete no-demand or no-eligible-work result with');
+    expect(report).toContain('Do not use `tools:find`, `plans:list`, `work_items:list`, `search:semantic`');
+    expect(report).toContain('A `not_applicable` receipt proves only that the');
     expect(engineer).not.toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
+    expect(engineer).not.toContain('A complete no-demand or no-eligible-work result with');
   }, 60_000);
 
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {
@@ -331,6 +343,22 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
       }
     },
   );
+
+  it('no-demand rejects successful tool discovery after its authoritative recovery read', () => {
+    const findings = s33BehaviorAssert('no-demand').eval(run([
+      { phase: 'exposure', case: 'no-demand', callName: 'coord:orient' },
+      { phase: 'call', tool: 'tools:find', callName: 'tools:find', callInput: { query: 'plans:list' } },
+    ], 'No applicable demand in the complete current portfolio.'));
+    expect(findings.some((finding) => finding.claim.includes('extra tool calls followed it'))).toBe(true);
+  });
+
+  it('not_applicable never supports a session-wide tool-unavailable claim', () => {
+    const report = 'The tool surface available in this session is also constrained: plans:list returned not_applicable, so the broader inventory tools are not reachable here.';
+    const findings = s33BehaviorAssert('no-demand').eval(run([
+      { phase: 'exposure', case: 'no-demand' }, { phase: 'refusal', tool: 'plans:list' },
+    ], report));
+    expect(findings.some((finding) => finding.claim.includes('global tool unavailability'))).toBe(true);
+  });
 
   it('rejects invented causes or global tool absence while allowing explicit uncertainty', () => {
     const records = [{ phase: 'exposure' }, { phase: 'effect', effect: 'owner-report-delivered' }];

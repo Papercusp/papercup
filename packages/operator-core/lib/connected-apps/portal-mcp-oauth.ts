@@ -19,6 +19,7 @@
  */
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { consentPageCsp } from './consent-csp';
 import { parseAppKey } from './key';
 import {
   OAUTH_CLIENT_ID_PREFIX,
@@ -603,7 +604,12 @@ export function narrowedGrant(
 const escapeHtml = (value: string): string =>
   value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-function page(title: string, body: string, status = 200): Response {
+/**
+ * `redirectTargets`: where a form on this page can end up. The consent form's answer redirects to
+ * the client's registered redirect_uri, and the browser enforces form-action on that hop too
+ * (WI-10004470), so the page must admit exactly that target.
+ */
+function page(title: string, body: string, status = 200, redirectTargets: readonly string[] = []): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem}input{width:100%;font:inherit}
@@ -613,7 +619,7 @@ function page(title: string, body: string, status = 200): Response {
     status,
     headers: {
       'content-type': 'text/html; charset=utf-8',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      'content-security-policy': consentPageCsp(redirectTargets),
       'x-frame-options': 'DENY',
       // NOT 'no-referrer' (WI-10004462): under it a browser posts the consent form with
       // `Origin: null` (see ../endpoint-route/same-origin-form-post.ts). 'same-origin' still keeps
@@ -807,7 +813,7 @@ export async function handleHostedMcpOAuth(request: Request, deps: PortalMcpOAut
     if (!mayConsent(who.principal, pending.workspace)) {
       return page('Not your workspace', '<p>The account you are signed in with cannot use this workspace, so it cannot approve this app.</p>', 403);
     }
-    if (method === 'GET') return page(`Allow ${client.clientName}?`, consentForm(id, handle, client, pending));
+    if (method === 'GET') return page(`Allow ${client.clientName}?`, consentForm(id, handle, client, pending), 200, [pending.redirectUri]);
 
     const approvedBy = `portal:${who.principal.userId}`;
     if (fields.decision !== 'approve') {
@@ -819,7 +825,9 @@ export async function handleHostedMcpOAuth(request: Request, deps: PortalMcpOAut
       return redirectWithParams(denied.redirectUri, { error: 'access_denied', error_description: 'the owner denied access', state: denied.state, iss: issuer });
     }
     const grant = narrowedGrant(pending.requestedScopes, fields);
-    if (!grant.ok) return page('Check the scope', `<p>${escapeHtml(grant.problem)}.</p>${consentForm(id, handle, client, pending)}`, 400);
+    if (!grant.ok) {
+      return page('Check the scope', `<p>${escapeHtml(grant.problem)}.</p>${consentForm(id, handle, client, pending)}`, 400, [pending.redirectUri]);
+    }
     const code = newAuthorizationCode(random);
     const decidedAt = now();
     const approved = await deps.store.decide({

@@ -112,7 +112,7 @@ describe('readScoutDraftCandidates SQL projection', () => {
       hasRevisionHold: true,
     });
     // WI-2142684: this decision has no title/body text (only `{id: 'D-001'}'),
-    // so it can never match CONDITIONAL_DISPOSITION_RE — the ref-resolution
+    // so hasConditionalDisposition returns false — the ref-resolution
     // query must be skipped entirely. Regression guard for the common case.
     expect((sql as unknown as { mock: { calls: unknown[][] } }).mock.calls.length).toBe(1);
   });
@@ -184,6 +184,13 @@ describe('decisionStillSuppresses (WI-2142684)', () => {
   ]);
   const empty: ReadonlyMap<string, CitedWorkItemRefState> = new Map();
 
+  it('keeps long decision text within a linear scan budget', () => {
+    const decision = { title: '', body: 'x'.repeat(80_000) };
+    const startedAt = Date.now();
+    expect(decisionStillSuppresses(decision, empty)).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+  
   it('an unconditional decision (no conditional language) suppresses forever, ref or not', () => {
     expect(
       decisionStillSuppresses({ title: 'D-001', body: 'This plan is deprecated (EI-1).' }, terminalRef),

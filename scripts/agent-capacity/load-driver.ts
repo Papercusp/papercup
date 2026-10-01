@@ -121,6 +121,20 @@ export function loadMetas(corpusDir: string): SessionMeta[] {
   return out;
 }
 
+/** Each CLI whose installed `--version` is not one the selected sessions were recorded with. */
+export function versionMismatches(
+  sessions: Pick<SessionMeta, 'cli' | 'cliVersion'>[],
+  installed: (cli: string) => string,
+): { cli: string; have: string; want: string[] }[] {
+  const out: { cli: string; have: string; want: string[] }[] = [];
+  for (const cli of new Set(sessions.map((s) => s.cli))) {
+    const want = [...new Set(sessions.filter((s) => s.cli === cli).map((s) => s.cliVersion))];
+    const have = installed(cli);
+    if (!want.includes(have)) out.push({ cli, have, want });
+  }
+  return out;
+}
+
 function installedVersion(cli: string): string {
   try {
     return execFileSync(cli, ['--version'], { encoding: 'utf8', timeout: 20_000 }).trim();
@@ -309,10 +323,14 @@ async function main(): Promise<void> {
   const metas = loadMetas(corpusDir);
   const sessions = selectSessions(metas, arg('select'), arg('sessions')?.split(',').filter(Boolean));
   for (const m of sessions) if (m.corpusVersion !== corpus.version) throw new Error(`${m.sessionId} recorded with corpus v${m.corpusVersion}, tasks.json is v${corpus.version}`);
-  for (const cli of new Set(sessions.map((s) => s.cli))) {
-    const want = new Set(sessions.filter((s) => s.cli === cli).map((s) => s.cliVersion));
-    const have = installedVersion(cli);
-    if (!want.has(have)) console.log(`WARN ${cli} installed ${have}; recorded with ${[...want].join(' | ')} — requests may not match`);
+  const mismatch = versionMismatches(sessions, installedVersion);
+  if (mismatch.length) {
+    // A different CLI build sends different requests, so the replay would diverge and read as a
+    // fidelity failure. Refuse unless explicitly allowed (measured 2026-10-01: the systemd user
+    // manager's PATH resolved an older codex than the interactive shell's).
+    const msg = mismatch.map((m) => `${m.cli} installed ${m.have}; recorded with ${m.want.join(' | ')}`).join('; ');
+    if (!process.argv.includes('--allow-version-mismatch')) throw new Error(`CLI version mismatch: ${msg}. Put the recorded build first on PATH, or pass --allow-version-mismatch.`);
+    console.log(`WARN ${msg} — requests may not match`);
   }
   const runId = arg('run-id', new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, ''))!;
   const outDir = arg('out', path.join(CACHE, 'runs', runId))!;

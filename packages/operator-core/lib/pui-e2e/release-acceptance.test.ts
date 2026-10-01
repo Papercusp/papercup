@@ -6,8 +6,10 @@ import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
-  DOCKER_START_PROBE_TIMEOUT_MS, probeDockerCreateStart, remeasureStockMachines, runCloudDeviceStartSmoke,
-  runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs, sweepOrphanedProbeContainers,
+  CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
+  legsBlocked, measureCloudDeviceStart, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
+  runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
+  sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
 
 describe('Docker create/start release preflight', () => {
@@ -235,6 +237,67 @@ describe('public cloud device-start release guard', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
     expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: null });
+  });
+
+  const smokeResult = (status: number | null, ok = false): CloudDeviceStartResult => ({
+    endpoint: 'https://cloud.invalid/api/hosted/cli/device/code', checkedAt: '2026-10-01T01:12:00.000Z',
+    status, ok, problem: ok ? null : `HTTP ${status}`,
+  });
+
+  it('tells an ingress that did not answer from one that measurably refused', () => {
+    for (const status of [null, 500, 502, 503]) {
+      expect(cloudDeviceStartTransient(smokeResult(status))).toBe(true);
+      expect(cloudDeviceStartBlocksLegs(smokeResult(status))).toBe(false);
+    }
+    for (const status of [200, 401, 404]) {
+      expect(cloudDeviceStartTransient(smokeResult(status))).toBe(false);
+      expect(cloudDeviceStartBlocksLegs(smokeResult(status))).toBe(true);
+    }
+    expect(cloudDeviceStartTransient(smokeResult(200, true))).toBe(false);
+    expect(cloudDeviceStartBlocksLegs(smokeResult(200, true))).toBe(false);
+  });
+
+  // WI-10004247 run 13: one HTTP 502 at 01:12Z, beside a Docker stall, skipped
+  // every leg; the same endpoint answered 200 at 01:24Z.
+  it('runs the legs past a 502 and an unmeasured stock smoke, but not past a measured refusal', () => {
+    const unmeasured = [{ image: 'ubuntu:24.04', unmeasured: true, status: null, output: 'stalled' }];
+    expect(legsBlocked(unmeasured, smokeResult(502))).toBe(false);
+    expect(legsBlocked(unmeasured, smokeResult(null))).toBe(false);
+    expect(legsBlocked(unmeasured, smokeResult(401))).toBe(true);
+    expect(legsBlocked([{ image: 'ubuntu:24.04', status: 1, output: 'boom' }], smokeResult(200, true))).toBe(true);
+    expect(legsBlocked([{ image: 'ubuntu:24.04', status: 0, output: 'ok' }], smokeResult(200, true))).toBe(false);
+  });
+
+  it('asks again after a transient failure and stops at the first answer that is not transient', async () => {
+    const answers = [smokeResult(502), smokeResult(null), smokeResult(200, true), smokeResult(200, true)];
+    let calls = 0;
+    const history = await measureCloudDeviceStart(async () => answers[calls++], 5, 0);
+    expect(history.map(({ status, ok }) => [status, ok])).toEqual([[502, false], [null, false], [200, true]]);
+    expect(calls).toBe(3);
+
+    calls = 0;
+    const refused = await measureCloudDeviceStart(async () => { calls++; return smokeResult(401); }, 5, 0);
+    expect(refused).toHaveLength(1);
+    expect(calls).toBe(1);
+
+    calls = 0;
+    const down = await measureCloudDeviceStart(async () => { calls++; return smokeResult(502); }, CLOUD_DEVICE_START_ATTEMPTS, 0);
+    expect(down).toHaveLength(CLOUD_DEVICE_START_ATTEMPTS);
+    expect(calls).toBe(CLOUD_DEVICE_START_ATTEMPTS);
+  });
+
+  it('measures a transient failure again after the legs and keeps every attempt in the record', async () => {
+    let calls = 0;
+    const measure = async () => { calls++; return [smokeResult(200, true)]; };
+    const passed = [smokeResult(200, true)];
+    expect(await remeasureCloudDeviceStart(passed, measure)).toBe(passed);
+    const refused = [smokeResult(401)];
+    expect(await remeasureCloudDeviceStart(refused, measure)).toBe(refused);
+    expect(calls).toBe(0);
+    const recovered = await remeasureCloudDeviceStart([smokeResult(502), smokeResult(502)], measure);
+    expect(recovered.map(({ status }) => status)).toEqual([502, 502, 200]);
+    expect(recovered[recovered.length - 1].ok).toBe(true);
+    expect(calls).toBe(1);
   });
 });
 

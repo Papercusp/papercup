@@ -33,9 +33,16 @@ export function runAsync(cmd: string, args: string[]): Promise<void> {
   });
 }
 
+/**
+ * Make `dst` an exact copy of `src`. Any existing `dst` is removed first, and `-T` stops `cp` from
+ * nesting the copy as `dst/<basename(src)>` when `dst` already exists. Measured 2026-10-01: an
+ * aborted run left partial work dirs under the same run id, the relaunch copied each checkout one
+ * level too deep, and the replayed tool calls failed on paths that were no longer there.
+ */
 export async function copyTree(src: string, dst: string): Promise<void> {
   mkdirSync(path.dirname(dst), { recursive: true });
-  await runAsync('cp', ['-a', '--reflink=auto', src, dst]);
+  await removeTree(dst);
+  await runAsync('cp', ['-a', '--reflink=auto', '-T', src, dst]);
 }
 
 export const removeTree = (p: string): Promise<void> => runAsync('rm', ['-rf', '--', p]);

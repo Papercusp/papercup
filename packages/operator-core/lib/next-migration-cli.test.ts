@@ -18,16 +18,29 @@
  * to a `.DRAFT`-suffixed path — invisible to every consumer of the migration
  * runner (`*.filter(f => f.endsWith('.sql'))` in migration-runner.js,
  * lint-migrations.mjs, and migration-drift.ts's `isRunnerMigration`) — and
- * hands back the exact rename to arm it.
+ * hands back the shared linted no-clobber command to arm it.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line import/no-relative-packages
-import { buildAllocationResult } from '../../../scripts/next-migration.mjs';
+import { armMigration, buildAllocationResult } from '../../../scripts/next-migration.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+const temporarySqlDirs: string[] = [];
+
+function makeSqlDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'next-migration-arm-'));
+  temporarySqlDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of temporarySqlDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)', () => {
   it('rejects a slug-empty name before opening Postgres', () => {
@@ -67,7 +80,7 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
     expect(r.arm_path).toBe('libs/papercusp/libs/db/sql/740-add-foo-index.sql');
   });
 
-  it('`arm_command` is the exact rename from the DRAFT path to the arm path', () => {
+  it('arm_command uses the shared linted no-clobber CLI executor', () => {
     const r = buildAllocationResult({
       next: 740,
       filename: '740-add-foo-index.sql',
@@ -75,7 +88,7 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
       dryRun: false,
     });
     expect(r.arm_command).toBe(
-      'mv libs/papercusp/libs/db/sql/740-add-foo-index.sql.DRAFT libs/papercusp/libs/db/sql/740-add-foo-index.sql',
+      "npx tsx scripts/next-migration.mjs --arm 'libs/papercusp/libs/db/sql/740-add-foo-index.sql.DRAFT'",
     );
   });
 
@@ -122,5 +135,69 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
     });
     expect(r.path).toBe('some/other/dir/001-x.sql.DRAFT');
     expect(r.arm_path).toBe('some/other/dir/001-x.sql');
+  });
+
+  it('routes --arm before allocation so a missing draft path does not try to open Postgres', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', 'scripts/next-migration.mjs', '--arm'],
+      { cwd: REPO_ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('db:next-migration ARM FAILED — A .sql.DRAFT path is required.');
+    expect(result.stderr).not.toContain('could not reach the reservation ledger');
+  });
+
+  it('refuses to arm a draft that fails the boot pre-apply lint and leaves it unchanged', async () => {
+    const sqlDir = makeSqlDir();
+    const draftPath = join(sqlDir, '1300-unsafe-index-swap.sql.DRAFT');
+    const armPath = join(sqlDir, '1300-unsafe-index-swap.sql');
+    const unsafeSql = [
+      '-- FORWARD-COMPAT: replacement is not consumed by the serving release',
+      'CREATE UNIQUE INDEX IF NOT EXISTS agent_facts_identity_current',
+      '  ON harness_shared.agent_facts',
+      "     (workspace_id, scope, COALESCE(scope_ref, ''::text), key)",
+      '  WHERE superseded_at IS NULL;',
+      'DROP INDEX IF EXISTS harness_shared.agent_facts_identity;',
+    ].join('\n');
+    writeFileSync(draftPath, unsafeSql);
+
+    await expect(armMigration({ draftPath, sqlDir })).rejects.toThrow(
+      'same-migration unique-index shape swap',
+    );
+    expect(existsSync(draftPath)).toBe(true);
+    expect(readFileSync(draftPath, 'utf8')).toBe(unsafeSql);
+    expect(existsSync(armPath)).toBe(false);
+  });
+
+  it('arms safe SQL as a separate no-clobber file and removes the unchanged draft', async () => {
+    const sqlDir = makeSqlDir();
+    const draftPath = join(sqlDir, '1301-safe-addition.sql.DRAFT');
+    const armPath = join(sqlDir, '1301-safe-addition.sql');
+    const safeSql = 'ALTER TABLE harness_shared.example ADD COLUMN value text;';
+    writeFileSync(draftPath, safeSql);
+
+    await expect(armMigration({ draftPath, sqlDir })).resolves.toMatchObject({
+      ok: true,
+      draft_path: draftPath,
+      arm_path: armPath,
+      draft_removed: true,
+    });
+    expect(readFileSync(armPath, 'utf8')).toBe(safeSql);
+    expect(existsSync(draftPath)).toBe(false);
+  });
+
+  it('never overwrites an existing armed migration', async () => {
+    const sqlDir = makeSqlDir();
+    const draftPath = join(sqlDir, '1302-no-clobber.sql.DRAFT');
+    const armPath = join(sqlDir, '1302-no-clobber.sql');
+    const draftSql = 'ALTER TABLE harness_shared.example ADD COLUMN draft_value text;';
+    const existingSql = 'ALTER TABLE harness_shared.example ADD COLUMN existing_value text;';
+    writeFileSync(draftPath, draftSql);
+    writeFileSync(armPath, existingSql);
+
+    await expect(armMigration({ draftPath, sqlDir })).rejects.toThrow('target already exists');
+    expect(readFileSync(draftPath, 'utf8')).toBe(draftSql);
+    expect(readFileSync(armPath, 'utf8')).toBe(existingSql);
   });
 });

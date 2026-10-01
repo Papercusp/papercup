@@ -1,10 +1,10 @@
 /**
- * goals:start — open a goal AND spawn the GOAL-mode agent that owns it, in one
- * call (goals-tab-improvement-2026-08-09 P-015, D-008).
+ * goals:start — persist a goal, stamp its pre-pinned GOAL holder, then spawn it
+ * as one ordered operation (goals-tab-improvement-2026-08-09 P-015, D-008).
  *
  * WHY THIS EXISTS AS ONE TOOL. The owner's "+ Start a goal" composer needs
- * three writes to land together: the goal row, a spawned agent, and the
- * `agent_modes` stamp that JOINS them. Done client-side that is three
+ * three effects to happen in order: the goal row, the `agent_modes` stamp that
+ * JOINS it to a pre-pinned owner id, and a spawned agent. Done client-side that is three
  * independent calls with two failure gaps, and the gaps are not hypothetical —
  * the workspace this shipped into had TWO goals, ONE goal-mode session, and
  * ZERO rows joining any of them (EI-20015592992797890). A goal whose agent
@@ -12,8 +12,8 @@
  * somebody believes is being pursued.
  *
  * ORDER IS LOAD-BEARING — row, then mode, then spawn:
- *   1. INSERT the goal (cheap, rollback-able).
- *   2. Stamp `agent_modes` for the PRE-PINNED owner id (cheap, rollback-able).
+ *   1. INSERT and commit the goal row.
+ *   2. Stamp `agent_modes` for the PRE-PINNED owner id.
  *   3. Spawn the agent (expensive, and the only irreversible step).
  * The stamp must precede the spawn because it is what the agent reads on its
  * very first orient; writing it afterwards is a race against the agent's own
@@ -21,8 +21,11 @@
  * which goal it owns. Pre-pinning the identity (`psu --owner-id=`) is what
  * makes writing-before-existing possible at all.
  *
- * If the spawn fails, both writes are compensated and the tool reports the
- * failure — never a goal with no agent.
+ * Database writes use the short autocommit handle; a child process must never
+ * outlive an ambient transaction that could roll its goal row back. If launch
+ * preparation or spawn reports failure, the handler compensates the database
+ * and mode writes. A caller timeout after spawn leaves the committed goal row
+ * visible to the holder and to a retry guard.
  *
  * WHY NOT IN agent-mcp beside goals:create: the spawn needs operator-core's
  * console-launcher, and agent-mcp deliberately does not depend on
@@ -36,6 +39,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { TripwireSchema, deleteGoalRow, goalId, insertGoalRow } from '@papercusp/agent-mcp/goals';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
+import { getOrgPg } from '@papercusp/db-org';
 import { validatePropertySchemaDeclaration } from '../../typed-properties-db';
 import { withCanonicalWorklistDeclaration } from '../../goals/package-property-datatypes';
 import { applyGoalBlockedBy, readGoalReadiness, replaceGoalBlockedBy } from '@papercusp/agent-mcp/goal-deps';
@@ -395,9 +399,8 @@ function buildStartLaunchSettings(args: {
 
 export default defineTool({
   name: 'goals:start',
-  needsWorkspaceTx: true,
   description:
-    'Open a GOAL and spawn the GOAL-mode agent that owns it, atomically — the goal row, the agent, and the agent_modes stamp joining them, or none of them. ' +
+    'Open a GOAL and spawn the GOAL-mode agent that owns it. The goal row and agent_modes stamp are committed before spawn; handled launch failures are compensated. ' +
     "{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. " +
     'Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.',
   guidance: {
@@ -604,7 +607,11 @@ export default defineTool({
     if (!installSlug) {
       return err('No harness in scope — goals are filed against an install_slug. Pass `harness`.');
     }
-    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, ctx.tx as never);
+    // Each statement commits independently before any awaited process spawn.
+    // Do not opt into the dispatcher's ambient workspace transaction here:
+    // caller cancellation must not roll back a goal after its holder exists.
+    const sql = getOrgPg().sql as unknown as GoalSqlTag;
+    await assertGoalWriteAuthorityForCaller(ctx, workspaceId, sql);
 
     // EI-20049757392342975: the SAME refusal `goals:propose`, `goals:update` and
     // `goals:create` apply. This door was the one that mattered most and the one
@@ -691,7 +698,7 @@ export default defineTool({
     // refs must resolve in datatype_registry; defaults must satisfy their
     // datatype's payload_schema), same placement as the IO-schema gates above.
     if (args.propertySchema) {
-      const propCheck = await validatePropertySchemaDeclaration(ctx.tx as never, workspaceId, args.propertySchema);
+      const propCheck = await validatePropertySchemaDeclaration(sql, workspaceId, args.propertySchema);
       if (!propCheck.ok) return err(`propertySchema refused: ${propCheck.issues.join('; ')}`);
     }
 
@@ -716,7 +723,7 @@ export default defineTool({
 
     // ── 1. the goal row ───────────────────────────────────────────────────
     try {
-      await insertGoalRow(ctx.tx, {
+      await insertGoalRow(sql, {
         id,
         installSlug,
         workspaceId,
@@ -748,14 +755,14 @@ export default defineTool({
     // prerequisites the caller declared would start an agent on a premise the
     // caller did not state.
     if (args.blockedBy?.length) {
-      const applied = await applyGoalBlockedBy(ctx.tx, {
+      const applied = await applyGoalBlockedBy(sql, {
         workspaceId,
         goalId: id,
         refs: args.blockedBy,
         createdBy: callerOwnerId ?? null,
       });
       if (!applied.ok) {
-        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
         return err(`blockedBy refused (nothing spawned, goal rolled back): ${applied.problem}`);
       }
     }
@@ -770,15 +777,15 @@ export default defineTool({
     // moments ago, so the edges just applied are the only edges it can have.
     let startBlockedOverride: string | null = null;
     if (args.blockedBy?.length) {
-      const readiness = await readGoalReadiness(ctx.tx, workspaceId, id);
+      const readiness = await readGoalReadiness(sql, workspaceId, id);
       if (!readiness.actionable) {
         const unsatisfied = readiness.blockers
           .filter((b) => b.verdict !== 'satisfied')
           .map((b) => `${b.ref} (${b.kind}/${b.status ?? 'absent'}/${b.verdict})`)
           .join(', ');
         if (!args.startBlocked) {
-          await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
-          await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+          await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+          await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
           return err(
             `Refusing to start: unsatisfied blocker(s) ${unsatisfied}. Nothing was spawned and the goal was rolled back. ` +
               'Either file it as a STUB and arm it when its prerequisites clear — goals:create { blockedBy } ' +
@@ -798,7 +805,7 @@ export default defineTool({
     let sourceWorkItemStampAttempted = false;
     const clearSourceWorkItemStamp = async () => {
       if (!args.sourceWorkItemId || !sourceWorkItemStampAttempted) return;
-      await clearWorkItemGoalAtStart(ctx.tx as unknown as GoalSqlTag, {
+      await clearWorkItemGoalAtStart(sql, {
         id: args.sourceWorkItemId,
         workspaceId,
         harness: installSlug,
@@ -809,7 +816,7 @@ export default defineTool({
       sourceWorkItemStampAttempted = true;
       let sourceStamp: Awaited<ReturnType<typeof stampWorkItemGoalAtStart>>;
       try {
-        sourceStamp = await stampWorkItemGoalAtStart(ctx.tx as unknown as GoalSqlTag, {
+        sourceStamp = await stampWorkItemGoalAtStart(sql, {
           id: args.sourceWorkItemId,
           workspaceId,
           harness: installSlug,
@@ -817,8 +824,8 @@ export default defineTool({
         });
       } catch (e) {
         await clearSourceWorkItemStamp();
-        await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
-        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+        await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
         return err(
           `sourceWorkItemId ${args.sourceWorkItemId} could not be attributed (${(e as Error)?.message ?? e}); ` +
             'nothing was spawned and the goal was rolled back.',
@@ -826,8 +833,8 @@ export default defineTool({
       }
       if (!sourceStamp.ok) {
         await clearSourceWorkItemStamp();
-        await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
-        await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+        await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+        await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
         return err(
           `sourceWorkItemId ${args.sourceWorkItemId} refused (${sourceStamp.reason}); ` +
             'nothing was spawned and the goal was rolled back.',
@@ -854,8 +861,8 @@ export default defineTool({
       // Edges before the row — same rule as the main rollback below: a deleted
       // goal must not leave dangling blocked-by edges (P-004 closes the gap
       // P-002 left on this early-failure path).
-      await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
-      await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+      await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+      await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
       return err(
         `Could not put the new agent in GOAL mode (${modeRes.error ?? 'unknown error'}), so nothing was spawned and the goal was rolled back. ` +
           'A GOAL-mode agent that does not know its goal is the failure this tool exists to prevent.',
@@ -882,7 +889,7 @@ export default defineTool({
           goalId: id,
           goalTitle: args.title,
           agentOwnerId: ownerId,
-          goalTx: ctx.tx,
+          goalTx: sql,
         });
         drainFleet = { slug: minted.fleetSlug, specRevision: minted.specRevision };
       } catch (e) {
@@ -922,8 +929,8 @@ export default defineTool({
       // Edges before the row: a deleted goal must not leave dangling blocked-by
       // edges (they would be invisible absent-blocker no-ops, but they pollute
       // the workspace edge read every consumer folds).
-      await replaceGoalBlockedBy(ctx.tx, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
-      await deleteGoalRow(ctx.tx, { id, workspaceId }).catch(() => {});
+      await replaceGoalBlockedBy(sql, { workspaceId, goalId: id, blockers: [] }).catch(() => {});
+      await deleteGoalRow(sql, { id, workspaceId }).catch(() => {});
     };
 
     let base;
@@ -955,7 +962,7 @@ export default defineTool({
       goalId: id,
       goalRole: 'goal',
       requested: launchSettingsResult.requested,
-      sql: ctx.tx as never,
+      sql,
     });
     if (goalLaunch.refusal) {
       await rollback();
@@ -1071,7 +1078,7 @@ export default defineTool({
           fleetSlug: drainFleet.slug,
           launcherOwnerId: ownerId,
           requested: {},
-          sql: ctx.tx as never,
+          sql,
         });
         if (leaderLaunch.refusal) throw new Error(`leader launch policy refused: ${leaderLaunch.refusal.message}`);
         const leaderOwnerId = `su-${randomUUID()}`;
@@ -1132,7 +1139,7 @@ export default defineTool({
 
         const memberLaunch = await resolveGoalLaunchForGoal({
           workspaceId, goalId: id, goalRole: 'drain-fleet-member', fleetSlug: drainFleet.slug,
-          launcherOwnerId: ownerId, requested: {}, sql: ctx.tx as never,
+          launcherOwnerId: ownerId, requested: {}, sql,
         });
         if (memberLaunch.refusal) throw new Error(`member launch policy refused: ${memberLaunch.refusal.message}`);
         let memberCmd = buildAgentLaunchCommand({

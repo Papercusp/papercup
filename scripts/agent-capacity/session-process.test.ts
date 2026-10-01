@@ -82,6 +82,25 @@ describe('copyTree / removeTree', () => {
     }
   });
 
+  it('replaces a leftover partial destination instead of nesting the copy inside it', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'capdrv-copy-'));
+    try {
+      const src = path.join(root, 'excalidraw');
+      mkdirSync(path.join(src, 'packages', 'common', 'src'), { recursive: true });
+      writeFileSync(path.join(src, 'packages', 'common', 'src', 'colors.ts'), 'export {}');
+      // What an aborted run leaves behind: the work dir with part of the tree already removed.
+      const dst = path.join(root, 'replay-work', 'run', 's1-i0');
+      mkdirSync(path.join(dst, 'stale'), { recursive: true });
+      writeFileSync(path.join(dst, 'stale', 'left.txt'), 'x');
+      await copyTree(src, dst);
+      expect(readFileSync(path.join(dst, 'packages', 'common', 'src', 'colors.ts'), 'utf8')).toBe('export {}');
+      expect(existsSync(path.join(dst, 'excalidraw'))).toBe(false);
+      expect(existsSync(path.join(dst, 'stale'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects with the command and its stderr when the copy fails', async () => {
     await expect(copyTree('/nonexistent-capdrv-src', path.join(tmpdir(), 'capdrv-never'))).rejects.toThrow(/^cp .* exited 1: /);
   });

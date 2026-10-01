@@ -2469,6 +2469,9 @@ export function fleetOscFromEnv(env?: EnvironmentMap): string | null;
 export function injectTurn(sock: string, text: string, ownerId?: string): Promise<any>;
 /**
  * EI-24091823697677465: heal a DEAD loopback operator pin before an in-place respawn.
+ * Direct :3170 pins also route proactively through the same-build staging proxy (:9171),
+ * including explicit pins. The ordinary launcher already applies this rule, but an
+ * in-place carry-respawn reuses this host's environment and bypasses that resolver.
  *
  * The in-place respawn below re-spawns the CLI with THIS host's env, so whatever
  * PAPERCUSP_OPERATOR_URL the session was launched with rides into every successor
@@ -2495,6 +2498,11 @@ export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs 
 }): Promise<{
     from: string;
     to: string;
+    route: string;
+} | {
+    from: string;
+    to: string;
+    route?: undefined;
 } | null>;
 /**
  * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
