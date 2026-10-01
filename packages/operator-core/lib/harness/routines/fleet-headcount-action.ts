@@ -1451,7 +1451,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         config.headless
           ? spawnHeadless({
               envelope: { ...envelope, greetingCmd: commands[i], cwd: envelope.cwd },
-              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan})`,
+              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan ?? 'claim-spec'})`,
               logDir: logDir!,
               launchedBy: launcherOwnerId,
               fleetSlug,
@@ -1459,7 +1459,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
             })
           : spawnConsole({
               envelope: { ...envelope, greetingCmd: commands[i], cwd: envelope.cwd },
-              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan})`,
+              label: `${fleetSlug} · governor member ${i + 1}/${waveCount} (${config.plan ?? 'claim-spec'})`,
               writeMcpJson: false,
               allowDesktopBridge: true,
             }),

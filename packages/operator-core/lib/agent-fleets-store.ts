@@ -288,7 +288,12 @@ export interface CreateFleetInput {
 
 /** Validated launch recipe persisted for the headcount governor. */
 export interface FleetHeadcountConfig {
-  plan: string;
+  /** The launching plan, kept as provenance (governor labels + the terminal-plan
+   * disarm). Absent for a pure claim-spec (claimKinds) drain fleet: its members
+   * pull by the fleet claim spec, which is persisted in the claim-spec store and
+   * is what governor top-ups use anyway (they launch plan-less). R-8 of
+   * feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01. */
+  plan?: string;
   harness: string;
   agent: 'claude' | 'omp' | 'codex';
   model?: string;
