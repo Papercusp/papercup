@@ -131,7 +131,7 @@ async function retirePendingAttemptBindings(
   const pending = rows.filter(row => {
     const execution = (row.details as { testExecution?: unknown } | null)?.testExecution as
       { schemaVersion?: number; phase?: string; runId?: string; originRunId?: string } | undefined;
-    return row.id > 0 && row.evidenceKind === prepared.input.evidenceKind
+    return row.id > 0 && !row.withdrawal && row.evidenceKind === prepared.input.evidenceKind
       && row.specId === prepared.input.specId && row.specRevision === prepared.input.specRevision
       && row.evidenceRef === prepared.input.evidenceRef && row.testRunId == null
       && execution?.schemaVersion === 1 && execution.phase === 'pending'
@@ -792,9 +792,13 @@ async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: De
 
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
 export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps: Deps = defaults) {
+  // Audit withdrawn mappings to recover a reporter result that arrived after a
+  // terminal-no-result retirement. They supply the immutable recipe only: the
+  // exact scoped ledger and source checks below still decide whether it is proof.
   const evidence = await deps.list({ harnessSlug: scope.harnessSlug,
     planSlugs: [recovery.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [recovery.workItemId],
-    evidenceRefs: Array.from({ length: 20 }, (_, index) => refFor(recovery.originRunId, index)), limit: 200 });
+    evidenceRefs: Array.from({ length: 20 }, (_, index) => refFor(recovery.originRunId, index)),
+    includeRetracted: true, limit: 200 });
   const latest = new Map<string, (typeof evidence)[number]>();
   for (const row of [...evidence].sort((a, b) => b.id - a.id)) if (!latest.has(row.evidenceRef)) latest.set(row.evidenceRef, row);
   const prepared: Prepared[] = [];
@@ -805,7 +809,7 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   // handle rather than requiring the caller to reconstruct it from memory.
   const originOnlyRecovery = recovery.runId === recovery.originRunId;
   for (const row of latest.values()) {
-    const execution = row.details.testExecution as { schemaVersion?: number; runId?: string; originRunId?: string; binding?: unknown } | undefined;
+    const execution = row.details.testExecution as { schemaVersion?: number; phase?: string; runId?: string; originRunId?: string; binding?: unknown } | undefined;
     if (execution?.schemaVersion !== 1 || execution.originRunId !== recovery.originRunId
       || typeof execution.runId !== 'string'
       || (!originOnlyRecovery && execution.runId !== recovery.runId && execution.runId !== recovery.originRunId)) continue;
@@ -813,11 +817,21 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
     // the caller already has that detached handle but the row still contains
     // its pre-timeout origin id, trust the caller's handle and let exact ledger
     // scope/file/run checks decide whether it has a measured result.
-    const recoveredRunId = originOnlyRecovery || execution.runId === recovery.runId
+    let recoveredRunId = originOnlyRecovery || execution.runId === recovery.runId
       ? execution.runId
       : recovery.runId;
-    recoveredRunIds.add(recoveredRunId);
     const binding = bindingSchema.parse(execution.binding);
+    if (row.withdrawal) {
+      // Never revive deliberate withdrawals, settled proof, pre-launch refusals,
+      // or an older mapping hidden by a later withdrawal for the same reference.
+      const retired = row.withdrawal.reason?.match(/^Detached test run ([0-9a-f-]+) terminated \((?:pass|fail|error|cancelled), exit (?:-?\d+|unknown)\) without an attributed result for (.+); this attempt cannot settle and must be rerun\.$/);
+      if (execution.phase !== 'pending' || row.testRunId != null || !retired
+        || retired[2] !== binding.testPath
+        || (execution.runId !== recovery.originRunId && execution.runId !== retired[1])
+        || (!originOnlyRecovery && retired[1] !== recovery.runId)) continue;
+      recoveredRunId = retired[1]!;
+    }
+    recoveredRunIds.add(recoveredRunId);
     const measurement = repoFilesEvidenceMeasurementSchema.parse(row.details.currentMeasurement);
     prepared.push({ binding, measurement, input: {
       harnessSlug: scope.harnessSlug, actorId: scope.actorId,
