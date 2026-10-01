@@ -13937,6 +13937,7 @@ describe("reportSessionRespawnedDurably (WI-10004917: a respawn report lost to a
     await tick();
     pending.shift()!.release();
     await tick();
+    expect(reportImpl).toHaveBeenCalledTimes(2);
     expect(onConfirmed).toHaveBeenCalledExactlyOnceWith(freshId);
     expect(pending).toHaveLength(0);
   });
@@ -14057,7 +14058,9 @@ describe("announceAdoptedCarryRespawn (EI-21567375926533125 — report before wa
     });
 
     await Promise.resolve();
-    expect(reportImpl).toHaveBeenCalledWith("42", freshId, { coordOwnerId: "su-owner" });
+    expect(reportImpl).toHaveBeenCalledWith("42", freshId, {
+      coordOwnerId: "su-owner", onConfirmed: expect.any(Function),
+    });
     expect(emitImpl).not.toHaveBeenCalled();
 
     resolveReport(true);

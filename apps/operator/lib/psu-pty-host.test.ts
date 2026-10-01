@@ -1485,6 +1485,53 @@ describe('verified carry completion (WI-10004791)', () => {
   const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
   const proof = { persisted: true, nativeRef: `/isolated/sessions/2026/10/01/rollout-2026-10-01T10-00-00-${nativeId}.jsonl` };
 
+  it('announces an eventual reanchor confirmation once after the first report fails', async () => {
+    let confirm!: () => void;
+    const emit = vi.fn();
+    const report = vi.fn((_id: string, options: { onConfirmed: () => void }) => {
+      confirm = options.onConfirmed;
+      return false;
+    });
+    expect(await announceVerifiedCarryRespawn({ ownerId: 'su-carry', agent: 'codex', proof, report, emit }))
+      .toMatchObject({ announced: false, reason: 'successor-reanchor-unconfirmed' });
+    expect(emit).not.toHaveBeenCalled();
+    expect(confirm).toBeTypeOf('function');
+    confirm();
+    confirm();
+    expect(emit).toHaveBeenCalledExactlyOnceWith('su-carry', 'carry-respawn', { nativeId });
+  });
+
+  it('announces a confirmation after the bounded foreground wait expires', async () => {
+    let confirm!: () => void;
+    const emit = vi.fn();
+    await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex', proof, emit, timeoutMs: 5,
+      report: (_id: string, options: { onConfirmed: () => void }) => {
+        confirm = options.onConfirmed;
+        return new Promise(() => {});
+      },
+    });
+    expect(emit).not.toHaveBeenCalled();
+    confirm();
+    expect(emit).toHaveBeenCalledOnce();
+  });
+
+  it('withholds eventual confirmation when the carry child has been superseded', async () => {
+    let current = true;
+    let confirm!: () => void;
+    const emit = vi.fn();
+    await announceVerifiedCarryRespawn({
+      ownerId: 'su-carry', agent: 'codex', proof, emit, isCurrent: () => current,
+      report: (_id: string, options: { onConfirmed: () => void }) => {
+        confirm = options.onConfirmed;
+        return false;
+      },
+    });
+    current = false;
+    confirm();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('discovers the late Codex id and awaits reanchor before waking peers', async () => {
     const order: string[] = [];
     let confirm!: (value: boolean) => void;
@@ -1492,7 +1539,7 @@ describe('verified carry completion (WI-10004791)', () => {
     const emit = vi.fn(() => { order.push('emit'); return null; });
     const done = announceVerifiedCarryRespawn({ ownerId: 'su-carry', agent: 'codex', proof, report, emit });
     await Promise.resolve();
-    expect(report).toHaveBeenCalledWith(nativeId);
+    expect(report).toHaveBeenCalledWith(nativeId, { onConfirmed: expect.any(Function) });
     expect(emit).not.toHaveBeenCalled();
     order.push('reanchor');
     confirm(true);
