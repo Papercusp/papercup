@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DELETE_FIXTURE,
   EDIT_FIXTURE,
+  answered,
   runEngineArm,
   summarizeArm,
   type EngineArm,
@@ -58,7 +59,17 @@ function makeWorld(): World {
  * A scripted engine. `live` engines re-read the tree on refresh (so they see edits and
  * deletes); a stale engine snapshots once at index time and never again.
  */
-function fakeArm(world: World, opts: { live: boolean; surfaceFault?: boolean }): EngineArm & { refreshes: number } {
+function fakeArm(
+  world: World,
+  opts: {
+    live: boolean;
+    surfaceFault?: boolean;
+    /** A caveat the engine attaches to EVERY answer (the GitNexus facade does: index health unmeasured). */
+    note?: string;
+    /** The engine declines every query: no sites, `error` set. */
+    declines?: string;
+  },
+): EngineArm & { refreshes: number } {
   let snapshot = new Map(world.disk);
   const arm = {
     id: opts.live ? 'fake-live' : 'fake-stale',
@@ -79,16 +90,18 @@ function fakeArm(world: World, opts: { live: boolean; surfaceFault?: boolean }):
       return OK;
     },
     async query(kase: CorpusCase): Promise<EngineQueryResult> {
+      if (opts.declines) return { sites: [], responseBytes: 10, error: opts.declines };
+      const error = opts.note ?? null;
       if (kase.id === 'fixture-edit-new-symbol') {
         const text = snapshot.get(`${ROOT}/${EDIT_FIXTURE.file}`) ?? '';
         const idx = text.split('\n').findIndex((l) => l.includes(`export function ${EDIT_FIXTURE.symbol}`));
         const sites = idx < 0 ? [] : [{ path: EDIT_FIXTURE.file, line1: idx + 1, kind: null, detail: '' }];
-        return { sites, responseBytes: 40, error: null };
+        return { sites, responseBytes: 40, error };
       }
       const sites = kase.expectedSites
         .filter((s) => s.path !== DELETE_FIXTURE.file || snapshot.has(`${ROOT}/${s.path}`))
         .map((s) => ({ path: s.path, line1: s.line1, kind: null, detail: '' }));
-      return { sites, responseBytes: 100, error: null };
+      return { sites, responseBytes: 100, error };
     },
     async indexBytes() {
       return 123;
@@ -143,6 +156,45 @@ describe('runEngineArm (fake engines)', () => {
     expect(report.unavailable).toBe('binary not built');
     expect(report.cases).toEqual([]);
     expect(summarizeArm(report).available).toBe(false);
+  });
+
+  it('grades an engine that attaches a caveat note to every answer on its sites, not on the note (WI-10001405)', async () => {
+    const world = makeWorld();
+    const report = await runEngineArm(fakeArm(world, { live: true, note: 'index health UNMEASURED' }), OPTS, world.deps);
+    // the same engine graded without the note passes everything (first test) — the note must not flip that
+    expect(report.cases.every((c) => c.correct)).toBe(true);
+    expect(report.cases.every((c) => c.recall === 1)).toBe(true);
+    expect(report.cases.every((c) => c.error === 'index health UNMEASURED')).toBe(true);
+    expect(report.fixtures.map((f) => [f.name, f.pass])).toEqual([
+      ['edit', true],
+      ['delete', true],
+      ['refresh-failure', true],
+    ]);
+    // the note is surfaced in the detail, never dropped
+    expect(report.fixtures.find((f) => f.name === 'edit')?.detail).toMatch(/\[engine note: index health UNMEASURED\]/);
+  });
+
+  it('a noted answer is still graded on content: a stale engine with a note still FAILS edit and delete', async () => {
+    const world = makeWorld();
+    const report = await runEngineArm(fakeArm(world, { live: false, note: 'index health UNMEASURED' }), OPTS, world.deps);
+    const byName = Object.fromEntries(report.fixtures.map((f) => [f.name, f]));
+    expect(byName.edit?.pass).toBe(false);
+    expect(byName.delete?.pass).toBe(false);
+    expect(byName.delete?.detail).toMatch(/STALE sites still returned/);
+  });
+
+  it('an engine that DECLINES every query (error and no sites) scores 0 correct, 0 recall and fails the fixtures', async () => {
+    const world = makeWorld();
+    const report = await runEngineArm(fakeArm(world, { live: true, declines: 'tool call failed' }), OPTS, world.deps);
+    expect(report.cases.every((c) => !c.correct && c.recall === 0)).toBe(true);
+    const byName = Object.fromEntries(report.fixtures.map((f) => [f.name, f]));
+    expect(byName.edit?.pass).toBe(false);
+    expect(byName.delete?.pass).toBe(false);
+    expect(byName.delete?.detail).toMatch(/query FAILED \(error and no sites\)/);
+    expect(byName.delete?.detail).toMatch(/\[engine note: tool call failed\]/);
+    // nothing was correct cold, so "stays as correct while a refresh is broken" would hold vacuously (0 >= 0)
+    expect(byName['refresh-failure']?.pass).toBe(false);
+    expect(byName['refresh-failure']?.detail).toMatch(/NOT MEASURABLE/);
   });
 
   it('reports a failed cold index as an error and measures nothing after it', async () => {
