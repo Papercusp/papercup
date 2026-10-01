@@ -34,9 +34,12 @@ const goalHoldersMock = vi.hoisted(() =>
   vi.fn(async (_sql: unknown, opts: { workspaceId: string; goalId: string }) => ({
     workspaceId: opts.workspaceId,
     goalId: opts.goalId,
-    holders: [],
-    live: [{ ownerId: 'su-live-goal-holder' }],
-    liveness: 'held' as const,
+    holders: [] as Array<{ ownerId: string }>,
+    live: [{ ownerId: 'su-live-goal-holder' }] as Array<{ ownerId: string }>,
+    // Widened on purpose: the stale-owner-edge tests (WI-10004524) re-queue this
+    // mock with every liveness verdict, and a literal `'held'` return type would
+    // force a cast at each call site.
+    liveness: 'held' as 'held' | 'unheld' | 'lost' | 'unknown',
   })),
 );
 vi.mock('@papercusp/flags/server', () => ({
@@ -158,7 +161,19 @@ interface MockOpts {
   portfolio?: Record<string, Record<string, unknown>>;
   /** Active role='owner' goal for a target harness. Terminal historical owners
    * are deliberately absent: the production query joins goals.status='active'. */
-  activePotOwner?: Record<string, { goalId: string; title?: string | null }>;
+  activePotOwner?: Record<
+    string,
+    {
+      goalId: string;
+      title?: string | null;
+      /** WI-10004524: `goals.metadata.disposition` of the owning goal. */
+      disposition?: string | null;
+      standing?: boolean;
+      /** Non-archived non-terminal plans stamped to / listed by the owner goal.
+       *  Omitted ⇒ the count column is absent, i.e. UNREAD (never read as 0). */
+      liveWorklistPlans?: number;
+    }
+  >;
   /**
    * Holder-AUTHORITY election, by GOAL id — who currently holds the goal named
    * in `modeSubject`. Omitted ⇒ the owner that runs the goal is also its
@@ -257,7 +272,17 @@ function mockSql(opts: MockOpts = {}): Sql {
       ) as string | undefined;
       const owner = harness ? opts.activePotOwner?.[harness] : undefined;
       return Promise.resolve(
-        owner ? [{ owner_goal_id: owner.goalId, owner_goal_title: owner.title ?? null }] : [],
+        owner
+          ? [
+              {
+                owner_goal_id: owner.goalId,
+                owner_goal_title: owner.title ?? null,
+                owner_disposition: owner.disposition ?? null,
+                owner_standing: owner.standing ?? false,
+                live_worklist_plans: owner.liveWorklistPlans,
+              },
+            ]
+          : [],
       );
     }
     if (text.includes('FROM harness_shared.session_briefs b')) {
@@ -338,6 +363,109 @@ describe('resolveGoalPotPlacementAuthority', () => {
       reason: 'different-active-goal-owns-pot',
       ownerGoalId: 'goal-sidestage-owner',
       ownerGoalTitle: 'SideStage release',
+      // The worklist count column was not read (the fixture omits it): UNREAD is
+      // never 0, so the edge stays live and the oracle is not consulted.
+      ownerState: { disposition: null, standing: false, liveWorklistPlans: null, holderLiveness: 'not-checked' },
+    });
+    expect(goalHoldersMock).not.toHaveBeenCalled();
+  });
+
+  describe('stale owner edge (WI-10004524)', () => {
+    const launcher = 'goal-work-on-everything';
+    const ownerGoal = 'goal-owner-handed-off';
+    const verdictFor = (
+      owner: Omit<NonNullable<MockOpts['activePotOwner']>[string], 'goalId' | 'title'>,
+      seen?: string[],
+    ) =>
+      resolveGoalPotPlacementAuthority({
+        workspaceId: WS,
+        launcherGoalId: launcher,
+        harnessSlug: 'papercusp',
+        sql: mockSql({ activePotOwner: { papercusp: { goalId: ownerGoal, title: 'Handed off', ...owner } }, seen }),
+      });
+    const holderLiveness = (liveness: 'held' | 'unheld' | 'lost' | 'unknown') =>
+      goalHoldersMock.mockImplementationOnce(async (_sql, opts) => ({
+        workspaceId: opts.workspaceId,
+        goalId: opts.goalId,
+        holders: [],
+        live: [],
+        liveness,
+      }));
+
+    it('a LIVE owner (non-terminal worklist plan) refuses and never pays for the oracle', async () => {
+      const verdict = await verdictFor({ liveWorklistPlans: 2, disposition: 'handoff' });
+      expect(verdict).toMatchObject({ allowed: false, reason: 'different-active-goal-owns-pot' });
+      expect(verdict.ownerState).toEqual({
+        disposition: 'handoff',
+        standing: false,
+        liveWorklistPlans: 2,
+        holderLiveness: 'not-checked',
+      });
+      expect(goalHoldersMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['handoff', 'killed', 'achieved'])(
+      'a %s owner with no live worklist is VACANT without consulting the oracle',
+      async (disposition) => {
+        const verdict = await verdictFor({ liveWorklistPlans: 0, disposition });
+        expect(verdict).toMatchObject({
+          allowed: true,
+          reason: 'stale-owner-edge-vacant',
+          ownerGoalId: ownerGoal,
+        });
+        expect(verdict.ownerState?.holderLiveness).toBe('not-checked');
+        expect(goalHoldersMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('an owner whose only worklist plan is terminal (count 0) with a DEAD holder is vacant', async () => {
+      holderLiveness('lost');
+      const verdict = await verdictFor({ liveWorklistPlans: 0 });
+      expect(verdict).toMatchObject({ allowed: true, reason: 'stale-owner-edge-vacant' });
+      expect(verdict.ownerState).toEqual({
+        disposition: null,
+        standing: false,
+        liveWorklistPlans: 0,
+        holderLiveness: 'lost',
+      });
+      expect(goalHoldersMock).toHaveBeenCalledWith(expect.anything(), { workspaceId: WS, goalId: ownerGoal });
+    });
+
+    it.each(['held', 'unheld', 'unknown'] as const)(
+      'no worklist but holder %s keeps the edge LIVE (a just-created or live goal keeps its pot)',
+      async (liveness) => {
+        holderLiveness(liveness);
+        const verdict = await verdictFor({ liveWorklistPlans: 0 });
+        expect(verdict).toMatchObject({ allowed: false, reason: 'different-active-goal-owns-pot' });
+        expect(verdict.ownerState?.holderLiveness).toBe(liveness);
+      },
+    );
+
+    it('an unreadable presence oracle is UNKNOWN, never dead — the guard keeps refusing', async () => {
+      goalHoldersMock.mockImplementationOnce(async () => {
+        throw new Error('oracle down');
+      });
+      const verdict = await verdictFor({ liveWorklistPlans: 0 });
+      expect(verdict).toMatchObject({ allowed: false });
+      expect(verdict.ownerState?.holderLiveness).toBe('unknown');
+    });
+
+    it('a STANDING goal is not released by a recorded disposition alone', async () => {
+      holderLiveness('held');
+      const verdict = await verdictFor({ liveWorklistPlans: 0, disposition: 'killed', standing: true });
+      expect(verdict).toMatchObject({ allowed: false });
+      expect(verdict.ownerState).toMatchObject({ standing: true, holderLiveness: 'held' });
+    });
+
+    it('measures the worklist over non-archived, non-terminal plans using the plan grammar', async () => {
+      const seen: string[] = [];
+      await verdictFor({ liveWorklistPlans: 1 }, seen);
+      const query = seen.find((text) => text.includes('FROM harness_shared.goal_pots gp')) ?? '';
+      expect(query).toContain('FROM harness_shared.harness_plans hp');
+      expect(query).toContain('NOT COALESCE(hp.archived, false)');
+      expect(query).toContain('hp.goal_id = g.id');
+      expect(query).toContain("g.properties->'worklist'->'value'");
+      expect(query).toContain("g.status = 'active'");
     });
   });
 

@@ -61,6 +61,9 @@
 import { z } from 'zod';
 import type { Sql } from 'postgres';
 import { getOrgPg, GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+// Pure plan-status grammar (zero I/O) — the one definition of "terminal plan",
+// shared with plans:set-plan-status. Used by the pot-owner worklist count.
+import { TERMINAL_PLAN_STATUSES } from '@papercusp/plan-parser';
 // Re-exported below for the public surface; imported here because this module
 // uses both internally (the schema's role enum + the resolver signatures).
 import {
@@ -2580,9 +2583,64 @@ export async function readGoalLaunchSettingsForLauncher(args: {
  */
 export interface GoalPotPlacementAuthority {
   allowed: boolean;
-  reason: 'no-active-owner' | 'caller-goal-owns-pot' | 'different-active-goal-owns-pot';
+  reason:
+    | 'no-active-owner'
+    | 'caller-goal-owns-pot'
+    | 'different-active-goal-owns-pot'
+    /** An `owner` edge exists for another ACTIVE goal, but that goal has outlived
+     *  its executable worklist (WI-10004524) — the edge is read as VACANT. */
+    | 'stale-owner-edge-vacant';
   ownerGoalId: string | null;
   ownerGoalTitle: string | null;
+  /**
+   * What the sovereignty read measured about ANOTHER goal's owner edge — present
+   * on the refusal AND on the stale-edge allow, so a steward can tell a stale
+   * owner from a live one without a second query (WI-10004524 acceptance 2).
+   * Absent when there is no other-goal owner to describe.
+   */
+  ownerState?: GoalPotOwnerState;
+}
+
+/**
+ * What decides whether an `owner` edge still confers placement sovereignty.
+ * `holderLiveness` is `'not-checked'` when an earlier leg already settled the
+ * verdict (a live worklist plan keeps the edge; a releasing disposition drops
+ * it) so the presence oracle is only paid for when it can change the answer.
+ */
+export interface GoalPotOwnerState {
+  /** `goals.metadata.disposition`, e.g. `handoff` | `killed` | `achieved`. */
+  disposition: string | null;
+  /** Standing goals pursue an ongoing duty: a recorded disposition alone never
+   *  releases their edge — only a lost holder with no worklist does. */
+  standing: boolean;
+  /** Non-archived, non-terminal plans stamped to the goal or named in its
+   *  `worklist` property. `null` = the count was not read (never read as 0). */
+  liveWorklistPlans: number | null;
+  holderLiveness: 'held' | 'unheld' | 'lost' | 'unknown' | 'not-checked';
+}
+
+/** Dispositions that mean the owner goal has stopped pursuing its pot. `handoff`
+ *  is the one that leaves `status='active'` by design, which is why status alone
+ *  cannot release the edge. */
+export const POT_OWNER_RELEASING_DISPOSITIONS: readonly string[] = ['handoff', 'killed', 'achieved'];
+
+/**
+ * PURE: does this owner edge still hold the pot? An edge is STALE — vacant for
+ * every other goal — only when the owning goal has NO executable worklist AND is
+ * demonstrably not working it: it declared a releasing disposition, or every
+ * holder row it has resolves dead (`lost`).
+ *
+ * CONSERVATIVE on every unknown, because the status quo (refuse) is the safe
+ * failure: an unread worklist count, an unresolved/`unknown` oracle verdict and
+ * `unheld` (a goal created but not yet started has no holder row yet and must
+ * keep the pot it was just given) all leave the edge LIVE.
+ */
+export function potOwnerEdgeIsStale(state: GoalPotOwnerState): boolean {
+  if (state.liveWorklistPlans === null || state.liveWorklistPlans > 0) return false;
+  if (!state.standing && state.disposition && POT_OWNER_RELEASING_DISPOSITIONS.includes(state.disposition)) {
+    return true;
+  }
+  return state.holderLiveness === 'lost';
 }
 
 export async function resolveGoalPotPlacementAuthority(args: {
@@ -2592,8 +2650,43 @@ export async function resolveGoalPotPlacementAuthority(args: {
   sql?: Sql;
 }): Promise<GoalPotPlacementAuthority> {
   const sql = pg(args.sql);
-  const rows = await sql<Array<{ owner_goal_id: string; owner_goal_title: string | null }>>`
-    SELECT gp.goal_id AS owner_goal_id, g.title AS owner_goal_title
+  // The worklist count mirrors the portfolio brief's definition of a goal's
+  // worklist — plans stamped `goal_id` plus the refs in the goal's `worklist`
+  // property (same ref grammar as readGoalPortfolioBrief) — narrowed to plans
+  // that are not archived and not terminal. `TERMINAL_PLAN_STATUSES` comes from
+  // the plan grammar so the vocabulary cannot drift from plans:set-plan-status.
+  const rows = await sql<
+    Array<{
+      owner_goal_id: string;
+      owner_goal_title: string | null;
+      owner_disposition?: string | null;
+      owner_standing?: boolean | null;
+      live_worklist_plans?: number | string | null;
+    }>
+  >`
+    SELECT gp.goal_id AS owner_goal_id, g.title AS owner_goal_title,
+           g.metadata->>'disposition' AS owner_disposition,
+           g.standing AS owner_standing,
+           (SELECT count(*)::int
+              FROM harness_shared.harness_plans hp
+             WHERE hp.workspace_id = g.workspace_id
+               AND NOT COALESCE(hp.archived, false)
+               AND COALESCE(hp.status, '') <> ALL(${[...TERMINAL_PLAN_STATUSES]}::text[])
+               AND (
+                 hp.goal_id = g.id
+                 OR EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements_text(
+                            CASE WHEN jsonb_typeof(g.properties->'worklist'->'value') = 'array'
+                                 THEN g.properties->'worklist'->'value' ELSE '[]'::jsonb END
+                          ) wr(ref)
+                    WHERE hp.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                      AND (
+                        position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
+                        OR hp.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1)
+                      )
+                 )
+               )) AS live_worklist_plans
       FROM harness_shared.goal_pots gp
       JOIN harness_shared.goals g
         ON g.workspace_id = gp.workspace_id
@@ -2623,11 +2716,47 @@ export async function resolveGoalPotPlacementAuthority(args: {
       ownerGoalTitle: owner.owner_goal_title,
     };
   }
+  // Another active goal holds the edge. Decide whether it still EARNS it.
+  const worklistCount = owner.live_worklist_plans == null ? null : Number(owner.live_worklist_plans);
+  const ownerState: GoalPotOwnerState = {
+    disposition: owner.owner_disposition ?? null,
+    standing: owner.owner_standing === true,
+    liveWorklistPlans: worklistCount !== null && Number.isFinite(worklistCount) ? worklistCount : null,
+    holderLiveness: 'not-checked',
+  };
+  // Holder liveness is the expensive leg (presence oracle) and only matters when
+  // the cheap legs are inconclusive: no live plan, and no releasing disposition.
+  const dispositionReleases =
+    !ownerState.standing && ownerState.disposition !== null && POT_OWNER_RELEASING_DISPOSITIONS.includes(ownerState.disposition);
+  if (ownerState.liveWorklistPlans === 0 && !dispositionReleases) {
+    try {
+      const { resolveGoalHolders } = await import('./goals/holder');
+      const holders = await resolveGoalHolders(sql, {
+        workspaceId: args.workspaceId,
+        goalId: owner.owner_goal_id,
+      });
+      ownerState.holderLiveness = holders.liveness;
+    } catch {
+      // An unreadable oracle is UNKNOWN, never dead — the edge stays live and the
+      // caller keeps refusing, exactly as before this check existed.
+      ownerState.holderLiveness = 'unknown';
+    }
+  }
+  if (potOwnerEdgeIsStale(ownerState)) {
+    return {
+      allowed: true,
+      reason: 'stale-owner-edge-vacant',
+      ownerGoalId: owner.owner_goal_id,
+      ownerGoalTitle: owner.owner_goal_title,
+      ownerState,
+    };
+  }
   return {
     allowed: false,
     reason: 'different-active-goal-owns-pot',
     ownerGoalId: owner.owner_goal_id,
     ownerGoalTitle: owner.owner_goal_title,
+    ownerState,
   };
 }
 

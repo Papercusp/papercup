@@ -736,6 +736,38 @@ describe('fleet:launch-on-plan GOAL pot sovereignty fence (EI-22180799091614070)
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
+  it("names the owner goal's measured state so a steward can tell a live owner from a stale edge (WI-10004524)", async () => {
+    goalLaunchReadMock.mockResolvedValueOnce({
+      goalId: 'goal-work-on-everything',
+      settings: null,
+      drainFleetSlug: null,
+      degraded: false,
+      degradedReasons: [],
+    });
+    goalPotPlacementAuthorityMock.mockResolvedValueOnce({
+      allowed: false,
+      reason: 'different-active-goal-owns-pot',
+      ownerGoalId: 'goal-sidestage-owner',
+      ownerGoalTitle: 'SideStage release',
+      ownerState: { disposition: null, standing: false, liveWorklistPlans: 3, holderLiveness: 'not-checked' },
+    });
+
+    const res = await invokeLaunchHandler({
+      name: 'Cross Goal Fleet',
+      plan: 'my-plan',
+      harness: 'sidestage',
+      count: 1,
+    });
+    const text = (res as { content: { text: string }[] }).content[0].text;
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(text).toContain('goal_placement_sovereignty_refusal');
+    expect(text).toContain('non-terminal worklist plans=3');
+    expect(text).toContain('holder liveness=not-checked');
+    expect(text).toContain('disposition=none');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed before launch side effects when active-owner authority is unreadable', async () => {
     goalLaunchReadMock.mockResolvedValueOnce({
       goalId: 'goal-work-on-everything',

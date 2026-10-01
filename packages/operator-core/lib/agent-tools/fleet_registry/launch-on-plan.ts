@@ -2621,9 +2621,20 @@ export default defineTool({
       }
       if (!placementAuthority.allowed) {
         const ownerTitle = placementAuthority.ownerGoalTitle ? ` (\`${placementAuthority.ownerGoalTitle}\`)` : '';
+        // WI-10004524: name the owner's measured state so a steward can tell a LIVE
+        // owner from one whose edge merely survived — a refusal that says only
+        // "owns that pot" reads identically for both.
+        const ownerState = placementAuthority.ownerState;
+        const ownerEvidence = ownerState
+          ? ` Owner state: disposition=${ownerState.disposition ?? 'none'}${ownerState.standing ? ' (standing goal)' : ''}, ` +
+            `non-terminal worklist plans=${ownerState.liveWorklistPlans ?? 'unread'}, holder liveness=${ownerState.holderLiveness}. ` +
+            'An owner edge reads as vacant automatically once the owner has no non-terminal worklist plan AND either declared ' +
+            'handoff|killed|achieved or lost every holder; this one has not met that bar.'
+          : '';
         return err(
           `goal_placement_sovereignty_refusal: GOAL \`${goalSettings.goalId}\` cannot launch into harness ` +
-            `\`${planHarnessSlug}\` because active goal \`${placementAuthority.ownerGoalId}\`${ownerTitle} owns that pot. ` +
+            `\`${planHarnessSlug}\` because active goal \`${placementAuthority.ownerGoalId}\`${ownerTitle} owns that pot.` +
+            `${ownerEvidence} ` +
             "Route the finding/work to that goal's holder or drain leader instead. NO fleet was created and NO terminals were opened.",
         );
       }
