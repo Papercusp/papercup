@@ -4032,3 +4032,68 @@ gateway adoption, the historical client-close cause and application impact
 remain unverified. The shared-runtime, Portal and live-gate exclusions are
 unchanged. **P-008/R-8 remains open; no terminal disposition or shipment is
 claimed.**
+
+### Codex cancellation parity — October 1, final source verification
+
+The three Codex attempt observers (CLI, OAuth and bearer) also counted a
+downstream cancellation as an upstream error. Canonical HTTP regressions
+reproduced `codex.errors:1` rather than zero on each path. The observers now
+branch on the existing typed `cancelled` error before failure accounting,
+owner-ledger updates or credential-failure handling. Their cancellation and
+transport-error logs use the existing process instance/request ID and error
+code. No new telemetry surface was introduced.
+
+A separate OAuth transport regression distinguished a native fetch
+`AbortError` caused by downstream cancellation from a genuine TTFB timeout.
+The adapter previously cooled `chatgpt-a:default` for 30 seconds on either
+cause. It now reads the kernel's typed abort reason before attributing an
+egress failure: cancellation leaves both the failure callback and cooldown
+quiet; a real timeout preserves both. The direct adapter harness reproduced
+the cancellation failure while its timeout control passed, then its full
+suite passed **27/27**, zero skips, exit 0. It imports the adapter and kernel
+directly; the contemporaneous mutation probe named `gateway.ts`, which this
+harness does not exercise. This is not an immutable whole-import-graph claim.
+
+The four-file current matrix passed **351 tests**, zero skips, exit 0 on
+HEAD `0fa8a6e36d` plus local edits:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/inference-gateway/gateway.test.ts \
+  packages/operator-core/lib/inference-gateway/request-kernel.test.ts \
+  packages/operator-core/lib/inference-gateway/gateway-stage-telemetry.test.ts \
+  packages/operator-core/lib/inference-gateway/codex-oauth-kernel-adapter.test.ts
+```
+
+All seven recorded source/test fingerprints stayed fixed during that run
+(`/tmp/p008-fire76-fingerprints-before.txt` and `-after.txt`). A first selected
+green run exposed a fixture mistake: buffered CLI request-ceiling expiry is
+`gateway-error`, whereas HTTP TTFB expiry is `upstream-error`. The assertion
+now preserves that existing distinction and verifies positive failure counts
+for both deadline controls.
+
+Scoped typechecking then caught three optional stats-map accesses in the
+stage tests (including the prior Claude assertions). After correcting those
+test accesses, the final stage suite passed **31/31**, zero skips, exit 0;
+the four-file scoped typecheck passed with zero new errors and two existing
+baseline diagnostics. The final production sources were unchanged by this
+test-only correction. Final fingerprints:
+
+- `gateway.ts`: `a6bcb14981baefc5b69498870635be76a5655b951911068016d294d89fbaaf99`
+- stage test: `e119c153fd76e6a847f001bb3998248e8b6380aa04affc5e1b844a7997794950`
+- OAuth adapter: `f4275b9bd8f1ce720a4ce68ef36e6c4e2f3c16ccf41dd955df9edcbef32e9a4f`
+- OAuth adapter test: `b055eca041d06c72b46886bd50c5cc33ea980310827340abaf64e17ff04b1cbc`
+
+Logs: `/tmp/p008-fire76-codex-red.log`, `-codex-green.log` (the fixture
+correction), `-oauth-red.log`, `-oauth-green.log`, `-gateway-matrix.log`,
+`-stage-final.log`, and `-tsc-final.log`. Final stage/typecheck log SHA-256:
+`2bec5e66818942b0bca2a5bee75554d1a5ac20e2f10f8538b1d528a24a53fa07` /
+`edb7092e14c6ec05878aa786d22984ffc9f14bf449a6f89d77c43a6e2a4e7ce9`.
+
+The gateway edit was initially refused on a peer's mutation-probe lock.
+After coordination and the durable lock grant, it was applied without
+discarding peer changes; the peer confirmed their probe was stopped. Live
+adoption, historical client-close cause/application impact and the remaining
+R-8 operational inputs are still unverified. Portal and harvested-item
+routing are now held by the fleet leader, as delivered in coordination.
+**P-008/R-8 remains open; no acceptance binding or shipment is claimed.**

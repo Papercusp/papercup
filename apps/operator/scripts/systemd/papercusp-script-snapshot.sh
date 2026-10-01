@@ -6,7 +6,8 @@
 # Bash reads those scripts lazily, so an edit that lands while a long-running
 # invocation is in progress can move the next byte offset and turn a valid
 # program into a different program.  This launcher snapshots the entry script
-# and every nested *.sh argument before starting work.
+# and every nested *.sh argument plus its adjacent runtime sidecars before
+# starting work.
 #
 # The launcher snapshots itself first.  That keeps the short-lived dispatcher
 # stable too, and makes this helper safe to edit while a service is starting.
@@ -140,15 +141,15 @@ snapshot_script() {
 
   snapshot_file "$source" "$destination" "target $base" || return $?
 
-  # Setup-release-checkout sources dependency-generation.sh beside itself via
-  # BASH_SOURCE. Preserve every adjacent shell helper in the same directory;
-  # copying only the entry script changes that path to this private snapshot
-  # directory and makes the prepared checkout fail before any restart.
+  # Setup-release-checkout sources dependency-generation.sh and invokes
+  # pinned-lock-deps.mjs beside itself via BASH_SOURCE. Preserve adjacent shell
+  # and Node helpers in the same directory; copying only the entry script
+  # changes that path to this private snapshot directory and drops its helpers.
   while IFS= read -r -d '' sidecar; do
     [[ "$sidecar" == "$source" ]] && continue
     snapshot_file "$sidecar" "$destination_dir/$(basename -- "$sidecar")" \
       "adjacent helper $(basename -- "$sidecar")" || return $?
-  done < <(find "$source_dir" -maxdepth 1 -type f -name '*.sh' -print0 2>/dev/null)
+  done < <(find "$source_dir" -maxdepth 1 -type f \( -name '*.sh' -o -name '*.mjs' \) -print0 2>/dev/null)
 
   # Health checks source lib/red-marker.sh through BASH_SOURCE. Preserve the
   # existing subdirectory layout for those shell sidecars too.

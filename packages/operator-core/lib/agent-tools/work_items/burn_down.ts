@@ -31,7 +31,7 @@ import { shapeBurnDown } from './burn_down-shape';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
-import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { readAgentReviewState, countWorkItemPresentationStages } from '../../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
@@ -1003,6 +1003,17 @@ export async function buildFleetMetricsResult(
           observations: FLEET_METRIC_WRITERS.workItems,
           occurrences: FLEET_METRIC_WRITERS.occurrences,
         },
+      },
+      intakeStages: {
+        ...countWorkItemPresentationStages(currentMatched.filter(item => item.family === 'issue').map(item => ({
+          kind: item.kind, title: item.title, summary: item.summary, payload: item.payload,
+          status: item.state, assignee: item.assignee, terminalOwner: item.terminalOwner,
+          terminalCompletionRef: item.terminalCompletionRef, completionAuthority: item.completionAuthority,
+          blocked: ['blocked-dep', 'external-blocker', 'claim-hold', 'needs-owner-action']
+            .includes(floorById.get(item.id)?.refusedBy ?? ''),
+        }))),
+        scope: 'current-spec issue-family rows including observation evidence',
+        window: 'current stock at generatedAt',
       },
       populationLifecycle: resolution.populationLifecycle,
       admissionParity: FLEET_METRIC_ADMISSION_PARITY,

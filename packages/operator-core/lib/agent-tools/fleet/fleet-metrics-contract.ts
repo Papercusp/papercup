@@ -10,6 +10,7 @@
 import { z } from 'zod';
 import type { FleetPopulationLifecycleSnapshot } from './fleet-population';
 import { COUNT_EVIDENCE_COMPARISON_RULE } from '../../count-evidence-contract';
+import { WORK_ITEM_PRESENTATION_STAGES } from '../../work-item-presentation-contract';
 
 export const FLEET_METRICS_SCHEMA_VERSION = 'fleet-metrics-v1' as const;
 
@@ -358,6 +359,25 @@ export const fleetMetricsSnapshotSchema = z
     remaining: remainingSchema,
     authority: authorityPartitionSchema,
     issueUnits: issueUnitsSchema,
+    intakeStages: z.object({
+      population: nonNegativeInt,
+      unit: z.literal('work-item rows'),
+      counts: z.record(z.enum(WORK_ITEM_PRESENTATION_STAGES), nonNegativeInt),
+      remainingBugs: nonNegativeInt,
+      verifiedCompletions: nonNegativeInt,
+      mutuallyExclusive: z.literal(true),
+      writer: z.literal('deriveWorkItemPresentationStage'),
+      scope: z.literal('current-spec issue-family rows including observation evidence'),
+      window: z.literal('current stock at generatedAt'),
+    }).superRefine((report, ctx) => {
+      if (WORK_ITEM_PRESENTATION_STAGES.reduce((sum, stage) => sum + (report.counts[stage] ?? 0), 0) !== report.population
+        || WORK_ITEM_PRESENTATION_STAGES.some(stage => report.counts[stage] === undefined)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['counts'], message: 'intake stages must partition the declared population once' });
+      }
+      if (report.verifiedCompletions !== report.counts['verified-completion']) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedCompletions'], message: 'verified delivery must equal the verified-completion stage' });
+      }
+    }).optional(),
     // Optional for backwards-compatible parsing of pre-P-004 snapshots; the
     // canonical resolver and burn-down writer always emit it for fleet reads.
     populationLifecycle: z.custom<FleetPopulationLifecycleSnapshot>().optional(),

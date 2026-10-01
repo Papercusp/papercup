@@ -36,6 +36,13 @@ export function auditDraw(file: string, judgedSha: string): number;
  * imports and does not record them; those resolve to node_modules (package-lock.json, global) or to
  * @papercusp/test-config (libs/test-config, global), and a tree guard in test-pass-reuse.test.ts
  * fails if a nested config ever imports anything else. Root `vitest.*` stays global.
+ *
+ * package-lock.json and patches/ stay global because a proof cannot see node_modules (P-005,
+ * verified 2026-10-01: the reporter drops external modules, and 0 of 7,340 recent proofs carry a
+ * node_modules path), so a per-package match has nothing to match against. The one narrowing is a
+ * lockfile edit that leaves the installed tree identical (packageLockChangeIsInert, asked through
+ * the inertGlobalChange seam). A patches/ edit always rewrites an installed package, so it has no
+ * inert case.
  */
 export function isGlobalRunnerInput(rel: any): boolean;
 /**
@@ -65,6 +72,38 @@ export function isRunnerAffectingScript(name: string): boolean;
  * @returns {boolean}
  */
 export function rootPackageJsonChangeIsInert(beforeText: string, afterText: string): boolean;
+/**
+ * The part of a package-lock.json that decides what `npm ci` puts on disk, as one canonical
+ * string (gate-test-reuse-yield-2026-10-01 P-005), or null when the text is not a lockfile this
+ * can judge (fail closed). Kept: every top-level field except `packages`; every `packages` entry
+ * whose key is a node_modules path (version, resolved, integrity, link target, dependencies,
+ * install-script flag, at any nesting depth); and, for the non-installed entries (the root `""`
+ * and each workspace directory), the two fields that act at install time: `hasInstallScript` and
+ * `bin`. Dropped: the rest of a workspace entry (its declared dependencies, version, license,
+ * engines), which mirrors that workspace's own package.json and changes nothing installed.
+ *
+ * @param {string} text
+ * @returns {string | null}
+ */
+export function packageLockInstallView(text: string): string | null;
+/**
+ * Can a package-lock.json change between two shas change how any recorded proof ran (P-005)?
+ * True only when both sides parse and their install views (packageLockInstallView) are equal:
+ * then `npm ci` lays down the same node_modules tree at both shas, so no module a proof loaded
+ * can differ. That is the common "a workspace declared a dependency that was already installed"
+ * or "a workspace changed its own version" edit (5 of 17 lockfile commits, 2026-09-24..10-01).
+ *
+ * Any change to an installed entry stays global, however small, because a proof cannot see
+ * node_modules: the executed-source-map reporter records only non-external modules
+ * (libs/test-config/src/executed-source-map-reporter.ts drops `external` and node_modules paths),
+ * and 0 of 7,340 proofs recorded 2026-09-28..10-01 carry a node_modules path. That includes a
+ * brand-new package, which can still change behaviour through an optional `require` probe.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {boolean}
+ */
+export function packageLockChangeIsInert(beforeText: string, afterText: string): boolean;
 /**
  * @typedef {object} ReuseProof
  * @property {string}   recordedSha

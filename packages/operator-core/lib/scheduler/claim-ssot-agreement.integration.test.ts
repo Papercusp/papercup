@@ -66,9 +66,10 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { DEFAULT_CLAIM_SPEC } from './claim-spec';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
+  ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WATCHDOG_TICKS_DDL,
@@ -327,13 +328,21 @@ beforeAll(async () => {
   // adopted-name bindings. This focused DB did not previously install migration 140.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  // Every claim door asks readActiveOperationWorkerClaimBinding whether the claimant is a
+  // blueprint operation worker; without adv_sessions that read is 'unavailable' and the door
+  // fails CLOSED before any floor runs (WI-10003526). Present + empty => 'none', as for any
+  // ordinary claimant.
+  await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   // Claims emit `work-item:claimed:*` through the await-event primitive. The real
   // emitter records every fire in migration 632's unconditional latch; install
   // that runtime dependency here so the canonical race test exercises the same
   // path as production instead of producing a fail-soft missing-table warning.
-  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
+  // The full audited event substrate (event_awaits + latch + wake deliveries + predicate watches),
+  // not just 632: a claim emit also reads event_awaits, and a fixture missing it turns the
+  // fail-soft warning into a vitest-fail-on-console red (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'claim-ssot-agreement.integration.test.ts' });
   // The terminal-plan floor reads the real normalized plan-item index (migration 675), not a
   // retyped test-only table. The fixture seeds only the rows needed by the regression below.
   await db.sql.unsafe(readMigration('675-normalize-plan-items-decisions.sql')).simple();
@@ -402,7 +411,7 @@ beforeAll(async () => {
   // P-007 / WI-10004706: floor #16 (implementation readiness + acceptance contract) joins the
   // view through the 12-argument work_item_claim_floors overload. Seeds default to created_ts 0,
   // i.e. before the enforcement cutover, so every earlier case keeps its legacy admission.
-  await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql.DRAFT')).simple();
+  await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();

@@ -7821,6 +7821,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // The CLI home encapsulates its own credential — there is no token to
             // resolve — so the auth stage stays the zero-width seam it was.
             if (!error) return;
+            const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+            if (error.code === 'cancelled') {
+              log('info', `inference-gateway: codex-cli downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+              return;
+            }
             lastFailureDetail = error.message;
             if (isCodexRateLimitFailure(error.message)) {
               codexUpstream429++;
@@ -7831,7 +7836,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             } else {
               codexUpstreamErrors++;
               recordOwnerOutcome(routing.ownerId, 'upstream_error', { account, detail: 'cli-bridge' });
-              log('error', `inference-gateway: codex-cli bridge failed on '${account}': ${error.message}`);
+              log('error', `inference-gateway: codex-cli bridge failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`);
             }
             // THE ONE HOOK THAT FIRES ON EVERY ATTEMPT. Credential death must park
             // the account even on the LAST attempt, when no retry remains and the
@@ -8374,12 +8379,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (account !== lastAccountId) codexFailovers++;
               lastAccountId = account;
               if (error) {
+                const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                if (error.code === 'cancelled') {
+                  log('info', `inference-gateway: codex OAuth downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+                  return;
+                }
                 const authRefresh =
                   context.route.value.reason === 'refresh' ? kernelAdapter.noteRefreshFailure(context, error) : null;
                 // The STATUS discriminates the token-resolve throw (503) from the
-                // transport throw (502); a TTFB timeout, the request ceiling and a
-                // downstream abort all surfaced through the old transport catch, so
-                // they classify the same way here.
+                // transport throw (502). Cancellation was separated above; genuine
+                // deadlines retain their existing failure accounting.
                 const tokenResolve = error.status === 503;
                 codexUpstreamErrors++;
                 recordOwnerOutcome(routing.ownerId, 'upstream_error', {
@@ -8409,7 +8418,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 }
                 log(
                   'error',
-                  `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed on '${account}': ${error.message}`,
+                  `inference-gateway: codex OAuth ${tokenResolve ? 'token resolve' : 'upstream'} failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`,
                 );
                 return;
               }
@@ -9414,20 +9423,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (lastRouteKey !== null && lastRouteKey !== context.route.key) codexFailovers++;
               lastRouteKey = context.route.key;
               if (error) {
+                const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
+                if (error.code === 'cancelled') {
+                  log('info', `inference-gateway: Codex bearer downstream cancelled request=${requestRef} code=cancelled on '${account}': ${error.message}`);
+                  return;
+                }
                 // The STATUS is the only discriminator between the token-read throw
                 // (`prepareAttempt`, 503) and the transport throw (`executeAttempt`,
-                // 502); a TTFB timeout, the request ceiling and a downstream abort all
-                // surfaced through the old transport catch, so they classify the same
-                // way here. Do not "tidy" those statuses in the adapter.
+                // 502). Genuine deadlines retain their failure accounting; a
+                // downstream cancellation does not identify an upstream failure.
                 const tokenResolve = error.status === 503;
                 codexUpstreamErrors++;
                 recordOwnerOutcome(wantOwner, 'upstream_error', {
                   account,
                   detail: tokenResolve ? 'bearer-token-resolve' : 'bearer-transport',
                 });
-                if (tokenResolve) {
-                  log('error', `inference-gateway: Codex token read failed on '${account}': ${error.message}`);
-                }
+                log('error', `inference-gateway: Codex ${tokenResolve ? 'token read' : 'upstream'} failed request=${requestRef} code=${error.code} on '${account}': ${error.message}`);
                 return;
               }
               if (!response) return;

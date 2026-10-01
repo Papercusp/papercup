@@ -24,6 +24,8 @@ const {
   laneOfFromSplit,
   laneOfTaskScript,
   laneScopedCandidates,
+  packageLockChangeIsInert,
+  packageLockInstallView,
   REUSE_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA,
   reuseCandidates,
@@ -460,12 +462,145 @@ describe('P-002: scripts-only root package.json changes are not global', () => {
     expect(seam('package.json', 'old', 'dep')).toBe(false);
     // A sha this clone lacks reads as "cannot tell": global.
     expect(seam('package.json', 'gone', 'new')).toBe(false);
-    // Only the ROOT manifest can be inert; nothing else is even read.
+    // Only the root manifest and the lockfile (P-005, below) can be inert; nothing else is read.
     const before = calls.length;
-    expect(seam('package-lock.json', 'old', 'new')).toBe(false);
     expect(seam('libs/test-config/src/vitest-config.ts', 'old', 'new')).toBe(false);
     expect(seam('patches/x.patch', 'old', 'new')).toBe(false);
+    expect(seam('packages/operator-core/package.json', 'old', 'new')).toBe(false);
     expect(calls.length).toBe(before);
+  });
+});
+
+/**
+ * gate-test-reuse-yield-2026-10-01 P-005: package-lock.json is global unless the installed tree is
+ * identical at both shas. Proofs record no node_modules path (the reporter drops external modules),
+ * so any installed-entry change stays global. Measured: 5 of 17 lockfile commits in the 7 days to
+ * 2026-10-01 changed only workspace entries, and each one discarded every proof.
+ */
+describe('P-005: a lockfile edit that installs nothing different is not global', () => {
+  const lock = (over: { packages?: Record<string, unknown>; top?: Record<string, unknown> } = {}) =>
+    JSON.stringify({
+      name: 'root',
+      version: '0.0.1',
+      lockfileVersion: 3,
+      requires: true,
+      ...over.top,
+      packages: over.packages ?? {
+        '': { name: 'root', workspaces: ['packages/*'], devDependencies: { vitest: '4.0.0' } },
+        'packages/a': { name: '@x/a', version: '1.0.0', dependencies: { zod: '^3.0.0' } },
+        'node_modules/@x/a': { resolved: 'packages/a', link: true },
+        'node_modules/zod': { version: '3.1.0', resolved: 'https://r/zod-3.1.0.tgz', integrity: 'sha512-z' },
+        'packages/a/node_modules/kleur': { version: '4.0.0', integrity: 'sha512-k' },
+      },
+    });
+  const base = JSON.parse(lock()) as { packages: Record<string, Record<string, unknown>> };
+  const withPackages = (edit: (p: Record<string, Record<string, unknown>>) => void) => {
+    const p = structuredClone(base.packages);
+    edit(p);
+    return lock({ packages: p });
+  };
+
+  it('treats workspace-entry-only edits and key reordering as inert', () => {
+    // A workspace declares a dependency that is already installed, and bumps its own version.
+    const declared = withPackages((p) => {
+      p['packages/a'] = { ...p['packages/a'], version: '1.1.0', dependencies: { zod: '^3.0.0', kleur: '^4.0.0' } };
+    });
+    expect(packageLockChangeIsInert(lock(), declared)).toBe(true);
+    // The root entry's declarations mirror the root package.json (judged on its own, P-002).
+    const rootDeclared = withPackages((p) => {
+      p[''] = { ...p[''], devDependencies: { vitest: '4.0.0', zod: '^3.0.0' } };
+    });
+    expect(packageLockChangeIsInert(lock(), rootDeclared)).toBe(true);
+    const reordered = JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(lock()) as Record<string, unknown>).reverse()));
+    expect(reordered).not.toBe(lock());
+    expect(packageLockChangeIsInert(lock(), reordered)).toBe(true);
+  });
+
+  it('keeps every installed-tree change global, at any depth', () => {
+    const changes: Array<[string, string]> = [
+      ['version bump', withPackages((p) => void (p['node_modules/zod'] = { ...p['node_modules/zod'], version: '3.2.0' }))],
+      ['integrity only', withPackages((p) => void (p['node_modules/zod'] = { ...p['node_modules/zod'], integrity: 'sha512-y' }))],
+      ['nested copy', withPackages((p) => void (p['packages/a/node_modules/kleur'] = { version: '4.1.0' }))],
+      // A brand-new package can still change behaviour through an optional require probe.
+      ['new package', withPackages((p) => void (p['node_modules/bufferutil'] = { version: '4.0.8' }))],
+      ['removed package', withPackages((p) => void delete p['packages/a/node_modules/kleur'])],
+      ['hoisting move', withPackages((p) => {
+        p['node_modules/kleur'] = p['packages/a/node_modules/kleur']!;
+        delete p['packages/a/node_modules/kleur'];
+      })],
+      ['workspace link retarget', withPackages((p) => void (p['node_modules/@x/a'] = { resolved: 'packages/b', link: true }))],
+      // The two workspace-entry fields that act at install time.
+      ['workspace install script', withPackages((p) => void (p['packages/a'] = { ...p['packages/a'], hasInstallScript: true }))],
+      ['workspace bin', withPackages((p) => void (p['packages/a'] = { ...p['packages/a'], bin: { a: 'cli.js' } }))],
+      ['lockfile version', lock({ top: { lockfileVersion: 2 } })],
+    ];
+    for (const [label, after] of changes) {
+      expect(after, label).not.toBe(lock());
+      expect(packageLockChangeIsInert(lock(), after), label).toBe(false);
+    }
+  });
+
+  it('fails closed on anything it cannot judge', () => {
+    expect(packageLockChangeIsInert(lock(), '{ not json')).toBe(false);
+    expect(packageLockChangeIsInert('[]', '[]')).toBe(false);
+    expect(packageLockChangeIsInert('null', 'null')).toBe(false);
+    expect(packageLockChangeIsInert('{}', '{}')).toBe(false);
+    expect(packageLockInstallView(JSON.stringify({ packages: { 'packages/a': 'x' } }))).toBeNull();
+    // Calibration: the same text judges inert, so the lines above are not vacuous.
+    expect(packageLockChangeIsInert(lock(), lock())).toBe(true);
+  });
+
+  it('gitInertGlobalChange judges the lockfile by install view, reading each sha once', () => {
+    const texts: Record<string, string> = {
+      'old:package-lock.json': lock(),
+      'ws:package-lock.json': withPackages((p) => void (p['packages/a'] = { ...p['packages/a'], version: '2.0.0' })),
+      'bump:package-lock.json': withPackages((p) => void (p['node_modules/zod'] = { ...p['node_modules/zod'], version: '3.9.0' })),
+    };
+    const calls: string[] = [];
+    const exec = (_file: string, args: string[]) => {
+      calls.push(args[1]!);
+      const t = texts[args[1]!];
+      if (t === undefined) throw new Error(`fatal: invalid object name ${args[1]}`);
+      return t;
+    };
+    const seam = gitInertGlobalChange({ repoRoot: '/repo', exec });
+    expect(seam('package-lock.json', 'old', 'ws')).toBe(true);
+    expect(seam('package-lock.json', 'bump', 'ws')).toBe(false);
+    expect(seam('package-lock.json', 'gone', 'ws')).toBe(false);
+    // The judged sha ('ws') is shared by every proof; its 1 MB lockfile is read once.
+    expect(calls.filter((c) => c === 'ws:package-lock.json')).toHaveLength(1);
+    expect(calls).toHaveLength(4);
+  });
+
+  it('reuses a proof across an inert lockfile change, unless the proof read the lockfile', () => {
+    const T = 'packages/a/src/x.test.ts';
+    const prf = (readPaths: string[] = []) => ({
+      recordedSha: 'old',
+      recordedAtMs: 1_000,
+      executedModules: [T, 'packages/a/src/x.ts'],
+      readPaths,
+      inputsCaptured: true,
+      opaqueReasons: [],
+      runContext: 'green-checkpoint',
+      runnerIdentity: 'id',
+    });
+    const run = (p: ReturnType<typeof prf>, inert: boolean) =>
+      selectReusablePasses({
+        candidates: [T],
+        proofs: new Map([[T, p]]),
+        judgedSha: 'new',
+        changedBetween: () => new Set(['package-lock.json']),
+        runContext: 'green-checkpoint',
+        runnerIdentity: 'id',
+        nowMs: 2_000,
+        maxAgeMs: 1_000_000,
+        inertGlobalChange: (rel: string) => inert && rel === 'package-lock.json',
+      });
+    expect(run(prf(), true).skip).toEqual([T]);
+    expect(run(prf(), true).summary).toMatchObject({ reused: 1, globalInput: 0, inertGlobal: 1 });
+    expect(run(prf(['package-lock.json']), true).summary).toMatchObject({ reused: 0, inputChanged: 1 });
+    // Calibration: the same drift without the inert verdict is a global discard.
+    expect(run(prf(), false).summary).toMatchObject({ reused: 0, globalInput: 1 });
   });
 });
 

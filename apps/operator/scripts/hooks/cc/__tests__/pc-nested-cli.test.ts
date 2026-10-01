@@ -210,7 +210,9 @@ afterAll(() => {
 
 async function runHookUnder(
   shape: "nested-cli" | "psu-managed",
-  event: "SessionStart" | "SessionEnd",
+  event: string,
+  hookPath: string = LIFECYCLE_HOOK,
+  extraPayload: Record<string, unknown> = {},
 ) {
   const requests: string[] = [];
   const server = createServer((req, res) => {
@@ -256,7 +258,8 @@ async function runHookUnder(
       // when no real agent CLI sits above this test (CI); in the managed shape it proves
       // psu parentage outranks it.
       PAPERCUSP_CAPABILITY_BASH_FOREGROUND: "1",
-      LIFECYCLE_HOOK,
+      PAPERCUSP_JOURNAL_SYNC: "1",
+      LIFECYCLE_HOOK: hookPath,
       FAKE_CLAUDE_BODY: body,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -264,7 +267,12 @@ async function runHookUnder(
   let stdout = "";
   child.stdout.on("data", (c) => (stdout += c));
   child.stdin.end(
-    JSON.stringify({ hook_event_name: event, session_id: "nested-native-1", cwd: "/x" }),
+    JSON.stringify({
+      hook_event_name: event,
+      session_id: "nested-native-1",
+      cwd: "/x",
+      ...extraPayload,
+    }),
   );
   const exitCode = await Promise.race([
     new Promise<number | null>((resolve) => child.once("close", resolve)),
@@ -300,5 +308,69 @@ describe("lifecycle-report.sh — nested-CLI guard end-to-end (WI-10003957)", ()
     expect(r.stdout).toBe("");
     expect(r.requests).toHaveLength(1);
     expect(r.requests[0]).toMatch(/^\/api\/mcp\?superuser=1&origin=hook&client=su-nested-guard-test/);
+  });
+});
+
+// ── WI-10004863: the same leak in the per-TURN owner-mutating hooks ─────────────
+// Measured: harness_shared.owner_directives held 12 'say ok' rows (the advertised-tools
+// probe prompt) across 4 sessions — the provenance hook captured a nested CLI's `-p`
+// prompt as an OWNER directive of the su. stop-turn-journal filed its turns likewise.
+const PROVENANCE_HOOK = join(HOOK_DIR, "userpromptsubmit-provenance.sh");
+const JOURNAL_HOOK = join(HOOK_DIR, "stop-turn-journal.sh");
+
+/** Every hook that must skip a nested CLI. A new owner-mutating hook joins this list. */
+const NESTED_GUARDED_HOOKS = [
+  "lifecycle-report.sh",
+  "userpromptsubmit-provenance.sh",
+  "stop-turn-journal.sh",
+];
+
+describe("per-turn owner-mutating hooks skip a nested CLI (WI-10004863)", () => {
+  it("each guarded hook consults pc_nested_cli.py BEFORE reading its payload", () => {
+    for (const name of NESTED_GUARDED_HOOKS) {
+      const src = fs.readFileSync(join(HOOK_DIR, name), "utf8");
+      const guard = src.indexOf('python3 "$(dirname "$0")/pc_nested_cli.py"');
+      const read = src.indexOf("INPUT=$(cat)");
+      expect(guard, `${name}: no pc_nested_cli.py guard`).toBeGreaterThan(-1);
+      expect(read, `${name}: payload read not found (instrument broken)`).toBeGreaterThan(-1);
+      expect(guard, `${name}: guard must run before the payload is read`).toBeLessThan(read);
+    }
+  });
+
+  it("a NESTED CLI's prompt is not classified, stamped or captured as an owner directive", async () => {
+    const r = await runHookUnder("nested-cli", "UserPromptSubmit", PROVENANCE_HOOK, {
+      prompt: "say ok",
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("");
+    expect(r.requests).toEqual([]);
+  });
+
+  it("calibration: a psu-managed CLI's prompt IS still stamped", async () => {
+    const r = await runHookUnder("psu-managed", "UserPromptSubmit", PROVENANCE_HOOK, {
+      prompt: "say ok",
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("turn-provenance");
+  });
+
+  it("a NESTED CLI's Stop does not journal its turns under the su", async () => {
+    const transcript = join(fixtures, "nested-transcript.jsonl");
+    fs.writeFileSync(transcript, "{}\n");
+    const r = await runHookUnder("nested-cli", "Stop", JOURNAL_HOOK, {
+      transcript_path: transcript,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.requests).toEqual([]);
+  });
+
+  it("calibration: a psu-managed CLI's Stop still journals", async () => {
+    const transcript = join(fixtures, "managed-transcript.jsonl");
+    fs.writeFileSync(transcript, "{}\n");
+    const r = await runHookUnder("psu-managed", "Stop", JOURNAL_HOOK, {
+      transcript_path: transcript,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.requests).toHaveLength(1);
   });
 });

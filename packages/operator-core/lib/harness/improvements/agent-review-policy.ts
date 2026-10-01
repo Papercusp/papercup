@@ -12,7 +12,9 @@ import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 
 import type { OrgSql } from '../../work-items';
-import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
+export { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
 import {
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
@@ -243,7 +245,11 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
  * legacy exception until P-011 reviews their cohort. Migration 1301 repeats this
  * literal inside `work_item_claim_floors`; a unit test pins the two together.
  */
-export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER = '2026-10-02T00:00:00.000Z' as const;
+// D-018: the created-after-cutover arm is DEFERRED to P-011 (cohort baseline + named canary), so
+// this is a far sentinel, not an enforcement date. Lowering it is P-011's job: a new migration that
+// re-renders floor #16, plus first making every wall-clock claim test seed created_ts explicitly.
+// A stale-revision or invalid-authority acceptance refuses regardless of this value.
+export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER = '2100-01-01T00:00:00.000Z' as const;
 export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS = Date.parse(IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER);
 
 export function implementationReadinessIsLegacyEquivalent(payload: unknown): boolean {
@@ -545,6 +551,64 @@ export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): Work
     acceptance: acceptance.state,
     reReviewRequested,
     countsAsBugWork: input.kind === 'bug' && !observation && qualifyingAcceptance,
+  };
+}
+
+/** P-010: presentation partitions intake separately from accepted execution. */
+export interface WorkItemPresentationInput extends WorkItemIntakeStageInput {
+  assignee?: string | null;
+  /** Includes dependency/claim-floor holds resolved by the calling reader. */
+  blocked?: boolean;
+  completionAuthority?: string | null;
+}
+
+export function deriveWorkItemPresentationStage(input: WorkItemPresentationInput): {
+  stage: WorkItemPresentationStage;
+  reason: string;
+  intake: WorkItemIntakeStageDecision;
+} {
+  const intake = deriveWorkItemIntakeStage(input);
+  if (intake.primaryStage === 'terminal') {
+    const verified = intake.qualifyingAcceptance && ALL_SUCCESSFUL_STATUSES.has(input.status)
+      && (input.completionAuthority === 'committed' || input.completionAuthority === 'validated');
+    return { stage: verified ? 'verified-completion' : 'terminal-other',
+      reason: verified ? 'accepted-work-with-verified-success' : 'terminal-without-verified-accepted-success', intake };
+  }
+  if (intake.primaryStage !== 'accepted') {
+    return { stage: intake.primaryStage, reason: intake.reason, intake };
+  }
+  const payload = record(input.payload);
+  // Holds outrank assignment: a claimed item blocked on a dependency is blocked,
+  // while a claimed candidate remains intake regardless of lifecycle/assignment.
+  const blocked = input.blocked === true || payload._claimHold === true || hasStrictOwnerAction(payload)
+    || activeExternalBlockers(payload).length > 0
+    || !['open', 'wip', 'in_progress', 'in-progress', 'active', 'running'].includes(input.status);
+  if (blocked) return { stage: 'accepted-blocked', reason: 'accepted-work-held', intake };
+  const assigned = Boolean(input.assignee?.trim() && input.assignee.trim().toLowerCase() !== 'unassigned');
+  if (assigned || ['wip', 'in_progress', 'in-progress', 'active', 'running'].includes(input.status)) {
+    return { stage: 'accepted-active', reason: 'accepted-work-in-progress', intake };
+  }
+  return { stage: 'accepted-ready', reason: 'qualifying-acceptance', intake };
+}
+
+/** Counts only the supplied population; processing/comparison counters are never inputs. */
+export function countWorkItemPresentationStages(items: readonly WorkItemPresentationInput[]) {
+  const counts = Object.fromEntries(WORK_ITEM_PRESENTATION_STAGES.map((stage) => [stage, 0])) as
+    Record<WorkItemPresentationStage, number>;
+  let remainingBugs = 0;
+  for (const item of items) {
+    const { stage } = deriveWorkItemPresentationStage(item);
+    counts[stage] += 1;
+    if (item.kind === 'bug' && stage.startsWith('accepted-')) remainingBugs += 1;
+  }
+  return {
+    population: items.length,
+    unit: 'work-item rows' as const,
+    counts,
+    remainingBugs,
+    verifiedCompletions: counts['verified-completion'],
+    mutuallyExclusive: true as const,
+    writer: 'deriveWorkItemPresentationStage' as const,
   };
 }
 

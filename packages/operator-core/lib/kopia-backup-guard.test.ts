@@ -1235,10 +1235,11 @@ describe('Kopia managed entrypoint contract', () => {
     // case the retry exists for, so the next tick must be free to override again.
     const { dir, env } = fixture();
     seedDeadlineBase(dir, 'hot', 25_200);
-    // The dump is overdue too, so its published deadline has passed and the overdue
-    // sweep yields at once (WI-10004741). A dump that is not yet due is held until it
-    // is: see 'keeps an overdue hot sweep running until a waiting dump is itself due'.
-    seedDeadlineBase(dir, 'db-dump', 25_200);
+    // The dump is overdue too, and its deadline passed BEFORE the sweep's, so under
+    // earliest-deadline-first (WI-10004861) the overdue sweep yields at once. A dump
+    // that is not yet due, or due after the sweep, is held: see 'keeps an overdue hot
+    // sweep running until a waiting dump is itself due' and the EDF tests below.
+    seedDeadlineBase(dir, 'db-dump', 25_300);
     const scenario = spawnSync(
       'bash',
       [
@@ -1255,6 +1256,7 @@ describe('Kopia managed entrypoint contract', () => {
         grep -q 'result=staleness-override-armed' "$HOT_LOG" || exit 94
         grep -q 'result=escalation-refunded reason=priority-waiter shared-guard handoff' "$HOT_LOG" || exit 95
         ! grep -q 'reason=holder-overdue' "$HOT_LOG" || exit 96
+        ! grep -q 'reason=holder-earlier-deadline' "$HOT_LOG" || exit 97
         `,
       ],
       {
@@ -1284,7 +1286,9 @@ describe('Kopia managed entrypoint contract', () => {
   it('keeps an overdue hot sweep running until a waiting dump is itself due, then yields', () => {
     const fx = fixture();
     const { dir } = fx;
-    const env = { ...fx.env, KOPIA_BACKUP_MAX_DEFER_SEC: '10' };
+    // Extension 0 pins the WI-10004741 half on its own: the sweep yields the moment the
+    // dump is due. The EDF extension past that point is covered by the tests below.
+    const env = { ...fx.env, KOPIA_BACKUP_MAX_DEFER_SEC: '10', KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '0' };
     seedDeadlineBase(dir, 'hot', 25_200);
     const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', 3), 'utf8').trim());
     const dueEpoch = dumpBase + 10;

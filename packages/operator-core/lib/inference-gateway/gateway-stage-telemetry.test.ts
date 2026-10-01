@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Agent } from 'undici';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt,
@@ -287,7 +287,7 @@ it.each(['downstream-cancel', 'upstream-timeout'] as const)(
     if (cause === 'downstream-cancel') {
       expect(stats.upstreamErrors).toBe(0);
       expect(stats.egressFailsByAccount['abort-proxy'] ?? 0).toBe(0);
-      expect(stats.edgeThrottleByAccount['abort-proxy']?.cooldownUntil ?? 0).toBe(0);
+      expect(stats.edgeThrottleByAccount?.['abort-proxy']?.cooldownUntil ?? 0).toBe(0);
       expect(timeline.outcome).toBe('cancelled');
       expect(logs.some(l => l.level === 'info' && l.message.includes('downstream cancelled')
         && l.message.includes('code=cancelled') && l.message.includes(`:${timeline.requestId} `))).toBe(true);
@@ -300,10 +300,102 @@ it.each(['downstream-cancel', 'upstream-timeout'] as const)(
     } else {
       expect(stats.upstreamErrors).toBeGreaterThan(0);
       expect(stats.egressFailsByAccount['abort-proxy']).toBeGreaterThan(0);
-      expect(stats.edgeThrottleByAccount['abort-proxy'].cooldownUntil).toBeGreaterThan(Date.now());
+      expect(stats.edgeThrottleByAccount?.['abort-proxy']?.cooldownUntil ?? 0).toBeGreaterThan(Date.now());
       expect(timeline.outcome).toBe('upstream-error');
       expect(logs.some(l => l.level === 'error' && l.message.includes('STALLED')
         && l.message.includes('code=ttfb-timeout') && l.message.includes(`:${timeline.requestId} `))).toBe(true);
+    }
+  },
+);
+
+it.each(['cli', 'oauth', 'bearer'] as const)(
+  'separates Codex %s cancellation from an upstream deadline in counters and owner reports',
+  async transport => {
+    const home = await mkdtemp(join(tmpdir(), 'gateway-codex-cancel-'));
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    await writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`,
+      refresh_token: 'fixture-refresh', account_id: 'abort-codex',
+    } }));
+    try {
+      for (const cause of ['downstream-cancel', 'upstream-timeout'] as const) {
+        const logs: { level: string; message: string }[] = [];
+        let entered!: () => void;
+        const attemptStarted = new Promise<void>(resolve => { entered = resolve; });
+        let calls = 0;
+        const blockedAttempt = (signal: AbortSignal) => {
+          entered();
+          return new Promise<never>((_resolve, reject) => {
+            const abort = () => reject(new DOMException('fixture aborted', 'AbortError'));
+            if (signal.aborted) abort();
+            else signal.addEventListener('abort', abort, { once: true });
+          });
+        };
+        gateway = createInferenceGateway({
+          accountId: 'unused-claude', token: async () => 'unused',
+          upstreamBase: 'http://upstream.invalid', openaiUpstreamBase: 'http://upstream.invalid',
+          ...(transport === 'bearer'
+            ? { codexPool: createFailoverPool([{ accountId: 'abort-codex', token: async () => 'fixture-token' }]) }
+            : { codexCliAccounts: () => [{ accountId: 'abort-codex', home }], codexOAuthProxy: transport === 'oauth' }),
+          codexCliRun: async opts => {
+            if (++calls === 1) await blockedAttempt(opts.signal!);
+            return { text: 'recovered', inputTokens: 1, outputTokens: 1 };
+          },
+          fetchImpl: async (_url, init) => {
+            if (++calls === 1) await blockedAttempt(init!.signal!);
+            return transport === 'oauth'
+              ? new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_recovered', output: [] } })}\n\ndata: [DONE]\n\n`,
+                { headers: { 'content-type': 'text/event-stream' } })
+              : new Response(JSON.stringify({ id: 'resp_recovered', output: [] }), { status: 200 });
+          },
+          requestCeilingMs: cause === 'upstream-timeout' && transport === 'cli' ? 2_000 : 5_000,
+          upstreamHeadersTimeoutMs: cause === 'upstream-timeout' ? 80 : 5_000,
+          upstreamStreamHeadersTimeoutMs: cause === 'upstream-timeout' ? 80 : 5_000,
+          requestAbsorbMs: 0, selfHeal: { enabled: false },
+          log: (level, message) => { logs.push({ level, message }); },
+        });
+        const port = await gateway.listen(0);
+        const owner = `su-${transport}-${cause}`;
+        let controller = new AbortController();
+        const request = () => fetch(`http://127.0.0.1:${port}/v1/responses`, {
+          method: 'POST', signal: controller.signal,
+          headers: { 'content-type': 'application/json', 'x-papercusp-owner': owner },
+          body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture', stream: transport === 'oauth' }),
+        });
+        const pending = request().catch(() => null);
+        await attemptStarted;
+        if (cause === 'downstream-cancel') controller.abort();
+        const response = await pending;
+        await response?.text();
+        await vi.waitFor(() => {
+          expect(gateway!.stats().requestStages!.recent.find(t => t.ownerId === owner)).toBeDefined();
+        });
+        const stats = gateway.stats();
+        const timeline = stats.requestStages!.recent.find(t => t.ownerId === owner)!;
+        const report = await (await fetch(`http://127.0.0.1:${port}/admin/owner-report?owner=${owner}`)).json();
+        if (cause === 'downstream-cancel') {
+          expect(stats.codex.errors).toBe(0);
+          expect(report.ledger.upstreamErrors).toBe(0);
+          expect(stats.egressFailsByAccount['abort-codex'] ?? 0).toBe(0);
+          expect(stats.edgeThrottleByAccount?.['abort-codex']?.cooldownUntil ?? 0).toBe(0);
+          expect(timeline.outcome).toBe('cancelled');
+          expect(logs.some(l => l.level === 'info' && l.message.includes('code=cancelled')
+            && l.message.includes(`:${timeline.requestId} `))).toBe(true);
+          controller = new AbortController();
+          const recovered = await request();
+          expect(recovered.status).toBe(200); await recovered.text();
+          expect(calls).toBe(2);
+        } else {
+          expect(stats.codex.errors).toBeGreaterThan(0);
+          expect(report.ledger.upstreamErrors).toBeGreaterThan(0);
+          // Buffered CLI execution is bounded by the request ceiling, which
+          // retains its gateway-error contract rather than an HTTP TTFB error.
+          expect(timeline.outcome).toBe(transport === 'cli' ? 'gateway-error' : 'upstream-error');
+        }
+        await gateway.close(); gateway = undefined;
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
   },
 );

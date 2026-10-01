@@ -144,11 +144,25 @@ async function readIpcClient(): Promise<string | null> {
     // positive IPC proof can dispatch before other startup work fills the cap.
     finish.mark('importReady');
     finish.mark('invokeStarted');
+    // WebKitGTK lacks Long Tasks entries. Keep a bounded timer observation
+    // alongside the native snapshot so a slow reply cannot be mistaken for
+    // slow Rust work or an unmeasured renderer stall. Stop also records the
+    // final gap: the invoke continuation can precede an overdue timer.
+    const rendererIntervalMs = 50;
+    finish.startRenderer(rendererIntervalMs);
+    const rendererTimer = setInterval(() => finish.observeRenderer('timer'), rendererIntervalMs);
+    const rendererDeadline = setTimeout(() => {
+      clearInterval(rendererTimer);
+      finish.observeRenderer('deadline');
+    }, IPC_ASSERT_TIMEOUT_MS);
     let status: { client?: string; snapshotStartedAtUnixMs?: number; snapshotDurationMs?: number };
     try {
       status = await invoke<typeof status>('endpoint_ipc_status');
     } finally {
       finish.mark('invokeCompleted');
+      clearInterval(rendererTimer);
+      clearTimeout(rendererDeadline);
+      finish.observeRenderer('reply');
     }
     // Rust's monotonic duration separates snapshot work from dispatch/reply
     // delay. Translate its epoch start onto the existing page clock; older

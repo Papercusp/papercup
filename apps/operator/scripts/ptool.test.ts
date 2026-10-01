@@ -9,6 +9,7 @@ import {
   connectWithLocalRetry,
   connectWithOperatorCandidates,
   connectWithTokenFallback,
+  listToolsWithTokenFallback,
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
@@ -426,6 +427,57 @@ describe('ptool bearer-token resolution', () => {
       .rejects.toBe(transportError);
     expect(connectOnce).toHaveBeenCalledTimes(1);
     expect(isInvalidSuperuserBearerFailure(new Error('HTTP 401: unauthorized'))).toBe(false);
+  });
+
+  it('reconnects with the next implicit token when read-only tools/list rejects the first bearer', async () => {
+    const authError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const firstClient = { close: vi.fn() };
+    const secondClient = { close: vi.fn() };
+    const catalog = [{ name: 'work_items:get' }];
+    const reconnect = vi.fn().mockResolvedValue(secondClient);
+    const listTools = vi.fn()
+      .mockRejectedValueOnce(authError)
+      .mockResolvedValueOnce(catalog);
+
+    const result = await listToolsWithTokenFallback(
+      firstClient,
+      ['/workspace/superuser-token', '/tmp/shared-superuser-token'],
+      '/workspace/superuser-token',
+      reconnect,
+      listTools,
+    );
+
+    expect(result).toEqual({ client: secondClient, tools: catalog, error: null });
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledWith('/tmp/shared-superuser-token');
+    expect(firstClient.close).toHaveBeenCalledOnce();
+    expect(listTools.mock.calls).toEqual([[firstClient], [secondClient]]);
+  });
+
+  it('keeps explicit token pins and non-bearer catalog errors terminal', async () => {
+    const explicitError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const explicitReconnect = vi.fn();
+    const explicitResult = await listToolsWithTokenFallback(
+      { close: vi.fn() },
+      ['/explicit/superuser-token'],
+      '/explicit/superuser-token',
+      explicitReconnect,
+      vi.fn().mockRejectedValue(explicitError),
+    );
+    expect(explicitResult.error).toBe(explicitError);
+    expect(explicitReconnect).not.toHaveBeenCalled();
+
+    const genericError = new Error('HTTP 401: unauthorized');
+    const genericReconnect = vi.fn();
+    const genericResult = await listToolsWithTokenFallback(
+      { close: vi.fn() },
+      ['/workspace/superuser-token', '/tmp/shared-superuser-token'],
+      '/workspace/superuser-token',
+      genericReconnect,
+      vi.fn().mockRejectedValue(genericError),
+    );
+    expect(genericResult.error).toBe(genericError);
+    expect(genericReconnect).not.toHaveBeenCalled();
   });
 });
 

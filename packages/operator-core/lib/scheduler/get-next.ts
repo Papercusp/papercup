@@ -1203,6 +1203,11 @@ export function issueClaimCandidateSubquery(
           -- path, and the failure is silent — asserted by
           -- claimability-snapshot-projection-covers-floors.test.ts.
           wi.condition_key,
+          -- P-007 (WI-10004706): floor #16 (implementation readiness + acceptance contract,
+          -- inside agentReviewNormalExclusionSql) derives the intake stage from item_kind,
+          -- title AND summary, and compares created_ts to the enforcement cutover. Same
+          -- pushdown-path rule as wi.lane above.
+          wi.summary,
           wi.goal_id,
           wi.expected_cost_cents,
           wi.tags,

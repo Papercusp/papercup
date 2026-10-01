@@ -95,6 +95,7 @@ vi.mock('./agent-tools/coordination/log', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted).
 const issues = await import('./issues-engineer');
+const acceptancePolicy = await import('./harness/improvements/agent-review-policy');
 const feed = await import('./topics-feed');
 const blocks = await import('./issue-blocks-merge');
 
@@ -1532,5 +1533,94 @@ describe('mergeIssuePayload opts.unset REMOVES the key (EI-21215793636294109)', 
     await issues.mergeIssuePayload(a.id, { keep: 'yes' });
     await issues.mergeIssuePayload(a.id, {}, { unset: ['never_present'] });
     expect(await rawPayload(a.id)).toMatchObject({ keep: 'yes' });
+  });
+});
+
+describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 / D-016, cutover deferred by D-018)', () => {
+  // D-018 parks the cutover at a far sentinel, so "post-cutover" is reached here by seeding
+  // created_ts explicitly past it; a fresh row's real-time created_ts stays pre-cutover.
+  const POST = acceptancePolicy.IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS + 60_000;
+  const TITLE = 'Bounded parser drops the trailing token';
+  const SUMMARY = 'The bounded parser drops the last token of every line.';
+  const UPDATED_AT = '2026-10-01T00:00:00.000Z';
+  const PROPOSAL = {
+    problem: 'The bounded parser drops the trailing token of a line.',
+    evidence: ['parser.test.ts trailing-token fixture fails on HEAD'],
+    outcome: 'Every token of a line survives parsing.',
+    scope: 'Fix the bounded parser defect only.',
+    completionCheck: 'The trailing-token regression fixture passes.',
+  };
+  const sealedFor = (title: string) => {
+    const sealed = acceptancePolicy.sealImplementationAcceptance({
+      proposal: PROPOSAL,
+      authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1 },
+      reason: 'agent-review-approved (grade 5/5)',
+      source: { kind: 'bug', title, summary: SUMMARY },
+      acceptedAt: UPDATED_AT,
+    });
+    if (!sealed.ok) throw new Error('fixture contract must seal');
+    return sealed.contract;
+  };
+  const ready = (acceptance?: object) =>
+    acceptancePolicy.createImplementationReadiness({
+      status: 'ready',
+      source: 'agent-review',
+      reason: 'agent-review-approved',
+      updatedAt: UPDATED_AT,
+      ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
+    });
+
+  /** createIssue stamps the creation-enrollment `unknown` verdict; override it and/or the age. */
+  async function seedIssue(opts: { createdTs?: number; readiness?: unknown; status?: string } = {}) {
+    const created = await issues.createIssue({ title: TITLE, body: SUMMARY, kind: 'bug', createdBy: 'agA' });
+    if (opts.readiness !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items
+                      SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{implementationReadiness}',
+                                              ${db.sql.json(opts.readiness as never)})
+                    WHERE feature_id = ${created.id}`;
+    }
+    if (opts.createdTs !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items SET created_ts = ${opts.createdTs} WHERE feature_id = ${created.id}`;
+    }
+    if (opts.status !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items SET status = ${opts.status} WHERE feature_id = ${created.id}`;
+    }
+    return created.id;
+  }
+
+  it('refuses a post-cutover row whose acceptance is missing (enrolled unknown, or a bare ready verdict)', async () => {
+    const enrolled = await seedIssue({ createdTs: POST });
+    const bareReady = await seedIssue({ createdTs: POST, readiness: ready() });
+    expect(await issues.claimIssue(enrolled, 'agB')).toBeNull();
+    expect(await issues.claimIssue(bareReady, 'agB')).toBeNull();
+    // Refused means untouched: the row has no holder.
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${enrolled}`;
+    expect(row?.taken_by ?? null).toBeNull();
+  });
+
+  it('admits a post-cutover row that carries a qualifying sealed acceptance', async () => {
+    const id = await seedIssue({ createdTs: POST, readiness: ready(sealedFor(TITLE)) });
+    await expect(issues.claimIssue(id, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+  });
+
+  it('refuses a STALE acceptance at any age, including a pre-cutover row (D-018 keeps this arm live)', async () => {
+    const stale = await seedIssue({ readiness: ready(sealedFor('An earlier title of the same defect')) });
+    expect(await issues.claimIssue(stale, 'agB')).toBeNull();
+    // Control: the same pre-cutover age with the legacy enrolled verdict is admitted.
+    const legacy = await seedIssue();
+    await expect(issues.claimIssue(legacy, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+  });
+
+  it('exempts a same-holder re-claim and a terminal row (WI-5826 reopen escape hatch)', async () => {
+    const held = await seedIssue();
+    await expect(issues.claimIssue(held, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+    await db.sql`UPDATE harness_shared.work_items SET created_ts = ${POST} WHERE feature_id = ${held}`;
+    await expect(issues.claimIssue(held, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+    // …while a different holder is still refused on that same row.
+    expect(await issues.claimIssue(held, 'agC', { fromHolder: 'agB' })).toBeNull();
+
+    const finished = await seedIssue({ createdTs: POST, status: 'done' });
+    await expect(issues.claimIssue(finished, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
   });
 });

@@ -10,7 +10,7 @@
  *      design and would be quarantined from every commit.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,14 @@ describe('findIdentityLeakError', () => {
     // a green-checkpoint leg. The runtime string is byte-identical either way.
     await expect(findIdentityLeakError('x.txt', '', REPO_ROOT)).resolves.toBeNull();
     await expect(findIdentityLeakError('x.bin', '\x00\xff/home/', REPO_ROOT)).resolves.toBeNull();
+  });
+});
+
+describe('ptool test fixture content', () => {
+  it('stays free of machine-specific home paths', async () => {
+    const file = 'apps/operator/scripts/ptool.test.ts';
+    const text = readFileSync(join(REPO_ROOT, file), 'utf8');
+    await expect(findIdentityLeakError(file, text, REPO_ROOT)).resolves.toBeNull();
   });
 });
 

@@ -614,6 +614,28 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
     expect(JSON.stringify(json)).toHaveLength(24156);
+
+    const hasSchemaField = (value: unknown, field: string): boolean => {
+      value = resolveRef(value);
+      if (!value || typeof value !== 'object') return false;
+      const record = value as Record<string, unknown>;
+      const properties = record.properties;
+      if (properties && typeof properties === 'object' && field in properties) return true;
+      return Object.values(record).some((child) => hasSchemaField(child, field));
+    };
+    const hasProbeSchemaRevision = (value: unknown): boolean => {
+      value = resolveRef(value);
+      if (!value || typeof value !== 'object') return false;
+      const record = value as Record<string, unknown>;
+      const properties = record.properties;
+      if (properties && typeof properties === 'object') {
+        const probe = (properties as Record<string, unknown>).probe;
+        if (probe && hasSchemaField(probe, 'schemaRevision')) return true;
+      }
+      return Object.values(record).some(hasProbeSchemaRevision);
+    };
+    expect(hasProbeSchemaRevision(json.properties?.checks)).toBe(true);
+    expect(hasProbeSchemaRevision(json.properties?.items?.items)).toBe(true);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {

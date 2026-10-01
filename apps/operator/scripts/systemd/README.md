@@ -1,8 +1,12 @@
 # Shared-host CPU performance policy — installation (WI-37533)
 
-`papercusp-host-performance.service` sets both cpufreq's governor and the
+papercusp-host-performance.service sets both cpufreq's governor and the
 independent `amd-pstate-epp` preference to `performance` on every CPU policy. It
-also reserves 18,000 × 2 MiB huge pages before PostgreSQL starts. The unit is a
+resolves the physical disk or disks backing `/` and selects mq-deadline when
+the kernel offers it. It verifies the scheduler read-back and fails if the root
+disk or scheduler control cannot be resolved, so an active unit cannot imply
+that the requested disk policy was skipped. It also reserves 18,000 × 2 MiB
+huge pages before PostgreSQL starts. The unit is a
 `RequiredBy` dependency of `postgresql@18-main.service`: if Linux cannot reserve
 all pages, it fails loud and PostgreSQL does not start with a silent
 `huge_pages=try` fallback.
@@ -30,20 +34,26 @@ systemctl is-enabled papercusp-host-performance.service
 systemctl is-active papercusp-host-performance.service
 for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do cat "$f"; done | sort -u
 for f in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do cat "$f"; done | sort -u
+ROOT_SOURCE="$(findmnt -nro SOURCE / | cut -d '[' -f 1)"
+lsblk --inverse --noheadings --raw --output KNAME,TYPE "$ROOT_SOURCE" |
+  awk '$2 == "disk" { print $1 }' |
+  while IFS= read -r disk; do printf '%s: ' "$disk"; cat "/sys/block/$disk/queue/scheduler"; done
 cat /proc/sys/vm/nr_hugepages
 sudo -u postgres psql -tAc "show shared_memory_size_in_huge_pages; show huge_pages; show huge_pages_status"
 ```
 
-Both CPU populations must contain only `performance`, `nr_hugepages` must be at
-least 18,000, and PostgreSQL must report `huge_pages=on` plus
+Both CPU populations must contain only `performance`, every root backing disk
+must show mq-deadline as the selected scheduler, `nr_hugepages` must be at least 18,000, and PostgreSQL
+must report `huge_pages=on` plus
 `huge_pages_status=on`. A live fragmented host may accept only part of the
 reservation; the service deliberately fails in that case. Reboot so allocation
 happens before PostgreSQL consumes ~32 GiB, then run
 `npx tsx scripts/pg-autotune.ts --apply` through the normal DB-resource drain.
 
-Roll back with
+Record each root disk's previous scheduler before a manual update. Roll back with
 `sudo systemctl disable --now papercusp-host-performance.service`, remove the two
-installed files, daemon-reload, and write the prior policy back through sysfs.
+installed files, daemon-reload, and write the prior CPU/EPP, huge-page and root
+scheduler settings back through sysfs.
 
 ---
 
@@ -1411,8 +1421,11 @@ unreachable-guest checks past the 600s boot grace — a COLD restart (QMP
 `quit`, wait for qemu to exit, `systemctl --user start`). It never sends
 `system_reset`, which re-enters the loop. At most one cold restart per hour.
 
-A rig operation that must not be interrupted holds restarts off (alerts still
-fire):
+The registered exclusive `mac-test-vm:aviweiss@127.0.0.1:2222` lease
+automatically withholds cold restarts while it is active; alerts still fire.
+The watchdog checks live exclusive rows across coordination domains and fails
+closed if it cannot read the lease state. For operations outside that lease, a
+manual hold still suppresses restarts:
 
 ```bash
 node ~/papercupai-workspace/papercusp/papercusp-desktop/bin/mac-vm-watchdog.mjs \

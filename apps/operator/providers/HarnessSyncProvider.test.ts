@@ -99,6 +99,42 @@ describe('resolveMaxInFlightFetches', () => {
 });
 
 describe('assertIpcCarriesFetch (D-047)', () => {
+  it('observes renderer timers during a pending reply and releases both timers on receipt', async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: { client: string }) => void;
+    invoke.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const assertion = assertIpcCarriesFetch();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toMatchObject({ timerTicks: 5, stopReason: null });
+    resolve({ client: 'connected' });
+    expect(await assertion).toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toMatchObject({ timerTicks: 5, stopReason: 'reply' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds an unanswered invoke probe and retains the deadline when its reply arrives later', async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: { client: string }) => void;
+    invoke.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const assertion = assertIpcCarriesFetch();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const expired = syncMetrics.snapshot().ipcAssertion![0].renderer!;
+    expect(expired.stopReason).toBe('deadline');
+    expect(vi.getTimerCount()).toBe(0);
+    resolve({ client: 'connected' });
+    expect(await assertion).toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toEqual(expired);
+  });
+
+  it('releases the renderer probe when invoke rejects', async () => {
+    vi.useFakeTimers();
+    invoke.mockRejectedValue(new Error('native failure'));
+    expect(await assertIpcCarriesFetch()).toBe(false);
+    expect(syncMetrics.snapshot().ipcAssertion![0]).toMatchObject({ error: 'native failure',
+      renderer: { stopReason: 'reply' } });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('dispatches the startup IPC assertion without waiting for another module load', async () => {
     invoke.mockResolvedValue({ client: 'connected' });
     const assertion = assertIpcCarriesFetch();

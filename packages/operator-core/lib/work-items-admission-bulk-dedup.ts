@@ -158,6 +158,17 @@ interface BulkBatchCheckpoint {
   pairKeys: string[];
   canary: boolean;
   status: 'complete';
+  /**
+   * WI-10004862: the evidence each judgement was made against, so a stage
+   * whose corpus drifted (a DBOS recovery re-reads a live corpus) can reuse
+   * every pair whose endpoints did not change instead of discarding the whole
+   * batch map. `qualityGateKey` pins model/prompt/threshold/dataset;
+   * `pairFingerprints` maps pairKey -> digest of both endpoint merge snapshots.
+   * Absent on checkpoints written before the fix: those are reusable only on
+   * the exact-fingerprint path.
+   */
+  qualityGateKey?: string;
+  pairFingerprints?: Record<string, string>;
   judgements: PromoterJudgement[];
   modelCalls: number;
   modelRetries: number;
@@ -876,6 +887,8 @@ async function acquireBulkStageLease(
     nowMs: number;
     leaseMs: number;
     inputFingerprint: string;
+    /** Merge-quality gate key the stage judges under (WI-10004862 drift reuse). */
+    qualityGateKey: string;
     sourceCensusRunId: string;
     scope: BulkDedupScope;
     pairs: number;
@@ -908,6 +921,15 @@ async function acquireBulkStageLease(
     stale && currentOwner && currentOwner !== input.ownerId
       ? Number(current.lease?.takeoverCount ?? 0) + 1
       : Number(current.lease?.takeoverCount ?? 0);
+  const fingerprintMatched = current.inputFingerprint === input.inputFingerprint;
+  // WI-10004862: a live corpus drifts between a crash and its DBOS recovery
+  // (measured: 35 adjudications + 178 item edits on the pinned members in
+  // 56 min), so wiping the map on any drift discarded every judged batch on
+  // every bg-host restart. Keep what can still be proven per pair.
+  const retainedBatches = fingerprintMatched
+    ? (current.checkpoints?.batches ?? {})
+    : retainBulkCheckpointsAcrossDrift(current.checkpoints?.batches, input.qualityGateKey);
+  const canaryRetained = Object.values(retainedBatches).some((checkpoint) => checkpoint.canary);
   const next: BulkStageEnvelope = {
     ...current,
     schemaVersion: BULK_STAGE_SCHEMA_VERSION,
@@ -924,13 +946,8 @@ async function acquireBulkStageLease(
       takeoverCount,
     },
     canary:
-      current.inputFingerprint === input.inputFingerprint
-        ? (current.canary ?? { status: 'pending' })
-        : { status: 'pending' },
-    checkpoints:
-      current.inputFingerprint === input.inputFingerprint
-        ? { batches: current.checkpoints?.batches ?? {} }
-        : { batches: {} },
+      fingerprintMatched || canaryRetained ? (current.canary ?? { status: 'pending' }) : { status: 'pending' },
+    checkpoints: { batches: retainedBatches },
     // Capacity blocks are retryable. A re-arm must take a fresh headroom
     // reading rather than fossilizing the previous zero-capacity verdict.
     preflight: currentStatus === 'blocked' ? undefined : current.preflight,
@@ -965,7 +982,7 @@ async function acquireBulkStageLease(
   }
   return {
     envelope: next,
-    reused: current.inputFingerprint === input.inputFingerprint,
+    reused: fingerprintMatched,
     complete: false,
   };
 }
@@ -999,6 +1016,51 @@ function batchCheckpointKey(stageRunId: string, shard: number, offset: number, p
     .digest('hex')
     .slice(0, 16);
   return `shard-${shard}-offset-${offset}-${digest}`;
+}
+
+/** Digest of both endpoint merge snapshots a pair judgement was made against.
+ * Null when either snapshot is missing: unprovable evidence is never reused. */
+function pairEvidenceFingerprint(pair: PromoterPair): string | null {
+  const a = pair.a.mergeSnapshot?.fingerprint;
+  const b = pair.b.mergeSnapshot?.fingerprint;
+  if (!a || !b) return null;
+  return createHash('sha256').update(`${pair.pairKey}\x00${a}\x00${b}`).digest('hex').slice(0, 32);
+}
+
+function pairFingerprintsFor(batch: readonly PromoterPair[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of batch) {
+    const fp = pairEvidenceFingerprint(pair);
+    if (fp) out[pair.pairKey] = fp;
+  }
+  return out;
+}
+
+/** A checkpoint that can donate individual pair judgements after corpus drift. */
+function checkpointSupportsPairReuse(checkpoint: BulkBatchCheckpoint, qualityGateKey: string): boolean {
+  return (
+    checkpoint.status === 'complete' &&
+    checkpoint.schemaVersion === BULK_BATCH_CHECKPOINT_SCHEMA_VERSION &&
+    checkpoint.qualityGateKey === qualityGateKey &&
+    !!checkpoint.pairFingerprints
+  );
+}
+
+/**
+ * Checkpoints worth carrying across an input-fingerprint drift: every
+ * pair-reusable checkpoint plus the canary (it proves the canary DBOS step is
+ * already recorded, so a recovery must not re-spend or mis-replay it).
+ */
+export function retainBulkCheckpointsAcrossDrift(
+  batches: Record<string, BulkBatchCheckpoint> | undefined,
+  qualityGateKey: string,
+): Record<string, BulkBatchCheckpoint> {
+  const kept: Record<string, BulkBatchCheckpoint> = {};
+  for (const [key, checkpoint] of Object.entries(batches ?? {})) {
+    if (!checkpoint || checkpoint.status !== 'complete') continue;
+    if (checkpoint.canary || checkpointSupportsPairReuse(checkpoint, qualityGateKey)) kept[key] = checkpoint;
+  }
+  return kept;
 }
 
 function checkpointMatchesBatch(
@@ -1356,6 +1418,14 @@ async function judgeBulkPairs(
     now: () => number;
     step: BulkDedupStepRunner;
     checkpoints: Record<string, BulkBatchCheckpoint>;
+    /** Merge-quality gate key every new checkpoint is stamped with. */
+    qualityGateKey: string;
+    /**
+     * False when the stage input drifted since the checkpoints were written
+     * (WI-10004862). Batch offsets then no longer line up, so reuse switches to
+     * pair granularity, validated per pair against the recorded evidence.
+     */
+    inputFingerprintMatched: boolean;
   },
 ): Promise<{
   judgements: PromoterJudgement[];
@@ -1378,18 +1448,63 @@ async function judgeBulkPairs(
     byShard.set(shard, [...(byShard.get(shard) ?? []), pair]);
   }
 
-  const shardEntries = [...byShard.entries()].sort((a, b) => a[0] - b[0]);
+  // WI-10004862: donate individual pair judgements from any checkpoint whose
+  // recorded evidence (quality gate key + both endpoint snapshot fingerprints)
+  // still matches the live pair. Batch offsets shift whenever one earlier pair
+  // leaves the input, so offset-keyed batch reuse alone cannot survive drift.
+  const pairDonors = new Map<
+    string,
+    { checkpoint: BulkBatchCheckpoint; fingerprint: string; judgements: PromoterJudgement[] }
+  >();
+  for (const checkpoint of Object.values(opts.checkpoints)) {
+    if (!checkpointSupportsPairReuse(checkpoint, opts.qualityGateKey)) continue;
+    for (const pairKey of checkpoint.pairKeys) {
+      const fingerprint = checkpoint.pairFingerprints?.[pairKey];
+      const judgements = checkpoint.judgements.filter((judgement) => judgement.pairKey === pairKey);
+      // An omitted pair has no judgement to donate; it is judged again.
+      if (!fingerprint || judgements.length === 0) continue;
+      const prior = pairDonors.get(pairKey);
+      if (!prior || checkpoint.completedAt > prior.checkpoint.completedAt) {
+        pairDonors.set(pairKey, { checkpoint, fingerprint, judgements });
+      }
+    }
+  }
+  const shardEntries = [...byShard.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([shard, pairs]) => {
+      const donated: PromoterPair[] = [];
+      const remaining: PromoterPair[] = [];
+      for (const pair of pairs) {
+        const donor = pairDonors.get(pair.pairKey);
+        if (donor && donor.fingerprint === pairEvidenceFingerprint(pair)) donated.push(pair);
+        else remaining.push(pair);
+      }
+      return { shard, pairs, donated, remaining };
+    });
+  // The canary is a single DBOS step per stage. When a canary checkpoint is
+  // already durable, that step is recorded (or provably passed by an earlier
+  // executor): replay it as a no-op up front, exactly once, before any shard
+  // runs, so the step sequence is identical whatever the batch keys are now.
+  const canaryRecorded = Object.values(opts.checkpoints).some(
+    (checkpoint) =>
+      checkpoint.canary &&
+      checkpoint.status === 'complete' &&
+      (checkpoint.qualityGateKey === undefined || checkpoint.qualityGateKey === opts.qualityGateKey),
+  );
   const firstBatchKey = (() => {
-    const first = shardEntries[0];
+    if (canaryRecorded) return null;
+    const first = shardEntries.find((entry) => entry.remaining.length > 0);
     return first
       ? batchCheckpointKey(
           opts.stageRunId,
-          first[0],
+          first.shard,
           0,
-          first[1].slice(0, opts.pairsPerCall).map((p) => p.pairKey),
+          first.remaining.slice(0, opts.pairsPerCall).map((p) => p.pairKey),
         )
       : null;
   })();
+  if (canaryRecorded) await opts.step(`bulk:${opts.stageRunId}:canary`, async () => undefined);
+  const foldedDonors = new Set<string>();
   let resolveCanary!: () => void;
   let rejectCanary!: (error: unknown) => void;
   const canaryGate = new Promise<void>((resolve, reject) => {
@@ -1865,6 +1980,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       sourceCensusRunId: census.runId,
       pairs: input.pairs.length,
       inputFingerprint: stageInputFingerprint,
+      qualityGateKey: mergeQualityPrepared.gateKey,
       ownerId: executionId,
       nowMs: now(),
       leaseMs,
@@ -2027,6 +2143,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         now,
         step,
         checkpoints: savedCheckpoints,
+        qualityGateKey: mergeQualityPrepared.gateKey,
+        inputFingerprintMatched: leaseState.reused,
       });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);

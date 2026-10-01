@@ -132,6 +132,36 @@ describe('papercusp-script-snapshot.sh', () => {
     }
   });
 
+  it('keeps an adjacent .mjs helper available and frozen during a long setup', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-adjacent-mjs-helper-'));
+    try {
+      const target = join(dir, 'setup-release-checkout.sh');
+      const helper = join(dir, 'pinned-lock-deps.mjs');
+      const ready = join(dir, 'mjs.ready');
+      const release = join(dir, 'release');
+      expect(spawnSync('mkfifo', [release]).status).toBe(0);
+      await writeFile(helper, 'console.log("MJS_ORIGINAL")\n');
+      await writeExecutable(target, [
+        '#!/usr/bin/env bash',
+        'set -u',
+        'printf ready > "$READY_FILE"',
+        'read -r token < "$RELEASE_PIPE"',
+        'node "$(dirname "${BASH_SOURCE[0]}")/pinned-lock-deps.mjs"',
+      ].join('\n'));
+
+      const run = runWrapper(dir, [target], { READY_FILE: ready, RELEASE_PIPE: release });
+      await waitForFile(ready);
+      await writeFile(helper, 'console.log("MJS_MUTATED")\n');
+      await writeFile(release, 'resume\n');
+
+      const result = await run;
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('MJS_ORIGINAL');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a long-running target on the pre-edit byte snapshot', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'papercusp-script-snapshot-test-'));
     try {

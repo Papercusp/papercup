@@ -895,6 +895,14 @@ describe('work_items:burn_down', () => {
       duplicateOccurrences: 3,
       separateUnits: true,
     });
+    // R-32/R-33: legacy terminal claims remain lifecycle metrics, not verified
+    // accepted delivery, and observation/occurrence units cannot inflate bugs.
+    expect(result.snapshot.intakeStages).toMatchObject({
+      population: 3, remainingBugs: 0, verifiedCompletions: 0,
+      scope: 'current-spec issue-family rows including observation evidence',
+      window: 'current stock at generatedAt', unit: 'work-item rows',
+      counts: { observation: 1, unknown: 1, 'terminal-other': 1 },
+    });
   });
 
   it('overlaps claim-floor attribution with a pending occurrence census', async () => {

@@ -295,7 +295,11 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
         ipcAssertion?: Array<{ startedAtMs: number; importReadyAtMs: number | null;
           invokeStartedAtMs: number | null; invokeCompletedAtMs: number | null;
           completedAtMs: number | null; client: string | null; error?: string;
-          nativeStartedAtMs?: number; nativeDurationMs?: number }>;
+          nativeStartedAtMs?: number; nativeDurationMs?: number;
+          renderer?: { unit: 'ms'; clock: 'performance.now'; intervalMs: number;
+            startedAtMs: number; lastObservedAtMs: number; timerTicks: number; maxGapMs: number;
+            gaps: Array<{ startedAtMs: number; completedAtMs: number; durationMs: number }>;
+            stoppedAtMs: number | null; stopReason: 'reply' | 'deadline' | null } }>;
         stages?: { recent: Array<{ stage: string; unit: 'ms'; durationMs: number; measuredAtMs: number;
           queryName?: string; traceId?: string }> } };
       queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string;

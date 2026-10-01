@@ -5,6 +5,8 @@ import {
   agentReviewEligibility,
   createImplementationReadiness,
   deriveWorkItemIntakeStage,
+  deriveWorkItemPresentationStage,
+  countWorkItemPresentationStages,
   evaluateImplementationAcceptance,
   hasStrictOwnerAction,
   IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
@@ -22,6 +24,7 @@ import {
   type ImplementationAcceptanceSource,
   type ImplementationReadinessState,
   WORK_ITEM_INTAKE_PRIMARY_STAGES,
+  WORK_ITEM_PRESENTATION_STAGES,
 } from './agent-review-policy';
 
 // Copy-out mutation-probe seam: the regular suite imports the real policy, while
@@ -83,6 +86,60 @@ const readinessWith = (
   });
 
 const acceptedReadiness = (source: ImplementationAcceptanceSource = BUG_SOURCE) => readinessWith(sealedContract(source));
+
+describe('P-010 shared intake presentation', () => {
+  const accepted = () => ({ ...BUG_SOURCE, status: 'open', payload: { implementationReadiness: acceptedReadiness() } });
+
+  it('R-10: assignment cannot convert intake to active accepted work, and a hold outranks assignment', () => {
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: {}, assignee: 'su-worker' }).stage).toBe('unknown');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: { implementationReadiness: readinessWith(undefined) },
+      status: 'wip', assignee: 'su-worker' }).stage).toBe('candidate');
+    expect(deriveWorkItemPresentationStage(accepted()).stage).toBe('accepted-ready');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker' }).stage).toBe('accepted-active');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), assignee: 'su-worker', blocked: true }).stage).toBe('accepted-blocked');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), payload: { ...accepted().payload, _claimHold: true } }).stage)
+      .toBe('accepted-blocked');
+    expect(deriveWorkItemPresentationStage({ ...accepted(), title: 'changed after acceptance' }).stage).toBe('candidate');
+  });
+
+  it('R-33: a verified successful accepted close is delivery; a duplicate, invalid or legacy close is not', () => {
+    for (const status of ['done', 'passed', 'resolved']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status, completionAuthority: 'committed' }).stage)
+        .toBe('verified-completion');
+    }
+    for (const status of ['closed', 'dropped', 'deprecated']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status, completionAuthority: 'committed' }).stage)
+        .toBe('terminal-other');
+    }
+    // `failed` is retryable in the canonical lifecycle; it is held, not delivered.
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'failed', completionAuthority: 'committed' }).stage)
+      .toBe('accepted-blocked');
+    for (const completionAuthority of [null, 'proposed', 'invalid', 'pending_human']) {
+      expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'done', completionAuthority }).stage)
+        .toBe('terminal-other');
+    }
+    expect(deriveWorkItemPresentationStage({ ...accepted(), status: 'done', payload: {}, completionAuthority: 'committed' }).stage)
+      .toBe('terminal-other');
+  });
+
+  it('R-33: the population partitions once and intake processing cannot inflate remaining bugs or delivered fixes', () => {
+    const rows = [
+      { ...accepted(), payload: { lane: 'observation', digestConsumed: true }, status: 'done', completionAuthority: 'committed' },
+      { ...accepted(), payload: { implementationReadiness: readinessWith(undefined), pairComparisons: 2000 }, assignee: 'su-worker' },
+      accepted(), { ...accepted(), assignee: 'su-worker' }, { ...accepted(), blocked: true },
+      { ...accepted(), status: 'done', completionAuthority: 'validated' },
+      { ...accepted(), status: 'closed', completionAuthority: 'committed' },
+      { ...accepted(), payload: {} },
+    ];
+    const census = countWorkItemPresentationStages(rows);
+    expect(census.population).toBe(8);
+    expect(WORK_ITEM_PRESENTATION_STAGES.map(stage => census.counts[stage])).toEqual([1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(Object.values(census.counts).reduce((a, b) => a + b, 0)).toBe(census.population);
+    expect(census.remainingBugs).toBe(3);
+    expect(census.verifiedCompletions).toBe(1);
+    expect(census).toMatchObject({ unit: 'work-item rows', mutuallyExclusive: true, writer: 'deriveWorkItemPresentationStage' });
+  });
+});
 
 describe('implementation readiness payload', () => {
   it('round-trips a current three-valued verdict with a stable schema version', () => {
