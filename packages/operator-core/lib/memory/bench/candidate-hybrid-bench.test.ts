@@ -93,6 +93,13 @@ describe('frozen seven-bar measurement contracts (P-001)', () => {
     expect(() => check(queries.slice(1), { ...proof, queryIds: proof.queryIds.slice(1) })).toThrow('unbalanced');
     expect(() => check(queries, { ...proof, frozenAt: '2026-01-03T00:00:00.000Z' })).toThrow('time');
   });
+  it.each(['same-transport', 'same-file', 'normalized-file-alias'])('refuses reused judge evidence: %s', (kind) => {
+    const { entries, queries, proof } = independentCohortFixture();
+    if (kind === 'same-transport') proof.judges[1].transport = ` ${proof.judges[0].transport} `;
+    else proof.judges[1].raw.path = kind === 'same-file' ? proof.judges[0].raw.path : '/private/x/../judge-1.json';
+    expect(() => validateIndependentCohort(entries, queries, proof, proof.snapshotSha256,
+      proof.labelsSha256, '2026-01-02T00:00:00.000Z')).toThrow(/duplicate.*judge/);
+  });
   it('binds arm recipes independent of object key order and refuses equal-width space substitution', () => {
     const arm = measurementManifestFixture('/private').arms[0];
     const actual = { profile: arm.profile, prompts: arm.prompts, execution: arm.execution, tokenizer: arm.tokenizer };

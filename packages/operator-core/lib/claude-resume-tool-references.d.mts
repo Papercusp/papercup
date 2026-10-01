@@ -8,6 +8,13 @@ export interface ClaudeResumeTranscriptAnalysis {
   lastMissingToolReferenceEvidence: string | null;
   /** The tool name the latest counted rejection named, or null. */
   lastMissingToolReferenceName: string | null;
+  /**
+   * Assistant records (model output or the provider's synthetic error) written
+   * after the most recent submitted prompt. A fork's file carries the source's
+   * copied history, so "any assistant record exists" cannot say whether the
+   * fork's own first reply has landed; this count can (WI-10004645).
+   */
+  assistantTurnsSinceLastPrompt: number;
   /** Trailing streak ≥ CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS: a live session must be moved onto fresh context. */
   needsFreshContext: boolean;
   poisoned: boolean;

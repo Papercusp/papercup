@@ -39,6 +39,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Sql } from 'postgres';
 import {
   buildAgentLaunchCommand,
@@ -72,6 +73,18 @@ import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
  * requester's critical path, and null is an honest "still booting", never a
  * failure — the cascade expiry guards the reply. */
 export const DISPATCH_VERIFY_TIMEOUT_MS = 15_000;
+
+/**
+ * How long after its kickoff lands a Claude fork gets to write its first reply
+ * before the dispatch stops waiting to judge it (WI-10004645). A provider
+ * "Tool reference … not found" 400 is a request-validation failure, so it lands
+ * within seconds of the kickoff (measured: 2s and 8s). The bound is measured
+ * from the kickoff, so it overlaps the host verification wait rather than
+ * adding to it. Expiry keeps the dispatch: no reply yet is not a rejection.
+ */
+export const FIRST_TURN_WAIT_MS = 20_000;
+/** Re-read interval for that wait; the analyzer caches by size + mtime. */
+export const FIRST_TURN_POLL_MS = 500;
 
 export type DispatchOperation = 'fork' | 'convert';
 
@@ -208,7 +221,12 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
    */
   analyzeClaudeTranscript: (
     transcriptPath: string,
-  ) => Pick<ClaudeResumeTranscriptAnalysis, 'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName'> | null;
+  ) => Pick<
+    ClaudeResumeTranscriptAnalysis,
+    'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName' | 'assistantTurnsSinceLastPrompt'
+  > | null;
+  /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
+  sleepMs: (ms: number) => Promise<void>;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
   injectLaunchedByArg: typeof injectLaunchedByArg;
   buildConsoleEnvelope: typeof buildConsoleEnvelope;
@@ -831,6 +849,7 @@ export async function dispatchConsultResponder(
     recordDispatchAttempts: defaultRecordDispatchAttempts,
     readSourceDispatchRecords: defaultReadSourceDispatchRecords,
     nowMs: () => Date.now(),
+    sleepMs: (ms: number) => sleep(ms),
     ...deps,
   };
   const result = await walkConsultDispatch(opts, ctx, d);
@@ -1051,6 +1070,18 @@ async function walkConsultDispatch(
         ...(evidenceSource ? { evidenceSource } : {}),
       }, ctx, d, target, rank, operation);
       attempts.push(attempt.record);
+      // WI-10004645: every fork rank replays the SAME source history, and a
+      // "Tool reference … not found" first reply comes from a reference in that
+      // history the fork's toolset lacks. Once one fork of this source is
+      // rejected that way, the other fork ranks would be too (measured: rank 2
+      // re-forked the source rank 1 had just failed on, and died identically).
+      // Conversions re-render the history, so they stay eligible.
+      if (operation === 'fork' && attempt.record.reason === 'first-turn-rejected' && !forkBlockedByPoison) {
+        forkBlockedByPoison =
+          `rank #${rank.rank} (${rank.agent}/${rank.model}) forked ${target.ownerId ?? 'the source'} and its ` +
+          'first reply was a provider "Tool reference not found" rejection; every fork replays the same ' +
+          'source history, so the remaining fork ranks would fail the same way';
+      }
       if (attempt.record.outcome === 'dispatched') {
         return {
           dispatched: true,
@@ -1226,6 +1257,8 @@ async function launchAnsweringSession(
     );
     return launchError ? { ...result, record: { ...result.record, launchError } } : result;
   }
+  // The first-turn wait below is bounded from this instant (WI-10004645).
+  const kickoffSeenAtMs = d.nowMs();
 
   // The brief is submitted and the session is running, so from HERE it can post
   // — and the reply gate refuses an author the consult row does not name yet.
@@ -1284,24 +1317,56 @@ async function launchAnsweringSession(
   // … not found" 400, this session is dead on arrival, even though its host
   // may register as live: Claude Code shows the error and waits for input. Measured
   // on an acceptance consult: the fork recorded 'dispatched', then held the
-  // grading slot silently until its cascade expiry. Checked once, after the
-  // verification wait; a first turn that has not landed yet reads as healthy,
-  // so this can only turn a dead dispatch into a fast cascade, never refuse a
-  // good one.
+  // grading slot silently until its cascade expiry.
+  //
+  // WI-10004645: reading once, right after the verification wait, was not
+  // enough. That wait can return in milliseconds, before the reply exists — a
+  // fork recorded 'dispatched' 2.2s before its 400 landed. And a fork's file
+  // carries the source's copied history, so an assistant record does not by
+  // itself mean the fork has replied. So: wait, bounded from the kickoff, for
+  // the first assistant record AFTER the fork's own prompt, then judge that
+  // reply. Expiry or an unreadable transcript keeps the dispatch (no reply yet
+  // is not a rejection), so this can turn a dead dispatch into a fast cascade
+  // but never refuse a good one.
   const answeringTranscript = spawn.kickoffProof?.nativeRef;
+  // Set when the transcript was readable but no reply had landed by the bound;
+  // the dispatch stands, and its record says the first turn was not judged.
+  let firstTurnUnjudgedAfterMs: number | null = null;
   if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
     let rejection: { turns: number; tool: string | null } | null = null;
-    try {
-      const analysis = d.analyzeClaudeTranscript(answeringTranscript);
-      if (analysis && analysis.trailingMissingToolReferenceTurns > 0) {
-        rejection = {
-          turns: analysis.trailingMissingToolReferenceTurns,
-          tool: analysis.lastMissingToolReferenceName,
-        };
+    const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
+    // The read-count bound is independent of the clock, so a stalled clock
+    // cannot turn this into an unbounded loop.
+    const maxPolls = Math.ceil(FIRST_TURN_WAIT_MS / FIRST_TURN_POLL_MS);
+    let readable = true;
+    let replied = false;
+    for (let poll = 0; ; poll += 1) {
+      let analysis: ReturnType<ConsultDispatchDeps['analyzeClaudeTranscript']> = null;
+      try {
+        analysis = d.analyzeClaudeTranscript(answeringTranscript);
+      } catch {
+        analysis = null;
       }
-    } catch {
-      // Unreadable is not evidence of a rejection; keep the dispatch.
+      if (!analysis) {
+        // Unreadable is not evidence of a rejection; keep the dispatch.
+        readable = false;
+        break;
+      }
+      if (analysis.assistantTurnsSinceLastPrompt > 0) {
+        replied = true;
+        if (analysis.trailingMissingToolReferenceTurns > 0) {
+          rejection = {
+            turns: analysis.trailingMissingToolReferenceTurns,
+            tool: analysis.lastMissingToolReferenceName,
+          };
+        }
+        break;
+      }
+      const remainingMs = deadline - d.nowMs();
+      if (poll >= maxPolls || remainingMs <= 0) break;
+      await d.sleepMs(Math.min(FIRST_TURN_POLL_MS, remainingMs));
     }
+    if (readable && !replied) firstTurnUnjudgedAfterMs = Math.max(0, d.nowMs() - kickoffSeenAtMs);
     if (rejection) {
       const stopped = await d.stopFailedLaunch(spawn.taskId);
       return {
@@ -1321,16 +1386,20 @@ async function launchAnsweringSession(
     }
   }
 
+  const firstTurnNote = firstTurnUnjudgedAfterMs === null
+    ? ''
+    : ` First reply not written ${firstTurnUnjudgedAfterMs}ms after kickoff, so it was not checked for a ` +
+      'provider rejection.';
   return {
     record: {
       ...base,
       outcome: 'dispatched',
-      detail: verify.started
+      detail: (verify.started
         ? `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
           `live host registered after ${verify.waitedMs}ms (log ${spawn.logPath ?? '?'}).`
         : `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
           `spawned, no live host after ${verify.waitedMs}ms — still booting (NOT a failure; the cascade ` +
-          `expiry guards the reply). Log ${spawn.logPath ?? '?'}.`,
+          `expiry guards the reply). Log ${spawn.logPath ?? '?'}.`) + firstTurnNote,
     },
     answeringOwnerId,
     verified: verify.started ? true : null,

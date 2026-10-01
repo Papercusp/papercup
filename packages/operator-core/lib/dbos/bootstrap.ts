@@ -430,6 +430,12 @@ async function startDbosOnce(): Promise<void> {
   // recovery resumes an interrupted run; nothing executes until a caller admits a durable run.
   await import('./durable-orchestration-workflow');
 
+  // agent-economy-flywheel-2026-08-30 P-041 (D-024): hourly anchoring of the hash-chained
+  // ledgers. Registered ungated before launch; a pass publishes only when an anchor key is
+  // configured (otherwise it checks cadence and files one missed-hour alert per workspace),
+  // and PAPERCUSP_LEDGER_ANCHOR_BACKEND=none turns it off.
+  await import('./ledger-anchor-workflow');
+
   // EI-20196041413229589: register the release:checkpoint-run eligibility waiter before
   // DBOS.launch, then install its request-side enqueue seam only after the runtime is live.
   // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.

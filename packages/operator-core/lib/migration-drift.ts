@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { normalizeMigrationSql } from './migration-sql-normalize';
+import { selectNewContentDrift } from './migration-content-drift-acknowledged';
 import {
   recoverAppliedMigrationText,
   type AppliedMigrationTextResult,
@@ -263,6 +264,13 @@ export interface MigrationDrift {
    *  half-landed migration as benign silences exactly the signal the detector
    *  exists to carry. `null` exactly when `contentDrift` is (not measured). */
   contentDriftExecutable: ClassifiedMigrationContentDrift[] | null;
+  /** WI-10004651: `contentDriftExecutable` minus the ACKNOWLEDGED set
+   *  (migration-content-drift-acknowledged.ts) — drift nobody has resolved or
+   *  proven benign yet. `contentDriftExecutable` is never empty on a long-lived
+   *  database, so it cannot alert by itself; THIS is the field an alert keys on
+   *  (the improvements watchdog's `migration-content-drift` source does).
+   *  `null` exactly when `contentDrift` is (not measured). */
+  contentDriftNew: ClassifiedMigrationContentDrift[] | null;
   /** The tree whose bytes `contentDrift` compared against — the canonical
    *  staging tree when resolvable (agents edit THERE, so drift shows up there
    *  first), else whichever tree served this call. Null when neither resolves,
@@ -653,6 +661,7 @@ export async function checkMigrationDrift(
       }));
   const contentDriftExecutable =
     contentDrift === null ? null : contentDrift.filter((d) => d.classification !== 'comments-only');
+  const contentDriftNew = contentDrift === null ? null : selectNewContentDrift(contentDrift);
 
   return {
     sqlDir,
@@ -678,6 +687,7 @@ export async function checkMigrationDrift(
     missingCanonical,
     contentDrift,
     contentDriftExecutable,
+    contentDriftNew,
     contentDriftSqlDir,
   };
 }

@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P002 exact recipe identity counterexample",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+    "--summarize-reference",
+    "<private-native-collision-v1>",
+    "--python-reference",
+    "<private-python-collision-v1>",
+    "--out",
+    "<private-should-not-publish>"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-01T07:46:05.887610Z",
+  "finishedAt": "2026-10-01T07:49:08.549563Z",
+  "summary": "Same exact native/request/Python file join as the successful actual qualification; only corrected Gemma native arm profileId is replaced by shipped Gemma profileId. Native bytes and Python nativeSha256 are consistently re-frozen so the artifact SHA gate remains satisfied. The CLI exits1 with reference recipe identity collision/missing arm and emits no summary. This is a killed counterexample, not a passing-test row relabeled as a mutation.",
+  "assertions": [
+    {
+      "id": "same-request-assets",
+      "passed": true,
+      "evidence": "Frozen request copied byte-for-byte from successful native run; graph/tokenizer assets, cases and vectors unchanged. Python raw native hash updated to match modified native bytes."
+    },
+    {
+      "id": "exact-falsifier-rejected",
+      "passed": true,
+      "evidence": "Observed process exit1/stdout: embedder-eval failed: reference recipe identity collision/missing arm."
+    },
+    {
+      "id": "invalid-summary-not-published",
+      "passed": true,
+      "evidence": "Destination should-not-publish-collision-v1.json is absent after the rejected join."
+    }
+  ],
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004536",
+  "spec": "MDENSE-reference-arm-identity@1",
+  "positiveControl": "docs/evidence/mdenseon-incumbent-reference-2026-10-01.json",
+  "rawArtifacts": [
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-collision-v1.json",
+      "sha256": "dab2e165f8f6f6bbb43ac8647f74645ca729939d5122d8656958701d148b649e",
+      "bytes": 1572674
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/native-collision-v1.json.request.json",
+      "sha256": "4aec943511864de3619503b61120fd677c9341b60f64941fa5ee19a001258dcf",
+      "bytes": 6949
+    },
+    {
+      "locator": "cache:validation/mdenseon-reference-WI10004536-20261001/python-collision-v1.json",
+      "sha256": "14faf43e3bd8c6907da3cdef1628400847c92c40e8366d55687d9baceda63aba",
+      "bytes": 944374
+    }
+  ],
+  "mutatedField": "native.arms[1].profileId",
+  "expectedRejectedField": "shipped/corrected recipe identity collision"
+}

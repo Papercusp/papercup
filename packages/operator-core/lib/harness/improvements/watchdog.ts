@@ -89,6 +89,10 @@ export type WatchdogSource =
   // the migration LEDGER and an object created outside the migration set leaves no
   // trace in it. See collectSchemaObjectDriftSignals.
   | 'schema-object-drift'
+  // WI-10004651: an applied migration edited after it ran, outside the acknowledged
+  // set — the fourth direction: ledger and live objects agree, the FILE does not.
+  // See collectMigrationContentDriftSignals.
+  | 'migration-content-drift'
   // a role fire-path in error-backoff (autoloop_state.consecutive_errors):
   | 'fire-circuit-open'
   // an engine LOOP (loop:arm) parked at 'infinity' far past its fire with NO completion
@@ -2533,6 +2537,49 @@ export async function collectSchemaAheadSignals(
 }
 
 /**
+ * migration-content-drift (WI-10004651): an APPLIED migration whose bytes on disk no
+ * longer match the sha256 recorded when it ran, and that is not in the acknowledged
+ * set (migration-content-drift-acknowledged.ts). The edit never executed and no
+ * restart will run it, so the file misdescribes the live schema until a NEW migration
+ * re-applies the intended state.
+ *
+ * `checkMigrationDrift` has measured this since EI-19365742982915607, but only
+ * db:check_drift read it, and the raw list is never empty on a long-lived database —
+ * so 1219 lost its run-instance exemption on the live trigger in silence until a
+ * deployed smoke tripped over it. One signal PER FILE, keyed by filename, so each
+ * repair closes its own item. Pays the content hash (~37ms, measured WI-10002541) once
+ * per watchdog tick, never the git-history classification.
+ */
+export async function collectMigrationContentDriftSignals(
+  check: () => Promise<{
+    contentDriftNew: Array<{ filename: string; recordedSha256: string; diskSha256: string; classification: string }> | null;
+    contentDriftSqlDir?: string | null;
+  }> = () => checkMigrationDrift({ checkContent: true }),
+): Promise<WatchdogSignal[]> {
+  let drift: Awaited<ReturnType<typeof check>>;
+  try { drift = await check(); } catch { return []; }
+  if (!drift.contentDriftNew?.length) return [];
+  const scanned = drift.contentDriftSqlDir ? `\n\nCompared against sql dir: ${drift.contentDriftSqlDir}` : '';
+  return drift.contentDriftNew.map((d) => ({
+    source: 'migration-content-drift' as const,
+    key: `migration-content-drift:${d.filename}`,
+    title: `Applied migration ${d.filename} was edited after it ran: the live DB never executed the edit`,
+    body:
+      `Watchdog signal (migration-content-drift): ${d.filename} is recorded as applied with sha256 ` +
+      `${d.recordedSha256.slice(0, 12)}, but the file on disk now hashes to ${d.diskSha256.slice(0, 12)}. ` +
+      `No restart or deploy re-runs an applied migration, so the edit is not live (1219 lost the live ` +
+      `stamp_acceptance_bar_epoch run-instance exemption this way, WI-10004651).\n\n` +
+      `Repair: compare the live object with the file (db:check_drift classifies it), then write a NEW ` +
+      `migration that re-applies the intended state. Once repaired or proven comment-only, add the file to ` +
+      `ACKNOWLEDGED_CONTENT_DRIFT in packages/operator-core/lib/migration-content-drift-acknowledged.ts ` +
+      `with a reason naming the repair. Do not acknowledge it unrepaired.${scanned}`,
+    severity: 'major' as const,
+    kind: 'bug' as const,
+    paths: [`libs/papercusp/libs/db/sql/${d.filename}`],
+  }));
+}
+
+/**
  * schema-object-drift: index objects that exist in the LIVE database but that the
  * migration set does not produce — so a FRESH INSTALL will not have them.
  *
@@ -4251,6 +4298,7 @@ export async function defaultPapercuspCollectors(
     // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
     { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },
     { name: 'papercusp-schema-ahead-of-code', collect: () => collectSchemaAheadSignals() },
+    { name: 'papercusp-migration-content-drift', collect: () => collectMigrationContentDriftSignals() },
     { name: 'papercusp-schema-object-drift', collect: () => collectSchemaObjectDriftSignals() },
     { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
     { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },

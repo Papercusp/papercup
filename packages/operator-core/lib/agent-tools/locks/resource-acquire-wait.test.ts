@@ -16,6 +16,7 @@ vi.mock('./su-lock-store', () => ({
   pokeResource: vi.fn(),
   readResourceLockStatus: vi.fn(),
   readResourceQueue: vi.fn(),
+  releaseAllResourcesForOwner: vi.fn(),
   tryAcquireResource: vi.fn(),
   tryReleaseResource: vi.fn(),
 }));
@@ -28,6 +29,7 @@ vi.mock('./workspace-listener', () => ({
 
 import {
   readResourceLockStatus,
+  releaseAllResourcesForOwner,
   tryAcquireResource,
   tryReleaseResource,
   type ResourceAcquireResult,
@@ -36,7 +38,7 @@ import {
 import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { subscribeWorkspace } from './workspace-listener';
-import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { acquireResourceExclusiveQueued, acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 
 const txnM = vi.mocked(inWorkspaceTxn);
 const subscribeM = vi.mocked(subscribeWorkspace);
@@ -201,5 +203,120 @@ describe('acquireResourceExclusiveWithWait mid-drain failure', () => {
     expect(releaseM).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('queued-exclusive'), expect.any(Error));
     warn.mockRestore();
+  });
+});
+
+// The P-008 staging bridge made ONE git-sync:<slug> attempt per hourly gate tick and lost it
+// four times to a git-sync fire mid-run. The queued variant must keep a stable FIFO ticket
+// across polls and must never leave that ticket (or a late cascade grant) behind on a give-up.
+describe('acquireResourceExclusiveQueued', () => {
+  const releaseAllM = vi.mocked(releaseAllResourcesForOwner);
+  const gitSyncFire: ResourceHolder = {
+    resource: 'git-sync:papercusp',
+    owner: 'system:git-sync:1650535:fire',
+    owner_label: 'git-sync:papercusp',
+    mode: 'exclusive',
+    status: 'held',
+    lock_id: 'git-sync-fire',
+    reason: 'auto-commit papercusp',
+    acquired_ts: new Date('2026-10-01T07:56:02.000Z'),
+    expires_ts: new Date('2026-10-01T08:06:02.000Z'),
+    fence_seq: 40,
+  };
+  const queuedBehindFire: Extract<ResourceAcquireResult, { ok: false }> = {
+    ok: false,
+    reason: 'held_exclusive',
+    holders: [gitSyncFire],
+    queue_ticket: 'ticket-1',
+    queue_position: 1,
+  };
+  const queue = (maxQueueSec: number, beforeAcquire?: () => Promise<void>) =>
+    acquireResourceExclusiveQueued({
+      coordinationDomain: 'workspace-domain',
+      owner: 'system:green-checkpoint:staging-absorption:1:attempt',
+      ownerLabel: 'green-checkpoint:papercusp',
+      resource: 'git-sync:papercusp',
+      reason: 'absorb promoted frozen lineage',
+      ttlSec: 120,
+      maxQueueSec,
+      pollMs: 2_000,
+      ...(beforeAcquire ? { beforeAcquire } : {}),
+    });
+
+  beforeEach(() => {
+    acquireM.mockReset();
+    releaseAllM.mockReset();
+    mockResolvedTyped(releaseAllM, { released: 0, exclusiveResources: [], waiters: {} });
+  });
+
+  it('keeps one owner queued across polls until the cascade grants it, then leaves the lease held', async () => {
+    mockResolvedOnceTyped(acquireM, queuedBehindFire);
+    mockResolvedOnceTyped(acquireM, queuedBehindFire);
+    mockResolvedOnceTyped(acquireM, { ...held, lock_id: 'bridge-lease', fence_seq: 41 });
+    const beforeAcquire = vi.fn(async () => undefined);
+
+    const pending = queue(300, beforeAcquire);
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      status: 'held',
+      lock_id: 'bridge-lease',
+      fence_seq: 41,
+      waited_sec: 4,
+    });
+
+    expect(acquireM).toHaveBeenCalledTimes(3);
+    for (const [, params] of acquireM.mock.calls) {
+      expect(params).toMatchObject({
+        owner: 'system:green-checkpoint:staging-absorption:1:attempt',
+        mode: 'exclusive',
+        queueOnConflict: true,
+      });
+    }
+    expect(beforeAcquire).toHaveBeenCalledTimes(3);
+    expect(releaseAllM).not.toHaveBeenCalled();
+  });
+
+  it('gives up at the deadline and clears the ticket plus any lease granted after the last poll', async () => {
+    mockResolvedTyped(acquireM, queuedBehindFire);
+
+    const pending = queue(5);
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      reason: 'queue_timeout',
+      holders: [gitSyncFire],
+      queue_position: 1,
+      waited_sec: 5,
+    });
+
+    // polls at 0s, 2s, 4s and the clipped 5s deadline
+    expect(acquireM).toHaveBeenCalledTimes(4);
+    expect(releaseAllM).toHaveBeenCalledTimes(1);
+    expect(releaseAllM.mock.calls[0]?.slice(1)).toEqual([
+      'workspace-domain',
+      'system:green-checkpoint:staging-absorption:1:attempt',
+    ]);
+  });
+
+  it('returns a non-queueable refusal at once and still clears the owner', async () => {
+    mockResolvedOnceTyped(acquireM, { ok: false, reason: 'unknown_resource', holders: [] });
+
+    const pending = queue(300);
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toMatchObject({ ok: false, reason: 'unknown_resource', waited_sec: 0 });
+    expect(acquireM).toHaveBeenCalledTimes(1);
+    expect(releaseAllM).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the queued ticket before rethrowing a non-transient failure mid-wait', async () => {
+    mockResolvedOnceTyped(acquireM, queuedBehindFire);
+    acquireM.mockRejectedValueOnce(new Error('connection reset'));
+
+    const pending = queue(300);
+    const settled = expect(pending).rejects.toThrow('connection reset');
+    await vi.runAllTimersAsync();
+    await settled;
+    expect(releaseAllM).toHaveBeenCalledTimes(1);
   });
 });

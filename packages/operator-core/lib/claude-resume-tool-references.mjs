@@ -87,6 +87,24 @@ function missingToolReferenceName(text) {
   return match?.[1] ?? null;
 }
 
+/**
+ * A prompt a person (or launcher) actually submitted: a `user` record that is
+ * not harness metadata (`isMeta`) and carries no `tool_result` block. Tool
+ * results and meta records are also `type:'user'` rows, but they continue the
+ * current turn rather than start one, so they must not reset the per-prompt
+ * count (WI-10004645).
+ */
+function isSubmittedPrompt(record) {
+  const role = record?.message?.role ?? record?.role;
+  if (record?.type !== 'user' && role !== 'user') return false;
+  if (role && role !== 'user') return false;
+  if (record?.isMeta === true) return false;
+  const content = record?.message?.content ?? record?.content;
+  if (typeof content === 'string') return true;
+  if (!Array.isArray(content)) return false;
+  return !content.some((part) => part && part.type === 'tool_result');
+}
+
 function assistantText(record) {
   const role = record?.message?.role ?? record?.role;
   if (record?.type !== 'assistant' && role !== 'assistant') return null;
@@ -114,6 +132,7 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   let trailingMissingToolReferenceTurns = 0;
   let lastMissingToolReferenceEvidence = null;
   let lastMissingToolReferenceName = null;
+  let assistantTurnsSinceLastPrompt = 0;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -126,8 +145,13 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     }
 
     collectPapercuspToolReferences(record, references);
+    if (isSubmittedPrompt(record)) {
+      assistantTurnsSinceLastPrompt = 0;
+      continue;
+    }
     const text = assistantText(record);
     if (text === null) continue;
+    assistantTurnsSinceLastPrompt += 1;
     // Structure first (WI-10003466): prose that merely quotes the rejection is an
     // ordinary assistant turn and resets the streak like any other.
     const synthetic = isSyntheticApiErrorRecord(record);
@@ -146,6 +170,7 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     trailingMissingToolReferenceTurns,
     lastMissingToolReferenceEvidence,
     lastMissingToolReferenceName,
+    assistantTurnsSinceLastPrompt,
     needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,
   };

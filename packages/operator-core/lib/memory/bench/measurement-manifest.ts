@@ -162,11 +162,14 @@ export function validateIndependentCohort(entries: FrozenEntry[], queries: Froze
   const proof = z.strictObject({
     formatVersion: z.literal(1), authority: z.literal('independent-blind-transport'),
     candidateRankingsExposed: z.literal(false), frozenAt: date, snapshotSha256: sha, labelsSha256: sha,
-    judges: z.array(z.strictObject({ model: z.string().min(1), revision: z.string().min(1),
-      transport: z.string().min(1), promptSha256: sha, raw: fingerprint })).min(2),
+    judges: z.array(z.strictObject({ model: z.string().trim().min(1), revision: z.string().trim().min(1),
+      transport: z.string().trim().min(1), promptSha256: sha, raw: fingerprint })).min(2),
     queryIds: z.array(z.string()), ambiguous: z.array(z.string()), excluded: z.array(z.string()),
     agreement: z.number().min(0).max(1),
   }).parse(receipt);
+  // Two array entries cannot stand in for two independently transported calls.
+  unique(proof.judges.map((j) => j.transport), 'judge transport');
+  unique(proof.judges.map((j) => path.resolve(j.raw.path)), 'judge raw artifact');
   if (proof.snapshotSha256 !== snapshotSha256 || proof.labelsSha256 !== labelsSha256 || proof.frozenAt > frozenAt) {
     throw new Error('label receipt fingerprint/time mismatch');
   }
@@ -253,10 +256,13 @@ export async function prepareMeasurementCell(file: string, expectedSha256: strin
       || JSON.stringify(dataset.queryIds) !== JSON.stringify(queries.map((q) => q.id))) throw new Error('frozen corpus/query order mismatch');
     validateIndependentCohort(entries, queries, receipt[dataset.corpus], m.inputs[dataset.snapshot].sha256,
       m.inputs[dataset.labels].sha256, m.frozenAt);
+    const judgeRawFiles: string[] = [];
     for (const judge of receipt[dataset.corpus].judges) {
       const actual = await fingerprintFile(path.resolve(repoRoot, judge.raw.path));
       if (actual.sha256 !== judge.raw.sha256 || actual.bytes !== judge.raw.bytes) throw new Error('independent judgment raw fingerprint mismatch');
+      judgeRawFiles.push(fs.realpathSync(path.resolve(repoRoot, judge.raw.path)));
     }
+    unique(judgeRawFiles, 'judge raw artifact');
   }
   const { raw } = measurementOutputPaths(m, cell, repoRoot);
   fs.mkdirSync(path.dirname(raw), { recursive: true, mode: 0o700 });

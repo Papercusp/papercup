@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { copyTree, parseCgroupStats, removeTree, sessionSpawn, systemdRunArgs, wrapperScript, STATS_MARKER } from './session-process';
+import { copyTree, overlayLayout, parseCgroupStats, prepareWorkdir, removeTree, sessionSpawn, systemdRunArgs, wrapperScript, STATS_MARKER } from './session-process';
 
 describe('cgroup accounting', () => {
   it('parses the last epilogue line and tolerates a missing value', () => {
@@ -103,6 +103,65 @@ describe('copyTree / removeTree', () => {
 
   it('rejects with the command and its stderr when the copy fails', async () => {
     await expect(copyTree('/nonexistent-capdrv-src', path.join(tmpdir(), 'capdrv-never'))).rejects.toThrow(/^cp .* exited 1: /);
+  });
+});
+
+// WI-10004672: per-session cp + rm of a 69k-file checkout capped P-005 at ~13 sessions in flight.
+describe('prepareWorkdir', () => {
+  it('copy: a real private copy, removed on teardown unless kept', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'capdrv-wd-'));
+    try {
+      const src = path.join(root, 'src');
+      mkdirSync(src);
+      writeFileSync(path.join(src, 'a.txt'), 'hello');
+      const dst = path.join(root, 'work', 's0-i0');
+      const wd = await prepareWorkdir('copy', src, dst);
+      writeFileSync(path.join(dst, 'a.txt'), 'changed');
+      expect(readFileSync(path.join(src, 'a.txt'), 'utf8')).toBe('hello');
+      await wd.teardown(false);
+      expect(existsSync(dst)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('overlay: clears leftovers, mounts the prepared tree read-only under a per-session upper layer, and tears down as root', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'capdrv-wd-'));
+    try {
+      const calls: string[] = [];
+      let leftoverUnmounted = true;
+      const run = async (cmd: string, args: string[]) => {
+        calls.push([cmd, ...args].join(' '));
+        // A leftover from an aborted run that is not mounted: umount fails, which must not stop setup.
+        if (args[1] === 'umount' && leftoverUnmounted) {
+          leftoverUnmounted = false;
+          throw new Error('umount: not mounted');
+        }
+      };
+      const src = path.join(root, 'prepared', 'excalidraw');
+      const dst = path.join(root, 'replay-work', 'run', 's3-i1');
+      const wd = await prepareWorkdir('overlay', src, dst, run);
+      expect(calls).toEqual([
+        `sudo -n umount ${dst}`,
+        `sudo -n rm -rf -- ${dst} ${dst}.ovl`,
+        `sudo -n mount -t overlay overlay -o lowerdir=${src},upperdir=${dst}.ovl/up,workdir=${dst}.ovl/wk ${dst}`,
+      ]);
+      // The upper and work dirs sit beside the mount point, never inside it.
+      expect(existsSync(`${dst}.ovl/up`) && existsSync(`${dst}.ovl/wk`) && existsSync(dst)).toBe(true);
+      calls.length = 0;
+      await wd.teardown(true);
+      expect(calls).toEqual([`sudo -n umount ${dst}`]);
+      calls.length = 0;
+      await wd.teardown(false);
+      expect(calls).toEqual([`sudo -n umount ${dst}`, `sudo -n rm -rf -- ${dst} ${dst}.ovl`]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('overlay refuses paths its mount option string cannot carry', () => {
+    expect(() => overlayLayout('/a,b', '/w')).toThrow(/cannot contain/);
+    expect(() => overlayLayout('/a', '/w:x')).toThrow(/cannot contain/);
   });
 });
 

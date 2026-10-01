@@ -1006,15 +1006,18 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
 
   it('fails loud with no_harness when neither args.harness nor ctx.harnessSlug nor a home hive resolves', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null as never);
-    homePotM.mockResolvedValueOnce(null);
+    operatorHomeM.mockReturnValueOnce(null);
+    vi.mocked(resolvePotHomeSlug)
+      .mockReturnValueOnce(null as never)
+      .mockReturnValueOnce(null as never);
     const out = (await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never)) as Out;
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
+    expect(operatorHomeM).toHaveBeenCalledOnce();
   });
 
-  it('EI-21355404648960524: treats an explicitly empty harness as omitted and resolves the workspace home', async () => {
-    homePotM.mockResolvedValueOnce('workspace-home');
+  it('EI-21355404648960524: treats an explicitly empty harness as omitted and resolves the operator home', async () => {
+    operatorHomeM.mockReturnValueOnce('workspace-home');
     mockReturnOnceTyped(potHomeM, 'workspace-home');
     const out = (await tool.handler(
       { intervalSec: 120, goal: 'g', harness: '' } as never,
@@ -1023,21 +1026,22 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     const b = body(out);
 
     expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
-    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(operatorHomeM).toHaveBeenCalledOnce();
+    expect(homePotM).not.toHaveBeenCalled();
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'workspace-home' }));
     expect(briefM).not.toHaveBeenCalled();
   });
 
-  it('EI-20185529721601434: resolves a workspace-scoped wildcard session to its formal home pot', async () => {
-    const { resolvePotHomeSlug } = await import('../../pot/wake');
-    homePotM.mockResolvedValueOnce('workspace-home');
+  it('EI-20185529721601434: resolves a workspace-scoped wildcard session to the canonical operator home', async () => {
+    operatorHomeM.mockReturnValueOnce('workspace-home');
     mockReturnOnceTyped(potHomeM, 'workspace-home');
     const out = (await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
     )) as Out;
     const b = body(out);
-    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(operatorHomeM).toHaveBeenCalledOnce();
+    expect(homePotM).not.toHaveBeenCalled();
     expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'workspace-home' }));
   });
@@ -1060,16 +1064,17 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       firstSeenAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
-    // A workspace with no formal home still uses the durable coord:orient scope.
-    homePotM.mockResolvedValueOnce(null);
-    mockReturnOnceTyped(potHomeM, 'oriented-harness');
+    // With no canonical operator home, retain the durable coord:orient scope.
+    operatorHomeM.mockReturnValueOnce(null);
+    potHomeM.mockReturnValueOnce(null as never).mockReturnValueOnce('oriented-harness');
     const out = (await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
     )) as Out;
     const b = body(out);
     expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
-    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(operatorHomeM).toHaveBeenCalledOnce();
+    expect(homePotM).not.toHaveBeenCalled();
     expect(b).toMatchObject({ ok: true, loop: { harness: 'oriented-harness' } });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'oriented-harness' }));
   });
@@ -1344,10 +1349,9 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
   it("EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug's '*'-skip instead of short-circuiting a raw ?? chain on it", async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    // Exercise the synchronous fallback path explicitly; normal workspace-scoped
-    // calls resolve the formal home pot first (EI-20185529721601434).
-    homePotM.mockResolvedValueOnce(null);
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('papercusp' as never);
+    // Exercise the synchronous fallback after confirming no canonical operator home.
+    operatorHomeM.mockReturnValueOnce(null);
+    potHomeM.mockReturnValueOnce(null as never).mockReturnValueOnce('papercusp');
     const out = (await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never)) as Out;
     const b = body(out);
     // resolvePotHomeSlug must be CALLED with the raw '*' so its own skip logic runs —

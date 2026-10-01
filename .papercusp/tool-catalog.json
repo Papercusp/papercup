@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 929,
+  "count": 931,
   "tools": [
     {
       "name": "ablation:report",
@@ -8467,6 +8467,42 @@
         "when": "Installing a result from cupboard:search { kind:'theme' } so it can be selected locally.",
         "notWhen": "Selecting an already installed theme or editing a local theme.",
         "chaining": "cupboard:search { kind:'theme' } → cupboard:install-theme { listingId } → select the returned activeThemeId in the ordinary UI."
+      }
+    },
+    {
+      "name": "cupboard:ledger-anchor",
+      "http": {
+        "path": "/api/agent-tools/cupboard/ledger-anchor",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Hourly anchoring of the hash-chained ledgers on Base (EAS). `status`: backend config, latest anchored root, pending links, cadence. `prove`: a portable inclusion bundle for one chain link (stream + seq). `verify`: check a bundle against public chain data only.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "You need the anchoring state, or a third-party-checkable proof that a ledger entry existed by a given hour.",
+        "notWhen": "Publishing an anchor now (cupboard:ledger-anchor-run) or verifying the chain itself (cupboard:ledger-chain).",
+        "chaining": "`prove` returns `not-yet-anchored` until the next hourly pass; pass `verify` the bundle exactly as `prove` returned it."
+      }
+    },
+    {
+      "name": "cupboard:ledger-anchor-run",
+      "http": {
+        "path": "/api/agent-tools/cupboard/ledger-anchor-run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run one ledger anchoring pass for this workspace now: log new chain links, publish the completed hour's root (EAS on Base Sepolia), check cadence. Dry run unless confirm:true.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "The hourly anchor is behind (a missed-hour alert, or cupboard:ledger-anchor status shows cadence missed) and the cause is fixed.",
+        "notWhen": "Reading anchor state or proofs (cupboard:ledger-anchor). An hour that is already anchored is a no-op.",
+        "chaining": "A failed tick names the error (e.g. insufficient funds = the anchor key needs Base Sepolia test ETH)."
       }
     },
     {

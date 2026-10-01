@@ -20,6 +20,7 @@ import {
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { _resetListenersForTests } from '../workspace-listener';
 import {
+  acquireResourceExclusiveQueued,
   acquireResourceExclusiveWithWait,
   workspaceTxnOptionsForExclusiveWait,
   type StaleHolderReclaimedInfo,
@@ -405,6 +406,92 @@ describe('acquireResourceExclusiveWithWait — dead-holder reclaim on the WAITIN
     expect(reclaimed).toBe(false);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.reason).toBe('held_exclusive');
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+});
+
+// The P-008 staging bridge vs. git-sync: a one-shot exclusive acquirer that fires on a short
+// period must not be able to starve a queued one, and a queued waiter that gives up must not
+// leave a ticket the cascade later turns into a lease nobody releases.
+describe('acquireResourceExclusiveQueued (exclusive FIFO wait)', async () => {
+  const live = await dbLive();
+
+  const oneShot = (ws: string, owner: string) =>
+    inWorkspaceTxn(ws, owner, (tx) =>
+      tryAcquireResource(tx, {
+        coordinationDomain: ws,
+        resource: 'dev-server',
+        mode: 'exclusive',
+        owner,
+        ownerLabel: `res:${owner}`,
+        reason: 'periodic one-shot',
+        ttlSec: 60,
+      }),
+    );
+  const queued = (ws: string, owner: string, maxQueueSec: number) =>
+    acquireResourceExclusiveQueued({
+      coordinationDomain: ws,
+      owner,
+      ownerLabel: `res:${owner}`,
+      resource: 'dev-server',
+      reason: 'absorb lineage',
+      ttlSec: 60,
+      maxQueueSec,
+      pollMs: 100,
+    });
+  const ownerRows = async (ws: string, owner: string) => {
+    const pool = getTxPool();
+    const [locks, tickets] = await Promise.all([
+      pool`SELECT 1 FROM agent_resource_locks WHERE coordination_domain = ${ws} AND owner = ${owner}`,
+      pool`SELECT 1 FROM agent_resource_exclusive_queue WHERE coordination_domain = ${ws} AND owner = ${owner}`,
+    ]);
+    return { locks: locks.length, tickets: tickets.length };
+  };
+
+  it.skipIf(!live)('is granted on the holder release and a later one-shot cannot jump its ticket', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const fire = await oneShot(ws, 'git-sync-fire-1');
+    expect(fire.ok).toBe(true);
+    if (!fire.ok) return;
+
+    const pending = queued(ws, 'bridge', 10);
+    await sleep(400);
+    expect(await ownerRows(ws, 'bridge')).toEqual({ locks: 0, tickets: 1 });
+
+    await rel(ws, 'git-sync-fire-1', fire.lock_id);
+    const nextFire = await oneShot(ws, 'git-sync-fire-2');
+    expect(nextFire.ok).toBe(false);
+    if (!nextFire.ok) expect(nextFire.reason).toBe('held_exclusive');
+
+    const r = await pending;
+    expect(r).toMatchObject({ ok: true, status: 'held' });
+    expect(await ownerRows(ws, 'bridge')).toEqual({ locks: 1, tickets: 0 });
+    if (r.ok) await rel(ws, 'bridge', r.lock_id);
+
+    await _resetListenersForTests();
+    await _resetForTests();
+  });
+
+  it.skipIf(!live)('leaves neither a ticket nor a late lease behind when it gives up', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const fire = await oneShot(ws, 'git-sync-fire-1');
+    expect(fire.ok).toBe(true);
+    if (!fire.ok) return;
+
+    const r = await queued(ws, 'bridge', 1);
+    expect(r).toMatchObject({ ok: false, reason: 'queue_timeout', queue_position: 1 });
+    expect(await ownerRows(ws, 'bridge')).toEqual({ locks: 0, tickets: 0 });
+
+    // Without the cleanup the cascade would grant the abandoned ticket right here.
+    await rel(ws, 'git-sync-fire-1', fire.lock_id);
+    expect(await ownerRows(ws, 'bridge')).toEqual({ locks: 0, tickets: 0 });
+    const nextFire = await oneShot(ws, 'git-sync-fire-2');
+    expect(nextFire.ok).toBe(true);
+    if (nextFire.ok) await rel(ws, 'git-sync-fire-2', nextFire.lock_id);
 
     await _resetListenersForTests();
     await _resetForTests();

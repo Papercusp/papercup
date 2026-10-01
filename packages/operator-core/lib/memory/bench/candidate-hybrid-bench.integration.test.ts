@@ -120,6 +120,26 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     const cached = await call(); expect(cached.cache?.hits).toBe(1);
     expect(() => assertMeasuredEmbedResponse(prepared.arm, cached, 1)).toThrow('accounting');
   });
+  it('refuses two declared judge files resolving to the same real artifact before inference', async () => {
+    const file = manifest.inputs.judgments.path, original = fs.readFileSync(file), manifestBytes = fs.readFileSync(manifestFile);
+    const originalFingerprint = manifest.inputs.judgments;
+    const alias = path.join(root, 'judge-alias.json');
+    const before = inferred;
+    try {
+      const receipts = JSON.parse(original.toString());
+      fs.symlinkSync(receipts.memory.judges[0].raw.path, alias);
+      receipts.memory.judges[1].raw = { ...receipts.memory.judges[0].raw, path: alias };
+      fs.writeFileSync(file, JSON.stringify(receipts));
+      manifest.inputs.judgments = await fingerprintFile(file);
+      fs.writeFileSync(manifestFile, JSON.stringify(manifest));
+      await expect(prepareMeasurementCell(manifestFile, (await fingerprintFile(manifestFile)).sha256,
+        'hybrid', repo)).rejects.toThrow('duplicate judge raw artifact');
+      expect(inferred).toBe(before);
+    } finally {
+      manifest.inputs.judgments = originalFingerprint;
+      fs.writeFileSync(file, original); fs.writeFileSync(manifestFile, manifestBytes); fs.rmSync(alias, { force: true });
+    }
+  });
   it('retains a phase failure and requires a new attempt instead of overwriting its diagnosis', async () => {
     const attempt = await prepareMeasurementCell(manifestFile, manifestHash, 'reliability', repo);
     const error = new Error('injected protocol failure before inference');
