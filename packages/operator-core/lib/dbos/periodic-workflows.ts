@@ -1622,7 +1622,7 @@ async function sessionIngestTick(): Promise<void> {
     async () => {
       if (shouldShedHeavyTick('session-ingest')) return;
       try {
-        const { runSessionIngestOnce } = await import('../search/session-ingest');
+        const { runSessionIngestOnce, sessionIngestLogLine } = await import('../search/session-ingest');
         const r = await runSessionIngestOnce();
         // `parts` is in BOTH the predicate and the line on purpose
         // (session-turn-storage-2026-07-28 P-001). The faithful-parts writer is
@@ -1632,13 +1632,10 @@ async function sessionIngestTick(): Promise<void> {
         // It went unnoticed for a full night exactly this way: bg-host was
         // running a pre-parts build, wrote 0 parts on every tick, and logged a
         // perfectly healthy-looking "+N turn(s)" each time.
-        const parts = r.partsInserted ?? 0;
-        if (!r.skipped && (r.turnsInserted > 0 || parts > 0 || r.errors > 0)) {
-          console.log(
-            `[session-ingest] +${r.turnsInserted} turn(s) +${parts} part(s) from ${r.filesIngested} file(s) ` +
-              `+ ${r.chatsIngested} chat turn(s) (${r.filesScanned} scanned, ${r.errors} error(s), ${r.durationMs}ms)`,
-          );
-        }
+        // A slow no-progress pass needs attribution too; otherwise discovery
+        // and unchanged-file metadata work disappear from the journal.
+        const line = sessionIngestLogLine(r);
+        if (line) console.log(line);
       } catch (err) {
         console.warn(`[session-ingest] sweep skipped (non-fatal): ${(err as Error).message}`);
       }
