@@ -319,6 +319,14 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.returns?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('shows carry-row soft caps in caller-facing discovery results', async () => {
+    expect(workItemsCheckpoint.name).toBe('work_items:checkpoint');
+    const out = await callHandler({ query: 'work_items:checkpoint', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'work_items:checkpoint');
+
+    expect(hit?.argSchema).toContain('verified?:string(≤1200 (soft cap ≤300))');
+  });
+
   it('shows required behaviorClass in plans:set-specs compact discovery', async () => {
     expect(plansSetSpecs.name).toBe('plans:set-specs');
     const { schemaByTool } = buildCorpus();
