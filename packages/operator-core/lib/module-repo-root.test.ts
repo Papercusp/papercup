@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { moduleRepoRoot } from './module-repo-root';
@@ -73,31 +73,13 @@ const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const SCOPE = ['packages/operator-core/lib', 'apps/operator/lib', 'apps/operator/bin'];
 
 /**
- * Non-test modules that still climb to the repo root with a fixed `..` count. None is inlined
- * into apps/operator/dist-host/hono-host.mjs today (checked 2026-10-01 against the bundle's
- * `// ../../packages/…` markers), so each runs from source and resolves correctly. SHRINK-ONLY:
- * convert a file to moduleRepoRoot and delete its entry; never add one. A module that becomes
- * bundled while still listed here breaks silently, which is why new sites are refused outright.
+ * Non-test modules allowed to climb to the repo root with a fixed `..` count. EMPTY since
+ * 2026-10-01 (EI-24812768473266076 converted the last 17 sites to moduleRepoRoot). SHRINK-ONLY:
+ * never add an entry. A listed module that later becomes bundled into
+ * apps/operator/dist-host/hono-host.mjs breaks silently, which is why new sites are refused
+ * outright rather than reviewed one by one.
  */
-const ALLOWED_FIXED_CLIMBS: Readonly<Record<string, number>> = {
-  'apps/operator/lib/release/cut-seed-cli.ts': 1,
-  'apps/operator/lib/release/release-project-history.ts': 1,
-  'apps/operator/lib/release/workspace-host-release-cut-cli.ts': 1,
-  'packages/operator-core/lib/code-intelligence/code-intel-bench.ts': 1,
-  'packages/operator-core/lib/code-intelligence/lsp-cold-open-false-empty-cli.ts': 1,
-  'packages/operator-core/lib/code-intelligence/lsp-intent-warmth-cli.ts': 1,
-  'packages/operator-core/lib/code-intelligence/lsp-saturation-bench-cli.ts': 1,
-  'packages/operator-core/lib/design-compare/report-cli.ts': 1,
-  'packages/operator-core/lib/gym/ab-run.ts': 1,
-  'packages/operator-core/lib/gym/blueprint-cycle.ts': 1,
-  'packages/operator-core/lib/gym/smoke.ts': 1,
-  'packages/operator-core/lib/gym/wake-mode.ts': 1,
-  'packages/operator-core/lib/inference-gateway/capless-conformance-battery.ts': 1,
-  'packages/operator-core/lib/memory/bench/candidate-embedders.ts': 2,
-  'packages/operator-core/lib/search/embedding-space-parity-gen-cli.ts': 1,
-  'packages/operator-core/lib/shared-pot-loop/composition-rig.ts': 1,
-  'packages/operator-core/lib/sync/hyperbee/__tests__/_hive-substrate-rig.ts': 1,
-};
+const ALLOWED_FIXED_CLIMBS: Readonly<Record<string, number>> = {};
 
 const MODULE_DIR = String.raw`(?:path\.)?dirname\(\s*fileURLToPath\(\s*import\.meta\.url\s*\)\s*\)`;
 
@@ -170,9 +152,14 @@ describe('census: no new fixed import.meta.url climbs to the repo root', () => {
       const n = fixedClimbsToRoot(src, join(REPO_ROOT, f), REPO_ROOT).length;
       if (n > 0) found[f] = n;
     }
-    // Positive control on the real tree: an allowlisted file is detected, so an empty `found`
-    // can never mean the detector silently stopped matching.
-    expect(found['packages/operator-core/lib/gym/smoke.ts'] ?? 0).toBeGreaterThan(0);
+    // Positive control on the real tree: a climb sized for a real scanned file's actual depth is
+    // detected against the real REPO_ROOT. With no offending site left, an empty `found` would
+    // otherwise also be what a broken census looks like (wrong REPO_ROOT, wrong joined path).
+    const probe = 'packages/operator-core/lib/module-repo-root.ts';
+    expect(files).toContain(probe);
+    const climb = relative(dirname(join(REPO_ROOT, probe)), REPO_ROOT);
+    const synthetic = `const R = resolve(dirname(fileURLToPath(import.meta.url)), '${climb}');`;
+    expect(fixedClimbsToRoot(synthetic, join(REPO_ROOT, probe), REPO_ROOT)).toHaveLength(1);
 
     const unlisted = Object.entries(found).filter(([f, n]) => n > (ALLOWED_FIXED_CLIMBS[f] ?? 0));
     expect(
