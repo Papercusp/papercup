@@ -199,6 +199,31 @@ function summarize(rows: Reading[]) {
   };
 }
 
+function diagnosticMisses(rows: Reading[]) {
+  const timely = (row: Reading) => row.status === 'ready' && row.callerMs <= MEMORY_BLOCK_COLD_DEADLINE_MS;
+  return rows
+    .filter((row) => row.expected.length > 0 && (!timely(row) || row.relevantDelivered.length === 0))
+    // Keep the causal error first: test-run ledgers retain a bounded failure tail, so an
+    // alphabetically earlier ordinary miss must not push the distinguishing error out.
+    .sort((a, b) => Number(Boolean(b.error)) - Number(Boolean(a.error)) || a.queryId.localeCompare(b.queryId))
+    .slice(0, 12)
+    .map((row) => ({
+      error: row.error?.slice(0, 320),
+      queryId: row.queryId,
+      status: row.status,
+      callerMs: Math.round(row.callerMs),
+      expected: row.expected,
+      retrieved: row.retrieved,
+      delivered: row.delivered,
+      relevantDelivered: row.relevantDelivered,
+      failedWork: row.work.filter((span) => span.outcome !== 'ready'),
+    }));
+}
+
+function diagnosticSummary(profile: string, rows: Reading[]) {
+  return { profile, misses: diagnosticMisses(rows), ...summarize(rows) };
+}
+
 async function measure(query: GoldQuery, phase: string): Promise<Reading> {
   measuredCalls += 1;
   const row: Reading = {
@@ -498,9 +523,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         // Keep aggregate evidence readable through the router's stdout/stderr
         // merge. Printing every hit of 150 rows made a single JSON line larger
         // than a pipe write, letting stderr split it before it could be parsed.
-        const misses = rows.filter((row) => row.expected.length > 0 && (
-          row.status !== 'ready' || row.callerMs > MEMORY_BLOCK_COLD_DEADLINE_MS || row.relevantDelivered.length === 0
-        ));
+        const misses = diagnosticMisses(rows);
         console.log('[P-006 result]', JSON.stringify({ name, concurrency, ...summarize(rows), misses }));
       }
       // The warm profile intentionally primes each query once, so the three
@@ -587,7 +610,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       expect(profile.rows.some((row) => row.corpusDelivered?.length), profile.name).toBe(true);
       expect(profile.rows.some((row) => row.corpusEmbedderAvailable), profile.name).toBe(true);
       expect(summarize(profile.rows).usefulRate,
-        JSON.stringify({ profile: profile.name, ...summarize(profile.rows) })).toBeGreaterThanOrEqual(0.95);
+        JSON.stringify(diagnosticSummary(profile.name, profile.rows))).toBeGreaterThanOrEqual(0.95);
     }
   });
 
@@ -597,7 +620,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
     for (const profile of profiles.filter((p) => p.concurrency === 1)) {
       expect(
         summarize(profile.rows).usefulRate,
-        JSON.stringify({ profile: profile.name, ...summarize(profile.rows) }),
+        JSON.stringify(diagnosticSummary(profile.name, profile.rows)),
       ).toBeGreaterThanOrEqual(0.95);
     }
   });
