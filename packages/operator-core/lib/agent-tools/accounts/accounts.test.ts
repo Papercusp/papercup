@@ -96,6 +96,16 @@ describe('accounts:register', () => {
     expect(saveM).toHaveBeenCalledTimes(1);
   });
 
+  it('R-37: registering into a named workspace writes ONLY that workspace’s pool (D-001 tenancy)', async () => {
+    const b = body(
+      await registerTool.handler({ id: 'K1', credentialRef: 'apikey:env:WS_B_KEY', workspace: 'ws-b' } as never, {} as never) as Out,
+    );
+    expect(b.ok).toBe(true);
+    expect(saveM).toHaveBeenCalledTimes(1);
+    // The pool row is keyed by workspace: the write targets ws-b, never the active workspace.
+    expect(saveM.mock.calls[0][1]).toBe('ws-b');
+  });
+
   it('never throws — a store failure becomes { ok:false, error } truncated to 400', async () => {
     saveM.mockRejectedValue(new Error('y'.repeat(500)));
     const b = body(await registerTool.handler({ id: 'A1', credentialRef: 'token:/p' } as never, {} as never) as Out);

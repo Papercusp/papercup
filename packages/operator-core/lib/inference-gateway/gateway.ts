@@ -56,7 +56,7 @@ import {
   ProviderAdmissionLifecycle,
   type ProviderLaneId,
 } from './provider-admission-lifecycle';
-import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } from './account-failover';
+import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, FIVE_HOURS_MS, type AccountBurnAction } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withClientBetas, scrubSecrets } from './credential-store';
 import {
@@ -65,6 +65,7 @@ import {
   parseClaudeBillingState,
   type ClaudeBillingStateKind,
   type ClaudeCreditWall,
+  type ClaudeCreditWallCause,
 } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
@@ -1572,6 +1573,10 @@ export interface GatewayAccountBilling {
   meteredPolicy: 'overflow' | 'never';
   classes: Partial<Record<GatewayBillingClass, GatewayBillingTally>>;
   metered: GatewayBillingTally;
+  /** Present while the account sits behind a credit wall (D-004): WHY (402 billing_error →
+   *  `billing-error`, 429 enforced_spend_limit_reached → `spend-limit`, 400 API usage limits →
+   *  `api-usage-limit`) and the epoch-ms the wall's pause ends. Absent once it clears. */
+  wall?: { cause: ClaudeCreditWallCause | 'unknown'; until: number };
 }
 
 export interface GatewayStats {
@@ -3396,13 +3401,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  from the unified-limiter headers of its OWN upstream responses. `until` = the allowance reset the
    *  same response named: a `usage-credits` reading stops applying there (the allowance is back). */
   const claudeBillingByAccount = new Map<string, { state: ClaudeBillingStateKind; until?: number }>();
-  const recordClaudeBilling = (account: ActiveAccount, headers: Record<string, string | undefined>): void => {
+  /** D-004 / D-008 E4: each account's latest credit wall — its cause and when the wall's pause ends.
+   *  Stats report it while `until` is in the future; a served (2xx) response from the account clears it. */
+  const claudeCreditWallByAccount = new Map<string, { cause: ClaudeCreditWallCause | 'unknown'; until: number }>();
+  const recordClaudeBilling =(account: ActiveAccount, headers: Record<string, string | undefined>): void => {
     const billing = parseClaudeBillingState(headers);
     if (!billing) return;
     const secToMs = (v: string | undefined): number | undefined =>
       v && /^\d+$/.test(v.trim()) ? Number(v.trim()) * 1000 : undefined;
-    const until =
+    const namedUntil =
       secToMs(headers['anthropic-ratelimit-unified-reset']) ?? secToMs(headers['anthropic-ratelimit-unified-5h-reset']);
+    // A usage-credits reading that named no reset is bounded by the SAME horizon the pool parks for
+    // (FIVE_HOURS_MS, onExhausted's no-reset default). Unbounded, it stayed "metered" forever: a
+    // `metered: never` account then outlived its park and every route to it — auto or pinned — was
+    // refused with no response ever arriving to clear the reading (D-008 E1, never held indefinitely).
+    const until = namedUntil ?? (billing.state === 'usage-credits' ? Date.now() + FIVE_HOURS_MS : undefined);
     claudeBillingByAccount.set(account.accountId, { state: billing.state, ...(until !== undefined ? { until } : {}) });
     // `metered: never` makes usage-credit overage a WALL (D-003). Park the account in the pool until its
     // allowance resets: every selection path (round-robin, failover walk, kernel rotation, internal retry)
@@ -3460,7 +3473,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (cls !== 'included') addBillingTally(metered, t);
       }
       addBillingTally(poolMetered, metered);
+      const wall = claudeCreditWallByAccount.get(id);
       byAccount[id] = {
+        ...(wall && wall.until > now ? { wall: { cause: wall.cause, until: wall.until } } : {}),
         state: account?.authMode === 'api-key' ? 'api-credits' : (recorded?.state ?? 'unknown'),
         ...(recorded?.until !== undefined && account?.authMode !== 'api-key' ? { stateUntil: recorded.until } : {}),
         meteredNow: account ? isMeteredNow(account, now) : false,
@@ -6570,6 +6585,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const accountGov = governorForAccount(model, account.accountId);
                 accountGov.recordResponse(hobj);
                 recordClaudeBilling(account, hobj as Record<string, string | undefined>);
+                // A served response proves the account is past its credit wall (e.g. an operator readmit
+                // after a top-up), so stats stop reporting a wall that no longer holds.
+                if (status >= 200 && status < 300) claudeCreditWallByAccount.delete(account.accountId);
                 deps.onResponse?.(hobj, status, model, account.accountId);
 
                 // Transport succeeded for THIS account — its egress proxy works, so
@@ -6599,6 +6617,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   accountGov.penalize({ resetAt: wallResetAt });
                   lastExhaustResetAt = wallResetAt;
                   const cause = (classification.detail as ClaudeCreditWall | undefined)?.cause ?? 'unknown';
+                  // D-008 E4: keep the cause where stats can read it, so a walled account shows WHY it is
+                  // out of rotation instead of only a bare pause deadline.
+                  claudeCreditWallByAccount.set(account.accountId, { cause, until: wallResetAt });
                   log(
                     'warn',
                     `inference-gateway: account '${account.accountId}' hit a credit wall (${cause}, HTTP ${status}) → paused until ${new Date(wallResetAt).toISOString()}, failing over`,

@@ -33,7 +33,11 @@ export interface FailoverPoolOptions {
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
 }
 
-const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+/** How long `onExhausted` parks an account when the exhaustion named no reset (or a reset already past).
+ *  Exported so the gateway bounds a reset-less usage-credits reading by the SAME horizon the park uses
+ *  (plan anthropic-credits-gateway-2026-09-30 D-007/D-008 E1): a `metered: never` account must never
+ *  outlive its park as "still metered" and be refused indefinitely. */
+export const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 
 /** Weight of ONE in-flight request in the load-aware selection key, relative to the [0,1) utilization
  *  term. ≥1 so a single extra concurrent request outranks the ENTIRE utilization range — i.e. among

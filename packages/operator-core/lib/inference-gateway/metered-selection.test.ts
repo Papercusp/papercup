@@ -9,13 +9,25 @@
  *   R-26  an account in usage-credits overage ranks behind an included account, yet still serves
  *         (from usage credits) once the included account is walled;
  *   R-27  an account with metered policy `never` is unselectable while in usage credits;
- *   R-28  a request pinned to an api-key account is served by it while included accounts are free.
+ *   R-28  a request pinned to an api-key account is served by it while included accounts are free;
+ *   R-35  a metered:never account parked on usage-credit overage rejoins once its named reset passes,
+ *         and with no named reset both the park and the overage reading end at the bounded default
+ *         (D-007, D-008 E1) — never held indefinitely;
+ *   R-36  a credit-walled account shows its wall cause in /stats and is not auto-selected while the
+ *         wall holds (D-004, D-008 E4).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
-import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
-import type { ActiveAccount } from './provider-contracts';
-import { createFailoverPool } from './account-failover';
+import {
+  createInferenceGateway,
+  ACCOUNT_HEADER,
+  ACCOUNT_PIN_HEADER,
+  ROUTED_ACCOUNT_HEADER,
+  type GatewayStats,
+} from './gateway';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
+import { createFailoverPool, FIVE_HOURS_MS } from './account-failover';
+import { CREDIT_WALL_DEFAULT_PAUSE_MS } from './anthropic-billing';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 interface Reply {
@@ -57,6 +69,22 @@ const WALLED = (): Reply => ({
 });
 /** An API-key account: no unified-limiter headers at all. */
 const API = (): Reply => ({ status: 200, headers: {} });
+/** Usage-credits overage whose response names the allowance reset at `resetSec` (epoch seconds). */
+const overageUntil = (resetSec: number): Reply => ({
+  status: 200,
+  headers: { ...OVERAGE().headers, 'anthropic-ratelimit-unified-reset': String(resetSec) },
+});
+/** Usage-credits overage whose response names NO reset at all. */
+const OVERAGE_NO_RESET = (): Reply => {
+  const { 'anthropic-ratelimit-unified-reset': _named, ...headers } = OVERAGE().headers;
+  return { status: 200, headers };
+};
+/** An empty Console balance: 402 billing_error, a credit wall (D-004). */
+const NO_CREDIT = (): Reply => ({
+  status: 402,
+  headers: {},
+  body: JSON.stringify({ type: 'error', error: { type: 'billing_error', message: 'Your credit balance is too low.' } }),
+});
 
 function credentialOf(req: http.IncomingMessage): string {
   const key = req.headers['x-api-key'];
@@ -97,12 +125,14 @@ const apiKey = (id: string, key: string, extra: Partial<ActiveAccount> = {}): Ac
 
 let gw: ReturnType<typeof createInferenceGateway> | undefined;
 let upstream: Upstream | undefined;
+let pool: AccountPool | undefined;
 
 afterEach(async () => {
   await gw?.close();
   await upstream?.close();
   gw = undefined;
   upstream = undefined;
+  pool = undefined;
 });
 
 async function boot(accounts: ActiveAccount[], replyFor: (cred: string) => Reply): Promise<number> {
@@ -110,9 +140,18 @@ async function boot(accounts: ActiveAccount[], replyFor: (cred: string) => Reply
   // Per-account governors live in a PROCESS-GLOBAL registry (governorForBackend), so a wall
   // recorded on 'incA' in one test would otherwise pause 'incA' in the next. Start clean.
   resetGovernorRegistry();
-  gw = createInferenceGateway({ pool: createFailoverPool(accounts), upstreamBase: upstream.base, maxQueueWaitMs: 200 });
+  pool = createFailoverPool(accounts);
+  gw = createInferenceGateway({ pool, upstreamBase: upstream.base, maxQueueWaitMs: 200 });
   return gw.listen(0);
 }
+
+async function billing(port: number): Promise<NonNullable<GatewayStats['billing']>> {
+  const stats = (await (await fetch(`http://127.0.0.1:${port}/stats`)).json()) as GatewayStats;
+  expect(stats.billing, '/stats carries the billing block').toBeDefined();
+  return stats.billing!;
+}
+
+const hitsOf = (cred: string): number => upstream!.seen.filter((c) => c === cred).length;
 
 async function fire(port: number, headers: Record<string, string> = {}): Promise<{ status: number; routed: string | null }> {
   const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
@@ -197,5 +236,73 @@ describe('metered selection — included allowance first, metered as overflow (P
     expect(upstream!.seen).toEqual(['sk-keyB', 'sk-keyB', 'sk-keyB']);
     // The included account is free: an unpinned request still prefers it.
     expect(await fire(port)).toEqual({ status: 200, routed: 'incA' });
+  });
+
+  it('R-35: a metered:never account parked on usage-credit overage is selectable again once its named reset passes', async () => {
+    // The overage response names an allowance reset ~1-2s out; incA is walled throughout, so the
+    // only way unpinned traffic is served is incB rejoining rotation.
+    const resetSec = Math.floor(Date.now() / 1000) + 2;
+    const port = await boot([oauth('incA', 'tokA'), oauth('incB', 'tokB', { meteredPolicy: 'never' })], (c) =>
+      c === 'tokB' ? overageUntil(resetSec) : WALLED(),
+    );
+    expect(await fire(port, { [ACCOUNT_HEADER]: 'incB' })).toEqual({ status: 200, routed: 'incB' });
+    // Parked exactly until the reset the response named — not the bounded default, not forever.
+    expect(pool!.parkState?.('incB')?.until).toBe(resetSec * 1000);
+    const parkedHits = hitsOf('tokB');
+    // Before the reset: unpinned traffic is refused and never billed to incB.
+    for (let i = 0; i < 2; i++) {
+      const r = await fire(port);
+      expect(r.routed).not.toBe('incB');
+      expect(r.status).not.toBe(200);
+    }
+    expect(hitsOf('tokB')).toBe(parkedHits);
+    // After the named reset passes, incB is back in rotation and serves.
+    await new Promise((r) => setTimeout(r, Math.max(0, resetSec * 1000 + 250 - Date.now())));
+    expect(await fireUntilServed(port)).toEqual({ status: 200, routed: 'incB' });
+    expect(hitsOf('tokB')).toBeGreaterThan(parkedHits);
+  }, 15_000);
+
+  it('R-35: with no named reset, the park and the overage reading both end at the bounded default, never indefinitely', async () => {
+    const port = await boot([oauth('incA', 'tokA'), oauth('incB', 'tokB', { meteredPolicy: 'never' })], (c) =>
+      c === 'tokB' ? OVERAGE_NO_RESET() : INCLUDED(),
+    );
+    const t0 = Date.now();
+    expect(await fire(port, { [ACCOUNT_HEADER]: 'incB' })).toEqual({ status: 200, routed: 'incB' });
+    const t1 = Date.now();
+    // The pool park is bounded by the default horizon...
+    const park = pool!.parkState?.('incB');
+    expect(park, 'incB is parked after reporting overage under metered:never').toBeDefined();
+    expect(park!.until).toBeGreaterThanOrEqual(t0 + FIVE_HOURS_MS);
+    expect(park!.until).toBeLessThanOrEqual(t1 + FIVE_HOURS_MS);
+    // ...and so is the usage-credits reading that would otherwise keep refusing incB after the park
+    // ends (selection scores it Infinity and admission refuses it while it reads as metered).
+    const b = (await billing(port)).byAccount.incB;
+    expect(b.state).toBe('usage-credits');
+    expect(b.stateUntil, 'a reset-less overage reading must carry a finite end').toBeDefined();
+    expect(b.stateUntil!).toBeGreaterThanOrEqual(t0 + FIVE_HOURS_MS);
+    expect(b.stateUntil!).toBeLessThanOrEqual(t1 + FIVE_HOURS_MS);
+  });
+
+  it('R-36: a credit-walled account shows its wall cause in stats and is not auto-selected while the wall holds', async () => {
+    const port = await boot([apiKey('keyA', 'sk-keyA'), apiKey('keyB', 'sk-keyB')], (c) =>
+      c === 'sk-keyA' ? NO_CREDIT() : API(),
+    );
+    // Drive traffic until keyA has been tried once (pool order puts it first); its 402 is a wall,
+    // so the request fails over and is served by keyB.
+    let served = await fireUntilServed(port);
+    for (let i = 0; i < 3 && hitsOf('sk-keyA') === 0; i++) served = await fireUntilServed(port);
+    expect(hitsOf('sk-keyA'), 'keyA was tried').toBe(1);
+    expect(served).toEqual({ status: 200, routed: 'keyB' });
+    const at = Date.now();
+    const b = await billing(port);
+    // The walled account's stats row says WHY it is out of rotation and until when.
+    expect(b.byAccount.keyA.wall?.cause).toBe('billing-error');
+    expect(b.byAccount.keyA.wall!.until).toBeGreaterThan(at);
+    expect(b.byAccount.keyA.wall!.until).toBeLessThanOrEqual(at + CREDIT_WALL_DEFAULT_PAUSE_MS);
+    // An account that never walled carries no wall.
+    expect(b.byAccount.keyB.wall).toBeUndefined();
+    // While the wall holds, auto selection never sends keyA another request.
+    for (let i = 0; i < 4; i++) expect(await fire(port)).toEqual({ status: 200, routed: 'keyB' });
+    expect(hitsOf('sk-keyA')).toBe(1);
   });
 });
