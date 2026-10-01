@@ -682,8 +682,13 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 });
 
 describe('release:cut — status (read-only)', () => {
-  it('accepts version/channel context carried by release-cut status callers', async () => {
-    const statusArgs = { op: 'status', version: '0.0.19', channel: 'stable' };
+  it('accepts version/channel/sourceSha context carried by release-cut status callers', async () => {
+    const statusArgs = {
+      op: 'status',
+      version: '0.0.19',
+      channel: 'stable',
+      sourceSha: '1feac8dd867c6566af834445a58b5a2e43b14649',
+    };
     expect(tool.args.safeParse(statusArgs).success).toBe(true);
 
     statusM.mockReturnValue({

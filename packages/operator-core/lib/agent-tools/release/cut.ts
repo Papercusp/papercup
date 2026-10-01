@@ -940,6 +940,11 @@ export default defineTool({
         .enum(['stable', 'beta', 'alpha'])
         .optional()
         .describe('Optional release channel carried as caller context; status is host-wide.'),
+      sourceSha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/)
+        .optional()
+        .describe('Optional exact source commit carried as caller context; status is host-wide.'),
     }),
     z.object({
       op: z.literal('handoff'),
