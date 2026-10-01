@@ -57,6 +57,7 @@ import {
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
+  silentMembersSummary,
   topExcludedFloors,
   selectLeaderBriefObligationFields,
   leaderBriefObligationFields,
@@ -4044,5 +4045,34 @@ describe('P-004 / R-4 — stalled-item rotation names the held ITEM that has not
       computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ acquiredTs: minAgo(m) })] }, NOW, 1, false);
     expect(at(29)).toBeUndefined();
     expect(at(30)?.noAdvanceMin).toBe(30);
+  });
+});
+
+// P-007 / R-17: the leader brief names the members the silence rule left out of
+// `headcount.current`, and never renders an unreadable leg as "nobody is silent".
+describe('silentMembersSummary (P-007 / R-17)', () => {
+  it('names the silent members with the threshold and pause flag', () => {
+    expect(
+      silentMembersSummary(['busy', 'quiet'], {
+        counted: ['busy'],
+        silent: ['quiet'],
+        paused: false,
+        thresholdMs: 1_200_000,
+      }),
+    ).toEqual({ status: 'measured', ownerIds: ['quiet'], thresholdMs: 1_200_000, paused: false });
+  });
+
+  it('reports a measured empty list only when the partition was actually read', () => {
+    expect(
+      silentMembersSummary(['busy'], { counted: ['busy'], silent: [], paused: true, thresholdMs: 1_200_000 }),
+    ).toEqual({ status: 'measured', ownerIds: [], thresholdMs: 1_200_000, paused: true });
+  });
+
+  it('answers unknown with a reason when the roster or a silence leg is unreadable', () => {
+    expect(silentMembersSummary(null, null)).toEqual({ status: 'unknown', reason: 'live roster unreadable' });
+    expect(silentMembersSummary(['busy'], null)).toEqual({
+      status: 'unknown',
+      reason: 'execution or await leg unreadable',
+    });
   });
 });
