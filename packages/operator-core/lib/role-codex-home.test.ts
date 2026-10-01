@@ -33,15 +33,19 @@ vi.mock('node:os', async (importActual) => {
 
 let fakeHome = '';
 const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
+const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
 
 beforeEach(() => {
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
+  process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
   vi.resetModules();
 });
 
 afterEach(() => {
   if (fakeHome) rmSync(fakeHome, { recursive: true, force: true });
+  if (savedCodexSqliteHomes === undefined) delete process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
+  else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
 });
 
 function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {
@@ -164,6 +168,9 @@ describe('writeRoleCodexHome', () => {
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
     const logDir = join(out.codexHome, 'log');
+    expect(out.sqliteHome).toBe(join(fakeHome, 'codex-sqlite-homes', 'session-42'));
+    expect(toml).toContain(`sqlite_home = "${out.sqliteHome}"`);
+    expect(existsSync(out.sqliteHome)).toBe(true);
     expect(toml).toContain(`log_dir = "${logDir}"`);
     expect(toml.indexOf(`log_dir = "${logDir}"`)).toBeLessThan(toml.indexOf('[features]'));
     expect(existsSync(logDir)).toBe(true);
@@ -455,6 +462,8 @@ describe('writeSuCodexHome', () => {
     };
     const home = writeSuCodexHome(opts);
     const expected = 'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }';
+    expect(readFileSync(home.configPath, 'utf8')).toContain(`sqlite_home = "${home.sqliteHome}"`);
+    expect(existsSync(home.sqliteHome)).toBe(true);
     expect(readFileSync(home.configPath, 'utf8')).toContain(expected);
 
     writeFileSync(home.configPath, readFileSync(home.configPath, 'utf8').replace(`${expected}\n`, ''));
@@ -891,10 +900,15 @@ describe('writeSuCodexHome', () => {
     writeFileSync(join(prepared.codexHome, 'prepared-only.txt'), 'keep me');
 
     const durableHome = rekeyCodexHome('port-uuid', 12596);
+    const durableSqliteHome = join(fakeHome, 'codex-sqlite-homes', 'session-12596');
     expect(durableHome).toBe(join(fakeHome, '.papercusp', 'su-codex-homes', 'session-12596'));
     expect(existsSync(prepared.codexHome)).toBe(false);
+    expect(existsSync(prepared.sqliteHome)).toBe(false);
+    expect(existsSync(durableSqliteHome)).toBe(true);
     expect(readFileSync(join(durableHome, 'prepared-only.txt'), 'utf8')).toBe('keep me');
     expect(readFileSync(join(durableHome, 'AGENTS.md'), 'utf8')).toContain('PORTED SESSION PLAYBOOK');
+    expect(readFileSync(join(durableHome, 'config.toml'), 'utf8'))
+      .toContain(`sqlite_home = "${durableSqliteHome}"`);
 
     writeSuCodexHome({
       sessionKey: 12597,
@@ -928,6 +942,8 @@ describe('writeSuCodexHome', () => {
     expect(toml).toContain('client=su-abc-123');
     expect(toml).toContain('superuser=1');
     const logDir = join(out.codexHome, 'log');
+    expect(toml).toContain(`sqlite_home = "${out.sqliteHome}"`);
+    expect(existsSync(out.sqliteHome)).toBe(true);
     expect(toml).toContain(`log_dir = "${logDir}"`);
     expect(toml.indexOf(`log_dir = "${logDir}"`)).toBeLessThan(toml.indexOf('[features]'));
     expect(existsSync(logDir)).toBe(true);

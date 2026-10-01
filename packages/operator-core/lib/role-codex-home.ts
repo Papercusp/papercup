@@ -58,7 +58,10 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import {
+  codexHomeForSessionKey,
+  codexSqliteHomeForSessionKey,
+} from '@papercusp/orchestrator/session-launch-dirs';
 import {
   codexGatewayConfigToml,
   codexManagedFeaturesToml,
@@ -84,6 +87,8 @@ const __dirname = __esmDirname(__esmFileURLToPath(import.meta.url));
 export interface RoleCodexHome {
   /** Absolute path to set as the child's CODEX_HOME. */
   codexHome: string;
+  /** Fast, session-keyed directory configured as Codex's `sqlite_home`. */
+  sqliteHome: string;
   /** The AGENTS.md (role prompt) path — diagnostics. */
   agentsPath: string;
   /** The config.toml (role-scoped MCP) path — diagnostics. */
@@ -196,6 +201,14 @@ function freshCodexHome(codexHome: string): string {
   return codexHome;
 }
 
+/** Rebuild the disposable/high-write SQLite companion for a fresh launch. */
+function freshCodexSqliteHome(sessionKey: string | number): string {
+  const sqliteHome = codexSqliteHomeForSessionKey(sessionKey);
+  rmSync(sqliteHome, { recursive: true, force: true });
+  mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
+  return sqliteHome;
+}
+
 /** The system skills root Codex reads. Creating it needs root, so host setup provisions it. */
 export const CODEX_SYSTEM_SKILLS_DIR = '/etc/codex/skills';
 
@@ -292,10 +305,32 @@ function numericAdvSessionId(value: string | number | null | undefined): string 
 export function rekeyCodexHome(sourceSessionKey: string | number, targetSessionKey: string | number): string {
   const source = codexHomeForSessionKey(sourceSessionKey);
   const target = codexHomeForSessionKey(targetSessionKey);
+  const sourceSqlite = codexSqliteHomeForSessionKey(sourceSessionKey);
+  const targetSqlite = codexSqliteHomeForSessionKey(targetSessionKey);
   if (source === target) return target;
   if (!existsSync(source)) throw new Error(`temporary Codex home does not exist: ${source}`);
   if (existsSync(target)) throw new Error(`target Codex home already exists: ${target}`);
-  renameSync(source, target);
+  if (existsSync(targetSqlite)) throw new Error(`target Codex sqlite home already exists: ${targetSqlite}`);
+  const movedSqlite = existsSync(sourceSqlite);
+  if (movedSqlite) renameSync(sourceSqlite, targetSqlite);
+  try {
+    renameSync(source, target);
+  } catch (error) {
+    if (movedSqlite) renameSync(targetSqlite, sourceSqlite);
+    throw error;
+  }
+  const configPath = join(target, 'config.toml');
+  try {
+    const config = readFileSync(configPath, 'utf8');
+    const next = config.replace(
+      `sqlite_home = "${tomlEscape(sourceSqlite)}"`,
+      `sqlite_home = "${tomlEscape(targetSqlite)}"`,
+    );
+    if (next !== config) writeFileSync(configPath, next, { mode: 0o600 });
+  } catch {
+    // The normal launch path writes this file before rekey. If a legacy home
+    // lacks it, the resume repair path renders the canonical target path.
+  }
   return target;
 }
 
@@ -1074,6 +1109,7 @@ export function writeRoleCodexHome(opts: {
   // path wrote to a separate `role-codex-homes/` root the resume leg never
   // looked in, so a woken codex role session resumed from nothing.
   const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
@@ -1102,6 +1138,7 @@ export function writeRoleCodexHome(opts: {
   const toml = [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
+    `sqlite_home = "${tomlEscape(sqliteHome)}"`,
     `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
@@ -1145,12 +1182,14 @@ export function writeRoleCodexHome(opts: {
     lockRuntime,
   });
 
-  return { codexHome, agentsPath, configPath, instructionLint };
+  return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
 }
 
 export interface SuCodexHome {
   /** Absolute path to set as the child's CODEX_HOME. */
   codexHome: string;
+  /** Fast, session-keyed directory configured as Codex's `sqlite_home`. */
+  sqliteHome: string;
   /** The AGENTS.md (engineer playbook) path — diagnostics. */
   agentsPath: string;
   /** The config.toml (superuser MCP) path — diagnostics. */
@@ -1199,6 +1238,8 @@ export interface SuCodexConfigInput {
   model?: string | null;
   /** Direct per-session CODEX_HOME whose model registry should seed context roots. */
   codexHome?: string | null;
+  /** Fast session companion for Codex's high-write SQLite state. */
+  sqliteHome?: string | null;
   token?: string | null;
   codexGatewayAccountId?: string | null;
   codexGatewayAuto?: boolean;
@@ -1279,6 +1320,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
     ...modelConfig,
+    ...(opts.sqliteHome ? [`sqlite_home = "${tomlEscape(opts.sqliteHome)}"`] : []),
     ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
@@ -1328,6 +1370,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   recoverMissingHome?: boolean;
 }): {
   codexHome: string;
+  sqliteHome: string;
   configPath: string;
   repaired: boolean;
   identityRepaired: boolean;
@@ -1335,21 +1378,24 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  const sqliteHome = codexSqliteHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
-      return { codexHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
+      return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
     }
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     inheritUserCodexHome(codexHome);
     ensureCodexSkillWatchRoots({ codexHome });
   }
+  mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
   const resolvedModel = resolveCodexModel(opts.model);
   const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
   const expectedContextConfig = codexContextConfigToml(resolvedModel, { codexHome });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
+  const expectedSqliteHome = `sqlite_home = "${tomlEscape(sqliteHome)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
   const expectedNativeSessionHeader = 'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }';
   const expectedSuMcpRoute =
@@ -1383,6 +1429,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes(expectedClient) &&
       current.includes(expectedNativeSessionHeader) &&
       contextMatches &&
+      current.includes(expectedSqliteHome) &&
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
@@ -1391,7 +1438,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     /* absent or unreadable — that is precisely the repair case */
   }
   if (!configReady) {
-    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome }), { mode: 0o600 });
+    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }), { mode: 0o600 });
   }
   const identity = repairSuCodexHomeIdentity(
     codexHome,
@@ -1425,6 +1472,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   }
   return {
     codexHome,
+    sqliteHome,
     configPath,
     repaired: !configReady || identity.repaired || promptRepaired,
     identityRepaired: identity.repaired,
@@ -1497,6 +1545,7 @@ export function writeSuCodexHome(opts: {
     );
   }
   const codexHome = freshCodexHome(targetHome);
+  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
@@ -1507,7 +1556,7 @@ export function writeSuCodexHome(opts: {
   const configPath = join(codexHome, 'config.toml');
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
-  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome }), { mode: 0o600 });
+  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome: targetHome, sqliteHome }), { mode: 0o600 });
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round
@@ -1543,7 +1592,7 @@ export function writeSuCodexHome(opts: {
     /* non-fatal: the collision guard simply skips on the next write */
   }
 
-  return { codexHome, agentsPath, configPath, instructionLint };
+  return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
 }
 
 const PAPERCUSP_SU_TABLE_RE = /^mcp_servers\.(?:papercusp-su|"papercusp-su")(?:\.|$)/;
