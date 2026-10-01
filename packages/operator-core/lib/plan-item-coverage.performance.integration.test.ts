@@ -21,7 +21,8 @@ import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 const live = process.env.PAPERCUSP_P010_LIVE_PROBE === '1';
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
+  liveness: new Map<string, any>(), frozenLiveness: false }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
@@ -30,6 +31,20 @@ vi.mock('./fleet/assignments', async (original) => {
   const actual = await original<typeof import('./fleet/assignments')>();
   return { ...actual, listFleetAssignments: process.env.PAPERCUSP_P010_LIVE_PROBE === '1'
     ? actual.listFleetAssignments : async () => [] };
+});
+vi.mock('./agent-tools/coordination/liveness-oracle', async (original) => {
+  const actual = await original<typeof import('./agent-tools/coordination/liveness-oracle')>();
+  return { ...actual, resolveSessionStates: async (...args: Parameters<typeof actual.resolveSessionStates>) => {
+    if (h.frozenLiveness) {
+      return new Map(args[0].map(subject => {
+        if (!h.liveness.has(subject.ownerId)) throw new Error('diagnostic liveness population changed');
+        return [subject.ownerId, h.liveness.get(subject.ownerId)];
+      }));
+    }
+    const result = await actual.resolveSessionStates(...args);
+    for (const [owner, verdict] of result) h.liveness.set(owner, verdict);
+    return result;
+  } };
 });
 
 const { getAllPlanItemCoverage } = await import('./plan-item-coverage');
@@ -134,7 +149,21 @@ function changedFields(expected: unknown, actual: unknown) {
 afterAll(async () => { await root?.end({ timeout: 5 }); });
 
 describe('matched plan coverage phase benchmark', () => {
+  it('reports changed fields without exposing their values', () => {
+    const result = changedFields({ holder: { stale: false, goalText: 'private expected' } },
+      { holder: { stale: true, goalText: 'private actual' } });
+    expect(result.count).toBe(2);
+    expect(result.fields.map(field => field.path)).toEqual(['selectedCoverage.holder.stale', 'selectedCoverage.holder.goalText']);
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(result.truncated).toBe(false);
+    const many = changedFields(Array(40).fill(false), Array(40).fill(true));
+    expect(many.count).toBe(40);
+    expect(many.fields).toHaveLength(32);
+    expect(many.truncated).toBe(true);
+  });
   it('preserves exact scoped coverage and records the reduced hydrated population', async () => {
+    const diagnostic = process.env.PAPERCUSP_P010_DIAGNOSTIC === '1';
+    expect(!diagnostic || live).toBe(true);
     const plan = process.env.PAPERCUSP_P010_PLAN ?? 'p010-benchmark';
     if (live) {
       root = postgres(getHarnessAdminUrl(), { max: 1, onnotice: () => {} });
@@ -178,9 +207,11 @@ describe('matched plan coverage phase benchmark', () => {
     let preflightError: string | undefined;
     let expected: ReturnType<typeof normalized> = [];
     const explain: Record<string, unknown> = {};
+    const diagnostics: any[] = [];
     const progress = { expectedReads: 4 * windows * requests, completedReads: 0, completedArms: 0 };
     const report = () => ({ schemaVersion: 2, workItem: 'WI-10004889', startedAt, endedAt: new Date().toISOString(),
-      mode: live ? 'live-read-only' : 'private-PG', host: hostname(), plan, identity, serving, fingerprints,
+      mode: diagnostic ? 'live-read-only-diagnostic' : live ? 'live-read-only' : 'private-PG',
+      host: hostname(), plan, identity, serving, fingerprints, diagnostics,
       incomplete: true, ...(preflightError ? { error: preflightError } : {}), progress: { ...progress },
       sourceSha, testFingerprint, confidenceMethod,
       control: 'full production coverage then exact plan selection', candidate: 'production planSlug restriction',
@@ -223,6 +254,38 @@ describe('matched plan coverage phase benchmark', () => {
       expected = normalized(await getAllPlanItemCoverage(), plan);
       expect(expected.length).toBeGreaterThan(0);
       persist();
+      if (diagnostic) {
+        // Deliberately move ONLY the JS clock, then freeze clock + the oracle's
+        // measured verdicts. This is causal diagnosis, never matrix acceptance.
+        const initialLiveness = new Map(h.liveness);
+        const fixedNow = Date.parse(identity.transaction_time);
+        const clock = vi.spyOn(Date, 'now');
+        const record = async (scenario: string, reference: typeof expected, arm: string) => {
+          const result = normalized(await getAllPlanItemCoverage(arm === 'candidate' ? { planSlug: plan } : {}), plan);
+          diagnostics.push({ scenario, arm, equal: digest(result) === digest(reference),
+            changedFields: changedFields(reference, result), resultHash: digest(result),
+            livenessHash: digest([...h.liveness].map(([owner, verdict]) => [owner, verdict.sessionState]).sort()) });
+          persist();
+          return result;
+        };
+        try {
+          clock.mockReturnValue(fixedNow + 15 * 60_000);
+          await record('clock-advanced-15-minutes', expected, 'control');
+          await record('clock-advanced-15-minutes', expected, 'candidate');
+          h.liveness = initialLiveness;
+          h.frozenLiveness = true;
+          clock.mockReturnValue(fixedNow);
+          const frozen = await record('frozen-clock-and-measured-liveness', expected, 'control');
+          for (const arm of ['control', 'candidate', 'control', 'candidate']) {
+            const result = await record('frozen-clock-and-measured-liveness', frozen, arm);
+            expect(result).toEqual(frozen);
+          }
+        } finally {
+          h.frozenLiveness = false;
+          clock.mockRestore();
+        }
+        return;
+      }
       for (const concurrency of [1, 8]) {
         for (let window = 0; window < windows; window++) {
           const arms = window % 2 === 0 ? ['control','candidate'] : ['candidate','control'];
@@ -282,6 +345,12 @@ describe('matched plan coverage phase benchmark', () => {
     }
     persist();
     expect(preflightError).toBeUndefined();
+    if (diagnostic) {
+      expect(diagnostics).toHaveLength(7);
+      persist(true);
+      console.log(JSON.stringify({ mode: report().mode, diagnostics }));
+      return;
+    }
     const outcomes = samples.flatMap(s => s.batch);
     expect(outcomes.filter(s => !s.ok)).toEqual([]);
     const stampRows = (arm: string) => samples.filter(s => s.arm === arm)
