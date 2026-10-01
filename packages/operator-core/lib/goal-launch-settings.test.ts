@@ -1947,6 +1947,68 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(rendered).not.toContain('Call fleet:launch-on-plan exactly once with {"name":"papercusp-draft');
   });
 
+  it('treats a todo whose blockers are all done or dropped as dependency-free, and keeps an open blocker blocking', async () => {
+    // Live shape on goal 60d3a8 (2026-10-01): gitnexus P-005 waited only on done P-004 and
+    // compiled as `blocked`, so placement offered nothing but a floor-gated plan.
+    const brief = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({
+        portfolio: {
+          'goal-1': {
+            ...portfolioRow,
+            plans: [
+              {
+                ref: 'plan:papercusp/open-blocker',
+                ordinal: 1,
+                harness: 'papercusp',
+                slug: 'open-blocker',
+                title: 'Waits on unfinished work',
+                status: 'active',
+                ambiguousMatches: 1,
+                items: [
+                  { id: 'P-001', text: 'Still going', status: 'blocked', phase: 'Build', blockedBy: [], seq: 1 },
+                  { id: 'P-002', text: 'Waits', status: 'todo', phase: 'Build', blockedBy: ['P-001'], seq: 2 },
+                ],
+              },
+              {
+                ref: 'plan:papercusp/resolved',
+                ordinal: 2,
+                harness: 'papercusp',
+                slug: 'resolved',
+                title: 'Blockers finished',
+                status: 'ready',
+                ambiguousMatches: 1,
+                items: [
+                  { id: 'P-001', text: 'Done', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
+                  { id: 'P-002', text: 'Dropped', status: 'dropped', phase: 'Build', blockedBy: [], seq: 2 },
+                  { id: 'P-003', text: 'Next', status: 'todo', phase: 'Build', blockedBy: ['P-001', 'P-002'], seq: 3 },
+                  { id: 'P-004', text: 'After', status: 'todo', phase: 'Build', blockedBy: ['P-003'], seq: 4 },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      now: NOW,
+      launch,
+    });
+
+    expect(brief?.worklist).toMatchObject([
+      { next: null, placement: { state: 'blocked', reconciliation: { action: 'resolve-plan-blockers' } } },
+      {
+        next: { id: 'P-003', blockedBy: [] },
+        placement: {
+          state: 'unplaced',
+          reconciliation: {
+            action: 'launch-plan-fleet',
+            toolCall: { tool: 'fleet:launch-on-plan', args: { plan: 'resolved' } },
+          },
+        },
+      },
+    ]);
+  });
+
   it('ignores an expired actionable lease instead of compiling a false placement', () => {
     expect(
       compileGoalPlanPlacement({
