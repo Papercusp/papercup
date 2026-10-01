@@ -252,6 +252,36 @@ async function startDbosOnce(): Promise<void> {
       armPgLaunchRetry();
       return;
     }
+    // WI-10004954 — if this executor's previous process shut down GRACEFULLY (it left a
+    // marker at SIGTERM/SIGINT), give each of its in-flight workflows back the recovery
+    // attempt that the re-dequeue after DBOS.launch() is about to charge. Runs on this
+    // probe connection, against the exact database DBOS recovers from, before launch.
+    // Crashes leave no marker and still count. Best-effort: a failure leaves the attempt
+    // counted (the pre-fix behaviour) and never blocks the launch.
+    try {
+      const [{ consumeGracefulShutdownCredit }, { DBOS: DbosForCredit }] = await Promise.all([
+        import('./graceful-shutdown-recovery-credit'),
+        import('@dbos-inc/dbos-sdk'),
+      ]);
+      const credit = await consumeGracefulShutdownCredit({
+        sql: probe,
+        executorId: DbosForCredit.executorID,
+      });
+      if (credit.outcome === 'credited') {
+        console.log(
+          `[dbos-graceful-credit] previous ${credit.marker.signal} was graceful: credited ` +
+            `${credit.ids.length} in-flight workflow(s) on executor ${credit.marker.executorId}` +
+            `${credit.ids.length > 0 ? `: ${credit.ids.slice(0, 10).join(', ')}` : ''}`,
+        );
+      } else if (credit.outcome !== 'no-marker') {
+        console.warn(`[dbos-graceful-credit] marker not credited: ${JSON.stringify(credit)}`);
+      }
+    } catch (e) {
+      console.warn(
+        '[dbos-graceful-credit] boot credit failed (non-fatal), the restart counts as a recovery attempt:',
+        e instanceof Error ? e.message : e,
+      );
+    }
     await probe.end({ timeout: 2 }).catch(() => {});
   }
 
@@ -538,18 +568,19 @@ async function startDbosOnce(): Promise<void> {
 
   // WI-10004954 — a graceful restart must not spend an in-flight workflow's DBOS recovery
   // budget (every dequeue charges one; boot recovery re-dequeues). On SIGTERM/SIGINT this
-  // executor gives each of its PENDING, deadline-bounded workflows that attempt back.
-  // Crashes still count. Best-effort: a failure leaves the pre-fix behaviour.
+  // writes a marker SYNCHRONOUSLY, ahead of the host's own drain (which may SIGKILL itself
+  // within a second); the next boot credits the attempt back before DBOS.launch(). The
+  // first version credited over PG inside the handler and was killed mid-flight
+  // (2026-10-01 18:14:25Z). Crashes still count. Best-effort: a failure leaves the
+  // pre-fix behaviour.
   try {
-    const [{ armGracefulShutdownRecoveryCredit }, { getOrgPg }, { DBOS: DbosForCredit }] =
-      await Promise.all([
-        import('./graceful-shutdown-recovery-credit'),
-        import('@papercusp/db-org'),
-        import('@dbos-inc/dbos-sdk'),
-      ]);
+    const [{ armGracefulShutdownMarker }, { DBOS: DbosForCredit }] = await Promise.all([
+      import('./graceful-shutdown-recovery-credit'),
+      import('@dbos-inc/dbos-sdk'),
+    ]);
     const executorId = DbosForCredit.executorID;
-    armGracefulShutdownRecoveryCredit({ sql: getOrgPg().sql, executorId });
-    console.log(`[dbos-graceful-credit] armed for executor ${executorId}`);
+    armGracefulShutdownMarker({ executorId });
+    console.log(`[dbos-graceful-credit] shutdown marker armed for executor ${executorId}`);
   } catch (e) {
     console.warn('[dbos-graceful-credit] failed to arm (non-fatal):', e instanceof Error ? e.message : e);
   }

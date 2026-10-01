@@ -6,10 +6,18 @@
  * test pins that the installed SDK still does this. Inline DDL carries only the columns
  * the credit reads (createFreshPgDb replays no migrations).
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { creditGracefulShutdownRecoveryAttempts } from './graceful-shutdown-recovery-credit';
+import {
+  armGracefulShutdownMarker,
+  consumeGracefulShutdownCredit,
+  creditGracefulShutdownRecoveryAttempts,
+} from './graceful-shutdown-recovery-credit';
 
 const EXEC = 'bg-host-3270';
 const OTHER_EXEC = 'desktop-dev-3070';
@@ -149,5 +157,61 @@ describe('creditGracefulShutdownRecoveryAttempts', () => {
     await dequeue('wf-mine');
     expect(await creditGracefulShutdownRecoveryAttempts(sql, '')).toEqual([]);
     expect(await attempts('wf-mine')).toBe(1);
+  });
+});
+
+/**
+ * The production shape: the old process writes a marker at SIGTERM, its drain may then
+ * SIGKILL it at any moment, and the NEXT process credits before DBOS.launch() recovers.
+ */
+describe('marker at SIGTERM, credit at the next boot (end to end)', () => {
+  let markerDir: string;
+  let pid = 10_000;
+
+  beforeEach(() => {
+    markerDir = mkdtempSync(join(tmpdir(), 'dbos-graceful-e2e-'));
+  });
+
+  afterEach(() => {
+    rmSync(markerDir, { recursive: true, force: true });
+  });
+
+  /** One host lifetime ending in SIGTERM, with a drain that "SIGKILLs" itself on the spot. */
+  function gracefulShutdown(): void {
+    const proc = new EventEmitter() as EventEmitter & { pid: number; kill: () => void };
+    proc.pid = ++pid;
+    proc.kill = () => {};
+    proc.on('SIGTERM', () => {
+      // hono-host's drain: nothing after this line of the old process ever runs.
+    });
+    armGracefulShutdownMarker({ executorId: EXEC, markerDir, proc: proc as never, log: () => {} });
+    proc.emit('SIGTERM');
+  }
+
+  async function boot(): Promise<void> {
+    await consumeGracefulShutdownCredit({ sql, executorId: EXEC, markerDir, pid: ++pid });
+    await recoverOnBoot();
+  }
+
+  it('keeps a long fire at one attempt across 20 graceful restarts', async () => {
+    await enqueue('wf-long');
+    let n = await dequeue('wf-long');
+    for (let restart = 0; restart < 20; restart++) {
+      gracefulShutdown();
+      await boot();
+      n = await dequeue('wf-long');
+    }
+    expect(n).toBe(1);
+  });
+
+  it('still dead-letters a poison workflow whose restarts are crashes', async () => {
+    await enqueue('wf-poison');
+    let n = await dequeue('wf-poison');
+    for (let crash = 0; crash < 6; crash++) {
+      await boot(); // no marker: the process died without a SIGTERM
+      n = await dequeue('wf-poison');
+    }
+    expect(n).toBe(7);
+    expect(wouldDeadLetter(n)).toBe(true);
   });
 });

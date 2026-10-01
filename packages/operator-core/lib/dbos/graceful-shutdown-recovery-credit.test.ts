@@ -6,17 +6,28 @@
  *    at `claimedAttempts > maxRecoveryAttempts + 1`. If an SDK upgrade changes any of
  *    those, this fails so the credit is re-derived instead of silently over- or
  *    under-crediting.
- * 2. The signal arming: fires once, logs what it credited, keeps the attempt counted on
- *    failure, and never suppresses the process's default exit when it is the only listener.
+ * 2. The signal half: the marker is on disk SYNCHRONOUSLY by the time the signal emit
+ *    returns, ahead of every other listener. The first version credited over PG inside
+ *    the handler and was killed mid-flight by the drain's self-SIGKILL (2026-10-01
+ *    18:14:25Z); the "durable before emit returns" assertions are what fail for any
+ *    design that defers the evidence to an await.
+ * 3. The boot half: only a fresh marker of THIS executor from ANOTHER process credits,
+ *    the marker is consumed before the credit, and every other case leaves the attempt
+ *    counted.
  */
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  GRACEFUL_RECOVERY_CREDIT_SOLE_LISTENER_EXIT_MS,
-  armGracefulShutdownRecoveryCredit,
+  GRACEFUL_SHUTDOWN_MARKER_MAX_AGE_MS,
+  GRACEFUL_SHUTDOWN_MARKER_SCHEMA,
+  armGracefulShutdownMarker,
+  consumeGracefulShutdownCredit,
+  defaultGracefulShutdownMarkerDir,
+  gracefulShutdownMarkerPath,
 } from './graceful-shutdown-recovery-credit';
 
 const require = createRequire(import.meta.url);
@@ -59,100 +70,211 @@ function fakeProc(): EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn
   return em;
 }
 
-/** A macrotask boundary: every microtask the credit chain queued has run by then. */
-const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+const EXEC = 'bg-host-3270';
+const NOW = 1_790_880_000_000;
 
-afterEach(() => {
-  vi.useRealTimers();
+let dir: string;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'dbos-graceful-credit-'));
 });
 
-describe('armGracefulShutdownRecoveryCredit', () => {
-  it('credits once on SIGTERM and logs the workflows it credited', async () => {
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+});
+
+function markerFile(): string {
+  return gracefulShutdownMarkerPath(dir, EXEC);
+}
+
+function arm(proc: ReturnType<typeof fakeProc>, extra: { log?: () => void; warn?: () => void; markerDir?: string } = {}) {
+  return armGracefulShutdownMarker({
+    executorId: EXEC,
+    markerDir: extra.markerDir ?? dir,
+    proc: proc as never,
+    now: () => NOW,
+    log: extra.log ?? vi.fn(),
+    warn: extra.warn ?? vi.fn(),
+  });
+}
+
+describe('armGracefulShutdownMarker (signal half)', () => {
+  it('has the marker on disk by the time the SIGTERM emit returns, with no await', () => {
     const proc = fakeProc();
-    proc.on('SIGTERM', () => {}); // the host's own shutdown handler
-    const log = vi.fn();
-    const result = vi.fn(async () => [{ workflow_uuid: 'wf-long' }]);
-    armGracefulShutdownRecoveryCredit({
-      sql: fakeSql(result) as never,
-      executorId: 'bg-host-3270',
-      proc: proc as never,
-      log,
-      warn: vi.fn(),
-    });
+    proc.on('SIGTERM', () => {}); // the host's own drain handler
+    arm(proc);
 
     proc.emit('SIGTERM');
-    proc.emit('SIGINT');
-    await flush();
 
-    expect(result).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('credited 1 in-flight workflow(s)'));
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('wf-long'));
+    // Synchronously, before any microtask: a self-SIGKILL here must not lose the evidence.
+    expect(existsSync(markerFile())).toBe(true);
+    const marker = JSON.parse(readFileSync(markerFile(), 'utf8'));
+    expect(marker).toEqual({
+      schema: GRACEFUL_SHUTDOWN_MARKER_SCHEMA,
+      executorId: EXEC,
+      pid: 4242,
+      signal: 'SIGTERM',
+      at: NOW,
+    });
     expect(proc.kill).not.toHaveBeenCalled();
   });
 
-  it('warns and leaves the attempt counted when the credit fails', async () => {
+  it('runs ahead of a drain handler that was registered first', () => {
+    const proc = fakeProc();
+    let markerSeenByDrain: boolean | null = null;
+    proc.on('SIGTERM', () => {
+      // The drain may SIGKILL the process from here; the marker must already exist.
+      markerSeenByDrain = existsSync(markerFile());
+    });
+    arm(proc);
+
+    proc.emit('SIGTERM');
+
+    expect(markerSeenByDrain).toBe(true);
+  });
+
+  it('fires once across SIGTERM then SIGINT', () => {
     const proc = fakeProc();
     proc.on('SIGTERM', () => {});
-    const warn = vi.fn();
-    armGracefulShutdownRecoveryCredit({
-      sql: fakeSql(async () => {
-        throw new Error('canceling statement due to statement timeout');
-      }) as never,
-      executorId: 'bg-host-3270',
-      proc: proc as never,
-      log: vi.fn(),
-      warn,
-    });
+    proc.on('SIGINT', () => {});
+    const log = vi.fn();
+    arm(proc, { log });
 
     proc.emit('SIGTERM');
-    await flush();
+    proc.emit('SIGINT');
 
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('counts as a recovery attempt'));
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(readFileSync(markerFile(), 'utf8')).signal).toBe('SIGTERM');
   });
 
-  it('re-raises the signal after the credit when it is the only listener', async () => {
+  it('re-raises the signal right after the write when it is the only listener', () => {
     const proc = fakeProc();
-    armGracefulShutdownRecoveryCredit({
-      sql: fakeSql(async () => []) as never,
-      executorId: 'bg-host-3270',
-      proc: proc as never,
-      log: vi.fn(),
-      warn: vi.fn(),
-    });
-
-    proc.emit('SIGTERM');
-    await flush();
-
-    expect(proc.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
-  });
-
-  it('re-raises after a bounded wait even if the credit never settles', async () => {
-    vi.useFakeTimers();
-    const proc = fakeProc();
-    armGracefulShutdownRecoveryCredit({
-      sql: fakeSql(() => new Promise(() => {})) as never,
-      executorId: 'bg-host-3270',
-      proc: proc as never,
-      log: vi.fn(),
-      warn: vi.fn(),
-    });
+    arm(proc);
 
     proc.emit('SIGINT');
-    expect(proc.kill).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(GRACEFUL_RECOVERY_CREDIT_SOLE_LISTENER_EXIT_MS);
+
+    expect(existsSync(markerFile())).toBe(true);
     expect(proc.kill).toHaveBeenCalledWith(4242, 'SIGINT');
+    expect(proc.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('warns, and still re-raises, when the marker cannot be written', () => {
+    const proc = fakeProc();
+    const warn = vi.fn();
+    // A FILE where the marker directory should be: mkdir fails.
+    const blocked = join(dir, 'blocked');
+    writeFileSync(blocked, 'not a directory');
+    arm(proc, { warn, markerDir: join(blocked, 'run') });
+
+    proc.emit('SIGTERM');
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('counts as a recovery attempt'));
+    expect(proc.kill).toHaveBeenCalledWith(4242, 'SIGTERM');
   });
 
   it('disarm removes both listeners', () => {
     const proc = fakeProc();
-    const disarm = armGracefulShutdownRecoveryCredit({
-      sql: fakeSql(async () => []) as never,
-      executorId: 'bg-host-3270',
-      proc: proc as never,
-    });
+    const disarm = arm(proc);
     expect(proc.listenerCount('SIGTERM')).toBe(1);
+    expect(proc.listenerCount('SIGINT')).toBe(1);
     disarm();
     expect(proc.listenerCount('SIGTERM')).toBe(0);
     expect(proc.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('defaults the marker directory to $PAPERCUSP_HOME/run', () => {
+    expect(defaultGracefulShutdownMarkerDir({ PAPERCUSP_HOME: '/x/.papercusp' })).toBe('/x/.papercusp/run');
+  });
+});
+
+function writeMarker(over: Record<string, unknown> = {}): void {
+  writeFileSync(
+    markerFile(),
+    JSON.stringify({
+      schema: GRACEFUL_SHUTDOWN_MARKER_SCHEMA,
+      executorId: EXEC,
+      pid: 1111,
+      signal: 'SIGTERM',
+      at: NOW - 40_000,
+      ...over,
+    }),
+  );
+}
+
+function consume(credit: () => Promise<{ workflow_uuid: string }[]>) {
+  return consumeGracefulShutdownCredit({
+    sql: fakeSql(credit) as never,
+    executorId: EXEC,
+    markerDir: dir,
+    now: () => NOW,
+    pid: 2222,
+  });
+}
+
+describe('consumeGracefulShutdownCredit (boot half)', () => {
+  it('credits the executor once for a fresh marker, and consumes the marker', async () => {
+    writeMarker();
+    const credit = vi.fn(async () => [{ workflow_uuid: 'wf-long' }]);
+
+    const first = await consume(credit);
+    const second = await consume(credit);
+
+    expect(first).toMatchObject({ outcome: 'credited', ids: ['wf-long'] });
+    expect(second).toEqual({ outcome: 'no-marker' });
+    expect(credit).toHaveBeenCalledTimes(1);
+    expect(existsSync(markerFile())).toBe(false);
+  });
+
+  it('a crash leaves no marker, so nothing is credited', async () => {
+    const credit = vi.fn(async () => [{ workflow_uuid: 'wf-poison' }]);
+    expect(await consume(credit)).toEqual({ outcome: 'no-marker' });
+    expect(credit).not.toHaveBeenCalled();
+  });
+
+  it('ignores and consumes a stale marker', async () => {
+    writeMarker({ at: NOW - GRACEFUL_SHUTDOWN_MARKER_MAX_AGE_MS - 1 });
+    const credit = vi.fn(async () => []);
+    expect(await consume(credit)).toMatchObject({ outcome: 'stale' });
+    expect(credit).not.toHaveBeenCalled();
+    expect(existsSync(markerFile())).toBe(false);
+  });
+
+  it.each([
+    ['another executor', { executorId: 'desktop-dev-3070' }],
+    ['this same process', { pid: 2222 }],
+    ['an unknown schema', { schema: 'v0' }],
+    ['no timestamp', { at: 'yesterday' }],
+  ])('refuses a marker from %s', async (_label, over) => {
+    writeMarker(over);
+    const credit = vi.fn(async () => []);
+    expect(await consume(credit)).toMatchObject({ outcome: 'invalid' });
+    expect(credit).not.toHaveBeenCalled();
+    expect(existsSync(markerFile())).toBe(false);
+  });
+
+  it('refuses and consumes an unparseable marker', async () => {
+    writeFileSync(markerFile(), '{"schema":');
+    const credit = vi.fn(async () => []);
+    expect(await consume(credit)).toEqual({ outcome: 'invalid', reason: 'unparseable marker' });
+    expect(credit).not.toHaveBeenCalled();
+    expect(existsSync(markerFile())).toBe(false);
+  });
+
+  it('round-trips: a marker armed at SIGTERM is credited by the next process', async () => {
+    const proc = fakeProc();
+    proc.on('SIGTERM', () => {});
+    arm(proc);
+    proc.emit('SIGTERM');
+
+    const credit = vi.fn(async () => [{ workflow_uuid: 'wf-long' }]);
+    const result = await consumeGracefulShutdownCredit({
+      sql: fakeSql(credit) as never,
+      executorId: EXEC,
+      markerDir: dir,
+      now: () => NOW + 45_000,
+      pid: 5555,
+    });
+
+    expect(result).toMatchObject({ outcome: 'credited', ids: ['wf-long'] });
   });
 });
