@@ -2524,6 +2524,9 @@ OPERATOR_SOURCE_ENV_LINE="PAPERCUSP_DEV_SOURCE_ROOT=\"$OPERATOR_SOURCE_ROOT\" PA
 # reverted on any package reinstall/upgrade — see the note where it's applied), and keeps
 # this rig self-consistent even when the patch is absent/reverted.
 write_and_launch_tauri() {
+  OPERATOR_STARTUP_DIAGNOSTIC_DIR="${VH_RUN_DIR:-$WORK}/phases/boot/operator-startup/attempt-$BOOT_ATTEMPTS"
+  mkdir -p -- "$OPERATOR_STARTUP_DIAGNOSTIC_DIR"
+  OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED=0
   local TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
   local TAURI_CONFIG
   # ONE definition of the window shape, shared by both branches below, so they
@@ -2562,6 +2565,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE
   PAPERCUSP_BIND_HOST=127.0.0.1 \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL="$NATIVE_TERMINAL" \\
   PAPERCUSP_VERIFY_TAURI_DEV_URL="$TAURI_DEV_URL" \\
+  PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR="$OPERATOR_STARTUP_DIAGNOSTIC_DIR" \\
   PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
   PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
   PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR=0 \\
@@ -2610,6 +2614,18 @@ LAUNCH
 # 2 matches on the broken boot (incl. the `-->` source locator via -A1), 0 on two
 # healthy boots.
 RUST_ERR_RE='error\[E[0-9]+\]:|error: could not compile|error: linking with|error: aborting due to'
+collect_operator_startup_diagnostic() {
+  [ "${OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED:-0}" = 0 ] || return 0
+  local node_pid
+  node_pid="$(cat "$OPERATOR_STARTUP_DIAGNOSTIC_DIR/node.pid" 2>/dev/null)" || return 0
+  [[ "$node_pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  # PID reuse, an old attempt and a foreign host must never receive this signal.
+  tr '\0' '\n' < "/proc/$node_pid/cmdline" 2>/dev/null |
+    grep -Fxq -- "$OPERATOR_HOST_BUNDLE" || return 0
+  kill -USR2 "$node_pid" 2>/dev/null || return 0
+  OPERATOR_STARTUP_DIAGNOSTIC_COLLECTED=1
+  log "requested credential-free Node startup report from owned pid=$node_pid; retained at $OPERATOR_STARTUP_DIAGNOSTIC_DIR"
+}
 boot_failure_diag() {
   echo "FATAL: $1" >&2
   local errs
@@ -2700,6 +2716,11 @@ while :; do
   PORT_LOST=0
   DISPLAY_LOST=0
   until desktop_binary_started; do
+    # Capture BEFORE Tauri's fixed 180s frontend deadline kills its child. Once
+    # Cargo starts the binary, this pre-listen diagnostic is no longer needed.
+    if [ "$BUILD_ELAPSED" -ge 60 ] && ! port_is_listening "$DEV_PORT"; then
+      collect_operator_startup_diagnostic
+    fi
     if port_lost_to_squatter; then PORT_LOST=1; break; fi
     # EI-21903832503219853: checked in the SAME position as port_lost_to_squatter
     # (before kill -0) so a desktop binary that died OF a dead/contended display
