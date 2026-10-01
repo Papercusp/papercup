@@ -1571,6 +1571,10 @@ import './cupboard/commerce-dashboards';
 // verify/export (read) and witness (write) over harness_shared.ledger_chain_links.
 import './cupboard/ledger-chain';
 import './cupboard/ledger-chain-witness';
+// P-041 — hourly Merkle anchoring of those chains (EAS on Base Sepolia): status/prove/verify
+// (read) and run-now (write).
+import './cupboard/ledger-anchor';
+import './cupboard/ledger-anchor-run';
 import './cupboard/bind-wallet';
 import './cupboard/bind-identity-funding';
 // P-031 — the per-unit half of the same commerce surface. A per-use offer has no
