@@ -3371,3 +3371,69 @@ Logs `/tmp/p008-bash-guidance-20261001.log` SHA-256
 Tool source SHA-256: `413e1d217d9d28bda601c5358c0be85b031cd4e52e6020f869227a4f1a7d5642`.
 The twelve existing checkpoint checks are preserved at their cap; this additional
 proof is retained here and in fact `p008-native-sql-lifetime-20261001`.
+
+### Historical task retention and current-host phase receipt — 2026-10-01 08:14Z
+
+**P-008 remains open; this is additional live measurement, not R-8 acceptance.**
+The cold wake's 07:25 carry-note was superseded by the work-item and loop notes
+written after the 07:45 integration proof. That proof was recovered rather than
+repeated: the test, shell guidance and retained integration log hashes still match.
+
+An exact read of `harness_shared.task_ledger` for workspace
+`papercusp-workspace` and task `0muelod7g1hap2451co` returned zero rows,
+untruncated, with a same-table/scope bash-job positive control
+`0mup90r6eq60uuo4gys` passing. This establishes absence from the current ledger,
+not the absence of the historical launch. The source writer
+`task-manager/store.ts:gcTerminalTasks` removes non-release terminal rows older
+than its retention horizon; `harness/routines/task-reconcile-action.ts` passes
+168 hours. The historical task is older than that horizon, but this read does
+not distinguish deletion from an original missing registration. The archive and
+original shell log retain the launch and timeout. No retained task receipt links
+that launch to PostgreSQL PID `3962125`; historical server settings and app impact
+remain unknown. The initial `tasks:get` miss was from the separate harness task
+surface and is not used as process-ledger evidence.
+
+The maintained `dev:pipeline_position` route for the actual changed path,
+`packages/operator-core/lib/search/session-ingest.ts`, still requires the
+disposable background assertion specified in D-006. Its recovered read reports
+bg-host build `9f9ff57142`, with matching source blob; it does not measure workload
+performance. A bounded, read-only journal measurement independently confirms
+natural phase logging on the running host. All seven phase rows identify PID
+`1650535` and systemd invocation `c126a26dc6dc4d52813bd11014a21fe3`, matching the
+current unit identity. Its recorded start is `2026-10-01 03:31:31 EDT` (07:31:31Z).
+No worker restart was performed.
+
+| Completed sweep, UTC | Total wall ms | Largest exclusive wall bucket | Bucket ms |
+|---|---:|---|---:|
+| 07:56:50.109 | 11691 | writes | 9103.5 |
+| 07:58:57.083 | 25306 | writes | 14435.2 |
+| 08:00:51.959 | 12387 | writes | 3462.6 |
+| 08:02:52.191 | 12255 | writes | 3170.3 |
+| 08:04:52.523 | 13878 | history | 4112.8 |
+| 08:07:04.915 | 32618 | discovery | 13997.9 |
+| 08:08:54.636 | 15528 | writes | 8144.1 |
+
+The source writer uses exclusive `performance.now()` wall-time buckets, including
+await and scheduling time. These values identify where elapsed time accumulated;
+they do not establish CPU, acquisition latency, or a shared-resource cause. The
+changing workload and largest bucket also preclude treating these sweeps as a
+controlled before/after comparison. Every retained sweep reports zero errors.
+The bounded window is 07:56–08:09Z; the maintained `logs:read` result returned seven
+rows with no journal error, unknown unit or truncation. A second bounded read
+recovered the PID and invocation fields that `logs:read` omits.
+
+Attribution receipt: task `0mup9bfumiwatefin87`, exit 0,
+`.papercusp/scratch/bash-bb688f39-2f2.log`, SHA-256
+`3a88b899cb84dfa2258de3914bba398bd0930399e3d9fbc8946fead440029739`.
+It retains the exact window, identity, timestamps and every phase bucket.
+Source SHA-256 remains
+`a63bb35bca2738b33f62084917b9c3fa3b522ca21d37946000ae8786449529a3`;
+the maintained integration fixture remains
+`94b732691b66c53566dde190c0c3b0eef91d5adb35f81468eb20a0d4c0e2b167`.
+Unchanged proofs were not rerun. The earlier statement that live phase adoption
+was unmeasured is superseded for this identified incarnation and bounded window.
+The mechanism behind the variable waits, historical account emitter mix, backup
+producer progress, shared-host adoption of other fixes and app impact remain open.
+The next distinguishing measurement must separate waiting from active work in
+one identified phase, with an alternative and a bounded workload; it must not
+attribute these wall-time buckets to CPU or close R-8 from phase logging alone.

@@ -488,7 +488,21 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/agent-capacity/session-process.ts: `runAsync` spawns native `cp -a --reflink=auto` and `rm -rf` to copy a prepared checkout into a session work dir and remove it afterwards. Each child is awaited to its exit code, is not detached, and holds nothing after exit, so it adds no residency or queue of its own. It is called only by load-driver.ts and record-session.ts after their assertHostAdmission check, once per session they were already admitted to run (WI-10004522).",
+      "P-016 reviewed bypass disposition for scripts/agent-capacity/session-process.ts: `runAsync` spawns native `cp -a --reflink=auto` and `rm -rf` (copy workdir mode), or `sudo -n mount -t overlay` / `sudo -n umount` (overlay workdir mode, WI-10004672), to prepare a session work dir from a prepared checkout and remove it afterwards. Each child is awaited to its exit code, is not detached, and holds nothing after exit (an overlay mount is a kernel object the same session unmounts), so it adds no residency or queue of its own. It is called only by load-driver.ts and record-session.ts after their assertHostAdmission check, once per session they were already admitted to run (WI-10004522).",
+  },
+  {
+    path: "scripts/lib/targeted-task-reuse.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/targeted-task-reuse.mjs: its only starts are synchronous `execFileSync` reads, `git` (120 s timeout, 64 MB maxBuffer) to fingerprint a task's inputs and `node -p process.version` (30 s timeout) to resolve the runner identity. Each is awaited to exit, not detached, and holds nothing after exit. It is called only from scripts/affected-tests.mjs, which already runs inside the caller's admission (the green-checkpoint run or a pc-heavy test slot), so it adds no residency or queue of its own (EI-24538088938561684).",
+  },
+  {
+    path: "packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/endpoint-route/routes/misc/health-deep.ts: `runProbeCommand` spawns one bwrap user-namespace probe (`BWRAP_USERNS_PROBE_ARGS`, a `/bin/true` payload) for the agent-sandbox health check. It is awaited to exit, not detached, SIGKILLed at AGENT_SANDBOX_PROBE_TIMEOUT_MS (30 s), single-flight (concurrent readers share one in-flight probe), and a definitive answer is cached for AGENT_SANDBOX_PROBE_TTL_MS (10 min), so steady state is one ~100 ms child per 10 minutes per operator. It holds nothing after exit and must stay runnable while productive capacity is pressured, because it reports whether agents can sandbox at all (WI-10004649).",
   },
   {
     path: "apps/operator/lib/release/cut-seed-cli.ts",

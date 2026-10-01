@@ -5,7 +5,41 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { drive, replayPath, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+import { achievedConcurrency, drive, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, toolOutcomesDiverge, versionMismatches } from './load-driver';
+
+// WI-10004672: the corpus profile limits gave each recording a different slowdown tolerance
+// (286s recorded against 300s timed out under ANY slowdown), so the limit is relative.
+describe('replayTimeoutMs', () => {
+  it('allows every replay the same 3x slowdown, never less than 60s', () => {
+    expect(replayTimeoutMs(286_090)).toBe(858_270);
+    expect(replayTimeoutMs(598_292)).toBe(1_794_876);
+    expect(replayTimeoutMs(5_000)).toBe(60_000);
+  });
+});
+
+// WI-10004672: P-005 asked for 64 sessions and held about 13, and nothing noticed.
+describe('achievedConcurrency', () => {
+  const start = Date.parse('2026-10-01T00:00:00Z');
+  const at = (offsetSec: number, wallSec: number) => ({ startedAt: new Date(start + offsetSec * 1000).toISOString(), wallMs: wallSec * 1000 });
+  const window = { startMs: start, agents: 4, staggerMs: 1000, durationSec: 103 };
+
+  it('counts sessions whose CLI is running, from the last stagger to the deadline', () => {
+    // Window is [3s, 103s): four sessions spanning it hold 4; one gone at 53s halves its share.
+    const full = [at(0, 200), at(1, 200), at(2, 200), at(3, 200)];
+    expect(achievedConcurrency(full, window)).toEqual({ target: 4, mean: 4, max: 4, fraction: 1, windowSec: 100 });
+    const half = [at(0, 200), at(1, 200), at(2, 200), at(3, 50)];
+    expect(achievedConcurrency(half, window)).toMatchObject({ mean: 3.5, max: 4, fraction: 0.88 });
+  });
+
+  it('reads a slot stuck in setup as not running, so an underdriven step is visible', () => {
+    // Two slots spend the whole window outside the CLI (setup): only 2 of 4 ever run.
+    expect(achievedConcurrency([at(0, 200), at(1, 200)], window)).toMatchObject({ mean: 2, fraction: 0.5 });
+  });
+
+  it('has no window to judge when the stagger outlasts the duration', () => {
+    expect(achievedConcurrency([at(0, 10)], { ...window, durationSec: 2 })).toBeNull();
+  });
+});
 
 describe('replayPath', () => {
   const recorded = { sessionId: 'codex-x', env: { path: '/rec/bin:/usr/bin', node: 'v22.1.0' } };

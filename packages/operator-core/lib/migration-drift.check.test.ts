@@ -84,6 +84,8 @@ describe('checkMigrationDrift content hashing is opt-in (WI-10002541)', () => {
     expect(readsUnderSqlDir()).toBe(0);
     expect(d.contentDrift).toBeNull();
     expect(d.contentDriftExecutable).toBeNull();
+    // WI-10004651: unmeasured stays unmeasured — never an empty "nothing new".
+    expect(d.contentDriftNew).toBeNull();
     // What the default callers DO read is still computed.
     expect(d.sqlDir).toBe(sqlDir);
     expect(d.missing).toEqual([]);
@@ -96,6 +98,9 @@ describe('checkMigrationDrift content hashing is opt-in (WI-10002541)', () => {
     expect(d.contentDrift?.map((e) => [e.filename, e.classification])).toEqual([['002-b.sql', 'unclassified']]);
     // Unclassified counts as hazardous.
     expect(d.contentDriftExecutable?.map((e) => e.filename)).toEqual(['002-b.sql']);
+    // WI-10004651: 002-b.sql is not in the acknowledged set, so it is NEW drift —
+    // the field the improvements watchdog alerts on.
+    expect(d.contentDriftNew?.map((e) => e.filename)).toEqual(['002-b.sql']);
   });
 
   it('classifyContent:true implies checkContent', async () => {

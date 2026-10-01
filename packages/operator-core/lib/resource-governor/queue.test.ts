@@ -6,6 +6,7 @@ import {
   type AdmissionContext,
 } from './admission';
 import {
+  EndedLeaseOwnerScanCoalescer,
   PgWorkItemAdmissionQueueStore,
   RESOURCE_GOVERNOR_LIVENESS_READ_DEADLINE_MS,
   WorkItemAdmissionQueueDriver,
@@ -357,7 +358,10 @@ describe('resource-governor queue liveness and census boundaries (EI-219699)', (
     ]);
     const resolveSessionStatesFn = async (subjects: readonly { ownerId: string }[], options: unknown) => {
       expect(subjects).toEqual([{ ownerId: 'owner-dead' }, { ownerId: 'owner-live' }]);
-      expect(options).toMatchObject({ hydratePerId: true, nowMs: 5_000 });
+      // WI-10004631: one owner-filtered presence read for the roster, never one
+      // point read per active lease owner.
+      expect(options).toMatchObject({ hydrateBatch: true, nowMs: 5_000 });
+      expect(options).not.toHaveProperty('hydratePerId');
       return new Map([
         ['owner-dead', { sessionState: 'ended' as const }],
         ['owner-live', { sessionState: 'live' as const }],
@@ -1024,5 +1028,158 @@ describe('no-deadline abandonment floor (WI-1741497)', () => {
     // is pinned here rather than left to review.
     expect(abandon?.text).toContain("COALESCE(jsonb_typeof(payload->'resource_governor'->'deadlineAtMs'), 'null')");
     expect(abandon?.text).toMatch(/state'\s*IN\s*\('queued',\s*'eligible'\)/);
+  });
+});
+
+describe('ended-lease-owner scan on the lease hot path (WI-10004631)', () => {
+  /** A controllable liveness oracle: counts calls and settles only when released. */
+  function gatedResolver() {
+    const calls: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fn = async (subjects: readonly { ownerId: string }[], options: unknown) => {
+      calls.push(options);
+      await gate;
+      return new Map(subjects.map((s) => [s.ownerId, { sessionState: 'live' as const }]));
+    };
+    return { calls, release, fn: fn as never };
+  }
+
+  /** Fake SQL that returns one active lease for the given store's active-lease read. */
+  function leaseSql(activeLeaseMarker: string, activeRow: Record<string, unknown>) {
+    const queries: string[] = [];
+    const tx = (strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      queries.push(text);
+      return Promise.resolve(text.includes(activeLeaseMarker) ? [activeRow] : ([] as unknown[]));
+    };
+    const client = Object.assign(tx, {
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx),
+    }) as never;
+    return { client, activeReads: () => queries.filter((q) => q.includes(activeLeaseMarker)).length };
+  }
+
+  it('coalescer: concurrent callers share one in-flight scan; sequential callers re-scan by default', async () => {
+    const coalescer = new EndedLeaseOwnerScanCoalescer();
+    let computes = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const compute = async () => {
+      computes += 1;
+      await gate;
+      return [{ receiptId: 'R-1', leaseId: 'L-1', owner: 'o' }];
+    };
+    const burst = Array.from({ length: 20 }, () => coalescer.scan('agent-process', 1_000, compute));
+    release();
+    const results = await Promise.all(burst);
+    expect(computes).toBe(1);
+    expect(new Set(results).size).toBe(1);
+
+    await coalescer.scan('agent-process', 1_001, compute);
+    expect(computes).toBe(2);
+    // Namespaces never share a scan.
+    await Promise.all([coalescer.scan('a', 1_002, compute), coalescer.scan('b', 1_002, compute)]);
+    expect(computes).toBe(4);
+  });
+
+  it('coalescer: an opt-in reuse window reuses a settled scan, expires, and treats a backwards clock as a miss', async () => {
+    const coalescer = new EndedLeaseOwnerScanCoalescer(2_000);
+    let computes = 0;
+    const compute = async () => {
+      computes += 1;
+      return [];
+    };
+    await coalescer.scan(null, 10_000, compute);
+    await coalescer.scan(null, 11_999, compute);
+    expect(computes).toBe(1);
+    await coalescer.scan(null, 12_000, compute);
+    expect(computes).toBe(2);
+    await coalescer.scan(null, 5_000, compute);
+    expect(computes).toBe(3);
+  });
+
+  it('coalescer: a failed scan is not cached and does not wedge later callers', async () => {
+    const coalescer = new EndedLeaseOwnerScanCoalescer(60_000);
+    await expect(
+      coalescer.scan('ns', 1, async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    await expect(coalescer.scan('ns', 2, async () => [])).resolves.toEqual([]);
+  });
+
+  it.each([
+    [
+      'legacy work-item store',
+      'SELECT feature_id AS receipt_id',
+      { receipt_id: 'WI-1', lease_id: 'lease-1', owner: 'owner-1' },
+      (sql: never, fn: never, reuse?: number) =>
+        new PgWorkItemAdmissionQueueStore({
+          sql,
+          workspaceId: 'workspace-test',
+          resolveSessionStatesFn: fn,
+          endedLeaseOwnerReuseMs: reuse,
+        }),
+    ],
+    [
+      'canonical ledger store',
+      'lease_owner AS owner',
+      { receipt_id: 'RG-1', lease_id: 'lease-1', owner: 'owner-1' },
+      (sql: never, fn: never, reuse?: number) =>
+        new PgAdmissionLedgerQueueStore({
+          sql,
+          workspaceId: 'workspace-test',
+          resolveSessionStatesFn: fn,
+          endedLeaseOwnerReuseMs: reuse,
+        }),
+    ],
+  ])('%s: a burst of leaseReceipt calls runs ONE liveness scan, batch-hydrated', async (_label, marker, row, make) => {
+    const { client, activeReads } = leaseSql(marker, row);
+    const oracle = gatedResolver();
+    const store = make(client, oracle.fn);
+    const burst = Array.from({ length: 20 }, (_, i) =>
+      store.leaseReceipt('agent-process', `missing-${i}`, 'owner-x', `lease-${i}`, 60_000, 50_000),
+    );
+    // Let every caller reach the shared scan before it settles.
+    await new Promise((resolve) => setImmediate(resolve));
+    oracle.release();
+    await Promise.all(burst);
+    expect(oracle.calls).toHaveLength(1);
+    expect(activeReads()).toBe(1);
+    expect(oracle.calls[0]).toMatchObject({ hydrateBatch: true, nowMs: 50_000 });
+    expect(oracle.calls[0]).not.toHaveProperty('hydratePerId');
+
+    // Default (no reuse window): the next sequential lease reads fresh state.
+    await store.leaseReceipt('agent-process', 'missing-next', 'owner-x', 'lease-next', 60_000, 50_001);
+    expect(oracle.calls).toHaveLength(2);
+  });
+
+  it('canonical ledger store: the production reuse window skips the scan for a lease inside it', async () => {
+    const { client, activeReads } = leaseSql('lease_owner AS owner', {
+      receipt_id: 'RG-1',
+      lease_id: 'lease-1',
+      owner: 'owner-1',
+    });
+    const oracle = gatedResolver();
+    oracle.release();
+    const store = new PgAdmissionLedgerQueueStore({
+      sql: client,
+      workspaceId: 'workspace-test',
+      resolveSessionStatesFn: oracle.fn,
+      endedLeaseOwnerReuseMs: 2_000,
+    });
+    await store.leaseReceipt('agent-process', 'a', 'o', 'l-a', 60_000, 100_000);
+    await store.leaseReceipt('agent-process', 'b', 'o', 'l-b', 60_000, 101_500);
+    expect(oracle.calls).toHaveLength(1);
+    expect(activeReads()).toBe(1);
+    await store.leaseReceipt('agent-process', 'c', 'o', 'l-c', 60_000, 102_000);
+    expect(oracle.calls).toHaveLength(2);
+    // Explicit reconciliation always reads fresh state, inside the window or not.
+    await store.reconcileExpired('agent-process', 102_001);
+    expect(oracle.calls).toHaveLength(3);
   });
 });

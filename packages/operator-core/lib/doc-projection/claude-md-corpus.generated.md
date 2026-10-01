@@ -1811,21 +1811,7 @@ SELECT file_path, status FROM harness_shared.test_runs
 
 Then per path, `git rev-parse <candidate>:<path>` vs `git rev-parse <repairHead>:<path>`: **DIFFERENT blobs mean the fix ALREADY LANDED** and the file awaits re-verification, not repair. Equal blobs are the real queue. For a SUBMODULE path the blobs are identical while the gitlink moved — use `git diff --raw <candidate> <repairHead> -- <sub> | grep '^:160000'`. And `filesJudged` is the AFFECTED RADIUS, never the ~6,700-file suite: an empty failing list is **not** "the gate is green".
 
-`testing:runs` returns a parser-validated `root` from `execution_details` but has no root filter. To LOCATE rows recorded under an isolated checkpoint tree, use the exact non-null root it returned and the frozen candidate SHA in a separate **diagnostic locator only**:
-
-```sql
-SELECT id, file_path, status, source, worktree_dirty, commit_sha, run_group_id
-  FROM harness_shared.test_runs
- WHERE workspace_id='<workspace id from testing:runs>'
-   AND harness_slug='<harness slug from testing:runs>'
-   AND execution_details->>'root'='<exact checkpoint root from testing:runs>'
-   AND commit_sha='<the frozen candidate sha>'
-   AND source='local' AND worktree_dirty=true
-   AND status IN ('fail','error')
- ORDER BY finished_at DESC NULLS LAST, started_at DESC;
-```
-
-If `root` is null, do not guess the checkout path or treat zero rows as absence. Add the exact `run_group_id` when known to narrow the query to one invocation. This is only a locator for rows and files: dirty `source='local'` rows do **NOT** prove those failures occurred on the frozen candidate and must never be counted as candidate failures. Use only `candidateFailures` or the clean `source='ci' AND worktree_dirty=false` population above for that verdict.
+`testing:runs` has no root filter; its isolated-checkpoint row locator (rows only — never candidate failures) is in the corpus evidence part.
 #### Why the `test_runs` routing row exists — the measured failure
 
 `harness_shared.test_runs` mixes three populations and only one of them judges the frozen
@@ -1857,6 +1843,24 @@ was.
 #### Measured figures behind the observation-lane warning
 
 The standalone invariant part states the rule; its measured support lives here. A `lane='observation'` row is correctly never claimable and never triaged, and correctly carries no assignee and no plan link — its absence from those columns is not a defect. Measured 2026-09-01: of open items whose title matches `P-[0-9]{3}`, 2,194 of 2,340 were observations; four weeks earlier the same query was 417 of 472 — the gap was widening fast. The same title/prose regex cannot distinguish an item that EXECUTES a reference from one that merely CITES it: observations cite constantly ("…defeats P-006", "another agent owns P-018", "do not claim P-008").
+
+#### `testing:runs` root locator (relocated from the routing part, WI-10004675)
+
+`testing:runs` returns a parser-validated `root` from `execution_details` but has no root filter. To LOCATE rows recorded under an isolated checkpoint tree, use the exact non-null root it returned and the frozen candidate SHA in a separate **diagnostic locator only**:
+
+```sql
+SELECT id, file_path, status, source, worktree_dirty, commit_sha, run_group_id
+  FROM harness_shared.test_runs
+ WHERE workspace_id='<workspace id from testing:runs>'
+   AND harness_slug='<harness slug from testing:runs>'
+   AND execution_details->>'root'='<exact checkpoint root from testing:runs>'
+   AND commit_sha='<the frozen candidate sha>'
+   AND source='local' AND worktree_dirty=true
+   AND status IN ('fail','error')
+ ORDER BY finished_at DESC NULLS LAST, started_at DESC;
+```
+
+If `root` is null, do not guess the checkout path or treat zero rows as absence. Add the exact `run_group_id` when known to narrow the query to one invocation. This is only a locator for rows and files: dirty `source='local'` rows do **NOT** prove those failures occurred on the frozen candidate and must never be counted as candidate failures. Use only `candidateFailures` or the clean `source='ci' AND worktree_dirty=false` population above for that verdict.
 
 
   Nothing in the table fits and the shape is genuinely one-off? Then **`dev:pg_query`**
@@ -1921,7 +1925,7 @@ The standalone invariant part states the rule; its measured support lives here. 
 
 ⚠ **A hand-written population query over `harness_shared.work_items` is mostly OBSERVATION LANE — the tools exclude it by default and raw SQL does not.** `work_items:list` / `:search` / `:claimable` all default `includeObservations:false`, because a `lane='observation'` row is an agent's turn-end reflection (never claimable, never triaged). Raw SQL has no such default, so `SELECT … FROM work_items WHERE <predicate>` answers about a different population than every tool you would compare it against. Add `AND lane IS DISTINCT FROM 'observation'` whenever you mean WORK, and say which population a count describes.
 
-A title or prose regex compounds it, because it cannot distinguish an item that EXECUTES a reference from one that merely CITES it — observations cite constantly. So "N items reference X" is never "N items are doing X", and a remediation sized from the first number can be an order of magnitude too large.
+A title/prose regex compounds it — it cannot tell an item that EXECUTES a reference from one that merely CITES it.
 
 
 Full guide (acceptable file uses, two-axes model, topology):

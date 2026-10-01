@@ -126,6 +126,71 @@ describe('Claude resume tool-reference recovery', () => {
     });
   });
 
+  // WI-10004645: a fork's file starts with the source's copied history, so the
+  // consult dispatcher needs to know whether the fork's OWN first reply exists.
+  describe('assistantTurnsSinceLastPrompt', () => {
+    const prompt = (text: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
+    const toolResult = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+    });
+    const meta = JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: 'caveat' } });
+    // The non-message rows a real fork transcript carries between its kickoff and its reply.
+    const attachment = JSON.stringify({ type: 'attachment', attachment: { type: 'hook_additional_context' } });
+    const system = JSON.stringify({ type: 'system', subtype: 'turn_duration', durationMs: 900 });
+
+    it('is 0 for a fork whose kickoff is written but whose reply is not, despite copied assistant history', () => {
+      const transcript = [
+        prompt('source work'),
+        assistant('source reply'),
+        prompt('the consult kickoff'),
+        attachment,
+        meta,
+      ].join('\n');
+      expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+        assistantTurnsSinceLastPrompt: 0,
+        trailingMissingToolReferenceTurns: 0,
+      });
+    });
+
+    it('counts the fork’s first reply once it lands, including the provider’s synthetic rejection', () => {
+      const transcript = [
+        prompt('source work'),
+        assistant('source reply'),
+        prompt('the consult kickoff'),
+        attachment,
+        apiError(missing('EndConversation')),
+        system,
+      ].join('\n');
+      expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+        assistantTurnsSinceLastPrompt: 1,
+        trailingMissingToolReferenceTurns: 1,
+        lastMissingToolReferenceName: 'EndConversation',
+      });
+    });
+
+    it('a tool result or meta row continues the turn — it does not reset the count', () => {
+      const transcript = [
+        prompt('the consult kickoff'),
+        assistant('calling a tool'),
+        toolResult,
+        meta,
+        assistant('answered'),
+      ].join('\n');
+      expect(analyzeClaudeResumeTranscript(transcript).assistantTurnsSinceLastPrompt).toBe(2);
+    });
+
+    it('a copied rejection in the source history is not counted for the fork before it replies', () => {
+      // The streak still reports the history's tail, which is why the
+      // dispatcher must also require a reply after the prompt before judging.
+      const transcript = [prompt('wake'), apiError(missing('WaitForMcpServers')), prompt('the consult kickoff')].join('\n');
+      expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+        assistantTurnsSinceLastPrompt: 0,
+        trailingMissingToolReferenceTurns: 1,
+      });
+    });
+  });
+
   it('appends Papercusp references without changing or duplicating the current seed', () => {
     expect(appendClaudeToolReferencesToSeed(
       'tools:find,coord:orient,mcp__papercusp-su__plans_audit',

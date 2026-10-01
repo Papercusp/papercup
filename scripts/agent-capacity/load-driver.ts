@@ -43,7 +43,7 @@ import { finished } from 'node:stream/promises';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
 // Checkouts are copied/removed with SPAWNED native cp/rm (see session-process.ts): the replay
 // server shares this event loop with every running agent's model replies.
-import { copyTree as cp, parseCgroupStats, removeTree as rm, sessionSpawn, type Isolation } from './session-process';
+import { parseCgroupStats, prepareWorkdir, removeTree as rm, sessionSpawn, type Isolation, type WorkdirMode } from './session-process';
 
 const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
 
@@ -57,6 +57,8 @@ export interface AgentRun {
   repo: string;
   profile: string;
   startedAt: string;
+  /** Time to give the session its checkout, before `startedAt`; not part of `wallMs`. */
+  setupMs: number;
   wallMs: number;
   recordedWallMs: number;
   exitCode: number | null;
@@ -73,6 +75,49 @@ export interface AgentRun {
 }
 
 export type ToolOutcomes = ReturnType<typeof summarizeToolOutcomes>;
+
+/**
+ * A replay is killed (and counted failed, which the ramp reads as saturation) once it has taken 3x
+ * its recorded wall time, never less than 60s. The limit is relative to the recording, so it
+ * means the same slowdown for every session. The corpus's per-profile timeouts are the RECORDER's
+ * limits; used here, they gave each recording a different tolerance (WI-10004672, measured
+ * 2026-10-01): claude-exc-light-4, recorded at 286s against the 300s light limit, timed out under
+ * any slowdown at all, and it and claude-mea-typical-3 (598s against 900s) produced every P-005
+ * `failed=N` verdict.
+ */
+export function replayTimeoutMs(recordedWallMs: number): number {
+  return Math.max(60_000, 3 * recordedWallMs);
+}
+
+/**
+ * How many sessions were actually running (CLI started, not yet exited) through a duration run,
+ * sampled every second once every slot should have started (after the stagger) until the
+ * deadline. A step that asks for N but holds fewer measures the driver, not the machine
+ * (WI-10004672: P-005 asked for 64 and held about 13), so the ramp checks `fraction`.
+ */
+export function achievedConcurrency(
+  runs: Pick<AgentRun, 'startedAt' | 'wallMs'>[],
+  w: { startMs: number; agents: number; staggerMs: number; durationSec: number },
+): { target: number; mean: number; max: number; fraction: number; windowSec: number } | null {
+  const from = w.startMs + (w.agents - 1) * w.staggerMs;
+  const to = w.startMs + w.durationSec * 1000;
+  if (!(to > from)) return null;
+  const spans = runs.map((r) => {
+    const s = Date.parse(r.startedAt);
+    return [s, s + r.wallMs] as const;
+  });
+  let total = 0;
+  let max = 0;
+  let samples = 0;
+  for (let t = from; t < to; t += 1000) {
+    const n = spans.filter(([s, e]) => s <= t && t < e).length;
+    total += n;
+    max = Math.max(max, n);
+    samples++;
+  }
+  const mean = total / samples;
+  return { target: w.agents, mean: Math.round(mean * 10) / 10, max, fraction: Math.round((mean / w.agents) * 100) / 100, windowSec: Math.round((to - from) / 1000) };
+}
 
 /** A replay ran different tool work than its recording when the outcome counts differ. */
 export function toolOutcomesDiverge(recorded: ToolOutcomes | null, replayed: ToolOutcomes): boolean {
@@ -206,6 +251,7 @@ async function runOne(o: {
   server: ReplayServer;
   isolation: Isolation;
   keepWork: boolean;
+  workdir: WorkdirMode;
   pathMode: PathMode;
   pathPrepend?: string;
 }): Promise<AgentRun> {
@@ -215,7 +261,9 @@ async function runOne(o: {
   const home = path.join(o.cacheDir, 'replay-home', runId, `s${slot}-i${iteration}`);
   const prepared = path.join(o.cacheDir, 'prepared', meta.repo.name);
   if (!existsSync(prepared)) throw new Error(`prepared checkout missing: ${prepared}`);
-  await cp(prepared, workDir);
+  const setupT0 = Date.now();
+  const checkout = await prepareWorkdir(o.workdir, prepared, workDir);
+  const setupMs = Date.now() - setupT0;
   mkdirSync(home, { recursive: true });
   const base = o.server.baseUrl(meta.sessionId, instance);
   o.server.rewritePaths(meta.sessionId, instance, { from: recordedWorkDirOf(meta), to: workDir });
@@ -242,7 +290,7 @@ async function runOne(o: {
     const child = spawn(s.cmd, s.args, { cwd: workDir, env: s.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(cliLog);
     child.stderr.pipe(errLog);
-    const limitMs = o.corpus.timeoutSec[meta.task.profile] * 1000;
+    const limitMs = replayTimeoutMs(meta.wallMs);
     const timer = setTimeout(() => {
       timedOut = true;
       if (s.killArgs) spawn('systemctl', s.killArgs, { stdio: 'ignore' });
@@ -267,10 +315,8 @@ async function runOne(o: {
   };
   const toolDiverged = toolOutcomesDiverge(toolOutcomes.recorded, toolOutcomes.replayed);
   const stats = existsSync(statsFile) ? parseCgroupStats(readFileSync(statsFile, 'utf8')) : { memPeakBytes: null, cpuUsec: null };
-  if (!o.keepWork) {
-    await rm(workDir);
-    await rm(home);
-  }
+  await checkout.teardown(o.keepWork);
+  if (!o.keepWork) await rm(home);
   return {
     runId,
     slot,
@@ -281,6 +327,7 @@ async function runOne(o: {
     repo: meta.repo.name,
     profile: meta.task.profile,
     startedAt,
+    setupMs,
     wallMs,
     recordedWallMs: meta.wallMs,
     exitCode,
@@ -308,6 +355,8 @@ export interface DriverOptions {
   durationSec: number;
   isolation: Isolation;
   keepWork: boolean;
+  /** Default `copy`; see WorkdirMode. The capacity ramps use `overlay`. */
+  workdir?: WorkdirMode;
   /** Run every selected session exactly once across the slots (ignores durationSec). */
   sweep?: boolean;
   /** Default `inherit`; see replayPath. */
@@ -334,7 +383,7 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
     for (let it = 0; ; it++) {
       const meta = pick(s, it);
       if (!meta) break;
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend });
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
@@ -348,7 +397,7 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
   return runs;
 }
 
-export function summarize(runs: AgentRun[]) {
+export function summarize(runs: AgentRun[], window?: Parameters<typeof achievedConcurrency>[1]) {
   const ok = runs.filter((r) => r.exitCode === 0 && !r.timedOut && !r.diverged);
   const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
   const pct = (xs: number[], p: number) => {
@@ -368,6 +417,8 @@ export function summarize(runs: AgentRun[]) {
     memPeakMiB: { p50: pct(peaks, 50), p95: pct(peaks, 95), max: pct(peaks, 100) },
     cpuSecPerSession: { p50: (pct(cpu, 50) ?? 0) / 1e6, p95: (pct(cpu, 95) ?? 0) / 1e6, total: sum(cpu) / 1e6 },
     served: runs.reduce((a, r) => ({ exact: a.exact + r.served.exact, shape: a.shape + r.served.shape, path: a.path + r.served.path, exhausted: a.exhausted + r.served.exhausted }), { exact: 0, shape: 0, path: 0, exhausted: 0 }),
+    setupMs: { p50: pct(runs.map((r) => r.setupMs), 50), max: pct(runs.map((r) => r.setupMs), 100) },
+    achievedConcurrency: window ? achievedConcurrency(runs, window) : null,
   };
 }
 
@@ -406,6 +457,8 @@ async function main(): Promise<void> {
   mkdirSync(outDir, { recursive: true });
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
+  const workdir = arg('workdir', 'copy');
+  if (workdir !== 'copy' && workdir !== 'overlay') throw new Error('--workdir copy|overlay');
   const opts: DriverOptions = {
     cacheDir: arg('cache', CACHE)!,
     agents: Math.max(1, Number(arg('agents', '1'))),
@@ -419,6 +472,7 @@ async function main(): Promise<void> {
     durationSec: Number(arg('duration-sec', '0')),
     isolation,
     keepWork: process.argv.includes('--keep-work'),
+    workdir,
     sweep: process.argv.includes('--sweep'),
     pathMode,
     pathPrepend,
@@ -436,8 +490,9 @@ async function main(): Promise<void> {
   process.once('SIGTERM', stopUnits);
   process.once('SIGINT', stopUnits);
   writeFileSync(path.join(outDir, 'run.json'), JSON.stringify({ ...opts, sessions: sessions.map((s) => s.sessionId), corpus: undefined, onRun: undefined, startedAt: new Date().toISOString() }, null, 2) + '\n', { flag: 'w' });
+  const startMs = Date.now();
   const runs = await drive(opts);
-  const summary = summarize(runs);
+  const summary = summarize(runs, opts.sweep || !opts.durationSec ? undefined : { startMs, agents: opts.agents, staggerMs: opts.staggerMs, durationSec: opts.durationSec });
   writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(`SUMMARY ${JSON.stringify(summary)}`);
 }

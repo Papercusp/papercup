@@ -161,7 +161,7 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 
     expect(h.resolveSessionStates).toHaveBeenCalledWith(
       [{ ownerId: 'peer-host-live' }],
-      { hydratePerId: true, psuHostPositiveAuthority: true },
+      { hydrateBatch: true, psuHostPositiveAuthority: true },
     );
   });
 });

@@ -94,7 +94,9 @@ let submoduleSource: string;
  * file-lock path from the repo root it is standing in, so running here also
  * proves that path is DERIVED rather than hardcoded to this checkout.
  */
-function runProbe(args: string[], extraEnv: Record<string, string> = {}) {
+// An `undefined` value REMOVES the variable from the child env (spawnSync skips
+// undefined entries) — the only way a case can run the probe with TMPDIR unset.
+function runProbe(args: string[], extraEnv: Record<string, string | undefined> = {}) {
   const r = spawnSync('bash', [PROBE, ...args], {
     cwd: scratch,
     encoding: 'utf8',
@@ -133,7 +135,7 @@ function runLockedProbe(
     | 'heartbeat-timeout-once'
     | 'auth-failure'
     | 'input-failure' = 'all',
-  extraEnv: Record<string, string> = {},
+  extraEnv: Record<string, string | undefined> = {},
 ): { code: number; out: string } {
   writeFileSync(lockLog, '');
   const result = runProbe(args, {
@@ -433,6 +435,30 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(calls.filter((call) => call.tool === 'coord:presence').map((call) => call.targetUrl))
       .toEqual([primaryUrl, 'http://127.0.0.1:3170']);
+  });
+
+  it('retries a timeout through staging when TMPDIR is UNSET (WI-10004679)', () => {
+    // The fallback branch used to read a bare "$TMPDIR" under `set -u`; every
+    // other case here sets TMPDIR, so that crash ('TMPDIR: unbound variable')
+    // only ever surfaced on a real agent shell, where the probe then refused
+    // with "could not read this session's Papercusp owner identity".
+    const { code, out } = runLockedProbe(
+      [
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--sweep-lock-held',
+      ],
+      'timeout-once',
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070', TMPDIR: undefined },
+    );
+
+    expect(out).not.toContain('unbound variable');
+    expect(code).toBe(0);
+    expect(out).toContain('recovered once through staging :3170');
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
   it('retries a same-lock heartbeat timeout through staging and verifies the extension', () => {

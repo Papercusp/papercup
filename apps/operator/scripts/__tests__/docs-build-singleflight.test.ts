@@ -17,12 +17,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const SCRIPT = resolve(__dirname, '../../../operator-docs/scripts/docs-build-singleflight');
+const DOCS_PACKAGE = resolve(__dirname, '../../../operator-docs/package.json');
 
 let tmp: string;
 const children: ChildProcess[] = [];
 
-function launch(cmd: string, env: Record<string, string> = {}): ChildProcess {
-  const child = spawn('bash', [SCRIPT], {
+function launch(cmd: string, env: Record<string, string> = {}, args: string[] = []): ChildProcess {
+  const child = spawn('bash', [SCRIPT, ...args], {
     env: {
       ...process.env,
       DOCS_BUILD_LOCK: join(tmp, 'build.lock'),
@@ -57,6 +58,36 @@ afterEach(() => {
 });
 
 describe('docs-build-singleflight (EI-11539)', () => {
+  it('holds the lock across PG materialization and the inner docs build', async () => {
+    const docsPackage = JSON.parse(readFileSync(DOCS_PACKAGE, 'utf8')) as { scripts: Record<string, string> };
+    expect(docsPackage.scripts['build:from-pg']).toBe('bash scripts/docs-build-singleflight --from-pg');
+
+    const materialize =
+      'if [ -e "$RUN_DIR/running" ]; then echo overlap >> "$RUN_DIR/violations"; fi; ' +
+      'touch "$RUN_DIR/running" "$RUN_DIR/materializing"; sleep 0.4; ' +
+      'echo materialize >> "$RUN_DIR/order"; rm -f "$RUN_DIR/running"';
+    const pgBuild =
+      'if [ -e "$RUN_DIR/running" ]; then echo overlap >> "$RUN_DIR/violations"; fi; ' +
+      'touch "$RUN_DIR/running"; sleep 0.1; echo pg-build >> "$RUN_DIR/order"; rm -f "$RUN_DIR/running"';
+    const normalBuild =
+      'if [ -e "$RUN_DIR/running" ]; then echo overlap >> "$RUN_DIR/violations"; fi; ' +
+      'touch "$RUN_DIR/running"; sleep 0.1; echo normal-build >> "$RUN_DIR/order"; rm -f "$RUN_DIR/running"';
+
+    const pg = launch(pgBuild, { DOCS_BUILD_PRE_CMD: materialize }, ['--from-pg']);
+    const deadline = Date.now() + 1000;
+    while (!existsSync(join(tmp, 'materializing')) && Date.now() < deadline) await sleep(10);
+    expect(existsSync(join(tmp, 'materializing'))).toBe(true);
+    const normal = launch(normalBuild);
+
+    const [pgCode, normalCode] = await Promise.all([exited(pg), exited(normal)]);
+    expect(pgCode).toBe(0);
+    expect(normalCode).toBe(0);
+    expect(existsSync(join(tmp, 'violations'))).toBe(false);
+    const order = readFileSync(join(tmp, 'order'), 'utf8').trim().split('\n');
+    expect(order).toHaveLength(3);
+    expect(order.indexOf('materialize')).toBeLessThan(order.indexOf('pg-build'));
+  });
+
   it('serializes two concurrent builds — the second QUEUES; they never overlap, and both run', async () => {
     const cmd =
       'if [ -e "$RUN_DIR/running" ]; then echo overlap >> "$RUN_DIR/violations"; fi; ' +

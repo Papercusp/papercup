@@ -29,6 +29,8 @@ import {
 import {
   DISPATCH_RECORD_TEXT_MAX,
   DISPATCH_VERIFY_TIMEOUT_MS,
+  FIRST_TURN_POLL_MS,
+  FIRST_TURN_WAIT_MS,
   consultDispatchBrief,
   dispatchConsultResponder,
   dispatchRecordEntry,
@@ -180,6 +182,8 @@ function makeFakes(
     // No transcript is poisoned unless a test says so; never read the real fs here.
     analyzeClaudeTranscript: () => null,
     nowMs: () => NOW_MS,
+    // The first-turn wait (WI-10004645) never sleeps for real in unit tests.
+    sleepMs: async () => {},
     loadRanks: async () => RANKS,
     ...over,
   } as unknown as Partial<ConsultDispatchDeps>;
@@ -517,7 +521,11 @@ describe('dispatchConsultResponder — the walk', () => {
       const { deps, calls } = makeFakes({
         analyzeClaudeTranscript: (p: string) =>
           p === '/native/answer.jsonl'
-            ? { trailingMissingToolReferenceTurns: 1, lastMissingToolReferenceName: 'EndConversation' }
+            ? {
+              trailingMissingToolReferenceTurns: 1,
+              lastMissingToolReferenceName: 'EndConversation',
+              assistantTurnsSinceLastPrompt: 1,
+            }
             : null,
       });
       const r = await dispatchConsultResponder(OPTS, CTX, deps);
@@ -535,11 +543,137 @@ describe('dispatchConsultResponder — the walk', () => {
 
     it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {
       const { deps, calls } = makeFakes({
-        analyzeClaudeTranscript: () => ({ trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null }),
+        analyzeClaudeTranscript: () => ({
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1,
+        }),
       });
       const r = await dispatchConsultResponder(OPTS, CTX, deps);
       expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      expect(r.attempts[0]!.detail).not.toContain('First reply not written');
       expect(calls.stopped).toEqual([]);
+    });
+
+    // WI-10004645 defect 1: the verification wait returned before the reply
+    // existed, and the single read that followed saw no rejection yet.
+    it('WAITS for the fork’s first reply: a rejection that lands after the verification wait still fails the rank', async () => {
+      let clock = NOW_MS;
+      const sleeps: number[] = [];
+      let reads = 0;
+      const { deps, calls } = makeFakes({
+        nowMs: () => clock,
+        sleepMs: async (ms: number) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        analyzeClaudeTranscript: (p: string) => {
+          if (p !== '/native/answer.jsonl') return null;
+          reads += 1;
+          // The kickoff is written; the 400 lands on the 5th read (~2s later).
+          return reads < 5
+            ? { trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null, assistantTurnsSinceLastPrompt: 0 }
+            : {
+              trailingMissingToolReferenceTurns: 1,
+              lastMissingToolReferenceName: 'EndConversation',
+              assistantTurnsSinceLastPrompt: 1,
+            };
+        },
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', outcome: 'failed', reason: 'first-turn-rejected' });
+      expect(r.attempts[0]!.detail).toContain("'EndConversation'");
+      expect(reads).toBe(5);
+      expect(sleeps).toEqual([FIRST_TURN_POLL_MS, FIRST_TURN_POLL_MS, FIRST_TURN_POLL_MS, FIRST_TURN_POLL_MS]);
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('the wait is BOUNDED: no reply by FIRST_TURN_WAIT_MS keeps the dispatch and says the first turn was not checked', async () => {
+      let clock = NOW_MS;
+      let slept = 0;
+      const { deps, calls } = makeFakes({
+        nowMs: () => clock,
+        sleepMs: async (ms: number) => {
+          slept += ms;
+          clock += ms;
+        },
+        analyzeClaudeTranscript: () => ({
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 0,
+        }),
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      expect(slept).toBe(FIRST_TURN_WAIT_MS);
+      expect(r.attempts[0]!.detail).toContain(`First reply not written ${FIRST_TURN_WAIT_MS}ms after kickoff`);
+      expect(calls.stopped).toEqual([]);
+    });
+
+    it('a STALLED clock cannot make the wait unbounded — the read count caps it', async () => {
+      let reads = 0;
+      const { deps } = makeFakes({
+        // nowMs stays at NOW_MS (the fixture default) and sleeping advances nothing.
+        analyzeClaudeTranscript: () => {
+          reads += 1;
+          return { trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null, assistantTurnsSinceLastPrompt: 0 };
+        },
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork' });
+      // The fixture source has no transcript path, so gate A never reads; every
+      // read here is the first-turn wait, capped at one per poll slot.
+      expect(reads).toBe(Math.ceil(FIRST_TURN_WAIT_MS / FIRST_TURN_POLL_MS) + 1);
+    });
+
+    // WI-10004645 defect 2: rank 2 re-forked the source rank 1 had just been
+    // rejected on, and died the same way.
+    it('after one fork is rejected on its first turn, the remaining FORK ranks of that source are skipped', async () => {
+      const { deps, calls } = makeFakes({
+        loadRanks: async () => [
+          { rank: 1, agent: 'claude', model: 'fable' },
+          { rank: 2, agent: 'claude', model: 'opus' },
+          { rank: 3, agent: 'codex', model: 'sol' },
+        ],
+        analyzeClaudeTranscript: (p: string) =>
+          p === '/native/answer.jsonl'
+            ? {
+              trailingMissingToolReferenceTurns: 1,
+              lastMissingToolReferenceName: 'EndConversation',
+              assistantTurnsSinceLastPrompt: 1,
+            }
+            : null,
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', outcome: 'failed', reason: 'first-turn-rejected' });
+      expect(r.attempts[1]).toMatchObject({
+        rank: 2,
+        operation: 'fork',
+        outcome: 'skipped',
+        reason: 'source-transcript-poisoned',
+      });
+      expect(r.attempts[1]!.detail).toContain('rank #1 (claude/fable)');
+      // Two launches: the rejected fork and the conversion. Rank 2 never spawned.
+      expect(calls.spawn).toHaveLength(2);
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex', model: 'sol' });
+    });
+
+    it('CONTROL: a fork that fails for another reason does not block the next fork rank', async () => {
+      const { deps, calls } = makeFakes(
+        {
+          loadRanks: async () => [
+            { rank: 1, agent: 'claude', model: 'fable' },
+            { rank: 2, agent: 'claude', model: 'opus' },
+          ],
+        },
+        { spawnStatuses: ['no-proof', 'ok'] },
+      );
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts[0]).toMatchObject({ rank: 1, outcome: 'failed', reason: 'kickoff-not-persisted' });
+      expect(calls.spawn).toHaveLength(2);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', model: 'opus' });
     });
 
     it('an unreadable transcript analysis does not block the fork (the kickoff proof still guards it)', async () => {
