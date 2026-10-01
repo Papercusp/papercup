@@ -83,7 +83,7 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
 
   let sawResultField = false;
   let hasPopulatedField = false;
-  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence']) {
+  for (const key of ['results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits']) {
     if (!(key in body)) continue;
     sawResultField = true;
     const value = body[key];

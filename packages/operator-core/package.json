@@ -150,6 +150,7 @@
     "@papercusp/fanout-resolver": "*",
     "@papercusp/file-claim": "file:../../libs/papercusp/packages/file-claim",
     "@papercusp/flags": "*",
+    "@papercusp/hash-chain": "*",
     "@papercusp/grid-core": "*",
     "@papercusp/harness": "*",
     "@papercusp/host-platform": "*",

@@ -56,6 +56,7 @@ const CALLS = Number(argValue('--calls') ?? 80);
 const CONCURRENCY = Math.max(1, Number(argValue('--concurrency') ?? 4));
 const WORKSPACE = argValue('--workspace') ?? 'papercusp-workspace';
 const RESCORE_V2 = process.argv.includes('--rescore-v2');
+const V2_RESCORE_TIMEOUT_MS = Math.max(400, Number(argValue('--v2-timeout-ms') ?? 5_000));
 /**
  * Per-call bound on one relevance-judge request. Without it a single stalled
  * request hung the whole run: a 106-call turn-start bench sat at 90/106 for
@@ -263,6 +264,7 @@ async function main(): Promise<void> {
   let firstJudgeError: string | null = null;
   let missingText = 0;
   let v2Failures = 0;
+  const v2FailureReasons: Record<string, number> = {};
   const perCall = await mapPool(sample, CONCURRENCY, async (row, i) => {
     const query = queries.get(row.state_sha256)!;
     const live = pYesByIndex(row.answers, row.subject_ids.length);
@@ -275,11 +277,21 @@ async function main(): Promise<void> {
       });
     let v2: number[] | null = null;
     if (client && cands.length > 0) {
+      // A QUALITY rescore, not a latency probe: the production 400 ms bound turned 93 of
+      // 100 rescores into timeouts (2026-10-01 05:25Z, a provider-latency window) and left
+      // the v2 rows measuring Jev's latency instead of its judgement. Latency is read from
+      // the live memory-injection ledger rows; here the call gets a generous bound.
       const j = await judgeAdmission(query, cands, JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT, (request, call) =>
-        client.decide(request, { consumer: PRECISION_BENCH_JEV_CONSUMER, subjectIds: call.candidates.map((ci) => cands[ci].id) }),
+        client.decide(request, {
+          consumer: PRECISION_BENCH_JEV_CONSUMER,
+          subjectIds: call.candidates.map((ci) => cands[ci].id),
+          timeoutMs: V2_RESCORE_TIMEOUT_MS,
+        }),
       );
-      if ('failure' in j.result) v2Failures += 1;
-      else v2 = [...j.result.scores];
+      if ('failure' in j.result) {
+        v2Failures += 1;
+        v2FailureReasons[j.result.failure] = (v2FailureReasons[j.result.failure] ?? 0) + 1;
+      } else v2 = [...j.result.scores];
     }
     const graded: { id: string; live: number; v2: number | null; relevance: number | null }[] = [];
     for (const [k, c] of cands.entries()) {
@@ -316,7 +328,7 @@ async function main(): Promise<void> {
     window: { since: SINCE.toISOString(), until: UNTIL.toISOString(), workspace: WORKSPACE, surface: SURFACE },
     judge: { model: JUDGE_AGREEMENT_MODEL, rubricVersion: JUDGE_AGREEMENT_RUBRIC_VERSION, passBar: RELEVANCE_PASS_BAR, failures: judgeFailures, firstError: firstJudgeError, stats: judge.stats() },
     recovery,
-    sample: { calls: sample.length, pairsJudged: judged.length, candidatesWithoutText: missingText, v2Rescored: RESCORE_V2, v2Failures },
+    sample: { calls: sample.length, pairsJudged: judged.length, candidatesWithoutText: missingText, v2Rescored: RESCORE_V2, v2TimeoutMs: V2_RESCORE_TIMEOUT_MS, v2Failures, v2FailureReasons },
     results,
     wipedRelevantCalls: Object.fromEntries(THRESHOLDS.flatMap((t) => [[`live@${t}`, wipedRelevant(t, 'live')], [`v2@${t}`, RESCORE_V2 ? wipedRelevant(t, 'v2') : null]])),
     perCall,
@@ -328,6 +340,7 @@ async function main(): Promise<void> {
 
   console.log(`recovered ${recovery.matchedDistinctStates} distinct live contexts (${recovery.matchedRows}/${recovery.ledgerAnsweredRows} ledger rows) from ${recovery.ownersWithClaudeTranscript}/${recovery.surfaceOwners} ${SURFACE} sessions`);
   console.log(`judged ${judged.length} pairs over ${sample.length} calls (judge failures ${judgeFailures}, no text ${missingText})`);
+  if (RESCORE_V2) console.log(`v2 rescore (bound ${V2_RESCORE_TIMEOUT_MS} ms): ${v2Failures}/${sample.length} calls failed ${JSON.stringify(v2FailureReasons)}`);
   for (const q of results.live) console.log(line('live (ledger P(yes))', q));
   if (results.v2) for (const q of results.v2) console.log(line('v2-content rescore', q));
   console.log(`calls where Jev drops everything but the judge found a relevant memory: ${JSON.stringify(report.wipedRelevantCalls)}`);

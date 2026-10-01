@@ -18,6 +18,7 @@
   "dependencies": {
     "@papercusp/artifact-registry": "*",
     "@papercusp/deployment-driver": "*",
+    "@papercusp/hash-chain": "*",
     "@papercusp/operator-core": "*",
     "hono": "^4.13.7",
     "viem": "^2.56.3"

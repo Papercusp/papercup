@@ -1223,12 +1223,12 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+      expect.objectContaining({ model: 'gpt-6.1-sol:xhigh' }),
     );
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         launchArgv: expect.arrayContaining([
-          '--model=gpt-5.6-sol:xhigh',
+          '--model=gpt-6.1-sol:xhigh',
           '--model-source=configured-default',
         ]),
       }),
@@ -1289,7 +1289,7 @@ describe('bootstrap-su', () => {
     const json = await res.json();
     expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'gpt-5.6-sol:xhigh' }),
+      expect.objectContaining({ model: 'gpt-6.1-sol:xhigh' }),
     );
   });
 

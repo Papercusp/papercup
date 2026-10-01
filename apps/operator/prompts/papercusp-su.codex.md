@@ -29,16 +29,23 @@ for an intent when you don't already know its name, call
 `tools:find("<what you need>")` — a hybrid semantic+lexical search over
 the full catalog — then call the returned tool directly.
 
-Inside Codex `functions.exec`, server verb names are exposed as normalized
-JavaScript methods. Call `tools.mcp__papercusp_su__tools_find({ query: "<what you need>" })`
-and `tools.mcp__papercusp_su__tools_invoke({ name, args })`; `tools.find` and
-`tools.invoke` are not aliases. The `tools:find` spelling is for `ptool` and
-Papercusp's catalog, not a JavaScript method name.
+Inside Codex `functions.exec`, Papercusp tools may be exposed as normalized
+JavaScript methods. Before calling a direct nested wrapper, check whether that
+exact method is callable, for example
+`typeof tools.mcp__papercusp_su__tools_find === "function"`. If it is callable,
+use `tools.mcp__papercusp_su__tools_find({ query: "<what you need>" })` and
+`tools.mcp__papercusp_su__tools_invoke({ name, args })`; `tools.find` and
+`tools.invoke` are not aliases. A missing normalized method is a client exposure
+gap, not evidence the Papercusp capability is absent; use the CLI fallback below.
 
 **Codex MCP-deferral fallback:** never infer that a Papercusp capability
 is unavailable merely because its MCP schema is absent from the current
 model-facing tool list. If the whole `papercusp-su` namespace is missing,
-including `tools:find`, use the installed CLI over the same MCP transport:
+including `tools:find`, or the specific normalized wrapper you need is not
+callable, use the installed CLI over the same MCP transport. Use `ptool
+tools:find` for discovery and `ptool tools:invoke` when the direct invoke
+wrapper is unavailable; `activated:false` means invoke the returned tool
+through `tools:invoke`, not that the tool is missing:
 
 When you call `exec_command` through `functions.exec`, remember that the outer
 program is JavaScript. **Never put a shell command containing `${...}` inside a

@@ -29,8 +29,30 @@ import { renderSuPlaybook } from './papercusp-files';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
 const OPERATOR_APP_ROOT = join(REPO_ROOT, 'apps', 'operator');
+// SU_BLUEPRINT_PERSONA's live interactive path resolves this blueprint base
+// and then splices the client overlay from the operator prompts directory.
+// renderSuPlaybook's default base is the legacy engineer playbook, so pin the
+// production source explicitly to keep this from becoming a false-positive.
+const LIVE_BASE_SOURCE = join(
+  REPO_ROOT,
+  'libs',
+  'papercusp',
+  'packages',
+  'harness',
+  'blueprints',
+  'base',
+  'prompts',
+  'su.md',
+);
+const LIVE_OVERLAY_DIR = join(OPERATOR_APP_ROOT, 'prompts');
 
-const render = (agent: string) => renderSuPlaybook({ agent, operatorAppRoot: OPERATOR_APP_ROOT });
+const render = (agent: string) =>
+  renderSuPlaybook({
+    agent,
+    operatorAppRoot: OPERATOR_APP_ROOT,
+    baseSource: LIVE_BASE_SOURCE,
+    overlayDir: LIVE_OVERLAY_DIR,
+  });
 
 /** Load-bearing phrases from the two P-010 sections of the codex overlay. Each is a
  *  claim an agent acts on, not decoration — so each is asserted individually and a
@@ -49,6 +71,10 @@ const CODEX_GUIDANCE = [
   'Never map a nested response to `output` alone',
   // MCP server verbs have qualified method names inside functions.exec.
   'tools.mcp__papercusp_su__tools_find({ query:',
+  'exact method is callable, for example',
+  'A missing normalized method is a client exposure',
+  'use the CLI fallback below.',
+  'ptool tools:find --json -',
   '`tools.find` and',
 ] as const;
 
@@ -57,8 +83,9 @@ describe('codex overlay reaches live launch context (P-010)', () => {
     const rendered = await render('codex');
     // If this is '', readAgentOverlay silently found no file and every content
     // assertion below would be vacuous.
+    expect(rendered.baseSource).toBe(LIVE_BASE_SOURCE);
     expect(rendered.overlaySource).not.toBe('');
-    expect(rendered.overlaySource).toContain('papercusp-su.codex.md');
+    expect(rendered.overlaySource).toBe(join(LIVE_OVERLAY_DIR, 'papercusp-su.codex.md'));
     expect(rendered.text.length).toBeGreaterThan(0);
   });
 

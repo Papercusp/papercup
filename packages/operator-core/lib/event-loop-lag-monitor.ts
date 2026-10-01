@@ -29,8 +29,9 @@ export interface LagMonitorOpts {
   /** Log a warning when p95 loop lag (ms) over the window exceeds this. Default 100. */
   warnP95Ms?: number;
   /** Sink for the structured warning line. Default console.warn. (Values are
-   *  numbers for the lag gauge; the profiler also passes the profile `file` path.) */
-  log?: (line: string, detail: Record<string, number | string>) => void;
+   *  numbers for the lag gauge, a boolean for `windowMature`; the profiler also
+   *  passes the profile `file` path.) */
+  log?: (line: string, detail: Record<string, number | string | boolean>) => void;
   /**
    * infra round-3 F1: when a window crosses `profileTriggerP95Ms` OR
    * `profileTriggerMaxMs`, capture a short V8 CPU profile (`.cpuprofile`) so the

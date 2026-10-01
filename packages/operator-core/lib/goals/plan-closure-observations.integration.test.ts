@@ -1,0 +1,188 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+
+const WORKSPACE = 'plan-closure-observations-test';
+const HARNESS = 'papercusp';
+const PLAN = 'closure-subject-plan';
+const RUBRIC = 'acceptance-closure-subject-plan';
+
+const state = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: state.sql }),
+}));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => WORKSPACE }));
+
+const { beginPlanClosureObservation, readPlanClosureObservations } = await import('./plan-closure-observations');
+
+const here = dirname(fileURLToPath(import.meta.url));
+const migration = (name: string) => resolve(here, '../../../../libs/papercusp/libs/db/sql', name);
+
+let db: FreshPgDb;
+
+beforeAll(async () => {
+  db = await createFreshPgDb('plan-closure-observations');
+  state.sql = db.sql;
+  await db.sql.unsafe(`
+    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE ROLE harness_admin; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    CREATE TABLE harness_shared.harness_plans (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      version bigint NOT NULL DEFAULT 1,
+      acceptance_bar_epoch integer,
+      template text,
+      template_data jsonb,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+    CREATE TABLE harness_shared.plan_items (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      item_id text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE harness_shared.plan_audits (
+      workspace_id text NOT NULL,
+      harness_slug text,
+      plan_slug text NOT NULL,
+      audit_seq integer NOT NULL
+    );
+    CREATE TABLE harness_shared.spec_evidence_bindings (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      retracted_at timestamptz
+    );
+    CREATE TABLE harness_shared.engineer_issues (
+      workspace_id text NOT NULL,
+      issue_id text NOT NULL,
+      payload jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+  `);
+  await applyMigrationForTest(db.sql, migration('1284-plan-closure-observations.sql'));
+}, 120_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+});
+
+beforeEach(async () => {
+  await db.sql.unsafe(`
+    TRUNCATE harness_shared.harness_plans, harness_shared.plan_items, harness_shared.plan_audits,
+             harness_shared.engineer_issues, harness_shared.spec_evidence_bindings,
+             harness_shared.plan_closure_observations
+  `);
+  await db.sql`
+    INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, version, acceptance_bar_epoch, template, template_data)
+    VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, 36, 1, NULL, NULL),
+           (${WORKSPACE}, ${HARNESS}, ${RUBRIC}, 10, NULL, 'rubric',
+            ${db.sql.json({ kind: 'acceptance', subjectPlan: PLAN })})`;
+  await db.sql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id)
+               VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, 'P-001')`;
+  await db.sql`INSERT INTO harness_shared.plan_audits (workspace_id, harness_slug, plan_slug, audit_seq)
+               VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, 5)`;
+});
+
+const VERDICT = { satisfied: false, code: 'acceptance_ungraded' as const, message: 'needs an independent grade', buildProvenance: { sha: 'abc1234' } };
+
+async function read(now = new Date()) {
+  const reads = await readPlanClosureObservations({ workspaceId: WORKSPACE, planSlugs: [PLAN], sql: db.sql, now });
+  return reads.get(PLAN)!;
+}
+
+describe('plan closure observations (D-032)', () => {
+  it('reads absent until the gate records a verdict, then serves it', async () => {
+    expect((await read()).status).toBe('absent');
+
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+
+    const fresh = await read();
+    expect(fresh).toMatchObject({
+      status: 'fresh',
+      gate: { satisfied: false, code: 'acceptance_ungraded', message: 'needs an independent grade' },
+    });
+    const [stored] = await db.sql`SELECT build_sha, fingerprint FROM harness_shared.plan_closure_observations`;
+    expect(stored.build_sha).toBe('abc1234');
+    expect(stored.fingerprint).toMatchObject({ planVersion: '36', acceptanceBarEpoch: 1, auditSeq: '5', rubrics: [`${RUBRIC}@10`] });
+  });
+
+  it('goes stale on a grading scorecard, a vetting scorecard, a plan write, an item, an audit or a rubric amend', async () => {
+    const changes: Array<[string, () => Promise<unknown>]> = [
+      ['scorecardWatermark', () => db.sql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload)
+        VALUES (${WORKSPACE}, 'EI-1', ${db.sql.json({ observation: { rubricRef: RUBRIC } })})`],
+      ['metaScorecardWatermark', () => db.sql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload)
+        VALUES (${WORKSPACE}, 'EI-2', ${db.sql.json({ observation: { rubricRef: 'meta-acceptance-rubric', subject: { ref: RUBRIC } } })})`],
+      ['planVersion', () => db.sql`UPDATE harness_shared.harness_plans SET version = version + 1 WHERE plan_slug = ${PLAN}`],
+      ['itemsWatermark', () => db.sql`UPDATE harness_shared.plan_items SET updated_at = now() + interval '1 second'`],
+      ['auditSeq', () => db.sql`INSERT INTO harness_shared.plan_audits (workspace_id, harness_slug, plan_slug, audit_seq)
+        VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN}, 6)`],
+      ['rubrics', () => db.sql`UPDATE harness_shared.harness_plans SET version = version + 1 WHERE plan_slug = ${RUBRIC}`],
+      ['specBindings', () => db.sql`INSERT INTO harness_shared.spec_evidence_bindings (workspace_id, harness_slug, plan_slug)
+        VALUES (${WORKSPACE}, ${HARNESS}, ${PLAN})`],
+      ['specBindings', () => db.sql`UPDATE harness_shared.spec_evidence_bindings SET retracted_at = now()`],
+    ];
+    for (const [key, change] of changes) {
+      await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+      expect((await read()).status, `fresh before ${key}`).toBe('fresh');
+      await change();
+      const stale = await read();
+      expect(stale.status, key).toBe('stale');
+      expect(stale.status !== 'fresh' && stale.detail, key).toContain(key);
+    }
+  });
+
+  it('ignores scorecards for other rubrics and vetting cards for other subjects', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    await db.sql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload) VALUES
+      (${WORKSPACE}, 'EI-3', ${db.sql.json({ observation: { rubricRef: 'acceptance-some-other-plan' } })}),
+      (${WORKSPACE}, 'EI-4', ${db.sql.json({ observation: { rubricRef: 'meta-acceptance-rubric', subject: { ref: 'acceptance-some-other-plan' } } })}),
+      ('another-workspace', 'EI-5', ${db.sql.json({ observation: { rubricRef: RUBRIC } })})`;
+    expect((await read()).status).toBe('fresh');
+  });
+
+  it('pairs the verdict with the fingerprint read BEFORE evaluation, so an input changed after it reads stale', async () => {
+    // begin resolves only once its fingerprint is read; the gate evaluates after that.
+    // An input that changes between the two must never be served as covered.
+    const observation = await beginPlanClosureObservation(PLAN);
+    await db.sql`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, payload)
+      VALUES (${WORKSPACE}, 'EI-6', ${db.sql.json({ observation: { rubricRef: RUBRIC } })})`;
+    await observation.record(HARNESS, { ...VERDICT, satisfied: true, code: undefined });
+    const read1 = await read();
+    expect(read1.status).toBe('stale');
+    expect(read1.status !== 'fresh' && read1.detail).toContain('scorecardWatermark');
+  });
+
+  it('never lets an older evaluation overwrite a newer one', async () => {
+    const older = await beginPlanClosureObservation(PLAN);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newer = await beginPlanClosureObservation(PLAN);
+    await newer.record(HARNESS, { ...VERDICT, message: 'newer' });
+    await older.record(HARNESS, { ...VERDICT, message: 'older' });
+    const [stored] = await db.sql`SELECT message FROM harness_shared.plan_closure_observations`;
+    expect(stored.message).toBe('newer');
+  });
+
+  it('reads stale once the observation is older than the bound', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    const later = new Date(Date.now() + 11 * 60_000);
+    expect((await read(later)).status).toBe('stale');
+  });
+
+  it('skips the write when the subject harness did not resolve', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(undefined, VERDICT);
+    await (await beginPlanClosureObservation(PLAN)).record('some-other-harness', VERDICT);
+    expect((await read()).status).toBe('absent');
+  });
+
+  it('reads ambiguous when the slug resolves in two harnesses', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug) VALUES (${WORKSPACE}, 'other', ${PLAN})`;
+    expect((await read()).status).toBe('ambiguous');
+  });
+});

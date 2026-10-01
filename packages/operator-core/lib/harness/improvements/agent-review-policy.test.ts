@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   agentReviewEligibility,
@@ -13,6 +13,14 @@ import {
   readStructuredOwnerAsk,
   WORK_ITEM_INTAKE_PRIMARY_STAGES,
 } from './agent-review-policy';
+
+// Copy-out mutation-probe seam: the regular suite imports the real policy, while
+// scripts/mutation-probe.sh can point the same behavioral fixtures at a mutated
+// copy without ever dirtying the shared checkout.
+vi.mock('./agent-review-policy', async (importOriginal) => {
+  const probe = process.env.PAPERCUSP_AGENT_REVIEW_POLICY_PROBE;
+  return probe ? await import(/* @vite-ignore */ probe) : await importOriginal();
+});
 
 const acceptedReadiness = () =>
   createImplementationReadiness({

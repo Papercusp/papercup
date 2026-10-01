@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 927,
+  "count": 929,
   "tools": [
     {
       "name": "ablation:report",
@@ -8467,6 +8467,41 @@
         "when": "Installing a result from cupboard:search { kind:'theme' } so it can be selected locally.",
         "notWhen": "Selecting an already installed theme or editing a local theme.",
         "chaining": "cupboard:search { kind:'theme' } → cupboard:install-theme { listingId } → select the returned activeThemeId in the ordinary UI."
+      }
+    },
+    {
+      "name": "cupboard:ledger-chain",
+      "http": {
+        "path": "/api/agent-tools/cupboard/ledger-chain",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Verify or export a pot's hash-chained plan-admission governance ledger. `verify` recomputes the chain against the stored events and names the FIRST broken position (an edited, deleted or spliced entry) plus entries not yet chained; pass `expectedHead` from an earlier export to also detect truncation. `export` returns the stable JSONL chain that verifies offline (`npx tsx libs/generic/hash-chain/src/verify-main.ts`).",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "You need proof a pot's governance history was not altered, or a portable copy of that proof.",
+        "notWhen": "Chaining entries that verify reports as unchained (cupboard:ledger-chain-witness).",
+        "chaining": "`ok:false` with `verdict.ok:true` means only unchained entries; a `verdict.firstBreak` is tampering."
+      }
+    },
+    {
+      "name": "cupboard:ledger-chain-witness",
+      "http": {
+        "path": "/api/agent-tools/cupboard/ledger-chain-witness",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Append hash-chain links for a pot's plan-admission governance events that are not chained yet (peer-federated events, or a failed after-append pass), in fold order. Idempotent: a chained entry is never re-linked, and an edited entry stays flagged by verify rather than being re-chained.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "cupboard:ledger-chain verify reported unchainedCount > 0.",
+        "notWhen": "Repairing a broken chain: a firstBreak is evidence of tampering and is not repairable by witnessing."
       }
     },
     {

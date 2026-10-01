@@ -13,6 +13,7 @@ import { seedContentHash } from '../cupboard/rubric-store';
 import { getRubric, provisionPinnedRubric } from '../rubrics';
 import { getWorkItem, setWorkItemState } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 // Copy-out mutation probes load the program executor from its mirrored path.
 // The normal integration suite uses the tracked module.
 const {
@@ -141,7 +142,7 @@ describe('program child admission pins the root specification', () => {
     const [row] = await sql<Array<{ updated_ts: number | string }>>`
       SELECT updated_ts FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${item.id}`;
-    const attempt = { workspaceId, harnessSlug, workItemId: item.id,
+    const attempt = { workspaceId, harnessSlug, storageHarnessSlug: harnessSlug, workItemId: item.id,
       receiptId: handle.receiptId, operationId: handle.operationId,
       specificationRevision: handle.specificationRevision,
       updatedTs: Number(row.updated_ts), requireUncancelled: true };
@@ -340,7 +341,33 @@ describe('program child admission pins the root specification', () => {
         requestKey: 'pot-member-cancel', reason: 'pot member cancellation',
       });
       expect(await readAcceptedProgramRootGuard(sql, root, 'pot-member-caller'))
-        .toMatchObject({ terminal: false, cancellationRequested: true });
+        .toMatchObject({ terminal: false, cancellationRequested: true, storageHarnessSlug: potHome });
+
+      // Terminal settlement writes the re-homed root. Live on bg-host this threw "accepted
+      // coord program root attempt changed before terminal settlement": the attempt and the
+      // settle/cancel writes addressed the root by the operation harness, not the pot home.
+      expect(await settleAcceptedCoordProgram(sql, parent!, { outcome: 'done', resolved: true }))
+        .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
+      expect(await getBlueprintOperationStatus(sql, child, 'pot-member-caller'))
+        .toMatchObject({ cancellationRequested: true });
+      const settledRoot = await sql<Array<{ harness_slug: string; status: string }>>`
+        SELECT harness_slug, status FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId} AND feature_id = ${root.target.id}`;
+      expect(settledRoot.map((row) => row.harness_slug)).toEqual([potHome]);
+      expect(ANY_FAMILY_TERMINAL_STATES).toContain(settledRoot[0]!.status);
+
+      // The successful close path settles a second re-homed root and stores its result.
+      const done = await submitBlueprintOperation(sql, {
+        workspaceId, harnessSlug: member, callerId: 'pot-member-caller', operationId: 'root',
+        requestKey: 'pot-member-root-done', input: {}, title: 'Pot member root (done)',
+      });
+      const doneParent = (await findUnstartedAcceptedCoordPrograms(sql))
+        .find((entry) => entry.acceptedOperation?.receiptId === done.receiptId);
+      expect(doneParent).toMatchObject({ harnessSlug: member });
+      expect(await settleAcceptedCoordProgram(sql, doneParent!, { outcome: 'done', resolved: true }))
+        .toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
+      expect(await getBlueprintOperationResult(sql, done, 'pot-member-caller'))
+        .toMatchObject({ state: 'ready', output: { outcome: 'done', resolved: true } });
     } finally {
       delete connection.potHomes[member];
     }
@@ -481,7 +508,7 @@ describe('program child admission pins the root specification', () => {
     const [root] = await sql<Array<{ updated_ts: string | number }>>`
       SELECT updated_ts FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
-    const attempt = { workspaceId, harnessSlug, workItemId: rootId,
+    const attempt = { workspaceId, harnessSlug, storageHarnessSlug: harnessSlug, workItemId: rootId,
       receiptId: accepted.receiptId, operationId: accepted.operationId,
       specificationRevision: accepted.specificationRevision,
       updatedTs: Number(root.updated_ts), requireUncancelled: true };
@@ -511,7 +538,7 @@ describe('program child admission pins the root specification', () => {
     const [root] = await sql<Array<{ updated_ts: string | number; item_kind: string }>>`
       SELECT updated_ts, item_kind FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
-    const attempt = { workspaceId, harnessSlug, workItemId: rootId,
+    const attempt = { workspaceId, harnessSlug, storageHarnessSlug: harnessSlug, workItemId: rootId,
       receiptId: accepted.receiptId, operationId: accepted.operationId,
       specificationRevision: accepted.specificationRevision,
       updatedTs: Number(root.updated_ts), requireUncancelled: true };
@@ -526,15 +553,18 @@ describe('program child admission pins the root specification', () => {
         readAcceptedProgramRootGuard(sql, accepted),
         getBlueprintOperationStatus(sql, accepted, 'program-caller'),
       ]);
+      // WI-10004562: the guard also reports the slug the root is stored under; for this
+      // non-member harness that is the harness itself.
       expect(guard).toEqual({ terminal: status.phase === 'terminal',
-        cancellationRequested: status.cancellationRequested, family });
+        cancellationRequested: status.cancellationRequested, family, storageHarnessSlug: harnessSlug });
       return guard;
     };
-    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false, family });
+    const stored = { family, storageHarnessSlug: harnessSlug };
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false, ...stored });
     // WI-10003631: with a caller, the same statement proves the receipt — the
     // program start relies on it instead of a full canonical read.
     expect(await readAcceptedProgramRootGuard(sql, accepted, 'program-caller'))
-      .toEqual({ terminal: false, cancellationRequested: false, family });
+      .toEqual({ terminal: false, cancellationRequested: false, ...stored });
     for (const [label, handle, caller] of [
       ['wrong caller', accepted, 'someone-else'],
       ['wrong operation', { ...accepted, operationId: 'other-op' }, 'program-caller'],
@@ -549,7 +579,7 @@ describe('program child admission pins the root specification', () => {
     await sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{blueprintCancellation}', '{"eventId":"test"}'::jsonb, true)
       WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
-    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: true, family });
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: true, ...stored });
     const raced = await runWithWorkspace(workspaceId, () => setWorkItemState(rootId, 'done', {
       harness: harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
       completionRef: blueprintProgramCompletionRef(accepted, 'succeeded'),
@@ -566,7 +596,7 @@ describe('program child admission pins the root specification', () => {
     expect(cancelled?.state).toBe('dropped');
     expect(await getBlueprintOperationStatus(sql, accepted, 'program-caller'))
       .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
-    expect(await guardAgrees()).toEqual({ terminal: true, cancellationRequested: true, family });
+    expect(await guardAgrees()).toEqual({ terminal: true, cancellationRequested: true, ...stored });
   }, 90_000);
 
   it('passes root cancellation to an accepted child before reporting the root cancelled', async () => {

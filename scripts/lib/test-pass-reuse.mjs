@@ -389,6 +389,78 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
   return [...proofFiles].filter((f) => f.startsWith(prefix));
 }
 
+/**
+ * The lane a unit task script runs, or `null` for a task that runs its workspace's whole unit
+ * suite (`test`). Lane membership is a property of each file's CONTENTS
+ * (libs/test-config/src/lane-split.ts), so the script name only says WHICH lane to keep.
+ *
+ * @param {string} script
+ * @returns {"pure" | "stateful" | null}
+ */
+export function laneOfTaskScript(script) {
+  const m = /^test:lane-(pure|stateful)$/.exec(script);
+  return m ? /** @type {"pure" | "stateful"} */ (m[1]) : null;
+}
+
+/**
+ * A `laneOf` for {@link laneScopedCandidates}, built from libs/test-config/src/lane-split.ts —
+ * the SAME classifier each lane's vitest config uses, so a lane task's candidates are exactly
+ * the files that lane runs. The module is a seam (the caller imports it) so this file stays free
+ * of TypeScript imports; only `wsRelFiles` are read, never the whole workspace.
+ *
+ * @param {{
+ *   isUnitTestFile: (relPath: string) => boolean,
+ *   classifyLanes: (rootDir: string, files: readonly string[]) => { stateful: string[] },
+ * }} split
+ * @param {string} wsRoot absolute workspace directory
+ * @param {string[]} wsRelFiles workspace-relative candidate paths
+ * @returns {(wsRelPath: string) => "pure" | "stateful" | null}
+ */
+export function laneOfFromSplit(split, wsRoot, wsRelFiles) {
+  const unit = wsRelFiles.filter((f) => split.isUnitTestFile(f));
+  const stateful = new Set(split.classifyLanes(wsRoot, unit).stateful);
+  return (rel) => (!split.isUnitTestFile(rel) ? null : stateful.has(rel) ? "stateful" : "pure");
+}
+
+/**
+ * Keep only the candidates a LANE task can actually run (WI-10004617).
+ *
+ * A lane task's selection is lane-agnostic: both lane tasks get the same related files, and each
+ * lane's vitest config intersects them with its own content-classified include at run time. So
+ * the other lane's files were counted as THIS task's candidates. The pure lane runs non-isolated
+ * and never records a pass proof, so on the 599dbeeb gate run ~1.9k pure-lane files showed up as
+ * `noProof` in lane-stateful's line, roughly halving its reported hit rate (367/4041 overall).
+ *
+ * Dropping a candidate can only shrink the skip list, so a misclassification makes the task run
+ * MORE files, never fewer. `laneOf` returns `null` for a path that is in neither lane (not a unit
+ * test file); such a path is dropped too, because no lane task runs it.
+ *
+ * @param {{
+ *   candidates: string[],
+ *   wsRel: string,
+ *   lane: "pure" | "stateful" | null,
+ *   laneOf: (wsRelPath: string) => "pure" | "stateful" | null,
+ * }} o
+ * @returns {{ candidates: string[], otherLane: number }}
+ */
+export function laneScopedCandidates({ candidates, wsRel, lane, laneOf }) {
+  if (lane === null) return { candidates, otherLane: 0 };
+  const prefix = wsRel === "" || wsRel === "." ? "" : `${wsRel.replace(/\/+$/, "")}/`;
+  /** @type {string[]} */
+  const kept = [];
+  let otherLane = 0;
+  for (const f of candidates) {
+    // Outside the workspace there is nothing to classify against; keep it (the safe direction).
+    if (prefix !== "" && !f.startsWith(prefix)) {
+      kept.push(f);
+      continue;
+    }
+    if (laneOf(f.slice(prefix.length)) === lane) kept.push(f);
+    else otherLane += 1;
+  }
+  return { candidates: kept, otherLane };
+}
+
 /** One greppable line per workspace: how many selected files were reused, and why others ran. */
 export function formatTestReuseLine(wsName, summary, extra = "") {
   const s = summary;

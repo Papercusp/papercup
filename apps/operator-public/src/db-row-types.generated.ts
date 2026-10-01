@@ -2,12 +2,12 @@
  * GENERATED FILE — do not edit by hand.
  *
  * Source: apps/operator-public/migrations/*.sql applied in filename order
- * Migration digest: cbd35dbf58fb628f50c1530d3d5b7183d65b6a3d0df6e68d5bd305a53d3ce065
+ * Migration digest: c4916de328db96fb67448f7eb77cf52b11d66cb5c5d2331ed9339c7f70029e07
  * Regenerate with: npm run db:types:generate --workspace @papercusp/cupboard-worker
  */
 
 export const GENERATED_MIGRATION_DIGEST =
-  "cbd35dbf58fb628f50c1530d3d5b7183d65b6a3d0df6e68d5bd305a53d3ce065";
+  "c4916de328db96fb67448f7eb77cf52b11d66cb5c5d2331ed9339c7f70029e07";
 export const GENERATED_TABLES = [
   "audit",
   "banned_publisher_pubkeys",
@@ -23,6 +23,7 @@ export const GENERATED_TABLES = [
   "creator_drafts",
   "harnesses",
   "indexer_runs",
+  "ledger_chain_links",
   "payment_channels",
   "prepaid_credit_balances",
   "prepaid_credit_events",
@@ -31,6 +32,7 @@ export const GENERATED_TABLES = [
   "reports",
   "settlement_batch_vouchers",
   "settlement_batches",
+  "treasury_safe_deployment_records",
   "treasury_safe_deployments",
   "treasury_transfers",
   "usage_receipts",
@@ -254,6 +256,10 @@ export interface HarnessesRow {
   release_manifest: string | null;
   uses_tools: string | null;
   identity_surface: string | null;
+  approved_commit_sha: string | null;
+  approved_tree_digest: string | null;
+  approved_at: number | null;
+  drift: number;
 }
 
 export interface IndexerRunsRow {
@@ -264,6 +270,16 @@ export interface IndexerRunsRow {
   harnesses_updated: number;
   errors_count: number;
   error_summary: string | null;
+}
+
+export interface LedgerChainLinksRow {
+  stream_id: string;
+  seq: number;
+  source_id: string;
+  entry_digest: string;
+  prev_hash: string;
+  entry_hash: string;
+  recorded_at_ms: number;
 }
 
 export interface PaymentChannelsRow {
@@ -378,6 +394,22 @@ export interface SettlementBatchesRow {
   created_at_ms: number;
   updated_at_ms: number;
   finalized_at_ms: number | null;
+}
+
+export interface TreasurySafeDeploymentRecordsRow {
+  record_id: string;
+  chain_id: number;
+  safe_address: string;
+  roles_module_address: string;
+  roles_version: string;
+  deployment_tx_hash: string;
+  network: string;
+  owners: string;
+  threshold: number;
+  automation_signer: string;
+  deployed_at_ms: number;
+  recorded_at_ms: number;
+  recorded_by: string;
 }
 
 export interface TreasurySafeDeploymentsRow {

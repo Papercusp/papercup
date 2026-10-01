@@ -1523,30 +1523,49 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
 async function resolveWorklistClosures(
   slugs: readonly string[],
   degradedReasons: string[],
+  scope: { workspaceId: string; sql: Sql; now?: Date },
 ): Promise<Map<string, PlanClosureVerdict>> {
   const closures = new Map<string, PlanClosureVerdict>();
   if (slugs.length === 0) return closures;
 
-  const [{ evaluatePlanAcceptanceGate }, { resolvePlanClosure }] = await Promise.all([
-    import('./plan-acceptance-gate'),
+  const [{ readPlanClosureObservations, refreshPlanClosureObservations }, { resolvePlanClosure }] = await Promise.all([
+    import('./goals/plan-closure-observations'),
     import('./goals/plan-closure'),
   ]);
 
-  await Promise.all(
-    slugs.map(async (planSlug) => {
-      try {
-        const gate = await evaluatePlanAcceptanceGate(planSlug);
-        closures.set(planSlug, resolvePlanClosure({ planSlug, status: 'read', gate }));
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        degradedReasons.push(`closure read failed for ${planSlug}: ${detail}`);
-        closures.set(
-          planSlug,
-          resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-unreadable', detail } }),
-        );
-      }
-    }),
-  );
+  // D-032: this read serves the gate's PERSISTED verdict and never runs the gate
+  // inline. A stale or absent verdict is `gate-not-evaluated` — the plan stays at
+  // awaiting-closure, exactly as before it was measured — and a background
+  // re-evaluation refreshes it. That is an expected transition, not a degraded read.
+  let observations: Awaited<ReturnType<typeof readPlanClosureObservations>>;
+  try {
+    observations = await readPlanClosureObservations({ workspaceId: scope.workspaceId, planSlugs: slugs, sql: scope.sql, now: scope.now });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    for (const planSlug of slugs) {
+      degradedReasons.push(`closure read failed for ${planSlug}: ${detail}`);
+      closures.set(
+        planSlug,
+        resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-unreadable', detail } }),
+      );
+    }
+    return closures;
+  }
+  const refresh: string[] = [];
+  for (const planSlug of slugs) {
+    const observation = observations.get(planSlug);
+    if (observation?.status === 'fresh') {
+      closures.set(planSlug, resolvePlanClosure({ planSlug, status: 'read', gate: observation.gate }));
+      continue;
+    }
+    const detail = observation?.detail ?? `no closure observation was read for '${planSlug}'`;
+    if (observation?.status !== 'ambiguous') refresh.push(planSlug);
+    closures.set(
+      planSlug,
+      resolvePlanClosure({ planSlug, status: 'unreadable', failure: { code: 'gate-not-evaluated', detail } }),
+    );
+  }
+  refreshPlanClosureObservations(refresh);
   return closures;
 }
 
@@ -1963,6 +1982,7 @@ export async function readGoalPortfolioBrief(args: {
     const closures = await resolveWorklistClosures(
       firstPass.filter((plan) => plan.placement.state === 'awaiting-closure').map((plan) => plan.slug),
       degradedReasons,
+      { workspaceId: args.workspaceId, sql, now: args.now },
     );
     const worklist = closures.size > 0 ? parsePortfolioWorklist(row.plans, assembledAt, closures) : firstPass;
     for (const plan of worklist) {

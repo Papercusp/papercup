@@ -491,16 +491,18 @@ export async function writeOperatorState<T>(
     return;
   }
 
-  await sql`
+  const written = await sql`
     INSERT INTO ${sql(`harness_shared.${table}`)}
       (workspace_id, payload, updated_at)
     VALUES (${ws}, ${JSON.stringify(payload)}::text::jsonb, ${now})
     ON CONFLICT (workspace_id) DO UPDATE
       SET payload = EXCLUDED.payload,
           updated_at = EXCLUDED.updated_at
+    WHERE ${table !== 'operator_account_pool'} OR ${sql(`harness_shared.${table}`)}.payload IS DISTINCT FROM EXCLUDED.payload
+    RETURNING workspace_id
   `;
   invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
-  await notifyOperatorStateSync(table);
+  if (table !== 'operator_account_pool' || written.length > 0) await notifyOperatorStateSync(table);
 }
 
 /**
@@ -536,6 +538,7 @@ export async function updateOperatorState<T>(
   const ws = wsOverride ?? activeWorkspaceId();
   const isEncrypted = ENCRYPTED_TABLES.has(table);
   const key = isEncrypted ? getDbEncryptionKey() : null;
+  let changed = true;
 
   const updated = (await sql.begin(async (tx) => {
     // Materialize the row so the FOR UPDATE below has something to lock (see the
@@ -587,18 +590,24 @@ export async function updateOperatorState<T>(
               updated_at = EXCLUDED.updated_at
       `;
     } else {
-      await tx`
+      // Account writers may return an unchanged (but rebuilt/normalized) pool.
+      // Compare JSONB under the existing row lock, so key order and in-place
+      // mutators are handled without dropping concurrent membership changes.
+      const written = await tx`
         INSERT INTO ${tx(`harness_shared.${table}`)}
           (workspace_id, payload, updated_at)
         VALUES (${ws}, ${JSON.stringify(next)}::text::jsonb, ${Date.now()})
         ON CONFLICT (workspace_id) DO UPDATE
           SET payload = EXCLUDED.payload,
               updated_at = EXCLUDED.updated_at
+        WHERE ${table !== 'operator_account_pool'} OR ${tx(`harness_shared.${table}`)}.payload IS DISTINCT FROM EXCLUDED.payload
+        RETURNING workspace_id
       `;
+      changed = table !== 'operator_account_pool' || written.length > 0;
     }
     return next;
   })) as T;
   invalidateOperatorStateCache(table, ws); // P-004: same-process read-after-write consistency
-  await notifyOperatorStateSync(table);
+  if (changed) await notifyOperatorStateSync(table);
   return updated;
 }

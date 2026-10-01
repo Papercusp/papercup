@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { buildApi } from '../routes/index.ts';
 import { makeEnv, stubGithub } from './fake-d1.ts';
+import { makeSqliteDb } from './sqlite-d1';
 
 const PUBLISHER = { id: 5, login: 'pub' };
 const OPERATOR_ID = 7;
@@ -69,7 +70,9 @@ describe('pre-publication review (D-007)', () => {
   });
 
   it('operator approve makes it public; the queue drains', async () => {
-    const { env } = makeEnv({ CUPBOARD_OPERATOR_GITHUB_IDS: String(OPERATOR_ID) });
+    // REAL SQLite: approve is one `db.batch` (approve + EXISTS-guarded retire of
+    // superseded versions, P-008) which the hand-rolled fake-d1 matcher cannot run.
+    const { env } = makeEnv({ DB: makeSqliteDb().db, CUPBOARD_OPERATOR_GITHUB_IDS: String(OPERATOR_ID) });
     stubGithub({ user: PUBLISHER, repo: { id: 71, private: false } });
     const pub = await publish(api, env, { ...LP_BASE, github_repository_id: 71 });
     const id = (await pub.json() as { id: string }).id;
@@ -121,7 +124,7 @@ describe('pre-publication review (D-007)', () => {
   });
 
   it('review endpoints are operator-only; deciding a non-pending row 409s', async () => {
-    const { env } = makeEnv({ CUPBOARD_OPERATOR_GITHUB_IDS: String(OPERATOR_ID) });
+    const { env } = makeEnv({ DB: makeSqliteDb().db, CUPBOARD_OPERATOR_GITHUB_IDS: String(OPERATOR_ID) });
     stubGithub({ user: PUBLISHER, repo: { id: 73, private: false } });
     const pub = await publish(api, env, { ...LP_BASE, github_repository_id: 73 });
     const id = (await pub.json() as { id: string }).id;

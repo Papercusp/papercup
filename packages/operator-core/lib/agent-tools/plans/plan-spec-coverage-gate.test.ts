@@ -313,10 +313,12 @@ describe('computePlanSpecCoverage — the aggregate', () => {
   });
 
   it('counts an adequacy scorecard only at the clause’s CURRENT revision', async () => {
-    const listCards = vi.fn(async (filter: { subjectRef?: string } = {}) =>
-      // Only the r1 card exists; the clause below is at r2.
-      filter.subjectRef === `${PLAN}#SPEC-1@1` ? [adequacyCard(`${PLAN}#SPEC-1@1`)] : [],
-    );
+    // Only the r1 card exists; the clause below is at r2. The fake honours the batched
+    // filter exactly, so an r1 card can only reach the gate if the gate asked for r1.
+    const listCards = vi.fn(async (filter: { subjectRef?: string; subjectRefs?: readonly string[] } = {}) => {
+      const asked = filter.subjectRefs ?? (filter.subjectRef ? [filter.subjectRef] : []);
+      return asked.includes(`${PLAN}#SPEC-1@1`) ? [adequacyCard(`${PLAN}#SPEC-1@1`)] : [];
+    });
     const aggregate = await computePlanSpecCoverage(
       { harnessSlug: 'papercusp', planSlug: PLAN },
       deps({
@@ -327,6 +329,57 @@ describe('computePlanSpecCoverage — the aggregate', () => {
     );
 
     expect(aggregate.adequacy).toMatchObject({ graded: 0, ungraded: 1, ungradedSpecIds: ['SPEC-1'] });
+  });
+
+  it('reads every clause’s adequacy cards in ONE batched read and grades each by its own subject', async () => {
+    const specs = ['SPEC-1', 'SPEC-2', 'SPEC-3'];
+    const listCards = vi.fn(async (filter: { subjectRefs?: readonly string[] } = {}) =>
+      (filter.subjectRefs ?? [])
+        .filter((ref) => ref !== `${PLAN}#SPEC-2@1`)
+        .map((ref) => adequacyCard(ref, { issueId: `EI-${ref}` })),
+    );
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => specs.map((specId) => clause({ specId }))),
+        listEvidence: vi.fn(async () => specs.map((specId) => evidence(specId, 1))),
+        listCards: listCards as unknown as PlanSpecCoverageDeps['listCards'],
+      }),
+    );
+
+    // One read for the plan, not one per clause: the per-clause fan-out scanned the
+    // rubric's whole card population once per clause and starved the GOAL portfolio read.
+    expect(listCards).toHaveBeenCalledTimes(1);
+    expect(listCards.mock.calls[0]?.[0]).toMatchObject({
+      rubricRef: 'spec-test-adequacy',
+      subjectRefs: specs.map((specId) => `${PLAN}#${specId}@1`),
+    });
+    expect(aggregate.adequacy).toMatchObject({ graded: 2, ungraded: 1, ungradedSpecIds: ['SPEC-2'] });
+  });
+
+  it('falls back to per-subject reads when the batch fills its cap, so a dropped older card is never read as missing', async () => {
+    const crowd = Array.from({ length: 500 }, (_, i) => adequacyCard(`${PLAN}#OTHER-${i}@1`, { issueId: `EI-crowd-${i}` }));
+    const listCards = vi.fn(async (filter: { subjectRef?: string; subjectRefs?: readonly string[] } = {}) => {
+      if (filter.subjectRefs) return crowd;
+      return filter.subjectRef === `${PLAN}#SPEC-1@1` ? [adequacyCard(`${PLAN}#SPEC-1@1`)] : [];
+    });
+    const aggregate = await computePlanSpecCoverage(
+      { harnessSlug: 'papercusp', planSlug: PLAN },
+      deps({
+        listClauses: vi.fn(async () => [clause({ specId: 'SPEC-1' }), clause({ specId: 'SPEC-2' })]),
+        listEvidence: vi.fn(async () => [evidence('SPEC-1', 1), evidence('SPEC-2', 1)]),
+        listCards: listCards as unknown as PlanSpecCoverageDeps['listCards'],
+      }),
+    );
+
+    expect(listCards).toHaveBeenCalledTimes(3);
+    expect(listCards.mock.calls.slice(1).map(([filter]) => filter)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ subjectRef: `${PLAN}#SPEC-1@1`, limit: 20 }),
+        expect.objectContaining({ subjectRef: `${PLAN}#SPEC-2@1`, limit: 20 }),
+      ]),
+    );
+    expect(aggregate.adequacy).toMatchObject({ graded: 1, ungraded: 1, ungradedSpecIds: ['SPEC-2'] });
   });
 
   it('marks boundedness on the AGGREGATE, not only on the row list', async () => {

@@ -58,6 +58,11 @@ export interface DecisionClientOptions {
 export interface DecideOptions {
   /** Label recorded with the call, e.g. `memory-injection`. */
   readonly consumer?: string;
+  /**
+   * Where in the host the call was made, e.g. the injection port. Recorded with
+   * the call so one consumer's calls can be split by surface; never sent.
+   */
+  readonly surface?: string;
   /** Per-call deadline override (still bounded by nothing else — keep it small). */
   readonly timeoutMs?: number;
   /**
@@ -261,6 +266,7 @@ export function createDecisionClient(options: DecisionClientOptions): DecisionCl
         outcome,
         startedAt,
         consumer: decideOptions.consumer ?? null,
+        surface: decideOptions.surface ?? null,
         subjectIds: decideOptions.subjectIds ? [...decideOptions.subjectIds] : [],
       });
       return outcome as DecisionOutcome<QM>;

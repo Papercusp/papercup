@@ -78,6 +78,9 @@ class MemoryFilesystem implements WorkspaceHostSystem {
   async ensureDirectory(path: string): Promise<void> {
     this.directories.add(path);
   }
+  async ensureWorkspaceDirectory(path: string): Promise<void> {
+    this.directories.add(path);
+  }
   async writePrivateFile(path: string, bytes: Buffer): Promise<void> {
     this.writes += 1;
     this.files.set(path, Buffer.from(bytes));

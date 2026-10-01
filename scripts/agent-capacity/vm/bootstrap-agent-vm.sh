@@ -30,7 +30,16 @@
 # (/etc/codex/skills, ~/.agents/skills, ~/.codex/skills); `leave` keeps the as-shipped
 # behaviour, which is what the P-005 baseline VMs ran with.
 #
-# DRY_RUN=1 prints each command as `RUN <argv>` instead of running it (used by the test).
+# Codex runs every tool call inside bwrap (`--sandbox workspace-write`). Ubuntu 24.04 sets
+# kernel.apparmor_restrict_unprivileged_userns=1, which denies an unconfined bwrap the user
+# namespace it needs, so every Codex shell or apply_patch call fails ("bwrap: loopback: Failed
+# RTM_NEWADDR: Operation not permitted") while the session still exits 0 having done no work
+# (measured 2026-10-01, plan D-012, WI-10004618). The bubblewrap package alone does not fix
+# it; /usr/bin/bwrap also needs its own AppArmor profile granting `userns`. Both are installed
+# here, and the bring-up fails unless a sandboxed Codex write actually succeeds.
+#
+# DRY_RUN=1 prints each command as `RUN <argv>` instead of running it, and each written
+# file as `RUN write <path>` followed by its lines prefixed `FILE ` (used by the test).
 set -euo pipefail
 
 TASKS=${1:?usage: bootstrap-agent-vm.sh <tasks.json>}
@@ -49,6 +58,26 @@ esac
 run() {
   if [ "${DRY_RUN:-0}" = 1 ]; then printf 'RUN %s\n' "$*"; else "$@"; fi
 }
+
+# write_root_file <path> <content>: install a root-owned 0644 file.
+write_root_file() {
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    printf 'RUN write %s\n' "$1"
+    printf '%s' "$2" | sed 's/^/FILE /'
+  else
+    printf '%s' "$2" | sudo install -m 0644 -o root -g root /dev/stdin "$1"
+  fi
+}
+
+BWRAP_APPARMOR_PROFILE='abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}
+'
 
 # Validate the volume request before running anything, so a bad request changes nothing.
 mount_cache=0
@@ -92,7 +121,9 @@ xfs_packages=
 apt_opts=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=5)
 run sudo apt-get update -q "${apt_opts[@]}"
 # shellcheck disable=SC2046,SC2086 # word-splitting the package lists is intended
-run sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yq "${apt_opts[@]}" git curl ca-certificates xz-utils zstd build-essential python3 $xfs_packages $(system_packages)
+run sudo env DEBIAN_FRONTEND=noninteractive apt-get install -yq "${apt_opts[@]}" git curl ca-certificates xz-utils zstd build-essential python3 bubblewrap $xfs_packages $(system_packages)
+write_root_file /etc/apparmor.d/bwrap "$BWRAP_APPARMOR_PROFILE"
+run sudo apparmor_parser -r /etc/apparmor.d/bwrap
 
 if [ "$mount_cache" = 1 ]; then
   run mkdir -p "$CACHE"
@@ -141,6 +172,13 @@ if [ "${DRY_RUN:-0}" != 1 ]; then
   have_codex=$(codex --version)
   case "$have_claude" in "$CLAUDE_VERSION"*) ;; *) echo "BOOTSTRAP_FAILED claude is $have_claude, want $CLAUDE_VERSION" >&2; exit 4 ;; esac
   case "$have_codex" in *"$CODEX_VERSION") ;; *) echo "BOOTSTRAP_FAILED codex is $have_codex, want $CODEX_VERSION" >&2; exit 4 ;; esac
+  # Prove Codex's own sandbox can run a tool that writes, not just that bwrap is installed.
+  probe=$(mktemp -d)
+  sandbox_out=$(cd "$probe" && codex sandbox -c sandbox_mode=workspace-write -- bash -c 'echo sandbox-ok >probe && cat probe' 2>&1) || true
+  rm -rf "$probe"
+  [ "$sandbox_out" = sandbox-ok ] ||
+    { echo "BOOTSTRAP_FAILED codex sandbox cannot run a tool: $sandbox_out" >&2; exit 6; }
+  echo CODEX_SANDBOX_OK
 fi
 echo "CODEX_SKILL_ROOTS=$CODEX_SKILL_ROOTS"
 echo BOOTSTRAP_OK

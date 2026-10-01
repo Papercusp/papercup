@@ -1,0 +1,9 @@
+HTTP/1.1 401 Unauthorized
+cache-control: no-store
+content-type: application/json
+www-authenticate: Bearer resource_metadata="http://127.0.0.1:33700/.well-known/oauth-protected-resource/api/mcp", error="invalid_token", error_description="the access token is not valid (connected_app_invalid_key:revoked)"
+Content-Length: 156
+Date: Thu, 01 Oct 2026 05:44:13 GMT
+Connection: keep-alive
+Keep-Alive: timeout=61
+

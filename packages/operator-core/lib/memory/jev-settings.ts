@@ -40,8 +40,19 @@ export type JevMode = (typeof JEV_MODES)[number];
 /** Name of the Jev key in operator_integration_credentials. */
 export const JEV_API_KEY_NAME = 'TYPESAFE_API_KEY';
 
-/** Budget for one Jev call on the memory push path: an answer or a fallback within this. */
-export const JEV_MEMORY_TIMEOUT_MS = 400;
+/**
+ * The most one Jev call on the memory push path may take: an answer or a fallback
+ * within this. A port whose turn waits for the answer gets less when its hook's
+ * wall is closer (jev-memory-gate: jevMemoryWaitMs).
+ *
+ * Was 400 ms until WI-10004485 step C. Measured 2026-10-01 from quiet processes
+ * (no operator-worker stalls; ~600 answered calls in healthy-provider windows):
+ * 2.3% of answers took longer than 400 ms, 1 longer than 600 ms, the slowest 639 ms.
+ * So 400 ms alone failed the pre-registered <2% inconclusive bar before any stall;
+ * 800 ms clears every healthy-provider answer seen. Live Log-only traffic at 400 ms
+ * timed out 10.6% of calls, 4 in 10 of them worker stalls (EI-24748208098755918).
+ */
+export const JEV_MEMORY_TIMEOUT_MS = 800;
 
 /**
  * Token rates for the pinned Jev model, so every ledger row carries `cost_usd`.

@@ -2342,6 +2342,12 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           CLAUDE_CONFIG_DIR: claudeConfig,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          // Keep the injected carry-at-prompt attempt bounded for this proof
+          // test. Production defaults allow a 10-minute carry budget and a
+          // 3-minute busy-gate wait, longer than the test's observation window.
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '4000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '25',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
@@ -2369,7 +2375,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           systemPromptAddendum: 'deterministic carry',
         });
 
-        const outcomeDeadline = Date.now() + 5_000;
+        const outcomeDeadline = Date.now() + 10_000;
         let events: Array<Record<string, unknown>> = [];
         while (Date.now() < outcomeDeadline) {
           if (existsSync(eventLog)) {
@@ -2379,6 +2385,8 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
           await sleep(20);
         }
 
+        expect(events.filter((event) => event.kind === 'respawned').map((event) => event.capMs))
+          .toEqual([4_000, 4_000]);
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'respawn-carry-turn-start-retry',
           nativeId,
@@ -2414,7 +2422,7 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         rmSync(root, { recursive: true, force: true });
       }
     },
-    15_000,
+    20_000,
   );
 });
 

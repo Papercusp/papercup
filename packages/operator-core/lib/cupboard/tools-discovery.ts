@@ -241,14 +241,13 @@ export function schemaCallConstraintAnnotation(
     .map(({ path, constraint }) => {
       const firstPath = firstPathByConstraint.get(constraint);
       firstPathByConstraint.set(constraint, firstPath ?? path);
-      // Compact discovery has a hard result budget. Repeating a long
-      // validator-owned rule at an equivalent alias wastes that budget while
-      // hiding callable fields later in the schema. Keep every path visible,
-      // but reference the first full rule for repeated verbose constraints.
-      if (options.compact && firstPath && constraint.length >= 200) {
-        return `constraint:${path} (same as constraint:${firstPath})`;
-      }
-      return `constraint:${path} (${constraint})`;
+      const full = `constraint:${path} (${constraint})`;
+      const repeated = firstPath ? `constraint:${path} (same as constraint:${firstPath})` : '';
+      // Compact discovery has a hard result budget. Repeating a validator rule
+      // at an equivalent alias wastes that budget while hiding callable fields
+      // later in the schema. Keep every path visible, but use the reference
+      // whenever it is shorter than repeating the rule, regardless of length.
+      return options.compact && repeated && repeated.length < full.length ? repeated : full;
     })
     .join('; ');
 }

@@ -239,8 +239,10 @@ fn draw_overlays(f: &mut Frame, app: &App) {
 
     // A transient toast for the latest notification sits above the body but
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
+    // The mute covers notifications only: an acknowledgement of the owner's
+    // own key or drag (`toast_is_ack`) is always shown.
     if let Some(t) = &app.toast {
-        if app.notify_enabled
+        if (app.notify_enabled || app.toast_is_ack)
             && !app.show_tutorial
             && !app.show_help
             && !app.palette_open
@@ -7981,6 +7983,22 @@ mod tests {
         let text = render(&app, 90, 12);
         assert!(text.contains("Inbox (2)")); // badge unaffected by the mute
         assert!(!text.contains("Decide P-002")); // toast suppressed
+    }
+
+    #[test]
+    fn the_mute_hides_notifications_but_never_the_answer_to_your_own_action() {
+        // pui-chat-first-ux P-018: a default launch (notifications muted) must
+        // still confirm a drag-copy; before this, "Copied N characters" was set
+        // and never drawn.
+        let mut app = App::new();
+        assert!(!app.notify_enabled, "fixture: notifications muted by default");
+        app.chat_toast("info", "Copied 18 characters".to_string());
+        assert!(render(&app, 90, 12).contains("Copied 18 characters"));
+        // A notification replacing it is muted again.
+        app.push_notif(ui_notif("info", "build finished", None));
+        let text = render(&app, 90, 12);
+        assert!(!text.contains("build finished"), "{text}");
+        assert!(!text.contains("Copied 18 characters"), "{text}");
     }
 
     #[test]

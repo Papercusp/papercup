@@ -44,7 +44,7 @@ import { alreadySurfacedIds, currentSessionEpoch, stampSurfaced } from './sessio
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
 import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
-import { runJevMemoryGate } from './jev-memory-gate';
+import { JEV_MEMORY_RESPONSE_MARGIN_MS, runJevMemoryGate } from './jev-memory-gate';
 import { annotateSupersededMemory } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
 import {
@@ -84,6 +84,12 @@ const EPHEMERAL_SLUG_RE =
 export interface MemoryInjectionInput {
   /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
   deadline?: MemoryWorkDeadline;
+  /**
+   * Epoch ms after which the caller's client stops waiting for the response (a
+   * hook's wall, measured from when the request arrived). Jev waits only for what
+   * is left of it (jev-memory-gate: jevMemoryWaitMs). Absent: no client wall.
+   */
+  respondByMs?: number;
   /**
    * Per-user memory scope. Omit (or pass null) on workspace-bearer
    * routes that don't have a session user — the helper will then
@@ -1639,8 +1645,14 @@ async function buildBlockInner(
           workspaceId: input.workspaceId,
           message: queryText,
           candidates: pooled.map((hit) => ({ id: hit.id, text: hit.text })),
-          // On waits only where the port's wall can afford it (JEV_MEMORY_NO_WAIT_PORTS).
+          // On waits only where the port's wall can afford it (JEV_MEMORY_NO_WAIT_PORTS),
+          // and only for what is left of that wall (jevMemoryWaitMs).
           ...(input.session?.port ? { port: input.session.port } : {}),
+          ...(input.respondByMs !== undefined
+            ? { budgetMs: input.respondByMs - Date.now() - JEV_MEMORY_RESPONSE_MARGIN_MS }
+            : {}),
+          // The same label memory_recall_stats.surface records for this recall.
+          surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
         }), 'admission');
         if (verdict.effective === 'on' && verdict.outcome === 'answered') {
           const drop = new Set(pooled.filter((_, i) => verdict.keep[i] === false));

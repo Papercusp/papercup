@@ -52,6 +52,7 @@ function record(outcome: DecisionOutcome, over: Partial<DecisionCallRecord> = {}
     outcome,
     startedAt: new Date('2026-09-30T02:00:00.000Z'),
     consumer: 'memory-injection',
+    surface: null,
     subjectIds: ['mem-1', 'mem-2'],
     ...over,
   };

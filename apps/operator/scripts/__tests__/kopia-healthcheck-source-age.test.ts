@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-const SOURCE_SCRIPT = resolve(__dirname, '../systemd/kopia-healthcheck.sh');
+// Overridable so falsifiability can be proven against a COPY outside the tree
+// (scripts/mutation-probe.sh copy-out mode), never by mutating the shared checkout.
+const SOURCE_SCRIPT =
+  process.env.KOPIA_HEALTHCHECK_SCRIPT ?? resolve(__dirname, '../systemd/kopia-healthcheck.sh');
 const CACHE_BOOTSTRAP = resolve(__dirname, '../systemd/kopia-cache-bootstrap.sh');
 const tempDirs: string[] = [];
 
@@ -38,7 +41,7 @@ function sourceBlock(source: string, time: string): string[] {
   ];
 }
 
-function runHealthcheck(dumpSnapshotAgeSeconds: number) {
+function runHealthcheck(dumpSnapshotAgeSeconds: number, status: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
 
@@ -60,7 +63,7 @@ function runHealthcheck(dumpSnapshotAgeSeconds: number) {
   const now = Math.floor(Date.now() / 1000);
   writeFileSync(
     join(dumpDir, 'STATUS.json'),
-    JSON.stringify({ lastSuccessEpoch: now - 10 * 60 }),
+    JSON.stringify({ lastSuccessEpoch: now - 10 * 60, ...status }, null, 2),
   );
 
   const unrelated = join(root, 'unrelated-source');
@@ -155,5 +158,44 @@ describe('Kopia healthcheck dump-source recency', () => {
     expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
     expect(run.log).toContain('OK: dump ');
     expect(run.alertLog).toBe('');
+  });
+});
+
+describe('Kopia healthcheck dump duty cycle (WI-10004603)', () => {
+  // Every run in this regime SUCCEEDS and the dump stays fresh, so no freshness
+  // check can see it: the only signal is how long the last run took against the
+  // hourly timer period. 3397 s is the run measured on 2026-10-01.
+  it('fails when the last dump run took most of its hourly period, even though the dump is fresh', () => {
+    const run = runHealthcheck(10 * 60, { elapsedSec: 3397, periodSec: 3600 });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('Postgres dump run is near-continuous');
+    expect(run.log).not.toContain('OK: dump ');
+  });
+
+  it('stays green when the last dump run left headroom in the hour', () => {
+    const run = runHealthcheck(10 * 60, { elapsedSec: 1800, periodSec: 3600 });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
+
+  it('does not judge a status written by a producer without the cadence lever (no periodSec)', () => {
+    // The first runs after deploy still carry the old producer's 3397 s; paging on
+    // them would page about a condition the next run already addresses.
+    const run = runHealthcheck(10 * 60, { elapsedSec: 3397 });
+
+    expect(run.result.status, [run.result.stdout, run.result.stderr, run.log].join('\n')).toBe(0);
+    expect(run.log).toContain('OK: dump ');
+  });
+
+  it('does not let a duty-cycle warning hide a stale dump source (the duty check runs last)', () => {
+    const run = runHealthcheck(3 * 60 * 60, { elapsedSec: 3397, periodSec: 3600 });
+    const evidence = [run.result.stdout, run.result.stderr, run.log].join('\n');
+
+    expect(run.result.status, evidence).toBe(1);
+    expect(evidence).toContain('Postgres dump source snapshot is STALE');
+    expect(evidence).not.toContain('near-continuous');
   });
 });

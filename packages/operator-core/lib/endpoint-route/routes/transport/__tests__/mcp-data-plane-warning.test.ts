@@ -63,6 +63,38 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it.each([
+    ['facts:list', { ok: true, mode: 'key', found: true, count: 1, facts: [{ key: 'guard-rail:example' }] }],
+    ['tools:find', { ok: true, hits: [{ tool: 'facts:list' }] }],
+  ])('does not warn for populated %s result arrays', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('keeps the proxy degradation warning on an empty facts:list key lookup', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ ok: true, mode: 'key', key: 'guard-rail:absent', found: false, count: 0, facts: [] }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-09-04T20:00:00.000Z') }),
+    );
+
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('does not add the proxy degradation warning to a populated TOON bulk result', () => {
     const body = {
       ok: true,

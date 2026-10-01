@@ -29,6 +29,18 @@ const OUTSIDER = `su-outsider-${RUN}`;
 const OWNERS = [HOLDER, LEADER, MEMBER, OUTSIDER];
 let fx: BaselineCoordFixture;
 
+async function writeFixturePlan(status = 'ready', items = '- **P-001** `wip` Implement the outcome') {
+  const body = `---\ntitle: Productive plan\nslug: ${PLAN}\nstatus: ${status}\n---\n\n## Build\n\n${items}\n`;
+  await seedPlan(fx.admin, WS, HARNESS, PLAN, body);
+  const idx = deriveIndexFromContent(body);
+  await fx.admin.begin(async (tx) => {
+    await tx`UPDATE harness_shared.harness_plans SET title = ${idx.title}, status = ${idx.status}
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    await writePlanIndexRows(tx as unknown as Parameters<typeof writePlanIndexRows>[0],
+      { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN }, idx);
+  });
+}
+
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   await insertGoalRow(fx.admin, { id: GOAL, workspaceId: WS, installSlug: 'papercusp',
@@ -37,14 +49,8 @@ beforeAll(async () => {
   expect((await setMode({ workspaceId: WS, ownerId: HOLDER, modeId: 'goal', subject: GOAL,
     enabled: true, reason: 'P003 isolated PG claim proof', setBy: HOLDER, sql: fx.admin })).ok).toBe(true);
   // Lifecycle eligibility is an explicit fixture input; this does not attest plan activation.
-  const body = `---\ntitle: Productive plan\nslug: ${PLAN}\nstatus: ready\n---\n\n## Build\n\n- **P-001** \`wip\` Implement the outcome\n`;
-  await seedPlan(fx.admin, WS, HARNESS, PLAN, body);
-  const idx = deriveIndexFromContent(body);
+  await writeFixturePlan();
   await fx.admin.begin(async (tx) => {
-    await tx`UPDATE harness_shared.harness_plans SET title = ${idx.title}, status = ${idx.status}
-      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
-    await writePlanIndexRows(tx as unknown as Parameters<typeof writePlanIndexRows>[0],
-      { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN }, idx);
     const written = await applyGoalPropertyWrite(tx as unknown as typeof fx.admin, {
       workspaceId: WS, goalId: GOAL, property: 'worklist', value: [`plan:${HARNESS}/${PLAN}`],
       expectedVersion: 0, actorId: HOLDER, provenance: 'agent-edit',
@@ -54,6 +60,7 @@ beforeAll(async () => {
 }, 150_000);
 
 beforeEach(async () => {
+  await writeFixturePlan();
   for (const ownerId of OWNERS) await heartbeatPresence({ ownerId, ownerLabel: ownerId,
     source: 'omp-hook-session', workspaceId: WS, userId: null });
   expect((await createFleetIfAbsent({ workspaceId: WS, fleetSlug: FLEET,
@@ -123,6 +130,29 @@ async function placement() {
   expect(p!.worklist).toHaveLength(1);
   return p!.worklist[0]!.placement;
 }
+
+describe('canonical plan lifecycle blocker receipts', () => {
+  it('refuses a persisted draft even with a dependency-free todo item', async () => {
+    await writeFixturePlan('draft', '- **P-001** `todo` Implement the outcome');
+    expect(await placement()).toMatchObject({ state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers', toolCall: null } });
+    expect((await placement()).reconciliation.reason).toMatch(/draft.*cannot launch/i);
+  });
+  it('names the dependency blocker without opening a launch transaction', async () => {
+    await writeFixturePlan('ready', '- **P-001** `todo` First (blocked-by: P-002)\n- **P-002** `todo` Second (blocked-by: P-001)');
+    await fx.admin`DELETE FROM harness_shared.agent_fleets WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
+    expect(await placement()).toMatchObject({ state: 'blocked', launchTransaction: null,
+      reconciliation: { action: 'resolve-plan-blockers', toolCall: null } });
+    expect((await placement()).reconciliation.reason).toMatch(/dependency-free todo/i);
+  });
+  it('emits the existing plan-fleet launch call for the persisted eligible control', async () => {
+    await writeFixturePlan('ready', '- **P-001** `todo` Implement the outcome');
+    await fx.admin`DELETE FROM harness_shared.agent_fleets WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
+    expect(await placement()).toMatchObject({ state: 'unplaced', launchTransaction: null,
+      reconciliation: { action: 'launch-plan-fleet',
+        toolCall: { tool: 'fleet:launch-on-plan', args: { plan: PLAN, harness: HARNESS, leader: 'spawn' } } } });
+  });
+});
 
 describe('canonical delegated-member claim receipt', () => {
   it('keeps a verified launch without a member claim admitting and preserves the one fleet', async () => {

@@ -18,6 +18,73 @@ function compile(source: Record<string, unknown> = {}) {
     source: { claims: [lane], fleet, goalHolderOwnerIds: ['su-goal'], ...source } });
 }
 
+const lifecycleScenarios = [
+  'draft-refusal', 'dependency-blocker', 'eligible-control',
+  'shipped-without-closure', 'satisfied-closure',
+] as const;
+type LifecycleScenario = typeof lifecycleScenarios[number];
+const lifecycleControl = process.env.PAPERCUSP_PLACEMENT_LIFECYCLE_CONTROL;
+if (lifecycleControl && !lifecycleScenarios.includes(lifecycleControl as LifecycleScenario)) {
+  throw new Error(`Unknown permanent placement lifecycle control: ${lifecycleControl}`);
+}
+const satisfiedClosure = {
+  state: 'closed' as const, evidenceSatisfied: true, reason: 'acceptance satisfied',
+  legs: { terminalEvidence: 'pass' as const, verificationReadBack: 'pass' as const,
+    independentRegrade: 'pass' as const, measuredReport: 'pass' as const },
+};
+function lifecyclePlacement(scenario: LifecycleScenario, wrong = false) {
+  const shipped = scenario === 'shipped-without-closure' || scenario === 'satisfied-closure';
+  const args: Parameters<typeof subject.compileGoalPlanPlacement>[0] = {
+    plan: { harness: 'fixture', slug: 'alpha', ambiguousMatches: 1 },
+    status: shipped ? 'shipped' : scenario === 'draft-refusal' ? 'draft' : 'active',
+    itemStatuses: shipped ? ['done'] : ['todo'],
+    actionableItemId: shipped || scenario === 'dependency-blocker' ? null : 'P-001',
+    source: {}, now: NOW,
+    closure: scenario === 'satisfied-closure' ? satisfiedClosure : null,
+  };
+  // Permanent wrong implementations exercise one acceptance failure each;
+  // neither the production module nor the shared tree is mutated for a probe.
+  if (wrong) {
+    if (scenario === 'draft-refusal') args.status = 'active';
+    if (scenario === 'dependency-blocker') args.actionableItemId = 'P-001';
+    if (scenario === 'eligible-control') args.actionableItemId = null;
+    if (scenario === 'shipped-without-closure') args.closure = satisfiedClosure;
+    if (scenario === 'satisfied-closure') args.closure = null;
+  }
+  return subject.compileGoalPlanPlacement(args);
+}
+
+describe('placement lifecycle causal contracts (WI-1074216)', () => {
+  it('placement calibration: unresolved plan identity never launches', () => {
+    expect(subject.compileGoalPlanPlacement({
+      plan: { harness: null, slug: 'alpha', ambiguousMatches: 1 },
+      status: 'active', itemStatuses: ['todo'], actionableItemId: 'P-001', source: {}, now: NOW,
+    })).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-identity', toolCall: null } });
+  });
+  it.each(lifecycleScenarios)('repaired placement contract: %s', (scenario) => {
+    const row = lifecyclePlacement(scenario, lifecycleControl === scenario);
+    if (scenario === 'eligible-control') {
+      expect(row, `placement-contract:${scenario}`).toMatchObject({
+        state: 'unplaced', reconciliation: { action: 'launch-plan-fleet', consistent: false,
+          toolCall: { tool: 'fleet:launch-on-plan', args: { plan: 'alpha' } } },
+      });
+    } else if (scenario === 'satisfied-closure') {
+      expect(row, `placement-contract:${scenario}`).toMatchObject({
+        state: 'terminal', reconciliation: { action: 'none', consistent: true, toolCall: null },
+      });
+    } else if (scenario === 'shipped-without-closure') {
+      expect(row, `placement-contract:${scenario}`).toMatchObject({
+        state: 'awaiting-closure', reconciliation: { action: 'close-plan', consistent: false, toolCall: null },
+      });
+    } else {
+      expect(row, `placement-contract:${scenario}`).toMatchObject({
+        state: 'blocked', reconciliation: { action: 'resolve-plan-blockers', consistent: false, toolCall: null },
+      });
+      expect(row.reconciliation.reason).toMatch(scenario === 'draft-refusal' ? /draft.*cannot launch/i : /dependency-free todo/i);
+    }
+  });
+});
+
 describe('actual delegated plan-member pickup', () => {
   it('recognizes a live member with matching work-item and TTL plan lease in a positively scoped independent fleet', () => {
     expect(compile()).toMatchObject({ state: 'working', reconciliation: { action: 'none', consistent: true } });

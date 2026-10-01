@@ -3245,10 +3245,35 @@ export const PG_READ_QUERY_CALL_OVERHEAD_MS = 3000;
  * the timer wins, so a late resolution/rejection is a no-op (resolve/reject
  * only takes effect once) rather than an unhandled rejection.
  */
-export function withCallDeadline<T>(work: Promise<T>, deadlineMs: number, timeoutMessage: string): Promise<T> {
+export function withCallDeadline<T>(
+  work: Promise<T> | ((assertActive: () => void) => Promise<T>),
+  deadlineMs: number,
+  timeoutMessage: string,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new PgReadQueryTimeoutError(timeoutMessage)), deadlineMs);
-    work.then(
+    const timeoutError = new PgReadQueryTimeoutError(timeoutMessage);
+    const expiresAt = performance.now() + deadlineMs;
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      reject(timeoutError);
+    }, deadlineMs);
+    // A deadline settles the caller but cannot cancel postgres-js acquisition.
+    // Factory callers check this before each new statement so a late connection
+    // or completed prerequisite cannot start abandoned diagnostic work. The
+    // monotonic check also covers a delayed timer under event-loop stalls.
+    const assertActive = () => {
+      if (expired || performance.now() >= expiresAt) throw timeoutError;
+    };
+    let pending: Promise<T>;
+    try {
+      pending = typeof work === 'function' ? work(assertActive) : work;
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+      return;
+    }
+    pending.then(
       (v) => {
         clearTimeout(timer);
         resolve(v);
@@ -3762,22 +3787,29 @@ export async function pgReadQuery(
   let rows: Record<string, unknown>[] = [];
   let positiveControlRows: Record<string, unknown>[] | null = null;
   const callDeadlineMs = timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
-  const work = sql.begin(async (tx) => {
+  const work = (assertActive: () => void) => sql.begin(async (tx) => {
+    assertActive();
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
+    assertActive();
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    assertActive();
     await tx.unsafe(SET_LOCAL_UTC);
+    assertActive();
     if (usePerTransactionOrgSearchPath) {
       await tx.unsafe(SET_LOCAL_ORG_SEARCH_PATH);
     }
+    assertActive();
     if (positiveControlQuery) {
       positiveControlRows = (await tx.unsafe(
         `SELECT * FROM (${positiveControlQuery}) AS _pgq_positive_control LIMIT 2`,
       )) as unknown as Record<string, unknown>[];
     }
+    assertActive();
     const resultRows = (await tx.unsafe(
       isExplain ? query : `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
     )) as unknown as Record<string, unknown>[];
+    assertActive();
     // EXPLAIN returns its plan as rows and cannot itself be wrapped in the
     // SELECT * / LIMIT shape above. Keep the same response cap at this seam;
     // the transaction timeout still bounds plan generation.
@@ -3835,12 +3867,17 @@ export async function explainReadQuery(
   const sql = opts.client ?? getOrgPg().sql;
   const callDeadlineMs = timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
   try {
-    const work = sql.begin(async (tx) => {
+    const work = (assertActive: () => void) => sql.begin(async (tx) => {
+      assertActive();
       await tx.unsafe('SET TRANSACTION READ ONLY');
+      assertActive();
       await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+      assertActive();
       // Same TZ pin as pgReadQuery so a query VALIDATES under the session it will RUN under.
       await tx.unsafe(SET_LOCAL_UTC);
+      assertActive();
       await tx.unsafe(`EXPLAIN (COSTS OFF) ${query}`);
+      assertActive();
     });
     // Bound the WHOLE call the same way pgReadQuery does — see withCallDeadline's doc.
     await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));

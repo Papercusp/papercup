@@ -148,6 +148,9 @@ const jev = vi.hoisted(() => ({
   clientBuilt: 0,
 }));
 vi.mock('./jev-settings', () => ({
+  // jev-memory-gate imports the cap from here; a mock without it throws inside the
+  // gate, which the injection path swallows as "no Jev call" (WI-10004485).
+  JEV_MEMORY_TIMEOUT_MS: 800,
   getJevMode: vi.fn(async () => jev.mode),
   resolveJevMemoryInjection: vi.fn(async () => ({ mode: jev.mode, keyPresent: jev.mode !== 'off', effective: jev.mode })),
   ensureJevDecisionClient: vi.fn(() => {

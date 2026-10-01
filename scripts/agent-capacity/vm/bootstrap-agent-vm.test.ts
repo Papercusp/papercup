@@ -133,6 +133,24 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     expect(lines.slice(-2)).toEqual(['CODEX_SKILL_ROOTS=create', 'BOOTSTRAP_OK']);
   });
 
+  // Plan D-012 / WI-10004618: on Ubuntu 24.04 (apparmor_restrict_unprivileged_userns=1) an
+  // unconfined bwrap gets no user namespace, so every Codex tool call fails silently. bubblewrap
+  // alone did not fix it on the P-005 VMs; the profile granting `userns` did.
+  it('installs bubblewrap and loads an AppArmor profile granting /usr/bin/bwrap user namespaces, after apt', () => {
+    const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
+    expect(r.status).toBe(0);
+    const lines = r.stdout.split('\n');
+    const install = lines.findIndex((l) => l.startsWith('RUN ') && l.includes('apt-get install'));
+    expect(lines[install].split(' ')).toContain('bubblewrap');
+    const write = lines.indexOf('RUN write /etc/apparmor.d/bwrap');
+    expect(write).toBeGreaterThan(install);
+    const profile = lines.slice(write + 1).filter((l, i, all) => all.slice(0, i + 1).every((x) => x.startsWith('FILE '))).map((l) => l.slice(5));
+    expect(profile).toContain('profile bwrap /usr/bin/bwrap flags=(unconfined) {');
+    expect(profile.map((l) => l.trim())).toContain('userns,');
+    expect(profile.at(-1)).toBe('}');
+    expect(lines.indexOf('RUN sudo apparmor_parser -r /etc/apparmor.d/bwrap')).toBe(write + 1 + profile.length);
+  });
+
   it('CODEX_SKILL_ROOTS=leave keeps the as-shipped baseline, and a bad value is refused before anything runs', () => {
     const leave = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', CODEX_SKILL_ROOTS: 'leave' });
     expect(leave.status).toBe(0);

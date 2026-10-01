@@ -31,7 +31,13 @@ import { JEV_PINNED_MODEL, type DecisionClient } from '@papercusp/decision-model
 import { getOperatorCache } from '../cache/instance';
 import { activeWorkspaceId } from '../workspace-registry';
 import { judgeAdmission, type AdmissionDecide, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
-import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
+import {
+  ensureJevDecisionClient,
+  getJevMode,
+  JEV_MEMORY_TIMEOUT_MS,
+  resolveJevMemoryInjection,
+  type JevMemoryInjectionResolution,
+} from './jev-settings';
 
 /** The ledger consumer label for push-path calls (the bench uses `memory-bench`). */
 export const JEV_MEMORY_CONSUMER = 'memory-injection';
@@ -65,6 +71,36 @@ export const JEV_MEMORY_VARIANT: AdmissionVariant = 'v2-content';
  * in-process timeouts (EI-24748208098755918) are fixed.
  */
 export const JEV_MEMORY_NO_WAIT_PORTS: ReadonlySet<string> = new Set(['mid-turn']);
+
+/**
+ * Below this a port that would wait for Jev does not (it runs Log only for that
+ * call). Jev's answered median from a quiet process was 178-258 ms on 2026-10-01,
+ * so a shorter wait would mostly time out and only add latency (WI-10004485).
+ */
+export const JEV_MEMORY_MIN_WAIT_MS = 150;
+
+/**
+ * What a caller keeps back from its client's wall for the work after Jev answers
+ * (filter, render, last-surfaced stamp, response) and for slack. The slow-recall
+ * log measured that tail (`postMs`) at tens of ms; the rest is margin for worker
+ * stalls, which ran to 1-2 s on 2026-10-01 (EI-24748208098755918). [inferred]
+ */
+export const JEV_MEMORY_RESPONSE_MARGIN_MS = 250;
+
+/**
+ * How long a port that waits for Jev may wait, given the time its caller can still
+ * use (`budgetMs`, already net of {@link JEV_MEMORY_RESPONSE_MARGIN_MS}): the full
+ * {@link JEV_MEMORY_TIMEOUT_MS} when there is no wall, otherwise whatever is left of
+ * it up to that cap. `null` when less than {@link JEV_MEMORY_MIN_WAIT_MS} is left:
+ * a wait that long would push the whole memory block past the client's wall,
+ * which loses more than the filter gains. A fixed longer bound was rejected for
+ * that reason: a fifth of recalls already took over 1.5 s before any Jev wait.
+ */
+export function jevMemoryWaitMs(budgetMs: number | undefined): number | null {
+  if (budgetMs === undefined || Number.isNaN(budgetMs)) return JEV_MEMORY_TIMEOUT_MS;
+  const bound = Math.min(JEV_MEMORY_TIMEOUT_MS, Math.floor(budgetMs));
+  return bound >= JEV_MEMORY_MIN_WAIT_MS ? bound : null;
+}
 
 /**
  * How long a Jev answer is reused for an exact repeat (WI-10004485). Measured on
@@ -171,6 +207,18 @@ export interface JevMemoryGateInput {
    * owner's On runs as Log only.
    */
   readonly port?: string;
+  /**
+   * Recorded with every call as decision_model_calls.surface, so one consumer's
+   * calls split by where they came from. Callers pass the same label they record
+   * as memory_recall_stats.surface. Absent: recorded as NULL (unattributed).
+   */
+  readonly surface?: string;
+  /**
+   * Milliseconds the caller can still use for the answer, already net of
+   * {@link JEV_MEMORY_RESPONSE_MARGIN_MS}. Absent: no wall, the full
+   * {@link JEV_MEMORY_TIMEOUT_MS}. See {@link jevMemoryWaitMs}.
+   */
+  readonly budgetMs?: number;
 }
 
 export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemoryGateDeps = defaultDeps): Promise<JevMemoryGateResult> {
@@ -184,7 +232,14 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
     return { effective: 'off' };
   }
   if (effective === 'off') return { effective: 'off' };
-  if (effective === 'on' && input.port !== undefined && JEV_MEMORY_NO_WAIT_PORTS.has(input.port)) effective = 'shadow';
+  const noWaitPort = input.port !== undefined && JEV_MEMORY_NO_WAIT_PORTS.has(input.port);
+  const waitMs = noWaitPort ? null : jevMemoryWaitMs(input.budgetMs);
+  if (effective === 'on' && waitMs === null) effective = 'shadow';
+  // The bound each request runs under. Where the turn would wait, the wait On would
+  // use, so Log only measures the timeout rate On would see. Where nothing waits,
+  // the full cap: a longer bound costs no latency there, and the ledger then
+  // records Jev's real answer instead of a timeout.
+  const timeoutMs = waitMs ?? JEV_MEMORY_TIMEOUT_MS;
 
   const candidates = input.candidates.filter((c) => c.text.trim().length > 0);
   if (candidates.length === 0 || !input.message.trim()) {
@@ -194,7 +249,12 @@ export async function runJevMemoryGate(input: JevMemoryGateInput, deps: JevMemor
   const consumer = input.consumer ?? JEV_MEMORY_CONSUMER;
   // Each request is ledgered against the memories it judges (all of them, or one under `pair`).
   const decide: AdmissionDecide = (request, call) =>
-    deps.client().decide(request, { consumer, subjectIds: call.candidates.map((ci) => candidates[ci].id) });
+    deps.client().decide(request, {
+      consumer,
+      timeoutMs,
+      ...(input.surface ? { surface: input.surface } : {}),
+      subjectIds: call.candidates.map((ci) => candidates[ci].id),
+    });
   const ask = async (): Promise<JevCachedAnswer> => {
     const judgement = await judgeAdmission(input.message, candidates, JEV_MEMORY_ENCODING, JEV_MEMORY_VARIANT, decide);
     const p = judgement.result;

@@ -2449,6 +2449,13 @@ pub struct App {
     /// Inbox badge (`unseen_notifs`) + the `N` history overlay (`notifs`) are
     /// independent of this and always stay live, so no message is ever lost.
     pub notify_enabled: bool,
+    /// True while `toast` acknowledges the owner's OWN action ("Copied 18
+    /// characters", an unknown slash command, a failed clipboard write), set
+    /// only through `chat_toast`. The `notify_enabled` mute is for operator
+    /// NOTIFICATIONS (`push_notif`, which clears this); it must never hide the
+    /// answer to a key or drag the owner just made — pui-chat-first-ux P-018
+    /// found drag-copy silently unconfirmed in a default launch.
+    pub toast_is_ack: bool,
     /// Fleet "no reachable session" action menu (pui-workbench-usability D-002).
     /// `Some` while Enter on an unreachable agent has surfaced the `[r]/[n]/[f]`
     /// choices; the next `r`/`n`/`f`/Esc closes it. Captures keys while open.
@@ -3012,6 +3019,7 @@ impl App {
             unseen_notifs: 0,
             notif_seq: 0,
             notify_enabled: false,
+            toast_is_ack: false,
             fleet_action_menu: None,
             crew_restore_prompt: None,
             wake_review: None,
@@ -3709,22 +3717,12 @@ impl App {
     fn apply_copy_outcome(&mut self, outcome: crate::chat_copy::CopyOutcome) -> Action {
         match outcome {
             crate::chat_copy::CopyOutcome::Copied { sequence, ack, .. } => {
-                self.toast = Some(Notif {
-                    level: "info".to_string(),
-                    message: ack,
-                    harness: None,
-                    ts: None,
-                });
+                self.chat_toast("info", ack);
                 Action::CopyToClipboard { sequence }
             }
             crate::chat_copy::CopyOutcome::Unavailable { ack }
             | crate::chat_copy::CopyOutcome::NoSelection { ack } => {
-                self.toast = Some(Notif {
-                    level: "warn".to_string(),
-                    message: ack,
-                    harness: None,
-                    ts: None,
-                });
+                self.chat_toast("warn", ack);
                 Action::Render
             }
         }
@@ -4790,13 +4788,16 @@ impl App {
         self.chat_leave_history_for_edit();
     }
 
-    fn chat_toast(&mut self, level: &str, message: String) {
+    /// Acknowledge the owner's own action. Shown even while notifications are
+    /// muted (see `toast_is_ack`).
+    pub(crate) fn chat_toast(&mut self, level: &str, message: String) {
         self.toast = Some(Notif {
             level: level.to_string(),
             message,
             harness: None,
             ts: None,
         });
+        self.toast_is_ack = true;
     }
 
     /// Run the composer's `/` command (pui-chat-first-ux P-004). Every command
@@ -5358,14 +5359,11 @@ impl App {
             return false;
         }
         self.tab = Tab::Operator;
-        self.toast = Some(Notif {
-            level: "info".to_string(),
-            message:
-                "This is a single chat. Boards (plans, fleet, inbox) open with `pui workbench`."
-                    .to_string(),
-            harness: None,
-            ts: None,
-        });
+        self.chat_toast(
+            "info",
+            "This is a single chat. Boards (plans, fleet, inbox) open with `pui workbench`."
+                .to_string(),
+        );
         true
     }
 
@@ -5671,6 +5669,7 @@ impl App {
     pub fn push_notif(&mut self, n: Notif) {
         if !Self::is_escalation_level(&n.level) {
             self.toast = Some(n.clone());
+            self.toast_is_ack = false;
             self.notif_seq += 1;
         }
         self.notifs.insert(0, n);

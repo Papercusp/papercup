@@ -8,6 +8,11 @@ import {
   GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
   GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS,
   GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT,
+  GOAL_DRAIN_RELAUNCH_SPEND_CEILING,
+  DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX,
+  drainWorkerThrottleFactKey,
+  goalSpendFraction,
+  parseCentsColumn,
   claimSpecFilterConstrainsGoal,
   claimSpecIsGoalScoped,
   classifyDelegatedDrainFleetLiveness,
@@ -932,6 +937,101 @@ describe('goalDrainRelaunchEligibility (pure gate)', () => {
       goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true } }),
     ).toEqual({ eligible: false, why: 'needs-human' });
   });
+
+  // WI-10004623: the relaunch leg is spend-aware.
+  it('GUARD: a goal at/over the spend ceiling is NOT eligible (spend-ceiling), below it still is', () => {
+    const standing = { standing: true, drainRespawn: null } as const;
+    const atCeiling = { ...standing, spentCents: GOAL_DRAIN_RELAUNCH_SPEND_CEILING * 50_000, budgetCents: 50_000 };
+    expect(goalDrainRelaunchEligibility(dead, atCeiling)).toEqual({ eligible: false, why: 'spend-ceiling' });
+    expect(goalDrainRelaunchEligibility(dead, { ...standing, spentCents: 50_000, budgetCents: 50_000 })).toEqual({
+      eligible: false,
+      why: 'spend-ceiling',
+    });
+    // positive control: the same goal one cent under the ceiling is eligible, so the gate is the ONLY difference
+    expect(goalDrainRelaunchEligibility(dead, { ...atCeiling, spentCents: atCeiling.spentCents - 1 })).toEqual({
+      eligible: true,
+    });
+    expect(goalDrainRelaunchEligibility(dead, { ...standing, spentCents: 36_628, budgetCents: 50_000 })).toEqual({
+      eligible: true,
+    });
+  });
+  it('unmeasured spend or no budget fails OPEN (cannot tell is never read as over-ceiling)', () => {
+    const standing = { standing: true, drainRespawn: null } as const;
+    for (const spend of [
+      { spentCents: null, budgetCents: 50_000 },
+      { spentCents: 49_999, budgetCents: null },
+      { spentCents: 49_999, budgetCents: 0 },
+      { spentCents: Number.NaN, budgetCents: 50_000 },
+      {},
+    ]) {
+      expect(goalDrainRelaunchEligibility(dead, { ...standing, ...spend })).toEqual({ eligible: true });
+    }
+  });
+  it('a non-relaunchable reason or a non-standing goal wins over the spend verdict (ordering of whys is stable)', () => {
+    const over = { spentCents: 50_000, budgetCents: 50_000 };
+    expect(goalDrainRelaunchEligibility({ reason: 'no-drain-fleet-declared' }, { standing: true, drainRespawn: null, ...over })).toMatchObject({
+      why: 'reason-not-relaunchable',
+    });
+    expect(goalDrainRelaunchEligibility(dead, { standing: false, drainRespawn: null, ...over })).toMatchObject({ why: 'not-standing' });
+    expect(
+      goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true }, ...over }),
+    ).toMatchObject({ why: 'needs-human' });
+  });
+
+  // WI-10004626: the steward's worker-throttle mark (a live drain-worker-throttle:<goalId> fact).
+  it('GUARD: a throttled standing goal is NOT eligible (steward-throttle); the same goal un-throttled is', () => {
+    const standing = { standing: true, drainRespawn: null } as const;
+    expect(goalDrainRelaunchEligibility(dead, { ...standing, workerThrottled: true })).toEqual({
+      eligible: false,
+      why: 'steward-throttle',
+    });
+    // positive controls: absent and explicit false are both eligible, so the mark is the ONLY difference
+    expect(goalDrainRelaunchEligibility(dead, { ...standing, workerThrottled: false })).toEqual({ eligible: true });
+    expect(goalDrainRelaunchEligibility(dead, standing)).toEqual({ eligible: true });
+    // a truthy-but-not-true value is not a mark (strict === true)
+    expect(goalDrainRelaunchEligibility(dead, { ...standing, workerThrottled: 1 as unknown as boolean })).toEqual({
+      eligible: true,
+    });
+  });
+  it('steward intent outranks the spend heuristic, but never outranks reason / not-standing / needs-human', () => {
+    const over = { spentCents: 50_000, budgetCents: 50_000, workerThrottled: true };
+    expect(goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: null, ...over })).toMatchObject({
+      why: 'steward-throttle',
+    });
+    expect(
+      goalDrainRelaunchEligibility({ reason: 'no-drain-fleet-declared' }, { standing: true, drainRespawn: null, ...over }),
+    ).toMatchObject({ why: 'reason-not-relaunchable' });
+    expect(goalDrainRelaunchEligibility(dead, { standing: false, drainRespawn: null, ...over })).toMatchObject({
+      why: 'not-standing',
+    });
+    expect(
+      goalDrainRelaunchEligibility(dead, { standing: true, drainRespawn: { deadSinceMs: 1, needsHuman: true }, ...over }),
+    ).toMatchObject({ why: 'needs-human' });
+  });
+  it('the throttle fact key is the documented prefix + goal id (the steward writes this exact key)', () => {
+    expect(DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX).toBe('drain-worker-throttle:');
+    expect(drainWorkerThrottleFactKey('work-on-everything-fresh-grading-and-improvement-60d3a8')).toBe(
+      'drain-worker-throttle:work-on-everything-fresh-grading-and-improvement-60d3a8',
+    );
+  });
+});
+
+describe('goalSpendFraction / parseCentsColumn (pure)', () => {
+  it('is spent/budget, null when either side is unmeasured or the budget is not positive', () => {
+    expect(goalSpendFraction({ spentCents: 36_628, budgetCents: 50_000 })).toBeCloseTo(0.73256, 5);
+    expect(goalSpendFraction({ spentCents: 0, budgetCents: 100 })).toBe(0);
+    expect(goalSpendFraction({ spentCents: -1, budgetCents: 100 })).toBeNull();
+    expect(goalSpendFraction({ spentCents: 10, budgetCents: -5 })).toBeNull();
+    expect(goalSpendFraction({})).toBeNull();
+  });
+  it('parseCentsColumn never coerces junk, blanks or null to 0', () => {
+    expect(parseCentsColumn('36628')).toBe(36_628);
+    expect(parseCentsColumn(36_628)).toBe(36_628);
+    expect(parseCentsColumn('0')).toBe(0);
+    for (const junk of [null, undefined, '', '   ', 'abc', Number.NaN, 'Infinity']) {
+      expect(parseCentsColumn(junk as string | number | null | undefined)).toBeNull();
+    }
+  });
 });
 
 describe('decideGoalDrainFleetRelaunch (pure timing)', () => {
@@ -1036,6 +1136,59 @@ describe('runGoalDrainFleetSweepOnce — relaunch leg (WI-2140699)', () => {
     expect(deps.markDrainDead).toHaveBeenCalledTimes(1);
     expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
     expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+  });
+
+  it('GUARD (WI-10004623): a standing goal at its spend ceiling gets NO relaunch, no ledger stamp and no reservation — the report-only alert still fires', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [{ ...standingGoal(), spentCents: 45_000, budgetCents: 50_000 }],
+      holders: [makeHolder()],
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 1, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead' }));
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
+    expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+    expect(deps.escalateRelaunchExhausted).not.toHaveBeenCalled();
+  });
+
+  it('positive control (WI-10004623): the same dead standing goal below the ceiling still relaunches', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [{ ...standingGoal(), spentCents: 36_628, budgetCents: 50_000 }],
+      holders: [makeHolder()],
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ relaunched: 1, relaunchCapped: 0 });
+    expect(deps.relaunchDrainFleet).toHaveBeenCalledTimes(1);
+  });
+
+  it('GUARD (WI-10004626): a standing goal under a steward throttle gets NO relaunch, no ledger stamp and no reservation — the report-only alert still fires', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      // spend is low on purpose: the throttle, not the spend ceiling, is the only reason it holds
+      goals: [{ ...standingGoal(), spentCents: 1_000, budgetCents: 50_000, workerThrottled: true }],
+      holders: [makeHolder()],
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ escalated: 1, relaunched: 0, relaunchCapped: 0 });
+    expect(deps.escalate).toHaveBeenCalledWith(expect.objectContaining({ reason: 'drain-fleet-dead' }));
+    expect(deps.markDrainDead).not.toHaveBeenCalled();
+    expect(deps.reserveRelaunchSlot).not.toHaveBeenCalled();
+    expect(deps.relaunchDrainFleet).not.toHaveBeenCalled();
+    expect(deps.escalateRelaunchExhausted).not.toHaveBeenCalled();
+  });
+
+  it('positive control (WI-10004626): the same dead standing goal once the throttle is lifted relaunches', async () => {
+    const deps = deadStandingDeps();
+    deps.readGoals = vi.fn(async () => ({
+      goals: [{ ...standingGoal(), spentCents: 1_000, budgetCents: 50_000, workerThrottled: false }],
+      holders: [makeHolder()],
+    }));
+    const res = await runGoalDrainFleetSweepOnce(sql, deps);
+    expect(res).toMatchObject({ relaunched: 1, relaunchCapped: 0 });
+    expect(deps.relaunchDrainFleet).toHaveBeenCalledTimes(1);
   });
 
   it('GUARD: a spent budget launches nothing and escalates the give-up exactly once per sweep', async () => {

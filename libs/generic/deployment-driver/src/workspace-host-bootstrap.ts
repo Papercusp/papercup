@@ -11,6 +11,14 @@ import { WORKSPACE_HOST_AGENT_HOME_OMP_LOCAL_MODELS_YML } from './workspace-host
 import { WORKSPACE_HOST_CREDENTIAL_DELIVERY_ARGV } from "./workspace-host-credential-delivery";
 import { WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV } from "./workspace-host-remote-initializer";
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
+import {
+  APPARMOR_PROFILE_DIR,
+  APPARMOR_RESTRICT_UNPRIVILEGED_USERNS_SYSCTL,
+  BWRAP_BIN,
+  BWRAP_USERNS_GRANT_FUNCTION,
+  BWRAP_USERNS_PROBE_ARGS,
+  bwrapUsernsGrantShellLines,
+} from './bwrap-userns-grant';
 
 /**
  * Provider-neutral bootstrap contract for a durable Papercusp workspace host.
@@ -212,6 +220,10 @@ export type WorkspaceHostNativeSoname =
 /** Host packages unrelated to native addon loading. */
 export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
   "acl",
+  // Codex's workspace-write sandbox runs every tool command through bwrap; without it every
+  // command fails while the run reports success. The `agent-sandbox-userns` check proves it works
+  // (WI-10004636).
+  "bubblewrap",
   "ca-certificates",
   "curl",
   "jq",

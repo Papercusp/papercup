@@ -120,7 +120,15 @@ const turnStartMemory = defineTool({
        * ack-on-arrival. See read-cursors.ts.
        */
       confirmedDelivery?: string | null;
+      /**
+       * The hook's own wall for this request in ms (hooks/inject/core.mjs sends its
+       * port's timeoutMs). Jev's memory filter waits only for what is left of it
+       * (WI-10004485). Absent (an older hook): no wall is assumed.
+       */
+      wallMs?: number;
     };
+    // Taken before the body read: the hook's wall started when it sent the request.
+    const arrivedAt = Date.now();
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -473,6 +481,9 @@ const turnStartMemory = defineTool({
               }
               return await buildMemoryContextBlock({
                 deadline,
+                ...(typeof body.wallMs === 'number' && body.wallMs > 0 && body.wallMs <= 60_000
+                  ? { respondByMs: arrivedAt + body.wallMs }
+                  : {}),
                 userId: recallInput.userId,
                 workspaceId,
                 harnessSlugs: harness ? [harness] : [],

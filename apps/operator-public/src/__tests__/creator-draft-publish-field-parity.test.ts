@@ -74,6 +74,10 @@ const DRAFTS_DO_NOT_CARRY: Record<string, string> = {
   pinned_commit_sha: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
   pinned_tree_digest: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
   pinned_at: 'repo pin resolved at direct-publish time; a draft pins its artifact hash',
+  // (migration 038 / P-008's approved_commit_sha / approved_tree_digest /
+  // approved_at are deliberately NOT listed: they are written ONLY by the
+  // operator review approve path, so NEITHER publish path's INSERT names them
+  // — the class guard below flags a name here the direct publish never writes.)
   // Identity facet (migration 035 / portable-identity-packages P-016): the
   // declared surface is DERIVED from the signed release closure at direct
   // publish. A draft has no signed closure, so creator-drafts refuses

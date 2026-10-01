@@ -127,6 +127,44 @@ export const GOAL_DRAIN_FLEET_DEAD_GRACE_MS = GOAL_DRAIN_FLEET_SWEEP_INTERVAL_MS
 export const GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT = 3;
 export const GOAL_DRAIN_FLEET_RELAUNCH_RATE_WINDOW_MS = 60 * 60_000;
 
+/**
+ * WI-10004623: the spend fraction (spentCents / budgetCents) at or above which the platform
+ * will NOT auto-relaunch a dead drain fleet. Observed 2026-10-01: a steward deliberately
+ * narrowed a drain fleet to leader-only at ~73% of the weekly ceiling and the relaunch leg —
+ * which only knew grace + rate limit — re-added a worker anyway. A relaunch is a spend
+ * decision; above this fraction it is a holder/owner decision, so the leg stands down and the
+ * report-only drain-dead alert (which fires before this gate) is the only signal.
+ */
+export const GOAL_DRAIN_RELAUNCH_SPEND_CEILING = 0.9;
+
+/**
+ * PURE: spentCents / budgetCents, or null when either side is unmeasured or the budget is not
+ * positive. Null means "cannot tell" — callers must NOT read it as 0% (it fails OPEN here only
+ * because refusing a relaunch off an unmeasured number would strand every unbudgeted goal).
+ */
+export function goalSpendFraction(goal: Pick<GoalDrainRowLike, 'spentCents' | 'budgetCents'>): number | null {
+  const { spentCents, budgetCents } = goal;
+  if (typeof spentCents !== 'number' || !Number.isFinite(spentCents) || spentCents < 0) return null;
+  if (typeof budgetCents !== 'number' || !Number.isFinite(budgetCents) || budgetCents <= 0) return null;
+  return spentCents / budgetCents;
+}
+
+/**
+ * WI-10004626: the steward's "hold the drain WORKER" mark. A goal steward pacing spend needs a leader-only drain
+ * fleet, but the contract ("one standing drain fleet per goal, always maintained") makes that read as
+ * `drain-fleet-dead`, and the launch-settings floor (DRAIN_FLEET_MIN_CEILINGS) forbids lowering maxAgents below
+ * holder + leader + one worker. The writer is the EXISTING standing-facts verb, no new surface:
+ * `facts:assert { scope:'workspace', key:'drain-worker-throttle:<goalId>', body:<reason>, ttlSec:<how long> }`;
+ * `facts:retract` lifts it early. Expiry is the fact's own `expires_at`, so a forgotten mark cannot permanently
+ * disable the always-maintained invariant. Reuse-first: fleet:pause's `winding-down` was the other candidate and
+ * does not fit — it stops the whole fleet from pulling work (leader included), where this holds only the relaunch.
+ */
+export const DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX = 'drain-worker-throttle:';
+
+export function drainWorkerThrottleFactKey(goalId: string): string {
+  return `${DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX}${goalId}`;
+}
+
 const WATCHDOG_IDENTITY: AgentIdentity = {
   ownerId: 'goal-drain-fleet-watchdog',
   ownerLabel: 'system · goal drain fleet',
@@ -150,6 +188,20 @@ export interface GoalDrainRowLike {
   installSlug?: string | null;
   /** metadata->'drainRespawn': the durable relaunch ledger (WI-2140699). */
   drainRespawn?: GoalDrainRespawnLedgerLike | null;
+  /**
+   * metadata->>'spentCents' — the goal's AUTHORITATIVE spend (the lineage rollup; see
+   * `spentCentsBreakdown.lineageScope`). Null/absent = unmeasured. WI-10004623: the relaunch leg
+   * reads it so an auto-respawn is not blind to the goal's budget.
+   */
+  spentCents?: number | null;
+  /** goals.budget_cents — the goal's budget for its window. Null/absent = no declared budget. */
+  budgetCents?: number | null;
+  /**
+   * WI-10004626: a LIVE (unexpired, unretracted, current-version) `drain-worker-throttle:<goalId>` standing fact
+   * exists for this goal — a steward has asked the relaunch leg to hold. Resolved at READ time against the fact's
+   * own `expires_at`, so the pure gate carries no second clock. Absent = not throttled.
+   */
+  workerThrottled?: boolean;
 }
 
 /** The slice of `goals.metadata.drainRespawn` the verdict reads. */
@@ -770,7 +822,11 @@ export type GoalDrainRelaunchIneligibility =
   /** Outcome goals keep the report-only posture; their holder decides. */
   | 'not-standing'
   /** The budget was spent and a human has not cleared `drainRespawn.needsHuman`. */
-  | 'needs-human';
+  | 'needs-human'
+  /** WI-10004623: the goal's own spend is at/over GOAL_DRAIN_RELAUNCH_SPEND_CEILING of its budget. */
+  | 'spend-ceiling'
+  /** WI-10004626: a steward holds the worker via a live `drain-worker-throttle:<goalId>` fact. */
+  | 'steward-throttle';
 
 /**
  * PURE gate: may this alert enter the relaunch leg at all? Evaluated BEFORE any
@@ -778,13 +834,22 @@ export type GoalDrainRelaunchIneligibility =
  */
 export function goalDrainRelaunchEligibility(
   alert: Pick<GoalDrainAlert, 'reason'>,
-  goal: Pick<GoalDrainRowLike, 'standing' | 'drainRespawn'>,
+  goal: Pick<GoalDrainRowLike, 'standing' | 'drainRespawn' | 'spentCents' | 'budgetCents' | 'workerThrottled'>,
 ): { eligible: true } | { eligible: false; why: GoalDrainRelaunchIneligibility } {
   if (alert.reason !== 'drain-fleet-dead' && alert.reason !== 'drain-fleet-not-found') {
     return { eligible: false, why: 'reason-not-relaunchable' };
   }
   if (goal.standing !== true) return { eligible: false, why: 'not-standing' };
   if (goal.drainRespawn?.needsHuman === true) return { eligible: false, why: 'needs-human' };
+  // WI-10004626: explicit steward intent outranks the spend heuristic (a steward who throttled below the ceiling
+  // meant it), and like it is evaluated before any ledger write.
+  if (goal.workerThrottled === true) return { eligible: false, why: 'steward-throttle' };
+  // WI-10004623: spend-aware. Evaluated before any ledger write, so a goal at its ceiling neither
+  // charges the rate-limit ledger nor stamps a dead episode it will never act on.
+  const spendFraction = goalSpendFraction(goal);
+  if (spendFraction !== null && spendFraction >= GOAL_DRAIN_RELAUNCH_SPEND_CEILING) {
+    return { eligible: false, why: 'spend-ceiling' };
+  }
   return { eligible: true };
 }
 
@@ -901,6 +966,38 @@ export function parseGoalDrainRespawnLedger(raw: unknown): GoalDrainRespawnLedge
   return { deadSinceMs, needsHuman: rec.needsHuman === true };
 }
 
+/** A text/bigint cents column → a finite number, or null (unmeasured). Never coerces junk to 0. */
+export function parseCentsColumn(raw: string | number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === 'string' && raw.trim() === '') return null;
+  const n = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The membership key {@link readLiveDrainWorkerThrottles} returns: workspace + goal, NUL-joined (neither can hold NUL). */
+export function drainWorkerThrottleSetKey(workspaceId: string, goalId: string): string {
+  return `${workspaceId}\u0000${goalId}`;
+}
+
+/**
+ * WI-10004626: every goal with a LIVE steward throttle mark, as {@link drainWorkerThrottleSetKey} members.
+ * "Live" mirrors agent-facts' own fold predicate (`liveFactPredicate` in agent-facts/store.ts: current version,
+ * unretracted, unexpired) and is PINNED against the canonical reader (`listFacts`) by
+ * goal-drain-fleet-watchdog.throttle.integration.test.ts — so a new lifecycle column on agent_facts that the fold
+ * learns about fails there instead of silently making this reader disagree with `facts:list`.
+ */
+export async function readLiveDrainWorkerThrottles(sql: Sql): Promise<Set<string>> {
+  const rows = await sql<{ workspace_id: string; goal_id: string }[]>`
+    SELECT workspace_id, substr(key, ${DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX.length + 1}) AS goal_id
+      FROM harness_shared.agent_facts
+     WHERE scope = 'workspace'
+       AND key LIKE ${DRAIN_WORKER_THROTTLE_FACT_KEY_PREFIX + '%'}
+       AND superseded_at IS NULL
+       AND retracted_at IS NULL
+       AND expires_at > now()`;
+  return new Set(rows.map((t) => drainWorkerThrottleSetKey(t.workspace_id, t.goal_id)));
+}
+
 function makeReadGoals(sql: Sql): GoalDrainFleetSweepDeps['readGoals'] {
   return async () => {
     const goalRows = await sql<
@@ -913,14 +1010,21 @@ function makeReadGoals(sql: Sql): GoalDrainFleetSweepDeps['readGoals'] {
         created_ms: string;
         drain_fleet: string | null;
         drain_respawn: unknown;
+        spent_cents: string | null;
+        budget_cents: string | null;
       }[]
     >`
       SELECT id, workspace_id, title, install_slug, standing,
              (extract(epoch FROM created_at) * 1000)::bigint AS created_ms,
              metadata->>'drainFleet' AS drain_fleet,
-             metadata->'drainRespawn' AS drain_respawn
+             metadata->'drainRespawn' AS drain_respawn,
+             metadata->>'spentCents' AS spent_cents,
+             budget_cents::text AS budget_cents
         FROM harness_shared.goals
        WHERE status = 'active'`;
+    // WI-10004626: live steward throttle marks, one query for every goal. A PG failure throws like every other
+    // read in this sweep — it is not swallowed into "not throttled".
+    const throttled = await readLiveDrainWorkerThrottles(sql);
     // P-001: the canonical holder read. Unfiltered by goal on purpose — an inner
     // join to active goals would drop the no-holder case.
     const holders = await readGoalHolderRows(sql);
@@ -934,6 +1038,9 @@ function makeReadGoals(sql: Sql): GoalDrainFleetSweepDeps['readGoals'] {
         standing: r.standing === true,
         installSlug: r.install_slug,
         drainRespawn: parseGoalDrainRespawnLedger(r.drain_respawn),
+        spentCents: parseCentsColumn(r.spent_cents),
+        budgetCents: parseCentsColumn(r.budget_cents),
+        workerThrottled: throttled.has(drainWorkerThrottleSetKey(r.workspace_id, r.id)),
       })),
       holders,
     };
@@ -1335,7 +1442,12 @@ async function defaultEscalate(alert: GoalDrainAlert): Promise<void> {
           `${GOAL_DRAIN_FLEET_DEAD_GRACE_MS / 60_000} min dead it re-mints the goal-scoped lane and launches one ` +
           `headless member, at most ${GOAL_DRAIN_FLEET_RELAUNCH_RATE_LIMIT} times per ` +
           `${GOAL_DRAIN_FLEET_RELAUNCH_RATE_WINDOW_MS / 60_000} min (ledger: goals.metadata.drainRespawn). ` +
-          `You are told when it does; a spent budget escalates to the owner instead.`
+          `You are told when it does; a spent budget escalates to the owner instead.\n\n` +
+          `Pacing spend and want a leader-only fleet? The relaunch also stands down by itself at ` +
+          `${GOAL_DRAIN_RELAUNCH_SPEND_CEILING * 100}% of the goal budget, and a steward can hold it earlier with ` +
+          `facts:assert { scope:'workspace', key:'${drainWorkerThrottleFactKey(alert.goalId)}', body:<reason>, ` +
+          `ttlSec:<how long> } (facts:retract lifts it; the mark expires on its own, so the always-maintained ` +
+          `contract resumes without anyone remembering).`
         : `Reported + event-emitted (goal:drain-dead), never auto-launched for an outcome goal: standing a ` +
           `fleet up is the goal holder's authority, noticing its absence is this watchdog's.`),
     meta: {

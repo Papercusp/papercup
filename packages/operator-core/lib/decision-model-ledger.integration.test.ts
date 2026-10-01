@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import {
@@ -40,9 +40,15 @@ const { recordDecisionModelCall, decisionModelLedgerStats, __resetDecisionModelL
   './decision-model-ledger'
 );
 
-const MIGRATION = fileURLToPath(
-  new URL('../../../libs/papercusp/libs/db/sql/1246-decision-model-calls.sql', import.meta.url),
-);
+// EVERY decision-model-calls migration, in number order (1246 creates the table, 1285 adds
+// `surface`, …). Loading only the creating file left this fixture one column behind the
+// writer the moment 1285 landed; matching the family keeps the next column addition
+// from stranding it the same way.
+const SQL_DIR = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/', import.meta.url));
+const MIGRATIONS = readdirSync(SQL_DIR)
+  .filter((f) => /^\d+-decision-model-calls(-[a-z0-9-]+)?\.sql$/.test(f))
+  .sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10))
+  .map((f) => `${SQL_DIR}${f}`);
 
 const SECRET = 'my bank PIN is 4417';
 
@@ -82,7 +88,11 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(readFileSync(MIGRATION, 'utf8'));
+  // Positive control: the family match must find the creating migration AND the surface one.
+  expect(MIGRATIONS.map((p) => p.slice(SQL_DIR.length))).toEqual(
+    expect.arrayContaining(['1246-decision-model-calls.sql', '1285-decision-model-calls-surface.sql']),
+  );
+  for (const file of MIGRATIONS) await rootSql.unsafe(readFileSync(file, 'utf8'));
   h.sql = rootSql;
 }, 120_000);
 
@@ -128,6 +138,7 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       },
       startedAt: new Date('2026-09-30T02:00:00.000Z'),
       consumer: 'memory-injection',
+      surface: 'turn-start',
       subjectIds: ['mem-1', 'mem-2'],
     };
     await expect(
@@ -137,6 +148,7 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
     expect(row).toMatchObject({
       workspace_id: 'ws-ledger-test',
       consumer: 'memory-injection',
+      surface: 'turn-start',
       provider: 'typesafe',
       requested_model: 'jev-1.13.0',
       returned_model: 'jev-1.13.0',
@@ -165,7 +177,11 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       fetch: jevFetch(200, JEV_OK),
       onCall: (r) => recordDecisionModelCall(r).then(() => undefined),
     });
-    const out = await answeredClient.decide(request, { consumer: 'memory-injection', subjectIds: ['mem-9'] });
+    const out = await answeredClient.decide(request, {
+      consumer: 'memory-injection',
+      subjectIds: ['mem-9'],
+      surface: 'tool:before_tool_call',
+    });
     expect(out.kind).toBe('answered');
 
     const keyless = createDecisionClient({
@@ -191,6 +207,8 @@ describe('decision_model_calls writer (real Postgres, real migration)', () => {
       ['inconclusive', 'rejected', 422],
     ]);
     expect(all[0]!.subject_ids).toEqual(['mem-9']);
+    // The port label travels decide() options -> call record -> column; calls that name none store NULL.
+    expect(all.map((r) => r.surface)).toEqual(['tool:before_tool_call', null, null]);
     expect(all[2]!.inconclusive_detail).toBeNull();
 
     const dump = JSON.stringify(await rootSql`SELECT row_to_json(c) AS j FROM harness_shared.decision_model_calls c`);

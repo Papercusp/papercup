@@ -53,7 +53,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
       const raw = values[2];
       const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
       store.set(key, payload);
-      return Promise.resolve([]);
+      return Promise.resolve(/RETURNING workspace_id/.test(sqlText) ? [{ workspace_id: ws }] : []);
     }
     return Promise.resolve([]);
   }

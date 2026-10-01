@@ -405,6 +405,14 @@ export function timeoutForTool(toolName: string, callArgs?: (Record<string, unkn
  */
 export function isLoopPressureShed(error: any): boolean;
 /**
+ * Whether a connection was rejected because this bearer is invalid for the
+ * selected operator. Only this typed refusal may advance to another implicit
+ * token file; explicit token overrides remain authoritative.
+ */
+export function isInvalidSuperuserBearerFailure(error: any): boolean;
+/** Retry connection setup with the next bearer only after a typed invalid-bearer rejection. */
+export function connectWithTokenFallback(connectOnce: any, tokenCandidates: any): Promise<any>;
+/**
  * Add bounded positive jitter AFTER a retry minimum, without overrunning the
  * caller's remaining total deadline. Returns null when even the minimum cannot
  * be honored before that deadline, so the caller surfaces the last typed error

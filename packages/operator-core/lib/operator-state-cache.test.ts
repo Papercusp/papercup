@@ -29,7 +29,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
     if (/INSERT INTO/.test(sqlText)) {
       const raw = values[2];
       store.set(key, typeof raw === 'string' ? JSON.parse(raw) : raw);
-      return Promise.resolve([]);
+      return Promise.resolve(/RETURNING workspace_id/.test(sqlText) ? [{ workspace_id: ws }] : []);
     }
     return Promise.resolve([]);
   }

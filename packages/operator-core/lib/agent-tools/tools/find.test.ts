@@ -636,6 +636,9 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain(
       'verification?:object{coverage?:object{population:array(≥1)<string>,checked?:array<string>,notChecked?:array<string>,notApplicable?:array<string>,residue?:array<string>}}',
     );
+    expect(compact).toContain(
+      'constraint:items[].completion.verification.coverage (same as constraint:completion.verification.coverage)',
+    );
     // WI-37960 / EI-22611436941619072: the structural coverage fields are
     // optional in JSON Schema for ordinary completions, but the validator
     // makes them required for verification-shaped universal terminal claims.
@@ -737,13 +740,17 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const result = await callHandler({ query: 'work_items:complete', limit: 1 });
     const compact = result.hits.find((hit) => hit.tool === 'work_items:complete')?.argSchema;
 
+    expect(compact).toContain(
+      `constraint:completion.verification.coverage (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`,
+    );
     for (const path of [
-      'completion.verification.coverage',
       'completion.coverage',
       'items[].completion.verification.coverage',
       'items[].completion.coverage',
     ]) {
-      expect(compact).toContain(`constraint:${path} (${COMPLETION_COVERAGE_CALL_CONSTRAINT})`);
+      expect(compact).toContain(
+        `constraint:${path} (same as constraint:completion.verification.coverage)`,
+      );
     }
     expect(compact).toContain('terminal state=done|resolved|passed');
     expect(compact).toContain('residue:[]');
@@ -1215,7 +1222,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(hit).toBeDefined();
     const rule = `body text joined with "\\n\\n" must fit ${COORD_SEND_MAX_CHUNK_PARTS} parts of <=${DEFAULT_INBOX_BODY_CAP} characters`;
     expect(hit!.argSchema).toContain(`constraint:body (${rule})`);
-    expect(hit!.argSchema).toContain(`constraint:items[].body (${rule})`);
+    expect(hit!.argSchema).toContain('constraint:items[].body (same as constraint:body)');
     expect(hit!.argSchema!.length).toBeLessThanOrEqual(2200);
 
     // RSR-P-008-B boundary: sections that each fill one part exactly. N of them

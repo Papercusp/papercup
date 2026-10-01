@@ -267,5 +267,45 @@ describe('papercusp-db-backup.sh tiered dump (WI-2146225)', () => {
     expect(src).toContain('"tierDumped"');
     expect(src).toContain('"tierFailed"');
     expect(src).toContain('"tiersEnabled"');
+    expect(src).toContain('"tierNotDue"');
+  });
+
+  describe('transcript-tier cadence (WI-10004603)', () => {
+    const code = stripComments(src);
+
+    it('keeps its default inside the health check\'s staleness bar, with room for a deferred run', () => {
+      const def = Number(defaultOf('PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC'));
+      const maxAgeH = Number(
+        (healthCheckSrc.match(/^BACKUP_MAX_AGE_H="\$\{BACKUP_MAX_AGE_H:-(\d+)\}"/m) ?? [])[1],
+      );
+      expect(def).toBeGreaterThan(0);
+      expect(maxAgeH).toBeGreaterThan(0);
+      // Worst case before a re-dump: the cadence, plus one hourly period of check
+      // granularity, plus the time a run takes to reach the tier (<1 h), plus one
+      // deferred run. That must still be under the alarm.
+      expect(def + 3 * 3600).toBeLessThan(maxAgeH * 3600);
+    });
+
+    it('measures the artifact the same way the health check does (directory mtime)', () => {
+      expect(code).toMatch(/transcript_tier_age\(\) \{[\s\S]*?stat -c %Y "\$1"/);
+      expect(healthCheckSrc).toMatch(/mtime="\$\(stat -c %Y "\$f"/);
+    });
+
+    it('never counts a not-due tier as dumped or failed', () => {
+      const branch = code.match(/tx_age=\$\(transcript_tier_age[\s\S]*?\n {4}fi\n/);
+      expect(branch, 'expected the transcript dump branch').not.toBeNull();
+      const notDue = (branch as RegExpMatchArray)[0].split(/\n\s*elif dump_one/)[0];
+      expect(notDue).toContain('TIER_NOT_DUE+=("$db-transcript")');
+      expect(notDue).not.toMatch(/DUMPED\+=|FAILED\+=/);
+    });
+
+    it('still dumps when there is no artifact to keep', () => {
+      // An absent or unreadable artifact yields an empty age, and an empty age
+      // must fall through to dump_one, never to "not due".
+      const fn = code.match(/transcript_tier_age\(\) \{[\s\S]*?\n\}/);
+      expect(fn).not.toBeNull();
+      expect((fn as RegExpMatchArray)[0]).toMatch(/\[ -d "\$1" \] \|\| return 0/);
+      expect(code).toMatch(/\[ -n "\$tx_age" \] && \[ "\$tx_age" -ge 0 \]/);
+    });
   });
 });

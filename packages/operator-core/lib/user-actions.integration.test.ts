@@ -86,7 +86,8 @@ describe('user_actions write path (real PG)', () => {
              finished_at::text AS finished_at, actor, workspace_id
         FROM harness_shared.user_actions
        WHERE harness_slug = ${slug}
-       ORDER BY id`;
+       -- id::bigint, not the text alias (WI-10004608): '10' would sort before '9'
+       ORDER BY id::bigint`;
   }
 
   it('records a running row then transitions it to succeeded with summary/detailUrl/invocationId', async () => {

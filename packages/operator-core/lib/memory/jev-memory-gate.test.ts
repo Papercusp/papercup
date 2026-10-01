@@ -8,12 +8,15 @@ import {
   JEV_MEMORY_CACHE_TTL_MS,
   JEV_MEMORY_CONSUMER,
   JEV_MEMORY_ENCODING,
+  JEV_MEMORY_MIN_WAIT_MS,
   JEV_MEMORY_NO_WAIT_PORTS,
   JEV_MEMORY_VARIANT,
   jevMemoryCacheKey,
+  jevMemoryWaitMs,
   runJevMemoryGate,
   type JevMemoryGateDeps,
 } from './jev-memory-gate';
+import { JEV_MEMORY_TIMEOUT_MS } from './jev-settings';
 
 const CANDS = [
   { id: 'mem-a', text: 'the deploy runs from papercup-release' },
@@ -28,7 +31,12 @@ function answered(pYes: Record<string, number>): DecisionOutcome<QuestionMap> {
 /** A non-generic stand-in for DecisionClient.decide; the gate only ever passes a yes/no QuestionMap. */
 type DecideFn = (
   request: { readonly questions: Readonly<Record<string, unknown>> },
-  options?: { readonly consumer?: string; readonly subjectIds?: readonly string[] },
+  options?: {
+    readonly consumer?: string;
+    readonly subjectIds?: readonly string[];
+    readonly timeoutMs?: number;
+    readonly surface?: string;
+  },
 ) => Promise<DecisionOutcome<QuestionMap>>;
 
 function harness(effective: 'off' | 'shadow' | 'on', decide: DecideFn) {
@@ -67,7 +75,7 @@ describe('runJevMemoryGate — Log only (shadow)', () => {
     await Promise.resolve();
     expect(h.decideSpy).toHaveBeenCalledTimes(1);
     const [request, options] = h.decideSpy.mock.calls[0];
-    expect(options).toEqual({ consumer: JEV_MEMORY_CONSUMER, subjectIds: ['mem-a', 'mem-b'] });
+    expect(options).toEqual({ consumer: JEV_MEMORY_CONSUMER, timeoutMs: JEV_MEMORY_TIMEOUT_MS, subjectIds: ['mem-a', 'mem-b'] });
     expect(Object.keys(request.questions)).toEqual(['m1', 'm2']);
   });
 
@@ -244,5 +252,55 @@ describe('runJevMemoryGate — per-port policy (WI-10004485)', () => {
   it('never turns Log only into On on any port', async () => {
     const h = harness('shadow', async () => answered({ m1: 0.9, m2: 0.1 }));
     expect(await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start' }, h.deps)).toEqual({ effective: 'shadow', fired: true });
+  });
+});
+
+describe('runJevMemoryGate — the wait fits the caller’s wall (WI-10004485 step C)', () => {
+  it('waits the full cap with no wall, what is left of the wall up to the cap, and not at all below the floor', () => {
+    // The cap must clear the slowest healthy-provider answer measured from a quiet
+    // process on 2026-10-01 (639 ms); 400 ms timed out 2.3% of healthy answers.
+    expect(JEV_MEMORY_TIMEOUT_MS).toBeGreaterThan(639);
+    expect(jevMemoryWaitMs(undefined)).toBe(JEV_MEMORY_TIMEOUT_MS);
+    expect(jevMemoryWaitMs(Number.NaN)).toBe(JEV_MEMORY_TIMEOUT_MS);
+    expect(jevMemoryWaitMs(JEV_MEMORY_TIMEOUT_MS + 5_000)).toBe(JEV_MEMORY_TIMEOUT_MS);
+    expect(jevMemoryWaitMs(500.9)).toBe(500);
+    expect(jevMemoryWaitMs(JEV_MEMORY_MIN_WAIT_MS)).toBe(JEV_MEMORY_MIN_WAIT_MS);
+    expect(jevMemoryWaitMs(JEV_MEMORY_MIN_WAIT_MS - 1)).toBeNull();
+    expect(jevMemoryWaitMs(-200)).toBeNull();
+  });
+
+  it('On waits under what is left of the wall, and the call runs under that same bound', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', budgetMs: 500 }, h.deps);
+    expect(r).toMatchObject({ effective: 'on', outcome: 'answered', keep: [true, false] });
+    expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(500);
+  });
+
+  it('On does not wait when less than the floor is left: it runs Log only under the full cap', async () => {
+    const never = new Promise<DecisionOutcome<QuestionMap>>(() => undefined);
+    const h = harness('on', () => never);
+    const r = await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', budgetMs: JEV_MEMORY_MIN_WAIT_MS - 1 }, h.deps);
+    expect(r).toEqual({ effective: 'shadow', fired: true });
+    expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(JEV_MEMORY_TIMEOUT_MS);
+  });
+
+  it('Log only on a waiting port measures under the bound On would wait', async () => {
+    const h = harness('shadow', async () => answered({ m1: 0.9, m2: 0.1 }));
+    await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', budgetMs: 600 }, h.deps);
+    expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(600);
+  });
+
+  it('a no-wait port always runs under the full cap: nothing waits there, whatever the wall', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.1 }));
+    await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'mid-turn', budgetMs: 300 }, h.deps);
+    expect(h.decideSpy.mock.calls[0][1]?.timeoutMs).toBe(JEV_MEMORY_TIMEOUT_MS);
+  });
+
+  it('records the surface with every call, and records none when the caller passes none', async () => {
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.9 }));
+    await runJevMemoryGate({ message: 'q', candidates: CANDS, port: 'turn-start', surface: 'turn-start' }, h.deps);
+    await runJevMemoryGate({ message: 'q2', candidates: CANDS }, h.deps);
+    expect(h.decideSpy.mock.calls[0][1]?.surface).toBe('turn-start');
+    expect(h.decideSpy.mock.calls[1][1]).not.toHaveProperty('surface');
   });
 });

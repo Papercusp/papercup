@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -5177,40 +5178,100 @@ describe("runGreenCheckpoint", () => {
   });
 
   it("EI-214116: child output resets the idle timeout while the hard ceiling stays independent", async () => {
-    // Total runtime (~4s) must exceed the idle timeout, or completing proves nothing about
-    // the reset. Each gap keeps a 2s margin under it: at 0.7s gaps vs a 1.5s idle timeout,
-    // gate-load event-loop lag alone fired the idle timer (candidate 9f0a0776, 2026-09-30).
-    const completed = await runCmd(
-      "bash",
-      [
-        "-c",
-        "printf 'stage=before\\n'; sleep 1; printf 'stage=copy\\n'; sleep 1; printf 'stage=after\\n'; sleep 1; printf 'stage=verify\\n'; sleep 1; printf 'stage=done\\n'",
-      ],
-      {
-        timeoutMs: 3_000,
-        timeoutResetsOnProgress: true,
-        hardTimeoutMs: 20_000,
-        killProcessGroupOnTimeout: true,
-      },
-    );
-    expect(completed.stdout).toContain("stage=done");
+    // The test owns the clock. Real sleep gaps against a real idle timeout failed whenever one
+    // gap overran under gate IO pressure (candidates 9f0a0776, ac843c61), at any margin. The
+    // child now waits for a go-file per stage, and each delivered chunk spends 80% of the idle
+    // window on the fake clock, so completing proves every chunk re-armed the idle timer.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setImmediate", "clearImmediate"] });
+    const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-idle-reset-"));
+    try {
+      const stages = ["copy", "after", "verify", "done"];
+      let released = 0;
+      const completed = await runCmd(
+        "bash",
+        [
+          "-c",
+          `printf 'stage=before\\n'; for s in ${stages.join(" ")}; do while [ ! -e ${dir}/$s ]; do sleep 0.02; done; printf "stage=$s\\n"; done`,
+        ],
+        {
+          timeoutMs: 1_000,
+          timeoutResetsOnProgress: true,
+          hardTimeoutMs: 20_000,
+          killProcessGroupOnTimeout: true,
+          // A microtask runs after capture has re-armed the idle timer for this chunk.
+          onOutput: () =>
+            queueMicrotask(() => {
+              vi.advanceTimersByTime(800);
+              if (released < stages.length) writeFileSync(join(dir, stages[released++]), "");
+            }),
+        },
+      );
+      expect(completed.stdout).toContain("stage=done");
 
-    const hardTimeout = await runCmd(
-      "bash",
-      ["-c", "while true; do printf 'still-alive\\n'; sleep 0.1; done"],
-      {
-        timeoutMs: 2_000,
-        timeoutResetsOnProgress: true,
-        hardTimeoutMs: 1_200,
-        killProcessGroupOnTimeout: true,
-      },
-    ).then(
-      () => null,
-      (caught: unknown) => caught,
-    );
-    expect(hardTimeout).toBeInstanceOf(Error);
-    expect(String(hardTimeout)).toContain("exceeded hard timeout after 1200ms");
-    expect(String(hardTimeout)).toContain("still-alive");
+      // Every chunk spends 400ms: output must not re-arm the 1200ms hard ceiling, or this
+      // endless child would never be stopped.
+      const hardTimeout = await runCmd(
+        "bash",
+        ["-c", "while true; do printf 'still-alive\\n'; sleep 0.1; done"],
+        {
+          timeoutMs: 2_000,
+          timeoutResetsOnProgress: true,
+          hardTimeoutMs: 1_200,
+          killProcessGroupOnTimeout: true,
+          onOutput: () => queueMicrotask(() => vi.advanceTimersByTime(400)),
+        },
+      ).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+      expect(hardTimeout).toBeInstanceOf(Error);
+      expect(String(hardTimeout)).toContain("exceeded hard timeout after 1200ms");
+      expect(String(hardTimeout)).toContain("still-alive");
+    } finally {
+      vi.useRealTimers();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("EI-214116: output the child wrote during an event-loop stall cancels the idle expiry", async () => {
+    // After a stall Node runs expired timers BEFORE the poll phase that reads output the child
+    // already wrote, so an idle timer that rejects on expiry kills a child that progressed
+    // (candidate ac843c61, 2026-10-01: only stage=before was captured). Stall the loop from a
+    // check-phase callback until the child has written its next chunk AND the idle window has
+    // passed, so the ordering is forced rather than raced.
+    const dir = mkdtempSync(join(tmpdir(), "green-checkpoint-idle-stall-"));
+    const go = join(dir, "go");
+    const wrote = join(dir, "wrote");
+    let stalled = false;
+    try {
+      const completed = await runCmd(
+        "bash",
+        [
+          "-c",
+          `printf 'ready\\n'; while [ ! -e ${go} ]; do sleep 0.02; done; printf 'progress\\n'; touch ${wrote}`,
+        ],
+        {
+          timeoutMs: 2_000,
+          timeoutResetsOnProgress: true,
+          hardTimeoutMs: 20_000,
+          killProcessGroupOnTimeout: true,
+          onOutput: (_stream, text) => {
+            if (stalled || !text.includes("ready")) return;
+            stalled = true;
+            setImmediate(() => {
+              const started = Date.now();
+              writeFileSync(go, "");
+              while (!existsSync(wrote) || Date.now() - started < 2_500) {
+                if (Date.now() - started > 15_000) break;
+              }
+            });
+          },
+        },
+      );
+      expect(completed.stdout).toContain("progress");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("reports child output progress while retaining stdout and stderr", async () => {

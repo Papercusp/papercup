@@ -157,7 +157,10 @@ export async function postInjection(port, body, opts = {}) {
     const res = await fetchImpl(operatorBase(env) + spec.endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      // wallMs: this hook's own wall, so the operator spends only what is left of
+      // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
+      // a second copy of the number on the server.
+      body: JSON.stringify({ ...body, wallMs: spec.timeoutMs }),
       signal: controller.signal,
     });
     if (!res || !res.ok) return null;

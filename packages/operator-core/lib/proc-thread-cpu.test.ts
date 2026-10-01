@@ -171,7 +171,16 @@ describe('isConfirmedHostIoWait', () => {
   });
 
   it('recognizes other storage wait channels from the incident evidence', () => {
-    for (const wchan of ['io_schedule', 'io_schedule_timeout', 'wait_on_buffer', 'jbd2_log_wait_commit']) {
+    // WI-10004559 measured readdirSync stalls in D-state at `iterate_dir` on
+    // ~/.papercusp/psu-pty immediately before the sentinel killed the worker.
+    for (const wchan of [
+      'io_schedule',
+      'io_schedule_timeout',
+      'wait_on_buffer',
+      'jbd2_log_wait_commit',
+      '__jbd2_log_wait_for_space',
+      'iterate_dir',
+    ]) {
       expect(isConfirmedHostIoWait({ state: 'D', cpuMs: 0, cores: 0, wchan })).toBe(true);
     }
   });

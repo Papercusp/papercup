@@ -68,6 +68,7 @@ import { bucketOf, usePlan } from '@/app/admin/plans/plans-api';
 import { stripFrontmatter } from '@/app/admin/plans/plan-renderers';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import SessionChatModal from '../chat/SessionChatModal';
+import { preloadPlanPopupModal } from '../chat/ChatRefPopupHost';
 import {
   CHAT_PLAN_POPUP_PARAM,
   CHAT_WORK_ITEM_POPUP_PARAM,
@@ -126,6 +127,7 @@ interface PlanWorkActivityRow {
  * finished before a warm-route sample starts. */
 const VDITOR_READY_MARK = 'plan-dashboard-vditor-ready-success-v1';
 const DOCUMENT_READY_MARK = 'plan-dashboard-document-ready-success-v1';
+const POPUP_MODULE_READY_MARK = 'plan-dashboard-popup-module-ready-success-v1';
 
 /** "2m" → "2m ago", "now" → "just now" — hover-title phrasing. */
 function agoPhrase(label: string): string {
@@ -295,6 +297,18 @@ export default function PlanDashboard({
         // Performance instrumentation must never break the dashboard.
       }
     });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    try { performance.clearMarks?.(POPUP_MODULE_READY_MARK); } catch { /* diagnostics only */ }
+    void preloadPlanPopupModal().then(() => {
+      if (cancelled) return;
+      try { performance.mark(POPUP_MODULE_READY_MARK); } catch { /* diagnostics only */ }
+    }).catch(() => {
+      // The popup's existing lazyWithRetry owns recovery on the actual click.
+    });
+    return () => { cancelled = true; };
   }, []);
 
   const documentSource = plan?.raw ?? plan?.prose;

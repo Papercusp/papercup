@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -40,6 +40,8 @@ const armSchema = z.strictObject({
 export const measurementManifestSchema = z.strictObject({
   formatVersion: z.literal(1), plan: z.literal('mdenseon-adoption-measurements-2026-10-01'),
   runId: id, ownerId: z.string().min(1), frozenAt: date, seed: z.string().min(1),
+  // Provenance anchor; exact loaded bytes are the declared file fingerprints.
+  // Unrelated shared-tree git-sync commits must not invalidate a pinned recipe.
   sourceCommit: z.string().regex(/^[a-f0-9]{40}$/),
   privateRoot: z.string().min(1), evidencePath: z.string().startsWith('docs/evidence/'),
   contracts: z.strictObject({
@@ -81,7 +83,13 @@ export function hashJson(value: unknown): string {
   return crypto.createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 }
 export function measurementPackageVersion(name: string): string {
-  const require = createRequire(import.meta.url); let dir = path.dirname(require.resolve(name));
+  const require = createRequire(import.meta.url);
+  // Literal loader targets keep the benchmark's import closure inspectable.
+  const entry = name === '@huggingface/transformers' ? require.resolve('@huggingface/transformers')
+    : name === '@huggingface/tokenizers' ? require.resolve('@huggingface/tokenizers')
+    : name === 'tokenizers' ? require.resolve('tokenizers') : undefined;
+  if (!entry) throw new Error(`undeclared benchmark runtime package ${name}`);
+  let dir = path.dirname(entry);
   for (;;) {
     const file = path.join(dir, 'package.json');
     if (fs.existsSync(file)) { const p = JSON.parse(fs.readFileSync(file, 'utf8')); if (p.name === name) return p.version; }
@@ -225,8 +233,8 @@ export async function prepareMeasurementCell(file: string, expectedSha256: strin
   if (m.frozenAt > new Date().toISOString()) throw new Error('manifest frozen in the future');
   const cell = m.cells.find((c) => c.id === cellId); if (!cell) throw new Error(`undeclared cell ${cellId}`);
   const arm = m.arms.find((a) => a.id === cell.armId)!;
-  const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-  if (currentCommit !== m.sourceCommit) throw new Error('measurement source commit differs from frozen manifest');
+  const anchor = spawnSync('git', ['merge-base', '--is-ancestor', m.sourceCommit, 'HEAD'], { cwd: repoRoot });
+  if (anchor.status !== 0) throw new Error('measurement source anchor is not in current tree history');
   const dataset = ['relevance', 'hybrid', 'answers'].includes(cell.bar) ? m.datasets.find((d) => d.corpus === cell.corpus) : undefined;
   const inputIds = new Set([...cell.inputIds, ...(dataset ? [dataset.snapshot, dataset.labels, dataset.judgments, dataset.census] : [])]);
   const files = [...inputIds].map((ref) => m.inputs[ref]);

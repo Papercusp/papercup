@@ -13,12 +13,22 @@
 #
 # Output: ~/capacity/rec/<phase>/<sessionId>/meta.json (real), ~/capacity/runs/replay-<phase>/
 # (replay), ~/capacity/fp/{real,replay}-<phase>.jsonl (time series). Lines to grep: PHASE_*.
+#
+# P004_CLIS=claude,codex (default) records only the listed CLIs' sessions, so the replay half
+# also covers only those. A Codex-only rerun exists because the first calibration's Codex half
+# was vacuous: the VM had no working Codex sandbox, so the real sessions ran no tools either
+# (plan D-012, WI-10004619), and re-recording Claude would spend inference for nothing.
 set -uo pipefail
 cd "$HOME/capacity" || exit 1
 PHASE=${1:?usage: p004-phase.sh n1|n4|n8 [real|replay|both]}
 WHAT=${2:-both}
 N=${PHASE#n}
 case "$PHASE" in n1|n4|n8) ;; *) echo "PHASE_BAD $PHASE"; exit 2 ;; esac
+P004_CLIS=${P004_CLIS:-claude,codex}
+[ -n "${P004_CLIS//,/}" ] || { echo "PHASE_BAD_CLIS '$P004_CLIS'"; exit 2; }
+for c in ${P004_CLIS//,/ }; do
+  case "$c" in claude | codex) ;; *) echo "PHASE_BAD_CLIS '$P004_CLIS'"; exit 2 ;; esac
+done
 S="scripts/agent-capacity"
 uid=$(id -u)
 SLROOT=/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service
@@ -37,6 +47,7 @@ sample_start() { # slice label
 }
 sample_stop() { kill "$(cat "$FP/$1.pid")" 2>/dev/null || true; }
 rec() { # cli tasks parallel
+  case ",$P004_CLIS," in *",$1,"*) ;; *) echo "PHASE_REC_SKIPPED $1 $2"; return 0 ;; esac
   npx tsx "$S/record-session.ts" --cli "$1" --tasks "$2" --parallel "$3" --out "$REC" \
     --upstream http://127.0.0.1:8788 --isolation systemd
 }

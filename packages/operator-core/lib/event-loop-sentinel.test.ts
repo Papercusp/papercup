@@ -124,6 +124,13 @@ describe('event-loop-sentinel worker starvation wiring', () => {
     expect(source).toContain('isConfirmedCpuStarvation(activity)');
     expect(source).toContain('mainThreadCpuPsiSome60');
   });
+
+  it('routes confirmed D-state directory I/O waits away from the SIGKILL path', () => {
+    const source = readFileSync(resolve(__dirname, 'event-loop-sentinel.worker.ts'), 'utf8');
+    const killBranch = source.slice(source.indexOf("case 'kill':"));
+    expect(killBranch).toContain('if (isConfirmedHostIoWait(activity))');
+    expect(killBranch).toContain('main event loop WEDGED — host I/O wait, NOT killing');
+  });
 });
 
 describe('decideLoopSentinelAction — a wedged loop is caught', () => {

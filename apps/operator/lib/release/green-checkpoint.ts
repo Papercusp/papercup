@@ -249,6 +249,9 @@ import {
   executedMapRecordingEnabled,
 } from "../../../../scripts/lib/executed-source-map.mjs";
 import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
+// EI-24538088938561684: a targeted TASK re-run (runGateAtRef — the frozen-repair verification's
+// `<ws> :: test:lane-*` re-run) arms the suite's per-file pass reuse and proof recording.
+import { armTargetedTaskReuse } from "../../../../scripts/lib/targeted-task-reuse.mjs";
 // WI-10000288: a repair-signature leg that answers "I verified NOTHING" (EXIT_NOT_CHECKED)
 // is not a failing leg, and judging it as one red-pins the candidate forever — no fix to the
 // SUBJECT can repair a verdict that was never about the subject. These guards infer their
@@ -20037,6 +20040,11 @@ export function realCheckpointDeps(
         process.env,
         undefined,
         cfg.greenCheckpointCapacityMode,
+        undefined,
+        // WI-1702898's rule applied to this leg: the rows a task writes here describe `ref`, so
+        // stamp it — but only once the checkout is verified to BE `ref` (a wrong sha is worse
+        // than the reporter's own resolution).
+        verifiedHead === ref ? ref : null,
       );
       const measured = await measureTargetedGateRuns(gateIds, async (script, workspace) => {
         const invocation = workspace
@@ -20050,12 +20058,42 @@ export function realCheckpointDeps(
               args: ["run", script],
               cwd: cfg.checkpointRoot,
             };
-        return exec(invocation.cmd, invocation.args, {
-          cwd: invocation.cwd,
-          env,
-          allowNonZero: true,
-          ...rescueTaskWatchdogOptions(script, env),
-        });
+        // EI-24538088938561684: a unit vitest task re-run here runs the workspace's own script
+        // under the suite's env, so it gets the suite's per-file pass reuse (files whose proof
+        // is still valid at `ref` are skipped, minus the audit sample) and records pass proofs
+        // for what it runs. Before this, a repair round re-ran ~2,700 lane-stateful tests and
+        // discarded every pass, so the next round and the promotion run at the same repair head
+        // re-ran them all again. Fail-open: an unverified checkout, or any failure inside the
+        // arming, runs the task exactly as before.
+        const armed =
+          workspace && verifiedHead === ref
+            ? await armTargetedTaskReuse({
+                root: cfg.checkpointRoot,
+                workspace,
+                script,
+                expectedSha: ref,
+                env,
+                scope: "targeted-gate",
+              }).catch((e: unknown) => {
+                log(
+                  `TARGETED_TEST_PASS_REUSE ws=${workspace}::${script} applied=false ` +
+                    `reason=arming-threw(${String(e instanceof Error ? e.message : e).replace(/\s+/g, "_").slice(0, 160)})`,
+                );
+                return null;
+              })
+            : null;
+        for (const line of armed?.lines ?? []) log(line);
+        const taskEnv = armed?.env ?? env;
+        try {
+          return await exec(invocation.cmd, invocation.args, {
+            cwd: invocation.cwd,
+            env: taskEnv,
+            allowNonZero: true,
+            ...rescueTaskWatchdogOptions(script, taskEnv),
+          });
+        } finally {
+          for (const line of armed?.finish() ?? []) log(line);
+        }
       });
       return {
         ...measured,
@@ -20844,7 +20882,10 @@ export function runCmd(
     const timeoutOutputTailMaxChars = 4_000;
     let timeoutOutputTail = "";
     const progressRemainders = new Map<"stdout" | "stderr", string>();
+    // Delivered output chunks, so a deferred idle expiry can tell whether the child progressed.
+    let outputChunks = 0;
     const capture = (stream: "stdout" | "stderr", chunk: Buffer | string) => {
+      outputChunks += 1;
       const text = chunk.toString();
       if (stream === "stdout") stdout += text;
       else stderr += text;
@@ -20920,7 +20961,15 @@ export function runCmd(
         const message = opts.timeoutResetsOnProgress
           ? `${cmd} ${args.join(" ")} made no output progress for ${opts.timeoutMs}ms`
           : `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms`;
-        rejectTimeout(message);
+        // EI-214116: after an event-loop stall Node runs expired timers BEFORE the poll phase
+        // that reads output the child already wrote, so rejecting here kills a child that
+        // progressed. Decide in the check phase, after that poll: a chunk delivered in between
+        // has re-armed the idle timer and cancels this expiry.
+        const chunksAtExpiry = outputChunks;
+        setImmediate(() => {
+          if (opts.timeoutResetsOnProgress && outputChunks !== chunksAtExpiry) return;
+          rejectTimeout(message);
+        });
       }, opts.timeoutMs);
     }
     // A bounded timeout kills the whole opted-in process group and rejects. By

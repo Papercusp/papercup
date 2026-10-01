@@ -313,7 +313,12 @@ export function operationWorkerEffectWhereSql(
  * canonical row makes its old attempt unable to close successfully. */
 export interface AcceptedProgramRootAttempt {
   workspaceId: string;
+  /** The harness the operation was accepted for; receipt and pin comparisons use it. */
   harnessSlug: string;
+  /** The `harness_slug` the root row is STORED under: the pot home slug for a pot member's
+   * root (WI-10004562 / D-045), as `AcceptedOperationWorkerBinding.storageHarnessSlug` is for
+   * an agent operation. Row matching uses this; pin comparisons never do. */
+  storageHarnessSlug: string;
   workItemId: string;
   receiptId: number;
   operationId: string;
@@ -328,7 +333,7 @@ export async function validateAcceptedProgramRootAttempt(
 ): Promise<void> {
   if (!Number.isSafeInteger(attempt.receiptId) || attempt.receiptId <= 0 ||
       !Number.isSafeInteger(attempt.updatedTs) || attempt.updatedTs <= 0 ||
-      attempt.workItemId !== item.id || attempt.harnessSlug !== item.harness) {
+      attempt.workItemId !== item.id || attempt.storageHarnessSlug !== item.harness) {
     throw new Error('accepted program root attempt is stale or malformed');
   }
   const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(
@@ -353,7 +358,7 @@ export function programRootEffectWhereSql(
   const payload = sql.unsafe(columns.payload);
   return sql`(
     ${sql.unsafe(columns.id)} = ${attempt.workItemId}
-    AND ${sql.unsafe(columns.harness)} IN (${attempt.harnessSlug}, ${`harness:${attempt.harnessSlug}`})
+    AND ${sql.unsafe(columns.harness)} IN (${attempt.storageHarnessSlug}, ${`harness:${attempt.harnessSlug}`})
     AND ${sql.unsafe(columns.updated)} = ${attempt.updatedTs}
     AND NOT (${sql.unsafe(columns.status)} = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
     AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'reopenHistory')

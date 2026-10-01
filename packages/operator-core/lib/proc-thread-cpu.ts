@@ -159,7 +159,7 @@ export interface MainThreadActivity {
  * enough to establish that the main thread is the parked subject rather than
  * a stale or misread `/proc` sample.
  */
-const HOST_IO_WAIT_WCHAN_RE = /^(?:rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
+const HOST_IO_WAIT_WCHAN_RE = /^(?:iterate_dir|rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|(?:__)?jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
 
 /**
  * Decide whether a sentinel kill should be suppressed because the main thread

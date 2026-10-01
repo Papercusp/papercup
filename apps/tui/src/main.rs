@@ -1775,14 +1775,11 @@ async fn run<B: Backend>(
                         .and_then(|()| out.flush())
                         .is_err()
                     {
-                        app.toast = Some(models::Notif {
-                            level: "error".to_string(),
-                            message:
-                                "Clipboard write failed — the terminal did not accept the copy"
-                                    .to_string(),
-                            harness: None,
-                            ts: None,
-                        });
+                        app.chat_toast(
+                            "error",
+                            "Clipboard write failed — the terminal did not accept the copy"
+                                .to_string(),
+                        );
                     }
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }

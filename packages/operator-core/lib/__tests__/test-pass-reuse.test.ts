@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+
+import { classifyLanes, isUnitTestFile } from '@papercusp/test-config/lane-split';
 
 import {
   auditDraw,
@@ -10,6 +12,9 @@ import {
   formatTestReuseLine,
   formatTestReuseTotalLine,
   isGlobalRunnerInput,
+  laneOfFromSplit,
+  laneOfTaskScript,
+  laneScopedCandidates,
   REUSE_SKIP_LIST_SCHEMA,
   reuseCandidates,
   reuseSoundnessAlarms,
@@ -374,6 +379,74 @@ describe('reuseCandidates', () => {
     ]);
     // The repo-root workspace owns every path.
     expect(reuseCandidates({ wsRel: '', relatedFiles: null, proofFiles })).toEqual(proofFiles);
+  });
+});
+
+// WI-10004617: both lane tasks receive the same lane-agnostic selection, so the other lane's
+// files were counted as candidates. Pure-lane files never record a proof (isolate:false), which
+// made ~1.9k of them read as lane-stateful `noProof` on the 599dbeeb gate run.
+describe('lane-scoped reuse candidates (WI-10004617)', () => {
+  it('maps only the two lane scripts to a lane', () => {
+    expect(laneOfTaskScript('test:lane-pure')).toBe('pure');
+    expect(laneOfTaskScript('test:lane-stateful')).toBe('stateful');
+    expect(laneOfTaskScript('test')).toBeNull();
+    expect(laneOfTaskScript('test:lane-stateful-extra')).toBeNull();
+    expect(laneOfTaskScript('test:integration')).toBeNull();
+  });
+
+  it("keeps only the task's own lane and counts the rest", () => {
+    const lanes: Record<string, 'pure' | 'stateful' | null> = {
+      'lib/a.test.ts': 'stateful',
+      'lib/b.test.ts': 'pure',
+      'lib/c.test.ts': 'pure',
+      'lib/d.integration.test.ts': null,
+    };
+    const candidates = Object.keys(lanes).map((f) => `packages/x/${f}`);
+    const laneOf = (rel: string) => lanes[rel] ?? null;
+    expect(laneScopedCandidates({ candidates, wsRel: 'packages/x', lane: 'stateful', laneOf })).toEqual({
+      candidates: ['packages/x/lib/a.test.ts'],
+      otherLane: 3,
+    });
+    expect(laneScopedCandidates({ candidates, wsRel: 'packages/x', lane: 'pure', laneOf })).toEqual({
+      candidates: ['packages/x/lib/b.test.ts', 'packages/x/lib/c.test.ts'],
+      otherLane: 2,
+    });
+  });
+
+  it('leaves an un-split task and out-of-workspace paths untouched', () => {
+    const never = () => {
+      throw new Error('an un-split task must not classify anything');
+    };
+    const candidates = ['packages/x/lib/a.test.ts'];
+    expect(laneScopedCandidates({ candidates, wsRel: 'packages/x', lane: null, laneOf: never })).toEqual({
+      candidates,
+      otherLane: 0,
+    });
+    expect(
+      laneScopedCandidates({ candidates: ['packages/y/lib/z.test.ts'], wsRel: 'packages/x', lane: 'stateful', laneOf: () => 'pure' }),
+    ).toEqual({ candidates: ['packages/y/lib/z.test.ts'], otherLane: 0 });
+  });
+
+  it('classifies with the real lane-split rule the lane configs use', () => {
+    const ws = mkdtempSync(join(tmpdir(), 'lane-scoped-reuse-'));
+    try {
+      mkdirSync(join(ws, 'lib'), { recursive: true });
+      // Built by concatenation so THIS file's own lane classification is unchanged.
+      const statefulMarker = 'vi.' + 'mock("./dep");';
+      writeFileSync(join(ws, 'lib/mocked.test.ts'), `${statefulMarker}\nit("x", () => {});\n`);
+      writeFileSync(join(ws, 'lib/plain.test.ts'), 'it("y", () => {});\n');
+      writeFileSync(join(ws, 'lib/db.integration.test.ts'), 'it("z", () => {});\n');
+      const rels = ['lib/mocked.test.ts', 'lib/plain.test.ts', 'lib/db.integration.test.ts', 'lib/gone.test.ts'];
+      const laneOf = laneOfFromSplit({ classifyLanes, isUnitTestFile }, ws, rels);
+      expect(laneOf('lib/mocked.test.ts')).toBe('stateful');
+      expect(laneOf('lib/plain.test.ts')).toBe('pure');
+      // Not a unit test file: no lane task runs it.
+      expect(laneOf('lib/db.integration.test.ts')).toBeNull();
+      // Unreadable is stateful in lane-split (the safe direction); mirror it.
+      expect(laneOf('lib/gone.test.ts')).toBe('stateful');
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
   });
 });
 

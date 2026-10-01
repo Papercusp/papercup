@@ -22,6 +22,7 @@ const {
   beginInteractionSpy,
   markInteractionPhaseSpy,
   preloadVditorSpy,
+  preloadPlanPopupSpy,
   preparePlanDocumentSpy,
   toastSpies,
   cleanupFlag,
@@ -48,6 +49,7 @@ const {
   beginInteractionSpy: vi.fn(),
   markInteractionPhaseSpy: vi.fn(),
   preloadVditorSpy: vi.fn(() => Promise.resolve(true)),
+  preloadPlanPopupSpy: vi.fn(() => Promise.resolve({})),
   preparePlanDocumentSpy: vi.fn(() => Promise.resolve(true)),
   toastSpies: { success: vi.fn(), error: vi.fn() },
   cleanupFlag: { value: true },
@@ -118,6 +120,9 @@ vi.mock('../perf/perf-marks', () => ({
 }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({
   preloadVditor: preloadVditorSpy,
+}));
+vi.mock('../chat/ChatRefPopupHost', () => ({
+  preloadPlanPopupModal: preloadPlanPopupSpy,
 }));
 vi.mock('@papercusp/ui-primitives', async (importOriginal) => ({
   ...await importOriginal<typeof import('@papercusp/ui-primitives')>(),
@@ -312,6 +317,7 @@ afterEach(() => {
   beginInteractionSpy.mockClear();
   markInteractionPhaseSpy.mockClear();
   preloadVditorSpy.mockClear();
+  preloadPlanPopupSpy.mockReset().mockResolvedValue({});
   preparePlanDocumentSpy.mockReset().mockResolvedValue(true);
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
@@ -320,6 +326,38 @@ afterEach(() => {
 });
 
 describe('PlanDashboard header', () => {
+  it('warms popup code independently of a click and marks only successful preparation', async () => {
+    const mark = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
+    let finish!: (module: {}) => void;
+    preloadPlanPopupSpy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    seed();
+    renderDash();
+    expect(preloadPlanPopupSpy).toHaveBeenCalledTimes(1);
+    expect(setQueryStatesSpy).not.toHaveBeenCalled();
+    expect(mark).not.toHaveBeenCalledWith('plan-dashboard-popup-module-ready-success-v1');
+    finish({});
+    await waitFor(() => expect(mark).toHaveBeenCalledWith('plan-dashboard-popup-module-ready-success-v1'));
+  });
+
+  it('leaves failed popup warm-up to the click retry and ignores completion after unmount', async () => {
+    const mark = vi.fn();
+    vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
+    preloadPlanPopupSpy.mockRejectedValueOnce(new Error('chunk unavailable'));
+    seed();
+    const failed = renderDash();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mark).not.toHaveBeenCalledWith('plan-dashboard-popup-module-ready-success-v1');
+    failed.unmount();
+    let finish!: (module: {}) => void;
+    preloadPlanPopupSpy.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = renderDash();
+    pending.unmount();
+    finish({});
+    await Promise.resolve();
+    expect(mark).not.toHaveBeenCalledWith('plan-dashboard-popup-module-ready-success-v1');
+  });
   it('prepares the exact read body from its existing live plan query and refreshes changed content', async () => {
     const mark = vi.fn();
     vi.stubGlobal('performance', { mark, clearMarks: vi.fn() });
@@ -370,7 +408,7 @@ describe('PlanDashboard header', () => {
     renderDash();
     await waitFor(() => expect(preloadVditorSpy).toHaveBeenCalledTimes(1));
     await Promise.resolve();
-    expect(mark).not.toHaveBeenCalled();
+    expect(mark).not.toHaveBeenCalledWith('plan-dashboard-vditor-ready-success-v1');
   });
 
   it('renders title, bucket, ✎/⚒ meta, progress and the needs-you line', () => {

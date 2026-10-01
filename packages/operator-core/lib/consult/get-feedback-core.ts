@@ -167,6 +167,8 @@ export interface GetFeedbackDeps {
     workspaceId: string;
     requesterId: string;
     question: string;
+    /** Exact durable subject (relevance-router `subjectRef`); forwarded from the request. */
+    subjectRef?: string | null;
     excludeOwners?: string[];
   }) => Promise<RouteResult>;
   /** Opens the kind='consult' conversation (bound to openConversation in prod). */

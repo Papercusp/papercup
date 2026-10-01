@@ -40,6 +40,7 @@ import {
 } from './agent-tools/plans/plan-spec-coverage-gate';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { getBuildInfo } from './build-info';
+import { beginPlanClosureObservation } from './goals/plan-closure-observations';
 // This suite checks shipment wiring; the design adapter's filesystem and
 // all-item aggregation are exercised by design-compare/acceptance.test.ts.
 vi.mock('./agent-tools/work_items/design-evidence-gate', () => ({ planDesignEvidenceGate: vi.fn() }));
@@ -76,6 +77,12 @@ vi.mock('./acceptance-bar-lifecycle-evaluator', () => ({ readAndEvaluateAcceptan
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
+}));
+// D-032's persisted closure verdict has its own suite (goals/plan-closure-observations*);
+// here only the gate's ordering and canonical-call contract with it is asserted.
+vi.mock('./goals/plan-closure-observations', async (orig) => ({
+  ...(await orig<typeof import('./goals/plan-closure-observations')>()),
+  beginPlanClosureObservation: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
@@ -250,6 +257,38 @@ describe('evaluatePlanAcceptanceGate', () => {
     });
     expect(verdict.repairAction?.nextVerb?.args.expectedCurrent)
       .toBe(status === 'awaiting-acceptance' ? status : undefined);
+  });
+
+  it('D-032: reads the closure fingerprint BEFORE the gate reads anything, then records the verdict', async () => {
+    const events: string[] = [];
+    const record = vi.fn(async () => undefined);
+    vi.mocked(beginPlanClosureObservation).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      events.push('fingerprint-read');
+      return { record };
+    });
+    mockFlag.mockResolvedValue(false);
+    const sql = (() => {
+      events.push('gate-read');
+      return Promise.resolve([{ plan_slug: 'observed-plan', harness_slug: 'actual-home', status: 'ready' }]);
+    }) as unknown as ReturnType<typeof getOrgPg>['sql'];
+    mockPg.mockReturnValue({ sql } as ReturnType<typeof getOrgPg>);
+
+    const verdict = await evaluatePlanAcceptanceGate('observed-plan');
+
+    expect(events[0]).toBe('fingerprint-read');
+    expect(events).toContain('gate-read');
+    expect(record).toHaveBeenCalledWith('actual-home', verdict);
+  });
+
+  it.each([
+    ['force', { force: { reason: 'waive code truth' } }],
+    ['gradingRecruitment', { gradingRecruitment: true }],
+  ])('D-032: never records a %s read as the closure verdict', async (_name, opts) => {
+    mockFlag.mockResolvedValue(false);
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'observed-plan', harness_slug: 'actual-home', status: 'ready' }]));
+    await evaluatePlanAcceptanceGate('observed-plan', opts);
+    expect(beginPlanClosureObservation).not.toHaveBeenCalled();
   });
 
   it('stamps even an early refusal with the loaded build provenance', async () => {

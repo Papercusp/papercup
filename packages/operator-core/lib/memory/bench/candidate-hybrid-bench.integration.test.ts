@@ -9,6 +9,8 @@ import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CanonicalVectorStore, HybridBackend, LexicalLegBackend, MEMORY_VECTOR_STORAGE_PROFILES, sidecarEmbedBatch } from '@papercusp/memory';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { getTestPg, startDedicatedNativePg } from '@papercusp/test-config/pg';
+import type { DedicatedNativePg } from '../../../../../libs/test-config/src/dedicated-native-pg';
 import { createEmbedSidecarServer, type EmbedSidecarHandle } from '../embed-sidecar-server';
 import { ensureBenchSchema, releaseBenchSchema } from './bench-host';
 import { canonicalCandidateBackend, candidateProfile } from './candidate-hybrid-bench';
@@ -18,13 +20,17 @@ import { fingerprintFile, prepareMeasurementCell, measurementOutputPaths, writeM
 
 describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () => {
   let db: OrgTestDb, client: Client, server: EmbedSidecarHandle, store: CanonicalVectorStore;
+  let nativePg: DedicatedNativePg | undefined;
+  const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
   let root: string, manifestFile: string, manifestHash: string, manifest: MeasurementManifest, prepared: PreparedMeasurement;
   let inferred = 0;
   const schema = `bench_memory_${process.pid}`;
   const repo = path.resolve(import.meta.dirname, '../../../../..');
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'measurement-protocol-'));
-    manifest = measurementManifestFixture(root, execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim());
+    // Positive control: a later unrelated git-sync commit is allowed when
+    // every declared input/runtime byte remains pinned and unchanged.
+    manifest = measurementManifestFixture(root, execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: repo, encoding: 'utf8' }).trim());
     const { entries, queries, proof } = independentCohortFixture();
     const write = async (name: string, value: unknown) => { const file = path.join(root, `${name}.json`);
       fs.writeFileSync(file, JSON.stringify(value)); return fingerprintFile(file); };
@@ -41,7 +47,14 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
     manifestHash = (await fingerprintFile(manifestFile)).sha256;
     prepared = await prepareMeasurementCell(manifestFile, manifestHash, 'hybrid', repo);
     await expect(prepareMeasurementCell(manifestFile, manifestHash, 'hybrid', repo)).rejects.toThrow('already owned');
+    // This suite needs actual PG18/migrations, not the shared Docker daemon.
+    // Own the cluster so a stalled shared-container resolve cannot erase all
+    // protocol evidence before beforeAll reaches the benchmark.
+    nativePg = await startDedicatedNativePg({ baseDir: root, readyBudgetMs: 15_000 });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = nativePg.getConnectionUri();
+    if (new URL(await getTestPg()).port !== String(nativePg.port)) throw new Error('test fixture resolved another cluster');
     db = await createOrgTestDb(); client = new Client({ connectionString: db.adminDsn }); await client.connect();
+    expect((await client.query('SHOW server_version_num')).rows[0].server_version_num.slice(0, 2)).toBe('18');
     await ensureBenchSchema(client, schema);
     const url = new URL(db.adminDsn), profile = candidateProfile('mdenseon');
     store = new CanonicalVectorStore({ host: url.hostname, port: Number(url.port), user: decodeURIComponent(url.username),
@@ -53,9 +66,16 @@ describe('frozen candidate manifest crosses actual HTTP/client/SQL seams', () =>
         inferred++; return [1, ...new Array(767).fill(0)]; } } });
   }, 120_000);
   afterAll(async () => {
-    await server?.close(); await store?.dispose();
-    if (client) { await releaseBenchSchema(client, schema); await client.end(); }
-    await db?.cleanup(); if (root) fs.rmSync(root, { recursive: true, force: true });
+    try {
+      await server?.close(); await store?.dispose();
+      if (client) { await releaseBenchSchema(client, schema); await client.end(); }
+      await db?.cleanup();
+    } finally {
+      if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+      await nativePg?.stop();
+      if (root) fs.rmSync(root, { recursive: true, force: true });
+    }
   });
   it('accepts verified uncached HTTP vectors, seeds the actual store and replays lexical/semantic fusion', async () => {
     const response = await sidecarEmbedBatch(`http://127.0.0.1:${await server.listening}`, {

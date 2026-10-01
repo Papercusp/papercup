@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-013: docs:search on the live operator returns the external-app quickstart, and the page carries curl, MCP client config and TypeScript examples",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004611",
+  "specs": ["AUTO-BAR-R-30-P-013@3"],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "supersedes": "docs/evidence/p013-docs-search-live-2026-09-30.json (the quickstart page changed after that run, at 2026-09-30T16:13:39Z, commit 1880386d3df2)",
+  "command": [
+    "docs:search { query: 'external app quickstart curl MCP TypeScript', limit: 3, harness: 'engineering' } through the live operator MCP (served by port-3170, build 36e3f8e6e7, per harness_shared.tool_invocations)",
+    "awk '/^```bash/{f=1;next} /^```/{f=0} f' apps/operator-docs/src/content/docs/harness/external-app-quickstart.mdx | grep -c 'curl '",
+    "grep -c 'mcpServers' apps/operator-docs/src/content/docs/harness/external-app-quickstart.mdx",
+    "grep -cE '^```(ts|typescript)' apps/operator-docs/src/content/docs/harness/external-app-quickstart.mdx"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T05:41:24Z",
+  "finishedAt": "2026-10-01T05:42:30Z",
+  "servedBy": {
+    "servingHost": "port-3170",
+    "servingBuildSha": "36e3f8e6e7"
+  },
+  "response": {
+    "surface": "engineering",
+    "hitCount": 929,
+    "legs": { "lexical": "ran", "semantic": "ran", "degraded": false },
+    "hits": [
+      { "rank": 1, "slug": "harness/external-app-quickstart", "title": "External-app quickstart" },
+      { "rank": 2, "slug": "agent-insights/mcp-client-drop-curl-recovery", "title": "Stranded after your papercusp-su MCP tools vanished? Recover in seconds via curl" },
+      { "rank": 3, "slug": "harness/remote-access-guide", "title": "Remote access: a user guide" }
+    ]
+  },
+  "pageCheck": {
+    "path": "apps/operator-docs/src/content/docs/harness/external-app-quickstart.mdx",
+    "sha256": "d0cdbead38ed3f00c4c03c8bb8eea657d36aa7511f042baff06b358566d26cec",
+    "headBlob": "e9926cc336c0fc6b52047e42638d591ed918137b",
+    "curlLinesInBashBlocks": 3,
+    "mcpServersConfigMentions": 1,
+    "typescriptCodeBlocks": 2
+  },
+  "assertions": [
+    {
+      "id": "R-30-quickstart-returned",
+      "passed": true,
+      "evidence": "docs:search returned harness/external-app-quickstart at rank 1 of 929 hits; both the lexical and semantic legs ran and the search was not degraded."
+    },
+    {
+      "id": "R-30-curl-example",
+      "passed": true,
+      "evidence": "The quickstart page's bash code block contains 3 curl command lines."
+    },
+    {
+      "id": "R-30-mcp-client-example",
+      "passed": true,
+      "evidence": "The quickstart page carries an mcpServers client configuration block."
+    },
+    {
+      "id": "R-30-typescript-example",
+      "passed": true,
+      "evidence": "The quickstart page carries 2 TypeScript code blocks (fetch and MCP SDK)."
+    }
+  ],
+  "summary": "Live docs:search on the running operator returned the external-app quickstart at rank 1 of 929 hits, and the page at blob e9926cc336c0 carries curl, MCP client config and TypeScript examples. Oracle independent of the page author: the operator's own search ranking plus a content check of the committed page."
+}

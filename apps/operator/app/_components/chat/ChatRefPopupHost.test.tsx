@@ -15,8 +15,9 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-const { nuqs, nuqsSetters, harness, phaseSpy } = vi.hoisted(() => ({
+const { nuqs, nuqsSetters, harness, phaseSpy, lazyRenderSpy } = vi.hoisted(() => ({
   phaseSpy: vi.fn(),
+  lazyRenderSpy: vi.fn(),
   nuqs: {} as Record<string, unknown>,
   nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
   // The surrounding surface's resolved harness (`?slug`), mutable per test.
@@ -49,7 +50,10 @@ vi.mock('@papercusp/operator-core/lib/lazy-with-retry', () => ({
   lazyWithRetry: (loader: () => Promise<{ default: unknown }>) => {
     let Comp: any = null;
     void loader().then((m) => { Comp = m.default; });
-    return (props: Record<string, unknown>) => (Comp ? <Comp {...props} /> : null);
+    return (props: Record<string, unknown>) => {
+      lazyRenderSpy();
+      return Comp ? <Comp {...props} /> : null;
+    };
   },
 }));
 // Tiny probes, gated on id/planSlug exactly like the real components, so a
@@ -67,7 +71,7 @@ vi.mock('../plans/PlanPopupModal', () => ({
     ) : null,
 }));
 
-import ChatRefPopupHost, { loadPlanPopupModal } from './ChatRefPopupHost';
+import ChatRefPopupHost, { loadPlanPopupModal, preloadPlanPopupModal } from './ChatRefPopupHost';
 
 afterEach(() => {
   for (const k of Object.keys(nuqs)) delete nuqs[k];
@@ -85,6 +89,19 @@ async function renderHost() {
 }
 
 describe('ChatRefPopupHost (WI-6601 — one mount, driven by the param)', () => {
+  it('renders the first prepared popup synchronously without entering the lazy boundary', async () => {
+    await preloadPlanPopupModal();
+    lazyRenderSpy.mockClear();
+    phaseSpy.mockClear();
+    nuqs.wppop = 'papercusp::prepared-plan';
+    render(<ChatRefPopupHost />);
+    expect(screen.getByTestId('plan-popup').getAttribute('data-plan')).toBe('prepared-plan');
+    expect(lazyRenderSpy).not.toHaveBeenCalled();
+    expect(phaseSpy.mock.calls).toEqual([
+      ['plan-popup-open', 'popup-module-requested'],
+      ['plan-popup-open', 'popup-module-ready'],
+    ]);
+  });
   it('records lazy module request and completion separately from component mount', async () => {
     phaseSpy.mockClear();
     const module = await loadPlanPopupModal();

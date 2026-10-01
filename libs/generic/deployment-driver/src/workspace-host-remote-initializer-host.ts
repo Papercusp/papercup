@@ -57,6 +57,7 @@ import {
 } from "./workspace-host-credential-namespace";
 import {
   NodeWorkspaceHostCredentialDeliveryFilesystem,
+  ensureSharedWorkspaceDirectory,
   recordWorkspaceHostCredentialRevocation,
   withWorkspaceHostCredentialFilesystemLock,
   workspaceHostCredentialFamilyLockPath,
@@ -190,6 +191,13 @@ export interface WorkspaceHostSystem
     WorkspaceHostCredentialDeliveryFilesystem,
     WorkspaceHostAgentHomeFilesystem {
   run(input: WorkspaceHostCommandInput): Promise<WorkspaceHostCommandResult>;
+  /**
+   * Create a directory under the ACL'd workspace root, mode `0770`, never following a symlink.
+   * Distinct from `ensureDirectory` (the PRIVATE `0700` credential/home form) on purpose: under
+   * the root's default ACL a `0700` mode sets `mask::---` and locks the service and agent
+   * accounts out of the customer's workspace (WI-10004594).
+   */
+  ensureWorkspaceDirectory(path: string): Promise<void>;
   pathExists(path: string): Promise<boolean>;
   removePath(path: string): Promise<void>;
   /** Optional only so hermetic systems need not model Unix ownership. Production always provides it. */
@@ -266,6 +274,10 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
 
   async ensureDirectory(path: string): Promise<void> {
     await this.deliveryFilesystem.ensureDirectory(path);
+  }
+
+  async ensureWorkspaceDirectory(path: string): Promise<void> {
+    await ensureSharedWorkspaceDirectory(path);
   }
 
   async pathExists(path: string): Promise<boolean> {
@@ -843,7 +855,9 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       input.workspaceId,
       "workspaceId",
     );
-    await this.system.ensureDirectory(directory);
+    // The workspace form, not the private `ensureDirectory`: this directory lives under the ACL'd
+    // workspace root and must stay reachable by the service and agent accounts (WI-10004594).
+    await this.system.ensureWorkspaceDirectory(directory);
     await this.system.setOwnership?.(
       directory,
       this.workspaceUser,

@@ -2081,6 +2081,14 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
+    "packages/operator-core/lib/memory/bench/measurement-manifest.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "the frozen-manifest contract for the hand-invoked memory benchmarks (embedder-eval-cli.ts, candidate-hybrid-bench.ts) runs two synchronous, read-only git metadata probes per measurement cell: `git check-ignore --quiet` (the summary path must stay Git-eligible) and `git merge-base --is-ancestor <sourceCommit> HEAD` (the frozen source commit must still be in history). Each returns one exit status, retains nothing and starts no resident work; they run only when a human runs a benchmark, never on a scheduled or serving path (WI-10004627)",
+    },
+  ],
+  [
     "packages/operator-core/lib/memory/op-deadline.ts::unbounded-resident-queue",
     {
       disposition: "semantic",

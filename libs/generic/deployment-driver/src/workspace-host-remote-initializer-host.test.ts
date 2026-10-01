@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +21,7 @@ import {
 } from "./workspace-host-desktop-pack";
 
 import {
+  NodeWorkspaceHostSystem,
   WorkspaceHostOperationError,
   WorkspaceHostGitCredentialBindingRegistry,
   WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
@@ -88,8 +98,15 @@ class RecordingSystem implements WorkspaceHostSystem {
   ): void {
     this.results.set(args.join("\u0000"), result);
   }
+  /** Which creation form made each directory: the PRIVATE 0700 one or the 0770 workspace one. */
+  readonly directoryForms = new Map<string, "private" | "workspace">();
   async ensureDirectory(path: string) {
     this.present.add(path);
+    this.directoryForms.set(path, "private");
+  }
+  async ensureWorkspaceDirectory(path: string) {
+    this.present.add(path);
+    this.directoryForms.set(path, "workspace");
   }
   async pathExists(path: string) {
     return this.present.has(path);
@@ -1143,4 +1160,130 @@ describe("ProductionWorkspaceHostRemoteInitializerHost cloned-repository observa
       }),
     ).resolves.toEqual({ visibility: "public", cloned: false });
   });
+});
+
+/**
+ * WI-10004594. The customer's workspace directory sits under the bootstrap's ACL'd root
+ * (`/srv/papercusp/workspaces`, default ACL naming the service, SSH and agent accounts). On a
+ * file with an ACL the mode's GROUP bits ARE the ACL mask, so creating it through the PRIVATE
+ * 0700 credential form set `mask::---` and the operator service account could no longer traverse
+ * it — the portal's "add a pot" answered "path does not exist" on a live hosted host.
+ */
+describe("ProductionWorkspaceHostRemoteInitializerHost workspace directory (WI-10004594)", () => {
+  class OwnershipRecordingSystem extends RecordingSystem {
+    readonly ownership = new Map<string, string>();
+    async setOwnership(path: string, owner: string, group: string) {
+      this.ownership.set(path, `${owner}:${group}`);
+    }
+  }
+
+  it("creates the workspace directory with the shared workspace form, not the private 0700 form", async () => {
+    const system = new OwnershipRecordingSystem();
+    const { host } = createProductionWorkspaceHostRemoteInitializerDeps({
+      system,
+      workspaceRoot: "/workspaces",
+      credentialMaterialRoot: MATERIAL_ROOT,
+      now: () => NOW,
+    });
+
+    const evidence = await host.createWorkspace({
+      workspaceId: "papercusp-workspace",
+      hostId: "host-1",
+    });
+
+    expect(evidence).toMatchObject({ directory: "/workspaces/papercusp-workspace", created: true });
+    expect(system.directoryForms.get("/workspaces/papercusp-workspace")).toBe("workspace");
+    expect(system.ownership.get("/workspaces/papercusp-workspace")).toBe(
+      "papercusp-workspace:papercusp-workspace",
+    );
+  });
+
+  async function scratch(): Promise<string> {
+    return await mkdtemp(join(tmpdir(), "wi-10004594-"));
+  }
+  const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
+
+  it("NodeWorkspaceHostSystem creates the directory 0770 and repairs an existing 0700 one", async () => {
+    const root = await scratch();
+    try {
+      const system = new NodeWorkspaceHostSystem();
+      const fresh = join(root, "fresh");
+      await system.ensureWorkspaceDirectory(fresh);
+      expect(await modeOf(fresh)).toBe(0o770);
+
+      const existing = join(root, "existing");
+      await mkdir(existing);
+      await chmod(existing, 0o700);
+      await system.ensureWorkspaceDirectory(existing);
+      expect(await modeOf(existing)).toBe(0o770);
+
+      // The private form is unchanged: credential and home directories stay 0700.
+      const credential = join(root, "credential");
+      await system.ensureDirectory(credential);
+      expect(await modeOf(credential)).toBe(0o700);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("NodeWorkspaceHostSystem refuses a symlink where the workspace directory belongs", async () => {
+    const root = await scratch();
+    try {
+      const target = join(root, "elsewhere");
+      await mkdir(target);
+      const link = join(root, "workspace");
+      await symlink(target, link);
+      await expect(new NodeWorkspaceHostSystem().ensureWorkspaceDirectory(link)).rejects.toThrow(
+        /refusing non-directory or symlink at workspace directory/,
+      );
+      expect(await modeOf(target)).not.toBe(0o770);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  const hasAclTools =
+    spawnSync("setfacl", ["--version"]).status === 0 &&
+    spawnSync("getfacl", ["--version"]).status === 0;
+
+  // The production failure itself, on a real filesystem with a real default ACL shaped like the
+  // bootstrap's. The private-form control proves this test can see a voided mask at all.
+  it.skipIf(!hasAclTools)(
+    "under a default ACL the workspace form keeps mask::rwx while the private form voids it",
+    async (context) => {
+      const root = await scratch();
+      try {
+        const me = userInfo().username;
+        const acl = `u:${me}:rwx,m::rwx,o::---`;
+        const set = spawnSync("setfacl", ["-m", acl, "-d", "-m", acl, root], { encoding: "utf8" });
+        if (set.status !== 0 && /Operation not supported/.test(set.stderr)) {
+          // A filesystem without ACL support cannot express the failure: report a SKIP, not a pass.
+          context.skip();
+        }
+        expect(set.status, set.stderr).toBe(0);
+        const maskOf = (path: string) => {
+          const out = spawnSync("getfacl", ["--omit-header", "--absolute-names", path], {
+            encoding: "utf8",
+          });
+          expect(out.status).toBe(0);
+          return /^mask::(\S+)$/m.exec(out.stdout)?.[1];
+        };
+        const system = new NodeWorkspaceHostSystem();
+
+        const workspace = join(root, "papercusp-workspace");
+        await system.ensureWorkspaceDirectory(workspace);
+        expect(maskOf(workspace)).toBe("rwx");
+
+        const privateForm = join(root, "private-form");
+        await system.ensureDirectory(privateForm);
+        expect(maskOf(privateForm)).toBe("---");
+
+        // Re-running the workspace form over a directory the old code left voided repairs it.
+        await system.ensureWorkspaceDirectory(privateForm);
+        expect(maskOf(privateForm)).toBe("rwx");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

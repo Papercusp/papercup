@@ -1,0 +1,34 @@
+[
+  {
+    "id": "e4a3fb25-13db-4cb0-ac08-758606afce84",
+    "kind": "mobile",
+    "text": "(unnamed) · Phone Added by local@desktop on 10/1/2026, 1:44:03 AM · last used never Pause Rotate Revoke ",
+    "pause": true,
+    "rotate": true,
+    "revoke": true
+  },
+  {
+    "id": "VdjKNUetHgPlcKw1",
+    "kind": "app",
+    "text": "p010-app-C · App key Added by local@desktop on 10/1/2026, 1:44:01 AM · last used never Tools: none Pause Edit scope Rotate Revoke ",
+    "pause": true,
+    "rotate": true,
+    "revoke": true
+  },
+  {
+    "id": "C8121IRM4T6gRXbU",
+    "kind": "app",
+    "text": "p010-app-B · App key Added by local@desktop on 10/1/2026, 1:44:01 AM · last used never Tools: none Pause Edit scope Rotate Revoke ",
+    "pause": true,
+    "rotate": true,
+    "revoke": true
+  },
+  {
+    "id": "x48HbgwDijCCrNhn",
+    "kind": "app",
+    "text": "p010-app-A · App key Added by local@desktop on 10/1/2026, 1:44:00 AM · last used never Tools: none Pause Edit scope Rotate Revoke ",
+    "pause": true,
+    "rotate": true,
+    "revoke": true
+  }
+]

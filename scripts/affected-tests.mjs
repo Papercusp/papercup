@@ -92,6 +92,9 @@ import {
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
+  laneOfFromSplit,
+  laneOfTaskScript,
+  laneScopedCandidates,
   reuseCandidates,
   reuseSoundnessAlarms,
   selectReusablePasses,
@@ -100,6 +103,7 @@ import {
   testReuseMaxAgeMs,
   writeReuseSkipList,
 } from "./lib/test-pass-reuse.mjs";
+import { LANE_SCRIPTS as SHARED_LANE_SCRIPTS } from "./lib/targeted-task-reuse.mjs";
 import {
   decideRetry,
   deriveRetryBudget,
@@ -4839,7 +4843,9 @@ const affected = affectedWorkspaces();
 // (`npm run test --workspace <ws> -- <files>`), which sets no lane env — so those re-runs
 // stay isolated BY CONSTRUCTION, and WI-6956 keeps its ability to classify "passes alone,
 // fails co-executed" as a real concurrency defect rather than absorbing it.
-const LANE_SCRIPTS = ["test:lane-pure", "test:lane-stateful"];
+// The lane list is shared with the gate's targeted task re-runs (EI-24538088938561684), which must
+// recognise the same unit tasks this runner arms reuse and proof recording on.
+const LANE_SCRIPTS = SHARED_LANE_SCRIPTS;
 const hasLaneSplit = (ws) => LANE_SCRIPTS.every((s) => ws.scripts?.[s]);
 /**
  * Do this workspace's already-queued tasks cover its FULL unit suite?
@@ -5573,6 +5579,14 @@ async function armTestPassReuse(taskList) {
   const loaded = new Map();
   /** @type {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} */
   const reuseTotals = { tasks: 0, summaries: [], savedMs: 0, unmeasured: 0 };
+  // WI-10004617: classify with the SAME function each lane's vitest config uses (lane-split.ts),
+  // so a lane task's candidates are exactly the files that lane runs. Loaded once, on demand.
+  /** @type {any} */
+  let laneSplit = null;
+  const laneClassifier = async (wsRoot, wsRelFiles) => {
+    laneSplit ??= await import("@papercusp/test-config/lane-split");
+    return laneOfFromSplit(laneSplit, wsRoot, wsRelFiles);
+  };
   try {
     for (const t of unitTasks) {
       if (!loaded.has(t.ws.name)) {
@@ -5598,8 +5612,26 @@ async function armTestPassReuse(taskList) {
       }
       const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
       const prefix = wsRel === "" ? "" : `${wsRel}/`;
+      let candidates = reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() });
+      // WI-10004617: a lane task's selection covers BOTH lanes; count only the files it can run.
+      const lane = laneOfTaskScript(t.script);
+      let laneNote = "";
+      if (lane !== null) {
+        try {
+          const laneOf = await laneClassifier(
+            join(ROOT, t.ws.dir),
+            candidates.map((f) => f.slice(prefix.length)),
+          );
+          const scoped = laneScopedCandidates({ candidates, wsRel, lane, laneOf });
+          candidates = scoped.candidates;
+          laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+        } catch (err) {
+          // Fail-open: the unfiltered list only over-counts noProof; it never skips a wrong file.
+          laneNote = ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
+        }
+      }
       const { skip, summary, watch } = selectReusablePasses({
-        candidates: reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() }),
+        candidates,
         proofs,
         judgedSha,
         changedBetween,
@@ -5651,7 +5683,7 @@ async function armTestPassReuse(taskList) {
           label,
           summary,
           ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)} ` +
-            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs}`,
+            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs}${laneNote}`,
         ),
       );
     }

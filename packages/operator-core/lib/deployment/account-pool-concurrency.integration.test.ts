@@ -33,14 +33,13 @@ import postgres from 'postgres';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { AccountPool } from './account-pool';
 
-const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-account-pool-concurrency' }));
+const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-account-pool-concurrency', notify: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
-// The pool write fans out to the sync bus; irrelevant here and it would need a listener.
-vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: h.notify }));
 
 const { loadAccountPool, updateAccountPool } = await import('./account-pool-store');
-const { readOperatorState, writeOperatorState } = await import('../operator-state-pg');
+const { readOperatorState, writeOperatorState, updateOperatorState } = await import('../operator-state-pg');
 const { registerAccount, recordAccountPenalty } = await import('./account-pool');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
@@ -76,6 +75,95 @@ describe('account pool writes under concurrency (WI-38164)', () => {
   beforeEach(async () => {
     await db.adminSql`DELETE FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}`;
     await updateAccountPool((p) => registerAccount(p, acct('incumbent'), 1));
+    h.notify.mockClear();
+  });
+
+  it('an unchanged account-pool mutation does not rewrite the row or invalidate accounts.pool', async () => {
+    const before = await db.adminSql`
+      SELECT xmin::text AS version, updated_at FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `;
+    // A real caller can do this when an already-removed account reports a penalty.
+    // updateAccountPool still normalizes/rebuilds the object before this mutator runs.
+    const pool = await updateAccountPool((p) => recordAccountPenalty(p, 'already-removed', 10));
+    expect(pool.accounts.map((a) => a.id)).toEqual(['incumbent']);
+    const after = await db.adminSql`
+      SELECT xmin::text AS version, updated_at FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `;
+    expect(after).toEqual(before);
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('JSONB-equivalent key reordering stays quiet, but an in-place rate change persists and invalidates', async () => {
+    const before = await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `;
+    await updateAccountPool((p) => ({ accounts: p.accounts.map((a) => {
+      const { id, ...rest } = a;
+      return { ...rest, id };
+    }) }));
+    expect(await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `).toEqual(before);
+    expect(h.notify).not.toHaveBeenCalled();
+
+    await updateAccountPool((p) => {
+      p.accounts[0]!.rate.pausedUntil = 999;
+      return p;
+    });
+    expect((await loadAccountPool()).accounts[0]!.rate.pausedUntil).toBe(999);
+    expect(h.notify.mock.calls.map(([name]) => name)).toEqual(['accounts.pool']);
+  });
+
+  it('an unchanged pool write still waits for the row lock and returns the committed membership', async () => {
+    const outsider = postgres(db.adminDsn, { max: 1, prepare: false, onnotice: () => {} });
+    try {
+      let settled = false;
+      let pending!: Promise<AccountPool>;
+      await outsider.begin(async (tx) => {
+        await tx`SELECT payload FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws} FOR UPDATE`;
+        pending = updateAccountPool((p) => p).then((p) => { settled = true; return p; });
+        await new Promise((r) => setTimeout(r, 100));
+        expect(settled).toBe(false);
+        await tx`
+          UPDATE harness_shared.operator_account_pool
+          SET payload = jsonb_set(payload, '{accounts}', payload->'accounts' || ${tx.json([
+            { id: 'committed-peer', credentialRef: 'token:/creds/peer', addedAt: 20, boundTo: [], rate: {} },
+          ])}::jsonb)
+          WHERE workspace_id = ${h.ws}
+        `;
+      });
+      expect((await pending).accounts.map((a) => a.id).sort()).toEqual(['committed-peer', 'incumbent']);
+    } finally {
+      await outsider.end({ timeout: 5 });
+    }
+  });
+
+  it('the direct state-write seam also suppresses an unchanged pool refresh', async () => {
+    const pool = await loadAccountPool();
+    const before = await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `;
+    await writeOperatorState('operator_account_pool', pool);
+    expect(await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_account_pool WHERE workspace_id = ${h.ws}
+    `).toEqual(before);
+    expect(h.notify).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged non-pool state write retains its write and timestamp semantics', async () => {
+    await writeOperatorState('operator_first_run', { seen: true });
+    const before = await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_first_run WHERE workspace_id = ${h.ws}
+    `;
+    await writeOperatorState('operator_first_run', { seen: true });
+    const after = await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_first_run WHERE workspace_id = ${h.ws}
+    `;
+    expect(after[0]!.version).not.toBe(before[0]!.version);
+    await updateOperatorState('operator_first_run', {}, (p) => p);
+    expect((await db.adminSql`
+      SELECT xmin::text AS version FROM harness_shared.operator_first_run WHERE workspace_id = ${h.ws}
+    `)[0]!.version).not.toBe(after[0]!.version);
   });
 
   it('CONTROL — the pre-fix load/mutate/blind-write shape DOES eat a concurrent registration', async () => {

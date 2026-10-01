@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ts from 'typescript';
@@ -149,6 +149,41 @@ describe('exportIndex on the indexed libraries', () => {
       expect(groups.some((g) => g.wholesale)).toBe(false);
       expect(new Set(parsed).size).toBe(parsed.length);
       expect(parsed.sort()).toEqual(checkerExportNames(entry).sort());
+    });
+  }
+});
+
+/**
+ * Falsifiability seam: a copy-out mutation probe points this at an edited copy
+ * of the catalog. Unset in every normal run, so the committed file is read.
+ */
+const CATALOG = process.env.PAPERCUSP_BORROWABLE_MD ?? join(REPO, 'BORROWABLE.md');
+
+/** The catalog text under `### \`<pkg>\``, up to the next heading of that level or above. */
+function catalogSection(catalog: string, pkg: string): string | null {
+  const lines = catalog.split('\n');
+  const start = lines.indexOf(`### \`${pkg}\``);
+  if (start < 0) return null;
+  const end = lines.findIndex((l, i) => i > start && /^#{1,3} /.test(l));
+  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n');
+}
+
+describe('the committed BORROWABLE.md', () => {
+  it('section extraction stops at the next heading', () => {
+    const text = ['### `@a/x`', '- `./m` — `one`', '### `@a/y`', '- `./n` — `two`'].join('\n');
+    expect(catalogSection(text, '@a/x')).toBe('- `./m` — `one`');
+    expect(catalogSection(text, '@a/z')).toBeNull();
+  });
+
+  for (const lib of EXPORT_INDEX) {
+    it(`${lib}: its section names every export of the entry module`, () => {
+      const pkg = (JSON.parse(readFileSync(join(REPO, lib, 'package.json'), 'utf8')) as { name: string }).name;
+      const section = catalogSection(readFileSync(CATALOG, 'utf8'), pkg);
+      expect(section, `no section for ${pkg}`).not.toBeNull();
+      const { groups } = exportIndex(join(REPO, lib)) as { groups: Group[] };
+      const names = groups.flatMap((g) => [...g.values, ...g.types]);
+      expect(names.length).toBeGreaterThan(0);
+      expect(names.filter((n) => !section!.includes(`\`${n}\``))).toEqual([]);
     });
   }
 });

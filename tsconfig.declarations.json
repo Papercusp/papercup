@@ -102,6 +102,10 @@
     // (D-004). Registered for the same reason as executed-source-map.mjs above: imported
     // directly by test-pass-reuse.test.ts.
     "scripts/lib/test-pass-reuse.mjs",
+    // EI-24538088938561684 — pass reuse + proof recording for the gate's targeted task re-runs.
+    // Imported by apps/operator/lib/release/green-checkpoint.ts (runGateAtRef) and directly by
+    // targeted-task-reuse.test.ts.
+    "scripts/lib/targeted-task-reuse.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure
@@ -374,6 +378,9 @@
     // P-015 R-7 live-switch verifier, imported by its contract test (same reason).
     "scripts/verify-identities-r7.mjs",
     // EI-18750303030034478: imported by its TypeScript contract test (same reason).
-    "scripts/lib/mutation-probe-window.mjs"
+    "scripts/lib/mutation-probe-window.mjs",
+    // shared-vector-search-libraries-2026-09-29 P-007 (WI-10004276): the BORROWABLE.md
+    // generator's export index is imported by borrowable-export-index.test.ts.
+    "scripts/gen-borrowable-catalog.mjs"
   ]
 }

@@ -86,6 +86,7 @@ import { readAndEvaluateAcceptanceBarLifecycle, type AcceptanceBarLifecycleVerdi
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
 import { planDesignEvidenceGate } from './agent-tools/work_items/design-evidence-gate';
 import { getBuildInfo, type BuildInfo } from './build-info';
+import { beginPlanClosureObservation, isCanonicalClosureGateCall } from './goals/plan-closure-observations';
 
 export type { CitationDeployment };
 
@@ -1965,12 +1966,19 @@ export async function evaluatePlanAcceptanceGate(
   opts: PlanAcceptanceGateOpts = {},
 ): Promise<PlanAcceptanceGateVerdict> {
   const subject: { status?: string | null; harnessSlug?: string } = {};
+  // D-032: this is the ONE writer of the persisted closure verdict the goal portfolio
+  // read serves (goals/plan-closure-observations.ts). Only a canonical call is
+  // recorded, since force/gradingRecruitment/caller fingerprints change the answer.
+  // The fingerprint is read BEFORE evaluation starts, never beside it.
+  const observation = isCanonicalClosureGateCall(opts) ? await beginPlanClosureObservation(planSlug) : null;
   const verdict = await evaluatePlanAcceptanceGateWithoutBuildProvenance(planSlug, opts, subject);
-  return {
+  const result: PlanAcceptanceGateVerdict = {
     ...verdict,
     repairAction: planAcceptanceRepairAction(
       planSlug, verdict, { ...opts, harnessSlug: subject.harnessSlug ?? opts.harnessSlug }, subject.status,
     ),
     buildProvenance: getBuildInfo(),
   };
+  await observation?.record(subject.harnessSlug, result);
+  return result;
 }

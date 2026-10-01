@@ -728,6 +728,44 @@ done
 PC_BACKUP_TRANSCRIPT_TABLES="${PC_BACKUP_TRANSCRIPT_TABLES:-harness_shared.session_archive_files harness_shared.session_turns harness_shared.tool_invocations harness_shared.session_turn_chunks harness_shared.session_turn_parts harness_shared.route_invocations}"
 TIER_DUMPED=()
 TIER_FAILED=()
+TIER_NOT_DUE=()
+
+# ── Transcript-tier cadence (WI-10004603) ────────────────────────────────────
+# MEASURED 2026-10-01: the hourly run took 2822 / 2999 / 2995 / 3397 s, ~95% of
+# its one-hour timer period. The target is one 7200 rpm HDD at ~72 MB/s, and the
+# transcript tier alone is ~100 GB of it (the state tier ~58 GB). Once a run
+# outlasts the period, the next timer start is a no-op on a running unit, so the
+# backup becomes continuous and the STATE tier's recovery point slips with it.
+#
+# So the transcript tier is rewritten only when its existing artifact is at
+# least PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC old, and the state tier stays hourly.
+# 9000 s (2.5 h) is below a 3 h cadence on purpose: a run reaches the tier ~20-50
+# min after its :10 start, so the artifact is ~1.3 h / 2.3 h / 3.3 h old at the
+# next three checks and the third one dumps. That keeps the worst case near
+# 3.75 h, under the health check's 6 h BACKUP_MAX_AGE_H with room for one
+# deferred run. The age is the artifact DIRECTORY's mtime, the same instrument
+# papercup-backup-health-check.sh alarms on, so the producer and the alarm can't
+# disagree about how old the tier is.
+#
+# Not dumping a tier that is not due is NOT a failure: the previous validated
+# artifact stays in place (dump_one only ever swaps a validated one in), and the
+# tier is listed in tierNotDue[] so a reader can tell "not due" from "never ran".
+# The tiers are separate pg_dump snapshots already (~20 min apart before this
+# change); no FK crosses between them (checked 2026-10-01: 0 of 110 FKs touch a
+# transcript table), so a wider skew restores the same way.
+# 0 restores the old every-run behaviour.
+PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC="${PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC:-9000}"
+case "$PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC" in ''|*[!0-9]*) PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC=9000 ;; esac
+
+# transcript_tier_age <artifact dir> — seconds since the artifact was written,
+# or empty when there is no artifact to keep (never dumped, or removed).
+transcript_tier_age() {
+  local mtime
+  [ -d "$1" ] || return 0
+  mtime=$(stat -c %Y "$1" 2>/dev/null) || return 0
+  [ -n "$mtime" ] || return 0
+  echo $(( $(date +%s) - mtime ))
+}
 
 # ── Tier 2 (transcript) is NEVER enrolled in kopia — and that rule is TREE-OWNED
 # The transcript tier is ~73G of high-churn session archive. The ratified ruling
@@ -807,7 +845,12 @@ if [ "$PC_BACKUP_TIERS_ENABLED" = 1 ]; then
     else
       TIER_FAILED+=("$db-state"); FAILED+=("$db-state")
     fi
-    if dump_one "$db" "$db-transcript" "${inc[@]}"; then
+    tx_age=$(transcript_tier_age "$PGOUT/$db-transcript")
+    if [ -n "$tx_age" ] && [ "$tx_age" -ge 0 ] \
+       && [ "$tx_age" -lt "$PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC" ]; then
+      TIER_NOT_DUE+=("$db-transcript")
+      log "$db-transcript not due: existing dump is ${tx_age}s old (< ${PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC}s, WI-10004603); kept as-is"
+    elif dump_one "$db" "$db-transcript" "${inc[@]}"; then
       TIER_DUMPED+=("$db-transcript"); DUMPED+=("$db-transcript")
     else
       TIER_FAILED+=("$db-transcript"); FAILED+=("$db-transcript")
@@ -928,6 +971,17 @@ fi
 ELAPSED=$(( $(date +%s) - START ))
 OK=true; [ ${#FAILED[@]} -eq 0 ] || OK=false
 
+# WI-10004603: a run that takes most of its timer period is one growth step from
+# becoming continuous (the next hourly start is a no-op on a running unit). Warn
+# at 75% here; kopia-healthcheck.sh pages on elapsedSec at its own threshold.
+PC_BACKUP_PERIOD_SEC="${PC_BACKUP_PERIOD_SEC:-3600}"
+case "$PC_BACKUP_PERIOD_SEC" in ''|*[!0-9]*|0) PC_BACKUP_PERIOD_SEC=3600 ;; esac
+DUTY_WARN=false
+if [ $(( ELAPSED * 4 )) -ge $(( PC_BACKUP_PERIOD_SEC * 3 )) ]; then
+  DUTY_WARN=true
+  log "WARNING: this run took ${ELAPSED}s, >= 75% of the ${PC_BACKUP_PERIOD_SEC}s timer period (WI-10004603). Not-due tiers: ${TIER_NOT_DUE[*]:-none}."
+fi
+
 # Carry the previous oddsmith success forward when this run did not produce one.
 # Read it BEFORE the STATUS rewrite, and default explicitly: `$(sed ... || echo 0)`
 # yields EMPTY when sed matches nothing (sed still exits 0), which would emit
@@ -979,6 +1033,14 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   printf '  "tiersEnabled": %s,\n' "$([ "$PC_BACKUP_TIERS_ENABLED" = 1 ] && echo true || echo false)"
   printf '  "tierDumped": [%s],\n' "$(json_arr ${TIER_DUMPED[@]+"${TIER_DUMPED[@]}"})"
   printf '  "tierFailed": [%s],\n' "$(json_arr ${TIER_FAILED[@]+"${TIER_FAILED[@]}"})"
+  # WI-10004603: a tier whose previous artifact is younger than its cadence is
+  # kept, not rewritten. Listed so "not due" is distinguishable from "not run".
+  printf '  "tierNotDue": [%s],\n' "$(json_arr ${TIER_NOT_DUE[@]+"${TIER_NOT_DUE[@]}"})"
+  printf '  "transcriptMinAgeSec": %s,\n' "$PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC"
+  # Duty cycle against the hourly timer: kopia-healthcheck.sh alarms on
+  # elapsedSec, and this flag says so to anyone reading the file by hand.
+  printf '  "periodSec": %s,\n' "$PC_BACKUP_PERIOD_SEC"
+  printf '  "dutyCycleWarn": %s,\n' "$DUTY_WARN"
   # WI-39502: the oddsmith embedded PG (5544) reports SEPARATELY from the system
   # cluster above — see the leg's comment for why coupling them would be a bug.
   # healthcheck.sh asserts oddsmithLastSuccessEpoch on its own threshold.

@@ -239,6 +239,11 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     });
     const a = await publish(api, env, body);
     expect(a.status).toBe(200);
+    // A `plan` lands pending; stand in for the operator's review approval so the
+    // first SHA is the "previously approved version" SPEC-P-004@2 talks about.
+    const approvedFirst = store.tables.harnesses.find((row) => row.pinned_commit_sha === first)!;
+    expect(approvedFirst.review_status).toBe('pending');
+    approvedFirst.review_status = 'approved';
     stubGithub({
       user: { id: 5, login: 'pub' },
       repo: { id: 8, private: false, permissions: { admin: true }, default_branch: 'main' },
@@ -250,13 +255,48 @@ describe('Cupboard /listings — three kinds + project-centric 1:N', () => {
     expect((await b.json() as { dedup?: boolean }).dedup).not.toBe(true);
     expect(store.tables.harnesses).toHaveLength(2);
     expect(store.tables.harnesses.map((row) => row.pinned_commit_sha)).toEqual(expect.arrayContaining([first, second]));
+    // SPEC-P-004@2: the previously APPROVED version keeps being served while the
+    // new SHA waits in review — publishing must never unlist the only installable copy.
+    const oldRow = store.tables.harnesses.find((row) => row.pinned_commit_sha === first)!;
+    const newRow = store.tables.harnesses.find((row) => row.pinned_commit_sha === second)!;
+    expect(oldRow).toMatchObject({ review_status: 'approved', unlisted_at: null });
+    expect(oldRow.claim_status).not.toBe('superseded');
+    expect(newRow).toMatchObject({ review_status: 'pending', unlisted_at: null });
+    const servedOld = await api.request(`/listings/${oldRow.id}`, {}, env);
+    expect(servedOld.status).toBe(200);
+    const hiddenNew = await api.request(`/listings/${newRow.id}`, {}, env);
+    expect(hiddenNew.status).toBe(404);
+    const browse = await api.request('/listings?kind=plan', {}, env);
+    expect((await browse.json() as { results: Array<{ id: string }> }).results.map((r) => r.id)).toEqual([oldRow.id]);
+    const exactRetry = await publish(api, env, body);
+    expect((await exactRetry.json() as { dedup?: boolean }).dedup).toBe(true);
+    expect(store.tables.harnesses).toHaveLength(2);
+  });
+
+  it('P-004 retires the prior version at publish only for a kind that publishes approved', async () => {
+    const { env, store } = makeEnv();
+    const first = 'c'.repeat(40);
+    const second = 'd'.repeat(40);
+    const body = { ...BLUEPRINT_BASE, github_repository_id: 10, listing_kind: 'theme', listing_ref: 'solar' };
+    const stub = (sha: string) => stubGithub({
+      user: { id: 5, login: 'pub' },
+      repo: { id: 10, private: false, permissions: { admin: true }, default_branch: 'main' },
+      head: { sha },
+      tree: { entries: stubTreeFor('solar') },
+    });
+    stub(first);
+    expect((await publish(api, env, body)).status).toBe(200);
+    stub(second);
+    expect((await publish(api, env, body)).status).toBe(200);
+    expect(store.tables.harnesses).toHaveLength(2);
     expect(store.tables.harnesses.find((row) => row.pinned_commit_sha === first)).toMatchObject({
       claim_status: 'superseded',
       unlisted_reason: 'superseded_by_new_content_pin',
     });
-    const exactRetry = await publish(api, env, body);
-    expect((await exactRetry.json() as { dedup?: boolean }).dedup).toBe(true);
-    expect(store.tables.harnesses).toHaveLength(2);
+    expect(store.tables.harnesses.find((row) => row.pinned_commit_sha === second)).toMatchObject({
+      review_status: 'approved',
+      unlisted_at: null,
+    });
   });
 
   it('POST /listings plugin publishes (install kind)', async () => {

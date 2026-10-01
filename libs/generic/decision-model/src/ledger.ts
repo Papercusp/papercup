@@ -30,6 +30,8 @@ export interface DecisionPricing {
 export interface DecisionLedgerEntry {
   readonly provider: string;
   readonly consumer: string | null;
+  /** Where in the host the call was made; null when the caller passed none. */
+  readonly surface: string | null;
   readonly requestedModel: string;
   /** The model id the provider says answered; null when nothing answered. */
   readonly returnedModel: string | null;
@@ -129,6 +131,7 @@ export function toDecisionLedgerEntry(record: DecisionCallRecord, options: Decis
   const base = {
     provider: record.provider,
     consumer: record.consumer,
+    surface: record.surface,
     requestedModel: record.requestedModel,
     questionIds: Object.keys(request.questions),
     questionsSchemaSha256: questionsSchemaSha256(request.questions),

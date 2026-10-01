@@ -1866,6 +1866,42 @@ function errorDetail(error) {
 }
 
 /**
+ * Whether a connection was rejected because this bearer is invalid for the
+ * selected operator. Only this typed refusal may advance to another implicit
+ * token file; explicit token overrides remain authoritative.
+ */
+export function isInvalidSuperuserBearerFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (/\bsuperuser_invalid_bearer\b/i.test(errorDetail(current))) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/** Retry connection setup with the next bearer only after a typed invalid-bearer rejection. */
+export async function connectWithTokenFallback(connectOnce, tokenCandidates) {
+  const candidates = Array.isArray(tokenCandidates)
+    ? tokenCandidates.filter((token) => typeof token === 'string' && token.length > 0)
+    : [];
+  if (candidates.length === 0) throw new Error('ptool: no superuser token candidates were resolved');
+
+  let lastError;
+  for (let index = 0; index < candidates.length; index += 1) {
+    try {
+      return await connectOnce(candidates[index]);
+    } catch (error) {
+      lastError = error;
+      if (index === candidates.length - 1 || !isInvalidSuperuserBearerFailure(error)) throw error;
+    }
+  }
+  throw lastError;
+}
+
+/**
  * The MCP proxy includes a forwarding result in its JSON error body when it
  * refuses an upstream request before forwarding it. Keep this check tolerant
  * of the MCP SDK's Error wrapper (which normally preserves the body only in
@@ -2739,11 +2775,11 @@ export async function importSdkModuleWithInstallAwareness(
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
 async function connect(operatorUrl, { workspace, harness, tokenFile, transport: requestedTransport } = {}, { timeoutMs } = {}) {
-  const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
-  const { StreamableHTTPClientTransport } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/streamableHttp.js');
   const tokenPaths = resolveTokenPaths({ tokenFile });
-  const token = readToken({ tokenFile });
-  if (!token) {
+  const tokens = tokenPaths
+    .map((path) => readToken({ tokenFile: path }))
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) {
     throw new Error(`no superuser token at ${tokenPaths.join(' or ')} — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
   const url = buildMcpUrl(operatorUrl, {
@@ -2754,26 +2790,31 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
   });
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) throw new Error('Invalid MCP transport; expected http, uds or auto');
-  if (mode !== 'http') {
-    // Package-built plain JS: do not import a TS-only workspace package from
-    // the installed Node CLI or copy its wire implementation into this file.
-    const { default: native } = await import('../../../packages/omp-plugin/dist/native-client.cjs');
-    const connected = await native.connectAgentMcp({
-      url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
-      name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
+  return connectWithTokenFallback(async (token) => {
+    if (mode !== 'http') {
+      // Package-built plain JS: do not import a TS-only workspace package from
+      // the installed Node CLI or copy its wire implementation into this file.
+      const { default: native } = await import('../../../packages/omp-plugin/dist/native-client.cjs');
+      const connected = await native.connectAgentMcp({
+        url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
+        name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
+      });
+      return connected.client;
+    }
+    const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const transport = new StreamableHTTPClientTransport(url, {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
     });
-    return connected.client;
-  }
-  const transport = new StreamableHTTPClientTransport(url, {
-    requestInit: { headers: { Authorization: `Bearer ${token}` } },
-  });
-  const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
-  try {
-    await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);
-  } catch (e) {
-    throw new Error(formatOperatorConnectFailure(operatorUrl, e), { cause: e });
-  }
-  return client;
+    const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
+    try {
+      await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);
+    } catch (e) {
+      await closeClientQuietly(client);
+      throw new Error(formatOperatorConnectFailure(operatorUrl, e), { cause: e });
+    }
+    return client;
+  }, tokens);
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   type PlanAdmissionShadowObservation,
 } from './plan-admission-gate';
 import { PLAN_ADMISSION_DOORS } from './plan-admission-enforcement';
+import { memoryLedgerChainLinkStore } from '../../cupboard/ledger-chain';
 import type { PlanAdmissionPolicy } from './plan-admission-policy';
 import type { PlanRow } from './source';
 
@@ -203,7 +204,9 @@ describe('plan-admission governance event store', () => {
   it('appends content-addressed immutable events, replays idempotently, and rejects event-id mutation', async () => {
     const rows: HiveSettingRecord[] = [];
     let writes = 0;
+    const ledgerChain = memoryLedgerChainLinkStore();
     const deps: PlanAdmissionGovernanceStoreDeps = {
+      ledgerChain,
       resolvePotScope: async () => POT_ID,
       listSettings: async () => [...rows],
       setSetting: async (input) => {
@@ -240,6 +243,10 @@ describe('plan-admission governance event store', () => {
     expect(replay).toEqual(first);
     expect(rows).toHaveLength(1);
     expect(writes).toBe(1);
+    // P-040: the append is witnessed into the pot's hash chain exactly once.
+    expect(ledgerChain.rows.map((row) => [row.link.streamId, row.link.seq, row.sourceId])).toEqual([
+      [`governance.plan-admission:${POT_ID}`, 0, first.settingKey],
+    ]);
 
     const mutated = { ...event, occurredAtMs: event.occurredAtMs + 1 };
     await expect(

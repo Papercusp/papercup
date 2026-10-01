@@ -96,6 +96,36 @@ done`,
     ]);
   });
 
+  // Plan D-012 / WI-10004619: the Codex half of the first calibration was vacuous, so it is re-run alone.
+  const runWith = (env: Record<string, string>, ...args: string[]) =>
+    spawnSync('bash', [SCRIPT, ...args], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, HOME: home, PATH: `${bin()}:${process.env.PATH}`, ...env },
+    });
+
+  it('P004_CLIS=codex records and replays only the Codex sessions', () => {
+    const r = runWith({ P004_CLIS: 'codex' }, 'n4');
+    expect(r.status, r.stderr).toBe(0);
+    const calls = log('npx.log').trim().split('\n');
+    expect(calls.filter((c) => c.includes('record-session.ts')).map((c) => c.match(/--cli (\S+) --tasks (\S+)/)!.slice(1).join(' '))).toEqual([
+      'codex exc-light-3,mea-light-3',
+    ]);
+    expect(r.stdout).toMatch(/^PHASE_REC_SKIPPED claude exc-typical-2,mea-typical-1$/m);
+    expect(calls.find((c) => c.includes('load-driver.ts'))).toContain(
+      '--sessions codex-exc-light-3-20261001T000000,codex-mea-light-3-20261001T000000 ',
+    );
+  });
+
+  it('refuses a P004_CLIS naming an unknown or no CLI before recording anything', () => {
+    for (const bad of ['gemini', 'codex,clade', ',']) {
+      const r = runWith({ P004_CLIS: bad }, 'n1', 'real');
+      expect(r.status, bad).toBe(2);
+      expect(r.stdout).toContain('PHASE_BAD_CLIS');
+    }
+    expect(() => log('npx.log')).toThrow();
+  });
+
   it('refuses an unknown phase and a replay with nothing recorded', () => {
     const bad = run('n2');
     expect(bad.status).toBe(2);

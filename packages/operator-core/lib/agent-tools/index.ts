@@ -1567,6 +1567,10 @@ import './cupboard/publish-offer';
 import './cupboard/refund-request';
 import './cupboard/support-request';
 import './cupboard/commerce-dashboards';
+// agent-economy-flywheel-2026-08-30 P-040 — hash-chained governance ledger:
+// verify/export (read) and witness (write) over harness_shared.ledger_chain_links.
+import './cupboard/ledger-chain';
+import './cupboard/ledger-chain-witness';
 import './cupboard/bind-wallet';
 import './cupboard/bind-identity-funding';
 // P-031 — the per-unit half of the same commerce surface. A per-use offer has no

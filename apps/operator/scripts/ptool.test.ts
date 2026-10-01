@@ -8,6 +8,7 @@ import {
   buildMcpUrl,
   connectWithLocalRetry,
   connectWithOperatorCandidates,
+  connectWithTokenFallback,
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
@@ -32,6 +33,7 @@ import {
   formatToolCatalogFailure,
   isLoopPressureShed,
   isRecoverableAuthorityDenial,
+  isInvalidSuperuserBearerFailure,
   isValidCodeRunReplayProof,
   isTransportFailure,
   printResult,
@@ -393,6 +395,37 @@ describe('ptool bearer-token resolution', () => {
       '/home/tester/.papercusp/superuser-token',
     ]);
     expect(resolveTokenPath({ env, home: '/home/tester' })).toBe(paths[0]);
+  });
+
+  it('tries the next implicit token only after the operator rejects the first bearer', async () => {
+    const authError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn()
+      .mockRejectedValueOnce(authError)
+      .mockResolvedValueOnce(client);
+
+    await expect(connectWithTokenFallback(connectOnce, ['workspace-token', 'shared-token']))
+      .resolves.toBe(client);
+
+    expect(isInvalidSuperuserBearerFailure(authError)).toBe(true);
+    expect(connectOnce.mock.calls).toEqual([['workspace-token'], ['shared-token']]);
+  });
+
+  it('does not advance after a generic failure or beyond one explicit token', async () => {
+    const authError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const explicitConnect = vi.fn().mockRejectedValue(authError);
+
+    await expect(connectWithTokenFallback(explicitConnect, ['explicit-token']))
+      .rejects.toBe(authError);
+    expect(explicitConnect).toHaveBeenCalledTimes(1);
+
+    const transportError = new Error('ECONNREFUSED');
+    const connectOnce = vi.fn().mockRejectedValue(transportError);
+
+    await expect(connectWithTokenFallback(connectOnce, ['workspace-token', 'shared-token']))
+      .rejects.toBe(transportError);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
+    expect(isInvalidSuperuserBearerFailure(new Error('HTTP 401: unauthorized'))).toBe(false);
   });
 });
 

@@ -3006,3 +3006,232 @@ The six measured source/test fingerprints were unchanged across the final run:
 | `db-boot-migrate.integration.test.ts` | `dd37aca3f860e911c7e232cc4c644538f1c1e5f4d07dbceeb064ca5eb6bee478` |
 | `backup-lock-migration-proof.ts` | `40041543b475c38b4cf83d0096617213b063a64b9c1eb825e7f5dce85bfc9c13` |
 | `backup-lock-migration-proof.test.ts` | `4e7cde86f34ab9856ce64e1bfafadec13cc6e2d43fd0f8999ed93faf4e378c78` |
+
+### Diagnostic deadline continuation — 2026-10-01 05:40Z
+
+**P-008 remains open.** This verifies a current source defect and its guard,
+not the origin or performance impact of the historical 3,500-second `psql`
+DO scan. The frozen audit identifies that separate scan as diagnostic work;
+its contribution to application latency and the current loaded hosts remain
+unverified. No shared host, database, backup holder, Portal or gate was changed.
+
+Root cause: the whole-call timer settled the caller while the postgres-js
+transaction promise kept running. A connection acquired later still started
+SQL; a positive control completing later still started the target scan. The
+maintained unit regression reproduced three failures before the fix: delayed
+read and EXPLAIN each issued four statements after expiry, and a delayed
+positive control issued the target scan. An intermediate five-case run passed
+the three repaired read cases and independently reproduced the same late-start
+defect in mutation and dependency-traversal transactions (three and four SQL
+calls respectively). These discriminate abandoned driver continuation from
+an already-running database statement ignoring its server timeout.
+
+The existing `withCallDeadline` now also accepts a work factory with an active
+deadline assertion. It records expiry before rejecting and uses a monotonic
+clock to reject overdue continuation even before a delayed timer runs. Existing
+read, EXPLAIN, mutation and dependency-query callers check at statement
+boundaries. A mutation resuming after DML or audit completion throws inside
+the transaction and rolls back. Existing SQL budgets, READ ONLY, row caps,
+positive-control scope, mutation guards and audit atomicity are retained.
+No timeout policy, timer service, table, tool or config surface was added.
+This does not cancel an already-running PostgreSQL statement or prove the
+timing of COMMIT; server-side statement timeouts remain necessary.
+
+The eight pure lifecycle regressions live in the canonical
+`packages/operator-core/lib/pg-query-deadline.test.ts`. Separating them from
+the existing filesystem-census tests lets the maintained mutation-probe fence
+prove their import scope; two earlier broad-file attempts were refused before
+any test process started during a peer's public-listings probe. No probe or
+lock was bypassed. The original `pg-read-query.test.ts` content was restored.
+
+Verification receipts:
+
+- Baseline: 347/347 unit tests passed, zero skipped, exit 0, at HEAD
+  `6563e1ea76`; `/tmp/p008-diagnostic-baseline-20261001.log` SHA-256
+  `8da2b02535259a72e0603d11bfdb087a3851e2dc2865dca16868f69946cf5ddb`.
+- Initial red: `testing:run` `35dc3925-e02b-4194-9d20-a78645bf145b`,
+  test-run `20355686`: three failed, 347 excluded.
+- Sibling red: `36eebcc0-345d-412d-b298-b2ae59245d0a`, test-run `20355752`:
+  three passed, two failed, zero skipped.
+- Final five-file matrix: `039071d8-f936-4473-bc6a-dc423582e2c4`,
+  test-runs `20356048`–`20356052`: **466 passed, zero failed or skipped**.
+  Files: `pg-read-query.test.ts`, `pg-mutate-query.test.ts`,
+  `dependency-traversal.test.ts`, `agent-tools/dev/pg_query.test.ts`,
+  `pg-query-deadline.test.ts`, all under `packages/operator-core/lib/`.
+- Real private PostgreSQL: canonical `pg-read-query.integration.test.ts`
+  **33/33 passed, zero skipped, exit 0**. Its new case executes a real UPDATE,
+  withholds the driver result beyond the 4,000 ms caller deadline, then
+  releases it and reads back the original value after rollback (4,017 ms).
+  `/tmp/p008-diagnostic-private-matrix-20261001.log` SHA-256
+  `71c3db33d6b66ea30bcceb45a113b7b5855e6ebc3cb2f19d29e98b86e71ac9c2`.
+  The maintained `startDedicatedNativePg` helper supplied only a fresh private
+  admin URL via `PAPERCUSP_TEST_PG_ADMIN_URL`; `stop()` ran in `finally`.
+  Directory removal and private-port connection refusal both passed.
+- Scoped `lint:tsc` baseline gate passed, exit 0, for the five changed code/test
+  files and its selected importers. It reported one baseline-covered type
+  error, so this is not a zero-diagnostic claim. Log SHA-256
+  `a691d0e105e49be3b20670f902e3132c410fd8c7dd5643b99477c94d2c057262`.
+  Scoped `git diff --check` passed.
+
+Re-run the five-file matrix with `testing:run { files, harness:'papercusp' }`
+or the canonical `npm run test:file -- <five paths>` router after relevant
+fingerprints change. Re-run the integration file through that router with
+the maintained private native-PG override; assert cleanup again. The private
+orchestration is fixture setup, not a separate test implementation.
+
+Final fingerprints at HEAD `6563e1ea76` plus local edits:
+
+| Path under `packages/operator-core/lib/` | SHA-256 |
+|---|---|
+| `pg-read-query.ts` | `94dc38fce2be3121edf16d0737f22ef2d2506817a2fe98a5e97b6e759a273dc8` |
+| `pg-mutate-query.ts` | `246ce21df810d8a665d382a62c7a17f37f4fd43e8fad43c5db31786ba739e26a` |
+| `dependency-traversal.ts` | `c5e22a8d84d60cb95f8307501d4a315cf5edc23091b46715ee86bc8f83d57fc6` |
+| `pg-query-deadline.test.ts` | `54b7a0a791ee87257961e0e1016a3e717526c2c24277af0d3981e1e025053eec` |
+| `pg-read-query.integration.test.ts` | `4c73018ff2a1f4eaf7bc82e07a8e9e63941e46054d854b9191eaa87c5a195993` |
+| `pg-read-query.test.ts` | `e4a7512a038cce5f6d267de5f6adc852ca6751349b51e740c2ddae01a3073153` |
+| `pg-mutate-query.test.ts` | `75024df2b6003c972a5173d0878ece93d676d76ca1e03ef524a721a9ef66830d` |
+| `dependency-traversal.test.ts` | `39d00d539ba4dc099f72b8f8da9edcaa6e8ad71e72f2a28d9c741e751b5fa6a2` |
+| `agent-tools/dev/pg_query.test.ts` | `b5f6dedb061b72fe98a164f786e8d67997a9676a8cc8264b7c6db41762946357` |
+| `agent-tools/dev/pg_query.ts` | `1dab98320657298c05300b02415498d81c5eb857354f859d65f0fd8853524c52` |
+
+### Account-pool no-op invalidation — 2026-10-01 06:02Z
+
+P-008 remains open. This is a verified source defect and private-runtime fix;
+the historical frequency of this producer, loaded-host adoption, and its
+contribution to application latency remain unverified.
+
+The existing `updateAccountPool` normalizes the locked document before calling
+its mutator. Some legitimate mutators produce an equivalent document: for
+example, `recordAccountPenalty` for an account already removed from the pool.
+`updateOperatorState` nevertheless performed an unconditional upsert, advanced
+`updated_at`, and emitted `accounts.pool`. The database row trigger also saw
+that unnecessary UPDATE. PUI's prior account-only refresh fix correctly treats
+this event as an account refresh, so fixing the consumer alone cannot remove
+this producer-side amplification.
+
+The maintained account concurrency integration suite now measures PostgreSQL
+`xmin` and `updated_at`, and captures the application's sync invalidations.
+Before the fix, the unknown-account no-op changed row version `3965` to `3966`
+and timestamp `1790834266923` to `1790834266930`. The separate key-reordering
+case changed version `3968` to `3969`. Both cases failed, exit 1; six excluded
+cases were not evidence. Private directory removal and port refusal passed.
+
+The existing plaintext upsert now uses `IS DISTINCT FROM` on PostgreSQL JSONB
+for `operator_account_pool` only, and `RETURNING workspace_id` determines
+whether to publish a refresh. Both the direct state-write and transactional
+mutation seams use this guard. The existing transaction and row-lock path
+remains intact; local cache invalidation still ensures the caller does not
+retain a stale pre-transaction value. Other state tables retain their write
+semantics, including writes of identical payloads. No table, migration, flag,
+timer, service, tool, or alternate account-pool writer was added.
+
+Final verification at HEAD `6563e1ea76` plus local edits:
+
+- Five canonical unit suites: **77 passed, zero skipped, exit 0**.
+- Canonical real-PG concurrency suite: **10 passed, zero skipped, exit 0**.
+  It covers equivalent/key-reordered documents, in-place rate changes, direct
+  no-op writes, unchanged non-pool writes, row-lock waiting, parallel
+  registrations, and registration/rate-write races. The old lost-update shape
+  remains a failing-behavior positive control. The maintained
+  `startDedicatedNativePg` helper supplied only a fresh private admin URL via
+  `PAPERCUSP_TEST_PG_ADMIN_URL`; `stop()` ran in `finally`, followed by explicit
+  directory-removal and refused-port assertions. Native sessions 34747 (red),
+  37500 (first green), 9263 (final green), and 36785 (typecheck) were drained.
+- Scoped `lint:tsc` baseline gate passed, exit 0. It reported three diagnostics
+  across two files within their existing baselines; this is not a claim of
+  zero type errors. Scoped `git diff --check` passed.
+
+Canonical commands (supply the private helper's admin URL for the integration):
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/operator-state-pg.test.ts \
+  packages/operator-core/lib/operator-state-cache.test.ts \
+  packages/operator-core/lib/deployment/account-pool-store.test.ts \
+  packages/operator-core/lib/deployment/account-pool-write-path.test.ts \
+  packages/operator-core/lib/deployment/account-pool-store.override.test.ts
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/deployment/account-pool-concurrency.integration.test.ts
+```
+
+| Source/test path under `packages/operator-core/lib/` | SHA-256 |
+|---|---|
+| `operator-state-pg.ts` | `43522584b5a4ba3089e0ad4f505c1b6c3ab3c3d48212e3428fc0ce26a9e34734` |
+| `operator-state-pg.test.ts` | `b55911055dafa9ff3455ed222490d5908a98c2f73100ba725c971b037267e517` |
+| `operator-state-cache.test.ts` | `57eff6952bce9418f583fb387a3e99c7460a5185371f2c289a2916283430e2d4` |
+| `deployment/account-pool-concurrency.integration.test.ts` | `600e1c1fc45c0ff730483696a965b7e0e11f2c48a4d879c48654f4d3a292ca5b` |
+| `deployment/account-pool-store.ts` (unchanged writer wrapper) | `bd1bff0ca9c7e1fb1a90c876e9c7e5f5d41258b964bd64c675e25382d1b7138a` |
+
+| Evidence log | SHA-256 |
+|---|---|
+| `/tmp/p008-account-noop-private-red-20261001.log` | `37aae1b91ef37e852c47408746e03287bd3d997b235ea8aca9d4938093dca89e` |
+| `/tmp/p008-account-noop-private-matrix-final-20261001.log` | `c0ae6b69bed2a5fd61a0778d4a72116e8f4deeb41d7710a0e8b204ba9978e816` |
+| `/tmp/p008-account-noop-unit-matrix-20261001.log` | `df41b304e0f0e8c768c4d585ff6fc27d000f43f7e4fb8a9423622bcad8ad5db6` |
+| `/tmp/p008-account-noop-tsc-20261001.log` | `068212cf1530e029f6084cee586b3a85489b544ffb313e0dd05746b7afa41778` |
+
+The gateway projector's current throttle key includes account, rate-limit
+bucket, and model, with a 30-second floor and meaningful-window-change check.
+That source is not evidence of the historical emitter mix. No shared database,
+service, federation host, Portal, or live release gate was operated here.
+
+### Historical account-trigger evidence limit — 2026-10-01 06:25Z
+
+P-008 remains open under `AUTO-BAR-R-8-P-008@2`. The fresh continuation
+`01a0f617-7c4e-7403-accf-c5789c400c5c` recovered the newer 06:08Z work-item
+checkpoint and 06:10Z loop checkpoint, which supersede the incoming 05:45Z
+carry note. The account-pool no-op fix was already verified; its five saved
+source/test fingerprints still match, so that matrix was not repeated.
+
+The exact retained high-volume account-call population was re-read with
+workspace, tool, caller, spawn, host, build and timestamp predicates:
+`papercusp-workspace`, `accounts:status`, `pui-2057122`, `palette`, `port-3170`,
+`e5b3a2cb54`, `[2026-09-23T03:00:00Z,2026-09-23T04:16:00Z)`. A scalar inventory
+and a separate exhaustive null/empty partition agree on **1,488 calls**,
+from `03:00:54.263Z` through `04:15:04.197Z`. Every retained call in this
+population has `{}` arguments; its metadata contains only `kernel` and
+`uiClientId`. Both reads used same-scope row `28953729` as a positive control;
+the final partition completed in 63ms, with one returned cell and no truncation.
+This is a coverage statement about that exact call population, not a census
+of all September 23 traffic. It establishes that these retained rows cannot
+identify the triggering SSE frame; it does not establish which producer ran.
+The saved current-window control `30385108` likewise contains only those two
+metadata keys.
+
+Source distinguishes the available evidence surfaces:
+
+- The pool trigger emits a raw table-change event. The existing membership
+  audit returns without inserting when the account-id set is unchanged, so
+  that audit cannot distinguish rate-window updates from equivalent writes.
+- The sync bus keeps a process-local 60-second replay ring. Its `onMessage`
+  sends each raw event, then separately coalesces the logical bridge target.
+  The 90-second logical dedupe therefore does not bound raw table-event
+  delivery. Current PUI correctly recognizes both `accounts.pool` and the
+  raw pool-table event as account refreshes. A source-side throttle or logical
+  dedupe alone cannot establish the historical PUI request cadence.
+- The gateway projector uses account, bucket and model in its throttle key,
+  a 30-second floor, and a meaningful utilization/reset-change check. This
+  source policy does not identify the historical producer mix or loaded PUI.
+
+The maintained canonical invalidation-bus test `bridged full-bust targets
+dedupe within the window, like an explicit notifyInvalidate` verifies three
+raw deliveries versus one logical delivery inside its scaled window. It
+passed **1 selected test**, exit 0; **30 excluded tests provide no evidence**
+in this run. Log `/tmp/p008-account-raw-bridge-20261001.log`, SHA-256
+`e0f8c01944c79418c3e4b0bcdfd7c7eaf34b7db678a3859181e82406c5f326a6`.
+
+PUI's source fingerprint changed since the saved 04:02Z proof, so its focused
+canonical Cargo regressions were rerun: **4 passed, 0 failed, 0 ignored,
+1,281 filtered out**, exit 0. This preserves the account/unrelated-event
+distinction on the current source; the prior full-crate result remains dated
+evidence. Log `/tmp/p008-pui-refetch-current-20261001.log`, SHA-256
+`9706ae6a96e877072e644b3de87de9a03fb61e17ce967fcd16281b7daa65e024`.
+Current fingerprints: PUI `main.rs`
+`27a6a7c4f5e8c52cdfa375801207658eb3f67ed2bee9a9782ecf4424b989a932`;
+sync bus source `622353a18b8bbe5adbec9bd3a75e3657bf381883d44caf5ae7bcc7f351c10221`;
+sync bus test `5bc78ac6a36c20c4429c56c1993f2dda9a63faeb15ac55349c9e58f3c8e4cd1b`.
+
+The leader's current reply explicitly retains loaded-fix adoption as unknown
+(`coord-send-006aed5f0b53c4522e20e5dbf28d19061125f0004c8c559678e8a2d97f026d9c`).
+Historical triggering frames, actual producer mix, installed-PUI adoption and
+application latency impact remain unresolved. No source behavior, shared
+service, account credential, federation, Portal or live-gate action changed.

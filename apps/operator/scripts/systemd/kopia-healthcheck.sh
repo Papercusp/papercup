@@ -73,8 +73,8 @@ ALERT="${BACKUP_ALERT_CMD:-$HOME/.config/kopia/backup-alert.sh}"
 MIN_SANE_DUMP_AGE_S=600     # 10m. The backup runs hourly; no real bar is below this.
 ALARM_SUPPRESSED=""
 if [ -z "${BACKUP_ALERT_FORCE:-}" ]; then
-  if [ -n "${MAX_DUMP_AGE_S+x}" ] || [ -n "${MAX_SNAP_AGE_S+x}" ] || [ -n "${MAX_ODDSMITH_DUMP_AGE_S+x}" ] || [ -n "${MAX_HOME_SNAP_AGE_S+x}" ]; then
-    ALARM_SUPPRESSED="a threshold was overridden in the environment (MAX_DUMP_AGE_S/MAX_SNAP_AGE_S/MAX_ODDSMITH_DUMP_AGE_S/MAX_HOME_SNAP_AGE_S) — that is a TEST run, not production"
+  if [ -n "${MAX_DUMP_AGE_S+x}" ] || [ -n "${MAX_SNAP_AGE_S+x}" ] || [ -n "${MAX_ODDSMITH_DUMP_AGE_S+x}" ] || [ -n "${MAX_HOME_SNAP_AGE_S+x}" ] || [ -n "${MAX_DUMP_RUN_S+x}" ]; then
+    ALARM_SUPPRESSED="a threshold was overridden in the environment (MAX_DUMP_AGE_S/MAX_SNAP_AGE_S/MAX_ODDSMITH_DUMP_AGE_S/MAX_HOME_SNAP_AGE_S/MAX_DUMP_RUN_S) — that is a TEST run, not production"
   fi
 fi
 
@@ -88,6 +88,8 @@ fi
 # up if a stale backup somehow went 8h without that EI being acted on.
 MAX_DUMP_AGE_S="${MAX_DUMP_AGE_S:-28800}"   # 8h backstop (primary alarm = repo script @ 6h)
 MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"     # 30m cadence: tolerate one missed cycle plus runtime/jitter; also caps the exact dump source below
+# 90% of the hourly db-backup timer period; see the duty-cycle check at the end (WI-10004603).
+MAX_DUMP_RUN_S="${MAX_DUMP_RUN_S:-3240}"
 
 # 48h — $HOME is a DAILY source (kopia-home-snapshot.timer), so its bar is
 # "two consecutive missed runs", by the same reasoning MAX_ODDSMITH_DUMP_AGE_S uses for its
@@ -664,5 +666,25 @@ for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
     fi
   fi
 done
+
+# ── Dump duty cycle (WI-10004603) ────────────────────────────────────────────
+# Freshness above cannot see this coming: every run still SUCCEEDS while its
+# duration climbs toward the hourly timer period (measured 2026-10-01: 2822 ->
+# 3397 s over four runs). Past the period the next timer start is a no-op on the
+# running unit, so the dump runs back to back, holds the backup guard and host
+# I/O permanently, and the state tier's recovery point slips one run at a time.
+# Page at 90% of the hour, while there is still a run's worth of headroom to act.
+# LAST on purpose: fail() exits, and a duty warning must never hide a staleness
+# or validity failure checked above.
+# Judged only on a STATUS.json that carries "periodSec": that field is written by
+# the producer that HAS the cadence lever (PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC). A
+# status from an older producer predates the fix, so paging on it would page about
+# a condition the next run already addresses.
+if [ -f "$STATUS" ] && grep -q '"periodSec"' "$STATUS" 2>/dev/null; then
+  run_s=$(sed -n 's/.*"elapsedSec": *\([0-9]*\).*/\1/p' "$STATUS" | head -1)
+  if [ -n "${run_s:-}" ] && [ "$run_s" -gt "$MAX_DUMP_RUN_S" ] 2>/dev/null; then
+    fail "Postgres dump run is near-continuous: the last run took $(dur "$run_s") (limit $(dur "$MAX_DUMP_RUN_S")) of its hourly timer period. Once a run outlasts the hour, the next start is a no-op and the backup never rests. Read the per-tier times in db-backup.log; lever: PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC in papercusp-db-backup.sh (WI-10004603)."
+  fi
+fi
 
 echo "[$(date -Iseconds)] OK: dump $(( age / 60 ))m old, snapshot $(( snap_age / 60 ))m old" >> "$LOG"

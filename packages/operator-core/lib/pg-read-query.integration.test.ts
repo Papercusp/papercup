@@ -21,9 +21,11 @@ import {
   pgReadQuery,
   explainReadQuery,
   PgReadQueryError,
+  PgReadQueryTimeoutError,
   describeRelation,
   listRelations,
 } from './pg-read-query';
+import { pgMutateQuery } from './pg-mutate-query';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -104,6 +106,45 @@ describe('pgReadQuery (real PG)', () => {
       fields: ['n'],
     });
   });
+
+  it('rolls back real DML when its driver result arrives after the caller deadline', async () => {
+    await db.adminSql.unsafe('CREATE TABLE harness_shared.query_deadline_rollback_fixture (id int PRIMARY KEY, value int)');
+    await db.adminSql.unsafe('INSERT INTO harness_shared.query_deadline_rollback_fixture VALUES (1, 1)');
+    let releaseResult!: () => void;
+    const resultGate = new Promise<void>((resolve) => { releaseResult = resolve; });
+    let markUpdated!: () => void;
+    const updated = new Promise<void>((resolve) => { markUpdated = resolve; });
+    let markSettled!: () => void;
+    const settled = new Promise<void>((resolve) => { markSettled = resolve; });
+    const client = {
+      begin: (fn: (tx: { unsafe: (query: string, params?: unknown[]) => Promise<unknown> }) => Promise<unknown>) =>
+        db.adminSql.begin(async (tx) => fn({
+          unsafe: async (query, params) => {
+            const rows = await tx.unsafe(query, params as never[]);
+            if (query.startsWith('UPDATE harness_shared.query_deadline_rollback_fixture')) {
+              markUpdated();
+              await resultGate;
+            }
+            return rows;
+          },
+        })).finally(markSettled),
+    } as never;
+    const call = pgMutateQuery(
+      'UPDATE harness_shared.query_deadline_rollback_fixture SET value = 2 WHERE id = 1',
+      { client, timeoutMs: 1000, expectedRows: 1 },
+    );
+    const assertion = expect(call).rejects.toBeInstanceOf(PgReadQueryTimeoutError);
+    try {
+      // The UPDATE really ran; only delivery of its result is withheld.
+      await Promise.race([updated, call]);
+      await assertion;
+    } finally {
+      releaseResult();
+      await settled;
+    }
+    const rows = await db.adminSql.unsafe('SELECT value FROM harness_shared.query_deadline_rollback_fixture WHERE id = 1');
+    expect(rows[0]?.value).toBe(1);
+  }, 15_000);
 
   it('rejects a plain write before it reaches the DB (guard 1)', async () => {
     await expect(

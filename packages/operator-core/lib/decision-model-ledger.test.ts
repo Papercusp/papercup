@@ -25,6 +25,7 @@ const record: DecisionCallRecord = {
   outcome: { kind: 'inconclusive', reason: 'no-key', latencyMs: 0, attempts: 0 },
   startedAt: new Date('2026-09-30T02:00:00Z'),
   consumer: 'memory-injection',
+  surface: 'turn-start',
   subjectIds: ['mem-1'],
 };
 
