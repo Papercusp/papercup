@@ -137,6 +137,34 @@ describe('resolveSessionConfigDir', () => {
     expect(r).toMatchObject({ dir: real, source: 'transcript-scan' });
   });
 
+  describe("WI-10004654: a fork's seed copy of the transcript never wins over the owner's own dir", () => {
+    // A managed fork seeds its own config dir with a copy of the source's
+    // `<id>.jsonl`. readdir order is filesystem-specific (XFS lists small dirs in
+    // creation order), so each case is laid out both ways round.
+    const SID = '8aea8b70-bcb9-48b4-93bd-959d46b7a128';
+    for (const forkFirst of [true, false]) {
+      it(`resolves the expected owner's dir (fork seed created ${forkFirst ? 'first' : 'second'})`, () => {
+        if (forkFirst) layTranscript('su-aaa-fork', SID);
+        const own = layTranscript(OWNER, SID);
+        if (!forkFirst) layTranscript('su-aaa-fork', SID);
+
+        const r = resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, sessionId: SID });
+
+        expect(r).toMatchObject({ dir: own, source: 'transcript-scan' });
+      });
+
+      it(`an alternate owner key is preferred over a fork seed too (fork seed created ${forkFirst ? 'first' : 'second'})`, () => {
+        if (forkFirst) layTranscript('su-aaa-fork', SID);
+        const real = layTranscript(REAL_KEY, SID);
+        if (!forkFirst) layTranscript('su-aaa-fork', SID);
+
+        const r = resolveSessionConfigDir({ ownerId: OWNER, altOwnerIds: [REAL_KEY], home, procRoot, sessionId: SID });
+
+        expect(r).toMatchObject({ dir: real, source: 'transcript-scan' });
+      });
+    }
+  });
+
   it('caches a validated transcript hit so repeated roster reads skip the directory walk', () => {
     const sessionId = 'cached-transcript-123';
     const real = layTranscript(REAL_KEY, sessionId);
