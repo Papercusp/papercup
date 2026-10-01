@@ -65,10 +65,21 @@ export type BulkRunPhase = 'pending' | 'running' | 'review' | 'complete' | 'fail
  * in plan_cleanup_run_findings (plan-cleanup/run-store.ts) instead of the items
  * table. Single-flight is per (workspace, kind): one of EACH may run at once,
  * never two of a kind.
+ *
+ * 'intake-triage' (migration 1305, observation-candidate plan P-008 / D-020) is
+ * the registered drain for awaiting observations and unverified candidates. Its
+ * membership and outcomes use the same items snapshot as 'inbox-resolve'; it is
+ * a separate kind only so it never contends with the Inbox run's single-flight
+ * slot and its reports can be read apart from accepted-work delivery.
  */
-export type BulkRunKind = 'inbox-resolve' | 'plan-cleanup';
+export type BulkRunKind = 'inbox-resolve' | 'plan-cleanup' | 'intake-triage';
 
-export const BULK_RUN_KINDS: readonly BulkRunKind[] = ['inbox-resolve', 'plan-cleanup'] as const;
+export const BULK_RUN_KINDS: readonly BulkRunKind[] = ['inbox-resolve', 'plan-cleanup', 'intake-triage'] as const;
+
+/** Kinds whose membership is the attention_bulk_run_items snapshot. */
+export function isItemSnapshotRunKind(kind: BulkRunKind): boolean {
+  return kind !== 'plan-cleanup';
+}
 
 /** The pre-937 rows' kind, and the default everywhere a caller does not say —
  *  which is what keeps every existing inbox call site's behavior unchanged. */
@@ -774,7 +785,7 @@ export async function createRun(input: {
   const seedRefs = [...new Set((input.seedRefs ?? []).filter((s) => typeof s === 'string' && s !== ''))];
   // Same "a run over nothing is a caller bug" rule, per kind: an inbox run needs
   // its item snapshot; a plan-cleanup run needs its plan-slug snapshot.
-  if (runKind === 'inbox-resolve' && items.length === 0) {
+  if (isItemSnapshotRunKind(runKind) && items.length === 0) {
     throw new Error('createRun: refusing to create a bulk run with zero items');
   }
   if (runKind === 'plan-cleanup' && seedRefs.length === 0) {
@@ -813,7 +824,7 @@ export async function createRun(input: {
     seen.add(i.itemId);
     return true;
   });
-  if (runKind === 'inbox-resolve' && unique.length === 0) {
+  if (isItemSnapshotRunKind(runKind) && unique.length === 0) {
     throw new Error('createRun: no valid item ids in the snapshot');
   }
   // total_items: the run's unit count for the strip — items for inbox runs,
