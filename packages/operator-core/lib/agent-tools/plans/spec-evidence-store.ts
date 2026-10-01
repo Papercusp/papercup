@@ -1798,6 +1798,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       bindingFingerprint: row.binding_fingerprint,
       createdBy: row.created_by,
       createdAt: pgTimestampToIso(row.created_at),
+      ...(row.retracted_at == null ? {} : { withdrawal: {
+        at: pgTimestampToIso(row.retracted_at), by: row.retracted_by, reason: row.retraction_reason,
+      } }),
       ...(measured
         ? {
             serverMeasurement:
