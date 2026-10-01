@@ -76,7 +76,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'Preview a BAR meaning amendment without writing; returns exact approval JSON. If approvalRequired, post preview.approval once as a work_items:comment and repeat the dry run with reviewPreviewPost to open the routed review (guidance.chaining).',
+        'Preview a BAR meaning amendment without writing; returns approval JSON. If approvalRequired, post preview.approval as a work_items:comment, then re-run with reviewPreviewPost (see chaining).',
       ),
     reviewPreviewPost: z
       .string()
@@ -91,7 +91,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     }).strict().optional().describe(
-      'dryRun reviewPreviewPost only: require this allowed backend/model and optional reasoning effort for routed and fresh reviewers; an unavailable model refuses instead of changing the requested choice.',
+      'dryRun reviewPreviewPost only: required backend/model (+ optional effort) for reviewers; an unavailable model refuses rather than substituting.',
     ),
     criteria: z
       .array(amendmentCriterionSchema)
