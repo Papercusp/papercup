@@ -2306,7 +2306,11 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
 });
 
 describe('carry completion follows native delivery and reanchor (WI-10004791)', () => {
-  it.each([true, false])('does not confuse a booted Codex with a completed carry (persists=%s)', async (persists) => {
+  it.each([
+    { persists: true, deferred: false },
+    { persists: true, deferred: true },
+    { persists: false, deferred: false },
+  ])('does not confuse a booted Codex with a completed carry (persists=$persists, deferred=$deferred)', async ({ persists, deferred }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-carry-completion-'));
     const codexHome = join(root, 'codex');
     const nativeId = '01a0f68e-3037-7dc3-b898-a1cc12441884';
@@ -2317,9 +2321,14 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
     const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
     const { captured, io } = fakeIo();
     const order: string[] = [];
-    const report = vi.fn(async (id: string) => {
+    let confirm!: () => void;
+    const report = vi.fn(async (id: string, options: { onConfirmed: () => void }) => {
       expect(id).toBe(nativeId);
       expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      if (deferred) {
+        confirm = () => { order.push('reanchor'); options.onConfirmed(); };
+        return false;
+      }
       order.push('reanchor');
       return true;
     });
@@ -2362,6 +2371,11 @@ describe('carry completion follows native delivery and reanchor (WI-10004791)', 
         expect(rows.some((row) => row.kind === (persists ? 'respawn-carry-delivered' : 'respawn-carry-dropped'))).toBe(true);
       }, { timeout: 6000 });
       if (persists) {
+        if (deferred) {
+          expect(order).toEqual([]);
+          expect(emit).not.toHaveBeenCalled();
+          confirm();
+        }
         expect(order).toEqual(['reanchor', 'emit']);
         expect(report).toHaveBeenCalledOnce();
         expect(emit).toHaveBeenCalledWith(ownerId, 'carry-respawn', { nativeId });

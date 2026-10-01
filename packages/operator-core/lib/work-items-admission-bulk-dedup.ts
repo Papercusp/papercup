@@ -107,6 +107,16 @@ export const DEFAULT_BULK_SHARD_CONCURRENCY = 4;
 /** Bounded retries for a single model batch. A successful earlier batch stays
  * in memory, so only the failed batch is replayed. */
 export const DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS = [500, 1_500, 4_000] as const;
+
+/**
+ * WI-10004942: a second, longer ladder that THROWN retryable errors fall through
+ * to once the short ladder above is spent: a transport outage (gateway or sidecar
+ * socket down), not a blip. Protocol retries (a schema-invalid response) never
+ * use it. ~3.75 min in total. Measured 2026-10-01: stage-1 of the P-005 pass
+ * failed at 15:43:32Z on one UND_ERR_SOCKET once the ~6s ladder ran out, ending
+ * a ~24h fire after ~3.7h of judging.
+ */
+export const DEFAULT_BULK_TRANSPORT_RETRY_BACKOFFS_MS = [15_000, 30_000, 60_000, 120_000] as const;
 export const BULK_STAGE_SCHEMA_VERSION = 'work-item-admission-bulk-stage-v2';
 export const BULK_BATCH_CHECKPOINT_SCHEMA_VERSION = 'work-item-admission-bulk-batch-v1';
 /** A live owner refreshes this lease before and after every batch. Two hours is
@@ -384,6 +394,10 @@ export interface BulkDedupRunOptions {
   model?: string;
   /** Injectable bounded backoff for transient model transport failures. */
   batchRetryBackoffsMs?: readonly number[];
+  /** WI-10004942: the longer ladder a thrown retryable error falls through to once
+   * `batchRetryBackoffsMs` is spent. Defaults to DEFAULT_BULK_TRANSPORT_RETRY_BACKOFFS_MS;
+   * pass `[]` for the short-ladder-only behaviour. */
+  transportRetryBackoffsMs?: readonly number[];
   /** Injectable sleep seam for retry tests; production uses setTimeout. */
   batchRetryDelay?: (ms: number) => Promise<void>;
   runCensus?: CensusRunner;
@@ -1381,7 +1395,15 @@ export async function runShardPool<E, R>(
 async function callBulkModelBatchWithRetry<T>(
   call: () => Promise<BulkModelResponse>,
   validate: (response: BulkModelResponse) => T,
-  opts: { backoffsMs: readonly number[]; delay: (ms: number) => Promise<void> },
+  opts: {
+    backoffsMs: readonly number[];
+    delay: (ms: number) => Promise<void>;
+    /** WI-10004942: spent only by THROWN retryable errors, after `backoffsMs`. */
+    transportBackoffsMs?: readonly number[];
+    /** Runs before and after each transport-ladder wait. The stage uses it to
+     * renew its lease and to stop if a sibling shard already failed the stage. */
+    onTransportWait?: () => Promise<void>;
+  },
 ): Promise<{
   response: BulkModelResponse;
   value: T | null;
@@ -1392,6 +1414,8 @@ async function callBulkModelBatchWithRetry<T>(
   tokensOut: number;
 }> {
   let retries = 0;
+  let transportRetries = 0;
+  const transportBackoffsMs = opts.transportBackoffsMs ?? [];
   let protocolFailures = 0;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -1400,9 +1424,20 @@ async function callBulkModelBatchWithRetry<T>(
     try {
       response = await call();
     } catch (error) {
-      if (!isRetryableModelCallError(error) || retries >= opts.backoffsMs.length) throw error;
-      await opts.delay(opts.backoffsMs[retries]!);
-      retries += 1;
+      if (!isRetryableModelCallError(error)) throw error;
+      if (retries < opts.backoffsMs.length) {
+        await opts.delay(opts.backoffsMs[retries]!);
+        retries += 1;
+        continue;
+      }
+      // The short ladder is spent, so this is an outage, not a blip: wait it out
+      // on the transport ladder (WI-10004942). `retries` is NOT advanced, so a
+      // protocol retry after the outage still gets its full short ladder.
+      if (transportRetries >= transportBackoffsMs.length) throw error;
+      await opts.onTransportWait?.();
+      await opts.delay(transportBackoffsMs[transportRetries]!);
+      transportRetries += 1;
+      await opts.onTransportWait?.();
       continue;
     }
     tokensIn += response.inputTokens;
@@ -1411,7 +1446,7 @@ async function callBulkModelBatchWithRetry<T>(
       return {
         response,
         value: validate(response),
-        retries,
+        retries: retries + transportRetries,
         protocolFailures,
         protocolError: null,
         tokensIn,
@@ -1424,7 +1459,7 @@ async function callBulkModelBatchWithRetry<T>(
         return {
           response,
           value: null,
-          retries,
+          retries: retries + transportRetries,
           protocolFailures,
           protocolError,
           tokensIn,
@@ -1447,6 +1482,7 @@ async function runAdmissionMergeQualityReplay(
     llmCall: PromoterLlmCall;
     ownerId?: string;
     batchRetryBackoffsMs: readonly number[];
+    transportRetryBackoffsMs?: readonly number[];
     batchRetryDelay: (ms: number) => Promise<void>;
     now: () => number;
   },
@@ -1481,7 +1517,11 @@ async function runAdmissionMergeQualityReplay(
         return response;
       },
       (response) => parsePromoterJudgements(responsePayload(response)),
-      { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
+      {
+        backoffsMs: opts.batchRetryBackoffsMs,
+        delay: opts.batchRetryDelay,
+        transportBackoffsMs: opts.transportRetryBackoffsMs,
+      },
     );
     return scoreAdmissionMergeQualityGate({
       prepared,
@@ -1539,6 +1579,7 @@ async function judgeBulkPairs(
     ownerId?: string;
     executionId: string;
     batchRetryBackoffsMs: readonly number[];
+    transportRetryBackoffsMs?: readonly number[];
     batchRetryDelay: (ms: number) => Promise<void>;
     stageRunId: string;
     sql: OrgSql;
@@ -1752,7 +1793,22 @@ async function judgeBulkPairs(
               ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
             }),
           (response) => parsePromoterJudgements(responsePayload(response)),
-          { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
+          {
+            backoffsMs: opts.batchRetryBackoffsMs,
+            delay: opts.batchRetryDelay,
+            transportBackoffsMs: opts.transportRetryBackoffsMs,
+            // A transport wait can last minutes: stop if a sibling already failed
+            // the stage (WI-10004932) and keep this stage's lease visibly alive.
+            onTransportWait: async () => {
+              stopIfSiblingFailed();
+              await heartbeatBulkStage(opts.sql, {
+                id: opts.stageRunId,
+                ownerId: opts.executionId,
+                nowMs: opts.now(),
+                leaseMs: opts.leaseMs,
+              });
+            },
+          },
         );
       // The canary is the DBOS-visible model checkpoint. Remaining batches use
       // the admission_runs checkpoints below; concurrent DBOS.runStep calls
@@ -1954,6 +2010,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const batchRetryBackoffsMs = (opts.batchRetryBackoffsMs ?? DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS).filter(
     (delayMs) => Number.isFinite(delayMs) && delayMs >= 0,
   );
+  const transportRetryBackoffsMs = (opts.transportRetryBackoffsMs ?? DEFAULT_BULK_TRANSPORT_RETRY_BACKOFFS_MS).filter(
+    (delayMs) => Number.isFinite(delayMs) && delayMs >= 0,
+  );
   const batchRetryDelay =
     opts.batchRetryDelay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const runCensus = opts.runCensus ?? runWorkItemAdmissionCensus;
@@ -2017,6 +2076,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
               llmCall: opts.llmCall,
               ownerId: opts.ownerId,
               batchRetryBackoffsMs,
+              transportRetryBackoffsMs,
               batchRetryDelay,
               now,
             }),
@@ -2300,6 +2360,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         ownerId: opts.ownerId,
         executionId,
         batchRetryBackoffsMs,
+        transportRetryBackoffsMs,
         batchRetryDelay,
         stageRunId,
         sql,
