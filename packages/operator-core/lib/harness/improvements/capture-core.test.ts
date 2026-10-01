@@ -4,6 +4,7 @@ import {
   captureToolInvocationFriction,
   validateScoutEvidenceCitations,
   storageKindOf,
+  CaptureWatchdogIdentityConflictError,
   DUP_THRESHOLD,
   CONTAINMENT_THRESHOLD,
   CAPTURE_LEXICAL_SEARCH_BUDGET_MS,
@@ -3231,9 +3232,44 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
           },
           d,
         ),
-      ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_watchdog_identity_uq' });
+      ).rejects.toMatchObject({
+        name: 'CaptureWatchdogIdentityConflictError',
+        code: 'watchdog_identity_conflict',
+        reason: 'no_compatible_winner',
+        retryable: false,
+        watchdogKey: 'k',
+        relatedIds: [`EI-MISMATCH-${_dimension}`],
+      });
     },
   );
+
+  it('returns a retryable typed refusal when the named conflict winner cannot be re-read', async () => {
+    let lookupCount = 0;
+    const d = deps();
+    d.findIssuesByWatchdogKeys = async () => {
+      lookupCount += 1;
+      if (lookupCount === 1) return [];
+      throw new Error('secondary watchdog read unavailable');
+    };
+    d.createIssue = async () => {
+      throw {
+        code: '23505',
+        constraint_name: 'work_items_watchdog_identity_uq',
+        message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+      };
+    };
+
+    await expect(
+      captureImprovement({ title: 'winner lookup unavailable', kind: 'bug', watchdogKey: 'lookup:k' }, d),
+    ).rejects.toMatchObject({
+      name: 'CaptureWatchdogIdentityConflictError',
+      code: 'watchdog_identity_conflict',
+      reason: 'winner_lookup_failed',
+      retryable: true,
+      watchdogKey: 'lookup:k',
+      relatedIds: [],
+    });
+  });
 
   it('does not swallow a different unique violation as a watchdog race', async () => {
     const d = deps();

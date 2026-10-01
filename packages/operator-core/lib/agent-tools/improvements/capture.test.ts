@@ -912,6 +912,35 @@ describe('improvements:capture tool envelope', () => {
     expect(body).toEqual({ ok: true, id: 'EI-42', created: true, duplicateOf: null });
   });
 
+  it('maps an unmatched watchdog identity conflict to a structured refusal', async () => {
+    const conflict = Object.assign(new Error('A watchdog identity conflict could not be safely coalesced.'), {
+      name: 'CaptureWatchdogIdentityConflictError',
+      code: 'watchdog_identity_conflict',
+      reason: 'no_compatible_winner',
+      retryable: false,
+      watchdogKey: 'tool-failure:work_items:get:23505',
+      relatedIds: ['EI-41', 'EI-42'],
+    });
+    mockCapture.mockRejectedValueOnce(conflict);
+
+    const res = await callTool({
+      title: 'capture conflict',
+      kind: 'bug',
+      watchdogKey: 'tool-failure:work_items:get:23505',
+    });
+    const body = JSON.parse(res.content[0].text) as Record<string, unknown>;
+
+    expect(body).toEqual({
+      ok: false,
+      error: 'watchdog_identity_conflict',
+      retryable: false,
+      reason: 'no_compatible_winner',
+      watchdogKey: 'tool-failure:work_items:get:23505',
+      relatedIds: ['EI-41', 'EI-42'],
+      message: 'A watchdog identity conflict could not be safely coalesced.',
+    });
+  });
+
   it('maps bounded database contention to a retryable timeout envelope', async () => {
     mockCapture.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
 

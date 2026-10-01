@@ -100,6 +100,37 @@ import {
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
 
+export type CaptureWatchdogIdentityConflictReason = 'no_compatible_winner' | 'winner_lookup_failed';
+
+/** A watchdog-key INSERT lost its unique-index race, but no safe row was available to coalesce. */
+export class CaptureWatchdogIdentityConflictError extends Error {
+  readonly code = 'watchdog_identity_conflict' as const;
+  readonly retryable: boolean;
+  readonly watchdogKey: string;
+  readonly relatedIds: string[];
+  readonly reason: CaptureWatchdogIdentityConflictReason;
+  readonly lookupError?: unknown;
+
+  constructor(options: {
+    watchdogKey: string;
+    relatedIds: string[];
+    reason: CaptureWatchdogIdentityConflictReason;
+    lookupError?: unknown;
+  }) {
+    super(
+      options.reason === 'winner_lookup_failed'
+        ? 'A watchdog identity conflict could not be inspected. No improvement was captured; retry after the database read recovers.'
+        : 'A watchdog identity conflict could not be safely coalesced. No improvement was captured.',
+    );
+    this.name = 'CaptureWatchdogIdentityConflictError';
+    this.watchdogKey = options.watchdogKey;
+    this.relatedIds = [...new Set(options.relatedIds)];
+    this.reason = options.reason;
+    this.retryable = options.reason === 'winner_lookup_failed';
+    this.lookupError = options.lookupError;
+  }
+}
+
 // Re-export the shared threshold for existing capture-core callers while keeping
 // the value owned by the lightweight digest policy module.
 export { DUP_THRESHOLD };
@@ -3116,16 +3147,33 @@ export async function captureImprovement(
     // different 23505 (or a winner from another lane/Pot/origin) must remain a
     // visible failure rather than being silently turned into a duplicate merge.
     if (input.watchdogKey && isWatchdogIdentityConflict(error)) {
-      const raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(() => {
-        throw error;
-      });
+      let raced: EngineerIssue[] = [];
+      let lookupError: unknown;
+      try {
+        raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]);
+      } catch (readError) {
+        lookupError = readError;
+      }
       const winner = raced.find(
         (candidate) =>
           isWatchdogNonTerminal(candidate) &&
           sameWatchdogIdentity(candidate, input, origin) &&
           compatibleToolFailureClassIdentity(candidate, incomingProbation),
       );
-      if (!winner) throw error;
+      if (!winner) {
+        const relatedIds = raced
+          .filter((candidate) => {
+            const payload = (candidate.payload as Record<string, unknown> | null) ?? {};
+            return isWatchdogNonTerminal(candidate) && payload.watchdogKey === input.watchdogKey;
+          })
+          .map((candidate) => candidate.id);
+        throw new CaptureWatchdogIdentityConflictError({
+          watchdogKey: input.watchdogKey,
+          relatedIds,
+          reason: lookupError === undefined ? 'no_compatible_winner' : 'winner_lookup_failed',
+          ...(lookupError === undefined ? {} : { lookupError }),
+        });
+      }
       return coalesceWatchdogWinner({
         prior: winner,
         input,

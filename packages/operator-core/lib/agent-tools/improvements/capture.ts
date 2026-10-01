@@ -25,6 +25,7 @@ import {
   recordCaptureReviewFailure,
   setCaptureReviewState,
   type AgentReviewFailure,
+  type CaptureWatchdogIdentityConflictError,
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { OBSERVATION_KINDS, ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -1646,6 +1647,33 @@ export default defineTool({
         ],
       };
     } catch (err) {
+      const watchdogConflict = err as CaptureWatchdogIdentityConflictError;
+      if (
+        err instanceof Error &&
+        watchdogConflict.code === 'watchdog_identity_conflict' &&
+        typeof watchdogConflict.watchdogKey === 'string' &&
+        Array.isArray(watchdogConflict.relatedIds) &&
+        watchdogConflict.relatedIds.every((id) => typeof id === 'string') &&
+        (watchdogConflict.reason === 'no_compatible_winner' || watchdogConflict.reason === 'winner_lookup_failed') &&
+        typeof watchdogConflict.retryable === 'boolean'
+      ) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: watchdogConflict.code,
+                retryable: watchdogConflict.retryable,
+                reason: watchdogConflict.reason,
+                watchdogKey: watchdogConflict.watchdogKey,
+                relatedIds: watchdogConflict.relatedIds,
+                message: watchdogConflict.message,
+              }),
+            },
+          ],
+        };
+      }
       // A bounded admin-pool transaction that exhausts its contention budget is
       // retryable and should not degrade into a generic MCP handler_error.
       if (err instanceof OrgTxnTimeoutError) {
