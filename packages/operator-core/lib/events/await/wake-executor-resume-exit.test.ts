@@ -372,6 +372,76 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     expect(spawned).toBe(false);
   });
 
+  it.each([
+    ['ExitPlanMode', 'started'],
+    ['ExitPlanMode', 'refused'],
+    ['WaitForMcpServers', 'started'],
+    ['WaitForMcpServers', 'throws'],
+    ['mcp__papercusp-su__plans_audit', 'started'],
+    ['mcp__papercusp-su__plans_audit', 'refused'],
+  ] as const)('uses fresh context for a dead no-host %s rejection (%s)', async (tool, launchResult) => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: {
+          role: 'assistant', model: '<synthetic>',
+          content: [{ type: 'text', text: `API Error: 400 Tool reference '${tool}' not found in available tools` }],
+        },
+      });
+      writeFileSync(transcriptPath, [turn(), turn(), turn()].join('\n'));
+      const launchColdFreshSuccessor = vi.fn(async (_input: Parameters<NonNullable<ExecuteWakeDeps['launchColdFreshSuccessor']>>[0]) => {
+        if (launchResult === 'throws') throw new Error('successor unavailable');
+        return launchResult === 'started';
+      });
+      const spawnDetached = vi.fn(() => 4242);
+      const claimResume = vi.fn(async () => true);
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{ rel: 'projects/-repo/native-A.jsonl', abs: transcriptPath, bytes: 1, mtimeMs: 1 }],
+        recoverToolReferenceDeath: async () => 'unrecoverable',
+        launchColdFreshSuccessor,
+        spawnDetached,
+        claimResume,
+        quarantineToolReferenceSession: quarantine as never,
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId, workspaceId: 'row-ws', harnessSlug: 'papercusp',
+        agent: 'claude', coordOwnerId: s.ownerId, sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z', endedAt: '2026-09-24T10:01:00.000Z',
+        pid: 7777, cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      const out = await executeWake(d, deps);
+
+      if (launchResult === 'started') {
+        expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
+      } else {
+        expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('without replaying') });
+      }
+      expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+        subscriberId: s.ownerId, workspaceId: 'row-ws', harness: 'papercusp', deliveryId: d.id,
+      }));
+      expect(launchColdFreshSuccessor.mock.calls[0]?.[0]).not.toHaveProperty('carry');
+      expect(claimResume).not.toHaveBeenCalled();
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(quarantine).not.toHaveBeenCalled();
+      if (launchResult === 'throws') {
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`cold fresh successor failed for ${s.ownerId}`));
+      } else {
+        expect(warn).not.toHaveBeenCalled();
+      }
+    } finally {
+      warn.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // WI-10003466 (su-7dc2cf9d, 2026-09-27): a transient MCP disconnect left a LIVE
   // interactive session replaying `Tool reference 'mcp__papercusp-su__capability_bash'
   // not found` on every turn; this branch ENDED the session instead of recovering it.

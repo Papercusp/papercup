@@ -985,6 +985,14 @@ const sessionTurn: SearchSource = {
     // `SET LOCAL` pattern.
     const rows = (await p.sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS}`);
+      // R2 live proof: correlated transcript terms were underestimated 10x,
+      // selecting a serial rank/sort over 106k matches (~1.0–1.1s). In a
+      // controlled baseline/profile/baseline sequence, setup cost 100 selected
+      // two workers (~0.4s), with identical top-20 rank values. Keep the
+      // profile transaction-local and cap workers below the host's default 8.
+      // The separately bounded literal fill still disables parallel workers.
+      await tx.unsafe('SET LOCAL max_parallel_workers_per_gather = 2');
+      await tx.unsafe('SET LOCAL parallel_setup_cost = 100');
       // PRIMARY — index-served only (`lex.match` carries no substring arm).
       const primary = (await tx`
       ${lex.with}

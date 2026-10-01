@@ -161,6 +161,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
 import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import tool from '../converse';
+import { buildOperatorPrompt } from '../converse-prompt';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyGen = AsyncGenerator<any, void, unknown>;

@@ -2599,6 +2599,8 @@ export interface ExecuteWakeDeps {
     harness: string | null;
     wakeText: string;
     deliveryId: number;
+    /** Explicit cold wakes override carry; transcript recovery preserves the source. */
+    carry?: 'cold';
   }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
@@ -3983,13 +3985,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // available rather than silently reopening the old context. This is only
     // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
     // preserve the normal resume fallback below.
-    if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
+    const coldWakeNeedsHost = await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps);
+    // EI-24797049094820185: a detached Claude turn has no managed host to
+    // carry-respawn. After its process exits, replaying the rejected transcript
+    // just produces the same API 400. Reuse the identity-preserving successor
+    // path below, even for warm/event wakes, without changing its carry policy.
+    const rejectedTranscriptNeedsSuccessor = sessionAgent === 'claude' &&
+      !reconciledTranscriptHealthy && Boolean(claudeTranscriptAnalysis?.needsFreshContext);
+    if (coldWakeNeedsHost || rejectedTranscriptNeedsSuccessor) {
       // The former P-013 inbox fallback discarded the cold marker. Its second
       // delivery therefore resumed the old Codex UUID and kept the critical
       // context. Use the existing identity-preserving successor launch instead.
       const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
         subscriberId: string; workspaceId: string; harness: string | null;
-        wakeText: string; deliveryId: number;
+        wakeText: string; deliveryId: number; carry?: 'cold';
       }) => {
         const { default: launchTool } = await import('../../agent-tools/capability/launch-agent');
         const result = await launchTool.handler({
@@ -3997,7 +4006,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           brief: input.wakeText,
           harness: input.harness ?? undefined,
           headless: true,
-          carry: 'cold',
+          carry: input.carry,
           idempotencyKey: `cold-wake:${input.deliveryId}`,
         } as never, {
           workspaceId: input.workspaceId,
@@ -4009,15 +4018,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       });
       const successorStarted = await launchSuccessor({
         subscriberId: d.subscriberId,
-        workspaceId: d.workspaceId,
+        workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         harness: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
         wakeText: text,
         deliveryId: d.id,
+        ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
       }).catch((error) => {
         console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
         return false;
       });
       if (successorStarted) return { kind: 'delivered', channel: 'cold-fresh-successor' };
+      if (rejectedTranscriptNeedsSuccessor && !coldWakeNeedsHost) {
+        return {
+          kind: 'park',
+          reason: 'Claude transcript repeatedly references an unavailable tool; fresh successor failed — parked without replaying the rejected transcript',
+        };
+      }
       // No inbox-wake watcher (or the fan failed): nothing else can carry this fire,
       // so the limbo guard below still streaks it toward pause + escalation.
       // EI-21431587306904888: for an ENDED session no injectable host ever

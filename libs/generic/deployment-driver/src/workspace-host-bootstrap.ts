@@ -2880,6 +2880,10 @@ export function buildWorkspaceHostBootstrap(
     "Environment=PAPERCUSP_PROMPTS_DIR=$STATE_ROOT/.papercusp/blueprints/base/prompts",
     "Environment=PAPERCUSP_SPA_DIST=$RUNTIME_ROOT/current/spa",
     "Environment=PAPERCUSP_DOCS_ROOT=$RUNTIME_ROOT/current/internal-docs",
+    // WI-10004899: the cut packs precomputed doc_sections vectors into the bundle, so a fresh
+    // host applies them instead of embedding ~15k sections on its own CPU (WI-10004455). A
+    // bundle cut before the seed existed has no such dir; applyShippedDocVectorSeed fails open.
+    "Environment=PAPERCUSP_DOC_VECTOR_SEED_DIR=$RUNTIME_ROOT/current/doc-vector-seed",
     "Environment=PAPERCUSP_TEMPLATES_DIR=$STATE_ROOT/.papercusp/templates",
     "Environment=PAPERCUSP_RUBRICS_DIR=$STATE_ROOT/.papercusp/rubrics",
     // D-403: the connector bearer, once enrolled. Optional (`-`), so the unit starts unchanged

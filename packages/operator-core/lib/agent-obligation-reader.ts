@@ -29,7 +29,7 @@ import { goalPlanningPortfolioFingerprint, parseGoalPlanningReview, type GoalPla
 import type { GoalPotPlacementAuthority } from './goal-launch-settings';
 import { GOAL_OWNER_REPORT_MAX_SILENCE_MS, GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS } from './system-health/goal-owner-report-watchdog';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
-import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { GoalPlacementProgressState } from './goal-placement-progress';
@@ -77,7 +77,14 @@ export interface AgentObligationReaderDeps {
     goalId: string,
     nowMs: number,
   ) => Promise<GoalOwnerReportObligation | null>;
-  planAcceptance: (planSlug: string) => Promise<PlanAcceptanceGateVerdict>;
+  /**
+   * The plan's PERSISTED canonical acceptance-gate verdict (D-039, WI-10004673). Never
+   * runs the gate: inline, it cost 1.0–1.8s of main-thread CPU per agenda read and
+   * lagged bg-host's event loop past every 900ms budget here. A stale or absent
+   * observation rejects — an `unknown` read — and starts the single-flight background
+   * re-evaluation that refreshes it.
+   */
+  planAcceptance: (workspaceId: string, planSlug: string) => Promise<PlanClosureGateFields>;
   /**
    * Undispositioned owner directives (`pending` + `open`) for this workspace.
    *
@@ -299,8 +306,8 @@ export async function readAgentObligationAgenda(input: {
   const readAcceptance = (planSlug: string) =>
     boundedRead(
       'plan-acceptance:' + planSlug,
-      deps.planAcceptance(planSlug),
-      null as PlanAcceptanceGateVerdict | null,
+      deps.planAcceptance(input.workspaceId, planSlug),
+      null as PlanClosureGateFields | null,
       sourceTimeoutMs,
     );
   const ownAcceptancePromises = ownPlanSlugs.map(readAcceptance);
@@ -314,7 +321,7 @@ export async function readAgentObligationAgenda(input: {
   // this wave still starts immediately and runs concurrently, and the one new
   // dependency edge (portfolio -> its own plans' acceptance) is intrinsic.
   const worklistAcceptancePromise = portfolioPromise.then(async (portfolioOutcome) => {
-    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanAcceptanceGateVerdict | null>[] };
+    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanClosureGateFields | null>[] };
     const budget = PLAN_CONTEXT_MAX - ownPlanSlugs.length;
     if (budget <= 0) return empty;
     const seen = new Set(ownPlanSlugs);
@@ -872,9 +879,16 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       ]);
       return readGoalOwnerReportObligation(getOrgPg().sql, { workspaceId, ownerId, goalId }, nowMs);
     },
-    planAcceptance: async (planSlug) => {
-      const { evaluatePlanAcceptanceGate } = await import('./plan-acceptance-gate');
-      return evaluatePlanAcceptanceGate(planSlug);
+    planAcceptance: async (workspaceId, planSlug) => {
+      // D-039: the same persisted verdict the goal portfolio's closure read serves
+      // (resolveWorklistClosures). A non-fresh observation is not a verdict, so it
+      // rejects with the observation's own detail rather than falling back inline.
+      const { readPlanClosureObservations, refreshPlanClosureObservations } =
+        await import('./goals/plan-closure-observations');
+      const observation = (await readPlanClosureObservations({ workspaceId, planSlugs: [planSlug] })).get(planSlug);
+      if (observation?.status === 'fresh') return observation.gate;
+      if (observation?.status !== 'ambiguous') refreshPlanClosureObservations([planSlug]);
+      throw new Error(observation?.detail ?? `no acceptance-gate observation was read for '${planSlug}'`);
     },
     ownerDirectives: async (workspaceId, ownerId) => {
       const [

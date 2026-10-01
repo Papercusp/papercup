@@ -89,4 +89,20 @@ describe('Guide output-only voice lifecycle', () => {
     setVoiceOutputMuted(true); render(<Fixture />);
     expect(screen.getByText('Guide speech is muted.')).toBeTruthy(); expect(fetch).not.toHaveBeenCalled();
   });
+  it('times out slow help, keeps lesson controls usable and ignores a late answer', async () => {
+    render(<Fixture />); await waitFor(() => expect(audio.length).toBe(1));
+    let resolveHelp!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce((_url, options) => {
+      requests.push({ url: String(_url), body: JSON.parse(options!.body as string), signal: options!.signal! });
+      return new Promise(resolve => { resolveHelp = resolve; });
+    });
+    vi.useFakeTimers(); fireEvent.click(screen.getByRole('button', { name: 'Ask about this step' }));
+    await act(async () => { vi.advanceTimersByTime(15_001); });
+    expect(screen.getByText(/AI help is taking too long/)).toBeTruthy();
+    expect(requests.at(-1)!.signal.aborted).toBe(true);
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
+    await act(async () => resolveHelp(Response.json({ answer: 'Late answer from obsolete request' })));
+    expect(screen.queryByText('Late answer from obsolete request')).toBeNull();
+    expect(screen.getByText('0 of 6 steps confirmed')).toBeTruthy();
+  });
 });

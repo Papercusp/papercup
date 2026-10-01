@@ -42,7 +42,8 @@ export const AWS_WORKSPACE_HOST_PROVIDER_VERSION = 'aws-workspace-host-provider-
 export const AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH = 64;
 
 export type AwsEc2InstanceState = 'pending' | 'running' | 'stopping' | 'stopped' | 'shutting-down' | 'terminated';
-export type AwsEbsVolumeState = 'creating' | 'available' | 'in-use' | 'deleting' | 'deleted';
+/** EC2's own volume states; `error` is terminal-failed (the SDK client fails a wait that lands there). */
+export type AwsEbsVolumeState = 'creating' | 'available' | 'in-use' | 'deleting' | 'deleted' | 'error';
 
 export interface AwsTag {
   Key: string;
@@ -1068,14 +1069,15 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       value === 'ok' ? true : value === 'impaired' ? false : null;
     const instanceOk = statusCheck(instance?.instanceStatus);
     const systemOk = statusCheck(instance?.systemStatus);
-    // NOT `=== true`: `ssmOnline` is optional and no AWS client in this tree writes it.
+    // NOT `=== true`: the SDK client (aws-sdk-client.ts) writes `ssmOnline` only when SSM
+    // DescribeInstanceInformation answered; an access-denied read leaves it absent = unmeasured.
     const ssmOnline = instance?.ssmOnline ?? null;
     const checks: WorkspaceHostHealthCheck[] = [
       { name: 'ec2-running', ok: running, detail: instance?.state ?? 'absent' },
       { name: 'ec2-instance-status', ok: instanceOk, detail: instance?.instanceStatus ?? 'absent' },
       { name: 'ec2-system-status', ok: systemOk, detail: instance?.systemStatus ?? 'absent' },
       ssmOnline === null
-        ? unmeasuredHealthCheck('ssm-online', 'no producer writes ssmOnline on the AWS path')
+        ? unmeasuredHealthCheck('ssm-online', 'SSM instance information was not readable for this host')
         : { name: 'ssm-online', ok: ssmOnline },
     ];
     return {

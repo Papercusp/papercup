@@ -479,6 +479,69 @@ async function readJsonIfPresent(path: string): Promise<unknown | null> {
   }
 }
 
+/** Directory inside the sidecar (the bundle root) that carries the doc vector seed. The hosted
+ *  unit points PAPERCUSP_DOC_VECTOR_SEED_DIR at `$RUNTIME_ROOT/current/<this>`. */
+export const WORKSPACE_HOST_DOC_VECTOR_SEED_DIR = 'doc-vector-seed';
+
+export type DocVectorSeedCutOutcome = 'skipped' | 'exported' | 'kept-previous' | 'none';
+
+export interface DocVectorSeedCutOptions {
+  sidecarDir: string;
+  /** Integration checkout: it has node_modules and resolves the build database. */
+  repoRoot: string;
+  logFile: string;
+  skip?: boolean;
+  /** Runs the exporter; defaults to `npx <args>` in `cwd`. Injected by tests. */
+  exporter?: (args: readonly string[], options: { cwd: string; logFile: string }) => Promise<void>;
+  warn?: (message: string) => void;
+}
+
+/**
+ * Write precomputed doc_sections vectors into the sidecar before it is packed (WI-10004899).
+ * Mirrors the desktop cut's `cut_doc_vector_seed` (papercusp-desktop/bin/release-local.sh): the
+ * previous seed, if one is already in the sidecar, is applied first so only changed sections are
+ * re-embedded; a failed export never fails the cut, because a bundle without the seed still works
+ * (the host embeds the uncovered sections itself, as before). The new seed replaces the old one only
+ * once the exporter has written a manifest, so a failed export leaves the previous seed in place.
+ */
+export async function cutDocVectorSeed(options: DocVectorSeedCutOptions): Promise<DocVectorSeedCutOutcome> {
+  if (options.skip) return 'skipped';
+  const out = join(options.sidecarDir, WORKSPACE_HOST_DOC_VECTOR_SEED_DIR);
+  const tmp = `${out}.new`;
+  const warn = options.warn ?? ((message: string) => console.warn(message));
+  const exporter =
+    options.exporter ??
+    ((args: readonly string[], runOptions: { cwd: string; logFile: string }) =>
+      runStep('doc-vector-seed', 'npx', args, runOptions));
+  const hasPrevious = existsSync(join(out, 'manifest.json'));
+  await rm(tmp, { recursive: true, force: true });
+  try {
+    await exporter(
+      [
+        'tsx', 'scripts/export-doc-vector-seed.mts',
+        '--out', tmp,
+        '--allow-uncovered',
+        ...(hasPrevious ? ['--previous', out] : []),
+      ],
+      { cwd: options.repoRoot, logFile: options.logFile },
+    );
+    if (!existsSync(join(tmp, 'manifest.json'))) {
+      throw new Error(`the exporter exited 0 but wrote no manifest.json into ${tmp}`);
+    }
+    await rm(out, { recursive: true, force: true });
+    await rename(tmp, out);
+    return 'exported';
+  } catch (err) {
+    await rm(tmp, { recursive: true, force: true });
+    const ships = hasPrevious ? "the previous cut's doc-vector seed" : 'no precomputed doc vectors';
+    warn(
+      `WARNING: doc-vector-seed export failed (${err instanceof Error ? err.message : String(err)}) — ` +
+        `the bundle ships ${ships}; fresh hosts embed the rest on first boot.`,
+    );
+    return hasPrevious ? 'kept-previous' : 'none';
+  }
+}
+
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await writeFile(`${path}.partial`, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await rename(`${path}.partial`, path);
@@ -569,6 +632,15 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       `sidecar stamp does not record a passing release identity audit for ${sourceSha}`,
     );
   }
+
+  // 3b. Precomputed doc_sections vectors (WI-10004899), so a fresh hosted host applies them
+  //     instead of embedding every doc section on its own CPU. Never fails the cut.
+  await cutDocVectorSeed({
+    sidecarDir: paths.sidecar,
+    repoRoot: plan.repoRoot,
+    logFile: logFor('doc-vector-seed'),
+    skip: process.env.PAPERCUSP_SKIP_DOC_VECTOR_SEED === '1',
+  });
 
   // 4. Pack into a fresh publication directory: a leftover file from an earlier attempt must not be
   //    published beside bytes it does not describe.

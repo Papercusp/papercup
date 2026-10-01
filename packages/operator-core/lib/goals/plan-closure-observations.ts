@@ -35,8 +35,15 @@ import { activeWorkspaceId } from '../workspace-registry';
 /** Older observations are re-evaluated even when the fingerprint still matches. */
 export const PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS = 10 * 60_000;
 
-/** The gate fields `resolvePlanClosure` consumes — and so the only ones persisted. */
-export type PlanClosureGateFields = Pick<PlanAcceptanceGateVerdict, 'satisfied' | 'code' | 'skipped' | 'message'>;
+/**
+ * The persisted gate fields: the four `resolvePlanClosure` consumes, plus the rubric and
+ * grader the independent-verification obligation names (D-039 — the turn-start
+ * obligation reader serves this observation instead of running the gate inline).
+ */
+export type PlanClosureGateFields = Pick<
+  PlanAcceptanceGateVerdict,
+  'satisfied' | 'code' | 'skipped' | 'message' | 'rubricId' | 'gradedBy'
+>;
 
 /** Gate inputs captured when an evaluation begins. Watermarks are epoch microseconds as text. */
 export interface PlanClosureFingerprint {
@@ -76,6 +83,8 @@ interface FingerprintRow {
   code: string | null;
   skipped: string | null;
   message: string | null;
+  rubric_id: string | null;
+  graded_by: string | null;
   observed_fingerprint: PlanClosureFingerprint | null;
   observed_at: Date | string | null;
 }
@@ -146,7 +155,7 @@ async function readFingerprintRows(sql: Sql, workspaceId: string, planSlugs: rea
     )
     SELECT fp.plan_slug, fp.harness_slug, fp.matches, fp.fingerprint,
            (o.fingerprint = fp.fingerprint) AS fingerprint_matches,
-           o.satisfied, o.code, o.skipped, o.message,
+           o.satisfied, o.code, o.skipped, o.message, o.rubric_id, o.graded_by,
            o.fingerprint AS observed_fingerprint, o.observed_at
       FROM current_fp AS fp
       LEFT JOIN harness_shared.plan_closure_observations AS o
@@ -173,9 +182,9 @@ export function changedFingerprintKeys(
  */
 export function judgePlanClosureObservation(
   planSlug: string,
-  rows: readonly Pick<FingerprintRow,
+  rows: readonly (Pick<FingerprintRow,
     'matches' | 'fingerprint' | 'fingerprint_matches' | 'satisfied' | 'code' | 'skipped' | 'message' |
-    'observed_fingerprint' | 'observed_at'>[],
+    'observed_fingerprint' | 'observed_at'> & Partial<Pick<FingerprintRow, 'rubric_id' | 'graded_by'>>)[],
   now: Date,
   maxAgeMs = PLAN_CLOSURE_OBSERVATION_MAX_AGE_MS,
 ): PlanClosureObservationRead {
@@ -214,6 +223,8 @@ export function judgePlanClosureObservation(
       code: row.code as PlanClosureGateFields['code'],
       ...(row.skipped ? { skipped: row.skipped as PlanClosureGateFields['skipped'] } : {}),
       ...(row.message != null ? { message: row.message } : {}),
+      ...(row.rubric_id ? { rubricId: row.rubric_id } : {}),
+      ...(row.graded_by ? { gradedBy: row.graded_by } : {}),
     } as PlanClosureGateFields,
     observedAt: observedAt.toISOString(),
   };
@@ -266,15 +277,19 @@ export async function beginPlanClosureObservation(planSlug: string): Promise<{
         if (!row) return;
         await sql`
           INSERT INTO harness_shared.plan_closure_observations
-            (workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message, fingerprint, observed_at, build_sha)
+            (workspace_id, harness_slug, plan_slug, satisfied, code, skipped, message, rubric_id, graded_by,
+             fingerprint, observed_at, build_sha)
           VALUES (${workspaceId}, ${harnessSlug}, ${planSlug}, ${verdict.satisfied}, ${verdict.code ?? null},
-                  ${verdict.skipped ?? null}, ${verdict.message ?? null}, ${sql.json(row.fingerprint as never)},
+                  ${verdict.skipped ?? null}, ${verdict.message ?? null}, ${verdict.rubricId ?? null},
+                  ${verdict.gradedBy ?? null}, ${sql.json(row.fingerprint as never)},
                   ${observedAt}, ${verdict.buildProvenance?.sha ?? null})
           ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
             satisfied = EXCLUDED.satisfied,
             code = EXCLUDED.code,
             skipped = EXCLUDED.skipped,
             message = EXCLUDED.message,
+            rubric_id = EXCLUDED.rubric_id,
+            graded_by = EXCLUDED.graded_by,
             fingerprint = EXCLUDED.fingerprint,
             observed_at = EXCLUDED.observed_at,
             build_sha = EXCLUDED.build_sha

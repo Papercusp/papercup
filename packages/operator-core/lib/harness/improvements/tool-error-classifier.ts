@@ -143,6 +143,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    messagePattern: 'Identity capability \\(unresolved\\): outside-ceiling',
+    why: 'the kernel refused a call outside the caller identity’s authored capability ceiling; this expected authorization refusal is not a tool implementation defect',
+  },
+  {
+    class: 'caller',
     messagePattern: 'coord:ask is owner-UI-only',
     why: 'coord:ask deliberately denies direct agent calls; this owner-UI-only permission refusal is caller-side, while generic unauthorized workspace-scope failures remain structural',
   },

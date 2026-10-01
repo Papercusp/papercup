@@ -22,7 +22,9 @@ import {
   DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
   describeStepExit,
   WORKSPACE_HOST_BUILD_STAGE,
+  WORKSPACE_HOST_DOC_VECTOR_SEED_DIR,
   WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE,
+  cutDocVectorSeed,
   WorkspaceHostCutStepError,
   buildWorkspaceHostPublicationInput,
   buildWorkspaceHostReleaseJournalSeed,
@@ -649,5 +651,105 @@ describe('step failure lines (EI-24283123732250788)', () => {
       .filter((code) => code !== 0 && code !== 1);
     expect(refusals.length).toBeGreaterThan(0);
     expect(new Set(refusals)).toEqual(new Set([DISK_PREFLIGHT_REFUSAL_EXIT_CODE]));
+  });
+});
+
+describe('doc-vector seed in the hosted bundle (WI-10004899)', () => {
+  let sidecar: string;
+  beforeEach(() => {
+    sidecar = mkdtempSync(join(tmpdir(), 'wh-seed-'));
+  });
+  afterEach(() => {
+    rmSync(sidecar, { recursive: true, force: true });
+  });
+  const seedDir = () => join(sidecar, WORKSPACE_HOST_DOC_VECTOR_SEED_DIR);
+  const writeSeed = (dir: string, marker: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ marker }));
+  };
+  const outOf = (args: readonly string[]) => args[args.indexOf('--out') + 1] as string;
+
+  it('exports into <sidecar>/doc-vector-seed, the dir the hosted unit points PAPERCUSP_DOC_VECTOR_SEED_DIR at', async () => {
+    const calls: { args: readonly string[]; cwd: string }[] = [];
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      exporter: async (args, { cwd }) => {
+        calls.push({ args, cwd });
+        writeSeed(outOf(args), 'new');
+      },
+    });
+    expect(outcome).toBe('exported');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.cwd).toBe('/repo');
+    expect(calls[0]!.args.slice(0, 2)).toEqual(['tsx', 'scripts/export-doc-vector-seed.mts']);
+    expect(calls[0]!.args).toContain('--allow-uncovered');
+    expect(calls[0]!.args).not.toContain('--previous');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'new' });
+    expect(existsSync(`${seedDir()}.new`)).toBe(false);
+  });
+
+  it('applies the previous seed first and replaces it only once the new one is written', async () => {
+    writeSeed(seedDir(), 'old');
+    let previousAtExport: string | null = null;
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      exporter: async (args) => {
+        const previous = args[args.indexOf('--previous') + 1] as string;
+        previousAtExport = JSON.parse(readFileSync(join(previous, 'manifest.json'), 'utf8')).marker;
+        writeSeed(outOf(args), 'new');
+      },
+    });
+    expect(outcome).toBe('exported');
+    expect(previousAtExport).toBe('old');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'new' });
+  });
+
+  it('never fails the cut: a failed export keeps the previous seed and warns', async () => {
+    writeSeed(seedDir(), 'old');
+    const warnings: string[] = [];
+    const outcome = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      warn: (message) => warnings.push(message),
+      exporter: async (args) => {
+        writeSeed(outOf(args), 'partial');
+        throw new Error('npx exited 1');
+      },
+    });
+    expect(outcome).toBe('kept-previous');
+    expect(JSON.parse(readFileSync(join(seedDir(), 'manifest.json'), 'utf8'))).toEqual({ marker: 'old' });
+    expect(existsSync(`${seedDir()}.new`)).toBe(false);
+    expect(warnings.join('\n')).toMatch(/doc-vector-seed export failed .*previous cut's doc-vector seed/);
+  });
+
+  it('ships no seed when the exporter exits 0 without a manifest, and when skipped', async () => {
+    const empty = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      warn: () => {},
+      exporter: async (args) => {
+        mkdirSync(outOf(args), { recursive: true });
+      },
+    });
+    expect(empty).toBe('none');
+    expect(existsSync(seedDir())).toBe(false);
+    let ran = false;
+    const skipped = await cutDocVectorSeed({
+      sidecarDir: sidecar,
+      repoRoot: '/repo',
+      logFile: join(sidecar, 'seed.log'),
+      skip: true,
+      exporter: async () => {
+        ran = true;
+      },
+    });
+    expect(skipped).toBe('skipped');
+    expect(ran).toBe(false);
   });
 });

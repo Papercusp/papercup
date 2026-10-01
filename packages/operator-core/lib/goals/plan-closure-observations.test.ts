@@ -52,6 +52,15 @@ describe('judgePlanClosureObservation', () => {
     expect(read.status === 'fresh' && read.gate).toEqual({ satisfied: true, code: null, skipped: 'already-shipped' });
   });
 
+  it('carries the rubric and grader the independent-verification obligation names (D-039)', () => {
+    const read = judgePlanClosureObservation('p', [row({
+      satisfied: true, code: null, message: null, rubric_id: 'acceptance-p', graded_by: 'su-grader',
+    })], NOW);
+    expect(read.status === 'fresh' && read.gate).toEqual({
+      satisfied: true, code: null, rubricId: 'acceptance-p', gradedBy: 'su-grader',
+    });
+  });
+
   it('reads stale on a fingerprint change and names what changed', () => {
     const current = { ...FP, planVersion: '37', scorecardWatermark: '1790830000000000' };
     const read = judgePlanClosureObservation('p', [row({ fingerprint: current, fingerprint_matches: false })], NOW);

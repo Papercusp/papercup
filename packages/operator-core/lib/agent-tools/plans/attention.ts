@@ -77,6 +77,7 @@ import {
 import { runWithWorkspace } from '../../workspace-als';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ownerAttentionSourcesFor, type OwnerAttentionSource } from '../../interest-profiles';
+import { ownerAskDefaultDisclosure } from '../../external-blockers';
 import { attachListMeta } from '../../sync-resolver/list-meta';
 import { deriveAttentionCounts, deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 
@@ -716,9 +717,16 @@ export default defineTool({
                     workItemId: r.feature_id,
                     itemKind: r.item_kind ?? 'unknown',
                     title: r.title ?? r.feature_id,
-                    body: r.summary,
                     harnessSlug: resolveHarness(r.harness_slug, null),
                     ownerAgentId: r.taken_by,
+                    // Owner-attention ledger (EI-23783029010995961): say what the system
+                    // will do if the owner never answers, in the card the owner reads.
+                    body: [
+                      (r.summary ?? '').trim() || r.title || r.feature_id,
+                      ownerAskDefaultDisclosure(r.payload),
+                    ]
+                      .filter(Boolean)
+                      .join('\n\n'),
                     // P-003: WHICH leg of the source query admitted this row —
                     // the terminal action clears a different gate for each.
                     status: r.status,

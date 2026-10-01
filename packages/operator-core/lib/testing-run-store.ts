@@ -876,6 +876,8 @@ export interface SpawnRequest {
   kind: RunSnapshot['kind'];
   label: string;
   filePath?: string;
+  /** Exact per-file request manifest for Vitest status verification. */
+  requestedFiles?: string[];
   command: string;
   args: string[];
   cwd?: string;
@@ -1099,6 +1101,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     kind: req.kind,
     label: req.label,
     filePath: req.filePath,
+    ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
     command: [req.command, ...req.args],
     status: 'running',
     exitCode: null,
@@ -1139,9 +1142,14 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     runtimeMaxSec: req.runtimeMaxSec,
     launchedBy: 'testing-run-store',
     workItemId: req.workItemId ?? null,
-    detail: { runId, kind: req.kind, ...(detachedReportArtifacts.length > 0 ? {
-      detachedReportArtifacts: { schemaVersion: 1, artifacts: detachedReportArtifacts },
-    } : {}) },
+    detail: {
+      runId,
+      kind: req.kind,
+      ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
+      ...(detachedReportArtifacts.length > 0 ? {
+        detachedReportArtifacts: { schemaVersion: 1, artifacts: detachedReportArtifacts },
+      } : {}),
+    },
   };
   // task-manager P-008: mint the task id + confinement decision before the
   // fork. Ledger writes remain fire-and-forget so the synchronous startRun API
@@ -1266,11 +1274,12 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     wrapped,
     detachedReportArtifacts,
   } = prepared;
-  let terminalFinalizationStarted = false;
-  const finalizeTerminalRun = (): void => {
-    if (terminalFinalizationStarted) return;
-    terminalFinalizationStarted = true;
-    void (async () => {
+  const state: RunState = { snapshot, proc: null, cwd, worktreeBefore, finalization: null };
+  _runs.set(snapshot.runId, state);
+  let terminalFinalization: Promise<void> | null = null;
+  const finalizeTerminalRun = (): Promise<void> => {
+    if (terminalFinalization) return terminalFinalization;
+    terminalFinalization = (async () => {
       try {
         // The final snapshot must be written only after detached report rows and
         // failure details have been reconciled; otherwise testing:run-status can
@@ -1282,6 +1291,8 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         /* swallow — terminal observability remains fail-soft (D-007) */
       }
     })();
+    state.finalization = terminalFinalization;
+    return terminalFinalization;
   };
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
@@ -1308,8 +1319,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     snapshot.exitCode = -1;
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
-    _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
-    finalizeTerminalRun();
+    void finalizeTerminalRun();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -1318,8 +1328,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     return snapshot;
   }
 
-  const state: RunState = { snapshot, proc, cwd, worktreeBefore };
-  _runs.set(snapshot.runId, state);
+  state.proc = proc;
   if (opts.persistInitialSnapshot) void persistRunSnapshot(snapshot);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -1478,6 +1487,29 @@ export function getRun(runId: string): RunSnapshot | null {
   return s ? { ...s.snapshot } : null;
 }
 
+const UNVERIFIED_VITEST_PASS_NOTE =
+  '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not exactly cover the requested file manifest.\n';
+
+async function withholdUnverifiedVitestPass(
+  snapshot: RunSnapshot,
+  sqlOverride?: SqlLike,
+): Promise<RunSnapshot> {
+  if (snapshot.kind !== 'vitest' || snapshot.status !== 'pass') return snapshot;
+
+  const requestedFiles = requestedFilesFromValue(snapshot.requestedFiles);
+  const sql = await snapshotSql(sqlOverride);
+  if (requestedFiles && sql) {
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
+    if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) return snapshot;
+  }
+
+  const unverified: RunSnapshot = { ...snapshot, status: 'error' };
+  appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
+  if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);
+  return unverified;
+}
+
 /**
  * Async local-first reader for status surfaces. A worker that owns the child
  * returns immediately from `_runs`; a sibling worker falls through to the
@@ -1485,9 +1517,15 @@ export function getRun(runId: string): RunSnapshot | null {
  */
 export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   evictOldRuns();
-  const local = getRun(runId);
-  if (local) return local;
-  return readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
+  const local = _runs.get(runId);
+  if (local) {
+    if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
+    const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
+    if (local.snapshot.status === 'pass' && snapshot.status !== 'pass') Object.assign(local.snapshot, snapshot);
+    return snapshot;
+  }
+  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
+  return persisted ? withholdUnverifiedVitestPass(persisted, sqlOverride) : null;
 }
 
 export function cancelRun(runId: string): boolean {

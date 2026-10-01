@@ -66,7 +66,7 @@ async function launch() {
   fireEvent.click(await screen.findByRole("button", { name: "+ New session" }));
   await screen.findByRole("button", { name: "Send sample task" });
   await waitFor(() => expect(liveStream()).toBeTruthy());
-  expect(screen.getByTestId("papercup-chat-transcript").clientHeight).toBeGreaterThan(0);
+  expect(within(screen.getByRole("region", { name: "First agent workspace session" })).getByTestId("papercup-chat-transcript").clientHeight).toBeGreaterThan(0);
   await act(async () => { liveStream().fireOpen(); liveStream().fire("backfill", "[]"); });
   await waitFor(() => expect(screen.getByRole("button", { name: "Send sample task" }).hasAttribute("disabled")).toBe(false));
 }

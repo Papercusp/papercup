@@ -19,7 +19,8 @@ import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPo
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
-import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { PlanAcceptanceGateCode } from './plan-acceptance-gate';
+import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
@@ -982,7 +983,8 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
 export interface IndependentVerificationProviderInput extends ProviderBase {
   planSlug: string;
   read: ProviderRead<{
-    gate: PlanAcceptanceGateVerdict;
+    /** The persisted canonical gate verdict (D-039), never an inline gate run. */
+    gate: PlanClosureGateFields;
     evidenceRef: string;
     reviewAgeMs?: number;
     /** False before implementation/audit/rubric makes independent review applicable. */

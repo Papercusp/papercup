@@ -20,6 +20,10 @@ NAME="${RELAY_VM:-pc-blind-relay-1}"
 PORT="${RELAY_PORT:-49737}"
 SEED_DIR="${RELAY_SEED_DIR:-$HOME/.papercusp/relay}"
 NODE_MAJOR="${RELAY_NODE_MAJOR:-22}"
+# Monthly egress budget (decimal GB, UTC month). Past it the daemon suspends relaying
+# until the month rolls over; usage persists in /opt/papercusp-relay/egress-state.json.
+# 0 disables the guard. WI-10004956.
+EGRESS_BUDGET_GB="${RELAY_EGRESS_BUDGET_GB:-50}"
 REGION="${ZONE%-*}"
 # A dedicated VPC: this project has no `default` network, and every pc-host-* network
 # belongs to the hosted-workspace controller, so the relay must not borrow one.
@@ -43,15 +47,30 @@ seed_file() {
   printf '%s' "$f"
 }
 
+# Existence check for `up`'s idempotency: 0 = exists, 1 = gcloud says "was not found".
+# Any other describe failure (token refresh, API flake, quota) is retried and then fatal,
+# never read as "absent" — that misread made `up` try to re-create an existing network
+# (2026-10-01, WI-10004956).
+gc_exists() {
+  local err i
+  for i in 1 2 3; do
+    if err="$("${GC[@]}" "$@" --format='value(name)' 2>&1 >/dev/null)"; then return 0; fi
+    if grep -qi 'was not found' <<<"$err"; then return 1; fi
+    log "describe failed (attempt $i/3): ${err%%$'\n'*}"
+    sleep 5
+  done
+  die "cannot tell whether it exists ($*): $err"
+}
+
 vm_ssh() { "${GC[@]}" compute ssh "$NAME" --zone="$ZONE" --tunnel-through-iap --command="$1"; }
 vm_scp() { "${GC[@]}" compute scp --zone="$ZONE" --tunnel-through-iap "$@"; }
 
 ensure_network() {
-  if ! "${GC[@]}" compute networks describe "$NETWORK" >/dev/null 2>&1; then
+  if ! gc_exists compute networks describe "$NETWORK"; then
     log "creating network $NETWORK"
     "${GC[@]}" compute networks create "$NETWORK" --subnet-mode=custom
   fi
-  if ! "${GC[@]}" compute networks subnets describe "$SUBNET" --region="$REGION" >/dev/null 2>&1; then
+  if ! gc_exists compute networks subnets describe "$SUBNET" --region="$REGION"; then
     log "creating subnet $SUBNET ($SUBNET_RANGE, $REGION)"
     "${GC[@]}" compute networks subnets create "$SUBNET" --network="$NETWORK" --region="$REGION" \
       --range="$SUBNET_RANGE"
@@ -59,12 +78,12 @@ ensure_network() {
 }
 
 ensure_firewall() {
-  if ! "${GC[@]}" compute firewall-rules describe "$FW_UDP" >/dev/null 2>&1; then
+  if ! gc_exists compute firewall-rules describe "$FW_UDP"; then
     log "creating firewall rule $FW_UDP (udp:$PORT from anywhere → tag $TAG)"
     "${GC[@]}" compute firewall-rules create "$FW_UDP" --network="$NETWORK" --direction=INGRESS \
       --action=ALLOW --rules="udp:$PORT" --source-ranges=0.0.0.0/0 --target-tags="$TAG"
   fi
-  if ! "${GC[@]}" compute firewall-rules describe "$FW_IAP" >/dev/null 2>&1; then
+  if ! gc_exists compute firewall-rules describe "$FW_IAP"; then
     log "creating firewall rule $FW_IAP (tcp:22 from IAP → tag $TAG)"
     "${GC[@]}" compute firewall-rules create "$FW_IAP" --network="$NETWORK" --direction=INGRESS \
       --action=ALLOW --rules=tcp:22 --source-ranges=35.235.240.0/20 --target-tags="$TAG"
@@ -72,7 +91,7 @@ ensure_firewall() {
 }
 
 ensure_vm() {
-  if "${GC[@]}" compute instances describe "$NAME" --zone="$ZONE" >/dev/null 2>&1; then
+  if gc_exists compute instances describe "$NAME" --zone="$ZONE"; then
     log "instance $NAME exists"
     return
   fi
@@ -122,7 +141,7 @@ Wants=network-online.target
 [Service]
 User=papercusp-relay
 WorkingDirectory=/opt/papercusp-relay
-ExecStart=/usr/local/bin/node /opt/papercusp-relay/blind-relay-daemon.mjs --seed-file /opt/papercusp-relay/seed.hex --port $PORT --stats-sec 300
+ExecStart=/usr/local/bin/node /opt/papercusp-relay/blind-relay-daemon.mjs --seed-file /opt/papercusp-relay/seed.hex --port $PORT --stats-sec 300 --egress-budget-gb $EGRESS_BUDGET_GB
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
@@ -152,7 +171,7 @@ verify() {
 status() {
   "${GC[@]}" compute instances describe "$NAME" --zone="$ZONE" \
     --format='value(status,networkInterfaces[0].accessConfigs[0].natIP,labels)'
-  vm_ssh 'systemctl is-active papercusp-blind-relay.service; journalctl -u papercusp-blind-relay.service -n 5 --no-pager -o cat'
+  vm_ssh 'systemctl is-active papercusp-blind-relay.service; journalctl -u papercusp-blind-relay.service -n 5 --no-pager -o cat; echo "egress-state: $(sudo cat /opt/papercusp-relay/egress-state.json 2>/dev/null || echo none)"'
 }
 
 down() {
@@ -162,10 +181,13 @@ down() {
   "${GC[@]}" compute networks delete "$NETWORK" || true
 }
 
-case "${1:-}" in
-  up) seed_file >/dev/null; ensure_network; ensure_firewall; ensure_vm; wait_ssh; install_remote; verify ;;
-  verify) verify ;;
-  status) status ;;
-  down) down ;;
-  *) echo "usage: $0 up|verify|status|down" >&2; exit 2 ;;
-esac
+# Dispatch only when executed; sourcing (the tests) loads the functions alone.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    up) seed_file >/dev/null; ensure_network; ensure_firewall; ensure_vm; wait_ssh; install_remote; verify ;;
+    verify) verify ;;
+    status) status ;;
+    down) down ;;
+    *) echo "usage: $0 up|verify|status|down" >&2; exit 2 ;;
+  esac
+fi

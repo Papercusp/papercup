@@ -23,7 +23,7 @@ const workspace = {
 };
 const ANSWER = 'Available tools: read files and search code.';
 
-async function setupJourney(page: Page, existing: boolean) {
+async function setupJourney(page: Page, existing: boolean, speech = false) {
   let rows: unknown[] = existing ? [connection, workspace] : [];
   let revision = 0;
   let disposition = 'active';
@@ -33,6 +33,7 @@ async function setupJourney(page: Page, existing: boolean) {
   const socketMessages: Record<string, unknown>[] = [];
   const apiHits: string[] = [];
   const browserErrors: string[] = [];
+  const assistance: Array<{ path: string; body: Record<string, unknown> }> = [];
   page.on('pageerror', error => browserErrors.push(error.message));
   await page.addInitScript(() => {
     window.__PAPERCUSP_HOSTED_BROWSER__ = {
@@ -55,6 +56,22 @@ async function setupJourney(page: Page, existing: boolean) {
     apiHits.push(path);
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
     if (path.endsWith('/onboarding/select-workspace')) return json({ error: 'workspace_already_selected' }, 409);
+    if (path.endsWith('/onboarding/tutorial-help')) {
+      assistance.push({ path, body: request.postDataJSON() });
+      return json({ answer: 'Use the connection form to validate your Google Cloud project permissions.' });
+    }
+    if (path.endsWith('/onboarding/tutorial-speech')) {
+      assistance.push({ path, body: request.postDataJSON() });
+      if (!speech) return json({ error: 'tutorial_speech_unavailable' }, 503);
+      // Real browser media playback; only the provider bytes are a fixed WAV.
+      const rate = 16000, samples = rate / 2, wav = Buffer.alloc(44 + samples * 2);
+      wav.write('RIFF', 0); wav.writeUInt32LE(wav.length - 8, 4); wav.write('WAVEfmt ', 8);
+      wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+      wav.writeUInt32LE(rate, 24); wav.writeUInt32LE(rate * 2, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+      wav.write('data', 36); wav.writeUInt32LE(samples * 2, 40);
+      for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(800 * Math.sin(2 * Math.PI * 220 * i / rate)), 44 + i * 2);
+      return route.fulfill({ status: 200, contentType: 'audio/wav', body: wav });
+    }
     if (path.endsWith('/onboarding/tutorial-progress')) {
       if (request.method() === 'POST') {
         const patch = request.postDataJSON();
@@ -113,8 +130,52 @@ async function setupJourney(page: Page, existing: boolean) {
     setTimeout(() => socket.send(JSON.stringify({ type: 'session.bound', protocol: 'papercusp-hosted-workspace.v1', channelId: 'tutorial-channel', role: 'observer', binding: { generation: 1, hostedSessionId: 'tutorial-session' } })), 20);
     socket.onMessage(raw => { socketMessages.push(JSON.parse(String(raw))); });
   });
-  return { writes, socketMessages, apiHits, browserErrors, sync, get prompt() { return sentPrompt; } };
+  return { writes, socketMessages, apiHits, browserErrors, assistance, sync, get prompt() { return sentPrompt; } };
 }
+
+test('guide speaks current instructions and scoped help with real browser audio and no microphone', async ({ page }) => {
+  const fixture = await setupJourney(page, false, true);
+  await page.addInitScript(() => {
+    const events: string[] = []; Object.defineProperty(window, '__tutorialAudioEvents', { value: events });
+    // Observe the detached Audio element's native events, preserving play().
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+      this.addEventListener('playing', () => events.push('playing'), { once: true });
+      this.addEventListener('ended', () => events.push('ended'), { once: true });
+      return play.call(this);
+    };
+    Object.defineProperty(window, '__tutorialMicCalls', { value: 0, writable: true });
+    if (navigator.mediaDevices?.getUserMedia) {
+      const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = constraints => {
+        (window as unknown as { __tutorialMicCalls: number }).__tutorialMicCalls++;
+        return acquire(constraints);
+      };
+    }
+  });
+  await page.goto('/cloud-workspaces', { waitUntil: 'domcontentloaded' });
+  await fixture.sync.waitForServed(['workspaceHosts.control']);
+  const guide = page.getByRole('region', { name: 'First agent guide' });
+  await guide.getByRole('button', { name: 'Replay speech' }).click();
+  const playing = () => page.evaluate(() => (window as unknown as { __tutorialAudioEvents: string[] }).__tutorialAudioEvents.filter(value => value === 'playing').length);
+  await expect.poll(playing).toBeGreaterThan(0);
+  const prior = await playing();
+  const composer = guide.locator('textarea');
+  await composer.fill('Why do I need Google Cloud project permissions?');
+  await composer.press('Enter');
+  await expect(guide).toContainText('Use the connection form to validate your Google Cloud project permissions.');
+  await expect.poll(playing).toBeGreaterThan(prior);
+  await guide.getByRole('button', { name: 'Mute guide' }).click();
+  await expect(guide.getByRole('button', { name: 'Replay speech' })).toBeDisabled();
+  await expect(guide).toContainText('0 of 6 steps confirmed');
+  expect(fixture.writes).toEqual([]);
+  expect(await page.evaluate(() => (window as unknown as { __tutorialMicCalls: number }).__tutorialMicCalls)).toBe(0);
+  const help = fixture.assistance.find(row => row.path.endsWith('tutorial-help'));
+  expect(help?.body).toEqual({ expectedScope: scope, context: { step: 'connection', status: 'ready' }, question: 'Why do I need Google Cloud project permissions?' });
+  await guide.getByRole('button', { name: 'Close guide' }).click();
+  await expect(page.getByRole('region', { name: 'Lesson help and speech' })).toHaveCount(0);
+  await test.info().attach('guide-audio-playback-events', { body: JSON.stringify(await page.evaluate(() => (window as unknown as { __tutorialAudioEvents: string[] }).__tutorialAudioEvents)), contentType: 'application/json' });
+});
 
 for (const existing of [false, true]) {
   test(`${existing ? 'existing workspace' : 'new user'} completes the actual Cloud first-agent journey`, async ({ page }) => {

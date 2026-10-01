@@ -4,6 +4,7 @@ import {
   attachExternalBlockerReachability,
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
+  ownerAskDefaultDisclosure,
   readExternalBlockers,
   readExternalBlockersWithReachability,
   updateExternalBlockerHistory,
@@ -155,5 +156,98 @@ describe('typed external blocker history', () => {
     });
     expect(out[0]!.reachability).toMatchObject({ verdict: 'reachable', authoritative: true });
     expect(out[1]!.reachability).toBeUndefined();
+  });
+});
+
+// Owner-attention ledger (EI-23783029010995961): what happens if the owner never answers.
+describe('owner-ask default disclosure', () => {
+  const ask = (extra: Record<string, unknown> = {}) =>
+    updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'product-decision',
+        ref: 'decision:pricing',
+        summary: 'Pick the pricing tier.',
+        nextVerb: 'work_items:set_blocker { clear: true }',
+        ...extra,
+      },
+      'su-a',
+      T1,
+    );
+
+  it('persists defaultIfUnanswered and decideBy (trimmed) on create', () => {
+    const { blockers } = ask({ defaultIfUnanswered: '  proceeds with the cheaper tier  ', decideBy: '2026-10-15T00:00:00Z' });
+    expect(blockers[0]).toMatchObject({
+      defaultIfUnanswered: 'proceeds with the cheaper tier',
+      decideBy: '2026-10-15T00:00:00Z',
+    });
+  });
+
+  it('updates the declared default on a re-assert without dropping it when omitted', () => {
+    const first = ask({ defaultIfUnanswered: 'stays parked' });
+    const reasserted = updateExternalBlockerHistory(
+      { externalBlockers: first.blockers },
+      { kind: 'human', capability: 'product-decision', ref: 'decision:pricing', summary: 'Pick the tier (reworded).' },
+      'su-a',
+      T2,
+    );
+    expect(reasserted.blockers[0]).toMatchObject({ defaultIfUnanswered: 'stays parked', summary: 'Pick the tier (reworded).' });
+    const changed = updateExternalBlockerHistory(
+      { externalBlockers: first.blockers },
+      { kind: 'human', ref: 'decision:pricing', defaultIfUnanswered: 'proceeds with option A', decideBy: '2026-11-01T00:00:00Z' },
+      'su-a',
+      T2,
+    );
+    expect(changed.blockers[0]).toMatchObject({ defaultIfUnanswered: 'proceeds with option A', decideBy: '2026-11-01T00:00:00Z' });
+  });
+
+  it('survives the defensive read of a stored payload', () => {
+    const { blockers } = ask({ defaultIfUnanswered: 'stays parked', decideBy: '2026-10-15T00:00:00Z' });
+    expect(readExternalBlockers({ externalBlockers: blockers })[0]).toMatchObject({
+      defaultIfUnanswered: 'stays parked',
+      decideBy: '2026-10-15T00:00:00Z',
+    });
+  });
+
+  it('discloses the default and its date to the owner', () => {
+    const { blockers } = ask({ defaultIfUnanswered: 'proceeds with the cheaper tier', decideBy: '2026-10-15T00:00:00Z' });
+    expect(ownerAskDefaultDisclosure({ externalBlockers: blockers })).toBe(
+      'Default if unanswered: proceeds with the cheaper tier (decide by 2026-10-15T00:00:00Z)',
+    );
+  });
+
+  it('says "no default declared" for a legacy ask rather than inventing one', () => {
+    const { blockers } = ask();
+    expect(blockers[0]!.defaultIfUnanswered).toBeUndefined();
+    expect(ownerAskDefaultDisclosure({ externalBlockers: blockers })).toBe(
+      'No default declared — the item stays parked until you answer.',
+    );
+  });
+
+  it('is silent for non-human blockers, cleared asks, and payloads with no blockers', () => {
+    const event = updateExternalBlockerHistory({}, { kind: 'event', ref: 'release:green' }, 'su-a', T1);
+    expect(ownerAskDefaultDisclosure({ externalBlockers: event.blockers })).toBeNull();
+    const open = ask({ defaultIfUnanswered: 'stays parked' });
+    const cleared = updateExternalBlockerHistory(
+      { externalBlockers: open.blockers },
+      { kind: 'human', ref: 'decision:pricing', clear: true },
+      'su-b',
+      T2,
+    );
+    expect(ownerAskDefaultDisclosure({ externalBlockers: cleared.blockers })).toBeNull();
+    expect(ownerAskDefaultDisclosure({})).toBeNull();
+    expect(ownerAskDefaultDisclosure(null)).toBeNull();
+  });
+
+  it('collapses identical disclosures from several asks on one item', () => {
+    const a = ask({ defaultIfUnanswered: 'stays parked' });
+    const b = updateExternalBlockerHistory(
+      { externalBlockers: a.blockers },
+      { kind: 'human', capability: 'credential', ref: 'credential:prod-db', defaultIfUnanswered: 'stays parked' },
+      'su-a',
+      T2,
+    );
+    expect(ownerAskDefaultDisclosure({ externalBlockers: b.blockers })).toBe('Default if unanswered: stays parked');
   });
 });

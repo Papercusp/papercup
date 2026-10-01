@@ -133,7 +133,7 @@ export function s33Agenda(c: S33Case, effected = false) {
       read: { status: 'known', value: {
         gradeable: true, evidenceRef: `fixture:s33:${c}:gate`,
         gate: {
-          buildProvenance: { sha: null, version: 's33-fixture' }, satisfied: false,
+          satisfied: false,
           code: c === 'verify' || effected ? 'acceptance_ungraded' : 'plan_items_unfinished',
           message: c === 'verify' || effected ? 'Current proof awaits independent review.' : 'Continue the already-held test-verification task before independent review.',
         },

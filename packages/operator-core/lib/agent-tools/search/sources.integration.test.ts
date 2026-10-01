@@ -1364,6 +1364,44 @@ describe('EI-24045346484356708 — the literal fallback is a bounded FILL, never
     expect(substringStatements()).toEqual([]);
   });
 
+  it('R2 applies its bounded planner profile inside the real transaction without leaking it', async () => {
+    await traced.unsafe('SET max_parallel_workers_per_gather = 7');
+    await traced.unsafe('SET parallel_setup_cost = 987');
+    let inside: { workers: string; setup: string } | undefined;
+    const begin = traced.begin.bind(traced);
+    // Preserve PostgreSQL's real BEGIN/COMMIT; inspect the same connection
+    // after the source query completes but before its transaction commits.
+    const inspected = new Proxy(traced, {
+      get(target, key, receiver) {
+        if (key === 'begin') {
+          return (action: (tx: postgres.TransactionSql) => Promise<unknown>) => begin(async (tx) => {
+            const result = await action(tx);
+            const rows = await tx<{ workers: string; setup: string }[]>`
+              SELECT current_setting('max_parallel_workers_per_gather') AS workers,
+                     current_setting('parallel_setup_cost') AS setup
+            `;
+            inside = rows[0];
+            return result;
+          });
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    try {
+      const out = await byName('session_turn').lexical(params({ sql: inspected, query: P17_QUERY }));
+      expect(out.map((r) => r.row.source_id).sort()).toEqual([T_ALL_A, T_ALL_B].sort());
+      expect(inside).toEqual({ workers: '2', setup: '100' });
+      const after = await traced<{ workers: string; setup: string }[]>`
+        SELECT current_setting('max_parallel_workers_per_gather') AS workers,
+               current_setting('parallel_setup_cost') AS setup
+      `;
+      expect(after[0]).toEqual({ workers: '7', setup: '987' });
+    } finally {
+      await traced.unsafe('RESET max_parallel_workers_per_gather');
+      await traced.unsafe('RESET parallel_setup_cost');
+    }
+  });
+
   it('a compact token whose dictionary hits already fill the limit sends no substring predicate', async () => {
     // `clamp` matches four workspace-A turns through the dictionary; limit 2
     // leaves no slot for a rank-0 literal row to occupy.

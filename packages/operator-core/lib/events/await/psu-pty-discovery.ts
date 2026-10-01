@@ -28,6 +28,7 @@ import {
   readSync,
   closeSync,
   appendFileSync,
+  renameSync,
   promises as fsp,
 } from 'node:fs';
 import net from 'node:net';
@@ -904,9 +905,40 @@ function recordedOwnerIdForSock(sock: string, envelopeOwnerId: string | undefine
   return null;
 }
 
+/** Size cap for the sender inject audit log, in bytes.
+ *
+ *  WI-10004854: the log was append-only with no cap (1.6 MB / 10.5k rows in a
+ *  month, ~57 KB/day). When it reaches the cap it is renamed to `<path>.1`,
+ *  replacing the previous `.1`, so the log never holds more than about twice the cap. 4 MiB
+ *  keeps about two months of rows in each generation at the measured rate. Override
+ *  with PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES; a non-numeric or non-positive
+ *  value keeps the default. */
+const INJECT_AUDIT_MAX_BYTES_DEFAULT = 4 * 1024 * 1024;
+
+function injectAuditMaxBytes(): number {
+  const raw = Number(process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INJECT_AUDIT_MAX_BYTES_DEFAULT;
+}
+
+/** Rotate `path` to `path.1` once it has reached the cap. A missing file is the
+ *  normal first-write case, not an error. Exported for the rotation test. */
+export function rotateInjectAuditIfFull(path: string, maxBytes: number = injectAuditMaxBytes()): boolean {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return false;
+  }
+  if (size < maxBytes) return false;
+  renameSync(path, `${path}.1`);
+  return true;
+}
+
 function appendInjectAudit(row: Record<string, unknown>): void {
   try {
-    appendFileSync(injectAuditPath(), `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
+    const path = injectAuditPath();
+    rotateInjectAuditIfFull(path);
+    appendFileSync(path, `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
   } catch {
     /* A diagnostic must never be able to fail a delivery. */
   }

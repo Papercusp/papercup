@@ -74,9 +74,9 @@ vi.mock('./agent-tools/coordination/liveness-oracle', async () => {
 
 // The maintained mutation runner supplies an isolated source copy. Every normal
 // suite run uses the production module; no tracked source is mutated for proof.
-const { getAllPlanItemCoverage, STAMP_ONLY_REL } = await import(
+const { getAllPlanItemCoverage, STAMP_ONLY_REL } = (await import(
   process.env.PAPERCUSP_COVERAGE_TEST_SUBJECT ?? './plan-item-coverage'
-);
+)) as typeof import('./plan-item-coverage');
 
 let rootSql: postgres.Sql;
 

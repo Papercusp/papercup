@@ -18,7 +18,7 @@ function setup() {
   const call = (body: unknown = input, options: { path?: string; origin?: string; principal?: ReturnType<typeof principal> | null; signal?: AbortSignal } = {}) => {
     const route = routes.find(row => row.path === (options.path ?? HOSTED_BROWSER_TUTORIAL_HELP_PATH))!;
     const request = new Request(`${origin}/api${route.path}`, { method: 'POST', headers: { origin: options.origin ?? origin, 'content-type': 'application/json' }, body: JSON.stringify(body), signal: options.signal });
-    const context: RouteContext = { principal: options.principal === null ? undefined : options.principal ?? principal(), params: {}, input: undefined, signal: request.signal, log: () => {} };
+    const context: RouteContext = { principal: options.principal === null ? null : options.principal ?? principal(), params: {}, input: undefined, signal: request.signal, log: () => {} };
     return route.handler(request, context);
   };
   return { call, answer, speech };

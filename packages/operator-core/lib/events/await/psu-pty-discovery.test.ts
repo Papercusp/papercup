@@ -13,8 +13,8 @@ import {
   readFileSync,
   utimesSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import net from 'node:net';
 import {
   findLiveHost,
@@ -35,6 +35,7 @@ import {
   sanitizeKey,
   sockOwnerIdFromPath,
   auditInjectOwnerBinding,
+  rotateInjectAuditIfFull,
   PSU_PTY_DIR,
   MAX_CONTROL_PAYLOAD_BYTES,
   type PsuPtyHost,
@@ -1301,5 +1302,68 @@ describe('auditInjectOwnerBinding — the SENDER-side owner-binding detector (WI
     const sockB = plantHost(OWNER_B);
     process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = join(auditDir, 'no', 'such', 'dir', 'a.jsonl');
     expect(() => auditInjectOwnerBinding(sockB, { mode: 'turn', ownerId: OWNER_A })).not.toThrow();
+  });
+
+  // WI-10004854: the log had no cap (1.6 MB in a month). Driven through the real write
+  // path: a full log rotates to `.1` (replacing the old generation) before the next row.
+  it('rotates a full audit log to .1 before writing, replacing the previous generation', () => {
+    writeFileSync(`${auditPath}.1`, 'OLDEST-GENERATION\n');
+    writeFileSync(auditPath, 'FULL-GENERATION\n');
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES = '8';
+    try {
+      expect(auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' })).toBe('unlabelled');
+    } finally {
+      delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_MAX_BYTES;
+    }
+    expect(readFileSync(`${auditPath}.1`, 'utf8')).toBe('FULL-GENERATION\n');
+    const fresh = rows();
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toMatchObject({ kind: 'inject-owner-unlabelled' });
+  });
+
+  it('does not rotate a log under the default cap', () => {
+    writeFileSync(auditPath, 'SMALL\n');
+    auditInjectOwnerBinding(join(PSU_PTY_DIR, `${OWNER_A}.sock`), { mode: 'turn' });
+    expect(existsSync(`${auditPath}.1`)).toBe(false);
+    expect(readFileSync(auditPath, 'utf8').startsWith('SMALL\n')).toBe(true);
+  });
+});
+
+describe('rotateInjectAuditIfFull (WI-10004854)', () => {
+  let dir: string;
+  let path: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'inject-audit-rotate-'));
+    path = join(dir, 'audit.jsonl');
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('treats a missing log as the normal first-write case', () => {
+    expect(rotateInjectAuditIfFull(path, 1)).toBe(false);
+    expect(existsSync(`${path}.1`)).toBe(false);
+  });
+
+  it('leaves a log one byte under the cap alone', () => {
+    writeFileSync(path, 'x'.repeat(9));
+    expect(rotateInjectAuditIfFull(path, 10)).toBe(false);
+    expect(readFileSync(path, 'utf8')).toBe('x'.repeat(9));
+  });
+
+  it('rotates a log exactly at the cap', () => {
+    writeFileSync(path, 'x'.repeat(10));
+    expect(rotateInjectAuditIfFull(path, 10)).toBe(true);
+    expect(existsSync(path)).toBe(false);
+    expect(readFileSync(`${path}.1`, 'utf8')).toBe('x'.repeat(10));
+  });
+});
+
+// WI-10004854: several tests above write sockets and discovery records into PSU_PTY_DIR
+// because the functions they exercise take no dir parameter. Killed runs left that
+// debris in the LIVE ~/.papercusp/psu-pty. setup-hermetic-env now redirects the dir for
+// every test process; this pins it from the consumer side.
+describe('test isolation of PSU_PTY_DIR (WI-10004854)', () => {
+  it('points at a hermetic dir, never the live ~/.papercusp/psu-pty', () => {
+    expect(resolve(PSU_PTY_DIR)).not.toBe(resolve(join(homedir(), '.papercusp', 'psu-pty')));
+    expect(PSU_PTY_DIR).toBe(process.env.PAPERCUSP_PSU_PTY_DIR);
   });
 });

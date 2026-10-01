@@ -1,4 +1,4 @@
-import { defineTool, dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { defineTool, dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
@@ -20,7 +20,9 @@ const speechSchema = tutorialHelpRequestSchema.extend({
 }).strict();
 
 async function answerLesson(input: TutorialHelpRequest, signal: AbortSignal, workspaceId: string): Promise<string> {
-  const { default: converse } = await import('../../agent-tools/operator/converse');
+  await import('../../agent-tools/index');
+  const converse = lookupByMcpName('operator:converse');
+  if (!converse) throw new Error('tutorial_help_unavailable');
   const ctx: UnifiedToolContext = { log: () => {}, signal, progress: () => {}, emit: () => {}, workspaceId,
     role: 'operator', runId: crypto.randomUUID(), spawnId: crypto.randomUUID(), transport: 'in_process', uiClientId: null };
   const result = await dispatchProjectedTool(converse, 'operator:converse', {

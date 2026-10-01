@@ -117,7 +117,10 @@ describe('local Git output-idle guard', () => {
   it('reads queued child progress before expiring an idle timer after a parent-loop stall', async () => {
     fixture.script = [
       "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      "send('ready'); let n = 0; const timer = setInterval(() => { send('progress'); if (++n === 10) clearInterval(timer); }, 40);",
+      // Emit for a wall-clock span, not a fixed count: under gate load the parent can
+      // read 'ready' hundreds of ms late, and a 10-write burst (~400ms) then finished
+      // before the stall began, so zero writes landed inside it (b8eb76cc red).
+      "const end = Date.now() + 1500; send('ready'); const timer = setInterval(() => { send('progress'); if (Date.now() >= end) clearInterval(timer); }, 40);",
     ].join(' ');
     let queued = false;
     let blockedFrom = 0;

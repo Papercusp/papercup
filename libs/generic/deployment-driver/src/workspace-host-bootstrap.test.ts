@@ -1327,6 +1327,8 @@ describe('buildWorkspaceHostBootstrap', () => {
     for (const [envVar, dir] of [
       ['PAPERCUSP_SPA_DIST', 'spa'],
       ['PAPERCUSP_DOCS_ROOT', 'internal-docs'],
+      // WI-10004899: the cut packs the doc-vector seed beside the docs it covers.
+      ['PAPERCUSP_DOC_VECTOR_SEED_DIR', 'doc-vector-seed'],
     ] as const) {
       expect(unit).toContain(`Environment=${envVar}=$RUNTIME_ROOT/current/${dir}`);
     }

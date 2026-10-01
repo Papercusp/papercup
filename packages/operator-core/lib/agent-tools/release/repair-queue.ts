@@ -62,6 +62,7 @@ import {
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
+import { scheduleRepairAutoVerify } from '../../release/repair-auto-verify';
 import {
   describeDependencyPrediction,
   isDependencyInputPath,
@@ -1658,6 +1659,15 @@ export default defineTool({
       const judgedSha = persisted ? outcome.commit : queue.repairHead;
       stampActionEffect({ status: persisted ? 'repair-head-published' : 'publish-failed',
         persisted, retracted, from: queue.repairHead, to: outcome.commit, auditRecorded });
+      // D-131: a persisted admit schedules a debounced, durable verify of the head it published.
+      // Never throws; a scheduling failure falls back to the D-127 manual path and is reported.
+      const autoVerify = persisted
+        ? await scheduleRepairAutoVerify({
+            candidate: queue.candidate,
+            repairHead: outcome.commit,
+            admittedAtMs: Date.now(),
+          })
+        : null;
       return json({
         ok: persisted,
         admitted: persisted,
@@ -1679,11 +1689,16 @@ export default defineTool({
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
+        ...(autoVerify ? { autoVerify } : {}),
         ...(persisted
           ? {
               nextAction:
-                `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}); the gate re-verifies at that head on its next tick. ` +
-                'Do NOT fire release:checkpoint-run and do NOT retire.' +
+                `repairHead is ${outcome.commit.slice(0, 12)} (phase ${next.phase}). ` +
+                (autoVerify?.scheduled
+                  ? `An auto-verify of that head is scheduled after a ${Math.round(autoVerify.quietMs / 60_000)}-min quiet window (D-131); a further admit restarts the window. ` +
+                    'Do NOT fire release:checkpoint-run unless you mean to skip the window, and do NOT retire.'
+                  : `Auto-verify was NOT scheduled (${autoVerify && !autoVerify.scheduled ? autoVerify.reason : 'unknown'}); ` +
+                    'the gate re-verifies at that head on its next tick. Do NOT fire release:checkpoint-run until your batch is complete (D-127), and do NOT retire.') +
                 (precheckEntry.ran
                   ? ` R6 pre-check ran at the built commit: ${precheckEntry.fixes?.length ?? 0} signature red(s) fixed, ${precheckEntry.failing?.length ?? 0} still failing, ${precheckEntry.unmeasured?.length ?? 0} unmeasured.`
                   : precheckEntry.reason === 'checkpoint-tree-busy'

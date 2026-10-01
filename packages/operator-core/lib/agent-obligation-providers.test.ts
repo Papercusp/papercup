@@ -472,7 +472,7 @@ describe('turn-start sink fit for a due placement row', () => {
         status: 'known', value: { portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'placement:fixture' },
       } },
       independentVerification: [{ ...base, sourceGeneration: LIVE_GENERATION, planSlug: SLUG, read: { status: 'known', value: {
-        gate: { buildProvenance: { sha: null, version: 'test' }, satisfied: false, code: 'acceptance_bar_contract_not_ready' as never,
+        gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' as never,
           message: 'refused', rubricId: 'acceptance-plan-a', gradedBy: null },
         evidenceRef: 'gate:acceptance_bar_contract_not_ready', reviewAgeMs: 3_600_000, gradeable: true,
       } } }],
@@ -976,7 +976,6 @@ describe('shared agenda composition', () => {
             status: 'known',
             value: {
               gate: {
-                buildProvenance: { sha: null, version: 'test' },
                 satisfied: false,
                 code: 'acceptance_rubric_missing',
                 message: 'author the rubric',

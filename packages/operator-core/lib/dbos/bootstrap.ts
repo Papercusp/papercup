@@ -478,6 +478,9 @@ async function startDbosOnce(): Promise<void> {
   // DBOS.launch, then install its request-side enqueue seam only after the runtime is live.
   // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.
   const { wireCheckpointEligibilityWait } = await import('./checkpoint-eligibility-workflow');
+  // D-131 (p2p-public-release-endgame): debounced auto-verify after a persisted repair admit.
+  // Same split: register before launch, wire the enqueue seam after.
+  const { wireRepairAutoVerify } = await import('./repair-auto-verify-workflow');
 
   try {
     await DBOS.launch();
@@ -509,6 +512,7 @@ async function startDbosOnce(): Promise<void> {
   }
   G.__papercuspDbosStarted = true;
   wireCheckpointEligibilityWait();
+  wireRepairAutoVerify();
   console.log(`[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`);
 
   // WI-10001739 link 3b — the hosted-lifecycle reconciler runs as `harness_app` and must read

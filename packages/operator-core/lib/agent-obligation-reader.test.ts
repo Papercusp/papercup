@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { goalPlanningPortfolioFingerprint } from './goal-planning-review';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import { buildGoalOwnerReportDraft } from './goal-owner-report';
 
 import {
+  defaultAgentObligationReaderDeps,
   PLAN_CONTEXT_MAX,
   projectAgentObligationBrief,
   projectAgentTurnStartObligationBrief,
@@ -13,6 +14,7 @@ import {
 } from './agent-obligation-reader';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
 import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { PlanClosureObservationRead } from './goals/plan-closure-observations';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
@@ -712,5 +714,77 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     releasePortfolio();
     const result = await pending;
     expect(result.planSlugs).toContain('delegated-plan');
+  });
+});
+
+describe('default planAcceptance dep serves the persisted gate verdict (D-039, WI-10004673)', () => {
+  afterEach(() => {
+    vi.doUnmock('./goals/plan-closure-observations');
+    vi.doUnmock('./plan-acceptance-gate');
+  });
+
+  // The inline gate cost 1.0–1.8s of main-thread CPU per agenda read on bg-host. The
+  // gate spy is the regression guard: no outcome of this dep may run it.
+  function mockObservation(observation: PlanClosureObservationRead | undefined) {
+    const evaluatePlanAcceptanceGate = vi.fn();
+    const refreshPlanClosureObservations = vi.fn(() => []);
+    const readPlanClosureObservations = vi.fn(async () =>
+      new Map(observation ? [[observation.planSlug, observation]] : []));
+    vi.doMock('./plan-acceptance-gate', () => ({ evaluatePlanAcceptanceGate }));
+    vi.doMock('./goals/plan-closure-observations', () => ({ readPlanClosureObservations, refreshPlanClosureObservations }));
+    return { evaluatePlanAcceptanceGate, refreshPlanClosureObservations, readPlanClosureObservations };
+  }
+
+  it('returns a fresh observation, rubric and grader included, without running the gate', async () => {
+    const gate = { satisfied: true, code: undefined, rubricId: 'acceptance-plan-a', gradedBy: 'su-grader' };
+    const spies = mockObservation({ planSlug: 'plan-a', status: 'fresh', gate, observedAt: NOW.toISOString() });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).resolves.toEqual(gate);
+    expect(spies.readPlanClosureObservations).toHaveBeenCalledWith({ workspaceId: 'ws', planSlugs: ['plan-a'] });
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it.each(['stale', 'absent'] as const)('rejects a %s observation and refreshes it in the background', async (status) => {
+    const spies = mockObservation({ planSlug: 'plan-a', status, detail: `observation is ${status}` });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).rejects.toThrow(`observation is ${status}`);
+    expect(spies.refreshPlanClosureObservations).toHaveBeenCalledWith(['plan-a']);
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ambiguous slug without a refresh, which could not disambiguate it either', async () => {
+    const spies = mockObservation({ planSlug: 'plan-a', status: 'ambiguous', detail: 'resolves in 2 harnesses' });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).rejects.toThrow('resolves in 2 harnesses');
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the provider episode and grader evidence when the verdict comes from an observation', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({
+        planAcceptance: vi.fn(async () => ({ satisfied: true, rubricId: 'acceptance-plan-a', gradedBy: 'su-grader' })),
+      }),
+    });
+
+    const obligation = read.agenda.evaluations.find((row) => row.family === 'independent-verification')!;
+    expect(obligation.status).toBe('satisfied');
+    expect(obligation.episode).toBe(`accepted:acceptance-plan-a:${obligation.sourceGeneration}`);
+    expect(obligation.evidence[0]?.note).toBe('graded by su-grader');
+  });
+
+  it('reads a rejected observation as an explicit unknown, never as satisfied or absent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ planAcceptance: vi.fn(async () => { throw new Error("no acceptance-gate verdict has been recorded for 'plan-a' yet"); }) }),
+    });
+    warn.mockRestore();
+
+    const obligation = read.agenda.evaluations.find((row) => row.family === 'independent-verification')!;
+    expect(obligation.status).toBe('unknown');
+    expect(obligation.reason).toContain("no acceptance-gate verdict has been recorded for 'plan-a' yet");
   });
 });

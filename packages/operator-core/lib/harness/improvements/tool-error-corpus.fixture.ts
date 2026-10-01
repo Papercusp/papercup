@@ -13,6 +13,8 @@
  * The acceptance-BAR vetting refusal was added 2026-10-01 from the repeated
  * watchdog sample (n=3) to keep caller-authored readiness failures out of the
  * structural repair lane.
+ * Kernel identity-ceiling refusals were added 2026-10-01 from a 24h sample
+ * (n=33/16) to keep expected no-grant identities out of the structural lane.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -212,6 +214,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'coord:ask is owner-UI-only; agents must use coord:send or coord:message-agent.',
     expectedClass: 'caller',
     note: 'agent invocation of an owner-UI-only surface is an expected permission precondition; keep the generic unauthorized workspace-scope error structural (D-007)',
+  },
+  {
+    n: 33, errorCode: 'authorization_denied', status: 'error',
+    message: 'Kernel preflight denied tool "sessions:ingest-gate-event": Identity capability (unresolved): outside-ceiling (sessions:ingest-gate-event)',
+    expectedClass: 'caller',
+    note: 'the caller identity has no authored grant for this tool; expected kernel refusal, not a structural tool defect',
+  },
+  {
+    n: 16, errorCode: 'authorization_denied', status: 'error',
+    message: 'Kernel preflight denied tool "journal:record-turn": Identity capability (unresolved): outside-ceiling (journal:record-turn)',
+    expectedClass: 'caller',
+    note: 'the caller identity has no authored grant for this tool; expected kernel refusal, not a structural tool defect',
   },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────

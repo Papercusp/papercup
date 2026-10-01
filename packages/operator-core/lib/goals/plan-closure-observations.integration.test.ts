@@ -69,6 +69,7 @@ beforeAll(async () => {
     );
   `);
   await applyMigrationForTest(db.sql, migration('1284-plan-closure-observations.sql'));
+  await applyMigrationForTest(db.sql, migration('1313-plan-closure-observations-rubric-grader.sql'));
 }, 120_000);
 
 afterAll(async () => {
@@ -113,6 +114,21 @@ describe('plan closure observations (D-032)', () => {
     const [stored] = await db.sql`SELECT build_sha, fingerprint FROM harness_shared.plan_closure_observations`;
     expect(stored.build_sha).toBe('abc1234');
     expect(stored.fingerprint).toMatchObject({ planVersion: '36', acceptanceBarEpoch: 1, auditSeq: '5', rubrics: [`${RUBRIC}@10`] });
+  });
+
+  it('persists and serves the rubric and grader of a graded verdict (D-039)', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      satisfied: true, rubricId: RUBRIC, gradedBy: 'su-grader', buildProvenance: { sha: 'abc1234' },
+    });
+
+    expect(await read()).toMatchObject({
+      status: 'fresh', gate: { satisfied: true, rubricId: RUBRIC, gradedBy: 'su-grader' },
+    });
+
+    // A later verdict without a grader clears the stored one rather than inheriting it.
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    const [stored] = await db.sql`SELECT rubric_id, graded_by FROM harness_shared.plan_closure_observations`;
+    expect(stored).toEqual({ rubric_id: null, graded_by: null });
   });
 
   it('persisted placement contract: shipped-without-closure', async () => {
