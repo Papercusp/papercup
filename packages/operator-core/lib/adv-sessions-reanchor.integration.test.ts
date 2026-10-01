@@ -14,6 +14,7 @@
  * `started_at` ordering.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -408,6 +409,56 @@ describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column reg
     const res = await reanchorAdvSessionNativeId(999_999, FRESH_ID);
     expect(res).toEqual({ reanchored: false, owner: null });
   });
+
+  // WI-10004917: the row moved, but no applied identity event ever named the new
+  // native id, so every owner-by-native-session oracle read the relaunched
+  // incarnation's turns as foreign (the goal-brief R-3 probe runs exactly ownersOf).
+  it.each(['exact', 'owner'] as const)(
+    'opens an applied identity span for the re-anchored incarnation through the %s path (WI-10004917)',
+    async (target) => {
+      const owner = `su-reanchor-span-${target}`;
+      // Activation events outlive both the per-test adv_sessions truncate and the run
+      // (the baseline container is reused), so the successor id must be unique per
+      // run or the positive control below sees an earlier run's span.
+      const fresh = randomUUID();
+      const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID });
+      const revision = { specificationRevision: 'c'.repeat(64), stateRevision: `reanchor-${target}` };
+      const requested = await requestSessionIdentityActivation({
+        ownerId: owner, workspaceId: WS, revision, source: 'launch',
+        attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      });
+      const applied = acknowledgeActivation(prepareActivation(requested.state.activation!, revision), revision);
+      await admin`
+        UPDATE harness_shared.session_briefs
+           SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(applied)}, true)
+         WHERE workspace_id = ${WS} AND owner_id = ${owner}
+      `;
+      const ownersOf = (native: string) => admin`
+        SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
+         WHERE native_session_id = ${native}
+      `;
+      const reanchor = () => (target === 'exact'
+        ? reanchorAdvSessionNativeId(id, fresh)
+        : reanchorAdvSessionNativeIdByOwner(owner, fresh));
+      try {
+        // Positive control: before the re-anchor the oracle cannot resolve the successor.
+        expect(await ownersOf(fresh)).toEqual([]);
+        expect(await reanchor()).toEqual({ reanchored: true, owner });
+        expect(await ownersOf(fresh)).toEqual([{ owner_id: owner, workspace_id: WS }]);
+        // A retried report is a no-op re-anchor and converges on the one event.
+        expect(await reanchor()).toEqual({ reanchored: false, owner });
+        const events = await admin<{ native_session_id: string; source: string; adv_session_id: string }[]>`
+          SELECT native_session_id, source, adv_session_id::text
+            FROM harness_shared.session_identity_activation_events
+           WHERE workspace_id = ${WS} AND owner_id = ${owner} AND phase = 'applied'
+             AND adv_session_id = ${id}
+        `;
+        expect(events).toEqual([{ native_session_id: fresh, source: 'reanchor', adv_session_id: String(id) }]);
+      } finally {
+        await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      }
+    },
+  );
 });
 
 describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` cohort)', () => {
