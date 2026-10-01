@@ -23,7 +23,8 @@ import { getFlag } from '@papercusp/flags/server';
 import { readStandingBulkAutomationPolicy } from '../../attention/automation-policy';
 import { bulkAutomationSnapshot } from '../../attention/bulk-dispositions';
 import { getRunningRun } from '../../attention/bulk-run-store';
-import { resolveBulkResolverLaunch } from '../../agent-config-constants';
+import { resolveBulkResolverLaunch, type BulkResolverLaunchProfile } from '../../agent-config-constants';
+import { readAgentConfig } from '../../agent-config';
 import {
   listSweepablePlanSlugs,
   MAX_RUN_PLANS,
@@ -43,6 +44,13 @@ export interface PlanCleanupSweepDeps {
   listPlans: typeof listSweepablePlanSlugs;
   select: typeof selectPlansLeastRecentlyScanned;
   readPolicy: typeof readStandingBulkAutomationPolicy;
+  /** The standing Plans-pane resolver profile (`resolverProfiles['plan-cleanup']`):
+   *  the model / effort / account / carry the owner chose for clean-up resolvers.
+   *  The pane's Clean-up button posts exactly this profile, so the sweep must
+   *  launch the same agent. Before WI-10004814 the sweep never read it and fell
+   *  back to the built-in defaults (claude on `default`), so a Claude usage limit
+   *  parked the resolver and the run watchdog failed the run. */
+  readLaunchProfile: () => Promise<Partial<BulkResolverLaunchProfile> | null>;
   start: typeof startPlanCleanupRun;
   log: (message: string) => void;
 }
@@ -59,6 +67,7 @@ export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDe
     listPlans: listSweepablePlanSlugs,
     select: selectPlansLeastRecentlyScanned,
     readPolicy: readStandingBulkAutomationPolicy,
+    readLaunchProfile: async () => (await readAgentConfig()).resolverProfiles?.['plan-cleanup'] ?? null,
     start: startPlanCleanupRun,
     log: (message) => console.log(`[${PLAN_CLEANUP_SWEEP}] ${message}`),
     ...overrides,
@@ -82,7 +91,16 @@ export function makePlanCleanupSweepAction(overrides: Partial<PlanCleanupSweepDe
     });
 
     const policy = bulkAutomationSnapshot(await deps.readPolicy(ctx.workspaceId));
+    // A read failure THROWS (red fire) rather than falling back to the built-in
+    // defaults: a silent fallback is exactly how the sweep came to launch an agent
+    // the owner never chose (WI-10004814).
+    const profile = await deps.readLaunchProfile();
     const resolved = resolveBulkResolverLaunch({
+      model: profile?.model ?? null,
+      effort: profile?.effort ?? null,
+      ...(profile?.account ? { account: profile.account } : {}),
+      ...(profile?.carry ? { carry: profile.carry } : {}),
+      // Authority comes from the standing automation policy, never the profile.
       automationMode: policy.mode,
       minConfidence: policy.minConfidence,
     });

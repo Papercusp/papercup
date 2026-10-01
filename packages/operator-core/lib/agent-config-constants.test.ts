@@ -26,6 +26,7 @@ import {
   PUBLIC_PORTAL_AGENT_BASELINE,
 } from './agent-config-constants';
 import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
+import { CODEX_GATEWAY_FALLBACK_LINEUP } from './inference-gateway/gateway';
 
 // opus + fable + sonnet-5 are LAUNCHED at the full 1M window — psu-launcher
 // normalizeModelSpec injects the [1m] marker for all three families — and
@@ -85,6 +86,24 @@ describe('bulk resolver client-safe launch vocabulary', () => {
     expect(launchAgentBackendForModel('openrouter/anthropic/claude-opus:max')).toBe('omp');
     expect(launchAgentBackendForModel(null)).toBeNull();
     expect(launchAgentBackendForModel('unknown-full-id')).toBeNull();
+  });
+
+  // WI-10004814: owner directive #1111 set resolverProfiles.plan-cleanup and
+  // .inbox-resolve to gpt-6.1-sol, which resolved to NO backend — every bulk
+  // resolver start (Plans Clean-up button, scheduled sweep) was refused.
+  it('resolves every Codex model the gateway offers to the codex CLI', () => {
+    const slugs = CODEX_GATEWAY_FALLBACK_LINEUP.map((entry) => entry.slug);
+    expect(slugs).toContain('gpt-6.1-sol');
+    for (const slug of slugs) {
+      expect({ slug, backend: launchAgentBackendForModel(slug) }).toEqual({ slug, backend: 'codex' });
+      expect({ slug, backend: launchAgentBackendForModel(`${slug}:xhigh`) }).toEqual({ slug, backend: 'codex' });
+    }
+  });
+
+  it('accepts the owner-configured gpt-6.1-sol resolver profile as a codex launch', () => {
+    expect(
+      resolveBulkResolverLaunch({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+    ).toMatchObject({ ok: true, effective: { model: 'gpt-6.1-sol', effort: 'xhigh', backend: 'codex' } });
   });
 
   it('carries owner automation policy through the effective launch snapshot', () => {
