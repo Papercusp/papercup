@@ -82,6 +82,7 @@ describe('WI-10004544 — Xvfb teardown is bound to the originating run', () => 
   it('uses the owned helper for final and retry teardown without unlinking shared display files', () => {
     expect(stopWriter).toBeTruthy();
     expect(stopWriter).toContain('"$WORK/stop-xvfb.sh"');
+    expect(stopWriter).not.toContain('systemctl --user stop --no-block "${VERIFY_SCOPE_BASE}-xvfb.scope"');
     expect(stopWriter).not.toMatch(/pkill\s+-9\s+-f\s+"Xvfb/);
     expect(stopWriter).not.toContain('rm -f "/tmp/.X11-unix/X$DISPLAY_NUM"');
     expect(stopWriter).not.toContain('"/tmp/.X$DISPLAY_NUM-lock"');

@@ -1,0 +1,2232 @@
+{
+  "formatVersion": 1,
+  "workItem": "WI-10004489",
+  "extends": "WI-10004335",
+  "createdAt": "2026-10-01T02:23:23.508Z",
+  "route": "self",
+  "model": "lightonai/mDenseOn",
+  "revision": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
+  "conclusion": {
+    "runtime": "Full frozen CPU native sidecar qualifies on both memory and prose, with2029prose documents/134queries added and all134prose top10 rankings exact.",
+    "quality": "Frozen full-prose cosine retrieval improves overall and on exact identifiers versus current Gemma; broad semantic superiority is not established. Memory cosine quality is effectively tied with Harrier at this sample power.",
+    "hybrid": "The fresh8-source-target-per-corpus hybrid validation remains inconclusive and does not reject the heldout negatives.",
+    "latency": "Existing serial warm CPU samples favor mDenseOn over Harrier on memory; prose query latency is similar to Gemma. They are single blocks, not randomized interleaved repetitions.",
+    "adoption": "Promising candidate for memory efficiency and prose identifier retrieval; production model/index switches remain outside this work."
+  },
+  "nativeProse": {
+    "parity": {
+      "thresholds": {
+        "minimumCosine": 0.99999,
+        "maximumAbsoluteError": 0.00003,
+        "top10Ranking": "exact"
+      },
+      "population": {
+        "documents": 2029,
+        "queries": 134
+      },
+      "docVectors": {
+        "n": 2029,
+        "minimumCosine": 0.9999999997154623,
+        "maximumAbsoluteError": 0.00000288415880178583,
+        "worstAbsoluteErrorIndex": 870
+      },
+      "queryVectors": {
+        "n": 134,
+        "minimumCosine": 0.999999999997851,
+        "maximumAbsoluteError": 0.0000011782378247227054,
+        "worstAbsoluteErrorIndex": 27
+      },
+      "rankingParity": {
+        "queries": 134,
+        "exact": 134,
+        "mismatchedQueryIds": []
+      },
+      "scoreParity": {
+        "byClassExact": true,
+        "relevantRanksExact": true,
+        "native": {
+          "n": 122,
+          "recall_at_1": 0.3279,
+          "recall_at_3": 0.5,
+          "recall_at_5": 0.5574,
+          "mrr_at_10": 0.426
+        }
+      },
+      "accepted": true
+    },
+    "byClass": {
+      "lexical-gap": {
+        "n": 24,
+        "recall_at_1": 0.3333,
+        "recall_at_3": 0.5417,
+        "recall_at_5": 0.6667,
+        "mrr_at_10": 0.4748
+      },
+      "ALL_ANSWERABLE": {
+        "n": 122,
+        "recall_at_1": 0.3279,
+        "recall_at_3": 0.5,
+        "recall_at_5": 0.5574,
+        "mrr_at_10": 0.426
+      },
+      "session-start-intent": {
+        "n": 8,
+        "recall_at_1": 0.125,
+        "recall_at_3": 0.625,
+        "recall_at_5": 0.875,
+        "mrr_at_10": 0.3417
+      },
+      "exact-identifier": {
+        "n": 90,
+        "recall_at_1": 0.3444,
+        "recall_at_3": 0.4778,
+        "recall_at_5": 0.5,
+        "mrr_at_10": 0.4206
+      }
+    },
+    "worker": {
+      "alive": true,
+      "disabled": false,
+      "pendingCount": 0,
+      "keepAlive": false,
+      "recycling": false
+    },
+    "runtime": "native-client-isolated-sidecar-worker-cpu-fp32",
+    "report": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-v1.json",
+    "log": "/tmp/native-prose-full-WI10004489.log",
+    "command": "PAPERCUSP_EMBED_DEVICE=cpu npx tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --legs sidecar:mdenseon --corpus prose --mdenseon-model ~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713 --isolated-sidecar --vectors-out ~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-vectors-v1.json --out ~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-v1.json"
+  },
+  "nativeMemory": {
+    "docVectors": {
+      "n": 114,
+      "mincos": 0.9999999132814488,
+      "maxabs": 0.000001455694866314694
+    },
+    "queryVectors": {
+      "n": 150,
+      "mincos": 0.9999998955829204,
+      "maxabs": 0.0000010535124367917759
+    },
+    "accepted": true
+  },
+  "combinedFrozenCpuVectorCoverage": {
+    "documents": 2143,
+    "queries": 284,
+    "totalVectors": 2427
+  },
+  "fullFrozenCosine": {
+    "memory": {
+      "corpusFixture": "packages/operator-core/lib/memory/bench/fixtures/corpus.v1.json",
+      "baselineName": "candidates-2026-09-30-memory-harrier:harrier",
+      "baseline": {
+        "lexical-gap": {
+          "n": 40,
+          "recall_at_1": 0.85,
+          "recall_at_3": 0.95,
+          "recall_at_5": 0.975,
+          "mrr_at_10": 0.9098
+        },
+        "ALL_ANSWERABLE": {
+          "n": 120,
+          "recall_at_1": 0.8833,
+          "recall_at_3": 0.975,
+          "recall_at_5": 0.9833,
+          "mrr_at_10": 0.9293
+        },
+        "exact-identifier": {
+          "n": 35,
+          "recall_at_1": 0.9714,
+          "recall_at_3": 0.9714,
+          "recall_at_5": 0.9714,
+          "mrr_at_10": 0.975
+        },
+        "session-start-intent": {
+          "n": 45,
+          "recall_at_1": 0.8444,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 0.9111
+        }
+      },
+      "candidate": {
+        "lexical-gap": {
+          "n": 40,
+          "recall_at_1": 0.85,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 0.925
+        },
+        "ALL_ANSWERABLE": {
+          "n": 120,
+          "recall_at_1": 0.8917,
+          "recall_at_3": 0.9667,
+          "recall_at_5": 0.975,
+          "mrr_at_10": 0.9294
+        },
+        "exact-identifier": {
+          "n": 35,
+          "recall_at_1": 0.9143,
+          "recall_at_3": 0.9143,
+          "recall_at_5": 0.9429,
+          "mrr_at_10": 0.9248
+        },
+        "session-start-intent": {
+          "n": 45,
+          "recall_at_1": 0.9111,
+          "recall_at_3": 0.9778,
+          "recall_at_5": 0.9778,
+          "mrr_at_10": 0.937
+        }
+      },
+      "pairedComparison": {
+        "baseline": "candidates-2026-09-30-memory-harrier:harrier",
+        "candidate": "mdenseon-python",
+        "byClass": {
+          "lexical-gap": {
+            "n": 40,
+            "baselineMrr": 0.9098,
+            "candidateMrr": 0.925,
+            "deltaMrr": {
+              "n": 40,
+              "meanA": 0.909821425,
+              "meanB": 0.925,
+              "delta": {
+                "point": 0.015178575000000083,
+                "lower": -0.05,
+                "upper": 0.0794643,
+                "ci": 0.95
+              },
+              "rho": 0.49383661360074216,
+              "halfWidth": 0.06473215,
+              "mde80": 0.09122103413643447,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.85,
+            "candidateRecallAt1": 0.85,
+            "hitAt1": {
+              "onlyA": 3,
+              "onlyB": 3,
+              "concordant": 34,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "lexical-gap: UNDERPOWERED — delta 0.0152 MRR, 95% CI [-0.05, 0.0795]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "ALL_ANSWERABLE": {
+            "n": 120,
+            "baselineMrr": 0.9293,
+            "candidateMrr": 0.9294,
+            "deltaMrr": {
+              "n": 120,
+              "meanA": 0.9293154666666665,
+              "meanB": 0.9294444416666666,
+              "delta": {
+                "point": 0.00012897500000008666,
+                "lower": -0.03687499166666666,
+                "upper": 0.03512229062499995,
+                "ci": 0.95
+              },
+              "rho": 0.51192241352182,
+              "halfWidth": 0.0359986411458333,
+              "mde80": 0.051978612878512714,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.8833,
+            "candidateRecallAt1": 0.8917,
+            "hitAt1": {
+              "onlyA": 6,
+              "onlyB": 7,
+              "concordant": 107,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta 0.0001 MRR, 95% CI [-0.0369, 0.0351]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "exact-identifier": {
+            "n": 35,
+            "baselineMrr": 0.975,
+            "candidateMrr": 0.9248,
+            "deltaMrr": {
+              "n": 35,
+              "meanA": 0.975,
+              "meanB": 0.9247619142857143,
+              "delta": {
+                "point": -0.050238085714285674,
+                "lower": -0.13119045714285715,
+                "upper": 0.004285714285714286,
+                "ci": 0.95
+              },
+              "rho": 0.5031032043344927,
+              "halfWidth": 0.06773808571428572,
+              "mde80": 0.10157917750565974,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.9714,
+            "candidateRecallAt1": 0.9143,
+            "hitAt1": {
+              "onlyA": 2,
+              "onlyB": 0,
+              "concordant": 33,
+              "p": 0.5
+            },
+            "verdict": "underpowered",
+            "statement": "exact-identifier: UNDERPOWERED — delta -0.0502 MRR, 95% CI [-0.1312, 0.0043]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "session-start-intent": {
+            "n": 45,
+            "baselineMrr": 0.9111,
+            "candidateMrr": 0.937,
+            "deltaMrr": {
+              "n": 45,
+              "meanA": 0.9111110888888889,
+              "meanB": 0.9370370222222222,
+              "delta": {
+                "point": 0.025925933333333262,
+                "lower": -0.025925911111111116,
+                "upper": 0.08148151111111111,
+                "ci": 0.95
+              },
+              "rho": 0.6056485821934687,
+              "halfWidth": 0.053703711111111115,
+              "mde80": 0.07752335263962738,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.8444,
+            "candidateRecallAt1": 0.9111,
+            "hitAt1": {
+              "onlyA": 1,
+              "onlyB": 4,
+              "concordant": 40,
+              "p": 0.375
+            },
+            "verdict": "underpowered",
+            "statement": "session-start-intent: UNDERPOWERED — delta 0.0259 MRR, 95% CI [-0.0259, 0.0815]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          }
+        },
+        "classesDisagree": false
+      },
+      "candidateRejection": {
+        "answerableTop1Mean": 0.5216,
+        "hardNegTop1Mean": 0.3829,
+        "margin": 0.1387
+      },
+      "baselineRejection": {
+        "answerableTop1Mean": 0.6052,
+        "hardNegTop1Mean": 0.476,
+        "margin": 0.1292
+      }
+    },
+    "prose": {
+      "corpusFixture": "packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json",
+      "baselineName": "candidates-2026-09-30-prose-gemma:gemma",
+      "baseline": {
+        "lexical-gap": {
+          "n": 24,
+          "recall_at_1": 0.375,
+          "recall_at_3": 0.5833,
+          "recall_at_5": 0.7083,
+          "mrr_at_10": 0.5014
+        },
+        "ALL_ANSWERABLE": {
+          "n": 122,
+          "recall_at_1": 0.2377,
+          "recall_at_3": 0.418,
+          "recall_at_5": 0.4836,
+          "mrr_at_10": 0.3492
+        },
+        "session-start-intent": {
+          "n": 8,
+          "recall_at_1": 0.25,
+          "recall_at_3": 0.625,
+          "recall_at_5": 0.75,
+          "mrr_at_10": 0.4063
+        },
+        "exact-identifier": {
+          "n": 90,
+          "recall_at_1": 0.2,
+          "recall_at_3": 0.3556,
+          "recall_at_5": 0.4,
+          "mrr_at_10": 0.3035
+        }
+      },
+      "candidate": {
+        "lexical-gap": {
+          "n": 24,
+          "recall_at_1": 0.3333,
+          "recall_at_3": 0.5417,
+          "recall_at_5": 0.6667,
+          "mrr_at_10": 0.4748
+        },
+        "ALL_ANSWERABLE": {
+          "n": 122,
+          "recall_at_1": 0.3279,
+          "recall_at_3": 0.5,
+          "recall_at_5": 0.5574,
+          "mrr_at_10": 0.426
+        },
+        "session-start-intent": {
+          "n": 8,
+          "recall_at_1": 0.125,
+          "recall_at_3": 0.625,
+          "recall_at_5": 0.875,
+          "mrr_at_10": 0.3417
+        },
+        "exact-identifier": {
+          "n": 90,
+          "recall_at_1": 0.3444,
+          "recall_at_3": 0.4778,
+          "recall_at_5": 0.5,
+          "mrr_at_10": 0.4206
+        }
+      },
+      "pairedComparison": {
+        "baseline": "candidates-2026-09-30-prose-gemma:gemma",
+        "candidate": "mdenseon-python",
+        "byClass": {
+          "lexical-gap": {
+            "n": 24,
+            "baselineMrr": 0.5014,
+            "candidateMrr": 0.4748,
+            "deltaMrr": {
+              "n": 24,
+              "meanA": 0.5014384583333333,
+              "meanB": 0.4747685,
+              "delta": {
+                "point": -0.026669958333333355,
+                "lower": -0.18946841041666668,
+                "upper": 0.14648114374999996,
+                "ci": 0.95
+              },
+              "rho": 0.46097229060079686,
+              "halfWidth": 0.1679747770833333,
+              "mde80": 0.24227950854848393,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.375,
+            "candidateRecallAt1": 0.3333,
+            "hitAt1": {
+              "onlyA": 4,
+              "onlyB": 3,
+              "concordant": 17,
+              "p": 0.9999999999999998
+            },
+            "verdict": "underpowered",
+            "statement": "lexical-gap: UNDERPOWERED — delta -0.0267 MRR, 95% CI [-0.1895, 0.1465]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "ALL_ANSWERABLE": {
+            "n": 122,
+            "baselineMrr": 0.3492,
+            "candidateMrr": 0.426,
+            "deltaMrr": {
+              "n": 122,
+              "meanA": 0.3492095901639345,
+              "meanB": 0.4260440819672131,
+              "delta": {
+                "point": 0.07683449180327862,
+                "lower": 0.011064402868852479,
+                "upper": 0.14213966987704912,
+                "ci": 0.95
+              },
+              "rho": 0.5909487138763784,
+              "halfWidth": 0.06553763350409832,
+              "mde80": 0.09421485336215883,
+              "significant": true
+            },
+            "baselineRecallAt1": 0.2377,
+            "candidateRecallAt1": 0.3279,
+            "hitAt1": {
+              "onlyA": 8,
+              "onlyB": 19,
+              "concordant": 95,
+              "p": 0.05223898589611052
+            },
+            "verdict": "candidate-better",
+            "statement": "ALL_ANSWERABLE: candidate is BETTER by 0.0768 MRR, 95% CI [0.0111, 0.1421] (n=122, rho=0.591)."
+          },
+          "session-start-intent": {
+            "n": 8,
+            "baselineMrr": 0.4062,
+            "candidateMrr": 0.3417,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.40624987500000004,
+              "meanB": 0.34166650000000004,
+              "delta": {
+                "point": -0.064583375,
+                "lower": -0.36666675000000004,
+                "upper": 0.227083375,
+                "ci": 0.95
+              },
+              "rho": 0.07755065985830722,
+              "halfWidth": 0.2968750625,
+              "mde80": 0.43251455301927405,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.25,
+            "candidateRecallAt1": 0.125,
+            "hitAt1": {
+              "onlyA": 2,
+              "onlyB": 1,
+              "concordant": 5,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "session-start-intent: UNDERPOWERED — delta -0.0646 MRR, 95% CI [-0.3667, 0.2271]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "exact-identifier": {
+            "n": 90,
+            "baselineMrr": 0.3035,
+            "candidateMrr": 0.4206,
+            "deltaMrr": {
+              "n": 90,
+              "meanA": 0.3035449777777778,
+              "meanB": 0.4205511333333334,
+              "delta": {
+                "point": 0.1170061555555556,
+                "lower": 0.046265102499999995,
+                "upper": 0.18874824027777776,
+                "ci": 0.95
+              },
+              "rho": 0.6620248338572048,
+              "halfWidth": 0.07124156888888888,
+              "mde80": 0.10212747020178367,
+              "significant": true
+            },
+            "baselineRecallAt1": 0.2,
+            "candidateRecallAt1": 0.3444,
+            "hitAt1": {
+              "onlyA": 2,
+              "onlyB": 15,
+              "concordant": 73,
+              "p": 0.0023498535156249996
+            },
+            "verdict": "candidate-better",
+            "statement": "exact-identifier: candidate is BETTER by 0.117 MRR, 95% CI [0.0463, 0.1887] (n=90, rho=0.662)."
+          }
+        },
+        "classesDisagree": false
+      },
+      "candidateRejection": {
+        "answerableTop1Mean": 0.4588,
+        "hardNegTop1Mean": 0.3431,
+        "margin": 0.1157
+      },
+      "baselineRejection": {
+        "answerableTop1Mean": 0.6398,
+        "hardNegTop1Mean": 0.4696,
+        "margin": 0.1702
+      }
+    }
+  },
+  "proseSensitivity": {
+    "method": "Exploratory: use fixture metadata surface+cluster as target source; union co-targeted sources for multi-answer queries; average queries within each component, give components equal weight, reuse pairedBootstrapCI with seed10004489 and20000iterations. Corpus writer defines a source as documentation page, session or plan.",
+    "sourceWriter": "packages/operator-core/lib/memory/bench/prose-corpus-snapshot.ts",
+    "sourceComponents": 99,
+    "equalSourceComparison": {
+      "n": 99,
+      "meanA": 0.314746664983165,
+      "meanB": 0.41480377188552187,
+      "delta": {
+        "point": 0.10005710690235686,
+        "lower": 0.036468039057239075,
+        "upper": 0.16590685149410767,
+        "ci": 0.95
+      },
+      "rho": 0.6540762230417151,
+      "halfWidth": 0.06471940621843429,
+      "mde80": 0.09224555600818848,
+      "significant": true
+    },
+    "groupedInputs": [
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/admission-subqueries-must-be-workspace-scoped",
+        "queryIds": [
+          "plg-001",
+          "plg-002"
+        ],
+        "baselineMrr": 0.75,
+        "candidateMrr": 0.5625
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/auto-implement-orphans-are-gateway-deaths-not-restarts",
+        "queryIds": [
+          "plg-003",
+          "plg-004"
+        ],
+        "baselineMrr": 0.6,
+        "candidateMrr": 0.375
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/behavior-cutover-must-enumerate-every-process-that-loads-the-module",
+        "queryIds": [
+          "plg-005",
+          "pei-030"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.0555555
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/boot-wire-drain-ordering",
+        "queryIds": [
+          "plg-006",
+          "plg-007",
+          "pei-072"
+        ],
+        "baselineMrr": 0.2333333333333333,
+        "candidateMrr": 0.111111
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/claude-file-memory-index-cap",
+        "queryIds": [
+          "plg-008",
+          "plg-009"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.25
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/coord-emit-subscription-scoping",
+        "queryIds": [
+          "plg-010",
+          "pei-048"
+        ],
+        "baselineMrr": 0.6666665,
+        "candidateMrr": 0.6666665
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/attention-push-delivery",
+        "queryIds": [
+          "plg-011",
+          "plg-012",
+          "pei-047"
+        ],
+        "baselineMrr": 0.3333333333333333,
+        "candidateMrr": 0.3333333333333333
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/committed-is-not-settled-git-sync-landing-race",
+        "queryIds": [
+          "plg-013",
+          "plg-014"
+        ],
+        "baselineMrr": 0.1339285,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/coord-escalations-pagination-semantics",
+        "queryIds": [
+          "plg-015"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/cursed-item-respec-verify-data-model",
+        "queryIds": [
+          "plg-016",
+          "plg-017",
+          "pei-076"
+        ],
+        "baselineMrr": 0.7777776666666667,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/dark-learning-loops-are-triple-gated",
+        "queryIds": [
+          "plg-018"
+        ],
+        "baselineMrr": 0.2,
+        "candidateMrr": 0.2
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/deploy-await-exact-sha-batched-deploy-strand",
+        "queryIds": [
+          "plg-019",
+          "plg-020"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/deploy-pipeline-is-async-self-healing",
+        "queryIds": [
+          "plg-021",
+          "plg-022",
+          "plg-023",
+          "plg-024"
+        ],
+        "baselineMrr": 0.75,
+        "candidateMrr": 0.57291675
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/migration-number-collisions-and-reservation-dx",
+        "queryIds": [
+          "psi-001",
+          "pei-035"
+        ],
+        "baselineMrr": 0.2291665,
+        "candidateMrr": 0.6666665
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/bash-vs-tool-routing",
+        "queryIds": [
+          "psi-002",
+          "pei-045"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/toolsearch-cannot-select-colon-form-tool-names",
+        "queryIds": [
+          "psi-003"
+        ],
+        "baselineMrr": 0.333333,
+        "candidateMrr": 0.333333
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/pgbouncer-rejects-statement-timeout-startup-param",
+        "queryIds": [
+          "psi-004",
+          "pei-012"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.6
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/claude-code-headless-permissions",
+        "queryIds": [
+          "psi-005",
+          "pei-029"
+        ],
+        "baselineMrr": 0.375,
+        "candidateMrr": 0.6666665
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/nuqs-tanstack-search-coercion-and-clobber",
+        "queryIds": [
+          "psi-006",
+          "pei-033"
+        ],
+        "baselineMrr": 0.75,
+        "candidateMrr": 0.35
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/module-scoped-state-is-per-worker-the-operator-is-a-forked-cluster",
+        "queryIds": [
+          "psi-007",
+          "psi-008",
+          "pei-022"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.5555553333333333
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/gym-cycle-inprocess-llm-bypasses-gateway",
+        "queryIds": [
+          "pei-001"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp test-gym-apiary-framework-2026-06-09",
+        "queryIds": [
+          "pei-002"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering harness/hooks",
+        "queryIds": [
+          "pei-003"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp multi-account-routing-verification-2026-06-15",
+        "queryIds": [
+          "pei-004"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/omp-gateway-routing-via-models-yml",
+        "queryIds": [
+          "pei-005"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/inbox-cards",
+        "queryIds": [
+          "pei-006"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp deploy-trigger-and-gate-unblock-2026-06-21",
+        "queryIds": [
+          "pei-007"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering implementation/multi-harness-spawning",
+        "queryIds": [
+          "pei-008"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp per-window-workspace-context-2026-05-31",
+        "queryIds": [
+          "pei-009"
+        ],
+        "baselineMrr": 0.166667,
+        "candidateMrr": 0.2
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/pot-instance-overrides-must-be-additive",
+        "queryIds": [
+          "pei-010"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp papercup-test-suite-green-2026-06-02",
+        "queryIds": [
+          "pei-011"
+        ],
+        "baselineMrr": 0.25,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/pot-survey-empty-frontier-is-not-a-read-bug",
+        "queryIds": [
+          "pei-013"
+        ],
+        "baselineMrr": 0.142857,
+        "candidateMrr": 0.142857
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/papercusp-shared-pot-per-owner",
+        "queryIds": [
+          "pei-014"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/mug-overwatch-dock-panes-tail-session-claude",
+        "queryIds": [
+          "pei-015"
+        ],
+        "baselineMrr": 0.125,
+        "candidateMrr": 0.333333
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp presence-coord-unification-2026-07-01",
+        "queryIds": [
+          "pei-016"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp loop-wake-rate-limit-robustness-2026-06-23",
+        "queryIds": [
+          "pei-017"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp token-efficient-agent-io-2026-06-06",
+        "queryIds": [
+          "pei-018"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/generalizing-a-lib-host-seam-pattern",
+        "queryIds": [
+          "pei-019"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering system/lifecycle",
+        "queryIds": [
+          "pei-020"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp named-su-agent-fleets-2026-06-29",
+        "queryIds": [
+          "pei-021"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/token-audit-p013-source-population-shift",
+        "queryIds": [
+          "pei-023"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp adv-harness-tab-migration-2026-05-30",
+        "queryIds": [
+          "pei-024"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/federation-public-release-known-limitations",
+        "queryIds": [
+          "pei-025"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp fleet-color-schemes-2026-06-30",
+        "queryIds": [
+          "pei-026"
+        ],
+        "baselineMrr": 0.142857,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "session_turns:claude 57fe6faf-f966-455d-af00-3c59cea17ca2",
+        "queryIds": [
+          "pei-027"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp app-templates-2026-07-04",
+        "queryIds": [
+          "pei-028"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/substrate-write-side-stack",
+        "queryIds": [
+          "pei-031"
+        ],
+        "baselineMrr": 0.25,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp queen-wave-dispatch-2026-06-13",
+        "queryIds": [
+          "pei-032"
+        ],
+        "baselineMrr": 0.1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp agent-managed-compaction-2026-07-01",
+        "queryIds": [
+          "pei-034"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering endpoint-system/operations",
+        "queryIds": [
+          "pei-036"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp presence-derivation-unification-2026-07-17",
+        "queryIds": [
+          "pei-037"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/substrate-revocation-model",
+        "queryIds": [
+          "pei-038"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/tool-delta-base-presence-contract",
+        "queryIds": [
+          "pei-039"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "session_turns:claude 86bc7677-9c99-41d0-a965-23c512e97272",
+        "queryIds": [
+          "pei-040"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp coordination-layer-test-hardening-2026-06-22",
+        "queryIds": [
+          "pei-041"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/operator-core-lint-tsc-count-gate",
+        "queryIds": [
+          "pei-042"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp presence-derive-from-session-log-2026-06-22",
+        "queryIds": [
+          "pei-043"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.166667
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/stale-bundle-fabricates-diagnostic-confirmation",
+        "queryIds": [
+          "pei-044"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp state-not-chat-fleet-state-2026-06-05",
+        "queryIds": [
+          "pei-046"
+        ],
+        "baselineMrr": 0.1,
+        "candidateMrr": 0.111111
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/reflexive-datatypes-and-tools",
+        "queryIds": [
+          "pei-049"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp papercusp-dogfood-phase7-pr-lifecycle-2026-05-24",
+        "queryIds": [
+          "pei-050"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/driving-the-autonomous-pot-loop",
+        "queryIds": [
+          "pei-051"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/scout-cycle-inprocess-llm-bypasses-gateway",
+        "queryIds": [
+          "pei-052"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/dbos-durable-execution-gotchas",
+        "queryIds": [
+          "pei-053"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp su-autonomy-envelope-2026-07-03",
+        "queryIds": [
+          "pei-054"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp memory-declaude-and-defaults-2026-07-28",
+        "queryIds": [
+          "pei-055"
+        ],
+        "baselineMrr": 0.125,
+        "candidateMrr": 0.142857
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering desktop/local-inference-hardware-support-matrix",
+        "queryIds": [
+          "pei-056"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering system/credentials-encryption",
+        "queryIds": [
+          "pei-057"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace oddsmith-hive oddsmith-public-launch-and-real-money-arming-2026-07-26",
+        "queryIds": [
+          "pei-058"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.125
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering implementation/plugin-marketplace-state-2026-05-11",
+        "queryIds": [
+          "pei-059"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace oddsmith-hive oddsmith-evidence-loop-2026-07-01",
+        "queryIds": [
+          "pei-060"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.333333
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp spawner-sidecar-offload-2026-06-30",
+        "queryIds": [
+          "pei-061"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.111111
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace oddsmith-hive oddsmith-gpt-analyst-liveness-honest-cost-2026-07-02",
+        "queryIds": [
+          "pei-062"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.5
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp papercusp-dogfood-phase10-hyperdrive-peer-mirror-2026-05-24",
+        "queryIds": [
+          "pei-063"
+        ],
+        "baselineMrr": 0.25,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp comb-retire-per-harness-sharing-2026-06-11",
+        "queryIds": [
+          "pei-064"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "session_turns:claude 9fdd8d4a-ab7f-4571-ac1c-2ad0d17ae98f",
+        "queryIds": [
+          "pei-065"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/autoloop-release-readiness-grading-runbook",
+        "queryIds": [
+          "pei-066"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/swarm-claim-dispatch-e2e-harness",
+        "queryIds": [
+          "pei-067"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/harness-provided-dispatched-ops",
+        "queryIds": [
+          "pei-068"
+        ],
+        "baselineMrr": 0.166667,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/types-first-from-design-memo",
+        "queryIds": [
+          "pei-069"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp non-collaborator-join-fork-pr-2026-06-02",
+        "queryIds": [
+          "pei-070"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering harness/decisions/curator",
+        "queryIds": [
+          "pei-071"
+        ],
+        "baselineMrr": 0.125,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp structured-streams-not-terminals-2026-06-05",
+        "queryIds": [
+          "pei-073"
+        ],
+        "baselineMrr": 0.25,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp sse-typed-events-HANDOFF",
+        "queryIds": [
+          "pei-074"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp deprecate-harness-config-json-2026-06-06",
+        "queryIds": [
+          "pei-075"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp queen-capacity-aware-dispatch-2026-06-22",
+        "queryIds": [
+          "pei-077"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace oddsmith-hive bet-pattern-mispricing-discovery-2026-06-30",
+        "queryIds": [
+          "pei-078"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp agentic-docs-qa-2026-07-06",
+        "queryIds": [
+          "pei-079"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/test-ddl-drift-silenced-by-best-effort-drain",
+        "queryIds": [
+          "pei-080"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0.333333
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp agent-launch-unification-2026-05-30",
+        "queryIds": [
+          "pei-081"
+        ],
+        "baselineMrr": 0.333333,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering benchmarks/frontier-swe",
+        "queryIds": [
+          "pei-082"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp plans-newbutton-and-subharness-scope-2026-05-25",
+        "queryIds": [
+          "pei-083"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.166667
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp production-test-readiness-2026-07-06",
+        "queryIds": [
+          "pei-084"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/wsl-inbox-conpty-pty-hang",
+        "queryIds": [
+          "pei-085"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp su-cold-auto-mode-2026-07-03",
+        "queryIds": [
+          "pei-086"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp memory-delivery-unification-2026-07-12",
+        "queryIds": [
+          "pei-087"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 0.1
+      },
+      {
+        "cluster": "session_turns:claude 2466e0f9-b2cd-4330-8700-fa7905f722ef",
+        "queryIds": [
+          "pei-088"
+        ],
+        "baselineMrr": 0,
+        "candidateMrr": 1
+      },
+      {
+        "cluster": "harness_plans:papercusp-workspace papercusp tool-distribution-granularity-2026-06-05",
+        "queryIds": [
+          "pei-089"
+        ],
+        "baselineMrr": 0.5,
+        "candidateMrr": 0
+      },
+      {
+        "cluster": "doc_sections:papercusp-engineering agent-insights/place-batch-spawned-not-running-manual-wake",
+        "queryIds": [
+          "pei-090"
+        ],
+        "baselineMrr": 1,
+        "candidateMrr": 1
+      }
+    ],
+    "byClass": {
+      "lexical-gap": {
+        "n": 24,
+        "baseline": 0.5014384583333333,
+        "candidate": 0.4747685
+      },
+      "exact-identifier": {
+        "n": 90,
+        "baseline": 0.3035449777777778,
+        "candidate": 0.4205511333333334
+      },
+      "session-start-intent": {
+        "n": 8,
+        "baseline": 0.40624987500000004,
+        "candidate": 0.34166650000000004
+      }
+    },
+    "equalClassDescriptiveMrr": {
+      "baseline": 0.40374443703703705,
+      "candidate": 0.41232871111111113
+    },
+    "interpretation": "Equal-source exploratory comparison also favors mDenseOn. Giving query classes equal weight reduces the descriptive pooled gain sharply; lexical and intent classes remain underpowered."
+  },
+  "freshHybrid": [
+    {
+      "corpus": "memory",
+      "documents": 48,
+      "calibrationQueries": 14,
+      "heldoutQueries": 28,
+      "independentPositiveSourceTargets": 8,
+      "baseline": {
+        "model": "harrier",
+        "positiveQueries": 24,
+        "negativeQueries": 4,
+        "recallAt1": 0.9166666666666666,
+        "recallAt3": 0.9583333333333334,
+        "mrrAt10": 0.9479166666666666,
+        "unflooredMrrAt10": 0.9330357142857143,
+        "negativeEmptyResults": 0,
+        "cosineFloor": 0.49
+      },
+      "candidate": {
+        "model": "mdenseon",
+        "positiveQueries": 24,
+        "negativeQueries": 4,
+        "recallAt1": 0.875,
+        "recallAt3": 1,
+        "mrrAt10": 0.9375,
+        "unflooredMrrAt10": 0.9143518518518517,
+        "negativeEmptyResults": 0,
+        "cosineFloor": 0.41
+      },
+      "queryPairedComparison": {
+        "baseline": "harrier",
+        "candidate": "mdenseon",
+        "byClass": {
+          "lexical-gap": {
+            "n": 8,
+            "baselineMrr": 0.9375,
+            "candidateMrr": 0.9375,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.9375,
+              "meanB": 0.9375,
+              "delta": {
+                "point": 0,
+                "lower": 0,
+                "upper": 0,
+                "ci": 0.95
+              },
+              "rho": 1,
+              "halfWidth": 0,
+              "mde80": 0,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.875,
+            "candidateRecallAt1": 0.875,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 8,
+              "p": 1
+            },
+            "verdict": "no-detected-difference",
+            "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+          },
+          "ALL_ANSWERABLE": {
+            "n": 24,
+            "baselineMrr": 0.9479,
+            "candidateMrr": 0.9375,
+            "deltaMrr": {
+              "n": 24,
+              "meanA": 0.9479166666666666,
+              "meanB": 0.9375,
+              "delta": {
+                "point": -0.01041666666666663,
+                "lower": -0.0625,
+                "upper": 0.03125,
+                "ci": 0.95
+              },
+              "rho": 0.7808688094430306,
+              "halfWidth": 0.046875,
+              "mde80": 0.06464380091290828,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.9167,
+            "candidateRecallAt1": 0.875,
+            "hitAt1": {
+              "onlyA": 1,
+              "onlyB": 0,
+              "concordant": 23,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta -0.0104 MRR, 95% CI [-0.0625, 0.0313]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          },
+          "exact-identifier": {
+            "n": 8,
+            "baselineMrr": 1,
+            "candidateMrr": 1,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 1,
+              "meanB": 1,
+              "delta": {
+                "point": 0,
+                "lower": 0,
+                "upper": 0,
+                "ci": 0.95
+              },
+              "rho": 0,
+              "halfWidth": 0,
+              "mde80": 0,
+              "significant": false
+            },
+            "baselineRecallAt1": 1,
+            "candidateRecallAt1": 1,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 8,
+              "p": 1
+            },
+            "verdict": "no-detected-difference",
+            "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+          },
+          "session-start-intent": {
+            "n": 8,
+            "baselineMrr": 0.9063,
+            "candidateMrr": 0.875,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.90625,
+              "meanB": 0.875,
+              "delta": {
+                "point": -0.03125,
+                "lower": -0.1875,
+                "upper": 0.09375,
+                "ci": 0.95
+              },
+              "rho": 0.6546536707079771,
+              "halfWidth": 0.140625,
+              "mde80": 0.19265417770440016,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.875,
+            "candidateRecallAt1": 0.75,
+            "hitAt1": {
+              "onlyA": 1,
+              "onlyB": 0,
+              "concordant": 7,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "session-start-intent: UNDERPOWERED — delta -0.0313 MRR, 95% CI [-0.1875, 0.0938]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          }
+        }
+      },
+      "sourceGroupedMrrComparison": {
+        "n": 8,
+        "meanA": 0.9479166666666667,
+        "meanB": 0.9375,
+        "delta": {
+          "point": -0.01041666666666674,
+          "lower": -0.062499999999999986,
+          "upper": 0.031250000000000014,
+          "ci": 0.95
+        },
+        "rho": 0.7262411172176583,
+        "halfWidth": 0.046875,
+        "mde80": 0.0642180592348017,
+        "significant": false
+      },
+      "sourceGroupedInterpretation": "Source-grouped interval includes zero: superiority is not established; equivalence is not established."
+    },
+    {
+      "corpus": "prose",
+      "documents": 49,
+      "calibrationQueries": 14,
+      "heldoutQueries": 28,
+      "independentPositiveSourceTargets": 8,
+      "baseline": {
+        "model": "gemma",
+        "positiveQueries": 24,
+        "negativeQueries": 4,
+        "recallAt1": 0.75,
+        "recallAt3": 0.9583333333333334,
+        "mrrAt10": 0.84375,
+        "unflooredMrrAt10": 0.8298611111111112,
+        "negativeEmptyResults": 0,
+        "cosineFloor": 0.56
+      },
+      "candidate": {
+        "model": "mdenseon",
+        "positiveQueries": 24,
+        "negativeQueries": 4,
+        "recallAt1": 0.75,
+        "recallAt3": 0.9583333333333334,
+        "mrrAt10": 0.857638888888889,
+        "unflooredMrrAt10": 0.8277777777777778,
+        "negativeEmptyResults": 0,
+        "cosineFloor": 0.38
+      },
+      "queryPairedComparison": {
+        "baseline": "gemma",
+        "candidate": "mdenseon",
+        "byClass": {
+          "lexical-gap": {
+            "n": 8,
+            "baselineMrr": 0.875,
+            "candidateMrr": 0.875,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.875,
+              "meanB": 0.875,
+              "delta": {
+                "point": 0,
+                "lower": 0,
+                "upper": 0,
+                "ci": 0.95
+              },
+              "rho": 1,
+              "halfWidth": 0,
+              "mde80": 0,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.75,
+            "candidateRecallAt1": 0.75,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 8,
+              "p": 1
+            },
+            "verdict": "no-detected-difference",
+            "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+          },
+          "ALL_ANSWERABLE": {
+            "n": 24,
+            "baselineMrr": 0.8438,
+            "candidateMrr": 0.8576,
+            "deltaMrr": {
+              "n": 24,
+              "meanA": 0.84375,
+              "meanB": 0.857638888888889,
+              "delta": {
+                "point": 0.01388888888888895,
+                "lower": -0.006944444444444443,
+                "upper": 0.041666666666666664,
+                "ci": 0.95
+              },
+              "rho": 0.9758882155660271,
+              "halfWidth": 0.024305555555555552,
+              "mde80": 0.035526200723733255,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.75,
+            "candidateRecallAt1": 0.75,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 24,
+              "p": 1
+            },
+            "verdict": "no-detected-difference",
+            "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0.0139 MRR, 95% CI [-0.0069, 0.0417], which rules out effects larger than ±0.0243 (80%-power MDE 0.0355; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+          },
+          "exact-identifier": {
+            "n": 8,
+            "baselineMrr": 0.9167,
+            "candidateMrr": 0.9167,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.9166666666666666,
+              "meanB": 0.9166666666666666,
+              "delta": {
+                "point": 0,
+                "lower": 0,
+                "upper": 0,
+                "ci": 0.95
+              },
+              "rho": 1,
+              "halfWidth": 0,
+              "mde80": 0,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.875,
+            "candidateRecallAt1": 0.875,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 8,
+              "p": 1
+            },
+            "verdict": "no-detected-difference",
+            "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+          },
+          "session-start-intent": {
+            "n": 8,
+            "baselineMrr": 0.7396,
+            "candidateMrr": 0.7813,
+            "deltaMrr": {
+              "n": 8,
+              "meanA": 0.7395833333333333,
+              "meanB": 0.78125,
+              "delta": {
+                "point": 0.04166666666666674,
+                "lower": -0.02083333333333333,
+                "upper": 0.11458333333333334,
+                "ci": 0.95
+              },
+              "rho": 0.9575575295511339,
+              "halfWidth": 0.06770833333333334,
+              "mde80": 0.10092869836369968,
+              "significant": false
+            },
+            "baselineRecallAt1": 0.625,
+            "candidateRecallAt1": 0.625,
+            "hitAt1": {
+              "onlyA": 0,
+              "onlyB": 0,
+              "concordant": 8,
+              "p": 1
+            },
+            "verdict": "underpowered",
+            "statement": "session-start-intent: UNDERPOWERED — delta 0.0417 MRR, 95% CI [-0.0208, 0.1146]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+          }
+        }
+      },
+      "sourceGroupedMrrComparison": {
+        "n": 8,
+        "meanA": 0.84375,
+        "meanB": 0.8576388888888888,
+        "delta": {
+          "point": 0.01388888888888884,
+          "lower": -0.006944444444444434,
+          "upper": 0.03819444444444447,
+          "ci": 0.95
+        },
+        "rho": 0.9858506598107998,
+        "halfWidth": 0.02256944444444445,
+        "mde80": 0.033642899454569365,
+        "significant": false
+      },
+      "sourceGroupedInterpretation": "Source-grouped interval includes zero: superiority is not established; equivalence is not established."
+    }
+  ],
+  "serialWarmTiming": {
+    "method": "one model per fresh CPU process; four model/corpus runs serial; 12 spread-out documents and 12 queries per trial, three trials; alternating kind order and reversing sample order; sidecar cache bypass verified per response",
+    "includesColdStartup": false,
+    "rawSamplesRetained": true,
+    "order": [
+      "warm-harrier-memory.json",
+      "warm-mdenseon-prose.json",
+      "warm-gemma-prose.json",
+      "warm-mdenseon-memory.json"
+    ],
+    "rows": [
+      {
+        "file": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/warm-harrier-memory.json",
+        "corpus": "memory",
+        "leg": "harrier@1024",
+        "execution": {
+          "device": "cpu",
+          "dtype": null,
+          "verified": true,
+          "why": "constructed: onnx-community/harrier-oss-v1-0.6b-ONNX=cpu. PAPERCUSP_EMBED_DEVICE=cpu (a host override, which outranks the Settings choice) forces the CPU"
+        },
+        "workerState": {
+          "alive": true,
+          "disabled": false,
+          "pendingCount": 0,
+          "keepAlive": false,
+          "recycling": false
+        },
+        "document": {
+          "samples": [
+            618.6971139999996,
+            1232.6116199999997,
+            1752.0279529999998,
+            2873.864377,
+            694.4492410000003,
+            1142.5621419999989,
+            2435.0880749999997,
+            1650.4848310000016,
+            2892.540509000002,
+            1746.9417270000013,
+            1947.9572590000025,
+            3189.2123150000007,
+            3184.5760070000033,
+            2083.0765459999966,
+            1923.4617560000042,
+            3094.7052170000024,
+            2014.620511999994,
+            2641.865236999998,
+            1017.1257650000043,
+            659.2380019999982,
+            2655.8474080000015,
+            1687.6167920000007,
+            1442.1818970000022,
+            737.3883080000014,
+            683.8424660000019,
+            1368.9419780000026,
+            1871.9402820000032,
+            2710.650093999997,
+            607.5088790000009,
+            1027.190008999998,
+            2343.1164510000017,
+            1561.893916999994,
+            2884.044351000004,
+            1799.9761900000012,
+            2042.3364560000045,
+            3557.8137419999985
+          ],
+          "n": 36,
+          "p50Ms": 1799.9761900000012,
+          "p95Ms": 3189.2123150000007
+        },
+        "query": {
+          "samples": [
+            152.77078600000095,
+            164.91868500000055,
+            172.72157000000152,
+            169.7295269999995,
+            124.9465229999987,
+            118.48943399999916,
+            114.43018200000006,
+            132.96685799999977,
+            144.05417899999884,
+            130.44518199999948,
+            121.24714500000118,
+            112.68873300000269,
+            110.114797000002,
+            124.10933800000203,
+            123.88828100000319,
+            126.02423199999976,
+            119.68226499999946,
+            115.17170299999998,
+            125.17492300000231,
+            118.49036600000181,
+            169.03163100000165,
+            171.22439100000338,
+            171.72736200000145,
+            162.87186599999768,
+            154.05702100000053,
+            161.55970699999307,
+            180.98113900001044,
+            182.3200019999931,
+            119.49772200000007,
+            122.82372899999609,
+            130.08459800000128,
+            125.47289999999339,
+            119.62162099999841,
+            135.07007699999667,
+            139.37992300000042,
+            119.9982170000003
+          ],
+          "n": 36,
+          "p50Ms": 126.02423199999976,
+          "p95Ms": 180.98113900001044
+        }
+      },
+      {
+        "file": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/warm-mdenseon-prose.json",
+        "corpus": "prose",
+        "leg": "sidecar:mdenseon",
+        "execution": {
+          "device": "cpu",
+          "dtype": null,
+          "verified": true,
+          "why": "constructed: ~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713=cpu. PAPERCUSP_EMBED_DEVICE=cpu (a host override, which outranks the Settings choice) forces the CPU"
+        },
+        "workerState": {
+          "alive": true,
+          "disabled": false,
+          "pendingCount": 0,
+          "keepAlive": false,
+          "recycling": false
+        },
+        "document": {
+          "samples": [
+            175.71260699999948,
+            361.0040939999999,
+            341.45356300000094,
+            223.8703029999997,
+            96.60097599999972,
+            619.1186899999993,
+            451.69273299999986,
+            520.715216999999,
+            47.434321999999156,
+            561.2336839999989,
+            171.96193999999923,
+            537.5038989999994,
+            501.04723899999954,
+            172.26804999999877,
+            593.0941570000014,
+            42.95283500000005,
+            522.542182000001,
+            432.0262679999996,
+            602.7824110000001,
+            93.28761300000042,
+            223.7289810000002,
+            316.1620949999997,
+            344.88476399999854,
+            196.0690539999996,
+            202.5277550000028,
+            366.31253800000195,
+            332.9365199999993,
+            260.18852699999843,
+            108.90881299999819,
+            669.0351819999996,
+            477.50569800000085,
+            613.6978720000006,
+            51.49842300000091,
+            693.087389999997,
+            193.74157200000263,
+            590.4250999999967
+          ],
+          "n": 36,
+          "p50Ms": 341.45356300000094,
+          "p95Ms": 669.0351819999996
+        },
+        "query": {
+          "samples": [
+            40.94312799999898,
+            37.68897900000047,
+            37.027782000001025,
+            22.31551699999909,
+            19.4472620000015,
+            18.83649399999922,
+            19.181219000000056,
+            17.472161000001506,
+            19.892119999998613,
+            26.20746599999984,
+            20.392415000000256,
+            21.433815999998842,
+            23.283825000000434,
+            21.382966999999553,
+            21.110070999999152,
+            22.195324000000255,
+            20.306480000001102,
+            22.716961000000083,
+            22.202688999999737,
+            27.705305999999837,
+            27.635450999998284,
+            41.52342700000008,
+            42.64263699999901,
+            41.75362099999984,
+            47.68732000000091,
+            46.23076899999796,
+            49.4458229999982,
+            27.846428000000742,
+            27.836218000000372,
+            24.46281900000031,
+            26.912625999997545,
+            24.329773000001296,
+            23.442630999998073,
+            23.30254100000093,
+            26.21177400000306,
+            30.191352000001643
+          ],
+          "n": 36,
+          "p50Ms": 24.329773000001296,
+          "p95Ms": 47.68732000000091
+        }
+      },
+      {
+        "file": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/warm-gemma-prose.json",
+        "corpus": "prose",
+        "leg": "gemma@768",
+        "execution": {
+          "device": "cpu",
+          "dtype": null,
+          "verified": true,
+          "why": "constructed: onnx-community/embeddinggemma-300m-ONNX=cpu. PAPERCUSP_EMBED_DEVICE=cpu (a host override, which outranks the Settings choice) forces the CPU"
+        },
+        "workerState": {
+          "alive": true,
+          "disabled": false,
+          "pendingCount": 0,
+          "keepAlive": false,
+          "recycling": false
+        },
+        "document": {
+          "samples": [
+            241.79926899999919,
+            519.1098950000005,
+            421.23399900000004,
+            306.4454510000005,
+            117.29227900000024,
+            663.9594749999997,
+            462.5785310000001,
+            681.5169719999994,
+            77.22713600000134,
+            775.2415779999992,
+            241.69134099999974,
+            610.2752150000015,
+            606.1393349999998,
+            264.9240469999986,
+            746.0016720000003,
+            55.57572000000073,
+            729.1135979999999,
+            883.8505450000011,
+            855.0192860000006,
+            136.35362700000042,
+            295.9926429999996,
+            296.3301440000014,
+            344.2428899999977,
+            185.4957949999989,
+            180.09191799999826,
+            332.726920000001,
+            276.1632129999998,
+            214.21170100000018,
+            87.4497909999991,
+            538.0677749999995,
+            405.2719419999994,
+            524.0978009999999,
+            44.218557000000146,
+            647.6549080000004,
+            318.7122899999995,
+            887.1154459999998
+          ],
+          "n": 36,
+          "p50Ms": 332.726920000001,
+          "p95Ms": 883.8505450000011
+        },
+        "query": {
+          "samples": [
+            43.926063000000795,
+            43.25258300000132,
+            43.662303999999494,
+            28.371640999999727,
+            27.748579999999492,
+            26.15539500000159,
+            31.69020499999897,
+            27.772816000000603,
+            27.97865399999864,
+            29.067904999999882,
+            27.548092999999426,
+            30.719011000001046,
+            29.937573000001066,
+            27.94043000000056,
+            29.999492000000828,
+            25.334662000001117,
+            25.462869999999384,
+            30.112230000000636,
+            25.618430000000444,
+            27.213878000000477,
+            29.335832000000664,
+            42.08408000000054,
+            41.400869999999486,
+            43.79313699999875,
+            51.52554600000076,
+            46.692009999998845,
+            45.897296999999526,
+            27.973534000000654,
+            25.72114800000054,
+            24.749251999997796,
+            26.90091399999801,
+            22.015799000000698,
+            22.176888999998482,
+            25.897067000001698,
+            28.440545000001293,
+            29.62662300000011
+          ],
+          "n": 36,
+          "p50Ms": 28.371640999999727,
+          "p95Ms": 46.692009999998845
+        }
+      },
+      {
+        "file": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/warm-mdenseon-memory.json",
+        "corpus": "memory",
+        "leg": "sidecar:mdenseon",
+        "execution": {
+          "device": "cpu",
+          "dtype": null,
+          "verified": true,
+          "why": "constructed: ~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713=cpu. PAPERCUSP_EMBED_DEVICE=cpu (a host override, which outranks the Settings choice) forces the CPU"
+        },
+        "workerState": {
+          "alive": true,
+          "disabled": false,
+          "pendingCount": 0,
+          "keepAlive": false,
+          "recycling": false
+        },
+        "document": {
+          "samples": [
+            257.046644,
+            525.459429999999,
+            632.47163,
+            1006.3282429999999,
+            258.2085960000004,
+            430.83201799999915,
+            994.1457090000004,
+            601.7688089999992,
+            1074.8495320000002,
+            688.7488259999991,
+            760.106151,
+            1336.0110209999984,
+            1299.729890999999,
+            738.3115709999984,
+            689.0295830000032,
+            1039.8526979999988,
+            589.0821179999984,
+            968.8265140000003,
+            431.4451679999984,
+            248.210919000001,
+            1127.2308779999985,
+            640.2318129999985,
+            462.52336099999957,
+            230.95451799999864,
+            263.6984309999971,
+            475.20676399999866,
+            623.7820189999984,
+            872.0653590000002,
+            215.42466699999932,
+            351.7110909999974,
+            843.6754269999947,
+            547.4925929999954,
+            980.2277549999999,
+            640.0462320000006,
+            731.5592429999961,
+            1259.560397000001
+          ],
+          "n": 36,
+          "p50Ms": 640.0462320000006,
+          "p95Ms": 1299.729890999999
+        },
+        "query": {
+          "samples": [
+            69.4544249999999,
+            77.58163000000059,
+            58.48649099999966,
+            58.74612199999683,
+            42.68401300000187,
+            35.304620999999315,
+            37.67201600000044,
+            29.69416099999944,
+            30.506987000000663,
+            27.98096599999917,
+            32.23094299999866,
+            30.567313999999897,
+            41.844302999998035,
+            32.31366200000048,
+            33.25814399999945,
+            34.6378850000001,
+            33.885283999999956,
+            38.7486229999995,
+            35.099396000001434,
+            39.696812000001955,
+            51.31741500000135,
+            60.737301999997726,
+            70.6903080000011,
+            47.99232200000188,
+            42.80532800000219,
+            50.46238699999958,
+            43.94901399999799,
+            43.30056300000433,
+            39.993414999997185,
+            31.394329999995534,
+            40.727952000001096,
+            34.388294999997015,
+            38.79513399999996,
+            40.94991999999911,
+            35.14796899999783,
+            36.018339000002015
+          ],
+          "n": 36,
+          "p50Ms": 38.79513399999996,
+          "p95Ms": 70.6903080000011
+        }
+      }
+    ]
+  },
+  "verification": {
+    "core": {
+      "testFiles": 3,
+      "tests": 80,
+      "passed": true,
+      "log": "/tmp/mdenseon-core-final-tests-WI10004335.log"
+    },
+    "library": {
+      "testFiles": 4,
+      "tests": 105,
+      "passed": true,
+      "log": "/tmp/mdenseon-library-final-tests-WI10004335.log"
+    },
+    "tokenizer": {
+      "testFiles": 1,
+      "tests": 3,
+      "passed": true,
+      "log": "/tmp/mdenseon-tokenizer-final-tests-WI10004335.log"
+    },
+    "typecheck": {
+      "scope": "three changed operator files plus referring files and direct importers",
+      "passed": true,
+      "log": "/tmp/mdenseon-targeted-typecheck-v2-WI10004335.log"
+    }
+  },
+  "sourceArtifacts": [
+    {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-v1.json",
+      "sha256": "f600661d021b7a7f016435ff2efa3600ef7ab06dd18419098c14e690cee84abc"
+    },
+    {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-vectors-v1.json",
+      "sha256": "3644640a198886f6d0893791424b1b7203e326828637a4a66f054f1c9f583afc"
+    },
+    {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-a5fdb000-rope-EI24726559745089713/native-prose-full-parity-v1.json",
+      "sha256": "3f50ad6859879800c1da46a492d023ba5d36ed8e89d999035391db21cbc8f968"
+    },
+    {
+      "path": ".papercusp/bench-reports/candidates-2026-09-30-mdenseon-vectors.json",
+      "sha256": "0467bd2876b5c2cb52a45da8c00463ce1e5d3d9be191724d8124d7c3c8f25775"
+    },
+    {
+      "path": ".papercusp/bench-reports/candidates-2026-09-30-prose-mdenseon.json",
+      "sha256": "f547989862383cde1f80cc04e62de6c018f704e9d09cfa8678dfc704ade8060f"
+    },
+    {
+      "path": ".papercusp/bench-reports/candidates-2026-09-30-memory-comparison.json",
+      "sha256": "9741efaa4147946fd4f738993390e38fdedc4ebfff2dcba5c14d61d399cfc817"
+    },
+    {
+      "path": ".papercusp/bench-reports/mdenseon-validation-2026-10-01.json",
+      "sha256": "8a4a2e8b13b723ed9cf47b099dd8a11d2436f5f468c257e3ba74b9af3d71856b"
+    }
+  ],
+  "currentLimitations": [
+    "Only eight independent positive source targets per fresh heldout corpus, with three query classes each; query-level bootstrap is secondary to source-grouped bootstrap.",
+    "Agent-authored relevance labels frozen before inference; not an independent human relevance audit.",
+    "Four heldout hard negatives per corpus; every model returned at least one hybrid hit for every negative, so cosine calibration does not establish hybrid rejection.",
+    "Production canonical SQL, lexical search and fusion are exercised in PID-owned cloned schemas; neutral precomputed adapter excludes extraction, entity graph, decay and HTTP request path.",
+    "Fresh corpus is a structurally sampled 48 memory rows and 49 prose sections, not the whole live population.",
+    "Tokenizer truncation is verified at 8192; numeric graph parity controlled inference reaches 1024 tokens, not full 8192-token inference.",
+    "Timing is warm CPU latency on this host, not cold-start, GPU or full production concurrency; no causal resource-load attribution.",
+    "Candidate timing includes isolated sidecar HTTP overhead; incumbent timing uses the shipped in-process worker builders.",
+    "Three timing trials within one block per model/corpus, not interleaved randomized blocks; host time drift may affect the cross-model comparison.",
+    "No final deployed-main acceptance or live release-gate operation required or performed.",
+    "Full frozen CPU sidecar parity now covers2143documents and284queries across memory and prose; full134prose top10 rankings and class metrics exactly reproduce the Python reference.",
+    "Frozen full-prose query mix is90identifier/24lexical-gap/8intent positives; the overall gain must not be described as a universal semantic win.",
+    "Equal-source statistical sensitivity is exploratory and uses frozen relevance labels, not a new independent human relevance audit."
+  ],
+  "delivery": {
+    "path": "docs/evidence/mdenseon-native-prose-2026-10-01.json",
+    "sourcePathIsGitIgnored": false,
+    "originalReportPath": ".papercusp/bench-reports/mdenseon-validation-2026-10-01.json",
+    "originalReportIsGitIgnored": true,
+    "correction": "The earlier assurance that the ignored report would automatically commit and settle was not established. Preserve original report and exact proof; tracked extension is published here.",
+    "ownedSettlementFollowup": "WI-10004491",
+    "ownedGemmaFollowup": "EI-24736955840892526"
+  }
+}

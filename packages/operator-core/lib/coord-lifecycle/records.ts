@@ -208,6 +208,9 @@ export interface ResidueRefOwnership {
   /** The item is in a settled state, so nothing is left to own. */
   settled: boolean;
   assignee: string | null;
+  /** An active, structured human-capability ask is routed to its resolution owner even though
+   *  the blocked agent claim was released from `assignee`. */
+  structuredHumanOwnerAction?: boolean;
   createdBy: string | null;
   /** Epoch ms; undefined when unknown. */
   createdAtMs?: number;
@@ -228,7 +231,7 @@ export function unownedResidueRefs(
   const byId = new Map(ownership.map((o) => [o.id.trim().toUpperCase(), o]));
   const unowned = (id: string) => {
     const o = byId.get(id);
-    return Boolean(o && !o.settled && !o.assignee?.trim());
+    return Boolean(o && !o.settled && !o.assignee?.trim() && !o.structuredHumanOwnerAction);
   };
   const filedByCloser = (id: string) => {
     const o = byId.get(id);

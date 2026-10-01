@@ -60,6 +60,7 @@ import { lookupRemoteAuthorEndedAt } from '../../work-items-orphan-author';
 // standalone module, not from '../../work-items', which this file's unit tests mock
 // wholesale — the guard would be `undefined` exactly here.
 import { decideTerminalOwnerOriginHeal } from '../../work-items-terminal-owner-origin-heal';
+import { activeExternalBlockers, externalBlockerCapabilityPolicy } from '../../external-blockers';
 import {
   getWorkItem,
   getWorkItemsByIds,
@@ -4099,10 +4100,18 @@ async function completeOne(
         cited,
         found.map((w) => {
           const createdAtMs = Date.parse(String(w.createdAt ?? ''));
+          const structuredHumanOwnerAction = activeExternalBlockers(w.payload).some(
+            (blocker) =>
+              blocker.kind === 'human' &&
+              externalBlockerCapabilityPolicy(blocker.capability).requiresOwnerCapability &&
+              Boolean(blocker.summary.trim()) &&
+              Boolean(blocker.nextVerb?.trim()),
+          );
           return {
             id: w.id,
             settled: TERMINAL_WORK_ITEM_STATES.has(String(w.state ?? '').toLowerCase()),
             assignee: w.assignee,
+            structuredHumanOwnerAction,
             createdBy: w.createdBy,
             ...(Number.isFinite(createdAtMs) ? { createdAtMs } : {}),
           };

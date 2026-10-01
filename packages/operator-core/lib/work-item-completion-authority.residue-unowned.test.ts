@@ -57,6 +57,12 @@ describe('unownedResidueRefs', () => {
     expect(judge({ followUps: ['WI-1', 'WI-2'], summaryRefs: [] }, ownership)).toEqual([]);
   });
 
+  it('an active structured human owner action is owned after its agent claim is released', () => {
+    expect(
+      judge({ followUps: ['WI-1'], summaryRefs: [] }, [open('WI-1', { structuredHumanOwnerAction: true })]),
+    ).toEqual([]);
+  });
+
   it('a summary id filed by someone else, or before the closer took the item, is history, not residue', () => {
     const ownership = [open('WI-5', { createdBy: 'su-other' }), open('WI-6', { createdAtMs: TAKEN_AT - 1 })];
     expect(judge({ followUps: [], summaryRefs: ['WI-5', 'WI-6'] }, ownership)).toEqual([]);

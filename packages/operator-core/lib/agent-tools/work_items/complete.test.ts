@@ -6786,9 +6786,9 @@ describe('record-only completion of an already-terminal item (EI-193624410379864
 // and an unanswerable store both stay silent.
 describe('D-041 — a close citing an UNOWNED follow-up is told so', () => {
   const change = { id: 'WI-res', kind: 'change', family: 'issue', state: 'open', harness: 'papercup' };
-  const followUp = (assignee: string | null) => ({
+  const followUp = (assignee: string | null, payload: Record<string, unknown> | null = null) => ({
     id: 'WI-95511', kind: 'bug', family: 'issue', state: 'open', harness: 'papercup',
-    assignee, createdBy: 'someone-else', createdAt: '2026-09-30T00:00:00Z',
+    assignee, payload, createdBy: 'someone-else', createdAt: '2026-09-30T00:00:00Z',
   });
   const close = () => one({
     id: 'WI-res',
@@ -6818,6 +6818,42 @@ describe('D-041 — a close citing an UNOWNED follow-up is told so', () => {
     const r = await close();
     expect(getWorkItemsByIds).toHaveBeenCalled();
     expect(r.residueUnownedWarning).toBeUndefined();
+  });
+
+  it('an active structured human ask is owned even after set_blocker releases the agent assignee', async () => {
+    getWorkItemsByIds.mockResolvedValue([followUp(null, {
+      externalBlockers: [{
+        kind: 'human',
+        capability: 'physical-device',
+        ref: 'device:camera',
+        summary: 'Connect the physical camera for verification.',
+        nextVerb: 'Run the camera verification again.',
+        status: 'active',
+        createdAt: '2026-09-30T00:00:00Z',
+        createdBy: 'su-closer',
+        updatedAt: '2026-09-30T00:00:00Z',
+      }],
+    })]);
+    const r = await close();
+    expect(r.residueUnownedWarning).toBeUndefined();
+  });
+
+  it('a cleared human blocker does not keep an unassigned follow-up owned', async () => {
+    getWorkItemsByIds.mockResolvedValue([followUp(null, {
+      externalBlockers: [{
+        kind: 'human',
+        capability: 'physical-device',
+        ref: 'device:camera',
+        summary: 'Connect the physical camera for verification.',
+        nextVerb: 'Run the camera verification again.',
+        status: 'cleared',
+        createdAt: '2026-09-30T00:00:00Z',
+        createdBy: 'su-closer',
+        updatedAt: '2026-09-30T00:00:00Z',
+      }],
+    })]);
+    const r = await close();
+    expect(r.residueUnownedWarning).toContain('WI-95511');
   });
 
   it('a store that cannot answer is silence, never an accusation', async () => {

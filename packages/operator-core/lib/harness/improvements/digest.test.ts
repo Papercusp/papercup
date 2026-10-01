@@ -1,5 +1,16 @@
+import { pathToFileURL } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import {
+import * as currentDigest from './digest';
+import type { ImprovementCandidate } from './policy';
+
+// Copy-out mutation-probe seam: scripts/mutation-probe.sh points this suite at
+// a mutated copy of digest.ts, so falsifiability checks never dirty the shared
+// tree. Unset during every ordinary test run.
+const digestProbePath = process.env.PAPERCUSP_INTAKE_DIGEST_PROBE;
+const digestSubject: typeof currentDigest = digestProbePath
+  ? await import(/* @vite-ignore */ pathToFileURL(digestProbePath).href)
+  : currentDigest;
+const {
   assembleIntakeCandidateGroups,
   buildDigest,
   dedupSignature,
@@ -10,8 +21,7 @@ import {
   recallAlreadyDecided,
   titleSimilarity,
   extractQuotedSignatures,
-} from './digest';
-import type { ImprovementCandidate } from './policy';
+} = digestSubject;
 
 const NOW = Date.parse('2026-06-04T12:00:00Z');
 function daysAgo(n: number): string {

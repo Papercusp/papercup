@@ -154,7 +154,11 @@ describe('EI-21903832503219853 — verify-tauri-headless re-picks a fresh displa
     // never leaves a stale Xvfb/openbox/lock behind for the display it is
     // abandoning.
     expect(displayBranch).toMatch(/kill -9 \$OPENBOX_PID/);
-    expect(displayBranch).toMatch(/kill -TERM \$XVFB_PID/);
+    expect(displayBranch).toContain('write_xvfb_stop_script');
+    expect(displayBranch).toContain('"$WORK/stop-xvfb.sh"');
+    expect(displayBranch).not.toMatch(/pkill\s+-9\s+-f\s+"Xvfb/);
+    expect(displayBranch).not.toContain('rm -f "/tmp/.X11-unix/X$DISPLAY_NUM"');
+    expect(displayBranch).not.toContain('"/tmp/.X$DISPLAY_NUM-lock"');
     expect(displayBranch).toMatch(/display_lock_release/);
     expect(displayBranch).toMatch(/fed_release_port_locks/);
 

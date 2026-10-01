@@ -99,7 +99,8 @@
     "libs/generic/overlap-clusters",
     "libs/generic/sequence-patterns",
     "libs/generic/agent-roster",
-    "libs/generic/hash-chain"
+    "libs/generic/hash-chain",
+    "libs/generic/merkle-log"
   ],
   "scripts": {
     "preinstall": "node scripts/guard-shared-tree-install.mjs && npx --yes only-allow npm",

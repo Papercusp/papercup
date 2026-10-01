@@ -1037,7 +1037,7 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
 /** Read a bounded, complete tail from one transcript under the backend's
  * isolated root. This is shared by the turn-boundary and launch-activity
  * probes so neither can accidentally certify another live session. */
-function readIsolatedNativeTranscriptRows({ agent, env = process.env, transcriptPath, home = homedir() }) {
+function readIsolatedNativeTranscriptWindow({ agent, env = process.env, transcriptPath, home = homedir() }) {
   if (!nativeTurnVerifierSupport(agent, env).supported || !transcriptPath) return null;
   let fd;
   try {
@@ -1053,15 +1053,43 @@ function readIsolatedNativeTranscriptRows({ agent, env = process.env, transcript
     const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     const read = readSync(fd, bytes, 0, length, info.size - length);
-    let tail = bytes.subarray(0, read).toString('utf8');
-    if (!tail.endsWith('\n')) return null; // the newest record is still being written
-    if (info.size > length) tail = tail.slice(tail.indexOf('\n') + 1);
-    return tail.split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
+    let tailBytes = bytes.subarray(0, read);
+    if (!tailBytes.length || tailBytes[tailBytes.length - 1] !== 0x0a) return null; // newest row is being written
+    let firstByteOffset = info.size - length;
+    if (info.size > length) {
+      const firstNewline = tailBytes.indexOf(0x0a);
+      if (firstNewline < 0) return null; // the first complete row is outside the bounded window
+      tailBytes = tailBytes.subarray(firstNewline + 1);
+      firstByteOffset += firstNewline + 1;
+    }
+    const rows = [];
+    let cursor = 0;
+    while (cursor < tailBytes.length) {
+      const newline = tailBytes.indexOf(0x0a, cursor);
+      if (newline < 0) return null;
+      const startOffset = firstByteOffset + cursor;
+      const endOffset = firstByteOffset + newline + 1;
+      const line = tailBytes.subarray(cursor, newline).toString('utf8');
+      if (line.trim()) rows.push({ row: JSON.parse(line), startOffset, endOffset });
+      cursor = newline + 1;
+    }
+    return {
+      rows,
+      firstCompleteRowOffset: rows[0]?.startOffset ?? null,
+      fileIdentity: `${info.dev}:${info.ino}`,
+      size: info.size,
+    };
   } catch {
     return null;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+/** Read rows from the bounded native window without exposing its byte metadata. */
+function readIsolatedNativeTranscriptRows(options) {
+  const window = readIsolatedNativeTranscriptWindow(options);
+  return window ? window.rows.map(({ row }) => row) : null;
 }
 
 /** A plain launch's marker proves submission. A native task-start or assistant
@@ -1074,34 +1102,63 @@ function nativeKickoffTurnActivityAfterMarker({
   transcriptPath,
   marker,
   markerLostChars = 0,
+  anchor = null,
   home = homedir(),
 }) {
   if (!['codex', 'claude'].includes(agent) || !marker) return { available: false, started: false };
-  const rows = readIsolatedNativeTranscriptRows({ agent, env, transcriptPath, home });
-  if (!rows) return { available: false, started: false };
+  const window = readIsolatedNativeTranscriptWindow({ agent, env, transcriptPath, home });
+  if (!window) return { available: false, started: false };
   const markerText = markerLostChars > 0 ? marker.slice(markerLostChars) : marker;
-  let markerSeen = false;
-  for (const row of rows) {
-    if (!markerSeen) {
-      let serialized;
-      try { serialized = JSON.stringify(row); }
-      catch { return { available: false, started: false }; }
-      if (serialized.includes(markerText)) markerSeen = true;
-      continue;
-    }
-    if (agent === 'codex') {
-      if (row?.type === 'event_msg' &&
-        ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
-        return { available: true, started: true };
+  const rowsAfter = (entries) => {
+    for (const { row } of entries) {
+      if (agent === 'codex') {
+        if (row?.type === 'event_msg' &&
+          ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
+          return true;
+        }
+        if (row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant') {
+          return true;
+        }
+      } else if (row?.type === 'assistant') {
+        return true;
       }
-      if (row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant') {
-        return { available: true, started: true };
-      }
-    } else if (row?.type === 'assistant') {
-      return { available: true, started: true };
     }
+    return false;
+  };
+
+  if (anchor?.fileIdentity) {
+    const markerEndOffset = anchor.markerEndOffset;
+    if (window.fileIdentity !== anchor.fileIdentity || !Number.isFinite(markerEndOffset) || window.size < markerEndOffset) {
+      return { available: false, started: false };
+    }
+    // Every complete row in this tail is after the proven marker row. Keep the
+    // bounded read, but no longer require the old marker itself to be present.
+    if (window.firstCompleteRowOffset != null && window.firstCompleteRowOffset >= markerEndOffset) {
+      return { available: true, started: rowsAfter(window.rows) };
+    }
+    // The window still overlaps the marker row; re-anchor there before using
+    // any later activity, and refuse if the file no longer contains that row.
+    const markerIndex = window.rows.findIndex(({ row, endOffset }) => {
+      if (endOffset !== markerEndOffset) return false;
+      try { return JSON.stringify(row).includes(markerText); }
+      catch { return false; }
+    });
+    if (markerIndex < 0) return { available: false, started: false };
+    return { available: true, started: rowsAfter(window.rows.slice(markerIndex + 1)) };
   }
-  return { available: markerSeen, started: false };
+
+  for (let index = 0; index < window.rows.length; index += 1) {
+    let serialized;
+    try { serialized = JSON.stringify(window.rows[index].row); }
+    catch { return { available: false, started: false }; }
+    if (!serialized.includes(markerText)) continue;
+    if (anchor) {
+      anchor.fileIdentity = window.fileIdentity;
+      anchor.markerEndOffset = window.rows[index].endOffset;
+    }
+    return { available: true, started: rowsAfter(window.rows.slice(index + 1)) };
+  }
+  return { available: false, started: false };
 }
 
 /** A queued kickoff retry may wait behind the original turn. At the final

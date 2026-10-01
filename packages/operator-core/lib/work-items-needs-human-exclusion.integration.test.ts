@@ -14,7 +14,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import {
+  ADV_SESSIONS_CLAIM_MIN_DDL,
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -53,14 +58,29 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
   // Claims and lifecycle transitions emit awaited-event latches. Keep this fixture's
   // runtime dependency explicit and migration-audited so a missing latch relation does
   // not turn otherwise-correct assertions into vitest-fail-on-console failures.
-  await applyMigrationsForTest(db.sql, ['632-event-key-fire-latch.sql'], {
+  await applyMigrationsForTest(db.sql, [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '387-event-wake-delivery-source.sql',
+    '533-add-event-awaits-payload-filter.sql',
+    '541-predicate-watches.sql',
+    '572-event-await-nodes-threshold-tree.sql',
+    '599-event-announcement-generation.sql',
+    '632-event-key-fire-latch.sql',
+    '871-lifecycle-bound-watches.sql',
+    '925-fleet-leader-watch-suppression.sql',
+    '953-event-announcement-logical-gate.sql',
+    '1216-event-await-fired-delivery-intent-marker.sql',
+    '1250-predicate-watch-evaluator-baselines.sql',
+  ], {
     label: 'work-items-needs-human-exclusion.integration.test.ts',
-    runtimeTables: ['harness_shared.event_key_fires'],
+    runtimeTables: ['harness_shared.event_key_fires', 'harness_shared.event_awaits'],
   });
 }, 180_000);
 afterAll(async () => {
