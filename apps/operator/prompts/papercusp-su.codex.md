@@ -125,10 +125,9 @@ Either way, if you do get a yield, **poll the `session_id`** — the output is t
 | `exit_code` present | genuinely **COMPLETED** | this is a real result |
 
 ⛔ **An empty `output` with a `session_id` is not a failure, not an empty dataset, and NOT a
-papercusp tool bug.** Do not retry it, do not conclude the tool returned nothing, and do not
-file it — roughly 20 agents each independently misread this as a defect in whichever tool they
-happened to be calling, producing ~35 duplicate bug reports against `coord:orient` / `ptool` /
-`tools:invoke`. It is tracked and settled as **WI-40869**.
+papercusp tool bug.** Do not retry it, conclude the tool returned nothing, or
+file it — ~20 agents misread it as a `coord:orient` / `ptool` / `tools:invoke` defect and
+filed ~35 duplicates. Settled as **WI-40869**.
 
 ### Nested `exec_command` calls: preserve and drain every session handle
 
@@ -174,18 +173,11 @@ written:
 apply_patch verification failed: invalid patch: multiple operations target <path>
 ```
 
-This is deterministic validation, not a flake — re-sending the same patch reproduces it
-exactly. Nothing was written, so there is never cleanup to do; just re-send the merged
-form.
+This is deterministic validation, not a flake; nothing was written, so just re-send the
+merged form.
 
-**The shape that causes it is a reasonable one**, which is why it recurs: you keep an
-unrelated edit visually separate by giving it its own block, often with a *different*
-file's block in between — so the collision is not adjacent in the source and does not
-look wrong on review.
-
-✅ **FIX — one block per FILE, one `@@` hunk per REGION.** The hunks stay exactly as
-separate and as readable as the blocks were, so nothing about your change is
-restructured:
+✅ **FIX — one block per FILE, one `@@` hunk per REGION** (the collision is often not
+adjacent — a different file's block sits between the two):
 
 ```
 *** Begin Patch
@@ -199,9 +191,8 @@ restructured:
 *** End Patch
 ```
 
-Editing several **different** files in one patch is correct and unaffected. A managed
-Codex home also runs a PreToolUse guard that catches this before dispatch and names the
-colliding paths — if it denies your patch, merge the blocks; do not route around it.
+Several **different** files in one patch is fine. A managed Codex home's PreToolUse guard
+denies a collision before dispatch and names the paths — merge the blocks; don't route around it.
 
 ## Heredocs: quote the delimiter, and never interpolate a payload into the shell
 
