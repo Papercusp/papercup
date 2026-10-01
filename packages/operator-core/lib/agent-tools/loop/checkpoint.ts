@@ -105,6 +105,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -145,7 +146,11 @@ class FrozenCarryCheckpointError extends Error {
 function frozenLoopCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
   if (!text?.trim()) return null;
   return frozenLineageCarryViolationPayload(
-    evaluateFrozenLineageCarryText({ surface: 'loop-checkpoint', text }),
+    evaluateFrozenLineageCarryText({
+      surface: 'loop-checkpoint',
+      text,
+      target: resolveHomeGateVerdictTarget(),
+    }),
   );
 }
 

@@ -7,7 +7,7 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
   scopeTerms: undefined as { exact: string[]; likePrefixes: string[] } | null | undefined,
-  scopeDecisions: [] as Array<{ harness?: string; verdict: string; note?: string }>,
+  scopeDecisions: [] as Array<{ harness?: string | null; verdict: string; note?: string }>,
 }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -2118,7 +2118,7 @@ describe('work-item admission promoter (real Postgres)', () => {
           FROM harness_shared.admission_runs WHERE id = 'fail-open-mis-homed'`;
       // Control: `email` is held too, but it is another pot's harness, so it is NOT mis-homed.
       expect(run).toEqual({ misHomed: { [platformHome]: 1 }, held: { email: 1, [platformHome]: 1 } });
-      const notes = Object.fromEntries(h.scopeDecisions.map((d) => [d.harness, d.note ?? '']));
+      const notes = Object.fromEntries(h.scopeDecisions.map((d) => [d.harness ?? '', d.note ?? '']));
       expect(notes[platformHome]).toMatch(/^MIS-HOMED: 1 .*work_items:rehome/);
       expect(notes.email).toMatch(/deliberate hold/);
       expect(notes.email).not.toMatch(/MIS-HOMED/);

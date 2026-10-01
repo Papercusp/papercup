@@ -61,6 +61,23 @@ interface TranscriptionPattern {
   value: RegExp;
   /** Required state-claim context within CONTEXT_WINDOW chars of the value. */
   context: RegExp;
+  /** The value is claimed to be a commit sha, so a commit resolver may veto it. */
+  commitSha?: boolean;
+}
+
+export interface DetectOptions {
+  /**
+   * Does this hex token name a real commit? `true` keeps the hit, `false` drops it,
+   * `null` means "could not tell" and keeps it (fail-open, like the detector itself).
+   *
+   * EI-24684014950807803: shape alone cannot tell a sha from the other hex ids that
+   * travel in coord prose — an agent short id (`c0b38c83` for `su-c0b38c83-…`), a
+   * chunk-group id, a contentHash. One exclusion per id kind never converges;
+   * resolving the token does. The detector stays PURE and synchronous: a caller that
+   * can reach git resolves the tokens first (`cellTranscriptionHintResolvingCommits`
+   * in `git-commit-resolver.ts`) and passes the verdicts in here.
+   */
+  resolvesToCommit?: (token: string) => boolean | null;
 }
 
 /**
@@ -207,6 +224,7 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // the deployed/serving commit.
     value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context: /\b(candidate|green[- ]?checkpoint)\b/i,
+    commitSha: true,
   },
   {
     cell: 'git.pipelinePosition',
@@ -229,6 +247,7 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context:
       /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|:3070|:3170|running|shipped)\b/i,
+    commitSha: true,
   },
   {
     cell: 'git.pipelinePosition',
@@ -262,7 +281,7 @@ function dedupeKey(hit: CellTranscription): string {
  * inside a `coord:send` would turn an advisory into an outage, which is the one
  * failure mode a tier-3 mechanism must never have.
  */
-export function detectCellTranscriptions(text: unknown): CellTranscription[] {
+export function detectCellTranscriptions(text: unknown, options: DetectOptions = {}): CellTranscription[] {
   if (typeof text !== 'string' || text.length === 0) return [];
   // Bound the work: a 100KB message body is not worth a full scan, and the scan is
   // on the hot path of every send.
@@ -304,6 +323,10 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
         continue;
       }
 
+      if (p.commitSha && options.resolvesToCommit && resolvesSafely(options.resolvesToCommit, m[0]) === false) {
+        continue; // hex-shaped, but not a commit — an agent id, hash, or other artifact id
+      }
+
       const hit: CellTranscription = { cell: p.cell, field: p.field, value: m[0], what: p.what };
       const key = dedupeKey(hit);
       if (seen.has(key)) continue;
@@ -312,6 +335,14 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
     }
   }
   return out;
+}
+
+function resolvesSafely(resolve: (token: string) => boolean | null, token: string): boolean | null {
+  try {
+    return resolve(token);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -336,8 +367,8 @@ export function formatCellTranscriptionHint(hits: CellTranscription[]): string |
 }
 
 /** Convenience: detect + format in one call. Returns null when there is nothing to say. */
-export function cellTranscriptionHint(text: unknown): string | null {
-  return formatCellTranscriptionHint(detectCellTranscriptions(text));
+export function cellTranscriptionHint(text: unknown, options: DetectOptions = {}): string | null {
+  return formatCellTranscriptionHint(detectCellTranscriptions(text, options));
 }
 
 /**

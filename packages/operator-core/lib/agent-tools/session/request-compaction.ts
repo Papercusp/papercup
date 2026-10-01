@@ -69,6 +69,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 // Preserve the established import surface while sharing the pure guard with
 // loop-turn-outcome and the compaction watchdog.
@@ -387,6 +388,7 @@ function frozenCompactionCarryRefusal(text: string) {
   const verdict = evaluateFrozenLineageCarryText({
     surface: 'compaction-continuation',
     text,
+    target: resolveHomeGateVerdictTarget(),
   });
   const payload = frozenLineageCarryViolationPayload(verdict);
   if (!payload) return null;

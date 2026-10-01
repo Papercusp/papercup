@@ -182,6 +182,7 @@ import {
   type TestingRunInvocation,
 } from './test-result-binding';
 import { gateRedCompletionClaimVerdict, gateRedCompletionClaimWarning } from '../../release/gate-red-completion-claim';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { GATE_RED_STREAK_CONDITION_PREFIX } from '../../work-items-admission';
 import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../../coord/actionable-conditions';
 import { renderCompletion } from '../../coord-lifecycle/render';
@@ -3843,6 +3844,7 @@ async function completeOne(
     }
     const gateRedVerdict = gateRedCompletionClaimVerdict(completionEvidenceForGate, {
       gateRedConditionItem,
+      target: resolveHomeGateVerdictTarget(),
       // A duplicate or explicit drop/discard settles an administrative condition item; it
       // does not assert that the frozen gate is green. The helper still checks any explicit
       // gate-progress prose claim carried by the same completion.
@@ -4856,7 +4858,9 @@ async function completeOne(
   // progress, but names failing paths the JUDGED sha does not carry. Sibling of the check
   // above and warn-only for the same reason — the fix is real, it just landed above the
   // frozen candidate, so the gate cannot see it and the claim would enter the record as fact.
-  const gateRedClaim = gateRedCompletionClaimWarning(completionEvidenceForGate);
+  const gateRedClaim = gateRedCompletionClaimWarning(completionEvidenceForGate, {
+    target: resolveHomeGateVerdictTarget(),
+  });
   const gateRedClaimWarning = gateRedClaim ? `completion for ${it.id}: ${gateRedClaim.detail}` : undefined;
 
   // EI-20288629053504794: a positive path claim is not evidence that this item touched

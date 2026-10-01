@@ -19,6 +19,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { registerSystemAction } from './system-actions';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 registerSystemAction('frozen-candidate-drift-sweep', async () => {
   const [{ readFrozenRepairMarker }, { detectFrozenCandidateDrift, parseDriftCommits }, { integrationRoot }, { integrationBranch }] =
@@ -29,7 +30,7 @@ registerSystemAction('frozen-candidate-drift-sweep', async () => {
       import('../../release/judged-sha-containment'),
     ]);
 
-  const marker = readFrozenRepairMarker();
+  const marker = readFrozenRepairMarker(resolveHomeGateVerdictTarget());
   if (!marker) return; // nothing frozen — the common case
 
   const root = integrationRoot();

@@ -11,6 +11,7 @@
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-repair-edit-marker';
+import type { GateVerdictTarget } from './gate-verdict-target';
 
 export interface FrozenLineageIdentity {
   candidate: string;
@@ -52,8 +53,10 @@ export function frozenLineageIdentityFromMarker(
   return frozenLineageIdentityFromQueue(marker);
 }
 
-export function readFrozenLineageIdentity(path?: string): FrozenLineageIdentity | null {
-  const marker = path === undefined ? readFrozenRepairMarker() : readFrozenRepairMarker(path);
+export function readFrozenLineageIdentity(
+  targetOrPath: GateVerdictTarget | string | null | undefined,
+): FrozenLineageIdentity | null {
+  const marker = readFrozenRepairMarker(targetOrPath);
   return marker ? frozenLineageIdentityFromMarker(marker) : null;
 }
 
@@ -156,6 +159,8 @@ export type FrozenLineagePolicyVerdict =
 export interface FrozenLineagePolicyProbe {
   /** Injected by tests/callers that already performed the live marker read. */
   marker?: FrozenRepairEditMarker | null;
+  /** Scope for the live marker read when no marker/identity has been injected. */
+  target?: GateVerdictTarget | null;
   /** Injected identity from the authoritative repair_queue reader. */
   identity?: FrozenLineageIdentity | null;
 }
@@ -196,7 +201,11 @@ export function evaluateFrozenLineagePolicy(
   probe: FrozenLineagePolicyProbe = {},
 ): FrozenLineagePolicyVerdict {
   const hasInjectedIdentity = Object.prototype.hasOwnProperty.call(probe, 'identity');
-  const marker = hasInjectedIdentity ? null : 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+  const marker = hasInjectedIdentity
+    ? null
+    : 'marker' in probe
+      ? probe.marker
+      : readFrozenRepairMarker(probe.target);
   const liveIdentity = hasInjectedIdentity
     ? probe.identity ?? null
     : marker
@@ -288,6 +297,8 @@ export interface FrozenLineageShellCommandInput {
 export interface FrozenLineageShellCommandProbe {
   /** Inject one stable marker for a pure test. */
   marker?: FrozenRepairEditMarker | null;
+  /** Scope for the live marker fallback; production adapters pass the home gate target. */
+  target?: GateVerdictTarget | null;
   /** Production/default is the live marker read; a sequence makes CAS races testable. */
   readMarker?: () => FrozenRepairEditMarker | null;
   /** The authoritative persisted repair_queue read; takes precedence over marker I/O. */
@@ -564,7 +575,9 @@ export async function evaluateFrozenLineageShellCommand(
   }
 
   const hasInjectedMarker = Object.prototype.hasOwnProperty.call(probe, 'marker');
-  const readMarker = hasInjectedMarker ? () => probe.marker ?? null : (probe.readMarker ?? readFrozenRepairMarker);
+  const readMarker = hasInjectedMarker
+    ? () => probe.marker ?? null
+    : (probe.readMarker ?? (() => readFrozenRepairMarker(probe.target)));
   const readLiveIdentity = async (): Promise<FrozenLineageIdentity | null> => {
     if (probe.readFrozenRepairQueue) {
       const queue = await probe.readFrozenRepairQueue();
@@ -648,6 +661,8 @@ export interface UnsafeFrozenCarryInstruction {
 export interface FrozenLineageCarryPolicyInput {
   surface: FrozenLineageCarrySurface;
   text: string;
+  /** Exact workspace/install whose persisted queue governs this carry boundary. */
+  target: GateVerdictTarget | null;
 }
 
 export type FrozenLineageCarryPolicyVerdict =
@@ -833,7 +848,7 @@ export function evaluateFrozenLineageCarryText(
   input: FrozenLineageCarryPolicyInput,
   probe: FrozenLineagePolicyProbe = {},
 ): FrozenLineageCarryPolicyVerdict {
-  const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+  const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker(input.target);
   if (!marker) {
     return {
       allowed: true,

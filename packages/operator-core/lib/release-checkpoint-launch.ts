@@ -43,6 +43,7 @@ import {
   GATE_VERDICT_HARNESS_ENV,
   GATE_VERDICT_WORKSPACE_ENV,
   gateVerdictEnv,
+  resolveHomeGateVerdictTarget,
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
 import { GATE_FIRE_ID_ENV, isGateFireId, mintGateFireId, recordGateFire } from './release/gate-fire-ledger';
@@ -85,20 +86,6 @@ function shellQuote(value: string): string {
  * the operator-home harness. Fail-safe — if either half won't resolve we stamp nothing, the run
  * doesn't record, and the routine records exactly as it did before.
  */
-function resolveHomeGateTarget(): GateVerdictTarget | null {
-  try {
-    const { activeWorkspaceId } = require('./workspace-registry') as typeof import('./workspace-registry');
-    const { operatorHomeHarnessSlug } =
-      require('./harness/operator-home-harness') as typeof import('./harness/operator-home-harness');
-    const workspaceId = activeWorkspaceId();
-    const installSlug = operatorHomeHarnessSlug();
-    if (!workspaceId || !installSlug) return null;
-    return { workspaceId, installSlug };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * The transient systemd unit the detached manual checkpoint runs as. DISTINCT from the deploy
  * unit (a checkpoint and a deploy are independent) — but a second manual checkpoint while one
@@ -2888,7 +2875,7 @@ export async function launchDetachedCheckpoint(
   // omitted ⇒ the operator-home gate, which is this launcher's documented scope. Hoisted so
   // the P-001 fire ANCHOR (in the close handler below) and the argv env stamps can never
   // disagree about which gate the run records into.
-  const verdictTarget = opts.target === undefined ? resolveHomeGateTarget() : opts.target;
+  const verdictTarget = opts.target === undefined ? resolveHomeGateVerdictTarget() : opts.target;
   const gateFireId = verdictTarget ? mintGateFireId() : undefined;
   const argv = buildCheckpointSystemdArgv(
     root,

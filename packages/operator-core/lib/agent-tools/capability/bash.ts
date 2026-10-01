@@ -63,6 +63,7 @@ import {
   evaluateFrozenLineageShellCommand,
   frozenLineageShellCommandViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { repoHeadSha } from '../../harness/docs/git-runner';
 import { resolveCapabilityIntegrationRoot } from './base-dir';
 import { classifyCapabilityBashEffect, commandBase, splitClassifiableShell } from './bash-effect';
@@ -571,6 +572,7 @@ export default defineTool({
     const frozenLineageRefusal = async () => {
       if (!frozenLineageRoot) return null;
       const verdict = await evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
+        target: resolveHomeGateVerdictTarget(),
         readCheckoutHead: repoHeadSha,
         canonicalizePath: realpathSoft,
         readFrozenRepairQueue: () =>

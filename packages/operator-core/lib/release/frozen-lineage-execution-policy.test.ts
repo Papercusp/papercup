@@ -586,6 +586,23 @@ describe('frozen lineage carry policy', () => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
 
+  it('allows verified descriptive prose that says the fixes are on staging', () => {
+    const verdict = evaluateFrozenLineageCarryText(
+      {
+        surface: 'work-item-checkpoint',
+        text: 'VERIFIED: the fixes are present on staging; the check still judges the prior frozen repair head.',
+        target: null,
+      },
+      { marker: marker() },
+    );
+
+    expect(verdict).toMatchObject({
+      allowed: true,
+      reason: 'no-unsafe-candidate-instruction',
+      liveIdentity: identity(),
+    });
+  });
+
   it.each([
     'Select staging as the judged candidate even though it is 32 commits behind the repair head.',
     'Run the canonical verification against staging as the judged candidate.',
@@ -610,6 +627,7 @@ describe('frozen lineage carry policy', () => {
       {
         surface: 'work-item-checkpoint',
         text: 'Then pin whatever staging resolves to at that instant.',
+        target: null,
       },
       { marker: marker() },
     );
@@ -641,7 +659,7 @@ describe('frozen lineage carry policy', () => {
   it('allows the same text when no frozen marker exists', () => {
     expect(
       evaluateFrozenLineageCarryText(
-        { surface: 'compaction-continuation', text: 'Pin staging as the canonical candidate.' },
+        { surface: 'compaction-continuation', text: 'Pin staging as the canonical candidate.', target: null },
         { marker: null },
       ),
     ).toMatchObject({ allowed: true, reason: 'no-frozen-queue' });

@@ -18,6 +18,8 @@ import {
   MAX_DEPENDS_ON_SUGGESTIONS,
   CONTEXT_WINDOW,
 } from './cell-transcription-detector';
+import { cellTranscriptionHintResolvingCommits, commitResolverRepo, gitResolvesToCommit } from './git-commit-resolver';
+import { execFileSync } from 'node:child_process';
 import { registerBuiltinCells } from './cell-registrations';
 import { getCellUnchecked, __resetCellRegistryForTests } from './cell-registry';
 

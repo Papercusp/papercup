@@ -207,6 +207,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { LIMITS } from '../limits';
 
 /**
@@ -592,7 +593,11 @@ class FrozenCarryCheckpointError extends Error {
 function frozenWorkItemCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
   if (!text?.trim()) return null;
   return frozenLineageCarryViolationPayload(
-    evaluateFrozenLineageCarryText({ surface: 'work-item-checkpoint', text }),
+    evaluateFrozenLineageCarryText({
+      surface: 'work-item-checkpoint',
+      text,
+      target: resolveHomeGateVerdictTarget(),
+    }),
   );
 }
 

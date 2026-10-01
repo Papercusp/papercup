@@ -11,6 +11,32 @@ export const MAX_MCP_REQUEST_TRACE_ID_CHARS = 36;
  */
 export const MCP_DATA_PLANE_DEGRADED_AT_HEADER = 'x-papercusp-mcp-data-plane-degraded-at';
 
+export type McpRequestTraceStage =
+  | 'request_started'
+  | 'inner_dispatch_started'
+  | 'inner_dispatch_settled'
+  | 'deadline';
+
+export interface McpRequestTraceEvent {
+  traceId: string;
+  toolName: string;
+  stage: McpRequestTraceStage;
+  elapsedMs: number;
+  deadlineMs?: number;
+  phase?: 'pre_dispatch' | 'inner_dispatch';
+  outcome?: 'success' | 'tool_error' | 'rejected';
+  afterDeadline?: boolean;
+}
+
+/** Emit bounded, argument-free MCP handler evidence without changing request behavior. */
+export function logMcpRequestTrace(event: McpRequestTraceEvent): void {
+  try {
+    console.info(`[mcp-request-trace] ${JSON.stringify(event)}`);
+  } catch {
+    // Diagnostics must never change the request result.
+  }
+}
+
 /** Accept only the fixed UUID shape minted by the proxy; reject arbitrary client input. */
 export function mcpTraceIdFromExtra(extra: unknown): string | null {
   const value = headersFromExtra(extra).get(MCP_REQUEST_TRACE_HEADER)?.trim() ?? '';

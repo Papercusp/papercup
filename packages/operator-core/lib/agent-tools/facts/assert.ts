@@ -68,6 +68,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 const FACT_LIFETIME_CALL_CONSTRAINT =
   "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
@@ -996,6 +997,7 @@ export default defineTool({
     const frozenCarryVerdict = evaluateFrozenLineageCarryText({
       surface: 'fact',
       text: slotted.body,
+      target: resolveHomeGateVerdictTarget(),
     });
     if (!frozenCarryVerdict.allowed) {
       return {

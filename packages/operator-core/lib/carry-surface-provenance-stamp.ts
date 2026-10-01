@@ -32,6 +32,7 @@ import {
   type TypedSlotLintMatch,
 } from './carry-surface-typed-slots';
 import { gateClaimCarryLint, type GateClaimCarryLint } from './release/gate-claim-carry-lint';
+import { resolveHomeGateVerdictTarget } from './release/gate-verdict-target';
 import {
   suppressProvenActionClaims,
   type SuccessfulActionInvocation,
@@ -621,7 +622,7 @@ export async function carryProvenanceFields(
   const retainedProvenance = options.retainedText ? provenanceLintField(options.retainedText) : undefined;
   // P-007: silent unless a repair queue is actually frozen, so this costs one failed marker
   // read in the ordinary case and never depends on the stamp having produced anything.
-  const gateClaimLint = gateClaimCarryLint(text);
+  const gateClaimLint = gateClaimCarryLint(text, { target: resolveHomeGateVerdictTarget() });
   if (!stamp && !retainedProvenance && !gateClaimLint) return {};
   const out: CarryProvenanceFields = {};
   if (gateClaimLint) out.gateClaimLint = gateClaimLint;

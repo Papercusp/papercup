@@ -5923,7 +5923,7 @@ export async function writeFrozenCandidateRepairQueue(
   // construction: a filesystem fault must never fail a release write, and an absent marker
   // simply leaves the hook silent (today's behaviour).
   const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
-  projectFrozenRepairMarker(queue);
+  projectFrozenRepairMarker(queue, target);
   if (manifested) {
     try {
       await publishRepairManifestToGateWorkItem(sql, target, manifested);
@@ -6149,7 +6149,7 @@ export async function retireFrozenCandidateRepairQueue(
     // warn agents off editing paths for a candidate that no longer exists — a false positive
     // that teaches them to ignore the signal, which is worse than no signal.
     const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
-    projectFrozenRepairMarker(null);
+    projectFrozenRepairMarker(null, target);
     return result;
   }
   // `result.current` was read while the routine row was locked. Avoid a second liveness query
