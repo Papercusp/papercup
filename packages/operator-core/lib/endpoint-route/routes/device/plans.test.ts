@@ -7,7 +7,8 @@ const source = vi.hoisted(() => ({
   harnessExistsInWorkspace: vi.fn(),
 }));
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (definition: unknown) => definition,
   dispatchProjectedTool: vi.fn(),
   lookupByMcpName: vi.fn(),
