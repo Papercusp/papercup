@@ -2203,7 +2203,9 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   build_root="$integration_root"
-  generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
+  # Preserve an explicit CLI root, then honor the service-level override before
+  # falling back to the integration checkout's local generation store.
+  generation_root="${generation_root:-${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$integration_root/.papercusp/dependency-generations}}"
   if [ -n "$prune_only" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {

@@ -190,10 +190,14 @@ function ensureRef(
   integration: string,
   ref: string,
   env: NodeJS.ProcessEnv = {},
+  generationRoot?: string,
 ): ShellResult {
+  const args = [SCRIPT, '--integration', integration];
+  if (generationRoot) args.push('--generation-root', generationRoot);
+  args.push('--ensure-ref', ref);
   const result = spawnSync(
     'bash',
-    [SCRIPT, '--integration', integration, '--ensure-ref', ref],
+    args,
     {
       encoding: 'utf8',
       env: { ...process.env, ...env },
@@ -834,6 +838,23 @@ describe('immutable dependency generation', () => {
     expect(publishedIdentity(second.stdout)).toBe(publishedIdentity(first.stdout));
     expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
   });
+
+  it('WI-10003403: direct --ensure-ref honors the environment generation root unless a CLI root is explicit', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+    const configuredRoot = join(dirname(integration), 'configured-generations');
+    const env = { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot };
+
+    const configured = ensureRef(integration, candidate, env);
+    expect(configured.status, configured.stderr).toBe(0);
+    expect(publishedPath(configured.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(existsSync(join(integration, '.papercusp/dependency-generations'))).toBe(false);
+
+    const explicitRoot = join(dirname(integration), 'explicit-generations');
+    const explicit = ensureRef(integration, candidate, env, explicitRoot);
+    expect(explicit.status, explicit.stderr).toBe(0);
+    expect(publishedPath(explicit.stdout).startsWith(`${explicitRoot}/`)).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
     const integration = makeIntegration();
