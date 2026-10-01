@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -162,34 +162,17 @@ beforeAll(async () => {
   // The condition upsert's self-heal path reaches event_awaits through the
   // shared work-item lifecycle writer. Keep this fixture's declared migration
   // set complete for that runtime table, including later additive columns.
-  await applyMigrationsForTest(
-    db.sql,
-    [
-      '163-await-event-subscriptions.sql',
-      '175-watch-floor-coalesce-cols.sql',
-      '387-event-wake-delivery-source.sql',
-      '533-add-event-awaits-payload-filter.sql',
-      '541-predicate-watches.sql',
-      '550-event-awaits-announce-scope.sql',
-      '569-event-awaits-policy-allow-announce.sql',
-      '599-event-announcement-generation.sql',
+  // The event tables come from the shared, audited event-substrate list (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'condition-upsert.integration',
+    extra: [
       '741-work-items-condition-key-singleton.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
-      '825-verified-wait-producer-health.sql',
-      '871-lifecycle-bound-watches.sql',
-      '925-fleet-leader-watch-suppression.sql',
-      '953-event-announcement-logical-gate.sql',
       '1110-work-items-admission-flags-generated-columns.sql',
       '1135-work-items-epoch-ms-timestamp-guard.sql',
       '1194-work-items-directive-ref.sql',
-      '1216-event-await-fired-delivery-intent-marker.sql',
-      '1250-predicate-watch-evaluator-baselines.sql',
     ],
-    {
-      label: 'condition-upsert.integration',
-      runtimeTables: ['harness_shared.event_awaits'],
-    },
-  );
+  });
 }, 120_000);
 
 afterAll(async () => {

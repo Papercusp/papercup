@@ -150,6 +150,24 @@ test('PgThreadStore.getOrCreateThread tolerates two CONCURRENT calls racing to c
   expect(p2).toBeTruthy();
 });
 
+test('PgThreadStore.getPostById reads a post only from its workspace partition', async () => {
+  const writer = new PgThreadStore(opts(freshWs()));
+  const otherWorkspace = new PgThreadStore(opts(freshWs()));
+  const thread = await writer.getOrCreateThread(
+    { kind: 'issue', ref: 'EI-thread-post-scope' },
+    { thread_id: `thread-post-scope-${randomBytes(4).toString('hex')}`, created_ts: '2026-10-01T00:00:00.000Z' },
+  );
+  const post = await writer.addPost({
+    thread_id: thread.thread_id,
+    author_id: 'su-scope-test',
+    body: 'workspace-scoped evidence',
+    created_ts: '2026-10-01T00:01:00.000Z',
+  });
+
+  await expect(writer.getPostById(post.id)).resolves.toEqual(post);
+  await expect(otherWorkspace.getPostById(post.id)).resolves.toBeNull();
+});
+
 // EI-11826 regression: the event-await fan-out can read existing event-key
 // subscriptions while the candidate migrations are still pending. Migration
 // 568 permits target_kind='event', but migration 602 adds the optional

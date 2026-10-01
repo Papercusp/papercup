@@ -39,8 +39,8 @@ import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  applyEventSubstrateMigrationsForTest,
   applyMigrationForTest,
-  applyMigrationsForTest,
   createFreshPgDb,
   type FreshPgDb,
 } from '../../test/_pg-helpers';
@@ -189,40 +189,22 @@ beforeAll(async () => {
   // future migration creates or extends a table this runtime path touches and is
   // not declared here, the fixture fails loudly at setup instead of drifting back
   // into a red-since-forever state nobody attributes to the fixture.
-  await applyMigrationsForTest(
-    db.sql,
-    [
-      '163-await-event-subscriptions.sql',
-      '175-watch-floor-coalesce-cols.sql',
-      '387-event-wake-delivery-source.sql',
-      '533-add-event-awaits-payload-filter.sql',
-      // 541 creates predicate_watches, which 871 below ALTERs alongside
-      // event_awaits. 871 is what adds `bound_to` — the column the naive
-      // "just apply 163" fix died on — and the audit does not prescribe it
-      // automatically precisely because it spans two tables.
-      '541-predicate-watches.sql',
-      '550-event-awaits-announce-scope.sql',
-      '569-event-awaits-policy-allow-announce.sql',
-      '599-event-announcement-generation.sql',
+  //
+  // The event tables come from the shared event-substrate list, whose runtime
+  // tables are audited from creation (WI-10004700). work_items is NOT a runtime
+  // table here: it is deliberately built from this fixture's consolidated DDL
+  // rather than from its creating migration, so declaring it would demand a
+  // creating migration the list is never meant to carry; the audit still
+  // enforces every LATER work_items migration because the fixture builds it.
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'condition-bridge.integration',
+    extra: [
       '741-work-items-condition-key-singleton.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
-      '825-verified-wait-producer-health.sql',
-      '871-lifecycle-bound-watches.sql',
-      '925-fleet-leader-watch-suppression.sql',
-      '953-event-announcement-logical-gate.sql',
       '1110-work-items-admission-flags-generated-columns.sql',
       '1135-work-items-epoch-ms-timestamp-guard.sql',
     ],
-    {
-      label: 'condition-bridge.integration',
-      // event_awaits ONLY. work_items is deliberately built from this fixture's
-      // consolidated DDL rather than from its creating migration, so declaring it
-      // here would demand a creating migration that the list is never meant to
-      // carry; the audit still enforces every LATER work_items migration because
-      // the fixture builds that table.
-      runtimeTables: ['harness_shared.event_awaits'],
-    },
-  );
+  });
 }, 120_000);
 
 afterAll(async () => {

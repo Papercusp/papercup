@@ -1445,15 +1445,24 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     args_json: unknown;
   };
   const invocations = (await (advSession
-    ? sql`
-        SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
-        FROM harness_shared.tool_invocations
-        WHERE coord_owner_id = ${advSession.coord_owner_id}
-          AND invoked_at >= ${advSession.started_at}
-          AND invoked_at <= COALESCE(${advSession.ended_at}, 'infinity'::timestamptz)
-        ORDER BY invoked_at ASC
-        LIMIT 500
-      `
+    ? advSession.ended_at
+      ? sql`
+          SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
+          FROM harness_shared.tool_invocations
+          WHERE coord_owner_id = ${advSession.coord_owner_id}
+            AND invoked_at >= ${advSession.started_at}
+            AND invoked_at <= ${advSession.ended_at}
+          ORDER BY invoked_at ASC
+          LIMIT 500
+        `
+      : sql`
+          SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
+          FROM harness_shared.tool_invocations
+          WHERE coord_owner_id = ${advSession.coord_owner_id}
+            AND invoked_at >= ${advSession.started_at}
+          ORDER BY invoked_at ASC
+          LIMIT 500
+        `
     : sql`
         SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
         FROM harness_shared.tool_invocations

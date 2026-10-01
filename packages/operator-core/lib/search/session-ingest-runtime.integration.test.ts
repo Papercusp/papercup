@@ -8,7 +8,7 @@ const root = resolve(__dirname, '../../../..');
 const source = resolve(root, 'packages/operator-core/lib/search/session-ingest.ts');
 
 describe('current-build ingestion on a private background runtime', () => {
-  it('attributes a fixed incremental workload, preserves offsets, and removes its database and home', () => {
+  it.each([false, true])('attributes a fixed incremental workload with CPU sampling=%s and removes its database and home', (sampleCpu) => {
     const sourceHash = createHash('sha256').update(readFileSync(source)).digest('hex');
     // An optional frozen local tail exercises real mixed record sizes without
     // checking private transcripts into the repository. Only hashes and counts
@@ -26,6 +26,7 @@ describe('current-build ingestion on a private background runtime', () => {
       import { mkdir, writeFile } from 'node:fs/promises';
       import { syncBuiltinESMExports } from 'node:module';
       import { performance } from 'node:perf_hooks';
+      import { Session } from 'node:inspector/promises';
       import { createHash } from 'node:crypto';
       import { execFileSync } from 'node:child_process';
       import { join } from 'node:path';
@@ -62,6 +63,48 @@ describe('current-build ingestion on a private background runtime', () => {
       // These are awaited-operation spans, including queueing and scheduling;
       // neither their wall time nor eventLoopUtilization measures kernel IO time.
       const observerOrder = [false, true, true, false];
+      const sampleCpu = e.TEST_INGEST_SAMPLE_CPU === '1';
+      // Keep filesystem observation fixed for the profiler comparison. Its
+      // off/on/on/off series must not confound two observers changing together.
+      if (sampleCpu) observerOrder.fill(true);
+      const profilerOrder = sampleCpu ? [false, true, true, false] : observerOrder.map(() => false);
+      const profiler = sampleCpu ? new Session() : null;
+      if (profiler) {
+        profiler.connect();
+        await profiler.post('Profiler.enable');
+        await profiler.post('Profiler.setSamplingInterval', { interval: 10_000 });
+      }
+      function summarizeProfile(profile) {
+        const nodes = new Map(profile.nodes.map(node => [node.id, node]));
+        const parents = new Map();
+        for (const node of profile.nodes) for (const child of node.children ?? []) parents.set(child, node.id);
+        assert.equal(profile.samples.length, profile.timeDeltas.length);
+        const sampled = new Map();
+        let sourceSamples = 0;
+        for (let i = 0; i < profile.samples.length; i++) {
+          const leaf = profile.samples[i];
+          let bucket = sampled.get(leaf);
+          if (!bucket) {
+            const stack = [];
+            for (let id = leaf; id != null; id = parents.get(id)) {
+              assert.ok(nodes.has(id), 'every sampled stack node must exist');
+              const frame = nodes.get(id).callFrame;
+              stack.push({ function: frame.functionName, url: frame.url, line: frame.lineNumber });
+            }
+            bucket = { samples: 0, precedingIntervalUs: 0, stack };
+            sampled.set(leaf, bucket);
+          }
+          bucket.samples++;
+          // timeDeltas describe intervals preceding samples; neither their sum
+          // nor ancestry allocation is exact per-function or per-phase CPU.
+          bucket.precedingIntervalUs += profile.timeDeltas[i];
+          if (bucket.stack.some(frame => frame.url.endsWith('/search/session-ingest.ts'))) sourceSamples++;
+        }
+        assert.ok(profile.samples.length > 0 && sourceSamples > 0, 'require actual sampled ingestion stacks');
+        return { profileHash: createHash('sha256').update(JSON.stringify(profile)).digest('hex'),
+          intervalUs: 10_000, startTimeUs: profile.startTime, endTimeUs: profile.endTime,
+          totalSamples: profile.samples.length, sourceSamples, sampledStacks: [...sampled.values()] };
+      }
       const managedRoot = join(e.PAPERCUSP_HOME, 'su-codex-homes');
       const originals = { readdir: fsPromises.readdir, stat: fsPromises.stat };
       let fsObservation = null;
@@ -91,14 +134,30 @@ describe('current-build ingestion on a private background runtime', () => {
         }
         syncBuiltinESMExports();
       }
-      async function measuredSweep(observe) {
+      async function measuredSweep(observe, profileCpu) {
         observeDiscovery(observe);
+        let profilerActive = false;
+        const startBegan = performance.now();
+        if (profileCpu) {
+          await profiler.post('Profiler.start');
+          profilerActive = true;
+        }
+        const profilerStartMs = profileCpu ? performance.now() - startBegan : 0;
         const cpuStarted = process.cpuUsage();
         const loopStarted = performance.eventLoopUtilization();
         try {
           const stats = await runSessionIngestOnce();
           const loop = performance.eventLoopUtilization(loopStarted);
           const cpu = process.cpuUsage(cpuStarted);
+          let cpuProfile = null;
+          let profilerStopMs = 0;
+          if (profileCpu) {
+            const stopBegan = performance.now();
+            const { profile } = await profiler.post('Profiler.stop');
+            profilerActive = false;
+            profilerStopMs = performance.now() - stopBegan;
+            cpuProfile = summarizeProfile(profile);
+          }
           const observation = fsObservation;
           if (observation) {
             assert.equal(observation.pending, 0);
@@ -113,10 +172,16 @@ describe('current-build ingestion on a private background runtime', () => {
               'non-overlapping discovery spans must fit their production phase');
           }
           return { ...stats, discoveryFs: observation,
+            cpuProfile, profilerStartMs, profilerStopMs,
             mainLoopMs: { active: loop.active, idle: loop.idle },
             // Includes all process threads; never label this per-phase JS CPU.
             processCpuMs: { user: cpu.user / 1000, system: cpu.system / 1000 } };
-        } finally { observeDiscovery(false); }
+        } finally {
+          observeDiscovery(false);
+          // Also stop sampling on an assertion/error path; the private runtime
+          // exits after this unit and the inspector is disconnected below.
+          if (profilerActive) await profiler.post('Profiler.stop');
+        }
       }
       let frozenTail = null;
       let corpusHash = null;
@@ -205,7 +270,7 @@ describe('current-build ingestion on a private background runtime', () => {
             'counts_backfill_offset = $2::bigint, parts_backfill_offset = $2::bigint',
             'WHERE file_path IN (SELECT jsonb_array_elements_text($1::jsonb))',
           ].join(' '), [changedPaths, prefixBytes]);
-          const stats = await measuredSweep(observerOrder[repeat]);
+          const stats = await measuredSweep(observerOrder[repeat], profilerOrder[repeat]);
           assert.equal(stats.errors, 0, JSON.stringify(stats));
           assert.equal(stats.filesScanned, 4800);
           assert.equal(stats.filesIngested, workload.changedFiles);
@@ -225,7 +290,7 @@ describe('current-build ingestion on a private background runtime', () => {
           const byPath = new Map(offsets.map(r => [r.file_path, Number(r.byte_offset)]));
           for (let i = 0; i < workload.changedFiles; i++) assert.equal(byPath.get(files[i]), sizes[i]);
           passes.push(stats);
-          const noTail = await measuredSweep(observerOrder[repeat]);
+          const noTail = await measuredSweep(observerOrder[repeat], profilerOrder[repeat]);
           assert.equal(noTail.errors, 0);
           assert.equal(noTail.filesScanned, files.length);
           assert.equal(noTail.filesIngested, 0);
@@ -252,11 +317,11 @@ describe('current-build ingestion on a private background runtime', () => {
         assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
         console.log('INGEST_RUNTIME_PROBE ' + JSON.stringify({
           sourceHash, head: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
-          workload, workloadHash, observerOrder, baseline, passes, matchedUnchanged, unchanged,
+          workload, workloadHash, observerOrder, profilerOrder, baseline, passes, matchedUnchanged, unchanged,
           child: { pid: process.pid, node: process.version, backgroundWorkers: e.PAPERCUSP_BACKGROUND_WORKERS },
           privateRows: rows[0].n, privateParts: parts[0].n, home: e.HOME, dbPort: dbUrl.port,
         }));
-      } finally { await sql.end(); }
+      } finally { profiler?.disconnect(); await sql.end(); }
     `;
     // Reject malformed probe JavaScript before the costly migrated runtime boot.
     const syntax = spawnSync(process.execPath, ['--input-type=module', '--check'], {
@@ -269,7 +334,7 @@ describe('current-build ingestion on a private background runtime', () => {
     ], {
       cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 2 * 1024 * 1024,
       env: { ...process.env, TEST_INGEST_SOURCE_HASH: sourceHash, TEST_LIVE_HOME: process.env.HOME ?? '',
-        TEST_INGEST_CORPUS_HASH: corpusHash },
+        TEST_INGEST_CORPUS_HASH: corpusHash, TEST_INGEST_SAMPLE_CPU: sampleCpu ? '1' : '0' },
     });
     const dataDir = result.stdout.match(/datadir ([^)]+)\)/)?.[1];
     expect(dataDir).toBeTruthy();

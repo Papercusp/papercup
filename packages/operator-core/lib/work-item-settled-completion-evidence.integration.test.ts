@@ -24,24 +24,11 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
-const readMigration = (file: string) =>
-  readFileSync(resolve(SQL_DIR, file), 'utf8')
-    .split('\n')
-    .filter(
-      (line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line),
-    )
-    .join('\n');
 
 const COORD_EVENT_LOG_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.coord_event_log (
@@ -86,18 +73,12 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
-  // Terminal work-item events synchronously retire lifecycle-bound awaits. Apply the same
-  // production schema chain as work-items.integration.test.ts so this focused writer guard
-  // reaches its behavior assertion instead of failing on a missing event relation.
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '541-predicate-watches.sql',
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // Terminal work-item events synchronously retire lifecycle-bound awaits. The shared,
+  // audited event-substrate list keeps those tables complete, so this focused writer guard
+  // reaches its behavior assertion instead of failing on a missing event column (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'work-item-settled-completion-evidence.integration.test.ts',
+  });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
 }, 90_000);

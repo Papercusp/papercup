@@ -215,6 +215,27 @@ describe('allowPlannedPaths — a pre-start BAR may name its future test file', 
     expect(v.failures.find((f) => f.criterionKey === 'shape')?.reason).toContain('not a test file');
   });
 
+  it('refuses a Playwright spec (WI-10004678): its *.spec.ts name passes the shape rule, but Vitest cannot run it', () => {
+    // The module name is split so THIS file's own source never contains the import the
+    // detector matches: other cases here validate this very file against the real repo.
+    const pw = ['@playwright', 'test'].join('/');
+    mkdirSync(join(root, 'apps', 'e2e'), { recursive: true });
+    writeFileSync(join(root, 'apps', 'e2e', 'billing.spec.ts'), `import { test, expect } from '${pw}';\ntest('x', () => {});\n`);
+    writeFileSync(join(root, 'apps', 'e2e', 'cjs.spec.js'), `const { test } = require("${pw}");\n`);
+    // Control: a Vitest spec with the same suffix still validates.
+    writeFileSync(join(root, 'apps', 'e2e', 'vitest.spec.ts'), "import { it } from 'vitest';\nit('x', () => {});\n");
+    const v = validateCriterionCheckPaths(
+      [
+        { key: 'pw', check: testsCheck(['apps/e2e/billing.spec.ts']) },
+        { key: 'pwcjs', check: testsCheck(['apps/e2e/cjs.spec.js']) },
+        { key: 'vitest', check: testsCheck(['apps/e2e/vitest.spec.ts']) },
+      ],
+      { root },
+    );
+    expect(v.failures.map((f) => f.criterionKey).sort()).toEqual(['pw', 'pwcjs']);
+    expect(v.failures.find((f) => f.criterionKey === 'pw')?.reason).toContain('Playwright spec');
+  });
+
   it('a Cargo manifest the plan will create is planned; an existing path is not re-labelled', () => {
     const v = validateCriterionCheckPaths(
       [{ key: 'crate', check: { kind: 'cargo', manifestPath: 'apps/new-crate/Cargo.toml', sourceFiles: ['apps/tui/src/app.rs'] } }],

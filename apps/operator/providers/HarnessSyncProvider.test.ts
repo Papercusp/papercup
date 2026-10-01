@@ -99,6 +99,17 @@ describe('resolveMaxInFlightFetches', () => {
 });
 
 describe('assertIpcCarriesFetch (D-047)', () => {
+  it('dispatches the startup IPC assertion without waiting for another module load', async () => {
+    invoke.mockResolvedValue({ client: 'connected' });
+    const assertion = assertIpcCarriesFetch();
+    try {
+      expect(invoke).toHaveBeenCalledWith('endpoint_ipc_status');
+      expect(syncMetrics.snapshot().ipcAssertion![0].invokeStartedAtMs).not.toBeNull();
+    } finally {
+      await assertion;
+    }
+  });
+
   it('records a slow pending startup assertion before allowing the IPC cap', async () => {
     let resolve!: (value: { client: string }) => void;
     invoke.mockReturnValue(new Promise((done) => { resolve = done; }));

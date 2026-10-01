@@ -161,11 +161,41 @@ describe('getSessionDetail related_chats', () => {
       ?.reduce((query, part, index) => `${query}${index ? `$${index}` : ''}${part}`, '')
       .replace(/\s+/g, ' ')
       .trim();
-    expect(invocationSql).toContain("invoked_at <= COALESCE($3, 'infinity'::timestamptz)");
+    expect(invocationSql).not.toContain('invoked_at <=');
     expect(invocationCall?.slice(1)).toEqual([
       'su-owner-1',
       '2026-09-13T00:00:00.000Z',
-      null,
+    ]);
+  });
+
+  it('bounds an ended interactive session with its typed end timestamp', async () => {
+    dbMocks.orgSql.mockReset();
+    dbMocks.orgSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          session_id: 'codex-session-ended',
+          omp_thread_id: null,
+          coord_owner_id: 'su-owner-1',
+          started_at: '2026-09-13T00:00:00.000Z',
+          ended_at: '2026-09-13T01:00:00.000Z',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await getSessionDetail('codex-session-ended');
+
+    const invocationCall = dbMocks.orgSql.mock.calls[2];
+    const invocationTemplate = invocationCall?.[0] as TemplateStringsArray | undefined;
+    const invocationSql = invocationTemplate
+      ?.reduce((query, part, index) => `${query}${index ? `$${index}` : ''}${part}`, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(invocationSql).toContain('invoked_at <= $3');
+    expect(invocationCall?.slice(1)).toEqual([
+      'su-owner-1',
+      '2026-09-13T00:00:00.000Z',
+      '2026-09-13T01:00:00.000Z',
     ]);
   });
 

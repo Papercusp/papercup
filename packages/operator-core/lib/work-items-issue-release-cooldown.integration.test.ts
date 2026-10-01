@@ -31,10 +31,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
@@ -55,13 +52,6 @@ const wi = await import('./work-items');
 const H = 'papercup';
 const WS = 'default';
 let db: FreshPgDb;
-
-const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
-const readMigration = (name: string) =>
-  readFileSync(resolve(SQL_DIR, name), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/\bGRANT\b/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
 
 async function seedIssue(id: string, opts: { createdTs?: number; takenBy?: string | null } = {}) {
   await db.sql`
@@ -97,18 +87,11 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   // releaseWorkItem retires lifecycle-bound awaits and emits a claim-released
-  // event. Keep this focused fixture on the same minimal coordination schema as
-  // the release/lifecycle integration suites so missing event tables cannot hide
-  // the cooldown assertions.
-  for (const migration of [
-    '163-await-event-subscriptions.sql',
-    '175-watch-floor-coalesce-cols.sql',
-    '541-predicate-watches.sql',
-    '632-event-key-fire-latch.sql',
-    '871-lifecycle-bound-watches.sql',
-  ]) {
-    await db.sql.unsafe(readMigration(migration)).simple();
-  }
+  // event. The shared, audited event-substrate list keeps those tables complete,
+  // so a missing event column cannot hide the cooldown assertions (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'work-items-issue-release-cooldown.integration.test.ts',
+  });
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
 afterAll(async () => {

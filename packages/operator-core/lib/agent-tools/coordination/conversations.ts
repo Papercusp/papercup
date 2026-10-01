@@ -489,6 +489,12 @@ export function getConversation(id: string, identity?: AgentIdentity): Promise<C
   return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
 }
 
+/** Read a shared thread post in the caller's workspace partition. */
+export function getThreadPost(postId: number, identity?: AgentIdentity) {
+  const run = () => deps.threads.getPostById(postId);
+  return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
+}
+
 /**
  * A consult's LIFECYCLE state, which lives in `harness_shared.consult_state` —
  * a different table from the conversation row itself.

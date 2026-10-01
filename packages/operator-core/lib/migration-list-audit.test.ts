@@ -8,9 +8,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   auditMigrationList,
+  EVENT_SUBSTRATE_MIGRATIONS,
+  EVENT_SUBSTRATE_RUNTIME_TABLES,
   formatStaleMigrationList,
+  mergeMigrationLists,
   migrationNumber,
   objectsTouchedBySql,
+  readAllMigrations,
   stripSqlComments,
   tablesCreatedBySql,
   tablesTouchedBySql,
@@ -267,10 +271,72 @@ describe('auditMigrationList', () => {
     ]);
   });
 
+  // WI-10004700. The runtime check used to measure from the per-table watermark,
+  // so declaring a NEWER migration on a runtime table hid every older gap beneath
+  // it. Observed: a fixture with event_awaits' 1216 but not 953 passed the audit,
+  // and every key-fire latch write then failed on the missing superseded_at.
+  it('catches a runtime-table gap BELOW a newer declared migration on that table', () => {
+    const migrations: [string, string][] = [
+      ['163-await-event-subscriptions.sql', 'CREATE TABLE harness_shared.event_awaits (event_key text);'],
+      ['953-event-announcement-logical-gate.sql', 'ALTER TABLE harness_shared.event_awaits ADD COLUMN superseded_at timestamptz;'],
+      ['1216-fired-delivery-intent.sql', 'ALTER TABLE harness_shared.event_awaits ADD COLUMN fired_delivery_intent_at timestamptz;'],
+    ];
+    const runtime = ['harness_shared.event_awaits'];
+
+    const gapped = auditMigrationList(
+      ['163-await-event-subscriptions.sql', '1216-fired-delivery-intent.sql'],
+      migrations,
+      runtime,
+    );
+    expect(gapped.runtimeStale).toEqual([
+      { table: 'harness_shared.event_awaits', migration: '953-event-announcement-logical-gate.sql' },
+    ]);
+    // The plain `missing` check keeps its watermark semantics: below the newest
+    // declared migration, an omission on a NON-runtime table is a deliberate choice.
+    expect(auditMigrationList(
+      ['163-await-event-subscriptions.sql', '1216-fired-delivery-intent.sql'],
+      migrations,
+    ).missing).toEqual([]);
+
+    const complete = auditMigrationList(migrations.map(([file]) => file), migrations, runtime);
+    expect(complete.runtimeStale).toEqual([]);
+    expect(complete.runtimeMissing).toEqual([]);
+  });
+
   it('reports missing files in numeric order', () => {
     const audit = auditMigrationList(['444-agent-facts.sql'], MIGRATIONS);
     const nums = audit.missing.map((m) => migrationNumber(m.file));
     expect(nums).toEqual([...nums].sort((a, b) => (a ?? 0) - (b ?? 0)));
+  });
+});
+
+// WI-10004700. The shared event-substrate list is audited against the REAL sql/
+// directory here, so a new migration on an event table fails this fast unit test
+// by name instead of silently breaking emits in every fixture that uses the list.
+describe('EVENT_SUBSTRATE_MIGRATIONS', () => {
+  it('covers every structural migration on the event runtime tables since creation', () => {
+    const all = readAllMigrations();
+    const files = new Set(all.map(([file]) => file));
+    for (const file of EVENT_SUBSTRATE_MIGRATIONS) expect(files.has(file), file).toBe(true);
+
+    const audit = auditMigrationList([...EVENT_SUBSTRATE_MIGRATIONS], all, EVENT_SUBSTRATE_RUNTIME_TABLES);
+    expect(formatStaleMigrationList(audit, 'EVENT_SUBSTRATE_MIGRATIONS')).not.toContain('  ! ');
+    expect(audit.runtimeMissing).toEqual([]);
+    expect(audit.runtimeStale).toEqual([]);
+    expect(audit.missing).toEqual([]);
+  });
+
+  it('is already in apply order', () => {
+    expect(mergeMigrationLists(EVENT_SUBSTRATE_MIGRATIONS)).toEqual([...EVENT_SUBSTRATE_MIGRATIONS]);
+  });
+});
+
+describe('mergeMigrationLists', () => {
+  it('merges extras into numeric order and drops duplicates', () => {
+    expect(mergeMigrationLists(
+      ['163-a.sql', '1216-b.sql'],
+      ['123-c.sql', '602-d.sql', '163-a.sql'],
+    )).toEqual(['123-c.sql', '163-a.sql', '602-d.sql', '1216-b.sql']);
   });
 });
 

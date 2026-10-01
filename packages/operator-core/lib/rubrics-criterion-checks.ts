@@ -34,7 +34,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -202,6 +202,34 @@ function describeUnroutableTestPath(file: string): string | null {
   );
 }
 
+const PLAYWRIGHT_IMPORT_RE = /(?:from\s*|require\(\s*|import\(\s*)['"]@playwright\/test['"]/;
+
+/**
+ * WI-10004678 — a Playwright spec has the right FILENAME (`*.spec.ts`), so the shape rule
+ * above admits it, but scorecards:emit runs check files through the Vitest router, and
+ * Vitest cannot run a Playwright spec: its `test` comes from `@playwright/test`, which
+ * throws outside the Playwright runner. The criterion would then be permanently
+ * ungradeable, the same failure WI-369566 moved to authoring time. Detected by the import
+ * itself, which is what makes it a Playwright spec wherever it lives.
+ *
+ * @returns a teaching reason when the file imports `@playwright/test`, else null.
+ */
+function describePlaywrightSpec(absPath: string): string | null {
+  let head: string;
+  try {
+    head = readFileSync(absPath, 'utf8').slice(0, 64 * 1024);
+  } catch {
+    return null; // unreadable: the resolve check above owns that answer
+  }
+  if (!PLAYWRIGHT_IMPORT_RE.test(head)) return null;
+  return (
+    'is a Playwright spec (imports @playwright/test) — scorecards:emit runs kind:"tests" ' +
+    'files through the Vitest router, which cannot run it, so this criterion could never be ' +
+    'graded. Cite the Playwright run as recorded evidence in the criterion method (leave the ' +
+    'check off), or name a Vitest *.test.ts file that covers the same behaviour'
+  );
+}
+
 /**
  * PROPOSE-time validation: every kind:'tests' check file and every kind:'cargo' manifest
  * or source attribution must resolve against the live tree. Tests files must also be
@@ -344,6 +372,11 @@ export function validateCriterionCheckPaths(
       const unroutable = describeUnroutableTestPath(f);
       if (unroutable) {
         failures.push({ criterionKey: c.key, path: f, reason: unroutable });
+        continue;
+      }
+      const playwright = resolves ? describePlaywrightSpec(candidate) : null;
+      if (playwright) {
+        failures.push({ criterionKey: c.key, path: f, reason: playwright });
         continue;
       }
       if (plannable) {

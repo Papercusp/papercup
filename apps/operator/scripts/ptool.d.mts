@@ -413,6 +413,21 @@ export function isInvalidSuperuserBearerFailure(error: any): boolean;
 /** Retry connection setup with the next bearer only after a typed invalid-bearer rejection. */
 export function connectWithTokenFallback(connectOnce: any, tokenCandidates: any): Promise<any>;
 /**
+ * Retry read-only tools/list discovery with the next implicit token file when
+ * the selected operator rejects its bearer. Some operators authenticate the
+ * first request after MCP initialize, so connect-time fallback alone is not
+ * enough. Keep this before any tools/call.
+ */
+export function listToolsWithTokenFallback(initialClient: any, tokenPaths: any, initialTokenPath: any, reconnectWithTokenPath: any, listTools: any): Promise<{
+    client: any;
+    tools: any;
+    error: null;
+} | {
+    client: any;
+    tools: null;
+    error: unknown;
+}>;
+/**
  * Add bounded positive jitter AFTER a retry minimum, without overrunning the
  * caller's remaining total deadline. Returns null when even the minimum cannot
  * be honored before that deadline, so the caller surfaces the last typed error

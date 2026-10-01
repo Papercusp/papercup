@@ -1901,6 +1901,61 @@ export async function connectWithTokenFallback(connectOnce, tokenCandidates) {
   throw lastError;
 }
 
+const ptoolTokenPathByClient = new WeakMap();
+
+/**
+ * Retry read-only tools/list discovery with the next implicit token file when
+ * the selected operator rejects its bearer. Some operators authenticate the
+ * first request after MCP initialize, so connect-time fallback alone is not
+ * enough. Keep this before any tools/call.
+ */
+export async function listToolsWithTokenFallback(
+  initialClient,
+  tokenPaths,
+  initialTokenPath,
+  reconnectWithTokenPath,
+  listTools,
+) {
+  let client = initialClient;
+  let tokenIndex = Array.isArray(tokenPaths) ? tokenPaths.indexOf(initialTokenPath) : -1;
+  let lastError;
+
+  while (true) {
+    try {
+      return { client, tools: await listTools(client), error: null };
+    } catch (error) {
+      lastError = error;
+      if (
+        !isInvalidSuperuserBearerFailure(error) ||
+        tokenIndex < 0 ||
+        tokenIndex + 1 >= tokenPaths.length
+      ) {
+        return { client, tools: null, error };
+      }
+
+      let nextClient;
+      let nextIndex = tokenIndex + 1;
+      while (nextIndex < tokenPaths.length) {
+        try {
+          nextClient = await reconnectWithTokenPath(tokenPaths[nextIndex]);
+          break;
+        } catch (connectError) {
+          lastError = connectError;
+          if (!isInvalidSuperuserBearerFailure(connectError)) {
+            return { client, tools: null, error: connectError };
+          }
+          nextIndex += 1;
+        }
+      }
+      if (!nextClient) return { client, tools: null, error: lastError };
+
+      await closeClientQuietly(client);
+      client = nextClient;
+      tokenIndex = nextIndex;
+    }
+  }
+}
+
 /**
  * The MCP proxy includes a forwarding result in its JSON error body when it
  * refuses an upstream request before forwarding it. Keep this check tolerant
@@ -2776,9 +2831,10 @@ export async function importSdkModuleWithInstallAwareness(
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
 async function connect(operatorUrl, { workspace, harness, tokenFile, transport: requestedTransport } = {}, { timeoutMs } = {}) {
   const tokenPaths = resolveTokenPaths({ tokenFile });
-  const tokens = tokenPaths
-    .map((path) => readToken({ tokenFile: path }))
-    .filter((token) => token.length > 0);
+  const tokenCandidates = tokenPaths
+    .map((path) => ({ path, token: readToken({ tokenFile: path }) }))
+    .filter((candidate) => candidate.token.length > 0);
+  const tokens = tokenCandidates.map((candidate) => candidate.token);
   if (tokens.length === 0) {
     throw new Error(`no superuser token at ${tokenPaths.join(' or ')} — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
@@ -2790,7 +2846,8 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
   });
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) throw new Error('Invalid MCP transport; expected http, uds or auto');
-  return connectWithTokenFallback(async (token) => {
+  let selectedTokenPath = tokenCandidates[0].path;
+  const client = await connectWithTokenFallback(async (token) => {
     if (mode !== 'http') {
       // Package-built plain JS: do not import a TS-only workspace package from
       // the installed Node CLI or copy its wire implementation into this file.
@@ -2799,6 +2856,7 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
         url: url.href, headers: { Authorization: `Bearer ${token}` }, mode,
         name: 'ptool', timeoutMs, home: process.env.PAPERCUSP_OPERATOR_HOME,
       });
+      selectedTokenPath = tokenCandidates.find((candidate) => candidate.token === token)?.path ?? selectedTokenPath;
       return connected.client;
     }
     const { Client } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/client/index.js');
@@ -2813,8 +2871,11 @@ async function connect(operatorUrl, { workspace, harness, tokenFile, transport: 
       await closeClientQuietly(client);
       throw new Error(formatOperatorConnectFailure(operatorUrl, e), { cause: e });
     }
+    selectedTokenPath = tokenCandidates.find((candidate) => candidate.token === token)?.path ?? selectedTokenPath;
     return client;
   }, tokens);
+  ptoolTokenPathByClient.set(client, selectedTokenPath);
+  return client;
 }
 
 /**
@@ -3180,16 +3241,19 @@ async function main() {
     toolName: args.tool,
   });
   const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
+  const tokenPaths = resolveTokenPaths({ tokenFile: args.tokenFile });
+  let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
   const rediscover = !args.tool && Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
-  const connectOperator = async ({ preferredIndex = 0 } = {}) => {
+  const connectOperator = async ({ preferredIndex = 0, tokenFile = activeTokenFile } = {}) => {
     const candidates = preferredIndex > 0
       ? [
         ...operatorCandidates.slice(preferredIndex),
         ...operatorCandidates.slice(0, preferredIndex),
       ]
       : operatorCandidates;
-    const connected = await connectWithOperatorCandidates(connect, candidates, scope, {
+    const connectionScope = tokenFile ? { ...scope, tokenFile } : scope;
+    const connected = await connectWithOperatorCandidates(connect, candidates, connectionScope, {
       ...retryOptions,
       rediscover,
       primaryAttemptOptions: candidates.length > 1 ? { maxAttempts: 1 } : {},
@@ -3210,6 +3274,7 @@ async function main() {
       connected.operatorUrl,
       ...operatorCandidates.filter((candidate) => candidate !== connected.operatorUrl),
     ];
+    activeTokenFile = ptoolTokenPathByClient.get(connected.client) ?? tokenFile ?? activeTokenFile;
     return connected.client;
   };
   let client = await connectOperator();
@@ -3226,7 +3291,16 @@ async function main() {
 
     let tools;
     try {
-      tools = await listAllTools(client, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) });
+      const discovery = await listToolsWithTokenFallback(
+        client,
+        tokenPaths,
+        ptoolTokenPathByClient.get(client),
+        (tokenFile) => connectOperator({ tokenFile }),
+        (targetClient) => listAllTools(targetClient, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) }),
+      );
+      client = discovery.client;
+      if (discovery.error) throw discovery.error;
+      tools = discovery.tools;
     } catch (error) {
       if (canDispatchWithoutCatalog(args.tool, inputKind)) {
         const callArgs = mergeDispatchProjection(inputArgs, projection);

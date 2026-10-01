@@ -42,6 +42,7 @@ import {
   syncMetrics,
 } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
 import { isTauri } from '@/app/_components/SetupWizard/tauri-detect';
@@ -137,7 +138,9 @@ async function readIpcClient(): Promise<string | null> {
   const finish = syncMetrics.beginIpcAssertion();
   let client: string | null = null;
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    // P-007: the cold native trace spent 3614ms loading this tiny module and
+    // only 17ms invoking status. Keep it available with the provider so the
+    // positive IPC proof can dispatch before other startup work fills the cap.
     finish.mark('importReady');
     finish.mark('invokeStarted');
     let status: { client?: string };

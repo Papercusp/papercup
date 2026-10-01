@@ -18,6 +18,7 @@ import type { ConversationRow } from '../conversations-store';
 vi.mock('../conversations', async (importActual) => ({
   getConversation: vi.fn(),
   getConsultStates: vi.fn(),
+  getThreadPost: vi.fn(),
   // The REAL pure summarizer: its output is what the tool is asked to surface.
   summarizeConsultDispatch: (await importActual<typeof import('../conversations')>()).summarizeConsultDispatch,
 }));
@@ -25,11 +26,13 @@ vi.mock('../conversations', async (importActual) => ({
 import {
   getConversation,
   getConsultStates,
+  getThreadPost,
   summarizeConsultDispatch,
   type ConsultDispatchSummary,
 } from '../conversations';
 const getM = vi.mocked(getConversation);
 const consultM = vi.mocked(getConsultStates);
+const postM = vi.mocked(getThreadPost);
 const tool = (await import('./conversations-get')).default;
 
 type Out = { data: any };
@@ -81,6 +84,7 @@ const detail = (id: string, over: Partial<ConversationRow> = {}): ConversationDe
 
 beforeEach(() => {
   vi.clearAllMocks();
+  postM.mockResolvedValue(null);
   // Default: no consult rows — the ordinary (non-consult) conversation path.
   // No `as never`: getConsultStates' real return type is
   // Promise<Map<string, ConsultLifecycleState>>, which an empty Map satisfies
@@ -94,6 +98,33 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     const b = await body({ id: 'c1' });
     expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
+  });
+
+  it('resolves a thread-post citation in the caller workspace without treating it as a conversation id', async () => {
+    const post = {
+      id: 1152470,
+      thread_id: 'work-item-thread-WI-7',
+      author_id: 'su-reviewer',
+      body: 'approve the reviewed change',
+      created_ts: '2026-10-01T08:00:00.000Z',
+    };
+    postM.mockResolvedValue(post);
+    const result = ((await tool.handler(
+      { id: 'thread-post:1152470' } as never,
+      { isSuperuser: true, uiClientId: 'client-1', workspaceId: 'ws-x' } as never,
+    )) as Out).data;
+
+    expect(postM).toHaveBeenCalledWith(1152470, expect.objectContaining({ workspaceId: 'ws-x' }));
+    expect(getM).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({ ok: true, id: 'thread-post:1152470', post });
+    expect(result.results[0]).not.toHaveProperty('conversation');
+  });
+
+  it('rejects malformed thread-post citations without falling through to conversation prefix lookup', async () => {
+    const result = await body({ id: 'thread-post:01' });
+    expect(result.results[0]).toMatchObject({ ok: false, id: 'thread-post:01', error: 'not_found' });
+    expect(postM).not.toHaveBeenCalled();
+    expect(getM).not.toHaveBeenCalled();
   });
 
   it('projects the conversation fields, topics, count, and trims post fields', async () => {

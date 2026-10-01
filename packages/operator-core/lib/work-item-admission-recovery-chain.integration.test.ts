@@ -9,7 +9,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Sql } from 'postgres';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolve } from 'node:path';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  createFreshPgDb, applyMigrationForTest, applyEventSubstrateMigrationsForTest,
+  type FreshPgDb,
+} from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL,
   COORD_REF_HOLDERS_DDL,
@@ -31,7 +34,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('./workspace-registry', async (orig) => ({
   ...await orig<typeof import('./workspace-registry')>(), activeWorkspaceId: () => 'default',
 }));
-vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { workflowID: undefined } }));
+vi.mock('@dbos-inc/dbos-sdk', () => ({
+  DBOS: { workflowID: undefined, registerWorkflow: (implementation: unknown) => implementation },
+}));
 vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
 vi.mock('./agent-tools/coordination/presence', async (orig) => ({
   ...await orig<typeof import('./agent-tools/coordination/presence')>(),
@@ -145,6 +150,9 @@ beforeAll(async () => {
       role text, started_at timestamptz DEFAULT now(), ended_at timestamptz, ended_by text
     );
   `);
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'work-item-admission-recovery-chain.integration',
+  });
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
 }, 60_000);

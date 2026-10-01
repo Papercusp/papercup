@@ -216,7 +216,7 @@ async function writeRequest(
 async function lockRequest(sql: Sql, scope: AdmissionRecoveryScope): Promise<boolean> {
   const [row] = await sql<{ locked: boolean }[]>`
     SELECT pg_try_advisory_xact_lock(hashtextextended(
-      ${JSON.stringify(['admission-recovery', scope.workspaceId, scope.harnessSlug, scope.workItemId])}, 0)) AS locked`;
+      ${admissionRecoveryLockKey(scope)}, 0)) AS locked`;
   return row?.locked === true;
 }
 

@@ -24,8 +24,10 @@ import {
   ceilingForMeasurement,
   checkComposition,
   compareProseBudget,
+  launchProseHeadroom,
   ratchetCeilings,
   renderProseBudgetReport,
+  surfaceDeltasFromFileDeltas,
   type ProseBudgetBaseline,
   type ProseSurfaceMeasurement,
 } from './launch-prose-budget';
@@ -256,5 +258,107 @@ describe('renderProseBudgetReport', () => {
     expect(out).toContain('OVER  playbook');
     expect(out).toContain('ok    guide');
     expect(out).toContain('total measured');
+  });
+});
+
+// ── Edit-time headroom signal (WI-10004682) ─────────────────────────────────────────────
+//
+// The guide re-breached its ceilings three times in three days because the only signal was
+// the gate. These cases pin the BOTH-WAYS contract the work-item names: an edit within the
+// ceiling prints `launch-prose headroom: N B`; an edit past it reports OVER and is reported
+// in `over` (which is what the `project-doc-parts --write` gate refuses on).
+describe('launchProseHeadroom — the edit-time signal', () => {
+  const projBaseline: ProseBudgetBaseline = {
+    schemaVersion: 1,
+    generatedAt: '2026-10-01T00:00:00.000Z',
+    ceilings: [
+      { surface: 'project-guide:claude-md', ceilingBytes: 116_600, floorBytes: 50_000, note: 'guide' },
+      { surface: 'project-guide:agents-md', ceilingBytes: 116_600, floorBytes: 50_000, note: 'agents' },
+      { surface: 'su-playbook-render:engineer:full:claude', ceilingBytes: 249_800, floorBytes: 120_000, note: 'eng' },
+      { surface: 'su-playbook-render:power:full:claude', ceilingBytes: 250_000, floorBytes: 120_000, note: 'pow' },
+      // Not projection-governed: a peer's unrelated prompt growth must not block a projection.
+      { surface: 'su-base:engineer', ceilingBytes: 10_000, floorBytes: 1_000, note: 'prompt' },
+    ],
+  };
+  // Headroom: guide 102, agents 600, engineer 54, power 400, su-base 5000 (not governed).
+  const measured = () =>
+    compareProseBudget(
+      [
+        m('project-guide:claude-md', 116_498),
+        m('project-guide:agents-md', 116_000),
+        m('su-playbook-render:engineer:full:claude', 249_746),
+        m('su-playbook-render:power:full:claude', 249_600),
+        m('su-base:engineer', 5_000),
+      ],
+      projBaseline,
+    );
+
+  it('WITHIN: prints `launch-prose headroom: N B` per governed surface and reports nothing over', () => {
+    const h = launchProseHeadroom(measured());
+    expect(h.over).toEqual([]);
+    expect(h.rows.map((r) => r.surface).sort()).toEqual([
+      'project-guide:agents-md',
+      'project-guide:claude-md',
+      'su-playbook-render:engineer:full:claude',
+      'su-playbook-render:power:full:claude',
+    ]);
+    expect(h.lines.join('\n')).toContain('launch-prose headroom: 54 B  su-playbook-render:engineer:full:claude');
+    expect(h.lines.join('\n')).toContain('launch-prose headroom: 102 B  project-guide:claude-md');
+    expect(h.lines.join('\n')).not.toContain('OVER');
+  });
+
+  it('OVER: a CLAUDE.md delta bigger than the TIGHTEST embedding surface is reported OVER even though the guide itself still fits', () => {
+    // +60 B fits the guide (102 B headroom) but breaches the engineer playbook (54 B) — the
+    // exact shape that checking the guide file alone would miss.
+    const deltas = surfaceDeltasFromFileDeltas({ 'CLAUDE.md': 60 });
+    const h = launchProseHeadroom(measured(), { surfaceDeltaBytes: deltas });
+    expect(h.over.map((r) => r.surface)).toEqual(['su-playbook-render:engineer:full:claude']);
+    expect(h.over[0]?.headroomBytes).toBe(-6);
+    const text = h.lines.join('\n');
+    expect(text).toContain('launch-prose headroom: -6 B  su-playbook-render:engineer:full:claude');
+    expect(text).toContain('← OVER by 6 B');
+    // The guide and the power render still fit, and say so.
+    expect(h.rows.find((r) => r.surface === 'project-guide:claude-md')?.over).toBe(false);
+  });
+
+  it('a delta fans out ONLY to the surfaces its file feeds: an AGENTS.md delta never moves the Claude renders', () => {
+    const deltas = surfaceDeltasFromFileDeltas({ 'AGENTS.md': 700 });
+    expect(Object.keys(deltas)).toEqual(['project-guide:agents-md']);
+    const h = launchProseHeadroom(measured(), { surfaceDeltaBytes: deltas });
+    expect(h.over.map((r) => r.surface)).toEqual(['project-guide:agents-md']);
+    expect(h.rows.find((r) => r.surface === 'su-playbook-render:engineer:full:claude')?.headroomBytes).toBe(54);
+  });
+
+  it('a surface that is over BEFORE any delta is still reported over (no delta needed)', () => {
+    const r = compareProseBudget(
+      [m('project-guide:claude-md', 116_601), m('project-guide:agents-md', 100_000)],
+      projBaseline,
+    );
+    expect(launchProseHeadroom(r).over.map((x) => x.surface)).toEqual(['project-guide:claude-md']);
+  });
+
+  it('an unmeasured / unbaselined surface yields NO row — it never invents a headroom number', () => {
+    const r = compareProseBudget([m('project-guide:claude-md', 116_000)], projBaseline);
+    // Four other ceilings have no measurement; the only row is the one that was measured.
+    expect(launchProseHeadroom(r).rows.map((x) => x.surface)).toEqual(['project-guide:claude-md']);
+  });
+
+  it('a non-governed surface is excluded by default: a peer prompt breach cannot block a projection write', () => {
+    const r = compareProseBudget(
+      [
+        m('project-guide:claude-md', 100_000),
+        m('su-base:engineer', 99_999),
+      ],
+      projBaseline,
+    );
+    expect(r.ok).toBe(false); // the lint gate still fails on su-base ...
+    expect(launchProseHeadroom(r).over).toEqual([]); // ... but the projection view does not.
+    expect(launchProseHeadroom(r, { surfaces: new Set(['su-base:engineer']) }).over).toHaveLength(1);
+  });
+
+  it('control: the naive guide-file-only check (what a bytes<=ceiling on CLAUDE.md alone does) passes the input the real signal flags', () => {
+    const brokenGuideOnlyCheck = (delta: number): boolean => 116_498 + delta <= 116_600;
+    expect(brokenGuideOnlyCheck(60)).toBe(true);
+    expect(launchProseHeadroom(measured(), { surfaceDeltaBytes: surfaceDeltasFromFileDeltas({ 'CLAUDE.md': 60 }) }).over).not.toHaveLength(0);
   });
 });
