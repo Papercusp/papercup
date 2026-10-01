@@ -141,12 +141,17 @@ beforeAll(async () => {
   // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
   // this process's first createFreshTestDb call.
   if (dedicatedPgMode === 'native') {
-    dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
-    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+    // P013_PG_BASE_DIR moves the cluster's data dir (default: os.tmpdir()), e.g. onto tmpfs
+    // to separate host-IO noise from the measured code path (WI-10004402). Echoed when set.
+    const baseDir = process.env.P013_PG_BASE_DIR || undefined;
+    const nativePg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS, baseDir });
+    dedicatedPg = nativePg;
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = nativePg.getConnectionUri();
     stamp('dedicated-native-pg-started');
     if (Object.keys(DEDICATED_PG_EXTRA_SETTINGS).length > 0) {
       console.error(`P013_SETUP diagnostic-pg-settings=${JSON.stringify(DEDICATED_PG_EXTRA_SETTINGS)} (not a graded configuration)`);
     }
+    if (baseDir) console.error(`P013_SETUP pg-base-dir=${baseDir} dataDir=${nativePg.dataDir}`);
   } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarted
     // this cluster mid-run under load (2026-09-27 warm smoke, see the helper).
