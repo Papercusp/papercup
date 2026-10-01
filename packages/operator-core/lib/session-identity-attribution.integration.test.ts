@@ -10,7 +10,7 @@ import {
   failControlTransitionActivation,
   markControlTransitionPrepared,
 } from './agent-tools/coordination/control-anchor';
-import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
+import { recordCurrentSessionIdentityActivation, recordSessionIdentityReanchor } from './session-identity-attribution';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
@@ -201,6 +201,81 @@ describe('P-009 activation span views', () => {
       source: 'control' as const, revision, sql: db.sql };
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('inserted');
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('replayed');
+  });
+
+  // WI-10004917: applied events were written only on control transitions, so a CLI
+  // relaunch that changed no control state left the new native id with no span, and
+  // the owner-by-native-session oracle (the goal-brief R-3 probe's exact query) read
+  // that incarnation's turns as foreign.
+  it('opens a span for each re-anchored native incarnation, idempotently (WI-10004917)', async () => {
+    const owner = 'su-reanchor-span';
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'reanchor-state' };
+    const activation = {
+      schemaVersion: 1, attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      desired: revision, prepared: revision, applied: revision, status: 'applied',
+    };
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (95,${WS},${owner},'reanchor-old','2026-09-12T00:00:00Z',NULL)`;
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,native_session_id,control_generation,control_state)
+      VALUES (${owner},${WS},NULL,40,${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+    await expect(recordCurrentSessionIdentityActivation({
+      workspaceId: WS, ownerId: owner, generation: 40, phase: 'applied', source: 'control',
+      revision, recordedAt: '2026-09-12T00:01:00Z', sql: db.sql,
+    })).resolves.toBe('inserted');
+    const ownersOf = (native: string) => db.sql`
+      SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
+       WHERE native_session_id = ${native}`;
+    const reanchor = (native: string) => recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: owner, nativeSessionId: native, sql: db.sql });
+
+    // Positive control: the oracle cannot resolve the relaunched incarnation yet.
+    expect(await ownersOf('reanchor-new')).toEqual([]);
+    expect(await ownersOf('reanchor-old')).toEqual([{ owner_id: owner, workspace_id: WS }]);
+
+    await db.sql`UPDATE harness_shared.adv_sessions SET session_id='reanchor-new' WHERE id=95`;
+    await expect(reanchor('reanchor-new')).resolves.toBe('inserted');
+    // A retried or duplicated report converges on the one span.
+    await expect(reanchor('reanchor-new')).resolves.toBe('replayed');
+    expect(await ownersOf('reanchor-new')).toEqual([{ owner_id: owner, workspace_id: WS }]);
+
+    const spans = () => db.sql<Array<{ native_session_id: string; source: string; open: boolean; stack_refs: string[] }>>`
+      SELECT native_session_id, source, active_until IS NULL AS open, stack_refs
+        FROM harness_shared.session_identity_activation_spans
+       WHERE owner_id = ${owner} ORDER BY active_from, activation_event_id`;
+    // The predecessor's span closes at the re-anchor; the new one carries the same stack.
+    expect(await spans()).toEqual([
+      { native_session_id: 'reanchor-old', source: 'control', open: false, stack_refs: ['domain:researcher'] },
+      { native_session_id: 'reanchor-new', source: 'reanchor', open: true, stack_refs: ['domain:researcher'] },
+    ]);
+
+    // A later return to an earlier id (a --resume rung) opens a fresh span, not a replay.
+    await expect(reanchor('reanchor-old')).resolves.toBe('inserted');
+    expect((await spans()).map((row) => [row.native_session_id, row.open])).toEqual([
+      ['reanchor-old', false], ['reanchor-new', false], ['reanchor-old', true],
+    ]);
+  });
+
+  it('records nothing for a re-anchor while no revision is applied (WI-10004917)', async () => {
+    const owner = 'su-reanchor-unapplied';
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'unapplied-state' };
+    const activation = {
+      schemaVersion: 1, attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      desired: revision, prepared: null, applied: null, status: 'desired',
+    };
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,native_session_id,control_generation,control_state)
+      VALUES (${owner},${WS},NULL,3,${JSON.stringify({ activation })}::text::jsonb)`;
+    await expect(recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: owner, nativeSessionId: 'unapplied-native', sql: db.sql,
+    })).resolves.toBe('missing');
+    await expect(recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: 'su-no-brief', nativeSessionId: 'unapplied-native', sql: db.sql,
+    })).resolves.toBe('missing');
+    const [{ n }] = await db.sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.session_identity_activation_events
+       WHERE owner_id IN (${owner}, 'su-no-brief')`;
+    expect(n).toBe(0);
   });
 
   // WI-10004494 gap 3 (migration 1295). Metering used to re-resolve a span's layers from the launch
