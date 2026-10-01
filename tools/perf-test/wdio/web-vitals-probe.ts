@@ -289,6 +289,10 @@ export function buildWebVitalsBundle(): string {
 export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
   fcpMs: number | null; lcpMs: number | null; attribution?: WebVitalsReading['attribution'];
 }) {
+  // Capture before IPC yields: timeOrigin aligns this document's performance
+  // clock with the external native diagnostic's epoch-ms read intervals.
+  const documentClock = { timeOriginMs: Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : null,
+    capturedAtMs: performance.now() };
   const metrics = (window as unknown as {
     __sync_metrics__?: {
       snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
@@ -355,7 +359,7 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     .map((entry) => ({ path: new URL(entry.name, location.href).pathname, startMs: Math.round(entry.startTime),
       durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
   return {
-    readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    documentClock, readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
     syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
       planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,
