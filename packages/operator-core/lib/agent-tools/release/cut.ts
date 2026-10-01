@@ -79,6 +79,7 @@ import {
   CUT_UNIT,
   PLATFORMS,
   cutUnitFor,
+  cutUnitForTask,
   cutLogFor,
   cutDoneFor,
   legsForPlatform,
@@ -95,6 +96,7 @@ import {
   readSourceGitlinks,
   type BeginCutOperationResult,
 } from '../../release-cut-operation';
+import { markSpawned } from '../../task-manager/store';
 
 const cutRootArg = z
   .string()
@@ -357,11 +359,8 @@ function cutRuntimeEnv(
  * Open the managed-release operation for a cut about to fire (P-001), so the cut runs
  * with a phase journal and is discoverable after an operator restart.
  *
- * DEGRADES rather than blocks. If the ledger write fails, the cut still fires — exactly
- * as every manual cut did before — because failing a release over a bookkeeping write
- * would be worse than cutting unmanaged. What it must NOT do is degrade SILENTLY: the
- * reason is returned and surfaced on the tool response, since "this cut is unmanaged and
- * cannot be resumed" is precisely the fact an operator needs at the 35-minute mark.
+ * Fails closed. A cut without a registered task service cannot be safely tracked or
+ * stopped through the task manager, so callers must refuse before launching it.
  */
 async function openCutOperation(input: {
   version: string;
@@ -1150,7 +1149,9 @@ export default defineTool({
     // ── status: read-only poll (whole-cut, or one leg with `platform`) ──
     if (args.op === 'status') {
       const status = readCutStatus({ platform: args.platform });
-      const unit = cutUnitFor(args.platform);
+      const unit = status.operation?.taskId
+        ? cutUnitForTask(status.operation.taskId)
+        : cutUnitFor(args.platform);
       const legNote = args.platform ? `leg '${args.platform}' (unit ${unit})` : `unit ${unit}`;
       const note =
         status.state === 'running'
@@ -1166,7 +1167,7 @@ export default defineTool({
                       : 'It ran UNMANAGED (no operation id on the started marker), so there are no phase receipts to resume from — a re-run rebuilds from the start.'
                   } Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
               : `No cut in flight and no recent result for ${legNote} on this host.`;
-      return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, note });
+      return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, unit, note });
     }
 
     // ── handoff: collect the LOCAL deliverable ──
@@ -1395,6 +1396,9 @@ export default defineTool({
         desktopRoot: selected.desktopRoot,
         workItemId: cutWorkItem,
       });
+      if (!managed.operation) {
+        return json({ ok: false, op: 'run-leg', refused: true, reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut' });
+      }
       const launch = await launchDetachedCut({
         version: args.version,
         channel,
@@ -1405,6 +1409,11 @@ export default defineTool({
         root: selected.desktopRoot,
         orchestratorRoot,
       });
+      if (launch.launched) {
+        // buildCutArgv uses Type=notify and sends READY only after the task marker and
+        // stable cut-slot flock are in place, so the reserved task service is live here.
+        await markSpawned(managed.operation.taskId, { confined: true, scopeUnit: launch.unit });
+      }
       await recordCutAudit('run-leg', actor, {
         platform,
         version: args.version,
@@ -1575,6 +1584,9 @@ export default defineTool({
       desktopRoot: selected.desktopRoot,
       workItemId: cutWorkItem,
     });
+    if (!managed.operation) {
+      return json({ ok: false, op: 'run', refused: true, reason: managed.reason ?? 'task ledger unavailable — refusing an unmanaged cut' });
+    }
     const launch = await launchDetachedCut({
       version: args.version,
       channel,
@@ -1584,6 +1596,11 @@ export default defineTool({
       root: selected.desktopRoot,
       orchestratorRoot,
     });
+    if (launch.launched) {
+      // buildCutArgv uses Type=notify and sends READY only after the task marker and
+      // stable cut-slot flock are in place, so the reserved task service is live here.
+      await markSpawned(managed.operation.taskId, { confined: true, scopeUnit: launch.unit });
+    }
     await recordCutAudit('run', actor, {
       version: args.version,
       channel,

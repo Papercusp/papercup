@@ -31,6 +31,10 @@ vi.mock('../../release-cut-operation', async (importOriginal) => ({
   beginCutOperation: vi.fn(),
   readSourceGitlinks: vi.fn(() => ({})),
 }));
+vi.mock('../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/store')>()),
+  markSpawned: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: auditSqlM } }) as never,
@@ -57,9 +61,11 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
+import { markSpawned } from '../../task-manager/store';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { execFileSync } from 'node:child_process';
 const beginOpM = vi.mocked(beginCutOperation);
+const markSpawnedM = vi.mocked(markSpawned);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
@@ -111,7 +117,7 @@ beforeEach(() => {
   preflightM.mockReturnValue(mkPreflight());
   launchM.mockResolvedValue({
     launched: true,
-    unit: 'papercup-release-cut',
+    unit: 'pc-task1.service',
     version: '0.0.8',
     channel: 'alpha',
     legs: {},
@@ -132,8 +138,9 @@ beforeEach(() => {
       gitlinks: {},
     },
     seed: {} as never,
-    unit: 'papercup-release-cut',
+    unit: 'pc-task1.service',
   });
+  markSpawnedM.mockResolvedValue(undefined);
 });
 
 describe('release:cut — constrained root selector', () => {
@@ -931,6 +938,8 @@ describe('release:cut — run (operator-gated write)', () => {
       root: expect.any(String),
       orchestratorRoot: '/tmp/release-cut-fixture/papercusp-desktop',
     }));
+    expect(markSpawnedM).toHaveBeenCalledWith('task1', { confined: true, scopeUnit: 'pc-task1.service' });
+    expect(launchM.mock.invocationCallOrder[0]).toBeLessThan(markSpawnedM.mock.invocationCallOrder[0]!);
   });
 
   it('opens the whole-cut operation with a null platform identity', async () => {
@@ -950,12 +959,12 @@ describe('release:cut — status (per-leg, WI-4233)', () => {
       logTail: 'mac build ok',
       logPath: '/tmp/papercup-release-cut-mac.log',
       donePath: '/tmp/papercup-release-cut-mac.done',
-      operation: { operationId: 'op-mac', taskId: 'task-mac', startedAtSec: 1_700_000_000 },
+      operation: { operationId: 'op-mac', taskId: 'taskmac1234', startedAtSec: 1_700_000_000 },
     });
     const b = body(await tool.handler({ op: 'status', platform: 'mac' } as never, { role: 'cup' } as never));
     expect(statusM).toHaveBeenCalledWith({ platform: 'mac' });
-    expect(b).toMatchObject({ ok: true, op: 'status', platform: 'mac', state: 'done' });
-    expect(b.note).toMatch(/leg 'mac'/);
+    expect(b).toMatchObject({ ok: true, op: 'status', platform: 'mac', state: 'done', unit: 'pc-taskmac1234.service' });
+    expect(b.note).toContain("leg 'mac' (unit pc-taskmac1234.service)");
   });
 });
 
@@ -1051,7 +1060,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
   it('confirm:true fires the detached LOCAL leg with only that platform\'s flag set', async () => {
     launchM.mockResolvedValue({
       launched: true,
-      unit: 'papercup-release-cut-mac',
+      unit: 'pc-task1.service',
       version: '0.0.8',
       channel: 'alpha',
       legs: { mac: true },
@@ -1062,7 +1071,8 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       taskId: 'task1',
     });
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
-    expect(b).toMatchObject({ ok: true, op: 'run-leg', platform: 'mac', launched: true, localOnly: true, unit: 'papercup-release-cut-mac' });
+    expect(b).toMatchObject({ ok: true, op: 'run-leg', platform: 'mac', launched: true, localOnly: true, unit: 'pc-task1.service' });
+    expect(markSpawnedM).toHaveBeenCalledWith('task1', { confined: true, scopeUnit: 'pc-task1.service' });
     expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
       version: '0.0.8',
       channel: 'alpha',
@@ -1093,7 +1103,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
   it('a linux leg needs no WITH_* flag at all', async () => {
     launchM.mockResolvedValue({
       launched: true,
-      unit: 'papercup-release-cut-linux',
+      unit: 'pc-task1.service',
       version: '0.0.8',
       channel: 'alpha',
       legs: {},
@@ -1126,32 +1136,13 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     );
   });
 
-  it('still fires when the journal is unavailable, but says the cut is UNMANAGED', async () => {
-    // Degrade, do not block: failing a release over a bookkeeping write would be worse
-    // than cutting unmanaged. Silence would be worse still — "this cannot be resumed" is
-    // exactly what an operator needs before the 35-minute mark.
+  it('refuses to launch when the task ledger cannot reserve a killable service unit', async () => {
     beginOpM.mockRejectedValue(new Error('ledger down'));
-    launchM.mockResolvedValue({
-      launched: true,
-      unit: 'papercup-release-cut-mac',
-      version: '0.0.8',
-      channel: 'alpha',
-      legs: { mac: true },
-      argv: [],
-      logPath: '/tmp/papercup-release-cut-mac.log',
-      donePath: '/tmp/papercup-release-cut-mac.done',
-      operationId: null,
-      taskId: null,
-    });
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
-    expect(b).toMatchObject({ ok: true, launched: true, managed: false, operationId: null });
-    expect(b.managedSkipReason).toMatch(/UNMANAGED/);
-    expect(b.managedSkipReason).toMatch(/ledger down/);
-    // The launch must still have gone out WITHOUT a half-set identity pair.
-    expect(launchM).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runtime: expect.objectContaining({ releaseTaskId: undefined, releaseOperationId: undefined }),
-      }),
-    );
+    expect(b).toMatchObject({ ok: false, op: 'run-leg', refused: true });
+    expect(b.reason).toMatch(/UNMANAGED/);
+    expect(b.reason).toMatch(/ledger down/);
+    expect(launchM).not.toHaveBeenCalled();
+    expect(markSpawnedM).not.toHaveBeenCalled();
   });
 });
