@@ -23,6 +23,10 @@ const SPECS: Array<[string, unknown]> = [
     ...receipt(C, 'top'), workspaceId: WORKSPACE, harnessSlug: 'h',
     identityHistory: [receipt(B, 'b'), receipt(A, 'a'), receipt(C, 'older-c')],
   }],
+  ['the state revision must match too, not just the specification revision', {
+    ...receipt(C, 'top'),
+    identityHistory: [{ ...receipt(A, 'same-spec-other-state'), stateRevision: 'state-other' }, receipt(A, 'a')],
+  }],
   ['duplicates keep stored order', {
     ...receipt(C, 'top'), identityHistory: [receipt(A, 'first'), receipt(B, 'b'), receipt(A, 'second')],
   }],
@@ -47,7 +51,7 @@ describe('selectNarrowedLaunchSpecBody (real PostgreSQL, WI-10004801)', () => {
     for (const [name, spec] of SPECS) {
       const [row] = await db.adminSql<Array<{ id: number }>>`
         INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
-        VALUES (${WORKSPACE}, 'interactive', ${OWNER}, ${JSON.stringify(spec)}::jsonb)
+        VALUES (${WORKSPACE}, 'console', ${OWNER}, ${JSON.stringify(spec)}::text::jsonb)
         RETURNING id`;
       ids.set(name, Number(row.id));
     }

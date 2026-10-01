@@ -89,6 +89,9 @@ export async function selectNarrowedLaunchSpecBody(
   },
 ): Promise<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>> {
   const want = input.revisions === null ? null : revisionsParam(input.revisions);
+  // `::text::jsonb`, never a bare `::jsonb`: a parameter the server types as
+  // jsonb is JSON-encoded AGAIN by postgres.js, turning the array into a jsonb
+  // string that matches no receipt (the WI-10002717 seeding trap).
   return sql<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>>`
     SELECT CASE
              WHEN w.want IS NULL THEN s.launch_spec
@@ -108,7 +111,7 @@ export async function selectNarrowedLaunchSpecBody(
            END AS launch_spec,
            s.xmin::text AS launch_spec_xmin
       FROM harness_shared.adv_sessions s
-     CROSS JOIN (SELECT ${want}::jsonb AS want) AS w
+     CROSS JOIN (SELECT ${want}::text::jsonb AS want) AS w
      WHERE s.id = ${input.advSessionId} AND s.coord_owner_id = ${input.ownerId} AND s.workspace_id = ${input.workspaceId}
      LIMIT 1
   `;
