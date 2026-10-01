@@ -286,6 +286,11 @@ describe('attention bulk-run store (real PG)', () => {
       targetRef: null,
       missingInformation: null,
       decidedAt: '2026-10-01T10:00:00.000Z',
+      // readIntakeDecision normalizes every stored decision to the full P-006 (D-014) shape,
+      // so a round-trip carries these keys even when the writer omitted them.
+      workKind: null,
+      acceptance: null,
+      sourceRevision: null,
       ...extra,
     });
     const reported = await reportOutcomes({
@@ -301,7 +306,7 @@ describe('attention bulk-run store (real PG)', () => {
           responsibility: 'engineering',
           confidenceLevel: 'high',
           rationale: 'because promote',
-          intakeDecision: decision('promote', { owner: 'engineering' }) as never,
+          intakeDecision: decision('promote', { owner: 'engineering', workKind: 'fix', sourceRevision: 'rev-7' }) as never,
         },
         {
           itemId: 'improvement:intake-2',
@@ -320,7 +325,7 @@ describe('attention bulk-run store (real PG)', () => {
 
     const rows = await getRunItems(run.runId);
     const byId = new Map(rows.map((row) => [row.itemId, row]));
-    expect(byId.get('improvement:intake-1')?.intakeDecision).toEqual(decision('promote', { owner: 'engineering' }));
+    expect(byId.get('improvement:intake-1')?.intakeDecision).toEqual(decision('promote', { owner: 'engineering', workKind: 'fix', sourceRevision: 'rev-7' }));
     expect(byId.get('improvement:intake-2')?.intakeDecision).toMatchObject({ disposition: 'merge', targetRef: 'WI-9' });
     // R-19: the unreached row stays pending with no decision.
     expect(byId.get('improvement:intake-3')).toMatchObject({ outcome: 'pending', intakeDecision: null });
