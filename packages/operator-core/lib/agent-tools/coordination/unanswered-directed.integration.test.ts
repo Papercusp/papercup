@@ -422,138 +422,37 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
       const insertedRows = await fx.admin<{
         workspace_id: string;
         msg_id: string;
-        database_name: string;
-        database_user: string;
-        session_user: string;
-        backend_pid: number;
-        server_addr: string | null;
-        server_port: number | null;
+        body_type: string;
+        body_from: string | null;
+        has_expect_effect: boolean;
       }[]>`
         INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id, origin)
-        VALUES ('messages', ${body.msg_id}, ${JSON.stringify(body)}::jsonb, ${new Date(sentAtMs)}, ${EXPLICIT_SCOPE_WORKSPACE}, 'local')
+        VALUES ('messages', ${body.msg_id}, ${fx.admin.json(body)}, ${new Date(sentAtMs)}, ${EXPLICIT_SCOPE_WORKSPACE}, 'local')
         RETURNING workspace_id, msg_id,
-                  current_database() AS database_name,
-                  current_user AS database_user,
-                  session_user AS session_user,
-                  pg_backend_pid() AS backend_pid,
-                  inet_server_addr()::text AS server_addr,
-                  inet_server_port() AS server_port
+                  jsonb_typeof(body) AS body_type,
+                  body->>'from' AS body_from,
+                  body ? 'expectEffect' AS has_expect_effect
       `;
+      expect(insertedRows).toEqual([expect.objectContaining({
+        workspace_id: EXPLICIT_SCOPE_WORKSPACE,
+        msg_id: body.msg_id,
+        body_type: 'object',
+        body_from: LEADER.ownerId,
+        has_expect_effect: Object.hasOwn(body, 'expectEffect'),
+      })]);
       seededMessages.push(...insertedRows.map(({ workspace_id, msg_id }) => ({ workspace_id, msg_id })));
-
-      const expectedIds = bodies.slice(0, seededMessages.length).map((seeded) => seeded.msg_id);
-      const observed = await fx.admin<{
-        database_name: string;
-        database_user: string;
-        session_user: string;
-        backend_pid: number;
-        server_addr: string | null;
-        server_port: number | null;
-        workspace_id: string | null;
-        msg_id: string | null;
-        surface: string | null;
-        body: unknown;
-        body_from: string | null;
-        has_expect_effect: boolean | null;
-        origin: string | null;
-        harness_slug: string | null;
-      }[]>`
-        WITH connection AS (
-          SELECT current_database() AS database_name,
-                 current_user AS database_user,
-                 session_user AS session_user,
-                 pg_backend_pid() AS backend_pid,
-                 inet_server_addr()::text AS server_addr,
-                 inet_server_port() AS server_port
-        ), rows AS (
-          SELECT workspace_id, msg_id, surface, body, body->>'from' AS body_from,
-                 body ? 'expectEffect' AS has_expect_effect, origin, harness_slug
-            FROM harness_shared.coord_event_log
-           WHERE msg_id = ANY(${expectedIds}::text[])
-        )
-        SELECT connection.database_name, connection.database_user, connection.session_user,
-               connection.backend_pid, connection.server_addr, connection.server_port,
-               rows.workspace_id, rows.msg_id, rows.surface, rows.body, rows.body_from,
-               rows.has_expect_effect, rows.origin, rows.harness_slug
-          FROM connection
-          LEFT JOIN rows ON TRUE
-         ORDER BY rows.msg_id
-      `;
-      const visibleRows = observed.filter((row) => row.msg_id !== null);
-      const expectedVisibleIds = expectedIds.slice().sort();
-      const visibleIds = visibleRows.map((row) => row.msg_id).sort();
-      const insertContext = insertedRows[0];
-      const readContext = observed[0];
-      if (
-        insertedRows.length !== 1 ||
-        insertContext?.workspace_id !== EXPLICIT_SCOPE_WORKSPACE ||
-        visibleRows.some((row) =>
-          row.workspace_id !== EXPLICIT_SCOPE_WORKSPACE ||
-          row.surface !== 'messages' ||
-          row.body_from !== LEADER.ownerId
-        ) ||
-        JSON.stringify(visibleIds) !== JSON.stringify(expectedVisibleIds) ||
-        insertContext?.database_name !== readContext?.database_name ||
-        insertContext?.database_user !== readContext?.database_user ||
-        insertContext?.session_user !== readContext?.session_user
-      ) {
-        throw new Error(`explicit-scope seed visibility mismatch: ${JSON.stringify({
-          inserted: insertedRows,
-          inputBody: body,
-          expectedWorkspace: EXPLICIT_SCOPE_WORKSPACE,
-          expectedIds: expectedVisibleIds,
-          readContext,
-          visibleRows,
-        })}`);
-      }
     }
     expect(seededMessages.map((row) => row.msg_id).sort()).toEqual(bodies.map((body) => body.msg_id).sort());
-    const inserted = await fx.admin<{
-      database_name: string;
-      database_user: string;
-      session_user: string;
-      backend_pid: number;
-      server_addr: string | null;
-      server_port: number | null;
-      exact_count: number;
-      total: number;
-      effect_count: number;
-      exact_rows: unknown;
-    }[]>`
-      WITH connection AS (
-        SELECT current_database() AS database_name,
-               current_user AS database_user,
-               session_user AS session_user,
-               pg_backend_pid() AS backend_pid,
-               inet_server_addr()::text AS server_addr,
-               inet_server_port() AS server_port
-      ), exact_rows AS (
-        SELECT workspace_id, msg_id, surface, body->>'from' AS body_from,
-               body ? 'expectEffect' AS has_expect_effect, origin, harness_slug
-          FROM harness_shared.coord_event_log
-         WHERE msg_id = ANY(${bodies.map((body) => body.msg_id)}::text[])
-      ), filtered_rows AS (
-        SELECT * FROM exact_rows
-         WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE}
-           AND surface = 'messages'
-           AND body_from = ${LEADER.ownerId}
-      )
-      SELECT connection.database_name, connection.database_user, connection.session_user,
-             connection.backend_pid, connection.server_addr, connection.server_port,
-             (SELECT count(*)::int FROM exact_rows) AS exact_count,
-             (SELECT count(*)::int FROM filtered_rows) AS total,
-             (SELECT count(*) FILTER (WHERE has_expect_effect)::int FROM filtered_rows) AS effect_count,
-             COALESCE((SELECT json_agg(exact_rows ORDER BY msg_id) FROM exact_rows), '[]'::json) AS exact_rows
-        FROM connection
+    const inserted = await fx.admin`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE body ? 'expectEffect')::int AS effect_count
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${EXPLICIT_SCOPE_WORKSPACE}
+         AND surface = 'messages'
+         AND body->>'from' = ${LEADER.ownerId}
+         AND msg_id = ANY(${bodies.map((body) => body.msg_id)}::text[])
     `;
-    if (inserted[0]?.exact_count !== 2 || inserted[0]?.total !== 2 || inserted[0]?.effect_count !== 1) {
-      throw new Error(`explicit-scope final seed audit mismatch: ${JSON.stringify({
-        finalAudit: inserted[0],
-        expectedWorkspace: EXPLICIT_SCOPE_WORKSPACE,
-        expectedIds: bodies.map((body) => body.msg_id).sort(),
-        perInsertIds: seededMessages.map((row) => row.msg_id).sort(),
-      })}`);
-    }
+    expect(inserted[0]).toMatchObject({ total: 2, effect_count: 1 });
 
     const actuation = await fetchDirectiveActuationSummaries([MEMBER.ownerId], {
       fromId: LEADER.ownerId,

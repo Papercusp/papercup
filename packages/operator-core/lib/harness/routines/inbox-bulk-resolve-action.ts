@@ -18,18 +18,45 @@ import {
   createRun,
   getItemIdsAwaitingOwnerReview,
   getRunningRun,
+  readConsecutiveNeverBeatRuns,
   setRunPhase,
   type BulkRunSeedItem,
 } from '../../attention/bulk-run-store';
 import {
   resolveBulkResolverLaunch,
+  type BulkResolverLaunchProfile,
   type EffectiveBulkResolverLaunch,
 } from '../../agent-config-constants';
+import { readAgentConfig } from '../../agent-config';
 import { launchResolver } from '../../endpoint-route/routes/admin/attention-bulk-resolve';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export const INBOX_BULK_RESOLVE = 'inbox-bulk-resolve';
 export const INBOX_BULK_RESOLVE_CAP = 200;
+const SCHEDULED_REQUESTER = 'system:inbox-bulk-resolve';
+
+/** After this many scheduled runs in a row whose resolver never reported... */
+export const NEVER_BEAT_BACKOFF_THRESHOLD = 3;
+/** ...launch at most once per this window until one does (WI-10004887). */
+export const NEVER_BEAT_BACKOFF_MS = 60 * 60_000;
+
+/**
+ * PURE: should this fire skip because recent scheduled launches never produced a
+ * working resolver? Repeating a launch that cannot work is not a backstop: on
+ * 2026-10-01 a walled launch account turned every 15-minute fire into a dead run.
+ * The back-off still retries once per window, so recovery needs no human.
+ */
+export function neverBeatBackoff(input: {
+  consecutive: number;
+  newestCreatedAt: string | null;
+  nowMs: number;
+}): { retryInMs: number } | null {
+  if (input.consecutive < NEVER_BEAT_BACKOFF_THRESHOLD || !input.newestCreatedAt) return null;
+  const newest = Date.parse(input.newestCreatedAt);
+  if (!Number.isFinite(newest)) return null;
+  const retryInMs = newest + NEVER_BEAT_BACKOFF_MS - input.nowMs;
+  return retryInMs > 0 ? { retryInMs } : null;
+}
 
 interface AttentionFeedItem {
   id?: unknown;
@@ -97,6 +124,16 @@ export interface InboxBulkResolveActionDeps {
    * items — 13 duplicate runs in 3h (WI-10004720 follow-up).
    */
   awaitingReview: (workspaceId: string) => Promise<ReadonlySet<string>>;
+  /**
+   * The owner's saved inbox-resolve launch profile (model / effort / account /
+   * carry) — the same settings the pane's Run button uses. The scheduled path
+   * used to ignore it, so every scheduled resolver ran the default Claude model
+   * on the system login regardless of what the owner chose (WI-10004887).
+   */
+  readLaunchProfile: () => Promise<Partial<BulkResolverLaunchProfile> | null>;
+  /** Consecutive newest scheduled runs that failed without one heartbeat. */
+  recentNeverBeat: (workspaceId: string) => Promise<{ consecutive: number; newestCreatedAt: string | null }>;
+  nowMs: () => number;
   launch: (input: {
     runId: string;
     itemCount: number;
@@ -121,6 +158,10 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
     readAttention: () => callPlansRead('attention', {}, { uiProjection: false }),
     runningRun: (workspaceId) => getRunningRun(workspaceId, 'inbox-resolve'),
     awaitingReview: (workspaceId) => getItemIdsAwaitingOwnerReview(workspaceId, 'inbox-resolve'),
+    readLaunchProfile: async () => (await readAgentConfig()).resolverProfiles?.['inbox-resolve'] ?? null,
+    recentNeverBeat: (workspaceId) =>
+      readConsecutiveNeverBeatRuns({ workspaceId, kind: 'inbox-resolve', requestedBy: SCHEDULED_REQUESTER }),
+    nowMs: () => Date.now(),
     launch: productionLaunch,
     log: (message) => console.log(`[${INBOX_BULK_RESOLVE}] ${message}`),
     ...overrides,
@@ -144,8 +185,24 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       );
       return;
     }
+    const backoff = neverBeatBackoff({ ...(await deps.recentNeverBeat(ctx.workspaceId)), nowMs: deps.nowMs() });
+    if (backoff) {
+      deps.log(
+        `skip: the last ${NEVER_BEAT_BACKOFF_THRESHOLD}+ scheduled runs failed before their resolver ever ` +
+          `reported (launch route not working); next attempt in ${Math.ceil(backoff.retryInMs / 60_000)}m`,
+      );
+      return;
+    }
     const policy = bulkAutomationSnapshot(await readStandingBulkAutomationPolicy(ctx.workspaceId));
+    const profile = await deps.readLaunchProfile();
+    // Same shape as plan-cleanup-sweep-action: the profile supplies the launch
+    // route, the standing automation policy supplies authority. An absent field
+    // inherits the launcher default, exactly as the pane's Run button does.
     const resolved = resolveBulkResolverLaunch({
+      model: profile?.model ?? null,
+      effort: profile?.effort ?? null,
+      ...(profile?.account ? { account: profile.account } : {}),
+      ...(profile?.carry ? { carry: profile.carry } : {}),
       automationMode: policy.mode,
       minConfidence: policy.minConfidence,
     });
@@ -159,7 +216,7 @@ export function makeInboxBulkResolveAction(overrides: Partial<InboxBulkResolveAc
       const run = await createRun({
         items,
         workspaceId: ctx.workspaceId,
-        requestedBy: 'system:inbox-bulk-resolve',
+        requestedBy: SCHEDULED_REQUESTER,
         automationPolicy: policy,
         launchSnapshot: resolved.effective,
       });

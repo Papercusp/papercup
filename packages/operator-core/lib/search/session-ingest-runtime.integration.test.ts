@@ -382,6 +382,18 @@ describe('current-build ingestion on a private background runtime', () => {
           assert.ok(Math.abs(total - stats.durationMs) < 1, JSON.stringify(stats));
           assert.ok(stats.phaseMs.discovery > 0 && stats.phaseMs.state > 0 && stats.phaseMs.metadata > 0);
           assert.ok(stats.phaseMs.decode > 0 && stats.phaseMs.writes > 0);
+          assert.equal(stats.metadataBackfills.length, 2);
+          const owners = stats.metadataBackfills.find(row => row.operation === 'sessionOwners');
+          assert.equal(owners.sourceKind, 'codex');
+          assert.equal(owners.requested, files.length);
+          assert.equal(owners.updated, 0, 'already-correct owners must be a measured no-op');
+          assert.equal(owners.status, 'completed');
+          for (const receipt of stats.metadataBackfills) {
+            assert.ok(Number.isFinite(receipt.startedAtMs) && receipt.startedAtMs > 0);
+            assert.ok(Number.isFinite(receipt.durationMs) && receipt.durationMs >= 0);
+            assert.deepEqual(Object.keys(receipt).sort(),
+              ['sourceKind', 'operation', 'requested', 'updated', 'startedAtMs', 'durationMs', 'status'].sort());
+          }
           const offsets = await sql.unsafe([
             'SELECT file_path, byte_offset::text FROM harness_shared.session_ingest_state',
             'WHERE file_path IN (SELECT jsonb_array_elements_text($1::jsonb))',
@@ -389,6 +401,15 @@ describe('current-build ingestion on a private background runtime', () => {
           const byPath = new Map(offsets.map(r => [r.file_path, Number(r.byte_offset)]));
           for (let i = 0; i < workload.changedFiles; i++) assert.equal(byPath.get(files[i]), sizes[i]);
           passes.push(stats);
+          // Repair must still run for unchanged bytes, and its reported count
+          // must be the real UPDATE count, not candidates or parameter count.
+          const damaged = await sql.unsafe([
+            "UPDATE harness_shared.session_turns SET owner = 'stale-owner'",
+            "WHERE source_kind = 'codex' AND session_id = $1",
+            'AND turn_idx = (SELECT min(turn_idx) FROM harness_shared.session_turns',
+            "WHERE source_kind = 'codex' AND session_id = $1)",
+          ].join(' '), [ids[0]]);
+          assert.equal(damaged.count, 1);
           const noTail = await measuredSweep(observerOrder[repeat], profilerOrder[repeat]);
           assert.equal(noTail.errors, 0);
           assert.equal(noTail.filesScanned, files.length);
@@ -397,6 +418,11 @@ describe('current-build ingestion on a private background runtime', () => {
           assert.equal(noTail.partsInserted ?? 0, 0);
           assert.equal(noTail.phaseMs.decode, 0);
           assert.equal(noTail.phaseMs.writes, 0);
+          assert.equal(noTail.metadataBackfills.find(row => row.operation === 'sessionOwners').updated, 1);
+          const repaired = await sql.unsafe(
+            "SELECT owner FROM harness_shared.session_turns WHERE source_kind = 'codex' AND session_id = $1 AND turn_idx = (SELECT min(turn_idx) FROM harness_shared.session_turns WHERE source_kind = 'codex' AND session_id = $1)",
+            [ids[0]]);
+          assert.equal(repaired[0].owner, 'synthetic-owner-000');
           matchedUnchanged.push(noTail);
         }
         const rows = await sql.unsafe("SELECT count(*)::int AS n FROM harness_shared.session_turns WHERE source_kind = 'codex'");

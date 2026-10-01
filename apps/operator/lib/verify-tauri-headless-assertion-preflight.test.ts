@@ -60,6 +60,23 @@ function runAssertion(assertionSource: string, useBashC = false) {
   return { dir, invocations, result };
 }
 
+function runAssertionPreflightOnly(assertionSource: string) {
+  const start = src.indexOf('validate_assertion_command_preflight() {');
+  const end = src.indexOf('\n\nvalidate_assertion_command_preflight || exit $?', start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+
+  return spawnSync('bash', ['-c', [
+    src.slice(start, end),
+    'ASSERTION_MODE=1',
+    'ASSERTION_ARGS=(bash -c "$VERIFY_TEST_ASSERTION_SOURCE")',
+    'validate_assertion_command_preflight',
+  ].join('\n')], {
+    env: { ...process.env, VERIFY_TEST_ASSERTION_SOURCE: assertionSource },
+    encoding: 'utf8',
+  });
+}
+
 describe('EI-21974634479405756 — assertion command preflight', () => {
   it('runs before workdir/resource allocation and checks shell syntax', () => {
     const preflight = src.indexOf('validate_assertion_command_preflight || exit $?');
@@ -109,6 +126,34 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('rejects an unqualified bridge probe before starting the verifier', () => {
+    const { dir, invocations, result } = runAssertion('tauri-agent-tools probe', true);
+
+    try {
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('must pin --pid to "$VERIFY_TAURI_PID"');
+      expect(readFileSync(invocations, 'utf8')).toBe('');
+      expect(
+        readdirSync(dir).filter((entry) => entry.startsWith('verify-tauri-headless.')),
+      ).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not accept a caller-supplied PID that could select a different bridge', () => {
+    const result = runAssertionPreflightOnly('tauri-agent-tools probe --pid "$OTHER_PID"');
+    expect(result.status, result.stderr).toBe(2);
+    expect(result.stderr).toContain('must pin --pid to "$VERIFY_TAURI_PID"');
+  });
+
+  it('accepts the verifier-owned PID as a negative control', () => {
+    const result = runAssertionPreflightOnly(
+      'tauri-agent-tools probe --pid "$VERIFY_TAURI_PID"',
+    );
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it('rejects invalid shell syntax before any verifier dependency is executed', () => {

@@ -7,15 +7,30 @@ const store = vi.hoisted(() => ({
   getRunningRun: vi.fn(async (): Promise<{ runId: string; phase: string } | null> => null),
   getActiveRun: vi.fn(async () => ({ runId: 'bulk-review-since-aug', phase: 'review' })),
   getItemIdsAwaitingOwnerReview: vi.fn(async (): Promise<Set<string>> => new Set()),
+  createRun: vi.fn(async () => ({ runId: 'bulk-new' })),
+  setRunPhase: vi.fn(async () => null),
 }));
 vi.mock('../../attention/bulk-run-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../attention/bulk-run-store')>()),
   getRunningRun: store.getRunningRun,
   getActiveRun: store.getActiveRun,
   getItemIdsAwaitingOwnerReview: store.getItemIdsAwaitingOwnerReview,
+  createRun: store.createRun,
+  setRunPhase: store.setRunPhase,
+}));
+vi.mock('../../attention/automation-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../attention/automation-policy')>()),
+  readStandingBulkAutomationPolicy: async () => ({ level: 'L0', minConfidence: 'high' }),
 }));
 
-import { makeInboxBulkResolveAction, buildInboxBulkResolveSeedItems } from './inbox-bulk-resolve-action';
+import {
+  makeInboxBulkResolveAction,
+  buildInboxBulkResolveSeedItems,
+  neverBeatBackoff,
+  NEVER_BEAT_BACKOFF_MS,
+  type InboxBulkResolveActionDeps,
+} from './inbox-bulk-resolve-action';
+import { countConsecutiveNeverBeat } from '../../attention/bulk-run-store';
 
 const ctx = { installSlug: 'papercusp', workspaceId: 'ws-1', triggerConfig: {}, payloadTemplate: null };
 
@@ -122,5 +137,119 @@ describe('inbox bulk resolver durable action', () => {
     expect(log).toHaveBeenCalledWith(
       'skip: no unreviewed action-bearing attention items (2 already await owner review)',
     );
+  });
+});
+
+// WI-10004887: on 2026-10-01 every scheduled run launched the default Claude
+// model on the system login (launch_snapshot model:null, backend:'claude') while
+// the owner's saved inbox-resolve profile said gpt-6.1-sol/xhigh. The system
+// login was at its session limit, so four runs in a row died before their first
+// heartbeat, one every 15 minutes.
+describe('scheduled launch route (WI-10004887)', () => {
+  const NOW = Date.parse('2026-10-01T12:30:00Z');
+  const feed = async () => ({ groups: [{ items: [{ id: 'a', actions: [{ id: 'ack' }] }] }] });
+  const launchSpy = () =>
+    vi.fn(async (_input: Parameters<InboxBulkResolveActionDeps['launch']>[0]) => ({ ok: true }));
+
+  it("launches with the owner's saved inbox-resolve profile, like the pane's Run button", async () => {
+    const launch = launchSpy();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: feed,
+      runningRun: async () => null,
+      awaitingReview: async () => new Set(),
+      readLaunchProfile: async () => ({ model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default', carry: 'warm' }),
+      recentNeverBeat: async () => ({ consecutive: 0, newestCreatedAt: null }),
+      nowMs: () => NOW,
+      launch,
+      log: vi.fn(),
+    });
+    await action(ctx);
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch.mock.calls[0]![0].launch).toMatchObject({
+      model: 'gpt-6.1-sol',
+      effort: 'xhigh',
+      account: 'default',
+      backend: 'codex',
+    });
+    // Authority still comes from the standing policy, never the profile.
+    expect(launch.mock.calls[0]![0].launch).toMatchObject({ automationMode: 'review-all', minConfidence: 'high' });
+  });
+
+  it('falls back to the launcher default when no profile is saved', async () => {
+    const launch = launchSpy();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: feed,
+      runningRun: async () => null,
+      awaitingReview: async () => new Set(),
+      readLaunchProfile: async () => null,
+      recentNeverBeat: async () => ({ consecutive: 0, newestCreatedAt: null }),
+      nowMs: () => NOW,
+      launch,
+      log: vi.fn(),
+    });
+    await action(ctx);
+    expect(launch.mock.calls[0]![0].launch).toMatchObject({ model: null, account: 'default' });
+  });
+
+  it('backs off after consecutive never-heartbeated scheduled runs, and says when it retries', async () => {
+    const launch = launchSpy();
+    const log = vi.fn();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: feed,
+      runningRun: async () => null,
+      awaitingReview: async () => new Set(),
+      readLaunchProfile: async () => null,
+      recentNeverBeat: async () => ({ consecutive: 4, newestCreatedAt: '2026-10-01T12:10:00Z' }),
+      nowMs: () => NOW,
+      launch,
+      log,
+    });
+    await action(ctx);
+    expect(launch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^skip: the last 3\+ scheduled runs failed .* next attempt in 40m$/));
+  });
+
+  it('retries once the back-off window has passed', async () => {
+    const launch = launchSpy();
+    const action = makeInboxBulkResolveAction({
+      enabled: async () => true,
+      readAttention: feed,
+      runningRun: async () => null,
+      awaitingReview: async () => new Set(),
+      readLaunchProfile: async () => null,
+      recentNeverBeat: async () => ({ consecutive: 4, newestCreatedAt: '2026-10-01T11:29:00Z' }),
+      nowMs: () => NOW,
+      launch,
+      log: vi.fn(),
+    });
+    await action(ctx);
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('neverBeatBackoff: below the threshold, or with no timestamp, never backs off', () => {
+    expect(neverBeatBackoff({ consecutive: 2, newestCreatedAt: '2026-10-01T12:29:00Z', nowMs: NOW })).toBeNull();
+    expect(neverBeatBackoff({ consecutive: 5, newestCreatedAt: null, nowMs: NOW })).toBeNull();
+    expect(neverBeatBackoff({ consecutive: 3, newestCreatedAt: '2026-10-01T12:29:00Z', nowMs: NOW })).toEqual({
+      retryInMs: NEVER_BEAT_BACKOFF_MS - 60_000,
+    });
+  });
+
+  it('countConsecutiveNeverBeat stops at the first run that ever beat or is still executing', () => {
+    const failedNoBeat = (createdAt: string) => ({ phase: 'failed' as const, heartbeatAt: null, createdAt });
+    expect(
+      countConsecutiveNeverBeat([
+        failedNoBeat('2026-10-01T12:25:00Z'),
+        failedNoBeat('2026-10-01T12:10:00Z'),
+        { phase: 'failed', heartbeatAt: '2026-10-01T11:50:00Z', createdAt: '2026-10-01T11:45:00Z' },
+        failedNoBeat('2026-10-01T11:30:00Z'),
+      ]),
+    ).toEqual({ consecutive: 2, newestCreatedAt: '2026-10-01T12:25:00Z' });
+    expect(
+      countConsecutiveNeverBeat([{ phase: 'running', heartbeatAt: null, createdAt: '2026-10-01T12:25:00Z' }]),
+    ).toEqual({ consecutive: 0, newestCreatedAt: null });
+    expect(countConsecutiveNeverBeat([])).toEqual({ consecutive: 0, newestCreatedAt: null });
   });
 });

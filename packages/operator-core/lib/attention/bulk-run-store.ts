@@ -1052,6 +1052,57 @@ export async function getItemIdsAwaitingOwnerReview(
   return new Set(rows.map((row) => row.item_id));
 }
 
+/**
+ * The newest runs a given requester started, read newest-first until the first
+ * one whose resolver DID report: how many consecutive runs failed without a
+ * single heartbeat, and when the newest of those was created.
+ *
+ * A run that failed with `heartbeat_at IS NULL` never got a working resolver at
+ * all (a refused launch, a walled account, a crash before the first tool call).
+ * Measured 2026-10-01: four scheduled runs in a row died that way while the
+ * launch account sat at its session limit, one every 15 minutes, each costing a
+ * resolver launch and re-seeding the same items (WI-10004887). The scheduled
+ * launcher reads this to back off instead of repeating a launch that cannot work.
+ */
+export async function readConsecutiveNeverBeatRuns(input: {
+  workspaceId?: string;
+  kind?: BulkRunKind | null;
+  requestedBy: string;
+  /** How many recent runs to inspect. Default 10. */
+  window?: number;
+}): Promise<{ consecutive: number; newestCreatedAt: string | null }> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const kind = input.kind === undefined ? DEFAULT_RUN_KIND : input.kind;
+  const window = Math.max(1, Math.min(50, input.window ?? 10));
+  const rows = await sql<{ phase: BulkRunPhase; heartbeat_at: Date | string | null; created_at: Date | string }[]>`
+    SELECT phase, heartbeat_at, created_at
+      FROM harness_shared.attention_bulk_runs
+     WHERE workspace_id = ${ws}
+       AND requested_by = ${input.requestedBy}
+       AND (${kind ?? null}::text IS NULL OR run_kind = ${kind ?? null})
+     ORDER BY created_at DESC
+     LIMIT ${window}
+  `;
+  return countConsecutiveNeverBeat(
+    rows.map((r) => ({ phase: r.phase, heartbeatAt: iso(r.heartbeat_at), createdAt: iso(r.created_at) })),
+  );
+}
+
+/** PURE half of {@link readConsecutiveNeverBeatRuns}; rows newest-first. */
+export function countConsecutiveNeverBeat(
+  rows: ReadonlyArray<{ phase: BulkRunPhase; heartbeatAt: string | null; createdAt: string | null }>,
+): { consecutive: number; newestCreatedAt: string | null } {
+  let consecutive = 0;
+  for (const row of rows) {
+    // An executing run has not failed yet, and a run whose resolver ever beat
+    // proves the launch route worked; either ends the streak.
+    if (row.phase !== 'failed' || row.heartbeatAt) break;
+    consecutive += 1;
+  }
+  return { consecutive, newestCreatedAt: consecutive > 0 ? (rows[0]?.createdAt ?? null) : null };
+}
+
 export async function getActiveRun(
   workspaceId?: string,
   kind: BulkRunKind | null = DEFAULT_RUN_KIND,
@@ -1203,6 +1254,14 @@ export async function failRunIfExecuting(input: {
  * is far higher than the cost of noticing a dead one a minute later.
  */
 export const RUN_HEARTBEAT_STALE_MS = 5 * 60_000;
+
+/**
+ * The longest a run may go without a RUN heartbeat while its resolver's other
+ * activity keeps it alive (WI-10004887). Run tools beat on every manifest and
+ * report, so a resolver that is busy for this long without touching one is not
+ * advancing the run, however many other tool calls it makes.
+ */
+export const RESOLVER_ACTIVITY_MAX_SILENCE_MS = 30 * 60_000;
 
 export type RunLiveness =
   /** Terminal, or `review` — the run is not executing, so liveness is not a question. */
@@ -1969,6 +2028,8 @@ export interface WatchdogRunRow {
   heartbeatAt: string | null;
   startedAt: string | null;
   createdAt: string | null;
+  /** The resolver's coord ownerId, whose own activity is a second witness of life. */
+  resolverOwner: string | null;
   undecided: number;
   stored: { autoResolved: number; recommended: number; skipped: number; failed: number };
   derived: { autoResolved: number; recommended: number; skipped: number; failed: number };
@@ -1999,6 +2060,7 @@ export async function readWatchdogRunRows(input?: {
       heartbeat_at: Date | string | null;
       started_at: Date | string | null;
       created_at: Date | string | null;
+      resolver_owner: string | null;
       auto_resolved: number;
       recommended: number;
       skipped: number;
@@ -2011,6 +2073,7 @@ export async function readWatchdogRunRows(input?: {
     }>
   >`
     SELECT r.run_id, r.run_kind, r.phase, r.heartbeat_at, r.started_at, r.created_at,
+           r.resolver_owner,
            r.auto_resolved, r.recommended, r.skipped, r.failed,
            COALESCE(i.undecided, f.undecided, 0)::int      AS d_undecided,
            COALESCE(i.auto_resolved, f.auto_resolved, 0)::int AS d_auto,
@@ -2055,6 +2118,7 @@ export async function readWatchdogRunRows(input?: {
     heartbeatAt: iso(r.heartbeat_at),
     startedAt: iso(r.started_at),
     createdAt: iso(r.created_at),
+    resolverOwner: r.resolver_owner ?? null,
     undecided: Number(r.d_undecided ?? 0),
     stored: {
       autoResolved: Number(r.auto_resolved ?? 0),
@@ -2104,26 +2168,61 @@ export async function strandStaleRun(input: {
   reason: string;
   workspaceId?: string;
   staleAfterMs?: number;
+  /** Ceiling on the resolver-activity rescue; default RESOLVER_ACTIVITY_MAX_SILENCE_MS. */
+  resolverMaxSilenceMs?: number;
 }): Promise<{ marked: number; phase: BulkRunPhase | null }> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const staleSecs = Math.max(0, input.staleAfterMs ?? RUN_HEARTBEAT_STALE_MS) / 1000;
+  const maxSilenceSecs =
+    Math.max(0, input.resolverMaxSilenceMs ?? RESOLVER_ACTIVITY_MAX_SILENCE_MS) / 1000;
 
   return await sql.begin(async (tx) => {
     const claimed = await tx<Array<{ run_id: string; run_kind: BulkRunKind; phase: BulkRunPhase }>>`
-      UPDATE harness_shared.attention_bulk_runs
+      UPDATE harness_shared.attention_bulk_runs AS r
          SET phase = 'failed',
              error = ${input.reason},
              finished_at = now(),
              updated_at = now()
-       WHERE workspace_id = ${ws}
-         AND run_id = ${input.runId}
-         AND phase IN ('pending', 'running')
+       WHERE r.workspace_id = ${ws}
+         AND r.run_id = ${input.runId}
+         AND r.phase IN ('pending', 'running')
          -- Same COALESCE as classifyRunLiveness and restartRun; these three must
          -- stay in step or a run reads stale to one and live to another.
-         AND COALESCE(heartbeat_at, started_at, created_at)
+         AND COALESCE(r.heartbeat_at, r.started_at, r.created_at)
                < now() - make_interval(secs => ${staleSecs})
-      RETURNING run_id, run_kind, phase
+         -- WI-10004887: the resolver's own activity is a second witness of life.
+         -- It is re-checked HERE, not only in the watchdog's read, so a resolver
+         -- that acts between that read and this write wins the race exactly as a
+         -- heartbeat does. Mirrors resolverKeepsRunAlive (bulk-run-watchdog.ts):
+         -- activity within the heartbeat threshold, and the run's own last beat
+         -- within the silence ceiling, so a resolver busy on unrelated work cannot
+         -- hold a run open forever. Both activity sources are the ones
+         -- fetchWakeability reads for coord:presence.
+         AND NOT (
+               r.resolver_owner IS NOT NULL
+               AND COALESCE(r.heartbeat_at, r.started_at, r.created_at)
+                     >= now() - make_interval(secs => ${maxSilenceSecs})
+               AND (
+                     EXISTS (
+                       SELECT 1 FROM harness_shared.tool_invocations ti
+                        WHERE ti.coord_owner_id = r.resolver_owner
+                          AND ti.invoked_at >= now() - make_interval(secs => ${staleSecs})
+                     )
+                     -- COALESCE is load-bearing: with no agent_activity row the
+                     -- scalar subquery is NULL, so (false OR NULL) is NULL, NOT(NULL)
+                     -- fails the WHERE, and a resolver that NEVER acted protected its
+                     -- run for the whole silence ceiling (measured 2026-10-01 on
+                     -- bulk-e6dc3abf: refused every sweep with zero activity rows).
+                     OR COALESCE((
+                       SELECT aa.created_at FROM harness_shared.agent_activity aa
+                        WHERE aa.owner_id = r.resolver_owner
+                        ORDER BY aa.id DESC
+                        LIMIT 1
+                     ), '-infinity'::timestamptz) >= now() - make_interval(secs => ${staleSecs})
+                   )
+             )
+      RETURNING r.run_id, r.run_kind, r.phase
     `;
     if (!claimed[0]) return { marked: 0, phase: null };
 

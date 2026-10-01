@@ -58,6 +58,7 @@
  * property the egress monitor depends on — see WI-6657.)
  */
 import path from "node:path";
+import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type { Browser } from "webdriverio";
 // Relative, not `@papercusp/gui-readiness`, for the same reason app-mount.ts is:
 // this runner is deliberately outside the npm workspace, so a bare specifier is
@@ -297,6 +298,25 @@ export function buildStartupStorageProbeScript(): string {
       resolveDir: __dirname, loader: 'ts' },
     bundle: true, platform: 'browser', format: 'iife', minify: true, keepNames: false, write: false,
   }).outputFiles[0].text;
+}
+
+/** Refuse aliasing BEFORE a diagnostic write can change the baseline artifact.
+ * Installed app trees may link their entire SPA directory to a frozen build. */
+export function writeStartupStorageDiagnosticIndex(spaDirectory: string, baselineIndex: string, script: string): void {
+  const directory = path.resolve(spaDirectory);
+  const index = path.join(directory, 'index.html');
+  const baseline = statSync(baselineIndex);
+  const target = statSync(index);
+  if (realpathSync(directory) !== directory || lstatSync(index).isSymbolicLink() ||
+      (target.dev === baseline.dev && target.ino === baseline.ino)) {
+    throw new Error('Diagnostic SPA aliases its baseline; create an independent directory and index before writing');
+  }
+  const html = readFileSync(baselineIndex, 'utf8');
+  if (html.split('<head>').length !== 2 || /<\/script/i.test(script)) {
+    throw new Error('Diagnostic SPA requires one head and a standalone inline payload');
+  }
+  writeFileSync(index, html.replace('<head>',
+    '<head>\n<script data-p007-startup-storage-probe="r158">' + script + '</script>'));
 }
 
 export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {

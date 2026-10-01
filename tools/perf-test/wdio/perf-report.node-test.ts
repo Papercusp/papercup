@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
-import { buildStartupStorageProbeScript, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, type WebVitalsReading } from "./web-vitals-probe";
+import { buildStartupStorageProbeScript, evaluateRequiredPageLoad, installStartupStorageProbe, readPageStartupTrace, writeStartupStorageDiagnosticIndex, type WebVitalsReading } from "./web-vitals-probe";
 import type { Browser } from "webdriverio";
 import { collectOwnedWebKitSample, NativeSampleBuffer, parseSchedstat, schedstatDelta, startNativeProcessProbe,
   stopNativeProcessProbe } from './native-process-probe';
@@ -192,6 +192,32 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     await stopNativeProcessProbe(child);
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('diagnostic index rejects SPA directory symlinks and index hardlinks before touching the baseline', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'startup-storage-artifact-'));
+  try {
+    const baselineDir = path.join(dir, 'baseline');
+    mkdirSync(baselineDir);
+    const baseline = path.join(baselineDir, 'index.html');
+    const html = '<html><head></head><body>baseline</body></html>';
+    writeFileSync(baseline, html);
+    const alias = path.join(dir, 'alias');
+    symlinkSync(baselineDir, alias, 'dir');
+    assert.throws(() => writeStartupStorageDiagnosticIndex(alias, baseline, 'probe();'), /aliases its baseline/);
+    assert.equal(readFileSync(baseline, 'utf8'), html);
+    const diagnostic = path.join(dir, 'diagnostic');
+    mkdirSync(diagnostic);
+    const index = path.join(diagnostic, 'index.html');
+    linkSync(baseline, index);
+    assert.throws(() => writeStartupStorageDiagnosticIndex(diagnostic, baseline, 'probe();'), /aliases its baseline/);
+    assert.equal(readFileSync(baseline, 'utf8'), html);
+    rmSync(index);
+    writeFileSync(index, html);
+    writeStartupStorageDiagnosticIndex(diagnostic, baseline, 'probe();');
+    assert(readFileSync(index, 'utf8').includes('<script data-p007-startup-storage-probe="r158">probe();</script>'));
+    assert.equal(readFileSync(baseline, 'utf8'), html);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('early serialized storage probe measures native getters/calls, preserves semantics and restores', () => {

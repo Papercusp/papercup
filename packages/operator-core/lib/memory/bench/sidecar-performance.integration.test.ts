@@ -56,7 +56,7 @@ describe('performance collector through real HTTP/client/sidecar queue', () => {
       }
     `;
     const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-      const env = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1' };
+      const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_FORBID_REAL_PG: '1', PAPERCUSP_EMBED_DEVICE: 'cpu' };
       delete env.VITEST;
       delete env.PAPERCUSP_HTTP_KEEPALIVE_TIMEOUT_MS;
       delete env.PAPERCUSP_HTTP_HEADERS_TIMEOUT_MS;

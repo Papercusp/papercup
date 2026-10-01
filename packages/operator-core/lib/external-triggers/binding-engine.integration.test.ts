@@ -877,6 +877,57 @@ describe('external trigger durable dispatch', () => {
     ]);
   });
 
+  it('expires a never-attempted run older than maxAgeSeconds instead of dispatching it (WI-10004920)', async () => {
+    const triggerArgs = (suffix: string) => ({
+      trigger: {
+        key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
+        sourceId: 'source-fixture', externalId: `aged-${suffix}`, occurredAt: null,
+        datatypeId: 'email-message', dedupeKey: `gmail:aged-${suffix}`,
+        payload: { id: `aged-${suffix}`, subject: 'Queued while the drain was paused' },
+      },
+    });
+    // Backlog that piled up while the dispatcher was off: never attempted, 2 days old.
+    const backlogId = await seedTriggerRun({ args: triggerArgs('backlog') });
+    // Same age, but dispatch already began — its retry policy, not the age window, governs it.
+    const startedId = await seedTriggerRun({ status: 'failed', attempts: 1, args: triggerArgs('started') });
+    // A custom, tighter window on the binding: 1h. A 2h-old fresh run is past it.
+    const customId = await seedTriggerRun({ args: triggerArgs('custom') });
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET triggered_at = CASE WHEN id = ${customId} THEN now() - interval '2 hours'
+                                 ELSE now() - interval '2 days' END,
+             next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id IN (${backlogId}, ${startedId}, ${customId})`;
+
+    const runPlan = vi.fn().mockRejectedValue(new Error('plan launch unavailable'));
+    const first = await dispatchPendingTriggerRuns(sql, { runPlan, staleAfterSeconds: 60 });
+    // Default window (24h): the backlog row expires, the already-started row is still claimed,
+    // and the 2h-old row is inside the default window so it is claimed too.
+    expect(first.triggerRunIds).not.toContain(backlogId);
+    expect(first.triggerRunIds).toContain(startedId);
+    const backlog = await sql<Array<{ status: string; error: string | null; attempts: number }>>`
+      SELECT status, error, attempts FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${backlogId}`;
+    expect(backlog[0]).toMatchObject({ status: 'skipped', attempts: 0 });
+    expect(backlog[0].error).toMatch(/^external_trigger_stale/);
+
+    // A stored custom window is honoured: reset the 2h-old row to never-attempted and tighten to 1h.
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'pending', attempts = 0, error = NULL, next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id = ${customId}`;
+    await sql`
+      UPDATE harness_shared.trigger_bindings
+         SET storm_policy = COALESCE(storm_policy, '{}'::jsonb) || '{"maxAgeSeconds": 3600}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    const second = await dispatchPendingTriggerRuns(sql, { runPlan, staleAfterSeconds: 60 });
+    expect(second.triggerRunIds).not.toContain(customId);
+    const custom = await sql<Array<{ status: string; error: string | null }>>`
+      SELECT status, error FROM harness_shared.trigger_runs WHERE workspace_id = ${WS} AND id = ${customId}`;
+    expect(custom[0].status).toBe('skipped');
+    expect(custom[0].error).toMatch(/^external_trigger_stale/);
+  });
+
   it('passes the complete Calendar-upcoming trigger input into the meeting-prep plan run', async () => {
     const args = {
       trigger: {

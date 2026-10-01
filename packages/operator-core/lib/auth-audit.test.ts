@@ -12,7 +12,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // hmacSessionToken never touches PG; stub the pool so importing the module opens nothing.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: vi.fn() }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: Object.assign(vi.fn(), { begin: vi.fn() }) }),
+}));
 
 describe('hmacSessionToken key source (WI-10004357)', () => {
   let home: string;

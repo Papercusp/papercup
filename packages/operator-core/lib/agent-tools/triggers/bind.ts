@@ -92,6 +92,13 @@ export default defineTool({
             .positive()
             .max(31 * 24 * 60 * 60)
             .optional(),
+          maxAgeSeconds: z
+            .number()
+            .int()
+            .positive()
+            .max(31 * 24 * 60 * 60)
+            .optional()
+            .describe('drop a queued run never dispatched within this many seconds (default 86400)'),
         })
         .optional(),
     })
