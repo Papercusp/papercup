@@ -59,15 +59,26 @@ import {
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
 
 /**
- * A MANUAL run (plans:run-now) takes a fresh token each call (EI-1369). A module-monotonic
- * counter guarantees a strictly-increasing, unique token even for two run-nows within the same
- * millisecond on one host — so the instance slug never collides and the run never replay-no-ops.
+ * A MANUAL run (plans:run-now) takes a fresh token each call (EI-1369). The module-monotonic
+ * counter makes the token strictly increasing within ONE PROCESS only. Two processes (cluster
+ * workers, a request host beside bg-host, separate cold children) can still draw the same
+ * millisecond, so the counter alone does not guarantee a unique instance slug — the seed
+ * transaction resolves that collision under its advisory lock (WI-10005127, see
+ * runScheduledPlanFireTx). `floor` lets that path step past a token another process seeded.
  */
 let lastManualToken = 0;
-function nextManualToken(): number {
-  const t = Math.max(Date.now(), lastManualToken + 1);
+function nextManualToken(floor = 0): number {
+  const t = Math.max(Date.now(), lastManualToken + 1, floor + 1);
   lastManualToken = t;
   return t;
+}
+
+/** Bound on cross-process manual-token collisions resolved in one seed transaction. */
+const MAX_MANUAL_TOKEN_COLLISIONS = 64;
+
+/** Test seam: a fresh PROCESS starts this counter at 0; resetting it stands in for one. */
+export function resetManualTokenCounterForTests(): void {
+  lastManualToken = 0;
 }
 
 export type ScheduledPlanFireRefusalReason =
@@ -430,7 +441,7 @@ async function runScheduledPlanFireTx(
   if (suppliedToken !== null && !/^\d+$/.test(suppliedToken)) {
     throw new Error('plan_run_token_must_be_decimal');
   }
-  const token =
+  let token =
     trigger === 'manual'
       ? nextManualToken()
       : suppliedToken !== null
@@ -438,19 +449,25 @@ async function runScheduledPlanFireTx(
         : rt[0]?.last_fired_at
           ? new Date(rt[0].last_fired_at).getTime()
           : Date.now();
-  const instanceSlug = planRunInstanceSlug(templateSlug, token);
+  let instanceSlug = planRunInstanceSlug(templateSlug, token);
 
   // Serialize callers racing on the same deterministic fire before the replay
   // check. Combined with the transaction wrapper, this makes the mint both atomic
   // and exactly-once visible even when two workers receive the same event.
-  const fireLockKey = `${workspaceId}:${appHarnessSlug}:${instanceSlug}`;
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
-
+  //
   // 3. Idempotency: the instance already existing ⇒ recover the SAME ledger
   // row and re-enter canonical promotion after this transaction. A replay is
   // not a promotion no-op: it is the healing path for a crash between the
   // atomic instance+ledger seed and the shared work-item writes.
-  const existing = await sql<Array<{ run_seq: number | null; run_id: number | null; inputs: unknown }>>`
+  //
+  // WI-10005127: that replay reading is ONLY valid for a deterministic token
+  // (scheduled/event fires, whose token is stable across a DBOS step replay). A
+  // MANUAL token is fresh per call and has no replay, so a seeded slug there means
+  // another PROCESS drew the same millisecond. Reading it as a replay merged two
+  // run-nows into ONE run (the second caller's run silently lost) and promoted that
+  // run twice concurrently — the P-013 B cold children left 2-3 rows for P-001 of
+  // one run. Under the lock, a manual fire steps to the next free token instead.
+  const readSeeded = () => sql<Array<{ run_seq: number | null; run_id: number | null; inputs: unknown }>>`
     SELECT p.run_seq, r.id AS run_id, r.inputs
       FROM harness_shared.harness_plans p
       LEFT JOIN LATERAL (
@@ -465,6 +482,18 @@ async function runScheduledPlanFireTx(
      WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = ${appPlanStorageSlug}
        AND p.plan_slug = ${instanceSlug}
   `;
+  let existing: Awaited<ReturnType<typeof readSeeded>>;
+  for (let collisions = 0; ; collisions++) {
+    const fireLockKey = `${workspaceId}:${appHarnessSlug}:${instanceSlug}`;
+    await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
+    existing = await readSeeded();
+    if (!existing[0] || trigger !== 'manual') break;
+    if (collisions >= MAX_MANUAL_TOKEN_COLLISIONS) {
+      throw new Error(`plan_run_manual_token_exhausted:${templateSlug}:${token}`);
+    }
+    token = nextManualToken(Number(token));
+    instanceSlug = planRunInstanceSlug(templateSlug, token);
+  }
   if (existing[0]) {
     if (!existing[0].run_id) {
       throw new Error(`plan_run_replay_missing_ledger:${instanceSlug}`);
