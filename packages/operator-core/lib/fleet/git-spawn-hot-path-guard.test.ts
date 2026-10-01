@@ -152,6 +152,9 @@ const HOT_GIT_SCAN_FILES: string[] = [
   'sync/pot-git/github-egress.ts',
   // Streaming seam — see its allowlist entry.
   'sync/pot-git/fetch-transport.ts',
+  // Completion-settlement reads, run by the git-sync reconciler on bg-host every
+  // pass (jev-memory-timeouts-to-zero-2026-10-01: ~8 forks/s traced, ~54 ms each).
+  'agent-tools/work_items/untouched-paths.ts',
 ];
 
 /** Every raw git invocation ALLOWED in the hot set, keyed by the top-level
@@ -193,14 +196,24 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
     why: 'the local fallback for the per-hive rev-list count',
   },
   {
+    file: 'agent-tools/work_items/untouched-paths.ts',
+    symbol: 'streamGitFieldsLocal',
+    why:
+      'the streaming local path behind streamGitFields: the default for unbounded reads (an early stop must kill git) ' +
+      'and the fallback when a preferSidecar read cannot reach the sidecar',
+  },
+  {
     file: 'harness/git-sync/run-git-sync.ts',
     symbol: 'runGitLocalBounded',
     why: 'the local fallback for the git-sync runner',
   },
 ];
 
-/** Any raw git invocation, however it is spelled. */
-const RAW_GIT_CALL = /(?:spawn|spawnSync|execFile|execFileSync|pexec)\(\s*['"]git['"]/g;
+/** Any raw git invocation, however it is spelled — including a test seam's
+ *  nullish default, `spawn(opts.gitBinary ?? 'git', …)`, which a bare
+ *  `spawn('git'` match cannot see. */
+const RAW_GIT_CALL =
+  /(?:spawn|spawnSync|execFile|execFileSync|pexec)\(\s*(?:[A-Za-z_$][\w$.?]*\s*\?\?\s*)?['"]git['"]/g;
 
 /** Nearest preceding TOP-LEVEL declaration — indentation 0, so a local
  *  `const child = spawn(...)` on the matching line itself is never mistaken

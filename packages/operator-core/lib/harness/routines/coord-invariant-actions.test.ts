@@ -140,39 +140,55 @@ describe('runProbeCycle + evaluateProbe', () => {
   });
 });
 
-describe('attributeBreach (EI-401 self-attribution)', () => {
+describe('attributeBreach (measured-boundary wording)', () => {
   const step = (s: string, ms: number): ProbeStep => ({ step: s, ok: true, ms });
 
-  it('blames DB-wide contention when the control baseline is itself slow', () => {
+  it('reports a slow baseline control without localizing its cause', () => {
     const hint = attributeBreach([step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)]);
-    expect(hint).toContain('DB-wide');
-    expect(hint).toContain('9000ms');
-    expect(hint).not.toContain('coord INSERT');
-  });
-
-  it('blames the coord write path when baseline is fast but ping/ack are slow', () => {
-    const hint = attributeBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000), step('inbox', 477)]);
-    expect(hint).toContain('coord INSERT+commit+NOTIFY');
-    expect(hint).toContain('ping 12000ms');
+    expect(hint).toContain('SELECT 1 baseline control took 9000ms');
+    expect(hint).toContain('does not distinguish connection-pool wait');
     expect(hint).not.toContain('DB-wide');
   });
 
-  it('falls back to cumulative-load when nothing dominates', () => {
+  it('reports end-to-end coord timings without naming a database cause', () => {
+    const hint = attributeBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000), step('inbox', 477)]);
+    expect(hint).toContain('end-to-end coord ping took 12000ms and ack-plus-readback took 9000ms');
+    expect(hint).toContain('do not isolate coord_event_log INSERT/commit/NOTIFY');
+    expect(hint).not.toContain('the cost is');
+  });
+
+  it('leaves the full-cycle cause unattributed when compared timings are below threshold', () => {
     const hint = attributeBreach([step('baseline', 5), step('ping', 100), step('ack', 80)]);
-    expect(hint).toContain('no single step dominates');
+    expect(hint).toContain('do not isolate the cause of the full-cycle delay');
+  });
+
+  it('does not infer write-layer dominance from the Sep 26 end-to-end timings', () => {
+    const hint = attributeBreach([
+      step('baseline', 1_591),
+      step('ping', 2_894),
+      step('inbox', 292),
+      step('ack', 6_044),
+      step('lock-acquire', 11_333),
+      step('lock-contend', 3_065),
+      step('lock-release', 4_161),
+      step('lock-regrant', 2_749),
+    ]);
+    expect(hint).toContain('end-to-end coord ping took 2894ms and ack-plus-readback took 6044ms');
+    expect(hint).toContain('do not isolate coord_event_log INSERT/commit/NOTIFY');
+    expect(hint).toContain('or show that these steps dominate the full cycle');
   });
 });
 
 describe('classifyBreach', () => {
   const step = (s: string, ms: number): ProbeStep => ({ step: s, ok: true, ms });
 
-  it('classifies a slow baseline as db-wide, fast-baseline-slow-write as coord', () => {
-    expect(classifyBreach([step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)])).toBe('db-wide');
-    expect(classifyBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000)])).toBe('coord');
+  it('classifies only the measured baseline and end-to-end operation thresholds', () => {
+    expect(classifyBreach([step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)])).toBe('baseline-slow');
+    expect(classifyBreach([step('baseline', 5), step('ping', 12_000), step('ack', 9_000)])).toBe('coord-operations-slow');
   });
 
-  it('returns cumulative when nothing dominates, none when no baseline sampled', () => {
-    expect(classifyBreach([step('baseline', 5), step('ping', 100), step('ack', 80)])).toBe('cumulative');
+  it('returns unattributed when compared timings are below threshold, none without a baseline', () => {
+    expect(classifyBreach([step('baseline', 5), step('ping', 100), step('ack', 80)])).toBe('unattributed');
     expect(classifyBreach([step('ping', 12_000), step('ack', 9_000)])).toBe('none');
   });
 });
@@ -182,12 +198,12 @@ describe('breachDisposition (EI-401 file-vs-note)', () => {
   const verdict = (over: Partial<ProbeVerdict>): ProbeVerdict =>
     ({ ok: false, totalMs: 30_001, sloBreached: true, ...over });
 
-  it('downgrades a pure SLO breach pinned on DB-wide contention to a NOTE', () => {
+  it('keeps the owner-ratified note disposition for a pure SLO breach with a slow baseline control', () => {
     const steps = [step('baseline', 9_000), step('ping', 12_000), step('ack', 9_000)];
     expect(breachDisposition(verdict({ sloBreached: true }), steps)).toBe('note');
   });
 
-  it('FILES a coord-attributed breach (the real coord INSERT+NOTIFY cost)', () => {
+  it('FILES a pure SLO breach with slow end-to-end coord operations for further investigation', () => {
     const steps = [step('baseline', 5), step('ping', 12_000), step('ack', 9_000), step('inbox', 477)];
     expect(breachDisposition(verdict({ sloBreached: true }), steps)).toBe('file');
   });

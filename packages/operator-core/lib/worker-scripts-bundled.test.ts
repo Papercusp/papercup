@@ -37,6 +37,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
+import { testImportClosures } from './agent-tools/testing/mutation-probe-fence';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 
@@ -258,17 +259,15 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const dir = mkdtempSync(join(tmpdir(), 'bundled-closure-'));
     writeFileSync(join(dir, 'entry.ts'), 'export { value } from "./subject.ts";');
     writeFileSync(join(dir, 'subject.ts'), 'export const value = 1;');
-    const worker = new Worker(join(output, 'mutation-probe-closure.worker.mjs'), {
-      execArgv: [], workerData: { root: dir, tests: [join(dir, 'entry.ts')] },
-    });
     try {
-      const result = await new Promise<any>((resolve, reject) => {
-        worker.once('message', resolve); worker.once('error', reject);
-        worker.once('exit', code => reject(new Error('Closure worker exited before response: ' + code)));
+      // Exercise the production fork/advanced-IPC door, including its awaited
+      // owned-tree cleanup. A thread-only check misses process-entry failures.
+      const result = await testImportClosures(dir, [join(dir, 'entry.ts')], {
+        workerPath: join(output, 'mutation-probe-closure.worker.mjs'),
       });
       expect(result.status).toBe('complete');
-      expect(result.files.get(join(dir, 'entry.ts'))).toContain(join(dir, 'subject.ts'));
-    } finally { await worker.terminate(); rmSync(dir, { recursive: true, force: true }); }
+      if (result.status === 'complete') expect(result.files.get(join(dir, 'entry.ts'))).toContain(join(dir, 'subject.ts'));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 10_000);
 
   it('refuses an unavailable required source even when an older bundle exists', () => {

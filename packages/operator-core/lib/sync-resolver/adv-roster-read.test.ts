@@ -38,6 +38,7 @@ vi.mock('../adv-roster', () => ({
   dedupeEndedAgainstActive: (ended: unknown) => ended,
   pendingLaunchesToRosterEntries: (rows: unknown) => rows,
   startingLaunchesToRosterEntries: (rows: unknown) => rows,
+  readStartingLaunchLogHints: async () => new Map(),
   dedupeStartingAgainstActive: (starting: unknown) => starting,
 }));
 

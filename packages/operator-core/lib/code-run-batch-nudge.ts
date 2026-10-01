@@ -174,6 +174,19 @@ export function clusterTurns(events: readonly { at: number; durationMs?: number 
  *  shape) trips a trigger; calls spread wider than this are treated as separate, deliberate steps. */
 export const NUDGE_WINDOW_MS = 90_000;
 
+/**
+ * EI-23761431768707969: how long after an aggregate-output-budget spill the SAME tool's next call
+ * counts as the re-issue the result door asked for. The door's own note tells the agent to
+ * re-issue the spilled call in a new output cohort, so that call's turn exists only because the
+ * door forced it. The batch-hint measures separate turns and used to count it, which made the two
+ * mechanisms contradict each other: widening a turn caused the spill, and narrowing it again to
+ * recover earned an escalating "default to code:run" nag. 60s covers the model reading the spill
+ * note and deciding; an unrelated later call of the same tool is NOT forgiven. Deliberately kept
+ * <= NUDGE_WINDOW_MS: once the spilled call has aged out of the nudge window there is nothing left
+ * to forgive a re-issue AGAINST, and forgiving it anyway would swallow one turn of a later burst.
+ */
+export const FORCED_REISSUE_WINDOW_MS = 60_000;
+
 /** Per-session cap on the recent-call ring (backstop against a long-lived session growing it). */
 const MAX_RECENT_PER_SESSION = 64;
 
@@ -362,11 +375,19 @@ interface RecentCall {
   /** Measured wall time of this call (EI-21254965187146713). What makes the fold advice CHECKABLE:
    *  without it the hint can only assert that folding is cheaper, and for slow children it is not. */
   durationMs?: number;
+  /** EI-23761431768707969: this call was the single re-issue the result door asked for after an
+   *  aggregate-output-budget spill. Its turn was FORCED, not chosen, so it is excluded from every
+   *  turn/tool count that decides whether to nudge (it stays in the ring for chain detection). */
+  forced?: boolean;
 }
 
 interface SessionState {
   /** Chronological ring of recent calls, trimmed to NUDGE_WINDOW_MS and capped. */
   recent: RecentCall[];
+  /** EI-23761431768707969: a same-tool re-issue is owed forgiveness — set when a call's own
+   *  result spilled under `aggregate-output-budget-exceeded`, consumed by the next call to the
+   *  same tool inside FORCED_REISSUE_WINDOW_MS. One spill forgives exactly one re-issue. */
+  pendingForcedReissue?: { tool: string; at: number; endedAt: number };
   /** How many nudges have already fired this session (drives the exponential cooldown). */
   nudgeCount: number;
   /** Calls recorded since the last nudge fired (the cooldown is measured in calls). */
@@ -785,6 +806,15 @@ export interface BatchNudgeInput {
    * killed by the script budget. Optional: absent timing degrades to the pre-gate behaviour.
    */
   durationMs?: number;
+  /**
+   * EI-23761431768707969: this call's OWN result was spilled by the result door's per-turn
+   * fan-out budget (`reason:'aggregate-output-budget-exceeded'`) — a verdict about the output
+   * COHORT it was dispatched in, not about the call. The door tells the caller to re-issue that
+   * one call in a new cohort, so the NEXT same-tool call is a turn the door FORCED. This flag
+   * arms that forgiveness (see FORCED_REISSUE_WINDOW_MS); without it the nudge counted the
+   * forced round-trip as a separate turn and nagged an agent for obeying the door.
+   */
+  aggregateSpill?: boolean;
   /** Injectable clock for tests; defaults to Date.now(). */
   now?: number;
 }
@@ -822,17 +852,45 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
 
   // Record this call, then trim the ring to the window + cap (the only common-path side effects).
   const argValues = chainValues(args);
+  const durationMs =
+    typeof input.durationMs === 'number' && Number.isFinite(input.durationMs) && input.durationMs >= 0
+      ? input.durationMs
+      : undefined;
+
+  // EI-23761431768707969: is THIS call the re-issue the result door asked for after an
+  // aggregate-output-budget spill? It must be the SAME tool, inside the window, and DISPATCHED AFTER
+  // the spilled call completed — a same-turn parallel sibling that merely completes later is not a
+  // re-issue (it was dispatched before the spill existed, so nothing forced it). One spill forgives
+  // exactly one re-issue; an expired entry is dropped here so it cannot leak into a later burst.
+  let forced = false;
+  const owed = st.pendingForcedReissue;
+  if (owed) {
+    const age = now - owed.at;
+    if (age < 0 || age > FORCED_REISSUE_WINDOW_MS) {
+      st.pendingForcedReissue = undefined;
+    } else if (owed.tool === toolName && now > owed.endedAt) {
+      forced = true;
+      st.pendingForcedReissue = undefined;
+    }
+  }
+
   st.recent.push({
     tool: toolName,
     at: now,
     argsRender: renderArgs(args),
     argValues: argValues.length > 0 ? argValues : undefined,
-    durationMs:
-      typeof input.durationMs === 'number' && Number.isFinite(input.durationMs) && input.durationMs >= 0
-        ? input.durationMs
-        : undefined,
+    durationMs,
+    ...(forced ? { forced: true } : {}),
   });
   st.callsSinceNudge += 1;
+
+  // Arm forgiveness for the NEXT same-tool call. The spilled call itself stays a normal event: it
+  // was the wide turn, and a correctly batched burst is not what this mechanism discounts. Without
+  // a measured duration the spilled call's end is unknown, so assume one TURN_GAP_MS — enough to
+  // keep a same-instant sibling from being mistaken for the re-issue.
+  if (input.aggregateSpill === true) {
+    st.pendingForcedReissue = { tool: toolName, at: now, endedAt: now + (durationMs ?? TURN_GAP_MS) };
+  }
   const cutoff = now - NUDGE_WINDOW_MS;
   let drop = 0;
   while (drop < st.recent.length && st.recent[drop].at < cutoff) drop++;
@@ -846,6 +904,7 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const seen = new Set<string>();
   const distinctOrder: string[] = [];
   for (const c of st.recent) {
+    if (c.forced) continue; // EI-23761431768707969: a door-forced re-issue is not a chosen call
     if (!seen.has(c.tool)) {
       seen.add(c.tool);
       distinctOrder.push(c.tool);
@@ -860,6 +919,10 @@ export function maybeBatchNudge(input: BatchNudgeInput): BatchNudgeResult | null
   const toolTurns = new Set<number>();
   const allTurns = new Set<number>();
   for (let i = 0; i < st.recent.length; i++) {
+    // EI-23761431768707969: the single re-issue the result door asked for after an
+    // aggregate-output-budget spill is a FORCED turn — it exists only because widening the previous
+    // turn caused the spill. Counting it nudged agents for obeying the door.
+    if (st.recent[i].forced) continue;
     allTurns.add(turnOf[i]);
     if (st.recent[i].tool === toolName) toolTurns.add(turnOf[i]);
   }

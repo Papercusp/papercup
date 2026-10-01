@@ -993,6 +993,27 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
       .join('\n'),
   );
+
+  // WI-10005120: the born-pending admission trio (admission / admitted_at /
+  // admitted_by). The hyperbee harness-features projection's writeToPg INSERTs
+  // all three into work_items on EVERY replicated feature write (WI-41745), so
+  // without them each F-00N merge failed with 42703 `column "admission" of
+  // relation "work_items" does not exist`, read-merge held the cursor, and the
+  // composition never converged. Load the REAL migrations verbatim, not an
+  // inline copy, so a later edit to either file reaches the rig: 944 adds the
+  // columns to the base table (plus its self-contained dedup tables), and 966
+  // re-creates the compat view to expose them, as production does.
+  for (const file of [
+    '944-work-queue-admission-dedup.sql',
+    '966-expose-admission-on-harness-features-consolidated-view.sql',
+  ]) {
+    await sql.unsafe(
+      readFileSync(join(SQL_DIR, file), 'utf8')
+        .split('\n')
+        .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+        .join('\n'),
+    );
+  }
 }
 
 /** Per-peer projection apply bound to THIS cell's sql (the Stage-6 seam). */

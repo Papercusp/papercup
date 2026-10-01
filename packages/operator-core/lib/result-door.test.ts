@@ -1260,6 +1260,10 @@ describe('applyResultDoor', () => {
       expect((second._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
       const envelope = JSON.parse((third.content[0] as { text: string }).text);
       expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+      // EI-23761431768707969: the spill note and the batch-hint used to give OPPOSED advice (widen a
+      // turn -> sibling spills; narrow it to recover -> "default to code:run" nag). The note now
+      // names the way to fan out WITHOUT spending this budget, so the two read as one instruction.
+      expect((third.content[0] as { text: string }).text).toContain('fold the calls into ONE code:run');
       const aggregate = (third._meta as { resultDoor?: { aggregate?: Record<string, unknown> } }).resultDoor?.aggregate;
       expect(aggregate).toMatchObject({
         mode: 'explicit',

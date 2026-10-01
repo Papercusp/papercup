@@ -232,6 +232,11 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     embedding vector(768),
     embedding_mode text,
     embedding_profile text,
+    -- migration 1322 (P-010 / D-018): nature + audience. Production stamps them with a
+    -- trigger from datatype_registry; this fixture has no registry, so rows default to
+    -- agent work, which is what every built-in kind resolves to.
+    nature text NOT NULL DEFAULT 'work',
+    audience text DEFAULT 'agent',
     _search tsvector GENERATED ALWAYS AS (
       setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
       setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -380,7 +385,10 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- view and read directly by issueAdmissibleWhereSql. Keep them last to mirror the
       -- append-only CREATE OR REPLACE VIEW migration contract.
       claim_hold,
-      needs_owner_action
+      needs_owner_action,
+      -- migration 1323 (P-010): nature and audience, appended last like 1110.
+      nature,
+      audience
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

@@ -448,36 +448,42 @@ export function genHealPinTag(sha: string): string {
  * gen-heal ref (recursing into heal-built commits for nested submodules). Throws on any
  * failed publication, which holds promotion before main moves.
  */
-export function publishGenHealGitlinks(input: {
+export async function publishGenHealGitlinks(input: {
   integrationRoot: string;
   candidateSha: string;
-  git?: AdmissionGitRunner;
-}): { path: string; sha: string }[] {
-  const git = input.git ?? realAdmissionGit;
+  /** Runs `git <argv>` in `cwd` without throwing on a non-zero exit. */
+  git?: (argv: string[], cwd: string) => Promise<{ code: number | null; stdout: string; stderr: string }>;
+}): Promise<{ path: string; sha: string }[]> {
+  const git =
+    input.git ??
+    (async (argv: string[], cwd: string) => {
+      const r = realAdmissionGit(argv, { cwd });
+      return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+    });
   const published: { path: string; sha: string }[] = [];
-  const visit = (repo: string, commit: string, prefix: string): void => {
-    const listed = git(["ls-tree", "-r", "-z", commit], { cwd: repo });
-    if (listed.status !== 0) {
-      throw new Error(`git ls-tree -r ${commit.slice(0, 12)} (cwd ${repo}) exited ${listed.status}: ${(listed.stderr ?? "").trim().slice(-300)}`);
+  const visit = async (repo: string, commit: string, prefix: string): Promise<void> => {
+    const listed = await git(["ls-tree", "-r", "-z", commit], repo);
+    if (listed.code !== 0) {
+      throw new Error(`git ls-tree -r ${commit.slice(0, 12)} (cwd ${repo}) exited ${listed.code}: ${listed.stderr.trim().slice(-300)}`);
     }
-    for (const record of (listed.stdout ?? "").split("\0")) {
+    for (const record of listed.stdout.split("\0")) {
       const m = /^160000 commit ([0-9a-f]{40})\t(.+)$/.exec(record);
       if (!m) continue;
       const [, sha, path] = m as unknown as [string, string, string];
+      // An uninitialized or absent submodule cannot hold the ref, so it is skipped here too.
       const subRepo = join(repo, path);
-      if (!existsSync(subRepo)) continue;
-      if (git(["rev-parse", "--verify", "--quiet", genHealRef(sha)], { cwd: subRepo }).status !== 0) continue;
-      const pushed = git(["push", "origin", `${sha}:${genHealPinTag(sha)}`], { cwd: subRepo });
-      if (pushed.status !== 0) {
+      if ((await git(["rev-parse", "--verify", "--quiet", genHealRef(sha)], subRepo)).code !== 0) continue;
+      const pushed = await git(["push", "origin", `${sha}:${genHealPinTag(sha)}`], subRepo);
+      if (pushed.code !== 0) {
         throw new Error(
-          `gate-pin publication for ${prefix}${path}@${sha.slice(0, 12)} failed (exit ${pushed.status}): ` +
-            (pushed.stderr ?? "").trim().slice(-300),
+          `gate-pin publication for ${prefix}${path}@${sha.slice(0, 12)} failed (exit ${pushed.code}): ` +
+            pushed.stderr.trim().slice(-300),
         );
       }
       published.push({ path: `${prefix}${path}`, sha });
-      visit(subRepo, sha, `${prefix}${path}/`);
+      await visit(subRepo, sha, `${prefix}${path}/`);
     }
   };
-  visit(input.integrationRoot, input.candidateSha, "");
+  await visit(input.integrationRoot, input.candidateSha, "");
   return published;
 }

@@ -43,6 +43,7 @@ import {
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
   startingLaunchesToRosterEntries,
+  readStartingLaunchLogHints,
   dedupeStartingAgainstActive,
 } from '../../../adv-roster';
 // Pure recency-param parsing (WI-5097) + the pure id-search half (WI-37204 —
@@ -1901,8 +1902,14 @@ const roster = defineTool({
     // THIRD tier. Deliberately not folded into `pending` — the pui panes that
     // tier, and these sessions already own a terminal. Rows whose session has
     // come online are dropped so presence renders it exactly once.
+    // EI-24748208098755918: log diagnostics are read off the event loop first;
+    // the mapper itself does no file I/O.
     const starting = dedupeStartingAgainstActive(
-      startingLaunchesToRosterEntries(startingRows, host),
+      startingLaunchesToRosterEntries(
+        startingRows,
+        host,
+        await readStartingLaunchLogHints(startingRows),
+      ),
       active,
     );
 

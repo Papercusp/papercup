@@ -4,6 +4,7 @@
  * pass `parent` or includeChildren). Filter by harness / kind / state / q.
  */
 import { z } from "zod";
+import { DATATYPE_NATURES } from '../../datatype-registry-store';
 import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
 import { resolveAgentIdentity } from "../coordination/identity";
@@ -380,6 +381,12 @@ export default defineTool({
       .describe(
         "EI-10422: by default a payload.lane:'observation' row (a turn-end reflection / rubric scorecard filed via improvements:capture { lane:'observation' }) is EXCLUDED — by design (D-005) it never enters the work queue/triage. Pass true to include raw observations in this read (a curation surface); the default keeps the backlog/triage view free of the ~2,700 open notes that otherwise masquerade as claimable `change` work.",
       ),
+    natures: z
+      .array(z.enum(DATATYPE_NATURES))
+      .optional()
+      .describe(
+        "P-010/D-011: natures to return (work|record|document|event). Default: work only, unless kind is named. ['record'] reads record rows such as pipeline deals.",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
   result: z.array(WORK_ITEM_ROW),
@@ -505,6 +512,7 @@ export default defineTool({
           audit: args.audit ?? null,
           completionAuthority: args.completionAuthority ?? null,
           includeObservations: args.includeObservations === true,
+          natures: args.natures ?? null,
           // WI-42508: cache full and lean SQL projections separately.  The
           // ambient/session tier is otherwise deliberately outside this key because
           // shaping is a post-cache operation; the source projection is not.
@@ -539,6 +547,7 @@ export default defineTool({
           audit: args.audit,
           completionAuthority: args.completionAuthority as CompletionAuthorityFilter | undefined,
           includeObservations: args.includeObservations,
+          natures: args.natures,
           includeBody,
           includePayload,
           limit: args.limit,

@@ -129,6 +129,126 @@ test('native sampling marks disabled scheduler-wait accounting and missing count
   assert.match(sample.unavailable.join(' '), /schedstat/);
 });
 
+test('native environment records only explicit diagnostic keys on owned app and renderer lifetimes', () => {
+  const f = nativeProcFixture();
+  f.files.set('/proc/20/environ', 'GST_REGISTRY_UPDATE=no\0GST_REGISTRY=/private/registry.bin\0API_KEY=excluded-secret\0');
+  f.files.set('/proc/30/environ', 'GST_REGISTRY_UPDATE=no\0GST_PLUGIN_SYSTEM_PATH_1_0=\0XDG_CACHE_HOME=/private/cache\0GST_SECRET_TOKEN=excluded-secret\0OPENAI_API_KEY=excluded-secret\0');
+  const sample = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc);
+  const env = sample.processes[1].environment;
+  assert(env?.status === 'captured');
+  assert.deepEqual(env.values.GST_REGISTRY_UPDATE, { status: 'present', value: 'no' });
+  assert.deepEqual(env.values.GST_PLUGIN_SYSTEM_PATH_1_0, { status: 'present', value: '' });
+  assert.deepEqual(env.values.GST_REGISTRY, { status: 'absent' });
+  assert.deepEqual(env.values.XDG_CACHE_HOME, { status: 'present', value: '/private/cache' });
+  assert(sample.processes[0].environment?.status === 'captured');
+  assert(!JSON.stringify(sample).includes('excluded-secret'));
+  assert(!('OPENAI_API_KEY' in env.values));
+  assert(!('GST_SECRET_TOKEN' in env.values));
+  assert(!f.reads.includes('/proc/10/environ'));
+  assert(!f.reads.includes('/proc/25/environ'));
+  assert(!f.reads.includes('/proc/40/environ'));
+  assert(!f.reads.some((file) => file.startsWith('/proc/90/')));
+  assert(env.readCompletedEpochMs >= env.readStartedEpochMs);
+});
+
+test('native environment unavailability is explicit and never serializes a raw read error', () => {
+  const f = nativeProcFixture();
+  const read = f.proc.read;
+  f.proc.read = (file) => {
+    if (file.endsWith('/environ')) throw new Error('EACCES raw-secret-must-not-leak');
+    return read(file);
+  };
+  const sample = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc);
+  assert.equal(sample.processes.length, 2);
+  assert.equal(sample.processes[1].environment?.status, 'unavailable');
+  assert(!JSON.stringify(sample).includes('raw-secret'));
+  assert.equal(sample.unavailable.length, 0); // Counters remain a separate observation.
+});
+
+test('native environment validates owned ancestry before reading and honors the disabled option', () => {
+  const f = nativeProcFixture();
+  const read = f.proc.read;
+  f.proc.read = (file) => {
+    const value = read(file);
+    if (file === '/proc/30/task/30/schedstat') f.files.set('/proc/25/stat', f.stat(25, 1));
+    return value;
+  };
+  const sample = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc);
+  assert(!sample.processes.some(({ pid }) => pid === 30));
+  assert(!f.reads.includes('/proc/30/environ'));
+  const disabled = nativeProcFixture();
+  collectOwnedWebKitSample({ ...disabled.options, environment: false }, disabled.proc);
+  assert(!disabled.reads.some((file) => file.endsWith('/environ')));
+});
+
+test('native environment uses the bounded reader and treats an empty environment as measured absence', () => {
+  const f = nativeProcFixture();
+  const calls: Array<{ file: string; maxBytes: number }> = [];
+  const proc = { ...f.proc, readBounded: (file: string, maxBytes: number) => {
+    calls.push({ file, maxBytes });
+    return '';
+  } };
+  const sample = collectOwnedWebKitSample({ ...f.options, environment: true }, proc);
+  assert.deepEqual(calls, [20, 30].map((pid) => ({ file: `/proc/${pid}/environ`, maxBytes: 128 * 1024 })));
+  for (const row of sample.processes) {
+    assert(row.environment?.status === 'captured');
+    assert(Object.values(row.environment.values).every((value) => value.status === 'absent'));
+  }
+});
+
+test('native environment rejects unterminated, duplicate and oversized data without leaking it', () => {
+  for (const value of ['GST_REGISTRY_UPDATE=raw-secret',
+    'GST_REGISTRY_UPDATE=no\0GST_REGISTRY_UPDATE=raw-secret\0',
+    `GST_REGISTRY=${'x'.repeat(4097)}raw-secret\0`,
+    `UNRELATED=${'x'.repeat(128 * 1024)}raw-secret\0`]) {
+    const f = nativeProcFixture();
+    f.files.set('/proc/30/environ', value);
+    const env = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc).processes[1].environment;
+    assert.equal(env?.status, 'unavailable');
+    assert(!JSON.stringify(env).includes('raw-secret'));
+  }
+});
+
+test('native environment discards data if PID, executable, boot or owned ancestry changes during read', () => {
+  for (const race of ['pid', 'executable', 'boot', 'ancestry']) {
+    const f = nativeProcFixture();
+    f.files.set('/proc/30/environ', 'GST_REGISTRY_UPDATE=raced-value\0');
+    const read = f.proc.read;
+    f.proc.read = (file) => {
+      const value = read(file);
+      if (file === '/proc/30/environ') {
+        if (race === 'pid') f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
+        if (race === 'executable') f.links.set('/proc/30/exe', '/usr/bin/peer');
+        if (race === 'boot') f.files.set('/proc/sys/kernel/random/boot_id', 'boot-B');
+        if (race === 'ancestry') f.files.set('/proc/25/stat', f.stat(25, 1));
+      }
+      return value;
+    };
+    let recorded = '';
+    try { recorded = JSON.stringify(collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc)); }
+    catch (error) { assert.match(String(error), /identity|boot|ancestry/); }
+    assert(f.reads.includes('/proc/30/environ'), race);
+    assert(!recorded.includes('raced-value'), race);
+    if (recorded) assert(!JSON.parse(recorded).processes.some(({ pid }: { pid: number }) => pid === 30), race);
+  }
+});
+
+test('native environment is captured once per PID identity, including unavailable reads', () => {
+  const f = nativeProcFixture();
+  f.files.set('/proc/30/environ', 'GST_REGISTRY_UPDATE=no\0');
+  const first = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc);
+  const seen = new Set(first.processes.filter((row) => row.environment)
+    .map((row) => `${row.pid}:${row.identity}`));
+  f.reads.length = 0;
+  const next = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc, seen);
+  assert(next.processes.every((row) => !row.environment));
+  assert(!f.reads.some((file) => file.endsWith('/environ')));
+  f.files.set('/proc/30/stat', f.stat(30, 25, '101'));
+  f.files.set('/proc/30/task/30/stat', f.stat(30, 25, '101'));
+  const reused = collectOwnedWebKitSample({ ...f.options, environment: true }, f.proc, seen);
+  assert.equal(reused.processes.find(({ pid }) => pid === 30)?.environment?.status, 'captured');
+});
+
 test('native stack capture requires owned identity, real frames, detach and resumed target', () => {
   const f = nativeProcFixture();
   const target = collectOwnedWebKitSample(f.options, f.proc).processes[1];
@@ -227,6 +347,13 @@ test('native diagnostic buffers during sampling, flushes on stop, and preserves 
     assert.equal(rows[0].maxSamples, 1200);
     assert.equal(rows[0].persistence, 'buffered-until-finish');
     assert.equal(rows[0].maxBufferedBytes, 16 * 1024 * 1024);
+    assert.equal(rows[0].schemaVersion, 'native-process-probe-v3');
+    assert.equal(rows[0].environment.maxBytes, 128 * 1024);
+    assert.equal(rows[0].environment.persistence, 'once-per-pid-identity');
+    const environments = rows.filter((row) => row.kind === 'sample')
+      .flatMap((row) => row.processes).filter((row) => row.environment);
+    assert(environments.some((row) => row.environment.status === 'captured'));
+    assert.equal(new Set(environments.map((row) => `${row.pid}:${row.identity}`)).size, environments.length);
     assert.equal(rows.at(-1).kind, 'end');
     assert.equal(rows.at(-1).reason, 'stopped');
     assert(rows.at(-1).samples >= 1);

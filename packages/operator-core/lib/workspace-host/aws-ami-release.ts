@@ -25,6 +25,16 @@ export const AWS_AMI_VERSION_MANIFEST_SCHEMA_VERSION = 1;
 /** Every released AMI is named `<prefix><release version>`. */
 export const AWS_AMI_NAME_PREFIX = 'papercusp-workspace-host-';
 
+/**
+ * AWS accounts whose shared AMIs a customer image catalog treats as Papercusp releases.
+ *
+ * A shared AMI carries no tags across accounts, and ANY account can share an AMI whose Name and
+ * Description imitate a release, so the owner account is the only trust anchor a consumer has.
+ * This is the AWS counterpart of the GCP catalog's single pinned image project
+ * (aws-byoc-gcp-parity-2026-10-01#D-005).
+ */
+export const AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS: readonly string[] = ['413781344298'];
+
 const AWS_AMI_DESCRIPTION_PATTERN = /^papercusp-workspace-host (\S+) release-sha256:([a-f0-9]{64})$/;
 
 /**

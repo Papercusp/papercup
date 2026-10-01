@@ -77,7 +77,15 @@ describe('llmScenarioLedgerRow', () => {
     expect(row.outputTail).toBeNull();
     expect(recordedTestLayer(row.executionDetails)).toBe('llm');
     const parsed = parseTestRunExecutionDetails(JSON.parse(JSON.stringify(row.executionDetails)));
-    expect(parsed).toMatchObject({ passed: 2, failed: 0, skipped: 0, filePath: ctx.filePath, commitSha: 'abc123', worktreeDirty: false });
+    expect(parsed).toMatchObject({
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+      filePath: ctx.filePath,
+      scenarioId: 'su-S01-harness-scope',
+      commitSha: 'abc123',
+      worktreeDirty: false,
+    });
   });
 
   it('a failed run fails the row; errored runs count as failures, not passes', () => {

@@ -76,8 +76,45 @@ export async function previewSpecPoolEffect(
   const sql = getOrgPg().sql;
   // Mirrors claimFloorsWhereSql's unified ['open'] default (work-item-status-full-unify P-004/P-005)
   // so the WI-5212 pool-effect preview counts the SAME pool the real claim runs against.
-  const states = [...(spec.states ?? ['open'])];
+  const states = specPoolStates(spec);
   const harness = opts.harness ?? null;
+  const filter = compileFilter(sql, spec.view.filter);
+  const rows = (await sql`
+    SELECT count(*)::int AS pool,
+           (count(*) FILTER (WHERE ${filter}))::int AS matched
+      FROM harness_shared.work_items wi
+     WHERE ${specPoolFloors(sql, { workspaceId: opts.workspaceId, harness, states })}
+  `) as Array<{ pool: number; matched: number }>;
+  const row = rows[0] ?? { pool: 0, matched: 0 };
+  return { matched: row.matched, pool: row.pool, states, harness };
+}
+
+/** The states a spec's pool count runs under: `spec.states ?? ['open']`. */
+export function specPoolStates(spec: ClaimSpec): string[] {
+  return [...(spec.states ?? ['open'])];
+}
+
+/**
+ * The neutral pool floors as ONE parenthesised WHERE conjunct — the single definition
+ * {@link previewSpecPoolEffect} COUNTS under and the predicate-partition adapter
+ * (spec-predicate-partition.ts, EI-23760081161304754) PARTITIONS under. Extracted rather than
+ * copied: a second hand-written copy of these floors is exactly how a preview and a pull come to
+ * measure different pools.
+ *
+ * Columns are deliberately UNQUALIFIED (no `wi.`), the same way FIELD_MAP's column fragments
+ * are: the partition surface re-renders this text into `FROM <relation> t …` statements whose
+ * alias is not `wi`, and a qualified reference there fails with a missing-FROM-entry error that
+ * the fail-open probe then swallows (the preview silently degrades to statements-only). Every
+ * caller reads one table, so an unqualified column resolves identically.
+ *
+ * The conjunct names `workspace_id`, which is what lets planPredicatePartition classify it as a
+ * SCOPE predicate carried into the partition's WHERE rather than as a discriminating dimension.
+ */
+export function specPoolFloors(
+  sql: OrgSql,
+  opts: { workspaceId: string; harness: string | null; states: string[] },
+) {
+  const { harness, states } = opts;
   // EI-18675972728146330: the real issue-family claim path (issueClaimCandidateSubquery /
   // aggregateIssueClaimExclusions, which backs work_items:claimable's matchedByFilter) admits
   // BOTH `wi.harness_slug = harness` AND the operator-scope alias `operator:<issuesScopeWorkspace()>`

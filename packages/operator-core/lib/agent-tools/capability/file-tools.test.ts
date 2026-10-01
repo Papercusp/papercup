@@ -470,6 +470,42 @@ describe('capability:read', () => {
     });
   });
 
+  it('directs text scratch spills to byte windows when evidence selection needs JSON', async () => {
+    const f = join(DIR, 'markdown-evidence-reference.txt');
+    const payload = '## Work item\nID: EI-123\n';
+    writeScratchReference({
+      filePath: f,
+      payload,
+      workspaceId: 'ws-1',
+      mediaType: 'text/markdown',
+      evidence: [{ evidenceClass: 'work-item', contentIndex: 0, jsonPointers: ['/id'] }],
+    });
+    const readCtx = { ...baseCtx, workspaceId: 'ws-1' } as never;
+
+    const selected = (await readTool.handler!(
+      { file_path: f, evidence_class: 'work-item' },
+      readCtx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(selected.isError).toBe(true);
+    expect(parse(selected)).toMatchObject({
+      ok: false,
+      reason: 'evidence_not_selectable',
+      message: 'scratch reference payload is not JSON. Use line or byte windows for text or Markdown spills.',
+    });
+
+    const bytes = (await readTool.handler!(
+      { file_path: f, byte_offset: 0, byte_limit: 256 },
+      readCtx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(bytes.isError).not.toBe(true);
+    expect(parse(bytes)).toMatchObject({
+      ok: true,
+      encoding: 'base64',
+      data: Buffer.from(payload).toString('base64'),
+      eof: true,
+    });
+  });
+
   it('advertises and enforces evidence-class window exclusivity', async () => {
     const published = toJsonSchema(readTool.args as never) as {
       anyOf?: Array<{

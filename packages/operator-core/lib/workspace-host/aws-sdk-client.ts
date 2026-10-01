@@ -123,6 +123,11 @@ import type {
   AwsVolumeObservation,
   AwsWorkspaceHostSdkClient,
 } from './aws-provider';
+import {
+  AWS_AMI_NAME_PREFIX,
+  AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS,
+  parseAwsAmiReleaseDescription,
+} from './aws-ami-release';
 
 export const AWS_WORKSPACE_HOST_CLIENT_TOKEN_TAG = 'papercusp:client-token';
 const DEFAULT_ROLE_SESSION_NAME = 'papercusp-workspace-host';
@@ -172,6 +177,8 @@ export interface AwsSdkWorkspaceHostClientOptions extends AwsSdkCredentialResolv
   createClients?: (config: AwsSdkClientConfig) => AwsSdkClientSet;
   waiter?: Partial<AwsSdkWaiterConfig>;
   now?: () => string;
+  /** Accounts whose shared release AMIs the image catalog lists (default: the Papercusp publisher). */
+  imagePublisherAccountIds?: readonly string[];
 }
 
 const DEFAULT_WAITER: AwsSdkWaiterConfig = { maxWaitTimeSec: 300, minDelaySec: 5, maxDelaySec: 20 };
@@ -548,6 +555,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   private readonly regional = new Map<string, AwsSdkClientSet>();
   private readonly waiter: AwsSdkWaiterConfig;
   private readonly now: () => string;
+  private readonly imagePublisherAccountIds: readonly string[];
   private accountCheck?: Promise<AwsCallerIdentityEvidence>;
 
   constructor(options: AwsSdkWorkspaceHostClientOptions) {
@@ -567,6 +575,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     this.createClients = options.createClients ?? defaultCreateClients;
     this.waiter = { ...DEFAULT_WAITER, ...options.waiter };
     this.now = options.now ?? (() => new Date().toISOString());
+    this.imagePublisherAccountIds = options.imagePublisherAccountIds ?? AWS_WORKSPACE_HOST_AMI_PUBLISHER_ACCOUNT_IDS;
   }
 
   private clients(region = this.bound.region): AwsSdkClientSet {
@@ -749,33 +758,60 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     this.assertSameAccount(connection);
     this.assertSameAccount(query.scope);
     const ec2 = this.clients(query.region ?? this.bound.region).ec2;
-    const filters = [
-      { Name: 'state', Values: ['available'] },
-      { Name: 'tag:papercusp:managed', Values: ['true'] },
-      ...(query.architecture ? [{ Name: 'architecture', Values: [query.architecture] }] : []),
-    ];
-    const [owned, shared] = await Promise.all([
-      this.call('describe-images', () => ec2.send(new DescribeImagesCommand({ Owners: ['self'], Filters: filters }))),
+    const available = { Name: 'state', Values: ['available'] };
+    const architecture = query.architecture ? [{ Name: 'architecture', Values: [query.architecture] }] : [];
+    // AWS never shows user-defined tags on an AMI to the accounts it is shared with, so a tag
+    // filter on the shared query returns nothing in a customer account. Shared releases are
+    // found instead by their publisher (the trust anchor) and their release name, and their
+    // provenance is read from the Description the release pipeline writes.
+    const publishers = [...new Set(this.imagePublisherAccountIds)].filter((id) => id !== this.bound.accountId);
+    const [owned, published] = await Promise.all([
       this.call('describe-images', () =>
-        ec2.send(new DescribeImagesCommand({ ExecutableUsers: ['self'], Filters: filters })),
+        ec2.send(
+          new DescribeImagesCommand({
+            Owners: ['self'],
+            Filters: [available, { Name: 'tag:papercusp:managed', Values: ['true'] }, ...architecture],
+          }),
+        ),
       ),
+      publishers.length
+        ? this.call('describe-images', () =>
+            ec2.send(
+              new DescribeImagesCommand({
+                Owners: publishers,
+                Filters: [available, { Name: 'name', Values: [`${AWS_AMI_NAME_PREFIX}*`] }, ...architecture],
+              }),
+            ),
+          )
+        : Promise.resolve({ Images: [] as Image[] }),
     ]);
-    const byId = new Map<string, Image>();
-    for (const image of [...(owned.Images ?? []), ...(shared.Images ?? [])]) {
-      if (image.ImageId) byId.set(image.ImageId, image);
+    const byId = new Map<string, { image: Image; version?: string; signed: boolean }>();
+    for (const image of owned.Images ?? []) {
+      if (!image.ImageId) continue;
+      const tags = new Map((image.Tags ?? []).map((tag) => [tag.Key ?? '', tag.Value ?? '']));
+      const version = tags.get('papercusp:image-version');
+      // Only an AMI produced by the release pipeline carries its signed release digest.
+      byId.set(image.ImageId, { image, ...(version ? { version } : {}), signed: Boolean(tags.get('papercusp:release-sha256')) });
+    }
+    const trusted = new Set(publishers);
+    for (const image of published.Images ?? []) {
+      if (!image.ImageId || byId.has(image.ImageId) || !image.OwnerId || !trusted.has(image.OwnerId)) continue;
+      const release = parseAwsAmiReleaseDescription(image.Description);
+      // A shared image is listed only as a complete release: its Name must be the release name
+      // for the version its Description attests. Anything else from the publisher (a staging
+      // candidate, a hand-made image) is not a release a customer should launch.
+      if (!release || image.Name !== `${AWS_AMI_NAME_PREFIX}${release.releaseVersion}`) continue;
+      byId.set(image.ImageId, { image, version: release.releaseVersion, signed: true });
     }
     return [...byId.values()]
-      .map((image) => {
-        const tags = new Map((image.Tags ?? []).map((tag) => [tag.Key ?? '', tag.Value ?? '']));
-        const version = tags.get('papercusp:image-version');
-        const architecture = architectureOf(image.Architecture);
+      .map(({ image, version, signed }) => {
+        const imageArchitecture = architectureOf(image.Architecture);
         return {
           id: image.ImageId!,
           ...(version ? { version } : {}),
           label: image.Name ?? image.ImageId!,
-          ...(architecture ? { architecture } : {}),
-          // Only an AMI produced by the release pipeline carries its signed release digest.
-          signed: Boolean(tags.get('papercusp:release-sha256')),
+          ...(imageArchitecture ? { architecture: imageArchitecture } : {}),
+          signed,
           ...(image.CreationDate ? { publishedAt: image.CreationDate } : {}),
           ...(image.DeprecationTime ? { deprecated: Date.parse(image.DeprecationTime) <= Date.now() } : {}),
         };

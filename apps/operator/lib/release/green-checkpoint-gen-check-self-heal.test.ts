@@ -13,6 +13,7 @@ import {
   makeRealGenCheckHealIo,
   pairedGenWriter,
   parsePorcelainZ,
+  publishGenHealGitlinks,
   signatureWithoutHealed,
   type GenCheckHealIo,
 } from "./green-checkpoint-gen-check-self-heal";
@@ -317,8 +318,10 @@ describe("makeRealGenCheckHealIo.buildSourceCommit (real git)", () => {
       runScript: async () => ({ code: 0, tail: "" }),
       log: () => {},
     });
-    return { integ, integSub, ckpt, pin, head, io };
+    return { base, integ, integSub, ckpt, pin, head, io };
   }
+  const gitlinkAt = (f: ReturnType<typeof fixture>, commit: string) =>
+    git(f.integ, ["ls-tree", commit, "--", "libs/sub"]).split(/\s+/)[2]!;
 
   it("commits a writer delta inside a submodule on its pin and stages that commit as the gitlink", async () => {
     const f = fixture();
@@ -345,5 +348,42 @@ describe("makeRealGenCheckHealIo.buildSourceCommit (real git)", () => {
     writeFileSync(join(sub, "gen.txt"), "fresh\n");
     git(sub, ["commit", "-qam", "moved"]);
     await expect(f.io.buildSourceCommit(f.head, ["libs/sub"])).rejects.toThrow(/not its pin/);
+  });
+
+  it("builds the same submodule commit every time, so its gate-pin can be published ahead", async () => {
+    const f = fixture();
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const first = gitlinkAt(f, await f.io.buildSourceCommit(f.head, ["libs/sub"]));
+    const second = gitlinkAt(f, await f.io.buildSourceCommit(f.head, ["libs/sub"]));
+    expect(second).toBe(first);
+    expect(git(f.integSub, ["show", "-s", "--format=%aI %cI", first])).toBe(
+      "2000-01-01T00:00:00+00:00 2000-01-01T00:00:00+00:00",
+    );
+  });
+
+  it("publishes a gate-pin tag on the submodule's origin for a heal-built gitlink only", async () => {
+    const f = fixture();
+    const origin = join(f.base, "sub-origin.git");
+    git(f.base, ["init", "-q", "--bare", origin]);
+    git(f.integSub, ["remote", "add", "origin", origin]);
+    expect(await publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: f.head })).toEqual([]);
+
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const src = await f.io.buildSourceCommit(f.head, ["libs/sub"]);
+    const healed = gitlinkAt(f, src);
+    expect(await publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: src })).toEqual([
+      { path: "libs/sub", sha: healed },
+    ]);
+    expect(git(origin, ["rev-parse", `refs/tags/gate-pin/${healed}^{commit}`])).toBe(healed);
+  });
+
+  it("throws when the gate-pin cannot be published, so promotion holds", async () => {
+    const f = fixture();
+    git(f.integSub, ["remote", "add", "origin", join(f.base, "missing-origin.git")]);
+    writeFileSync(join(f.ckpt, "libs", "sub", "gen.txt"), "fresh\n");
+    const src = await f.io.buildSourceCommit(f.head, ["libs/sub"]);
+    await expect(publishGenHealGitlinks({ integrationRoot: f.integ, candidateSha: src })).rejects.toThrow(
+      /gate-pin publication for libs\/sub/,
+    );
   });
 });

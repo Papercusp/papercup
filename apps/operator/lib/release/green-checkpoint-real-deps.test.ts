@@ -3616,15 +3616,38 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "base123",
       "candidate123",
     );
-    expect(calls[0].cmd).toBe("git");
-    expect(calls[0].args).toEqual([
+    // The candidate's gitlinks are listed first so a gen-heal pin can be published.
+    expect(calls[0].args).toEqual(["-C", "/int", "ls-tree", "-r", "-z", "candidate123"]);
+    expect(calls[1].cmd).toBe("git");
+    expect(calls[1].args).toEqual([
       "-C",
       "/int",
       "push",
       "origin",
       "candidate123:refs/heads/ready",
     ]);
-    expect(calls[0].opts?.env?.PAPERCUSP_MAIN_PUSH_OK).toBe("1");
+    expect(calls[1].opts?.env?.PAPERCUSP_MAIN_PUSH_OK).toBe("1");
+  });
+
+  it("push publishes a gate-pin tag for a gen-heal gitlink BEFORE main, and holds promotion when it cannot", async () => {
+    const heal = "e".repeat(40);
+    const listing = { code: 0, stdout: `100644 blob ${"1".repeat(40)}\ttop.txt\x00160000 commit ${heal}\tlibs/sub\x00` };
+    const published = makeExec([listing, { code: 0 }, { code: 0 }, { code: 0, stdout: "" }]);
+    await realCheckpointDeps(cfg, published.exec).push("ready", "base123", "candidate123");
+    expect(published.calls.map((c) => c.args.slice(2))).toEqual([
+      ["ls-tree", "-r", "-z", "candidate123"],
+      ["rev-parse", "--verify", "--quiet", `refs/papercusp/gen-heal/${heal}`],
+      ["push", "origin", `${heal}:refs/tags/gate-pin/${heal}`],
+      ["ls-tree", "-r", "-z", heal],
+      ["push", "origin", "candidate123:refs/heads/ready"],
+    ]);
+    expect(published.calls[2]!.args[1]).toBe("/int/libs/sub");
+
+    const refused = makeExec([listing, { code: 0 }, { code: 1, stderr: "remote rejected" }]);
+    await expect(realCheckpointDeps(cfg, refused.exec).push("ready", "base123", "candidate123")).rejects.toThrow(
+      /gate-pin publication for libs\/sub/,
+    );
+    expect(refused.calls.some((c) => c.args.includes("candidate123:refs/heads/ready"))).toBe(false);
   });
 
   it("push also workflow_dispatches test.yml (EI-18661485259809120: [skip ci] on every commit means the git push above never actually triggers it)", async () => {

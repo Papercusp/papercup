@@ -3,7 +3,7 @@
  * https://docs.kernel.org/scheduler/sched-stats.html#proc-pid-schedstat
  * This identifies CPU/runqueue/sleep intervals, never JavaScript call stacks. */
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
-import { appendFileSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
@@ -13,11 +13,25 @@ import {
 
 interface ProcReader {
   read(file: string): string;
+  readBounded?(file: string, maxBytes: number): string;
   list(file: string): string[];
   link(file: string): string;
 }
 const liveProc: ProcReader = {
   read: (file) => readFileSync(file, 'utf8'),
+  readBounded: (file, maxBytes) => {
+    const fd = openSync(file, 'r');
+    try {
+      const data = Buffer.alloc(maxBytes + 1);
+      let length = 0;
+      while (length < data.length) {
+        const bytes = readSync(fd, data, length, data.length - length, null);
+        if (!bytes) return data.subarray(0, length).toString('utf8');
+        length += bytes;
+      }
+      throw new Error('Native environment exceeds byte bound');
+    } finally { closeSync(fd); }
+  },
   list: (file) => readdirSync(file),
   link: (file) => readlinkSync(file),
 };
@@ -26,6 +40,50 @@ export interface NativeProbeOptions {
   driverIdentity: string;
   appPath: string;
   stacks?: boolean;
+  environment?: boolean;
+}
+
+// Exact keys, never a prefix allowlist or an inherited process.env snapshot.
+const ENVIRONMENT_KEYS = ['GST_REGISTRY', 'GST_REGISTRY_1_0', 'GST_REGISTRY_UPDATE',
+  'GST_REGISTRY_FORK', 'GST_PLUGIN_PATH', 'GST_PLUGIN_PATH_1_0',
+  'GST_PLUGIN_SYSTEM_PATH', 'GST_PLUGIN_SYSTEM_PATH_1_0', 'GST_PLUGIN_SCANNER',
+  'GST_PLUGIN_SCANNER_1_0', 'GST_DEBUG', 'GST_DEBUG_FILE', 'XDG_CACHE_HOME'] as const;
+const MAX_ENVIRONMENT_BYTES = 128 * 1024;
+const MAX_ENVIRONMENT_VALUE_BYTES = 4096;
+type EnvironmentKey = typeof ENVIRONMENT_KEYS[number];
+type NativeEnvironment = { readStartedEpochMs: number; readCompletedEpochMs: number } & (
+  { status: 'captured'; values: Record<EnvironmentKey,
+    { status: 'present'; value: string } | { status: 'absent' }> } |
+  { status: 'unavailable'; reason: 'read-failed' | 'invalid-or-oversized' }
+);
+
+function readNativeEnvironment(pid: number, proc: ProcReader): NativeEnvironment {
+  const readStartedEpochMs = Date.now();
+  const timing = () => ({ readStartedEpochMs, readCompletedEpochMs: Date.now() });
+  let raw: string;
+  try {
+    const file = `/proc/${pid}/environ`;
+    raw = proc.readBounded ? proc.readBounded(file, MAX_ENVIRONMENT_BYTES) : proc.read(file);
+  } catch {
+    // A proc reader's error may contain raw environment data; do not serialize it.
+    return { ...timing(), status: 'unavailable', reason: 'read-failed' };
+  }
+  if (Buffer.byteLength(raw) > MAX_ENVIRONMENT_BYTES || (raw && !raw.endsWith('\0'))) {
+    return { ...timing(), status: 'unavailable', reason: 'invalid-or-oversized' };
+  }
+  const values = Object.fromEntries(ENVIRONMENT_KEYS.map((key) => [key, { status: 'absent' }])) as
+    Extract<NativeEnvironment, { status: 'captured' }>['values'];
+  for (const entry of raw.split('\0')) {
+    const separator = entry.indexOf('=');
+    const key = entry.slice(0, separator) as EnvironmentKey;
+    if (separator < 0 || !ENVIRONMENT_KEYS.includes(key)) continue;
+    const value = entry.slice(separator + 1);
+    if (values[key].status !== 'absent' || Buffer.byteLength(value) > MAX_ENVIRONMENT_VALUE_BYTES) {
+      return { ...timing(), status: 'unavailable', reason: 'invalid-or-oversized' };
+    }
+    values[key] = { status: 'present', value };
+  }
+  return { ...timing(), status: 'captured', values };
 }
 export function parseSchedstat(value: string) {
   const fields = value.trim().split(/\s+/);
@@ -47,7 +105,8 @@ export function schedstatDelta(before: ReturnType<typeof parseSchedstat>, after:
 
 /** Discover through every task's children: GLib can spawn from a worker thread.
  * No global /proc name match, inherited environment, or PID-only attribution. */
-export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: ProcReader = liveProc) {
+export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: ProcReader = liveProc,
+  capturedEnvironmentIdentities: ReadonlySet<string> = new Set()) {
   const readStartedEpochMs = Date.now();
   const started = performance.now();
   const boot = proc.read('/proc/sys/kernel/random/boot_id').trim();
@@ -61,6 +120,7 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
   const seen = new Set<number>();
   const processes: Array<{ pid: number; identity: string; kind: 'app' | 'webkit'; ancestry: Ancestor[];
     appPid: number; appIdentity: string; state: string | null; wchan: string | null;
+    environment?: NativeEnvironment;
     schedstat: ReturnType<typeof parseSchedstat>; readStartedEpochMs: number; readCompletedEpochMs: number }> = [];
   const unavailable: string[] = [];
   while (queue.length) {
@@ -80,20 +140,30 @@ export function collectOwnedWebKitSample(options: NativeProbeOptions, proc: Proc
         const schedstat = parseSchedstat(proc.read(`${task}/schedstat`));
         let wchan: string | null = null;
         try { wchan = proc.read(`${task}/wchan`).trim(); } catch { /* explicitly unavailable */ }
-        if (linuxProcessIdentityFromStat(boot, mainStat) !== node.identity ||
-            identity(node.pid) !== node.identity || identity(app.pid) !== app.identity) {
-          throw new Error('process/app identity changed during sampling');
-        }
-        const chain = [...node.ancestry, { pid: node.pid, identity: node.identity }];
-        for (let i = 0; i < chain.length; i++) {
-          const stat = proc.read(`/proc/${chain[i].pid}/stat`);
-          if (linuxProcessIdentityFromStat(boot, stat) !== chain[i].identity ||
-              (i > 0 && linuxPpidFromProcStat(stat) !== chain[i - 1].pid)) {
-            throw new Error('owned ancestry changed during sampling');
+        const validate = () => {
+          if (linuxProcessIdentityFromStat(boot, mainStat) !== node.identity ||
+              identity(node.pid) !== node.identity || identity(app.pid) !== app.identity ||
+              proc.link(`/proc/${node.pid}/exe`) !== exe || proc.link(`/proc/${app.pid}/exe`) !== options.appPath ||
+              proc.read('/proc/sys/kernel/random/boot_id').trim() !== boot) {
+            throw new Error('process/app identity changed during sampling');
           }
-        }
+          const chain = [...node.ancestry, { pid: node.pid, identity: node.identity }];
+          for (let i = 0; i < chain.length; i++) {
+            const stat = proc.read(`/proc/${chain[i].pid}/stat`);
+            if (linuxProcessIdentityFromStat(boot, stat) !== chain[i].identity ||
+                (i > 0 && linuxPpidFromProcStat(stat) !== chain[i - 1].pid)) {
+              throw new Error('owned ancestry changed during sampling');
+            }
+          }
+        };
+        // Bracket the environment read with the same owned lifetime proof.
+        validate();
+        const environment = options.environment && !capturedEnvironmentIdentities.has(`${node.pid}:${node.identity}`)
+          ? readNativeEnvironment(node.pid, proc) : undefined;
+        if (environment) validate();
         processes.push({ pid: node.pid, identity: node.identity, kind, ancestry: node.ancestry,
           appPid: app.pid, appIdentity: app.identity, state: linuxProcStateFromStat(mainStat), wchan, schedstat,
+          ...(environment ? { environment } : {}),
           readStartedEpochMs: sampleStarted, readCompletedEpochMs: Date.now() });
       }
       const tasks = proc.list(`/proc/${node.pid}/task`);
@@ -222,11 +292,14 @@ export function startNativeProcessProbe(driverPid: number, appPath: string, file
   if (process.platform !== 'linux') throw new Error('Native CPU diagnostic requires Linux /proc');
   const driverIdentity = readProcessIdentity(driverPid);
   if (!driverIdentity) throw new Error('Native CPU diagnostic cannot identify its driver');
-  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks };
+  const options = { driverPid, driverIdentity, appPath: realpathSync(appPath), stacks, environment: true };
   // Exclusive create prevents a rerun from overwriting earlier diagnostic evidence.
-  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v2',
+  writeFileSync(file, `${JSON.stringify({ kind: 'header', schemaVersion: 'native-process-probe-v3',
     options, intervalMs: 100, maxDurationMs: 120_000, maxSamples: MAX_SAMPLES,
     persistence: 'buffered-until-finish', maxBufferedBytes: MAX_BUFFERED_BYTES,
+    environment: { keys: ENVIRONMENT_KEYS, maxBytes: MAX_ENVIRONMENT_BYTES,
+      maxValueBytes: MAX_ENVIRONMENT_VALUE_BYTES, persistence: 'once-per-pid-identity',
+      source: '/proc/<owned-pid>/environ', limitation: 'initial process environment; later in-process changes may be invisible' },
     stacks: stacks ? { maxCaptures: 3, intervalMs: 1_000, debuggerTimeoutMs: 4_000,
       maxOutputBytes: 256 * 1024, latencyAcceptance: false } : null })}\n`, { flag: 'wx', mode: 0o600 });
   return fork(__filename, [JSON.stringify(options), file], {
@@ -249,6 +322,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   const file = process.argv[3];
   const started = performance.now();
   const buffer = new NativeSampleBuffer();
+  const capturedEnvironmentIdentities = new Set<string>();
   let samples = 0;
   let finished = false;
   const stackRows: ReturnType<typeof captureOwnedNativeStacks>[] = [];
@@ -267,8 +341,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     if (finished) return;
     if (samples >= MAX_SAMPLES || performance.now() - started >= 120_000) return finish('bound');
     try {
-      const sample = collectOwnedWebKitSample(options);
+      const sample = collectOwnedWebKitSample(options, liveProc, capturedEnvironmentIdentities);
       if (!buffer.add(sample)) return finish('buffer-bound');
+      for (const row of sample.processes) {
+        if (row.environment) capturedEnvironmentIdentities.add(`${row.pid}:${row.identity}`);
+      }
       samples++;
       if (samples === 1 && process.connected) process.send?.({ kind: 'sampling-started' });
       const target = sample.processes.find(({ kind }) => kind === 'webkit');

@@ -745,7 +745,9 @@ function spillRecoveryNote(
       `${input.aggregateMode === 'compatibility' ? '2-second compatibility cohort' : 'explicit output cohort'} ` +
       'consumed the shared budget. This does not prove they were parallel siblings. ' +
       'Read the spill in bounded byte pages, or retry in a NEW output cohort; reissuing ' +
-      'within the same cohort can spill again.'
+      'within the same cohort can spill again. To fan out WIDE without spending this budget at all, ' +
+      'fold the calls into ONE code:run — only the script\'s return value re-enters context ' +
+      '(a re-issue after this spill is not counted against you by the batch-hint).'
     );
   }
   if (reason === 'explicit-full-request-overflow') {

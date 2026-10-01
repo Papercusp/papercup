@@ -89,6 +89,7 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       workspaceId: ledger.workspaceId,
       harnessSlug: ledger.harnessSlug,
       testNamePattern: null,
+      scenarioId: report.scenarioId,
       testLayer: 'llm',
       // An errored run measured nothing it could pass; count it against the file.
       passed,

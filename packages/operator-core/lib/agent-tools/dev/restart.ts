@@ -68,7 +68,7 @@
 import { z } from 'zod';
 import { execFile, spawn } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import { createTextCollector } from '../../child-output';
@@ -403,6 +403,117 @@ export function configureBgHostRestartFreshnessReaderForTests(
   reader: BgHostRestartFreshnessReader = defaultBgHostRestartFreshnessReader,
 ): void {
   bgHostRestartFreshnessReader = reader;
+}
+
+export type BgHostEnvironmentDropInSnapshot = {
+  path: string;
+  mtimeMs: number;
+  contents: string;
+};
+
+export type BgHostEnvironmentDropInFreshness = {
+  checked: boolean;
+  changedPaths: string[];
+};
+
+const UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS: BgHostEnvironmentDropInFreshness = {
+  checked: false,
+  changedPaths: [],
+};
+
+/**
+ * PURE — identify active Environment= drop-ins whose bytes post-date the exact
+ * current MainPID start time. Comparing only these files avoids treating
+ * unrelated process environment differences (for example PATH) as a stale unit.
+ */
+export function evaluateBgHostEnvironmentDropInFreshness(
+  dropIns: readonly BgHostEnvironmentDropInSnapshot[],
+  startedAtMs: number,
+): BgHostEnvironmentDropInFreshness {
+  if (!Number.isFinite(startedAtMs) || dropIns.some((dropIn) => !Number.isFinite(dropIn.mtimeMs))) {
+    return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+  }
+
+  const changedPaths = dropIns
+    .filter((dropIn) => {
+      if (dropIn.mtimeMs <= startedAtMs) return false;
+      return dropIn.contents.split(/\r?\n/).some((rawLine) => {
+        const line = rawLine.trimStart();
+        return !line.startsWith('#') && /^Environment\s*=/.test(line);
+      });
+    })
+    .map((dropIn) => dropIn.path);
+  return { checked: true, changedPaths };
+}
+
+export type BgHostEnvironmentDropInFreshnessReader = (
+  unit: string,
+  startedAtMs: number,
+) => Promise<BgHostEnvironmentDropInFreshness>;
+
+const defaultBgHostEnvironmentDropInFreshnessReader: BgHostEnvironmentDropInFreshnessReader = async (
+  unit,
+  startedAtMs,
+) => {
+  if (process.platform !== 'linux') return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+  try {
+    const { stdout } = await runExecFile(
+      'systemctl',
+      ['--user', 'show', '-p', 'DropInPaths', unit],
+      { cwd: process.cwd(), timeout: 5000, maxBuffer: 1024 * 1024 },
+    );
+    const dropInLine = stdout.split(/\r?\n/).find((line) => line.startsWith('DropInPaths='));
+    if (dropInLine === undefined) return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+
+    const paths = dropInLine
+      .slice('DropInPaths='.length)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const snapshots: BgHostEnvironmentDropInSnapshot[] = [];
+    for (const path of paths) {
+      if (!isAbsolute(path)) return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+      const before = statSync(path);
+      if (!before.isFile()) return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+      const contents = readFileSync(path, 'utf8');
+      const after = statSync(path);
+      if (before.mtimeMs !== after.mtimeMs || before.size !== after.size) {
+        return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+      }
+      snapshots.push({ path, mtimeMs: before.mtimeMs, contents });
+    }
+    return evaluateBgHostEnvironmentDropInFreshness(snapshots, startedAtMs);
+  } catch {
+    return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+  }
+};
+
+let bgHostEnvironmentDropInFreshnessReader = defaultBgHostEnvironmentDropInFreshnessReader;
+
+/** Test seam — keep systemctl and filesystem reads out of handler tests. */
+export function configureBgHostEnvironmentDropInFreshnessReaderForTests(
+  reader: BgHostEnvironmentDropInFreshnessReader = defaultBgHostEnvironmentDropInFreshnessReader,
+): void {
+  bgHostEnvironmentDropInFreshnessReader = reader;
+}
+
+async function readBgHostEnvironmentDropInFreshness(
+  unit: string,
+  service: ServiceStartInfo,
+): Promise<BgHostEnvironmentDropInFreshness> {
+  if (
+    !service.ok ||
+    service.mainPid === undefined ||
+    service.mainPid <= 0 ||
+    service.startedAtMs === undefined
+  ) {
+    return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+  }
+  try {
+    return await bgHostEnvironmentDropInFreshnessReader(unit, service.startedAtMs);
+  } catch {
+    return { ...UNKNOWN_BG_HOST_ENVIRONMENT_FRESHNESS };
+  }
 }
 
 /**
@@ -1041,6 +1152,8 @@ async function writeRestartAudit(
     gitSyncBarrier?: { resource: string; expiresAt: string } | null;
     /** The user manager consumed current unit/drop-in bytes before restart. */
     systemdDaemonReloaded: boolean;
+    /** A recent bg-host Environment= drop-in caused a cooldown bypass. */
+    unitEnvironmentDropInChange?: { paths: string[]; mainPidStartedAtMs: number } | null;
     /** WI-2140796: a real restart that deliberately crossed an active bg-host
      *  quiesce (override_quiesce:true) is attributable from the durable audit row. */
     quiesceOverridden?: { marker: QuiesceMarker | null } | null;
@@ -1527,6 +1640,7 @@ export default defineTool({
       serviceSecondsSinceStart: number | null;
       cooldownSec: number;
     } | null = null;
+    let bgHostEnvironmentDropInDrift: { changedPaths: string[]; startedAtMs: number } | null = null;
     if (enabled && cfg.cooldownResource) {
       const cd = cfg.cooldownResource;
       // EI-21998059463131681: the cooldown marker is the first staging
@@ -1574,6 +1688,16 @@ export default defineTool({
           // into an eager restart — the temporal throttle is also the protection
           // against repeatedly killing in-flight git-sync work.
           const freshness = target === 'bg-host' ? await readBgHostRestartFreshness() : null;
+          const environmentDropInFreshness =
+            target === 'bg-host' ? await readBgHostEnvironmentDropInFreshness(cfg.unit, svc) : null;
+          const environmentDropInChanged =
+            environmentDropInFreshness?.checked === true && environmentDropInFreshness.changedPaths.length > 0;
+          if (environmentDropInChanged && svc.startedAtMs !== undefined) {
+            bgHostEnvironmentDropInDrift = {
+              changedPaths: environmentDropInFreshness.changedPaths,
+              startedAtMs: svc.startedAtMs,
+            };
+          }
           const cooldownRemainingSec = Math.max(0, cooldownSec - ago);
           const freshnessFields = freshness
             ? {
@@ -1588,6 +1712,25 @@ export default defineTool({
                 ...(freshness.newestSourcePath ? { newestSourcePath: freshness.newestSourcePath } : {}),
               }
             : {};
+          const environmentDropInFields = environmentDropInFreshness
+            ? {
+                unitEnvFreshnessVerified: environmentDropInFreshness.checked,
+                unitEnvChangedSinceRestart: environmentDropInFreshness.checked
+                  ? environmentDropInFreshness.changedPaths.length > 0
+                  : null,
+                ...(environmentDropInChanged
+                  ? { unitEnvChangedDropIns: environmentDropInFreshness.changedPaths }
+                  : {}),
+              }
+            : {};
+          const environmentDropInNote =
+            environmentDropInFreshness === null
+              ? ''
+              : !environmentDropInFreshness.checked
+                ? ' Unit Environment= drop-in freshness could NOT be verified; do not assume Environment= edits are loaded.'
+                : environmentDropInChanged
+                  ? ` WARNING: Environment= drop-ins changed after MainPID ${svc.mainPid} started (${environmentDropInFreshness.changedPaths.join(', ')}); retrying under the exclusive restart guard.`
+                  : ' Unit Environment= drop-in freshness checked: no active Environment= drop-in is newer than the MainPID start.';
           const freshnessNote =
             freshness == null
               ? ''
@@ -1598,19 +1741,22 @@ export default defineTool({
                       freshness.newestSourcePath ? ` (newest source: ${freshness.newestSourcePath})` : ''
                     }; the requested edit is NOT loaded. The temporal throttle is preserved; retry after the remaining cooldown (~${cooldownRemainingSec}s) when safe.`
                   : ' Tree/bundle freshness checked: no runtime source is newer than the bundle used by this restart.';
-          return json({
-            ok: true,
-            target,
-            restarted: false,
-            coalesced: true,
-            verified: true,
-            restartedSecondsAgo: ago,
-            mainPid: svc.mainPid ?? null,
-            ...freshnessFields,
-            note: `${cfg.unit} genuinely restarted ~${ago}s ago${
-              holderName ? ` (marker held by ${holderName})` : ''
-            } — verified via systemd (MainPID ${svc.mainPid}). Skipping a redundant restart; probe it directly.${freshnessNote}`,
-          });
+          if (bgHostEnvironmentDropInDrift === null) {
+            return json({
+              ok: true,
+              target,
+              restarted: false,
+              coalesced: true,
+              verified: true,
+              restartedSecondsAgo: ago,
+              mainPid: svc.mainPid ?? null,
+              ...freshnessFields,
+              ...environmentDropInFields,
+              note: `${cfg.unit} genuinely restarted ~${ago}s ago${
+                holderName ? ` (marker held by ${holderName})` : ''
+              } — verified via systemd (MainPID ${svc.mainPid}). Skipping a redundant restart; probe it directly.${freshnessNote}${environmentDropInNote}`,
+            });
+          }
         }
         if (!svc.ok) {
           // Could NOT verify (no systemd / probe failed). Fall back to trusting
@@ -1844,6 +1990,62 @@ export default defineTool({
         // real cycle happened (the restart is detached+delayed, so we cannot
         // confirm it synchronously — but a changed MainPID proves it landed).
         const before = await probeServiceStart(cfg.unit);
+        let environmentDropInFreshnessAtGuard: BgHostEnvironmentDropInFreshness | null = null;
+        if (bgHostEnvironmentDropInDrift !== null) {
+          environmentDropInFreshnessAtGuard = await readBgHostEnvironmentDropInFreshness(cfg.unit, before);
+          if (!environmentDropInFreshnessAtGuard.checked) {
+            await releaseGitSyncBarrierOnAbort();
+            await releaseCooldownOnAbort();
+            return json({
+              ok: false,
+              target,
+              drained: true,
+              restarted: false,
+              reason: 'bg_host_freshness_unverified',
+              unitEnvFreshnessVerified: false,
+              unitEnvChangedSinceRestart: null,
+              note: `Restart REFUSED under the exclusive ${cfg.resource} lease because the current MainPID start or active Environment= drop-ins could not be verified. No restart was scheduled; the drain and git-sync barrier are being released. Retry when the service probe is available.`,
+            });
+          }
+          if (environmentDropInFreshnessAtGuard.changedPaths.length === 0) {
+            const currentTreeFreshness = await readBgHostRestartFreshness();
+            if (!currentTreeFreshness.checked) {
+              await releaseGitSyncBarrierOnAbort();
+              await releaseCooldownOnAbort();
+              return json({
+                ok: false,
+                target,
+                drained: true,
+                restarted: false,
+                reason: 'bg_host_freshness_unverified',
+                treeChangedSinceRestart: null,
+                freshnessVerified: false,
+                unitEnvFreshnessVerified: true,
+                unitEnvChangedSinceRestart: false,
+                note: `Restart REFUSED under the exclusive ${cfg.resource} lease because the source/bundle relationship could not be verified after the Environment= drop-in change was rechecked. No restart was scheduled; the drain and git-sync barrier are being released. Retry when freshness can be measured.`,
+              });
+            }
+            if (currentTreeFreshness.treeChangedSinceRestart === false) {
+              await releaseGitSyncBarrierOnAbort();
+              await releaseCooldownOnAbort();
+              return json({
+                ok: true,
+                target,
+                drained: true,
+                restarted: false,
+                coalesced: true,
+                verified: true,
+                restartedSecondsAgo: before.secondsSinceStart ?? null,
+                mainPid: before.mainPid ?? null,
+                treeChangedSinceRestart: false,
+                freshnessVerified: true,
+                unitEnvFreshnessVerified: true,
+                unitEnvChangedSinceRestart: false,
+                note: `${cfg.unit} was rechecked under the exclusive ${cfg.resource} lease: no active Environment= drop-in is newer than MainPID ${before.mainPid} and the bundle includes the current source tree. A peer already applied the requested changes, so no restart was scheduled.`,
+              });
+            }
+          }
+        }
         // Detached + delayed so this response returns before the service dies.
         // systemd latches a unit after it exceeds StartLimitBurst. A plain
         // `restart` is then rejected with "Start request repeated too quickly"
@@ -1948,6 +2150,14 @@ export default defineTool({
                   ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
                   : null,
               systemdDaemonReloaded,
+              ...(bgHostEnvironmentDropInDrift
+                ? {
+                    unitEnvironmentDropInChange: {
+                      paths: bgHostEnvironmentDropInDrift.changedPaths,
+                      mainPidStartedAtMs: bgHostEnvironmentDropInDrift.startedAtMs,
+                    },
+                  }
+                : {}),
               quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
             });
             if (stagingHandoff?.acquired) {
@@ -2031,6 +2241,15 @@ export default defineTool({
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
             systemdDaemonReloaded,
+            ...(environmentDropInFreshnessAtGuard
+              ? {
+                  unitEnvFreshnessVerified: environmentDropInFreshnessAtGuard.checked,
+                  unitEnvChangedSinceRestart: environmentDropInFreshnessAtGuard.changedPaths.length > 0,
+                  ...(environmentDropInFreshnessAtGuard.changedPaths.length > 0
+                    ? { unitEnvChangedDropIns: environmentDropInFreshnessAtGuard.changedPaths }
+                    : {}),
+                }
+              : {}),
             ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
             ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
             ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
@@ -2070,6 +2289,12 @@ export default defineTool({
                     phantomCoalesceBroken
                       ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
                       : ''
+                  }${
+                    environmentDropInFreshnessAtGuard?.changedPaths.length
+                      ? ` — restarted to load the newer Environment= drop-in(s): ${environmentDropInFreshnessAtGuard.changedPaths.join(', ')}`
+                      : bgHostEnvironmentDropInDrift
+                        ? ' — the Environment= drop-in change was rechecked under the exclusive lease; a peer loaded it while this request drained, and this restart is for the still-stale runtime tree'
+                        : ''
                   } — this connection will drop as the operator restarts.${
                     target === 'bg-host'
                       ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'

@@ -137,8 +137,16 @@ const ALLOWLIST: Record<string, Classification> = {
   'trigger_sources.scope_ref': {
     status: 'exempt',
     reason:
-      "enterprise-data-sources-2026-10-01 D-010 (migration 1317): the data-source CORPUS-scope reference — a pot " +
-      "slug, non-null iff scope='pot' (trigger_sources_scope_ref_chk) and NULL for scope='personal'|'organization'. " +
+      'Migration 1324 EXPAND-phase compat VIEW over data_sources (SELECT * FROM harness_shared.data_sources), kept ' +
+      'only so the deployed release still resolves the old table name; same column, same exemption as ' +
+      'data_sources.scope_ref below. Remove this entry when the CONTRACT migration drops the view.',
+  },
+  'data_sources.scope_ref': {
+    status: 'exempt',
+    reason:
+      "enterprise-data-sources-2026-10-01 D-010 (migration 1317; table renamed from trigger_sources by 1324): the " +
+      "data-source CORPUS-scope reference — a pot " +
+      "slug, non-null iff scope='pot' (data_sources_scope_ref_chk) and NULL for scope='personal'|'organization'. " +
       'It is a configuration selector naming which pot a connector ingests into, never an ownerId/sid; the ' +
       'personal owner lives in owner_user_id (a human user id). No presence-tied reader/reaper keys on it, and ' +
       'rebinding it would corrupt the pot ref. Same class as desktop_sessions.scope_ref.',

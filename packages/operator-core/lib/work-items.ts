@@ -86,7 +86,7 @@ import {
   stopTheLineExclusionSql,
 } from './work-items-admission';
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
-import { hasGenericKind } from './datatype-registry-store';
+import { hasGenericKind, type DatatypeNature } from './datatype-registry-store';
 import {
   ANY_FAMILY_TERMINAL_STATES,
   FEATURE_NON_REQUEUE_STATES,
@@ -1002,6 +1002,13 @@ export interface ListWorkItemsFilter {
   /** Case-insensitive literal substring matched against title + body/summary. */
   q?: string;
   kind?: WorkItemKind;
+  /**
+   * P-010 / D-011: restrict to rows of these natures (work | record | document | event).
+   * Unset or empty means nature 'work' only, UNLESS `kind` names one kind: naming a kind is
+   * an explicit ask, so `kind: 'pipeline-deal'` still returns its record rows. The issue
+   * family is bug/change/task, all nature 'work' (D-013), so a set without 'work' drops it.
+   */
+  natures?: readonly DatatypeNature[];
   state?: string;
   /**
    * WI-38339 — `state` as a SET, for the question a single value cannot ask. Measured
@@ -1252,6 +1259,28 @@ function likeContainsPattern(query: string): string {
  *
  * Returns `TRUE` when nothing is set, so a call site can AND it unconditionally.
  */
+/**
+ * P-010 / D-011 — the default-read nature boundary, ONE definition for list, both counts
+ * and search. Non-empty `natures` → that set. Otherwise an explicit `kind` → no nature
+ * filter (the caller named the kind). Otherwise only nature 'work', so a record-, document-
+ * or event-nature row never surfaces in a default work read. `nature` is stamped on every
+ * work_items row by the 1322 trigger from datatype_registry (D-018).
+ */
+export function natureWhereSql(
+  sql: OrgSql,
+  natures: readonly DatatypeNature[] | undefined,
+  kind: string | undefined,
+) {
+  if (natures && natures.length > 0) return sql`nature = ANY(${natures as string[]}::text[])`;
+  if (kind) return sql`TRUE`;
+  return sql`nature = 'work'`;
+}
+
+/** Whether a `natures` filter admits the issue family (bug/change/task are nature 'work'). */
+export function naturesAdmitWork(natures: readonly DatatypeNature[] | undefined): boolean {
+  return !natures || natures.length === 0 || natures.includes('work');
+}
+
 function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
   // An EMPTY `states` array is NO filter, never "match nothing": `= ANY('{}')` is false
   // for every row, so an empty list would return zero rows — indistinguishable from a
@@ -1277,7 +1306,8 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
             OR payload -> 'plan_item' ->> 'plan_slug' = ${filter.sourcePlanSlug}
           )`
         : sql`TRUE`
-    }`;
+    }
+    AND ${natureWhereSql(sql, filter.natures, filter.kind)}`;
 }
 
 /**
@@ -1319,7 +1349,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
   const q = filter.q?.trim();
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   const out: WorkItem[] = [];
 
   if (wantFeature) {
@@ -1458,7 +1488,7 @@ export async function listAllWorkItemsForFileExport(filter: ListWorkItemsFilter 
 export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<number> {
   const { sql } = getOrgPg();
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   let total = 0;
 
   if (wantFeature) {
@@ -1584,7 +1614,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
 export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
-  const wantIssue = !filter.kind || familyOf(filter.kind) === 'issue';
+  const wantIssue = (!filter.kind || familyOf(filter.kind) === 'issue') && naturesAdmitWork(filter.natures);
   const byState: Record<string, number> = {};
   const add = (state: string | null | undefined, n: number) => {
     const k = state ?? 'unknown';
@@ -1921,6 +1951,8 @@ interface WorkItemSearchFilters {
   /** Already narrowed to the source's own family by the caller (see `searchWorkItems`). */
   kind?: WorkItemKind;
   includeObservations?: boolean;
+  /** P-010: see {@link ListWorkItemsFilter.natures}; same default (work only unless `kind`). */
+  natures?: readonly DatatypeNature[];
 }
 
 /** Ranker/source labels. Stable — they appear in `legs.failures[].source`. */
@@ -2009,7 +2041,8 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
       AND item_kind IN ('bug', 'change', 'task')
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
       AND ${f.harness ? issueHarnessClause(sql, f.harness) : sql`TRUE`}
-      AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}`;
+      AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}
+      AND ${naturesAdmitWork(f.natures) ? sql`TRUE` : sql`FALSE`}`;
   const toListing = (
     rows: Array<{ id: string; title: string; body: string | null; score: number }>,
     ranker: string,
@@ -2071,7 +2104,8 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
           ${featureFamilyKindClause(sql, ws, { includeDeprecatedChunk: f.kind === 'chunk' })}
       AND workspace_id = ${ws}
       AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
-      AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}`;
+      AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}
+      AND ${natureWhereSql(sql, f.natures, f.kind)}`;
   const toListing = (
     rows: Array<{ id: string; title: string; body: string | null; score: number }>,
     ranker: string,
@@ -2310,6 +2344,8 @@ export async function searchWorkItems(
      * include raw observations in search results.
      */
     includeObservations?: boolean;
+    /** P-010 / D-011: nature set to match; unset → nature 'work' only unless `kind` is named. */
+    natures?: readonly DatatypeNature[];
     /**
      * Test seam for the WI-9393 coverage assessment, mirroring `embedderResolver`.
      * Injecting it also OPTS IN under vitest, where the assessment is otherwise
@@ -2333,6 +2369,7 @@ export async function searchWorkItems(
     // always one that source can match.
     ...(opts.kind ? { kind: opts.kind } : {}),
     ...(opts.includeObservations ? { includeObservations: true } : {}),
+    ...(opts.natures && opts.natures.length > 0 ? { natures: opts.natures } : {}),
   };
 
   // Resolve the query embedder BEFORE building the sources: its mode is the

@@ -32,6 +32,7 @@
     "verify:all-dogfood": "npm run verify:dogfood-bootstrap && npm run verify:trigger-consolidation && npm run verify:dogfood-types",
     "substrate:status": "tsx scripts/substrate-status.ts",
     "cut-seed": "tsx lib/release/cut-seed-cli.ts",
+    "release:aws-ami": "tsx lib/release/aws-ami-release-cli.ts",
     "release:gcp-image-family": "tsx lib/release/gcp-image-family-release-cli.ts",
     "release:gcp-image-request": "tsx lib/release/gcp-image-release-request-cli.ts",
     "release:workspace-host-publication-manifest": "tsx lib/release/workspace-host-publication-manifest-cli.ts",

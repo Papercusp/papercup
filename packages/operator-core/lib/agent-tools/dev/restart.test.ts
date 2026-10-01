@@ -251,10 +251,12 @@ const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 const {
   bgHostIntegrationRootFromUnitProperties,
+  configureBgHostEnvironmentDropInFreshnessReaderForTests,
   configureBgHostIntegrationRootResolverForTests,
   configureBgHostRestartFreshnessReaderForTests,
   configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
+  evaluateBgHostEnvironmentDropInFreshness,
   evaluateBgHostRestartFreshness,
   restartVerificationHint,
   SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS,
@@ -277,6 +279,13 @@ const freshnessM = vi.fn(
     bundleMtimeMs: null,
     newestSourceMtimeMs: null,
     newestSourcePath: null,
+  }),
+);
+type EnvironmentDropInFreshness = { checked: boolean; changedPaths: string[] };
+const environmentDropInFreshnessM = vi.fn(
+  async (_unit: string, _startedAtMs: number): Promise<EnvironmentDropInFreshness> => ({
+    checked: true,
+    changedPaths: [],
   }),
 );
 /** WI-10003606: the root bg-host's own unit names — deliberately NOT the serving operator's. */
@@ -341,6 +350,8 @@ beforeEach(() => {
     newestSourcePath: null,
   });
   configureBgHostRestartFreshnessReaderForTests(freshnessM);
+  environmentDropInFreshnessM.mockResolvedValue({ checked: true, changedPaths: [] });
+  configureBgHostEnvironmentDropInFreshnessReaderForTests(environmentDropInFreshnessM);
   bgHostRootM.mockResolvedValue(BG_HOST_UNIT_ROOT);
   configureBgHostIntegrationRootResolverForTests(bgHostRootM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
@@ -392,6 +403,37 @@ afterAll(() => {
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
+});
+
+describe('evaluateBgHostEnvironmentDropInFreshness (EI-24391112212280372)', () => {
+  it('flags only active Environment= drop-ins newer than the exact MainPID start time', () => {
+    expect(
+      evaluateBgHostEnvironmentDropInFreshness(
+        [
+          {
+            path: '/fixture/53-workspace-host-identity.conf',
+            mtimeMs: 101,
+            contents: '[Service]\nEnvironment=PAPERCUSP_WORKSPACE_HOST_RELEASE_MANIFEST=/new/manifest.json\n',
+          },
+          { path: '/fixture/50-memory.conf', mtimeMs: 102, contents: '[Service]\nMemoryMax=2G\n' },
+          { path: '/fixture/40-old-env.conf', mtimeMs: 99, contents: '[Service]\nEnvironment=FOO=old\n' },
+          { path: '/fixture/40-comment.conf', mtimeMs: 103, contents: '# Environment=IGNORED=1\n' },
+        ],
+        100,
+      ),
+    ).toEqual({ checked: true, changedPaths: ['/fixture/53-workspace-host-identity.conf'] });
+  });
+
+  it('reports unknown when the MainPID start time or a drop-in timestamp is not measurable', () => {
+    const dropIns = [{ path: '/fixture/env.conf', mtimeMs: 101, contents: 'Environment=FOO=1\n' }];
+    expect(evaluateBgHostEnvironmentDropInFreshness(dropIns, Number.NaN)).toEqual({
+      checked: false,
+      changedPaths: [],
+    });
+    expect(
+      evaluateBgHostEnvironmentDropInFreshness([{ ...dropIns[0]!, mtimeMs: Number.NaN }], 100),
+    ).toEqual({ checked: false, changedPaths: [] });
+  });
 });
 
 describe('evaluateBgHostRestartFreshness (WI-207443)', () => {
@@ -1876,6 +1918,117 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     });
     expect(b.note).toMatch(/freshness checked/i);
     expect(b.note).not.toMatch(/NOT loaded/i);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('restarts under the exclusive guard when an Environment= drop-in is newer than the MainPID', async () => {
+    const changedDropIn = '/fixture/53-workspace-host-identity.conf';
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6064, secondsSinceStart: 12, startedAtMs: 10_000 });
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6064, secondsSinceStart: 12, startedAtMs: 10_000 });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+    let underGuard = false;
+    let environmentReads = 0;
+    environmentDropInFreshnessM.mockImplementation(async (_unit, startedAtMs) => {
+      environmentReads++;
+      expect(startedAtMs).toBe(10_000);
+      if (environmentReads === 2) expect(underGuard).toBe(true);
+      return { checked: true, changedPaths: [changedDropIn] };
+    });
+    const guardBehavior = runGuard(fenceOk(14));
+    guardM.mockImplementation((async (spec, run) => {
+      underGuard = true;
+      try {
+        return await guardBehavior(spec as GuardSpec, run as never);
+      } finally {
+        underGuard = false;
+      }
+    }) as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: true,
+      unitEnvFreshnessVerified: true,
+      unitEnvChangedSinceRestart: true,
+      unitEnvChangedDropIns: [changedDropIn],
+    });
+    expect(b.coalesced).toBeUndefined();
+    expect(b.note).toMatch(/restarted to load the newer Environment= drop-in/i);
+    expect(environmentReads).toBe(2);
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(spawnM).toHaveBeenCalled();
+  });
+
+  it('skips the bypass restart when a peer loads the drop-in before the exclusive recheck', async () => {
+    const changedDropIn = '/fixture/53-workspace-host-identity.conf';
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6065, secondsSinceStart: 12, startedAtMs: 10_000 });
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6066, secondsSinceStart: 2, startedAtMs: 11_000 });
+    environmentDropInFreshnessM.mockResolvedValueOnce({ checked: true, changedPaths: [changedDropIn] });
+    environmentDropInFreshnessM.mockResolvedValueOnce({ checked: true, changedPaths: [] });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+    guardM.mockImplementation(runGuard(fenceOk(15)) as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: false,
+      coalesced: true,
+      unitEnvFreshnessVerified: true,
+      unitEnvChangedSinceRestart: false,
+      treeChangedSinceRestart: false,
+    });
+    expect(b.note).toMatch(/rechecked under the exclusive/i);
+    expect(environmentDropInFreshnessM).toHaveBeenCalledTimes(2);
+    expect(freshnessM).toHaveBeenCalledTimes(2);
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('keeps unit environment freshness explicitly unknown when the drop-in probe fails', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 6067, secondsSinceStart: 12, startedAtMs: 10_000 });
+    environmentDropInFreshnessM.mockResolvedValue({ checked: false, changedPaths: [] });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      coalesced: true,
+      unitEnvFreshnessVerified: false,
+      unitEnvChangedSinceRestart: null,
+    });
+    expect(b.note).toMatch(/Environment= drop-in freshness could NOT be verified/i);
+    expect(b.note).not.toMatch(/no active Environment= drop-in is newer/i);
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
   });

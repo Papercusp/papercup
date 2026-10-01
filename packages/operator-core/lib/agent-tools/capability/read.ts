@@ -48,7 +48,7 @@ const BYTE_WINDOW_EXCLUSIVITY =
 const CONTENT_INDEX_EXCLUSIVITY =
   'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class.';
 const EVIDENCE_CLASS_EXCLUSIVITY =
-  'Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+  'Text or Markdown scratch spills do not support evidence selection; read them with line or byte windows. Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
 
 const CAPABILITY_READ_SEE_ALSO = [
   'capability:edit (exact-string edit)',
@@ -257,7 +257,7 @@ const evidenceClassArgs = z.object({
   byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
   content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).describe(
-    `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
+    `For a stable result-door reference with a JSON MCP content envelope, resolve only the values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
   ),
 });
 
@@ -691,7 +691,12 @@ export default defineTool({
       if (selectors.length === 0) return err('evidence_class_not_found', `scratch reference has no ${args.evidence_class} evidence.`);
       let decoded: unknown;
       try { decoded = JSON.parse(bytes.toString('utf8')); }
-      catch { return err('evidence_not_selectable', 'scratch reference payload is not JSON.'); }
+      catch {
+        return err(
+          'evidence_not_selectable',
+          'scratch reference payload is not JSON. Use line or byte windows for text or Markdown spills.',
+        );
+      }
       const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
       const content = row?.content;
       if (!Array.isArray(content)) return err('evidence_not_selectable', 'scratch reference payload has no MCP content array.');

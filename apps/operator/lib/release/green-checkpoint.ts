@@ -208,6 +208,7 @@ import {
   describeGenCheckHeal,
   healGenCheckLegs,
   makeRealGenCheckHealIo,
+  publishGenHealGitlinks,
   signatureWithoutHealed,
   type GenCheckHealOutcome,
 } from "./green-checkpoint-gen-check-self-heal";
@@ -20645,6 +20646,16 @@ export function realCheckpointDeps(
         return;
       }
       const remoteRef = ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
+      // A gitlink to a gen self-heal submodule commit must resolve on that submodule's
+      // origin before main references it; this throws (holding promotion) if it cannot.
+      const pins = await publishGenHealGitlinks({
+        integrationRoot: cfg.integrationRoot,
+        candidateSha: candidateSha ?? ref,
+        git: (argv, cwd) => exec("git", ["-C", cwd, ...argv], { allowNonZero: true }),
+      });
+      if (pins.length > 0) {
+        log(`git-push: published gate-pin tag(s) ${pins.map((p) => `${p.path}@${p.sha.slice(0, 12)}`).join(", ")}`);
+      }
       await exec(
         "git",
         [
