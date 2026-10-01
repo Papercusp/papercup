@@ -1660,6 +1660,7 @@ export async function getWorkItem(
   id: string,
   harness?: string,
   opts: WorkItemReadOptions = {},
+  client?: ReturnType<typeof getOrgPg>['sql'],
 ): Promise<WorkItem | null> {
   // ⚠ `harness` is NOT applied to the issue-family branch — see harnessScopeMismatch()
   // below for why that is deliberate, and for the guard that covers what it leaves open.
@@ -1673,9 +1674,9 @@ export async function getWorkItem(
   // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
   // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
   // halves of one id space disagreed, and the issue half was the one being trusted.
-  const issue = await getIssue(id, opts);
+  const issue = await getIssue(id, opts, client);
   if (issue) return issueToWorkItem(issue);
-  return getFeatureWorkItemOnly(id, harness, opts);
+  return getFeatureWorkItemOnly(id, harness, opts, client);
 }
 
 /**
@@ -1717,8 +1718,9 @@ async function getFeatureWorkItemOnly(
   id: string,
   harness?: string,
   opts: WorkItemReadOptions = {},
+  client?: ReturnType<typeof getOrgPg>['sql'],
 ): Promise<WorkItem | null> {
-  const { sql } = getOrgPg();
+  const sql = client ?? getOrgPg().sql;
   // F-B3 (workspace-data-isolation-leaks): a bare WI/F id is unique only within a
   // (workspace, harness), not globally — scope to the active workspace so an id
   // collision across workspaces can't return the wrong row (getOrgPg bypasses RLS).
@@ -9030,7 +9032,7 @@ export async function releaseWorkItem(
     releasingOwnerId?: string;
   } = {},
 ): Promise<WorkItem | null> {
-  const wi = await getWorkItem(id, opts.harness);
+  const wi = await boundedOrgTxn((tx) => getWorkItem(id, opts.harness, {}, tx), { readOnly: true });
   if (!wi) return null;
   if (hasResourceGovernorReceiptPayload(wi.payload)) {
     throw new ResourceGovernorReleaseRequiredError(id);
