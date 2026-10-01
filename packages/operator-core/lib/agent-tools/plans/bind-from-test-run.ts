@@ -252,8 +252,15 @@ function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidence
   const outcome =
     kind === 'test'
       ? ({ pass: 'passed', fail: 'failed', skip: 'skipped' } as Record<string, string>)[status] ?? status
-      : // A mutant run that FAILED is a caught mutant; one that PASSED survived.
-        ({ fail: 'caught', pass: 'survived' } as Record<string, string>)[status] ?? status;
+      : kind === 'mutation' && deriveKind(row) !== 'mutation'
+        ? // A caller-declared mutation binding over a row that is NOT a raw mutant run (e.g. a
+          // testing:record-run operational record of a whole mutation-probe invocation) carries
+          // the probe's own VERDICT: it passes exactly when the mutant was caught. Inverting it
+          // like a mutant row fabricated `survived` for a caught mutant (WI-10004591). A failed
+          // verdict stays the raw status — the row cannot say whether it survived or misfired.
+          ({ pass: 'caught' } as Record<string, string>)[status] ?? status
+        : // A mutant run that FAILED is a caught mutant; one that PASSED survived.
+          ({ fail: 'caught', pass: 'survived' } as Record<string, string>)[status] ?? status;
   return {
     ...(testLayer ? { testLayer } : {}),
     collected: !collectionFailed && status !== 'error',

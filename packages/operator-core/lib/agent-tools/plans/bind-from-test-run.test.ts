@@ -140,6 +140,16 @@ describe('deriveBindingFromTestRun', () => {
       ok: true,
       binding: { details: { adequacy: { outcome: 'survived' } } },
     });
+    // WI-10004591: a caller-declared mutation binding over a row that is NOT a raw mutant run
+    // (a testing:record-run operational record of a whole probe invocation) carries the probe's
+    // VERDICT — a passing record is a CAUGHT mutant, never `survived`.
+    const verdict = (status: string) => run({ status, source: 'local', execution_details: { framework: 'shell' } });
+    expect(deriveBindingFromTestRun(input({ evidenceKind: 'mutation' }), verdict('pass'), root, 'run')).toMatchObject({
+      ok: true,
+      binding: { evidenceKind: 'mutation', details: { adequacy: { executed: true, outcome: 'caught' } } },
+    });
+    const failedVerdict = deriveBindingFromTestRun(input({ evidenceKind: 'mutation' }), verdict('fail'), root, 'run');
+    expect(failedVerdict.ok && failedVerdict.binding.details.adequacy).toMatchObject({ outcome: 'fail' });
     // The BASELINE half of a probe is ordinary passing test evidence.
     const baseline = run({ source: 'mutation-probe', execution_details: { mutationPhase: 'baseline' } });
     expect(deriveBindingFromTestRun(input(), baseline, root, 'run')).toMatchObject({
