@@ -89,6 +89,12 @@ export async function verifyReconciliationRequest(input: {
 
 export const TRANSFER_GATE_PATH = '/commerce/treasury/transfer-gate';
 export const RECONCILIATION_INPUTS_PATH = '/commerce/treasury/reconciliation-inputs';
+/**
+ * The Worker's chain links for the operator's anchor log (D-027). Paged with
+ * `?after=<cursor>&limit=<n>`; this route signs path AND query string, so a
+ * captured signature cannot read a different page.
+ */
+export const LEDGER_CHAIN_LINKS_PATH = '/commerce/ledger-chain/links';
 
 /** A gate older than this pauses transfers: a reconciliation that stopped reporting must not leave them running. */
 export const TRANSFER_GATE_MAX_AGE_MS = 3 * 60 * 60 * 1000;

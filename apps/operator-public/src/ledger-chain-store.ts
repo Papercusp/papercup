@@ -314,3 +314,53 @@ export async function exportLedgerStream(db: D1Database, streamId: LedgerStreamI
   const { records } = await loadRecords(db, streamId);
   return exportChain(streamId, records);
 }
+
+// ---------------------------------------------------------------------------
+// Anchor feed (agent-economy-flywheel-2026-08-30 D-027): every chain link,
+// across every stream, in (stream_id, seq) order. The operator anchors these
+// as leaves of its per-workspace Merkle log; the identity is the link, so a
+// verifier recomputes it from the stream export above.
+// ---------------------------------------------------------------------------
+
+export interface ChainLinkIdentity {
+  readonly streamId: string;
+  readonly seq: number;
+  readonly entryHash: string;
+}
+
+export interface ChainLinkPage {
+  readonly links: readonly ChainLinkIdentity[];
+  /** Opaque; pass back as `after` for the next page. Null on the last page. */
+  readonly nextCursor: string | null;
+}
+
+export const CHAIN_LINK_PAGE_MAX = 1000;
+
+/** Cursor = `<streamId>:<seq>` of the last link returned. Malformed input → null. */
+export function parseChainLinkCursor(cursor: string): { readonly streamId: string; readonly seq: number } | null {
+  const sep = cursor.lastIndexOf(':');
+  if (sep <= 0) return null;
+  const streamId = cursor.slice(0, sep);
+  const seq = Number(cursor.slice(sep + 1));
+  if (!isLedgerStreamId(streamId) || !Number.isSafeInteger(seq) || seq < 0) return null;
+  return { streamId, seq };
+}
+
+export async function listChainLinksPage(
+  db: D1Database,
+  opts: { readonly after?: { readonly streamId: string; readonly seq: number } | null; readonly limit?: number } = {},
+): Promise<ChainLinkPage> {
+  const limit = Math.max(1, Math.min(CHAIN_LINK_PAGE_MAX, Math.trunc(opts.limit ?? CHAIN_LINK_PAGE_MAX)));
+  const after = opts.after ?? null;
+  const stmt = after
+    ? db
+        .prepare(
+          'SELECT stream_id, seq, entry_hash FROM ledger_chain_links WHERE stream_id > ? OR (stream_id = ? AND seq > ?) ORDER BY stream_id ASC, seq ASC LIMIT ?',
+        )
+        .bind(after.streamId, after.streamId, after.seq, limit + 1)
+    : db.prepare('SELECT stream_id, seq, entry_hash FROM ledger_chain_links ORDER BY stream_id ASC, seq ASC LIMIT ?').bind(limit + 1);
+  const rows = (await stmt.all<{ stream_id: string; seq: number; entry_hash: string }>()).results ?? [];
+  const page = rows.slice(0, limit).map((r) => ({ streamId: r.stream_id, seq: Number(r.seq), entryHash: r.entry_hash }));
+  const last = page[page.length - 1];
+  return { links: page, nextCursor: rows.length > limit && last ? `${last.streamId}:${last.seq}` : null };
+}

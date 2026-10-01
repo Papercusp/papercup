@@ -101,6 +101,45 @@ export interface AnchorLinkFeed {
   links(workspaceId: string): Promise<readonly AnchorLeaf[]>;
 }
 
+/**
+ * D-027 §4: the primary feed's links plus each secondary's. A primary failure
+ * fails the tick. A secondary failure is reported and skipped: its links join
+ * at the next tick that reads them, which D-024 allows because a window promises
+ * no completeness and leaves are never reordered. Two sources claiming one
+ * stream id would collide on leaf identity, so that throws.
+ */
+export function unionAnchorLinkFeed(
+  primary: AnchorLinkFeed,
+  secondaries: readonly { readonly name: string; readonly feed: AnchorLinkFeed }[],
+  onSecondaryError: (workspaceId: string, name: string, error: unknown) => void,
+): AnchorLinkFeed {
+  return {
+    async links(workspaceId) {
+      const all = [...(await primary.links(workspaceId))];
+      const owner = new Map<string, string>();
+      for (const l of all) owner.set(l.streamId, 'primary');
+      for (const { name, feed } of secondaries) {
+        let links: readonly AnchorLeaf[];
+        try {
+          links = await feed.links(workspaceId);
+        } catch (error) {
+          onSecondaryError(workspaceId, name, error);
+          continue;
+        }
+        for (const l of links) {
+          const prior = owner.get(l.streamId);
+          if (prior !== undefined && prior !== name) {
+            throw new Error(`unionAnchorLinkFeed: stream '${l.streamId}' is claimed by both ${prior} and ${name}`);
+          }
+          owner.set(l.streamId, name);
+        }
+        all.push(...links);
+      }
+      return all;
+    },
+  };
+}
+
 /** The completed hour that ends at or before `nowSeconds`. */
 export function anchorWindow(nowSeconds: number): { readonly windowStart: number; readonly windowEnd: number } {
   const windowEnd = Math.floor(nowSeconds / HOUR_SECONDS) * HOUR_SECONDS;

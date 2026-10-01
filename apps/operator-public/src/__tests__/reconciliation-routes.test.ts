@@ -8,12 +8,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  LEDGER_CHAIN_LINKS_PATH,
   RECONCILIATION_INPUTS_PATH,
   RECONCILIATION_SIGNATURE_HEADER,
   TRANSFER_GATE_PATH,
   parseReconciliationInputs,
   signReconciliationRequest,
 } from '@papercusp/operator-core/lib/cupboard/reconciliation-hmac.ts';
+import { unionAnchorLinkFeed } from '@papercusp/operator-core/lib/cupboard/ledger-anchor.ts';
+import { cupboardAnchorLinkFeed } from '@papercusp/operator-core/lib/cupboard/ledger-anchor-cupboard-feed.ts';
 import { buildApi } from '../routes/index.ts';
 import { makeEnv } from './fake-d1.ts';
 import { makeSqliteDb } from './sqlite-d1.ts';
@@ -194,5 +197,128 @@ describe('GET /commerce/treasury/reconciliation-inputs', () => {
     expect((await h.api.request(RECONCILIATION_INPUTS_PATH, {}, h.env)).status).toBe(401);
     expect((await getInputs(h, { signedPath: TRANSFER_GATE_PATH })).status).toBe(401);
     expect((await getInputs(harness({ RECONCILIATION_GATE_SECRET: undefined }))).status).toBe(503);
+  });
+});
+
+// D-027: the anchor log reads the Worker's chain links through this signed route.
+describe('GET /commerce/ledger-chain/links', () => {
+  const hex = (n: number) => n.toString(16).padStart(64, '0');
+
+  function insertLink(h: H, streamId: string, seq: number) {
+    h.raw
+      .prepare(
+        `INSERT INTO ledger_chain_links (stream_id, seq, source_id, entry_digest, prev_hash, entry_hash, recorded_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(streamId, seq, `${streamId}-${seq}`, hex(1), hex(2), hex(1000 + seq), 1);
+  }
+
+  async function getLinks(h: H, query: string, options: { signedQuery?: string } = {}) {
+    const path = `${LEDGER_CHAIN_LINKS_PATH}${query}`;
+    const signature = await signReconciliationRequest({
+      secret: KEY,
+      method: 'GET',
+      pathname: `${LEDGER_CHAIN_LINKS_PATH}${options.signedQuery ?? query}`,
+      body: '',
+      nowMs: Date.now(),
+    });
+    return h.api.request(path, { headers: { [RECONCILIATION_SIGNATURE_HEADER]: signature } }, h.env);
+  }
+
+  type Page = { workspaceId: string | null; links: { streamId: string; seq: number; entryHash: string }[]; nextCursor: string | null };
+
+  it('pages every link in (stream, seq) order under the governing workspace', async () => {
+    const h = harness();
+    insertLink(h, 'treasury.transfers', 0);
+    insertLink(h, 'commerce.ledger', 1);
+    insertLink(h, 'commerce.ledger', 0);
+    const first = (await (await getLinks(h, '?limit=2')).json()) as Page;
+    expect(first.workspaceId).toBe(WS);
+    expect(first.links.map((l) => `${l.streamId}:${l.seq}`)).toEqual(['commerce.ledger:0', 'commerce.ledger:1']);
+    expect(first.links[1]!.entryHash).toBe(hex(1001));
+    expect(first.nextCursor).toBe('commerce.ledger:1');
+    const query = `?after=${encodeURIComponent(first.nextCursor!)}&limit=2`;
+    const second = (await (await getLinks(h, query)).json()) as Page;
+    expect(second.links.map((l) => `${l.streamId}:${l.seq}`)).toEqual(['treasury.transfers:0']);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it('binds the signature to the query, so a page signature cannot read another page', async () => {
+    const h = harness();
+    insertLink(h, 'commerce.ledger', 0);
+    const replayed = await getLinks(h, '?after=commerce.ledger%3A0&limit=1', { signedQuery: '?limit=1' });
+    expect(replayed.status).toBe(401);
+    expect((await h.api.request(`${LEDGER_CHAIN_LINKS_PATH}?limit=1`, {}, h.env)).status).toBe(401);
+  });
+
+  it('hands out no links without a governing workspace, and fails closed without a secret', async () => {
+    const unbound = harness({ RECONCILIATION_GATE_SECRET: KEY, RECONCILIATION_GATE_WORKSPACE: '' });
+    insertLink(unbound, 'commerce.ledger', 0);
+    expect(await (await getLinks(unbound, '')).json()).toEqual({ workspaceId: null, links: [], nextCursor: null });
+    expect((await getLinks(harness({ RECONCILIATION_GATE_SECRET: undefined }), '')).status).toBe(503);
+  });
+
+  it('refuses a malformed cursor or limit', async () => {
+    const h = harness();
+    expect((await getLinks(h, '?after=not-a-stream%3A0')).status).toBe(400);
+    expect((await getLinks(h, '?limit=0')).status).toBe(400);
+  });
+
+  // The operator's feed client against this real route: signing, paging and the
+  // workspace binding agree end to end, and the union adds the links to PG's.
+  function operatorFeed(h: H, treasuryWorkspace: string) {
+    return cupboardAnchorLinkFeed({
+      baseUrl: 'https://cupboard.test',
+      secret: KEY,
+      treasuryWorkspace,
+      pageSize: 2,
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = new URL(String(url));
+        return h.api.request(`${u.pathname}${u.search}`, init ?? {}, h.env);
+      }) as typeof fetch,
+    });
+  }
+
+  it('the operator feed reads every page and the union appends the Worker links to the PG links', async () => {
+    const h = harness();
+    for (let seq = 0; seq < 3; seq += 1) insertLink(h, 'commerce.ledger', seq);
+    insertLink(h, 'treasury.transfers', 0);
+    const pg = { links: async () => [{ streamId: 'governance.plan-admission:pot-1', seq: 0, entryHash: hex(7) }] };
+    const errors: string[] = [];
+    const union = unionAnchorLinkFeed(pg, [{ name: 'cupboard', feed: operatorFeed(h, WS) }], (_ws, name, e) => errors.push(`${name}:${String(e)}`));
+    const links = await union.links(WS);
+    expect(links.map((l) => `${l.streamId}:${l.seq}`)).toEqual([
+      'governance.plan-admission:pot-1:0',
+      'commerce.ledger:0',
+      'commerce.ledger:1',
+      'commerce.ledger:2',
+      'treasury.transfers:0',
+    ]);
+    expect(errors).toEqual([]);
+    // Another workspace's log never receives the Worker's links.
+    expect(await operatorFeed(h, WS).links('ws-other')).toEqual([]);
+  });
+
+  it('a workspace mismatch or an outage is reported by the union, and the PG links still flow', async () => {
+    const h = harness();
+    insertLink(h, 'commerce.ledger', 0);
+    const pg = { links: async () => [{ streamId: 'governance.plan-admission:pot-1', seq: 0, entryHash: hex(7) }] };
+    const errors: string[] = [];
+    const onError = (_ws: string, name: string, e: unknown) => errors.push(`${name}: ${e instanceof Error ? e.message : String(e)}`);
+    const mismatched = unionAnchorLinkFeed(pg, [{ name: 'cupboard', feed: operatorFeed(h, 'ws-wrong') }], onError);
+    expect((await mismatched.links('ws-wrong')).map((l) => l.streamId)).toEqual(['governance.plan-admission:pot-1']);
+    expect(errors[0]).toContain('Worker governs workspace "ws-recon"');
+    const down = harness({ RECONCILIATION_GATE_SECRET: undefined });
+    const outage = unionAnchorLinkFeed(pg, [{ name: 'cupboard', feed: operatorFeed(down, WS) }], onError);
+    expect(await outage.links(WS)).toHaveLength(1);
+    expect(errors[1]).toContain('status 503');
+  });
+
+  it('two sources claiming one stream fail the tick instead of colliding on leaf identity', async () => {
+    const h = harness();
+    insertLink(h, 'commerce.ledger', 0);
+    const pg = { links: async () => [{ streamId: 'commerce.ledger', seq: 0, entryHash: hex(7) }] };
+    const union = unionAnchorLinkFeed(pg, [{ name: 'cupboard', feed: operatorFeed(h, WS) }], () => {});
+    await expect(union.links(WS)).rejects.toThrow(/claimed by both primary and cupboard/);
   });
 });

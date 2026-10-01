@@ -19,7 +19,9 @@ import {
   type CadenceVerdict,
   type LedgerAnchorStore,
   type MissedHourAlert,
+  unionAnchorLinkFeed,
 } from './ledger-anchor';
+import { cupboardAnchorLinkFeed } from './ledger-anchor-cupboard-feed';
 import { resolveAnchorBackend } from './ledger-anchor-eas';
 import { anchorWorkspaces, ledgerAnchorLogId, pgAnchorLinkFeed, pgLedgerAnchorStore } from './ledger-anchor-store';
 
@@ -97,7 +99,43 @@ export interface LedgerAnchorPassResult {
   readonly backend: string | null;
   /** Why no backend is available (missing key, disabled, …). */
   readonly backendUnavailable: string | null;
-  readonly workspaces: readonly { readonly workspaceId: string; readonly tick: WorkspaceTick; readonly cadence: CadenceVerdict | null }[];
+  readonly workspaces: readonly {
+    readonly workspaceId: string;
+    readonly tick: WorkspaceTick;
+    readonly cadence: CadenceVerdict | null;
+    /** D-027 §5: a secondary feed (the Cupboard Worker) that could not be read this tick. */
+    readonly feedErrors: readonly string[];
+  }[];
+  /** Why the Cupboard Worker's chain links are not fed, when they are not. Null when they are. */
+  readonly cupboardFeedUnavailable: string | null;
+}
+
+/** The Worker's chain links (D-027) and the one workspace whose log holds them. */
+export interface CupboardLinkSource {
+  readonly feed: AnchorLinkFeed;
+  readonly treasuryWorkspace: string;
+}
+
+/** From the reconciliation config: the same Worker, secret and treasury workspace (D-027 §3). */
+export async function resolveCupboardLinkSource(
+  deps: { readonly resolveSecret?: (ref: string) => Promise<string>; readonly env?: NodeJS.ProcessEnv } = {},
+): Promise<{ readonly source: CupboardLinkSource | null; readonly unavailable: string | null }> {
+  const { readReconciliationRuntimeConfig } = await import('./reconciliation-runtime');
+  const cfg = readReconciliationRuntimeConfig(deps.env ?? process.env);
+  if (!cfg.treasuryWorkspace) return { source: null, unavailable: 'no treasury workspace (PAPERCUSP_RECONCILIATION_TREASURY_WORKSPACE)' };
+  if (!cfg.gateSecretRef) return { source: null, unavailable: 'PAPERCUSP_RECONCILIATION_GATE_SECRET_REF is not configured' };
+  let secret: string;
+  try {
+    const resolve =
+      deps.resolveSecret ?? (async (ref: string) => (await import('../inference-gateway/egress-providers/secret-ref')).resolveSecretRef(ref));
+    secret = await resolve(cfg.gateSecretRef);
+  } catch (error) {
+    return { source: null, unavailable: `gate secret unresolvable: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}` };
+  }
+  return {
+    source: { feed: cupboardAnchorLinkFeed({ baseUrl: cfg.cupboardUrl, secret, treasuryWorkspace: cfg.treasuryWorkspace }), treasuryWorkspace: cfg.treasuryWorkspace },
+    unavailable: null,
+  };
 }
 
 export async function runLedgerAnchorPass(
@@ -109,7 +147,10 @@ export async function runLedgerAnchorPass(
     readonly alertDeps?: MissedHourAlertDeps;
     readonly workspaces?: readonly string[];
     readonly store?: LedgerAnchorStore;
+    /** The PG chain-link feed (P-040). */
     readonly feed?: AnchorLinkFeed;
+    /** D-027: omit to resolve from the reconciliation config; `null` feeds no Worker links. */
+    readonly cupboard?: CupboardLinkSource | null;
   } = {},
 ): Promise<LedgerAnchorPassResult> {
   const nowSeconds = input.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -128,15 +169,34 @@ export async function runLedgerAnchorPass(
     }
   }
   const store = input.store ?? pgLedgerAnchorStore(input.sql);
-  const feed = input.feed ?? pgAnchorLinkFeed(input.sql);
+  let cupboard: CupboardLinkSource | null;
+  let cupboardFeedUnavailable: string | null = null;
+  if (input.cupboard !== undefined) {
+    cupboard = input.cupboard;
+  } else {
+    const resolved = await resolveCupboardLinkSource();
+    cupboard = resolved.source;
+    cupboardFeedUnavailable = resolved.unavailable;
+  }
+  const feedErrors = new Map<string, string[]>();
+  const primary = input.feed ?? pgAnchorLinkFeed(input.sql);
+  const feed = cupboard
+    ? unionAnchorLinkFeed(primary, [{ name: 'cupboard', feed: cupboard.feed }], (ws, name, error) => {
+        const message = `${name}: ${error instanceof Error ? error.message.split('\n')[0]! : String(error)}`;
+        feedErrors.set(ws, [...(feedErrors.get(ws) ?? []), message]);
+      })
+    : primary;
   const failures = new Map<string, string>();
   const alert = missedHourAlertSink({
     ...input.alertDeps,
     detailFor: (ws) => failures.get(ws) ?? (backendUnavailable ? `no anchor backend (${backendUnavailable})` : null),
   });
 
-  const results: { workspaceId: string; tick: WorkspaceTick; cadence: CadenceVerdict | null }[] = [];
-  for (const workspaceId of input.workspaces ?? (await anchorWorkspaces(input.sql))) {
+  const results: { workspaceId: string; tick: WorkspaceTick; cadence: CadenceVerdict | null; feedErrors: readonly string[] }[] = [];
+  const workspaces = input.workspaces ?? (await anchorWorkspaces(input.sql));
+  // D-027 §3: the treasury workspace is anchored even when PG holds no links for it.
+  const allWorkspaces = cupboard && !workspaces.includes(cupboard.treasuryWorkspace) ? [...workspaces, cupboard.treasuryWorkspace] : workspaces;
+  for (const workspaceId of allWorkspaces) {
     let tick: WorkspaceTick;
     if (!backend) {
       tick = { status: 'skipped', reason: backendUnavailable ?? 'no anchor backend' };
@@ -150,7 +210,7 @@ export async function runLedgerAnchorPass(
       }
     }
     const cadence = alertsEnabled ? await checkAnchorCadence({ workspaceId, nowSeconds, store, alert }) : null;
-    results.push({ workspaceId, tick, cadence });
+    results.push({ workspaceId, tick, cadence, feedErrors: feedErrors.get(workspaceId) ?? [] });
   }
-  return { backend: backend?.kind ?? null, backendUnavailable, workspaces: results };
+  return { backend: backend?.kind ?? null, backendUnavailable, workspaces: results, cupboardFeedUnavailable };
 }
