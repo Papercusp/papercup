@@ -189,7 +189,62 @@ describe('GET /commerce/treasury/reconciliation-inputs', () => {
 
   it('answers zero credits and no transfers on an empty treasury', async () => {
     const inputs = parseReconciliationInputs(await (await getInputs(harness())).json());
-    expect(inputs).toMatchObject({ outstandingCreditsMicros: 0, daoTransfers: [] });
+    expect(inputs).toMatchObject({ outstandingCreditsMicros: 0, daoTransfers: [], finalSettlementBatches: [] });
+  });
+
+  // D-032 (WI-10004709): the DAO's allocation of every FINAL batch is the operator's independent accrual.
+  function insertBatch(h: H, row: { id: string; state: string; claim: number; dao: string; finalizedAtMs: number | null; tx: string }) {
+    h.raw
+      .prepare(
+        `INSERT INTO settlement_batches
+           (batch_id, channel_id, principal_id, request_hash, chain_id, settlement_contract_address, stablecoin_address,
+            claim_micros, prior_cumulative_micros, cumulative_claim_micros, voucher_digests, settlement_id, split_manifest_hash,
+            allocations_micros, provider_cost_micros, distributable_micros, dao_treasury, receipt_hash, state,
+            required_confirmations, confirmations, claim_tx_hash, claim_block_number, claim_block_hash,
+            created_at_ms, updated_at_ms, finalized_at_ms)
+         VALUES (?, 'chan-1', 'gh:7', ?, 84532, ?, ?, ?, 0, ?, '[]', ?, 'sha256:split', ?, 0, ?, ?, ?, ?, 3, 3, ?, '100', ?, 1, 1, ?)`,
+      )
+      .run(
+        row.id,
+        `req-${row.id}`,
+        `0x${'1'.repeat(40)}`,
+        `0x${'2'.repeat(40)}`,
+        row.claim,
+        row.claim,
+        `settle-${row.id}`,
+        JSON.stringify({ creator: '0', dao: row.dao }),
+        row.claim,
+        `0x${'4'.repeat(40)}`,
+        `receipt-${row.id}`,
+        row.state,
+        row.tx,
+        `0x${'8'.repeat(64)}`,
+        row.finalizedAtMs,
+      );
+  }
+
+  it('lists only FINAL settlement batches, oldest finality first, with the DAO allocation in micros', async () => {
+    const h = harness();
+    insertBatch(h, { id: 'b-late', state: 'final', claim: 3_000_000, dao: '300000', finalizedAtMs: 9_000, tx: `0x${'e'.repeat(64)}` });
+    insertBatch(h, { id: 'b-early', state: 'final', claim: 2_000_000, dao: '200000', finalizedAtMs: 5_000, tx: `0x${'d'.repeat(64)}` });
+    // A claim the chain can still reorg is not money received, and a reorged one is void.
+    insertBatch(h, { id: 'b-claimed', state: 'claimed', claim: 1_000_000, dao: '100000', finalizedAtMs: null, tx: `0x${'f'.repeat(64)}` });
+    insertBatch(h, { id: 'b-reorged', state: 'reorged', claim: 1_000_000, dao: '100000', finalizedAtMs: null, tx: `0x${'a'.repeat(64)}` });
+
+    const inputs = parseReconciliationInputs(await (await getInputs(h)).json());
+    expect(inputs.finalSettlementBatches).toEqual([
+      { batchId: 'b-early', chainId: 84532, claimTransactionHash: `0x${'d'.repeat(64)}`, claimMicros: 2_000_000, daoMicros: 200_000, finalizedAtMs: 5_000 },
+      { batchId: 'b-late', chainId: 84532, claimTransactionHash: `0x${'e'.repeat(64)}`, claimMicros: 3_000_000, daoMicros: 300_000, finalizedAtMs: 9_000 },
+    ]);
+  });
+
+  it('a final batch with an unreadable DAO allocation makes the operator refuse the read rather than accrue zero', async () => {
+    const h = harness();
+    insertBatch(h, { id: 'b-bad', state: 'final', claim: 2_000_000, dao: 'not-a-number', finalizedAtMs: 5_000, tx: `0x${'d'.repeat(64)}` });
+    const response = await getInputs(h);
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(() => parseReconciliationInputs(body)).toThrow(/finalSettlementBatches\[0\]/);
   });
 
   it('refuses an unsigned read, a gate-push signature replayed as a read, and fails closed without a secret', async () => {
