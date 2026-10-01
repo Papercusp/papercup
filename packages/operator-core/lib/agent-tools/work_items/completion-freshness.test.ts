@@ -406,6 +406,19 @@ describe('describeUnprovenContentIdentity (EI-21970667079827352)', () => {
     expect(out).not.toContain('WAITING WILL NOT SETTLE');
   });
 
+  it('WI-10004711: names the one post-close event that falsifies "waiting settles this", and its signal', () => {
+    // Without this, a closer whose file was edited again before the sweep sat on an
+    // unsettleable close forever, obeying "Do not re-call work_items:complete".
+    for (const out of [
+      describeUnprovenContentIdentity([pending], 6)!,
+      describeUnprovenContentIdentity([pending, { path: 'gone.ts', reason: 'absent-from-both', settles: 'never' }], 6)!,
+    ]) {
+      expect(out).toContain('`superseded-before-commit`');
+      expect(out).toContain('sends you a coord message');
+      expect(out).toContain('re-send `work_items:complete` for this id');
+    }
+  });
+
   // The case the old single sentence could not express, and the reason this item existed:
   // an unbounded wait for something that can never happen.
   it('an all-never set says WAITING WILL NOT SETTLE and sends them to fix the path', () => {

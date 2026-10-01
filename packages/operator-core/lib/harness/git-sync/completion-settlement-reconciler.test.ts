@@ -213,12 +213,17 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
       { path: 'wrong-path.ts', reason: 'content-mismatch' },
       { path: 'ignored.ts', reason: 'missing-from-commit' },
     ]);
+    // WI-10004711: through the PRODUCTION working-tree reader, dirty.ts and wrong-path.ts are
+    // stranded — their recorded blobs reached no commit and the working tree has moved on.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const settlement = await reconcileProposedCompletionsAtCommit(
       emittedSha,
       { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
       { sql: settlementSql({ updateHits: [true], manifest: historyManifest }), emit: settlementEmitMock() },
     );
-    expect(settlement).toMatchObject({ inspected: 1, upgraded: [], residual: 3, unreadable: [] });
+    expect(settlement).toMatchObject({ inspected: 1, upgraded: [], residual: 3, unreadable: [], stranded: ['WI-42476'] });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
+    warn.mockRestore();
     expect(
       await completionBlobHistoryContains(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
     ).toBe(false);
@@ -921,5 +926,136 @@ describe('normalizeStoredSettlementManifest — WI-1409142 stripped-null toleran
     expect(normalizeStoredSettlementManifest('nope')).toBe('nope');
     expect(normalizeStoredSettlementManifest({ contentIdentity: 'nope' }))
       .toEqual({ contentIdentity: 'nope' });
+  });
+});
+
+/**
+ * WI-10004711: a close whose declared file was edited again BEFORE git-sync captured the
+ * close-time blob can never settle by waiting — the blob is in no commit and no longer in
+ * the working tree. It used to read as plain `content-mismatch` forever, its closer told
+ * "WAITING SETTLES THIS", with no signal ever sent (59 such rows in 7 days, measured
+ * 2026-10-01; repro rows WI-10004498, WI-10004595).
+ */
+describe('WI-10004711 — superseded-before-commit verdict and the one-time closer notice', () => {
+  const CLOSE_BLOB = 'd'.repeat(40);
+  const LATER_BLOB = 'f'.repeat(40);
+  // a.ts is committed at a DIFFERENT blob; nested/b.ts settles exactly.
+  const emittedTree = () =>
+    new Map([
+      ['a.ts', resolved(LATER_BLOB)],
+      ['nested/b.ts', resolved('e'.repeat(40))],
+    ]);
+  const neverCommitted = async () => false as const;
+  const tree = (current: string | null | undefined) => (_root: string, path: string) =>
+    path === 'a.ts' ? current : 'e'.repeat(40);
+  const verdict = (history: typeof neverCommitted | undefined, current: string | null | undefined) =>
+    residualPathsForCommit(manifest, SHA, emittedTree, undefined, history, undefined, tree(current));
+
+  it('strands a path only when history was consulted AND the working tree moved off the close blob', async () => {
+    expect(await verdict(neverCommitted, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
+    // Deleted from the working tree after the close: no sweep can land the closed blob either.
+    expect(await verdict(neverCommitted, null)).toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
+  });
+
+  it('keeps plain content-mismatch whenever waiting could still settle it, or the facts are unmeasured', async () => {
+    // The working tree STILL holds the close blob: the next sweep can land it.
+    expect(await verdict(neverCommitted, CLOSE_BLOB)).toEqual([{ path: 'a.ts', reason: 'content-mismatch' }]);
+    // The working tree could not be read: no verdict from a failed measurement.
+    expect(await verdict(neverCommitted, undefined)).toEqual([{ path: 'a.ts', reason: 'content-mismatch' }]);
+    // History was never consulted: an unconsulted `false` proves nothing.
+    expect(await verdict(undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'content-mismatch' }]);
+    // History could not answer: the server's failure, not the closer's.
+    expect(await verdict(async () => undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'identity-unavailable' }]);
+  });
+
+  function strandedSql(storedManifest: unknown, updateHit = true) {
+    const writes: Array<Record<string, Record<string, unknown>>> = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return [{
+          feature_id: 'WI-42476',
+          harness_slug: 'papercusp',
+          terminal_owner: 'su-closer',
+          payload: { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: storedManifest } },
+        }];
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        writes.push(values[0] as Record<string, Record<string, unknown>>);
+        return updateHit ? [{ feature_id: 'WI-42476', authority: 'proposed' }] : [];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    return { sql, writes };
+  }
+  const scope = { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: manifest.repositoryRoot };
+  const strandedDeps = (sql: ReturnType<typeof strandedSql>['sql'], notifyStranded: CompletionSettlementReconcilerDeps['notifyStranded']) => ({
+    sql,
+    lookup: emittedTree,
+    historyLookup: neverCommitted,
+    workingTreeLookup: tree(LATER_BLOB),
+    emit: settlementEmitMock(),
+    notifyStranded,
+  });
+
+  it('notifies the recorded closer once, and the persisted residue re-reads cleanly so a replay stays silent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notify = vi.fn(async () => {});
+    const first = strandedSql(manifest);
+    const pass1 = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(first.sql, notify));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('WI-42476'));
+
+    expect(pass1).toMatchObject({ inspected: 1, upgraded: [], residual: 1, unreadable: [], stranded: ['WI-42476'] });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({
+      workItemId: 'WI-42476',
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      terminalOwner: 'su-closer',
+      strandedPaths: ['a.ts'],
+      commitSha: SHA,
+      generation: manifest.generation,
+    });
+
+    // The written manifest is what the NEXT pass reads. The new reason must survive the
+    // schema, or every stranded row would turn into an `unreadable` one on that pass.
+    const persisted = first.writes[0]![TERMINAL_COMPLETION_EVIDENCE_KEY]!.settlementManifest;
+    expect((persisted as { residualPaths: unknown }).residualPaths)
+      .toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
+    const replay = strandedSql(persisted);
+    const pass2 = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(replay.sql, notify));
+    expect(pass2).toMatchObject({ inspected: 1, unreadable: [], stranded: [] });
+    expect(notify).toHaveBeenCalledTimes(1);
+    // The replay logs nothing new either: the stranded line fires on the transition only.
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('stays silent on a missed CAS, and a failing notice never fails the settlement pass', async () => {
+    const notify = vi.fn(async () => {
+      throw new Error('coord log unavailable');
+    });
+    const missed = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(strandedSql(manifest, false).sql, notify));
+    expect(missed.stranded).toEqual([]);
+    expect(notify).not.toHaveBeenCalled();
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failed = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(strandedSql(manifest).sql, notify));
+    expect(failed.stranded).toEqual(['WI-42476']);
+    expect(notify).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('a hermetic fixture (injected sql, no notice seam) never reaches the real coord log', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      ...strandedDeps(strandedSql(manifest).sql, undefined),
+    });
+    // Still reported — only the side effect is withheld.
+    expect(result.stranded).toEqual(['WI-42476']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
+    warn.mockRestore();
   });
 });
