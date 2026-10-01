@@ -10704,7 +10704,7 @@ export async function announceAdoptedCarryRespawn(
   advSessionId,
   nativeId,
   {
-    reportImpl = reportSessionRespawned,
+    reportImpl = reportSessionRespawnedDurably,
     emitImpl = fireSessionCompactedEvent,
   } = {},
 ) {
@@ -11793,7 +11793,7 @@ export function runWrapper(options) {
           hostHandoff.nativeId,
         );
       } else {
-        void reportSessionRespawned(
+        void reportSessionRespawnedDurably(
           env.PAPERCUSP_ADV_SESSION_ID || null,
           hostHandoff.nativeId,
           {
@@ -11921,7 +11921,8 @@ export function runWrapper(options) {
           // adv_sessions.session_id, which otherwise keeps naming the dead
           // predecessor — the P-018 successor-kill loop. coordOwnerId rides along
           // so an interactive/resumed launch (no adv id in env) re-anchors too.
-          return reportSessionRespawned(
+          // WI-10004917: durable — a report lost to an operator restart is retried.
+          return reportSessionRespawnedDurably(
             env.PAPERCUSP_ADV_SESSION_ID || null,
             freshId,
             {

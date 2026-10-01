@@ -7727,12 +7727,33 @@ export function hostThroughPty(o) {
       !codexMarkerKickoffRequiresFrame() &&
       !codexStartupExplicitlyStarting() &&
       childStartupFallbackElapsed();
+    let codexFrameWaitExtendedReported = false;
     const codexBackendFrameWaitExpired = () => {
       if (!codexMarkerKickoffRequiresFrame() || childBackendFirstFrameAt > 0) return false;
       const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
-      return waitStartedAt > 0 &&
+      const budgetSpent = waitStartedAt > 0 &&
         Date.now() - waitStartedAt >= startupMarkerFallbackMs *
           (CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER + 1);
+      // WI-10004919: this budget exists for a frame that is NEVER observed (a
+      // Codex that stops painting it, or bytes that beat the listener). A footer
+      // that positively reads `Starting` is the opposite case: the TUI is alive
+      // and still booting its MCP servers. Measured: v0.159.3 sat in `Starting`
+      // for 86.2s, the 75s budget dropped the kickoff 11s before the Ready frame,
+      // and the resolver idled at its prompt until the run watchdog stranded it.
+      // Keep waiting under the kickoff's own deadline; if it is still Starting
+      // there, the drop reason is `codex-startup-still-starting`.
+      if (budgetSpent && codexStartupExplicitlyStarting()) {
+        if (!codexFrameWaitExtendedReported) {
+          codexFrameWaitExtendedReported = true;
+          appendHostEvent(ownerId, 'launch-kickoff-backend-frame-wait-extended', {
+            reason: 'codex-footer-starting',
+            elapsedMs: Math.max(0, Date.now() - waitStartedAt),
+            remainingMs: Math.max(0, deadline - Date.now()),
+          });
+        }
+        return false;
+      }
+      return budgetSpent;
     };
     try {
       // A scripted resume/port begins this task before wireChildData() is
@@ -8143,9 +8164,16 @@ export function hostThroughPty(o) {
                       ? 'the owner used the fresh child before its carry prompt was submitted'
                       : dropReason === 'resume-compaction-timeout'
                         ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
+                        : dropReason === 'codex-backend-frame-not-observed'
+                          ? 'the Codex session frame (Ready footer or model header) was never observed within its backend-frame budget'
+                          : dropReason === 'codex-startup-still-starting'
+                            ? 'the Codex footer still read Starting (MCP servers booting) at the kickoff deadline'
               : 'the child never settled to its prompt'
         } ` +
-          `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
+          // WI-10004919: always name the machine reason. Unmapped reasons used to
+          // print only the generic text above, which hid a 75s frame-budget drop
+          // behind "within 600000ms".
+          `within ${budgetMs}ms over ${attempts} attempt(s); reason=${dropReason})\n`,
       );
     } catch {
       /* never let a diagnostic write break the host */

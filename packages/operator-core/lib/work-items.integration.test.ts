@@ -1699,6 +1699,51 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
     expect(await wi.observeWorkItem(bug.id)).toMatchObject({ available: false, claimedBy: 'B' });
   });
 
+  it('bounds the issue-family release pre-read when the unified work-items table is locked (EI-24780569549840269)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'locked release read', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(bug.id, 'agA', { harness: 'papercup' }))?.assignee).toBe('agA');
+
+    // The empty test database has no production role-default lock_timeout. Pin one on
+    // the caller's dedicated connection so the raw-read regression fails promptly;
+    // boundedOrgTxn overrides this with its own transaction-local timeout.
+    const priorSql = h.sql;
+    const releaseSql = await db.sql.reserve();
+    h.sql = releaseSql as unknown as postgres.Sql;
+    await releaseSql`SET lock_timeout = '1s'`;
+
+    let releaseBlocker!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      lockedResolve = resolve;
+    });
+    const blocker = db.sql.begin(async (tx) => {
+      await tx`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
+      lockedResolve();
+      await held;
+    });
+
+    await locked;
+    const startedAt = Date.now();
+    let error: unknown;
+    try {
+      await wi.releaseWorkItem(bug.id, { harness: 'papercup', expectedAssignee: 'agA' });
+    } catch (caught) {
+      error = caught;
+    } finally {
+      releaseBlocker();
+      await blocker;
+      h.sql = priorSql;
+      releaseSql.release();
+    }
+
+    expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+    expect(Date.now() - startedAt).toBeLessThan(12_000);
+    expect(await wi.getWorkItem(bug.id, 'papercup')).toMatchObject({ assignee: 'agA' });
+  }, 30_000);
+
   it('observing a missing work-item → null', async () => {
     expect(await wi.observeWorkItem('WI-404')).toBeNull();
   });

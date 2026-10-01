@@ -567,6 +567,10 @@ import './episode-scoped-operational-reconcile-action';
 // autonomous-inbox-resolution-2026-08-31 P-009: durable routinesTick backstop
 // for the existing supervised Inbox bulk-resolver launch path.
 import './inbox-bulk-resolve-action';
+// observation-candidate-acceptance-promotion-2026-09-30 P-008 (D-020):
+// `system:intake-triage-drain` — the registered executor that drains awaiting
+// observations/candidates as `intake-triage` runs, apart from accepted work.
+import './intake-triage-drain-action';
 // plan-cleanup-system-repair-2026-10-01 P-004: `system:plan-cleanup-sweep` — the
 // deterministic recurring plan clean-up (same start path as the Plans-pane button;
 // a resolver only for judgment residue). Replaces the never-producing LLM plan-run

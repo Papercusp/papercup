@@ -2955,6 +2955,21 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
     timeoutMs?: number | undefined;
 }): Promise<boolean>;
 /**
+ * {@link reportSessionRespawned} that keeps retrying in the background until the
+ * operator accepts it (WI-10004917). A single 2s attempt was the only chance the
+ * successor got: one that landed while the operator was restarting left the adv row
+ * naming the predecessor, and no applied identity span ever named the live native id,
+ * so owner-by-native-session oracles read its turns as foreign. Resolves with the
+ * FIRST attempt's verdict, so a caller that gates on confirmation (the carry wake)
+ * keeps its ordering. Retry timers are unref'd and a newer respawn supersedes them.
+ */
+export function reportSessionRespawnedDurably(advSessionId: any, sessionId: any, { coordOwnerId, reportImpl, retryDelaysMs, sleepImpl, }?: {
+    coordOwnerId?: null | undefined;
+    reportImpl?: typeof reportSessionRespawned | undefined;
+    retryDelaysMs?: number[] | undefined;
+    sleepImpl?: ((ms: any) => Promise<any>) | undefined;
+}): Promise<boolean>;
+/**
  * Complete a stale-host carry adoption's lifecycle report before announcing
  * `session:compacted`. The detached event wakes members that may immediately
  * claim work, so it is only safe after the operator has re-anchored the
@@ -2962,7 +2977,7 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * deterministic ordering regression test; both operations remain fail-soft.
  */
 export function announceAdoptedCarryRespawn(ownerId: any, advSessionId: any, nativeId: any, { reportImpl, emitImpl, }?: {
-    reportImpl?: typeof reportSessionRespawned | undefined;
+    reportImpl?: typeof reportSessionRespawnedDurably | undefined;
     emitImpl?: typeof fireSessionCompactedEvent | undefined;
 }): Promise<boolean>;
 /**

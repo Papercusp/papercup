@@ -2,6 +2,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { INTAKE_EXECUTION_SCHEMA_VERSION, readIntakeTriageState } from '../attention/intake-promotion';
 import { composeCompanionSummary, type CompanionListSummary, type FacetDef } from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
@@ -77,11 +79,13 @@ const matches = (row: FixtureRow, wire: LearningObservationsWireArgs): boolean =
     (f.scopes.length === 0 || f.scopes.includes(row.scope)) &&
     (f.sourceRoles.length === 0 || f.sourceRoles.includes(row.sourceRole)) &&
     (f.confidences.length === 0 || f.confidences.includes(row.confidence)) &&
+    (f.triageStates.length === 0 || f.triageStates.includes(row.triageState ?? 'awaiting')) &&
     (f.kinds.length === 0 || f.kinds.includes(row.kind))
   );
 };
 
 const facetDefs: readonly FacetDef<FixtureRow>[] = [
+  { key: 'triageState', extract: (row) => row.triageState ?? 'awaiting' },
   { key: 'kind', extract: (row) => row.kind },
   { key: 'scope', extract: (row) => row.scope },
   { key: 'sourceRole', extract: (row) => row.sourceRole },
@@ -109,11 +113,23 @@ const summaryFor = async (args: LearningObservationsWireArgs): Promise<Companion
   });
 };
 
+// Both benchmarks inject the same unused display projection into the canonical
+// base-table query; keeping one copy prevents a retired view alias surviving in one rig.
+const withUnusedObservationProjection = (query: string): string => query.replace(
+  /(scoped AS MATERIALIZED\s*\(\s*SELECT)/i,
+  `$1 feature_id AS id, COALESCE(title, '') AS title, summary AS body,
+    to_timestamp(created_ts / 1000.0) AS created_at,
+    ARRAY(SELECT jsonb_array_elements_text(CASE
+      WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
+      THEN payload->'observation'->'refs' ELSE '[]'::jsonb END)) AS refs,`,
+);
+
 beforeAll(async () => {
   db = await createFreshPgDb('learning-observations-query');
   sql = db.sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await sql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql', import.meta.url), 'utf8'));
   await sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status,
@@ -149,6 +165,60 @@ afterAll(async () => {
 });
 
 describe('learning.observations + summary real-PG contract', () => {
+  it('R-10/R-33 partitions retained observation stock into awaiting/handled exactly once, reopening new evidence and undo', async () => {
+    const schemaVersion = INTAKE_EXECUTION_SCHEMA_VERSION;
+    const disposition = { schemaVersion, disposition: 'retain', reason: 'kept as evidence', decidedBy: 'reviewer', occurrenceWatermark: 10 };
+    const fixtures = [
+      { id: 'never', payload: {}, latest: null, state: 'awaiting' },
+      { id: 'retain', payload: { intakeDisposition: disposition }, latest: 10, state: 'handled' },
+      { id: 'reject', payload: { intakeDisposition: { ...disposition, disposition: 'reject' } }, latest: null, state: 'handled' },
+      { id: 'reopened', payload: { intakeDisposition: disposition }, latest: 11, state: 'awaiting' },
+      { id: 'promoted', payload: { intakeExecution: { schemaVersion, disposition: 'promote', workItemId: 'WI-accepted' } }, latest: null, state: 'handled' },
+      { id: 'merged', payload: { intakeExecution: { schemaVersion, disposition: 'merge', workItemId: 'WI-target' } }, latest: null, state: 'handled' },
+      { id: 'in-place', payload: { intakePromotion: { schemaVersion, key: 'receipt' } }, latest: null, state: 'handled' },
+      { id: 'reversed', payload: { intakeDispositionReversed: [disposition] }, latest: null, state: 'awaiting' },
+      { id: 'retry', payload: { intakeDisposition: { ...disposition, disposition: 'retry' } }, latest: null, state: 'awaiting' },
+      { id: 'legacy', payload: { intakeExecution: { schemaVersion: 'unknown' } }, latest: null, state: 'awaiting' },
+      { id: 'bad-key', payload: { intakePromotion: { schemaVersion, key: 42 } }, latest: null, state: 'awaiting' },
+      { id: 'bad-watermark', payload: { intakeDisposition: { ...disposition, occurrenceWatermark: '10' } }, latest: 12, state: 'awaiting' },
+      { id: 'negative-watermark-no-occurrence', payload: { intakeDisposition: { ...disposition, occurrenceWatermark: -1 } }, latest: null, state: 'handled' },
+    ];
+    const ids = fixtures.map((fixture) => `TRIAGE-${fixture.id}`);
+    try {
+      for (const fixture of fixtures) {
+        const id = `TRIAGE-${fixture.id}`;
+        expect(readIntakeTriageState(fixture.payload, fixture.latest)).toBe(fixture.state);
+        await sql`INSERT INTO harness_shared.work_items
+          (workspace_id,harness_slug,feature_id,title,summary,status,item_kind,payload,created_ts,updated_ts,origin)
+          VALUES (${workspaceId},${harnessSlug},${id},${'triage-partition ' + fixture.id},'', 'open','bug',
+            ${sql.json({ ...fixture.payload, lane: 'observation' })},${BASE_TS},${BASE_TS},'local')`;
+        if (fixture.latest !== null) await sql`INSERT INTO harness_shared.work_item_occurrences
+          (occurrence_id,workspace_id,canonical_harness_slug,canonical_work_item_id,source_tool,report_kind,reported_title)
+          VALUES (${fixture.latest},${workspaceId},${harnessSlug},${id},'test','canonical-created','new evidence')`;
+      }
+      // The occurrence belongs to another canonical harness, despite sharing an id.
+      await sql`INSERT INTO harness_shared.work_item_occurrences
+        (occurrence_id,workspace_id,canonical_harness_slug,canonical_work_item_id,source_tool,report_kind,reported_title)
+        VALUES (101,${workspaceId},'other-harness','TRIAGE-retain','test','canonical-created','unrelated evidence')`;
+      const full = await summaryFor({ q: 'triage-partition' });
+      expect(full).toMatchObject({ total: ROWS + fixtures.length, matched: fixtures.length });
+      const partition = full.facets.find((facet) => facet.key === 'triageState')!.values;
+      expect(partition.map((value) => value.count).reduce((a, b) => a + b, 0)).toBe(fixtures.length);
+      for (const state of ['awaiting', 'handled']) {
+        const wire = { q: 'triage-partition', filters: { triageStates: [state] } };
+        const page = await pageFor(wire, null);
+        const expected = fixtures.filter((fixture) => fixture.state === state).map((fixture) => `TRIAGE-${fixture.id}`).sort();
+        expect(page.rows.map((row) => row.id).sort()).toEqual(expected);
+        expect(page.rows.every((row) => row.triageState === state)).toBe(true);
+        const summary = await summaryFor(wire);
+        expect(summary.matched).toBe(expected.length);
+        expect(summary.facets.find((facet) => facet.key === 'triageState')!.values).toEqual(partition);
+      }
+    } finally {
+      await sql`DELETE FROM harness_shared.work_item_occurrences WHERE workspace_id=${workspaceId} AND canonical_work_item_id=ANY(${ids}::text[])`;
+      await sql`DELETE FROM harness_shared.work_items WHERE workspace_id=${workspaceId} AND feature_id=ANY(${ids}::text[])`;
+    }
+  });
   it('bounds reference expansion for summaries/pages while retaining reference search', async () => {
     let captured: { query: string; parameters: Parameters<Sql['unsafe']>[1] } | undefined;
     const recordingSql = postgres(db.url, {
@@ -185,13 +255,7 @@ describe('learning.observations + summary real-PG contract', () => {
           // query. Both variants use the same predicates, facets, fixture and
           // connection; this is a controlled SQL benchmark, not a route p95.
           const currentQuery = captured!.query;
-          const legacyQuery = currentQuery.replace(
-            /(scoped AS MATERIALIZED\s*\(\s*SELECT)/i,
-            `$1 issue_id AS id, COALESCE(title, '') AS title, body, created_at,
-              ARRAY(SELECT jsonb_array_elements_text(CASE
-                WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
-                THEN payload->'observation'->'refs' ELSE '[]'::jsonb END)) AS refs,`,
-          );
+          const legacyQuery = withUnusedObservationProjection(currentQuery);
           expect(legacyQuery).not.toBe(currentQuery);
           const parameters = captured!.parameters;
           const canonical = (result: readonly object[]) => result.map((row) => JSON.stringify(row)).sort();
@@ -250,13 +314,7 @@ describe('learning.observations + summary real-PG contract', () => {
     }
     expect(captured).toBeDefined();
     const currentQuery = captured!.query;
-    const legacyQuery = currentQuery.replace(
-      /(scoped AS MATERIALIZED\s*\(\s*SELECT)/i,
-      `$1 issue_id AS id, COALESCE(title, '') AS title, body, created_at,
-        ARRAY(SELECT jsonb_array_elements_text(CASE
-          WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
-          THEN payload->'observation'->'refs' ELSE '[]'::jsonb END)) AS refs,`,
-    );
+    const legacyQuery = withUnusedObservationProjection(currentQuery);
     expect(legacyQuery).not.toBe(currentQuery);
     const canonical = (rows: readonly object[]) => rows.map((row) => JSON.stringify(row)).sort();
     const expected = canonical(await sql.unsafe(currentQuery, captured!.parameters));

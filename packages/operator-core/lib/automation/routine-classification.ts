@@ -632,6 +632,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Starts the supervised Inbox resolver agent, which can bill model turns',
   },
+  'system:intake-triage-drain': {
+    spend: 'llm',
+    why: 'Starts the supervised intake-triage resolver agent over awaiting observations/candidates, which can bill model turns',
+  },
   'system:plan-cleanup-sweep': {
     spend: 'llm',
     why: 'Runs the deterministic plan clean-up pass, then starts the supervised cleanup resolver agent when judgment residue remains, which can bill model turns',

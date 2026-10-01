@@ -37,6 +37,7 @@
  * injected dependency (`executeIntakeDecision`).
  */
 import { isDeepStrictEqual } from 'node:util';
+import type { OrgSql } from '../work-items';
 
 // Static on purpose: a lazily `import()`ed DB accessor was observed resolving to two
 // different clients for two concurrent executors (one per first-use import), so their
@@ -281,6 +282,30 @@ export function readIntakeDispositionState(
     occurrenceWatermark: watermark,
     reopened: latestOccurrenceId != null && latestOccurrenceId > (watermark ?? 0),
   };
+}
+
+/** Intake handling is independent of retained stock and accepted-work delivery. */
+export function readIntakeTriageState(payload: unknown, latestOccurrenceId: number | null): 'awaiting' | 'handled' {
+  const execution = record(record(payload).intakeExecution);
+  const disposition = readIntakeDispositionState(payload, latestOccurrenceId);
+  return execution.schemaVersion === INTAKE_EXECUTION_SCHEMA_VERSION || readIntakePromotionReceipt(payload) !== null
+    || (disposition !== null && !disposition.reopened) ? 'handled' : 'awaiting';
+}
+
+/** SQL twin for exact page/summary populations; column expressions are caller-owned. */
+export function intakeTriageStateSql(sql: OrgSql, columns: { payload: string; latestOccurrenceId: string }) {
+  const payload = sql.unsafe(columns.payload);
+  const latest = sql.unsafe(columns.latestOccurrenceId);
+  return sql`CASE WHEN
+    ${payload}->'intakeExecution'->>'schemaVersion' = ${INTAKE_EXECUTION_SCHEMA_VERSION}
+    OR (${payload}->'intakePromotion'->>'schemaVersion' = ${INTAKE_EXECUTION_SCHEMA_VERSION}
+        AND jsonb_typeof(${payload}->'intakePromotion'->'key') = 'string')
+    OR (${payload}->'intakeDisposition'->>'schemaVersion' = ${INTAKE_EXECUTION_SCHEMA_VERSION}
+        AND ${payload}->'intakeDisposition'->>'disposition' IN ('retain', 'reject')
+        AND (${latest} IS NULL OR ${latest} <= CASE
+          WHEN jsonb_typeof(${payload}->'intakeDisposition'->'occurrenceWatermark') = 'number'
+          THEN (${payload}->'intakeDisposition'->>'occurrenceWatermark')::numeric ELSE 0 END))
+    THEN 'handled' ELSE 'awaiting' END`;
 }
 
 /**

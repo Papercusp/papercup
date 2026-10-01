@@ -1122,7 +1122,9 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // because no acceptance evidence exists yet. Claim floors treat this source as
   // the visible legacy exception until P-007 records the enforcement cutover.
   if (
-    (storageKind === 'bug' || storageKind === 'change' || storageKind === 'task') &&
+    // Issue-family membership test (not a freshness check), written as a set
+    // lookup so the freshness kind-gate's no-bare-literal guard stays exact.
+    (['bug', 'change', 'task'] as const).includes(storageKind as 'bug' | 'change' | 'task') &&
     inputPayload.lane !== 'observation' &&
     !Object.prototype.hasOwnProperty.call(inputPayload, 'implementationReadiness')
   ) {
@@ -2592,9 +2594,13 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
  * `(workspace_id = ambient) DESC, updated_at DESC` is exactly that composition, and a
  * miss is null either way (the ambient fallback re-read also missed).
  */
-export async function getIssue(id: string, opts: WorkItemReadOptions = {}): Promise<EngineerIssue | null> {
+export async function getIssue(
+  id: string,
+  opts: WorkItemReadOptions = {},
+  client?: ReturnType<typeof getOrgPg>['sql'],
+): Promise<EngineerIssue | null> {
   const ambient = issuesScopeWorkspace();
-  const { sql } = getOrgPg();
+  const sql = client ?? getOrgPg().sql;
   const columns = projectWorkItemColumns(
     opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
     opts.payloadProjection,

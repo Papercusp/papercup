@@ -50,6 +50,7 @@ import {
   getRunItems,
   recordRunHeartbeat,
   reportOutcomes,
+  RUNNING_PHASES,
   settleRunPhase,
   type BulkOutcomeReport,
 } from '../../attention/bulk-run-store';
@@ -354,6 +355,21 @@ export function terminalDependencies(input: { call: InnerCall; workspaceId?: str
       const result = await executeIntakeDecision({ sourceId, decision, runId, itemId });
       if (!result.ok) throw new Error(`intake ${decision.disposition} refused (${result.refusal}): ${result.detail}`);
       return { terminal: true };
+    },
+    // P-009 (R-31, D-019): re-read the kill switch and the run's stop state at
+    // APPLICATION time. The tool's entry check ran before executeBulkRunAction took
+    // the run-row lock, so a switch flipped (or a run stopped) in between would
+    // otherwise not stop the write. Fails closed: an unreadable flag reads as OFF.
+    async recheckIntakeApply({ runId }) {
+      if (!(await bulkResolveEnabled())) {
+        return { allowed: false, reason: `${FLAGS.INBOX_BULK_RESOLVE} is off (kill switch)` };
+      }
+      const run = await getRun(runId, input.workspaceId);
+      if (!run) return { allowed: false, reason: `run ${runId} not found` };
+      if (!RUNNING_PHASES.includes(run.phase)) {
+        return { allowed: false, reason: `run ${runId} is ${run.phase}; it no longer accepts application` };
+      }
+      return { allowed: true };
     },
     async deliverOwnerReply(args) {
       const result = await deliverInboxOwnerReply({

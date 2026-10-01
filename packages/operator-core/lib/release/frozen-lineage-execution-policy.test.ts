@@ -556,6 +556,7 @@ describe('frozen lineage carry policy', () => {
     'Main editable tree measured by git status/worktree list is /workspace/papercusp on staging.',
     'The git worktree list shows the editable checkout on staging.',
     'Frozen candidate is 09d0c118d5df, 32 commits behind staging.',
+    'gap-3 source is NOT in frozen candidate d4946901 / repairHead 87d557e7 (0 hits each) but IS on staging (4 hits each).',
     'The frozen candidate is 32 commits behind origin/staging; repair admission remains the sanctioned route.',
     'The candidate is 2 commits ahead of staging.',
     'The candidate is stale vs staging and must be repaired on the frozen lineage.',

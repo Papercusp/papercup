@@ -156,6 +156,15 @@ describe('EI-21974634479405756 — assertion command preflight', () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it('accepts executable and PID aliases derived from verifier-owned values', () => {
+    const result = runAssertionPreflightOnly([
+      'TOOL="$VERIFY_TAURI_AGENT_TOOLS_BIN"',
+      'PID="$VERIFY_TAURI_PID"',
+      '"$TOOL" probe --pid "$PID"',
+    ].join('\n'));
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it('rejects invalid shell syntax before any verifier dependency is executed', () => {
     const { dir, invocations, result } = runAssertion(
       '#!/usr/bin/env bash\nif then\n  echo never\nfi\n',

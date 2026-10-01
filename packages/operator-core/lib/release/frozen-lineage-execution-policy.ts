@@ -742,7 +742,10 @@ function carryDirectiveIsNegated(clause: string, start: number, end: number): bo
  */
 export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCarryInstruction | null {
   const clauses = text
-    .split(/\n+|[.!?;](?:\s+|$)/)
+    // Keep contrastive facts local. In a containment statement such as “absent
+    // from the frozen candidate, but present on staging”, carrying “candidate”
+    // across “but” misreads the positive-control mention as candidate selection.
+    .split(/\n+|[.!?;](?:\s+|$)|\b(?:but|however|whereas|yet)\b/i)
     .map((clause) => clause.trim())
     .filter(Boolean);
 

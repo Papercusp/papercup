@@ -40,6 +40,7 @@ vi.mock('../../attention/bulk-run-store', () => ({
   reportOutcomes: h.reportOutcomes,
   setRunPhase: h.setRunPhase,
   settleRunPhase: h.settleRunPhase,
+  RUNNING_PHASES: ['pending', 'running'],
 }));
 vi.mock('../../attention/triage-store', () => ({ upsertTriage: h.upsertTriage }));
 vi.mock('../../attention/terminal-action-dispatch', () => ({
@@ -1134,5 +1135,46 @@ describe('P-004 intake: unresolved rows stay visible and resumable (R-19)', () =
     const rows = all.items as Array<{ itemId: string; outcome: string; intake: { decision: unknown } }>;
     expect(rows.find((row) => row.itemId === 'obs-1')!.intake.decision).toEqual(decision);
     expect(rows.find((row) => row.itemId === 'obs-3')!.outcome).toBe('failed');
+  });
+});
+
+// P-009 (R-31, D-019): the bulk tool's kill-switch read happens at entry, before the
+// run-row lock. recheckIntakeApply re-reads the switch and the run's stop state at
+// APPLICATION time, and fails closed when the flag cannot be read.
+describe('terminalDependencies.recheckIntakeApply', () => {
+  async function recheck() {
+    const { terminalDependencies } = await import('./bulk-run');
+    const deps = terminalDependencies({ call: (async () => ({ ok: true })) as never, workspaceId: 'ws-1' });
+    return deps.recheckIntakeApply!({ runId: 'run-1', itemId: 'attention-1' });
+  }
+
+  it('allows application while the switch is on and the run is still running', async () => {
+    expect(await recheck()).toEqual({ allowed: true });
+    expect(h.getRun).toHaveBeenCalledWith('run-1', 'ws-1');
+  });
+
+  it('refuses when the kill switch was flipped after the entry check', async () => {
+    h.getFlag.mockResolvedValue(false);
+    const result = await recheck();
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain('papercusp-inbox-bulk-resolve is off');
+    expect(h.getRun).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the flag backend errors', async () => {
+    h.getFlag.mockRejectedValue(new Error('flag store unreachable'));
+    expect((await recheck()).allowed).toBe(false);
+  });
+
+  it.each(['review', 'complete', 'failed'])('refuses when the run was stopped (phase %s)', async (phase) => {
+    h.getRun.mockResolvedValue({ ...run, phase });
+    const result = await recheck();
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain(`is ${phase}`);
+  });
+
+  it('refuses when the run no longer exists', async () => {
+    h.getRun.mockResolvedValue(null);
+    expect(await recheck()).toEqual({ allowed: false, reason: 'run run-1 not found' });
   });
 });

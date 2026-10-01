@@ -4,6 +4,8 @@ import {
   buildFacetCounts,
   buildLedgerRows,
   buildNeedsYou,
+  TRIGGER_DISPATCH_ROUTINE,
+  triggerDispatcherState,
   buildPopulationSummary,
   buildSourceHealth,
   buildSuggestionChips,
@@ -345,6 +347,41 @@ describe('buildSourceHealth', () => {
     ]);
     expect(health).toHaveLength(1);
     expect(health[0]).toMatchObject({ tone: 'bad', status: 'token expired', armedCount: 1, bindingCount: 2 });
+  });
+});
+
+describe('trigger dispatcher pause (WI-10004922)', () => {
+  const healthyRow = { id: 'a', label: 'Nightly release audit', needsAttention: false };
+
+  it('reads the dispatcher from the catalog, and treats a missing row as UNKNOWN, never paused', () => {
+    expect(triggerDispatcherState(undefined)).toBeNull();
+    expect(triggerDispatcherState([{ name: 'git-sync', active: false }])).toBeNull();
+    expect(triggerDispatcherState([{ name: TRIGGER_DISPATCH_ROUTINE, active: false }])).toEqual({ active: false });
+    // Active in any install means runs drain somewhere.
+    expect(
+      triggerDispatcherState([
+        { name: TRIGGER_DISPATCH_ROUTINE, active: false },
+        { name: TRIGGER_DISPATCH_ROUTINE, active: true },
+      ]),
+    ).toEqual({ active: true });
+  });
+
+  it('raises a leading bad item when armed triggered workflows cannot fire', () => {
+    const items = buildNeedsYou({
+      sources: [source({ status: 'token expired', bindingCount: 1 })],
+      rows: [healthyRow],
+      dispatcher: { active: false, heldWorkflows: 2 },
+    });
+    expect(items[0]).toMatchObject({ kind: 'dispatch-paused', severity: 'bad' });
+    expect(items[0].message).toContain('2 armed workflows');
+    // It stays first after collapsing, ahead of the reconnect item.
+    expect(collapseNeedsYou(items).rows[0].kind).toBe('dispatch-paused');
+  });
+
+  it('stays silent when the dispatcher runs, is unknown, or nothing armed depends on it', () => {
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: { active: true, heldWorkflows: 3 } })).toEqual([]);
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: null })).toEqual([]);
+    expect(buildNeedsYou({ sources: [], rows: [healthyRow], dispatcher: { active: false, heldWorkflows: 0 } })).toEqual([]);
   });
 });
 

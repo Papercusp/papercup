@@ -883,6 +883,7 @@ function normalizedStormPolicy(raw: Record<string, unknown> = {}): Record<string
   return {
     windowSeconds: parsed.windowSeconds,
     maxRuns: parsed.maxRuns,
+    maxAgeSeconds: parsed.maxAgeSeconds,
   };
 }
 
@@ -1912,12 +1913,20 @@ export async function updateExternalTriggerBindingStormPolicy(
   // `maxRuns: null` stays ACCEPTED at the boundary (the admin route's schema
   // still nulls it) but no longer MEANS unbounded — parseStormPolicy resolves
   // it to the bounded default, and the row is written with that cap.
-  input: { maxRuns: number | null; windowSeconds: number },
+  input: { maxRuns: number | null; windowSeconds: number; maxAgeSeconds?: number },
 ): Promise<{ id: string; stormPolicy: Record<string, unknown>; updatedAt: string } | null> {
-  const stormPolicy: Record<string, unknown> = normalizedStormPolicy({
+  const normalized = normalizedStormPolicy({
     maxRuns: input.maxRuns,
     windowSeconds: input.windowSeconds,
+    ...(input.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: input.maxAgeSeconds }),
   });
+  // An update that does not mention maxAgeSeconds must not reset a stored custom
+  // window to the default (WI-10004920): omit it here and let the jsonb merge below
+  // keep whatever the row already carries.
+  const stormPolicy: Record<string, unknown> =
+    input.maxAgeSeconds === undefined
+      ? { windowSeconds: normalized.windowSeconds, maxRuns: normalized.maxRuns }
+      : normalized;
   const rows = await sql<
     Array<{
       id: string;
@@ -1926,7 +1935,7 @@ export async function updateExternalTriggerBindingStormPolicy(
     }>
   >`
     UPDATE harness_shared.trigger_bindings
-       SET storm_policy = ${JSON.stringify(stormPolicy)}::text::jsonb,
+       SET storm_policy = COALESCE(storm_policy, '{}'::jsonb) || ${JSON.stringify(stormPolicy)}::text::jsonb,
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND id = ${id}::uuid
        AND detached_at IS NULL

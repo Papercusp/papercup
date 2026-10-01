@@ -59,6 +59,23 @@ const DEFAULT_STORM_WINDOW_SECONDS = 60;
  * expressible.
  */
 const DEFAULT_STORM_MAX_RUNS = 12;
+/**
+ * EVERY binding also gets a dispatch-time validity window (WI-10004920). The storm
+ * cap above is applied at ENQUEUE time, so it cannot see a backlog that piled up
+ * while the drain was down: on 2026-09-15 the dispatcher routine was paused for two
+ * weeks while ingestion kept queuing (122 runs), and nothing stopped a re-arm from
+ * firing every armed binding's backlog at batch speed — e.g. launching plans for
+ * calendar events that had already happened.
+ *
+ * A run that was NEVER attempted and is older than `maxAgeSeconds` (measured from
+ * `triggered_at`) is closed `skipped` with `external_trigger_stale` at claim time
+ * instead of dispatched, so the drop stays visible in the run ledger. Runs that
+ * already began dispatch keep their own retry policy: their intent was acted on in
+ * time, and what remains is finishing it. Same shape as the storm cap: absent means
+ * the bounded default, and unbounded is deliberately not expressible.
+ */
+const DEFAULT_MAX_RUN_AGE_SECONDS = 24 * 60 * 60;
+const MAX_RUN_AGE_CEILING_SECONDS = 31 * 24 * 60 * 60;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_STALE_AFTER_SECONDS = 60;
@@ -151,6 +168,11 @@ export interface StormPolicy {
    */
   maxRuns: number;
   windowSeconds: number;
+  /**
+   * Dispatch-time validity window for a never-attempted run, in seconds.
+   * Always bounded — see `DEFAULT_MAX_RUN_AGE_SECONDS`.
+   */
+  maxAgeSeconds: number;
 }
 
 export interface BindingEnqueueResult {
@@ -330,6 +352,14 @@ function positiveInteger(value: unknown, field: string): number {
 export function parseStormPolicy(raw: Record<string, unknown>): StormPolicy {
   const maxRaw = raw.maxRuns ?? raw.max_runs;
   const windowRaw = raw.windowSeconds ?? raw.window_seconds;
+  const maxAgeRaw = raw.maxAgeSeconds ?? raw.max_age_seconds;
+  const maxAgeSeconds =
+    maxAgeRaw === undefined || maxAgeRaw === null
+      ? DEFAULT_MAX_RUN_AGE_SECONDS
+      : positiveInteger(maxAgeRaw, 'storm_max_age_seconds');
+  if (maxAgeSeconds > MAX_RUN_AGE_CEILING_SECONDS) {
+    throw new Error('external_trigger_invalid_storm_max_age_seconds');
+  }
   return {
     maxRuns:
       maxRaw === undefined || maxRaw === null ? DEFAULT_STORM_MAX_RUNS : positiveInteger(maxRaw, 'storm_max_runs'),
@@ -337,6 +367,7 @@ export function parseStormPolicy(raw: Record<string, unknown>): StormPolicy {
       windowRaw === undefined || windowRaw === null
         ? DEFAULT_STORM_WINDOW_SECONDS
         : positiveInteger(windowRaw, 'storm_window_seconds'),
+    maxAgeSeconds,
   };
 }
 
@@ -685,9 +716,35 @@ async function claimPendingTriggerRuns(
   batchSize: number,
   staleAfterSeconds: number,
 ): Promise<ClaimedTriggerRun[]> {
-  return sql.begin(
-    async (tx) => tx<ClaimedTriggerRun[]>`
-    WITH cancelled_disarmed AS (
+  return sql.begin(async (tx) => {
+    // WI-10004920: a never-attempted run older than its binding's validity window.
+    // Written once and used twice — the expiring CTE and the candidates CTE MUST stay
+    // disjoint, because two data-modifying CTEs touching the same row in one statement
+    // is undefined in Postgres. A malformed stored value falls back to the default
+    // rather than aborting the whole claim transaction on a bad cast.
+    const stale = tx`(
+      tr.status = 'pending'
+      AND tr.attempts = 0
+      AND tr.triggered_at < now() - (
+        CASE WHEN binding.storm_policy->>'maxAgeSeconds' ~ '^[0-9]{1,9}$'
+             THEN GREATEST(1, LEAST((binding.storm_policy->>'maxAgeSeconds')::int, ${MAX_RUN_AGE_CEILING_SECONDS}))
+             ELSE ${DEFAULT_MAX_RUN_AGE_SECONDS}
+        END * interval '1 second'))`;
+    return tx<ClaimedTriggerRun[]>`
+    WITH expired_stale AS (
+      UPDATE harness_shared.trigger_runs tr
+         SET status = 'skipped',
+             completed_at = now(),
+             updated_at = now(),
+             error = 'external_trigger_stale: never dispatched within the binding maxAgeSeconds'
+        FROM harness_shared.trigger_bindings binding
+       WHERE binding.workspace_id = tr.workspace_id
+         AND binding.id = tr.binding_id
+         AND binding.detached_at IS NULL
+         AND binding.armed = TRUE
+         AND ${stale}
+      RETURNING tr.workspace_id, tr.id
+    ), cancelled_disarmed AS (
       UPDATE harness_shared.trigger_runs tr
          SET status = 'cancelled',
              completed_at = now(),
@@ -714,6 +771,7 @@ async function claimPendingTriggerRuns(
          AND binding.detached_at IS NULL
          AND binding.armed = TRUE
        WHERE tr.next_attempt_at <= now()
+         AND NOT ${stale}
          AND (
            (tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
             AND (
@@ -768,8 +826,8 @@ async function claimPendingTriggerRuns(
         ON b.workspace_id = c.workspace_id
        AND b.id = c.binding_id
        AND b.detached_at IS NULL
-     ORDER BY c.triggered_at, c.id`,
-  );
+     ORDER BY c.triggered_at, c.id`;
+  });
 }
 
 async function resolvePlanRunId(

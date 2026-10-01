@@ -51,6 +51,7 @@ import {
   buildFacetCounts,
   buildLedgerRows,
   buildNeedsYou,
+  triggerDispatcherState,
   buildPopulationSummary,
   buildSourceHealth,
   buildSuggestionChips,
@@ -417,9 +418,17 @@ export default function AdvWorkflowsTab() {
   const sources = useMemo(() => buildAutomationSources(modelInput), [modelInput]);
   const sourceHealth = useMemo(() => buildSourceHealth(sources), [sources]);
   const landingSources = external?.sources ?? [];
+  // WI-10004922: the dispatcher is a system routine, not a workflow row, so without this the
+  // strip had no input for "armed workflows cannot fire" and every triggered row looked ready.
+  const dispatcher = useMemo(() => {
+    const state = triggerDispatcherState(catalog?.routines);
+    if (!state) return null;
+    const heldWorkflows = rows.filter((row) => row.kind === 'triggered' && !row.paused).length;
+    return { active: state.active, heldWorkflows };
+  }, [catalog, rows]);
   const needsYou = useMemo(
-    () => collapseNeedsYou(buildNeedsYou({ sources: landingSources, rows })),
-    [landingSources, rows],
+    () => collapseNeedsYou(buildNeedsYou({ sources: landingSources, rows, dispatcher })),
+    [landingSources, rows, dispatcher],
   );
   const chips = useMemo(() => buildSuggestionChips(landingSources), [landingSources]);
 
@@ -682,6 +691,12 @@ export default function AdvWorkflowsTab() {
   const onNeedsYouAction = useCallback((entry: NeedsYouItem) => {
     if (entry.kind === 'reconnect') {
       openComposer(`${entry.message}. Check the connection and tell me what it needs to be restored.`);
+      return;
+    }
+    // Resuming the dispatcher can release a queued backlog of agent launches, and a pause
+    // is often a deliberate spend hold — so it routes through the agent, never a one-click write.
+    if (entry.kind === 'dispatch-paused') {
+      openComposer(`${entry.message}. Tell me why it is paused, what is queued, and whether it is safe to resume.`);
       return;
     }
     // The collapsed aggregate stands for N workflows, so its action is the attention FACET —
