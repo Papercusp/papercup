@@ -166,6 +166,10 @@ export function validateMigrationBootSmokeOverride(
 export interface CutRuntimeEnv {
   ownerName: string;
   ownerEmail?: string;
+  /** Explicit shipping policy: re-cut Git with its full reachable history. The
+   * cutter distinguishes this from its depth-1 default by a PRESENT-EMPTY env
+   * value, so the launcher must render the empty string rather than omit it. */
+  fullHistory?: boolean;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
   /** Explicit new-build path: package the validated placeholder-only seed directory
@@ -268,7 +272,13 @@ export function buildCutEnv(
   if (runtime.reuseSeed && runtime.seedless) {
     throw new Error('seed_mode_conflict — reuseSeed and seedless are mutually exclusive');
   }
+  if (runtime.fullHistory && (runtime.reuseSeed || runtime.seedless)) {
+    throw new Error(
+      'seed_history_mode_conflict — fullHistory requires a fresh Git seed cut and cannot accompany reuseSeed or seedless',
+    );
+  }
   if (runtime.reuseSeed || runtime.seedless) env.PAPERCUSP_SKIP_SEED_CUT = '1';
+  if (runtime.fullHistory) env.PAPERCUSP_SEED_DEPTH = '';
   // BOTH-OR-NEITHER, enforced HERE rather than discovered in the cut. release-local.sh's
   // release_task_journal_configure() hard-refuses a half-configured pair (`managed release
   // resume requires BOTH ...`, exit 2) — but that refusal happens inside the detached unit,
