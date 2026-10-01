@@ -443,7 +443,7 @@ export async function rollupChatUnits(
       const rows = await sql<SourceRow[]>`
         SELECT id, kind, scope, scope_ref, owner_user_id::text AS owner_user_id, provider_account_id,
                datatype_mappings, destination_policy, permission_mapping
-          FROM harness_shared.trigger_sources
+          FROM harness_shared.data_sources
          WHERE workspace_id = ${workspaceId} AND id = ${bucket.data_source_id}::uuid`;
       if (!rows[0]) continue;
       let route = corpusRouteFor(rows[0]);
@@ -597,7 +597,7 @@ export async function purgeExpiredChatMessages(
   const sourceFilter = opts.dataSourceId ? sql`AND m.data_source_id = ${opts.dataSourceId}::uuid` : sql``;
   const expired = await sql<Array<{ data_source_id: string; channel_id: string; thread_key: string | null; posted_at: Date }>>`
     DELETE FROM harness_shared.chat_messages m
-     USING harness_shared.trigger_sources s
+     USING harness_shared.data_sources s
      WHERE m.workspace_id = ${workspaceId} ${sourceFilter}
        AND s.workspace_id = m.workspace_id AND s.id = m.data_source_id
        AND jsonb_typeof(s.retention_policy -> 'maxAgeDays') = 'number'

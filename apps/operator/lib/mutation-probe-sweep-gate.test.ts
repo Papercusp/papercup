@@ -744,6 +744,72 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
  * that had started refusing everything.
  */
 describe('mutation-probe.sh assertion-evidence gate', () => {
+  const cargoPass = 'running 1 test\ntest guard ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n';
+  const cargoFail = 'running 1 test\ntest guard ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\nerror: test failed, to rerun pass --lib\n';
+  function cargoGuard(failure: string, exitCode = 101) {
+    // JSON string literals here are arguments to node, never shell payloads.
+    return `test -f "{}" && node -e 'process.stdout.write(process.env.PAPERCUSP_MUTATION_PHASE === "mutant" ? ${JSON.stringify(failure)} : ${JSON.stringify(cargoPass)}); process.exit(process.env.PAPERCUSP_MUTATION_PHASE === "mutant" ? ${exitCode} : 0)'`;
+  }
+
+  it('credits Cargo exit 101 only after named tests execute and fail', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(cargoFail),
+    ]);
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('guard_exit=101');
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it.each([
+    ['compilation', 'error[E0308]: mismatched types\nerror: could not compile guard (lib test) due to 1 previous error\n'],
+    ['setup', 'error: failed to run custom build command for guard\n'],
+    ['empty selection', 'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n'],
+    ['ignored tests', 'running 1 test\ntest guard ... ignored\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['missing named failure', 'running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['different test binary', 'running 1 test\ntest guard ... FAILED\nrunning 0 tests\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['later compile error', cargoFail + 'error: could not compile another crate\n'],
+    ['unrecognized runner', 'guard command failed\n'],
+    ['other runner evidence', 'Tests 1 failed (1)\n'],
+  ])('refuses Cargo-style exit 101 from %s', (_label, failure) => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(failure),
+    ]);
+    expect(status).toBe(2);
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=(harness-error|inconclusive)/);
+    expect(out).toContain('guard_exit=101');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('does not credit executed Cargo failures under an unrelated exit status', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(cargoFail, 2),
+    ]);
+    expect(status).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+  });
+
+  it('refuses a green Cargo baseline that selected no tests', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/',
+      '--test', 'test -f "{}" && printf "running 0 tests\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\\n"',
+    ]);
+    expect(status).toBe(2);
+    expect(out).toContain('zero_selection=cargo-libtest-zero-passed');
+    expect(out).not.toContain('mutant applied:');
+  });
+
+  it('accepts a Cargo baseline with empty binaries alongside a passing selected test', () => {
+    const guard = cargoGuard(cargoFail) + '; rc=$?; printf "running 0 tests\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\\n"; exit "$rc"';
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', guard,
+    ]);
+    expect(status).toBe(0);
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+  });
+
   const setupFailure = [
     // The reporter count below includes the failed setup hook, though no assertion ran.
     'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "FAIL setup hook: Hook timed out in 120000ms\\n"; printf "Tests 2 skipped (2)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=2\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',

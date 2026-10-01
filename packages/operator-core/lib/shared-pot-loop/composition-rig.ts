@@ -439,6 +439,10 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       work_item_kind TEXT,
       status         TEXT NOT NULL DEFAULT 'active',
       tags           TEXT[] NOT NULL DEFAULT '{}',
+      -- migration 1318 (P-008): the nature source of truth that migration 1322's
+      -- work_item_kind_nature() reads when it stamps work_items (loaded below).
+      nature         TEXT,
+      audience       TEXT,
       PRIMARY KEY (workspace_id, id)
     );
     -- WI-2118 reserved-plan-lane floor: the REAL claim paths the rig drives now AND in
@@ -1003,9 +1007,17 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
   // inline copy, so a later edit to either file reaches the rig: 944 adds the
   // columns to the base table (plus its self-contained dedup tables), and 966
   // re-creates the compat view to expose them, as production does.
+  // 1055 (layer 3): the claim floors read the per-agent release-cooldown sidecar
+  // (work_item_release_cooldowns); without it every claim 42P01s.
+  // 140 (layer 4): reservedPlanLaneExclusionSql's assignment leg (EI-22040912157347872)
+  // reads plan_item_assignments joined to agent_name_sessions; 140 creates both and is
+  // self-contained (own updated_at trigger fn). The later fed_ts/HLC columns (181/314)
+  // are not read by the claim floor, so they stay out.
   for (const file of [
     '944-work-queue-admission-dedup.sql',
     '966-expose-admission-on-harness-features-consolidated-view.sql',
+    '1055-work-item-release-cooldown-sidecar.sql',
+    '140-plan-item-assignments.sql',
   ]) {
     await sql.unsafe(
       readFileSync(join(SQL_DIR, file), 'utf8')
@@ -1014,6 +1026,61 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
         .join('\n'),
     );
   }
+
+  // WI-10005120 (layer 2): every claim now passes the operation-worker gate
+  // (blueprint/operation-worker-binding.ts readActiveOperationWorkerClaimBinding),
+  // which reads harness_shared.adv_sessions for the claimant's live session and
+  // fails CLOSED ("operation claim authority unavailable", 42P01) when the relation
+  // is missing. With no session row it answers status:'none' and the claim proceeds,
+  // so an EMPTY, correctly-shaped table is all the rig needs. The archive chain
+  // (archive/079 + 106) cannot build it: `role` exists only in the generated
+  // baseline. So take the CREATE block from 000-baseline.sql (a slice, like 314's;
+  // the guard test deliberately does not count the baseline as loaded), then the
+  // later column migrations the gate reads (735 ended_by, 738 launch_spec) verbatim.
+  const baseline = readFileSync(join(SQL_DIR, '000-baseline.sql'), 'utf8');
+  const advStart = baseline.indexOf('CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (');
+  const advEnd = advStart < 0 ? -1 : baseline.indexOf('\n);', advStart);
+  if (advStart < 0 || advEnd < 0) {
+    throw new Error('composition-rig: 000-baseline.sql adv_sessions shape changed — update the slice points');
+  }
+  await sql.unsafe(baseline.slice(advStart, advEnd + '\n);'.length));
+  for (const file of ['735-adv-sessions-ended-by.sql', '738-adv-sessions-launch-spec.sql']) {
+    await sql.unsafe(
+      readFileSync(join(SQL_DIR, file), 'utf8')
+        .split('\n')
+        .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+        .join('\n'),
+    );
+  }
+
+  // P-010 / D-009 (enterprise-data-sources-2026-10-01): work_items.nature + audience.
+  // 1322 is loaded VERBATIM (column, work_item_kind_nature(), the mint trigger, the
+  // registry re-stamp trigger, backfill and CHECKs), reading the 1318 columns on the
+  // rig's datatype_registry above. The rig's engineer_issues is a REAL table, not the
+  // production view over work_items, so it takes the columns directly; the issue
+  // family has no registry row, so work/agent is exactly what the trigger derives.
+  // 1323 patches both compat views; here only harness_features_consolidated is a
+  // view, so its view list is narrowed to that one. Its final check still verifies
+  // nature/audience exist on BOTH relations.
+  const stripPsql = (text: string): string =>
+    text
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n');
+  await sql.unsafe(stripPsql(readFileSync(join(SQL_DIR, '1322-work-items-nature.sql'), 'utf8')));
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.engineer_issues
+      ADD COLUMN IF NOT EXISTS nature   text NOT NULL DEFAULT 'work',
+      ADD COLUMN IF NOT EXISTS audience text DEFAULT 'agent';
+  `);
+  const viewList = "ARRAY['harness_features_consolidated', 'engineer_issues']";
+  const mig1323 = readFileSync(join(SQL_DIR, '1323-work-items-views-nature.sql'), 'utf8');
+  if (mig1323.split(viewList).length !== 2) {
+    throw new Error(
+      'composition-rig: 1323-work-items-views-nature.sql view list changed — update the rig narrowing',
+    );
+  }
+  await sql.unsafe(stripPsql(mig1323.replace(viewList, "ARRAY['harness_features_consolidated']")));
 }
 
 /** Per-peer projection apply bound to THIS cell's sql (the Stage-6 seam). */

@@ -148,6 +148,11 @@ const {
   readLinuxStartupCounters,
   resolveLinuxCodexStartupPid,
   startCodexStartupProcessTrace,
+  collectCodexStuckProcessTree,
+  collectCodexStartingStuckSnapshot,
+  readCodexTuiLogTail,
+  redactSnapshotArgv,
+  redactSnapshotText,
   hostErrorEvidence,
   sharedDrillLedgerPath,
   appendSharedDrillLedgerEvent,
@@ -4031,6 +4036,116 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
     startCodexStartupProcessTrace({ ...options, agent: 'claude' })('host-cleanup');
     startCodexStartupProcessTrace({ ...options, platform: 'win32' })('host-cleanup');
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('Codex Starting-stuck snapshot (WI-10004943 b)', () => {
+  // node launcher 100 -> codex 200, whose MCP servers were forked from WORKER
+  // threads 201/202 (as a live multithreaded Codex does), not the main thread.
+  const proc: Record<string, string> = {
+    '/proc/100/stat': '100 (node) S 1 100 100 0',
+    '/proc/100/wchan': 'do_epoll_wait',
+    '/proc/100/cmdline': 'node\0/usr/bin/codex\0',
+    '/proc/100/task/100/children': '200',
+    '/proc/200/stat': '200 (codex) S 100 100 100 0',
+    '/proc/200/wchan': 'futex_wait_queue',
+    '/proc/200/cmdline': '/opt/codex\0--yolo\0',
+    '/proc/200/task/200/children': '',
+    '/proc/200/task/201/children': '300',
+    '/proc/200/task/202/children': '301 302',
+    '/proc/300/stat': '300 (node) S 200 100 100 0',
+    '/proc/300/wchan': 'pipe_read',
+    '/proc/300/cmdline': 'node\0/srv/mcp-proxy.mjs\0--token\0abc123secret\0--port=9071\0',
+    '/proc/300/task/300/children': '',
+    '/proc/301/stat': '301 (uvx) D 200 100 100 0',
+    '/proc/301/wchan': '0',
+    '/proc/301/cmdline': 'uvx\0some-mcp\0API_KEY=zzz\0',
+    '/proc/301/task/301/children': '',
+    // 302 exited between the children read and its stat read.
+  };
+  const tasks: Record<string, string[]> = {
+    '/proc/100/task': ['100'],
+    '/proc/200/task': ['200', '201', '202'],
+    '/proc/300/task': ['300'],
+    '/proc/301/task': ['301'],
+  };
+  const readFile = (path: string) => {
+    const value = proc[path];
+    if (value === undefined) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+    return value;
+  };
+  const readDir = (path: string) => {
+    const value = tasks[path];
+    if (!value) throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+    return value;
+  };
+
+  it('walks children of EVERY thread and records state, wait channel and a redacted command', () => {
+    const { procs, truncated } = collectCodexStuckProcessTree(100, { readFile, readDir });
+    expect(truncated).toBe(false);
+    expect(procs.map((p: { pid: number }) => p.pid)).toEqual([100, 200, 300, 301]);
+    expect(procs[1]).toMatchObject({ pid: 200, ppid: 100, depth: 1, comm: 'codex', threads: 3, wchan: 'futex_wait_queue' });
+    expect(procs[2]).toMatchObject({ pid: 300, ppid: 200, depth: 2, state: 'S', wchan: 'pipe_read' });
+    expect(procs[2].cmd).toBe('node /srv/mcp-proxy.mjs --token <redacted> --port=9071');
+    expect(procs[3]).toMatchObject({ pid: 301, state: 'D', wchan: null });
+    expect(procs[3].cmd).toBe('uvx some-mcp API_KEY=<redacted>');
+    expect(JSON.stringify(procs)).not.toMatch(/abc123secret|zzz/);
+  });
+
+  it('CONTROL: a main-thread-only child walk misses the MCP servers entirely', () => {
+    // Without the per-thread listing the walk falls back to task/PID/children,
+    // which is empty for Codex: the subprocesses we need are invisible.
+    const mainThreadOnly = (path: string) => {
+      throw Object.assign(new Error(`ENOENT ${path}`), { code: 'ENOENT' });
+    };
+    const { procs } = collectCodexStuckProcessTree(100, { readFile, readDir: mainThreadOnly });
+    expect(procs.map((p: { pid: number }) => p.pid)).toEqual([100, 200]);
+  });
+
+  it('bounds the walk and reports truncation', () => {
+    const { procs, truncated } = collectCodexStuckProcessTree(100, { readFile, readDir, maxProcs: 2 });
+    expect(procs).toHaveLength(2);
+    expect(truncated).toBe(true);
+  });
+
+  it('tails the current codex-tui.log: drops the partial head line, strips ANSI, redacts, keeps the last timestamp', () => {
+    const text = [
+      'ial line cut by the tail read',
+      '2026-10-01T22:42:25.124474Z  INFO \u001b[2mcodex_tui::app::startup\u001b[0m: tui startup',
+      '2026-10-01T22:42:25.133367Z  INFO session_init.auth_mcp: header Authorization: Bearer abcdefghijklmnop',
+      '2026-10-01T22:42:26.000000Z  WARN \u001b[33mmcp\u001b[0m: server tsenta waiting for oauth',
+      '',
+    ].join('\n');
+    const readTail = vi.fn((_path: string, _maxBytes: number) => ({ text, size: 900_000, truncatedHead: true }));
+    const log = readCodexTuiLogTail('/homes/session-1', { readTail, maxLines: 2 });
+    expect(readTail).toHaveBeenCalledWith('/homes/session-1/log/codex-tui.log', 64 * 1024);
+    expect(log).toMatchObject({ present: true, bytes: 900_000, totalLinesInTail: 3, lastTs: '2026-10-01T22:42:26.000000Z' });
+    expect(log.tail).toHaveLength(2);
+    expect(log.tail[0]).not.toMatch(/abcdefghijklmnop/);
+    expect(log.tail[1]).toContain('WARN mcp: server tsenta waiting for oauth');
+    expect(log.tail.join('\n')).not.toContain('\u001b');
+    expect(JSON.stringify(log)).not.toContain('ial line cut');
+    expect(readCodexTuiLogTail('/homes/x', { readTail: () => null })).toEqual({
+      path: '/homes/x/log/codex-tui.log', present: false,
+    });
+    expect(readCodexTuiLogTail(undefined)).toBeNull();
+  });
+
+  it('never throws: off Linux it still reads the log, and a failing read becomes error metadata', () => {
+    const readTail = () => ({ text: '2026-10-01T00:00:00Z INFO boot\n', size: 30, truncatedHead: false });
+    const offLinux = collectCodexStartingStuckSnapshot({ rootPid: 100, codexHome: '/h', platform: 'darwin', readFile, readDir, readTail });
+    expect(offLinux).toMatchObject({ rootPid: 100, procs: [], procsTruncated: false, log: { present: true, lastTs: '2026-10-01T00:00:00Z' } });
+    const failing = collectCodexStartingStuckSnapshot({
+      rootPid: 100, codexHome: '/h', platform: 'linux', readFile, readDir,
+      readTail: () => { throw Object.assign(new TypeError('token=do-not-persist'), { code: 'EIO' }); },
+    });
+    expect(failing).toEqual({ rootPid: 100, error: { errorName: 'TypeError', errorCode: 'EIO' } });
+  });
+
+  it('redacts credential-shaped text and bounds argv', () => {
+    expect(redactSnapshotText('access_token=abc ghp_ABCDEFGHIJKLMNOPQRSTUV ok')).toBe('access_token=<redacted> <redacted> ok');
+    expect(redactSnapshotText('x'.repeat(300), 10)).toBe(`${'x'.repeat(10)}…`);
+    expect(redactSnapshotArgv(['a', 'b', 'c', 'd'], { maxArgs: 2 })).toBe('a b …+2');
   });
 });
 

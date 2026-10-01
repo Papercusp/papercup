@@ -70,6 +70,7 @@ import {
 } from './rubrics-citation-checks';
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
+import { diffAmendedCriteriaAgainstRequirements } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
@@ -3623,6 +3624,13 @@ export interface AcceptanceBarAmendmentPreview {
    */
   readinessDelta: import('./acceptance-bar-amendment-readiness').AcceptanceBarAmendmentReadinessDelta;
   /**
+   * EI-24816459669484550: ADVISORY, never a refusal. BARs whose amended text (`model`, or
+   * `driftMarkers` for a three-section R-N) disagrees with the subject plan's `## Requirements`
+   * block. The rubric is canonical after seeding and nothing re-renders that block, so the
+   * author sees the drift here instead of an outside reviewer finding it after the apply.
+   */
+  requirementsDrift: import('./acceptance-bar-amendment-requirements-drift').RequirementsDrift;
+  /**
    * EI-24372605712471072: check files and method/replication citations that are not in the
    * tree yet and were accepted only because the subject plan has not started (draft/ready).
    * Each must exist by grading time: scorecards:emit refuses a tests-check file that does
@@ -4629,6 +4637,12 @@ async function amendAcceptanceBarRubric(
             ...(previewImplementers ? { implementers: previewImplementers } : {}),
             ...(approverEligibility ? { approverEligibility } : {}),
             readinessDelta,
+            requirementsDrift: diffAmendedCriteriaAgainstRequirements({
+              requirementBars: requirements.bars,
+              nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+              changedBars,
+              removedBars,
+            }),
             plannedPaths,
             nextRepair: missingMethod
               ? {

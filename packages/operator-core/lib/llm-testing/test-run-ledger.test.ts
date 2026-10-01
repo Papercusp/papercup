@@ -59,7 +59,7 @@ function report(runs: ReturnType<typeof run>[]) {
 const ctx = {
   root: '/repo',
   filePath: 'packages/operator-core/lib/llm-testing/scenarios/su/S01-harness-scope.ts',
-  runGroupId: 'g1',
+  runGroupId: null,
   workspaceId: 'w1',
   harnessSlug: 'papercusp',
   commitSha: 'abc123',
@@ -81,6 +81,7 @@ describe('llmScenarioLedgerRow', () => {
       passed: 2,
       failed: 0,
       skipped: 0,
+      runGroupId: null,
       filePath: ctx.filePath,
       scenarioId: 'su-S01-harness-scope',
       commitSha: 'abc123',

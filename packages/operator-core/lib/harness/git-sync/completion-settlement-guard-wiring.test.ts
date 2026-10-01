@@ -43,6 +43,7 @@ describe('standing-guard wiring in reconcileProposedCompletionsAtCommit', () => 
       residual: 0,
       unreadable: 0,
       floorRejected: 0,
+      lookupUnavailable: 0,
       neverAttemptedRemaining: 4,
     });
   });

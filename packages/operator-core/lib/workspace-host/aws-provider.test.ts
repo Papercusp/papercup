@@ -91,6 +91,11 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
   repairCalls = 0;
   terminateCalls = 0;
   deleteVolumeCalls = 0;
+  /** Inbound rule count per security group; an unlisted group reads as closed (0). */
+  readonly securityGroupIngress = new Map<string, number>();
+  /** Groups EC2 "does not return" — simulates an unverifiable group. */
+  readonly hiddenSecurityGroups = new Set<string>();
+  readonly describedSecurityGroups: string[][] = [];
 
   private readonly instances = new Map<string, AwsInstanceObservation>();
   private readonly volumes = new Map<string, AwsVolumeObservation>();
@@ -135,6 +140,13 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
 
   async estimatePrice() {
     return { currency: 'USD', hourlyAmount: 0.12, observedAt: NOW, confidence: 'estimated' as const };
+  }
+
+  async describeSecurityGroupIngress(groupIds: readonly string[]) {
+    this.describedSecurityGroups.push([...groupIds]);
+    return groupIds
+      .filter((groupId) => !this.hiddenSecurityGroups.has(groupId))
+      .map((groupId) => ({ groupId, ingressRuleCount: this.securityGroupIngress.get(groupId) ?? 0 }));
   }
 
   async createVolume(input: AwsCreateVolumeInput): Promise<AwsCreatedVolume> {
@@ -410,6 +422,7 @@ describe('AWS workspace-host provider planning', () => {
           SubnetId: 'subnet-123',
           Groups: ['sg-egress', 'sg-workspace'],
           DeleteOnTermination: true,
+          AssociatePublicIpAddress: false,
         },
       ],
       IamInstanceProfile: { Arn: 'arn:aws:iam::123456789012:instance-profile/PapercuspWorkspace' },
@@ -461,6 +474,68 @@ describe('AWS workspace-host provider planning', () => {
     );
     expect('resource' in instanceResult && instanceResult.resource?.kind).toBe('vm');
     expect(client.runInstancesCalls).toHaveLength(1);
+  });
+
+  it('launches with no public IP and an SSM instance profile, reachable only over SSM (P-005)', async () => {
+    const { client, provider } = providerAndClient();
+    await provision(client, provider);
+
+    // The request EC2 actually received, not just the plan: an omitted AssociatePublicIpAddress
+    // would inherit the subnet's MapPublicIpOnLaunch, so false must be explicit on the wire input.
+    expect(client.runInstancesCalls).toHaveLength(1);
+    const [launch] = client.runInstancesCalls;
+    expect(launch!.NetworkInterfaces).toHaveLength(1);
+    expect(launch!.NetworkInterfaces[0].AssociatePublicIpAddress).toBe(false);
+    expect(launch!.IamInstanceProfile.Arn).toBe('arn:aws:iam::123456789012:instance-profile/PapercuspWorkspace');
+    // The ingress check ran against exactly the groups the instance is launched into.
+    expect(client.describedSecurityGroups).toEqual([['sg-egress', 'sg-workspace']]);
+
+    const transports = provider.capabilities.transportKinds;
+    expect(transports).toContain('aws-ssm-ssh');
+  });
+
+  it('refuses to launch into a security group that has any inbound rule (P-005)', async () => {
+    const { client, provider } = providerAndClient();
+    client.securityGroupIngress.set('sg-workspace', 1);
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'operation-ingress', idempotencyKey: 'operation-ingress', desired: desired() },
+      context(),
+    );
+    const volume = requireAppliedResource(
+      await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: [] },
+        context(),
+      ),
+    );
+    await expect(
+      provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[1], knownResources: [volume] },
+        context(),
+      ),
+    ).rejects.toThrow('aws_workspace_host_security_group_has_ingress: sg-workspace');
+    expect(client.runInstancesCalls).toHaveLength(0);
+  });
+
+  it('refuses to launch when EC2 cannot confirm a security group is closed (P-005)', async () => {
+    const { client, provider } = providerAndClient();
+    client.hiddenSecurityGroups.add('sg-egress');
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'operation-hidden', idempotencyKey: 'operation-hidden', desired: desired() },
+      context(),
+    );
+    const volume = requireAppliedResource(
+      await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: [] },
+        context(),
+      ),
+    );
+    await expect(
+      provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[1], knownResources: [volume] },
+        context(),
+      ),
+    ).rejects.toThrow('aws_workspace_host_security_group_unverifiable: sg-egress');
+    expect(client.runInstancesCalls).toHaveLength(0);
   });
 
   it('fails closed when a desired persistent data volume is not encrypted', async () => {

@@ -138,6 +138,25 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
 type CompletionContractRequirementKey = (typeof WORK_ITEMS_COMPLETION_CONTRACT.requirements)[number]['key'];
 
 /**
+ * EI-24814178215040083: ONE tree-stamp route for every close. The registry lookup that
+ * yields `registeredRepoRoots` is deliberately paid only when a path is unresolved or names
+ * another checkout, but the STAMP must not branch on it. The old fallback stamped through
+ * the single-repo `completionTreeStamp`, which silently drops an absolute path outside the
+ * checkout. A close whose only deliverable lived outside every repository (a tunnel config,
+ * a systemd drop-in) therefore persisted a treeStamp with NO contentIdentity, and both
+ * authority floors read that as "unproven" and pinned it at `proposed` forever, against the
+ * tool's own promise that such paths are recorded as `outOfRepoArtifact`.
+ * `completionTreeStampForEvidence` records them as artifacts, so it is the only route.
+ */
+export async function completionTreeStampForClose(
+  evidence: CompletionVerificationEvidence,
+  registeredRepoRoots: string[] | undefined,
+  primaryRoot: string | null,
+): ReturnType<typeof completionTreeStampForEvidence> {
+  return completionTreeStampForEvidence(evidence, registeredRepoRoots ?? (primaryRoot ? [primaryRoot] : []));
+}
+
+/**
  * EI-22166138797743784: completion settlement is local-only. A proposed close whose
  * content identity is merely waiting for this install's git-sync can converge without
  * another completion call; a remote-authored row must not receive that same advice because
@@ -147,8 +166,17 @@ export function contentIdentityAdviceForOrigin(
   origin: string | null | undefined,
   createdBy: string | null | undefined,
   localAdvice: string | undefined,
+  /**
+   * EI-24814178215040083: did THIS close persist a `settlementManifest`? The reconciler's
+   * candidate query keys on exactly that (`authority='proposed'` + a manifest naming this
+   * install's repository root) and never reads `origin`, so a remote-origin row the caller
+   * was allowed to close locally (its author, its terminal owner, an own-node row) IS
+   * upgraded here. Measured: WI-10004437, origin 'remote', settled proposed -> committed
+   * with a historyAttestation. Telling that closer "cannot upgrade it" named no settler.
+   */
+  settlesLocally = false,
 ): string | undefined {
-  if (origin !== 'remote') return localAdvice;
+  if (origin !== 'remote' || settlesLocally) return localAdvice;
   return (
     `This row is REMOTE-AUTHORED${createdBy ? ` by '${createdBy}'` : ''}; this install's ` +
     `git-sync completion-settlement reconciler cannot upgrade it. The originating authoring ` +
@@ -4316,13 +4344,7 @@ async function completeOne(
   // all stays `undefined` rather than gaining an `_completionEvidence` object whose one
   // key came from the server, which a later reader could mistake for caller-supplied proof.
   const treeStamp = completionEvidenceBeforeStamp
-    ? registeredRepoRoots
-      ? await completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
-      : await completionTreeStamp({
-          repoRoot: completionRoot(),
-          filesChanged: completionEvidenceBeforeStamp.filesChanged,
-          filesDeleted: completionEvidenceBeforeStamp.filesDeleted,
-        })
+    ? await completionTreeStampForClose(completionEvidenceBeforeStamp, registeredRepoRoots, completionRoot())
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
     const base = withClaimBaseline(completionEvidenceBeforeStamp, claimVerdicts, new Date().toISOString());
@@ -4949,6 +4971,7 @@ async function completeOne(
     existing.origin,
     existing.createdBy,
     contentIdentityDetail,
+    Boolean(completionEvidenceToPersist?.settlementManifest),
   );
   const authorityWarning =
     stampedAuthority === 'proposed'

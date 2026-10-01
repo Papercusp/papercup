@@ -40,13 +40,13 @@ async function makeSource(
 ): Promise<string> {
   const [row] = opts
     ? await org.adminSql<{ id: string }[]>`
-        INSERT INTO harness_shared.trigger_sources
+        INSERT INTO harness_shared.data_sources
           (workspace_id, kind, permission_mapping, scope, scope_ref, owner_user_id, provider_account_id)
         VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: permissionMode })}, ${opts.scope}, ${opts.scopeRef ?? null},
                 ${opts.ownerUserId ?? null}::uuid, ${opts.providerAccountId ?? null})
         RETURNING id`
     : await org.adminSql<{ id: string }[]>`
-        INSERT INTO harness_shared.trigger_sources (workspace_id, kind, permission_mapping)
+        INSERT INTO harness_shared.data_sources (workspace_id, kind, permission_mapping)
         VALUES (${WS}, 'slack', ${org.adminSql.json({ mode: permissionMode })})
         RETURNING id`;
   return row!.id;
@@ -112,7 +112,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.data_source_legal_holds WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.provider_identity_mappings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE workspace_id = ${WS}`;
@@ -241,7 +241,7 @@ describe('chat retrieval units (P-015)', () => {
 
   it('a legal hold keeps held content through delete, erase, edit and retention, then releases it', async () => {
     await org.adminSql`
-      UPDATE harness_shared.trigger_sources SET retention_policy = '{"maxAgeDays": 30}'::jsonb
+      UPDATE harness_shared.data_sources SET retention_policy = '{"maxAgeDays": 30}'::jsonb
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
     await upsertChatMessages(org.adminSql, WS, sourceId, [
       msg('6.1', '2026-01-01T10:00:00Z', 'old held message'),
@@ -256,7 +256,7 @@ describe('chat retrieval units (P-015)', () => {
       .rejects.toThrow(/chat_message_under_legal_hold/);
     await expect(org.adminSql`UPDATE harness_shared.chat_messages SET body = NULL WHERE workspace_id = ${WS} AND provider_message_id = '6.1'`)
       .rejects.toThrow(/chat_message_under_legal_hold/);
-    await expect(org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`)
+    await expect(org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`)
       .rejects.toThrow();
 
     const now = new Date('2026-10-01T00:00:00Z');
@@ -290,7 +290,7 @@ describe('chat retrieval units (P-015)', () => {
   });
 
   it('computes units but writes no corpus row when an organization source has no source ACL', async () => {
-    await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+    await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
     const ownerOnly = await makeSource('owner');
     await upsertChatMessages(org.adminSql, WS, ownerOnly, [msg('8.1', '2026-09-30T10:00:00Z', 'not for the corpus')]);
     const out = await rollupChatUnits(org.adminSql, WS);
@@ -350,7 +350,7 @@ describe('chat retrieval units (P-015)', () => {
     expect((await corpusRows()).map((r) => r.scope)).toEqual(['organization']);
 
     await org.adminSql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET scope = 'pot', scope_ref = 'research-pot', permission_mapping = '{"mode": "owner"}'::jsonb
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
     await upsertChatMessages(org.adminSql, WS, sourceId, [msg('12.2', '2026-09-30T10:01:00Z', 'feldspar reply', '12.1')]);

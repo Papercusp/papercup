@@ -31,13 +31,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (sql) await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`.catch(() => {});
+  if (sql) await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`.catch(() => {});
   if (sql && userId) await sql`DELETE FROM harness_shared.users WHERE id = ${userId}`.catch(() => {});
   await org?.cleanup();
 });
 
 beforeEach(async () => {
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
 });
 
 describe('external trigger source ownership', () => {
@@ -64,7 +64,7 @@ describe('external trigger source ownership', () => {
 
   it('fails closed for a legacy row even when audit and provider fields look like users', async () => {
     const rows = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources
+      INSERT INTO harness_shared.data_sources
         (workspace_id, kind, status, created_by, config)
       VALUES (
         ${WS}, 'gmail', 'ready', ${userId},
@@ -84,7 +84,7 @@ describe('external trigger source ownership', () => {
         kind: 'gmail',
         ownerUserId: '00000000-0000-0000-0000-000000000000',
       }),
-    ).rejects.toThrow(/trigger_sources_owner_user_id_fkey/);
+    ).rejects.toThrow(/data_sources_owner_user_id_fkey/);
   });
 
   it('lists only pollable owned sources and persists cursor/status transitions', async () => {
@@ -148,7 +148,7 @@ describe('external trigger source ownership', () => {
     expect(degraded.cursor).toEqual(connected.cursor);
     const stored = await sql<Array<{ last_error: string; last_connected_at: Date | null }>>`
       SELECT last_error, last_connected_at
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${WS} AND id = ${pollable.id}::uuid`;
     expect(stored[0].last_error).toBe('provider timeout');
     expect(stored[0].last_connected_at).toBeInstanceOf(Date);
@@ -321,11 +321,11 @@ describe('data-source record (migration 1317)', () => {
 
   it('derives organization scope for an unowned row and filters the list by scope', async () => {
     const [org] = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
       VALUES (${WS}, 'slack', 'ready')
       RETURNING id::text AS id`;
     const [pot] = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, scope, scope_ref)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, scope, scope_ref)
       VALUES (${WS}, 'webhook', 'ready', 'pot', 'research-pot')
       RETURNING id::text AS id`;
 
@@ -341,8 +341,8 @@ describe('data-source record (migration 1317)', () => {
 
   it('refuses a personal source with no owner', async () => {
     await expect(
-      sql`INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, scope)
+      sql`INSERT INTO harness_shared.data_sources (workspace_id, kind, status, scope)
           VALUES (${WS}, 'gmail', 'ready', 'personal')`,
-    ).rejects.toThrow(/trigger_sources_personal_owner_chk/);
+    ).rejects.toThrow(/data_sources_personal_owner_chk/);
   });
 });

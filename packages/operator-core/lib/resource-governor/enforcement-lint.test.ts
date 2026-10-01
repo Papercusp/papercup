@@ -155,6 +155,15 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('requires durable evidence to name the resident queue receiver', () => {
+    const queueWithUnrelatedReceipt =
+      "function recordReceipt() {\n const receipt = persistResult();\n}\nconst pendingQueue = new Map();\npendingQueue.set(job.id, job);";
+    expect(inspectGovernorSource(queueWithUnrelatedReceipt)).toContain('unbounded-resident-queue');
+    expect(inspectGovernorSource('work_items.pendingQueue.set(job.id, job);')).not.toContain(
+      'unbounded-resident-queue',
+    );
+  });
+
   it('does not treat pending diagnostic IDs as a resident queue', () => {
     expect(
       inspectGovernorSource(

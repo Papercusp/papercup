@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-01T21:02:45.656Z",
-  "migrationCountAtGeneration": 1115,
+  "generatedAt": "2026-10-01T22:53:35.937Z",
+  "migrationCountAtGeneration": 1121,
   "indexes": [
     {
       "schema": "audit",
@@ -1743,6 +1743,69 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "chat_messages_channel_time_idx",
+      "table": "chat_messages",
+      "definition": "CREATE INDEX chat_messages_channel_time_idx ON harness_shared.chat_messages USING btree (workspace_id, data_source_id, channel_id, posted_at) WHERE (thread_key IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_messages_pkey",
+      "table": "chat_messages",
+      "definition": "CREATE UNIQUE INDEX chat_messages_pkey ON harness_shared.chat_messages USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_messages_provider_key",
+      "table": "chat_messages",
+      "definition": "CREATE UNIQUE INDEX chat_messages_provider_key ON harness_shared.chat_messages USING btree (workspace_id, data_source_id, channel_id, provider_message_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_messages_retention_idx",
+      "table": "chat_messages",
+      "definition": "CREATE INDEX chat_messages_retention_idx ON harness_shared.chat_messages USING btree (workspace_id, data_source_id, posted_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_messages_thread_idx",
+      "table": "chat_messages",
+      "definition": "CREATE INDEX chat_messages_thread_idx ON harness_shared.chat_messages USING btree (workspace_id, data_source_id, channel_id, thread_key, posted_at) WHERE (thread_key IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_retrieval_units_bucket_idx",
+      "table": "chat_retrieval_units",
+      "definition": "CREATE INDEX chat_retrieval_units_bucket_idx ON harness_shared.chat_retrieval_units USING btree (workspace_id, data_source_id, channel_id, unit_kind, bucket_key)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_retrieval_units_pkey",
+      "table": "chat_retrieval_units",
+      "definition": "CREATE UNIQUE INDEX chat_retrieval_units_pkey ON harness_shared.chat_retrieval_units USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_retrieval_units_unit_key",
+      "table": "chat_retrieval_units",
+      "definition": "CREATE UNIQUE INDEX chat_retrieval_units_unit_key ON harness_shared.chat_retrieval_units USING btree (workspace_id, data_source_id, channel_id, unit_kind, unit_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_rollup_queue_pkey",
+      "table": "chat_rollup_queue",
+      "definition": "CREATE UNIQUE INDEX chat_rollup_queue_pkey ON harness_shared.chat_rollup_queue USING btree (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "chunk_plans_by_spawned_by",
       "table": "harness_chunk_plans",
       "definition": "CREATE INDEX chunk_plans_by_spawned_by ON harness_shared.harness_chunk_plans USING btree (workspace_id, harness_slug, spawned_by_spawn_id) WHERE (spawned_by_spawn_id IS NOT NULL)",
@@ -2783,6 +2846,69 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "customer_workspaces",
       "definition": "CREATE UNIQUE INDEX customer_workspaces_pkey ON harness_shared.customer_workspaces USING btree (workspace_id, id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_source_legal_holds_active_idx",
+      "table": "data_source_legal_holds",
+      "definition": "CREATE INDEX data_source_legal_holds_active_idx ON harness_shared.data_source_legal_holds USING btree (workspace_id, data_source_id, channel_id) WHERE (released_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_source_legal_holds_pkey",
+      "table": "data_source_legal_holds",
+      "definition": "CREATE UNIQUE INDEX data_source_legal_holds_pkey ON harness_shared.data_source_legal_holds USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_source_subscriptions_live_key",
+      "table": "data_source_subscriptions",
+      "definition": "CREATE UNIQUE INDEX data_source_subscriptions_live_key ON harness_shared.data_source_subscriptions USING btree (workspace_id, subject_kind, subject_ref, source) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_source_subscriptions_pkey",
+      "table": "data_source_subscriptions",
+      "definition": "CREATE UNIQUE INDEX data_source_subscriptions_pkey ON harness_shared.data_source_subscriptions USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_sources_owned_account_kind_uidx",
+      "table": "data_sources",
+      "definition": "CREATE UNIQUE INDEX data_sources_owned_account_kind_uidx ON harness_shared.data_sources USING btree (workspace_id, kind, owner_user_id, provider_account_id) WHERE ((owner_user_id IS NOT NULL) AND (provider_account_id IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_sources_pkey",
+      "table": "data_sources",
+      "definition": "CREATE UNIQUE INDEX data_sources_pkey ON harness_shared.data_sources USING btree (workspace_id, id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_sources_workspace_owner_account_idx",
+      "table": "data_sources",
+      "definition": "CREATE INDEX data_sources_workspace_owner_account_idx ON harness_shared.data_sources USING btree (workspace_id, owner_user_id, provider_account_id) WHERE ((owner_user_id IS NOT NULL) AND (provider_account_id IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_sources_workspace_owner_idx",
+      "table": "data_sources",
+      "definition": "CREATE INDEX data_sources_workspace_owner_idx ON harness_shared.data_sources USING btree (workspace_id, owner_user_id) WHERE (owner_user_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "data_sources_ws_kind_status_idx",
+      "table": "data_sources",
+      "definition": "CREATE INDEX data_sources_ws_kind_status_idx ON harness_shared.data_sources USING btree (workspace_id, kind, status)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -10475,41 +10601,6 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "trigger_runs_ws_status_triggered_idx",
       "table": "trigger_runs",
       "definition": "CREATE INDEX trigger_runs_ws_status_triggered_idx ON harness_shared.trigger_runs USING btree (workspace_id, status, triggered_at DESC)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_sources_owned_account_kind_uidx",
-      "table": "trigger_sources",
-      "definition": "CREATE UNIQUE INDEX trigger_sources_owned_account_kind_uidx ON harness_shared.trigger_sources USING btree (workspace_id, kind, owner_user_id, provider_account_id) WHERE ((owner_user_id IS NOT NULL) AND (provider_account_id IS NOT NULL))",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_sources_pkey",
-      "table": "trigger_sources",
-      "definition": "CREATE UNIQUE INDEX trigger_sources_pkey ON harness_shared.trigger_sources USING btree (workspace_id, id)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_sources_workspace_owner_account_idx",
-      "table": "trigger_sources",
-      "definition": "CREATE INDEX trigger_sources_workspace_owner_account_idx ON harness_shared.trigger_sources USING btree (workspace_id, owner_user_id, provider_account_id) WHERE ((owner_user_id IS NOT NULL) AND (provider_account_id IS NOT NULL))",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_sources_workspace_owner_idx",
-      "table": "trigger_sources",
-      "definition": "CREATE INDEX trigger_sources_workspace_owner_idx ON harness_shared.trigger_sources USING btree (workspace_id, owner_user_id) WHERE (owner_user_id IS NOT NULL)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "trigger_sources_ws_kind_status_idx",
-      "table": "trigger_sources",
-      "definition": "CREATE INDEX trigger_sources_ws_kind_status_idx ON harness_shared.trigger_sources USING btree (workspace_id, kind, status)",
       "constraintBacked": false
     },
     {

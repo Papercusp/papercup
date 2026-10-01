@@ -2,7 +2,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error — the shared CLI seam is a plain .mjs module.
 import { closeInspector, createCdpClient, redactDiagnosticUrl } from '../../../scripts/cdp-inspector.mjs';
 
 class FakeWebSocket extends EventEmitter {

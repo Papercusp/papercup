@@ -506,6 +506,7 @@ const blindQuestionSchema = z.strictObject({ queries: z.array(z.strictObject({
 })).length(4) });
 const blindVotesSchema = z.strictObject({ votes: z.array(z.strictObject({ queryId: z.string().min(1),
   relevantKeys: z.array(z.string().min(1)), ambiguous: z.boolean(), note: z.string().max(3000),
+  invalidDocumentReferences: z.array(z.number().int().nonnegative()).optional(),
 })) });
 export type BlindVote = z.infer<typeof blindVotesSchema>['votes'][number];
 const blindChunkVotesSchema = z.strictObject({ votes: z.array(z.strictObject({
@@ -514,7 +515,8 @@ const blindChunkVotesSchema = z.strictObject({ votes: z.array(z.strictObject({
 })) });
 
 /** Numeric references are resolved exclusively against the submitted chunk.
- * Never coerce, infer or repair a generated identifier. */
+ * Never coerce, infer or repair a generated identifier. An explicit abstention
+ * with invalid references carries diagnostics, never relevance or agreement. */
 export function parseBlindChunkVotes(payload: unknown, questions: Pick<HeldoutQuery, 'id'>[], chunk: Pick<CorpusEntry, 'key'>[]): BlindVote[] {
   const parsed = blindChunkVotesSchema.safeParse(payload);
   if (!parsed.success) throw new Error(`invalid blind numeric response: ${parsed.error.message}`);
@@ -523,6 +525,10 @@ export function parseBlindChunkVotes(payload: unknown, questions: Pick<HeldoutQu
     if (v.q >= questions.length) throw new Error(`blind vote ${index}: question index ${v.q} outside [0, ${questions.length})`);
     if (seen.has(v.q)) throw new Error(`blind vote ${index}: duplicate question index ${v.q}`);
     seen.add(v.q);
+    if (v.a && (new Set(v.d).size !== v.d.length || v.d.some((d) => d >= chunk.length))) {
+      return { queryId: questions[v.q].id, relevantKeys: [], ambiguous: true,
+        note: v.note ?? '', invalidDocumentReferences: v.d };
+    }
     if (new Set(v.d).size !== v.d.length) throw new Error(`blind vote ${index}: duplicate document index`);
     for (const d of v.d) if (d >= chunk.length) throw new Error(`blind vote ${index}: document index ${d} outside [0, ${chunk.length})`);
     return { queryId: questions[v.q].id, relevantKeys: v.d.map((d) => chunk[d].key), ambiguous: v.a, note: v.note ?? '' };
@@ -542,6 +548,7 @@ export function deriveBlindConsensus(entries: CorpusEntry[], questions: HeldoutQ
     const map = new Map(votes.map((v) => [v.queryId, v]));
     if (map.size !== votes.length || map.size !== ids.size || [...map.keys()].some((id) => !ids.has(id))) throw new Error('incomplete/duplicate blind votes');
     for (const vote of votes) {
+      if (vote.invalidDocumentReferences && (!vote.ambiguous || vote.relevantKeys.length)) throw new Error('invalid blind abstention');
       if (new Set(vote.relevantKeys).size !== vote.relevantKeys.length || vote.relevantKeys.some((k) => !source.has(k))) throw new Error('unknown/duplicate blind relevance key');
     }
     return map;
@@ -551,7 +558,7 @@ export function deriveBlindConsensus(entries: CorpusEntry[], questions: HeldoutQ
   const labeled = questions.map((q): HeldoutQuery => {
     const [a, b] = maps.map((m) => m.get(q.id)!);
     const keys = [...a.relevantKeys].sort(), same = JSON.stringify(keys) === JSON.stringify([...b.relevantKeys].sort());
-    if (same && a.ambiguous === b.ambiguous) agreements++;
+    if (same && a.ambiguous === b.ambiguous && !a.invalidDocumentReferences && !b.invalidDocumentReferences) agreements++;
     if (!same || a.ambiguous || b.ambiguous || (q.class === 'hard-negative') !== (keys.length === 0)
       || (q.class !== 'hard-negative' && !keys.some((k) => source.get(k) === q.group))
       || keys.some((k) => entries.find((e) => e.key === k)?.metadata?.partition !== q.partition)) {
@@ -567,6 +574,8 @@ export function deriveBlindConsensus(entries: CorpusEntry[], questions: HeldoutQ
   }
   return { queries: labeled.filter((q) => !rejectedGroups.has(q.group)), ambiguous,
     excluded: labeled.filter((q) => rejectedGroups.has(q.group)).map((q) => q.id),
+    formatAbstentions: passes.flatMap((votes, pass) => votes.filter((v) => v.invalidDocumentReferences)
+      .map((v) => ({ queryId: v.queryId, pass: pass + 1, documentIndices: v.invalidDocumentReferences! }))),
     agreement: agreements / Math.max(1, questions.length), judgedQuestions: questions.length };
 }
 
@@ -710,7 +719,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     const invocationIds = new Set<string>();
     for (let pass = 0; pass < 2; pass++) {
       const order = [...entries].sort((a, b) => hashJson([snapshot.seed, pass, a.key]).localeCompare(hashJson([snapshot.seed, pass, b.key])));
-      const combined = new Map(questions.map((q) => [q.id, { queryId: q.id, relevantKeys: [] as string[], ambiguous: false, note: '' }]));
+      const combined = new Map<string, BlindVote>(questions.map((q) => [q.id, { queryId: q.id, relevantKeys: [], ambiguous: false, note: '' }]));
       const calls = [];
       for (let offset = 0; offset < order.length; offset += BLIND_COHORT_CONTRACT.documentChunk) {
         const chunk = order.slice(offset, offset + BLIND_COHORT_CONTRACT.documentChunk);
@@ -722,12 +731,13 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
         for (const vote of votes) {
           const row = combined.get(vote.queryId)!;
           row.relevantKeys.push(...vote.relevantKeys); row.ambiguous ||= vote.ambiguous;
+          if (vote.invalidDocumentReferences) row.invalidDocumentReferences = [...(row.invalidDocumentReferences ?? []), ...vote.invalidDocumentReferences];
           if (vote.ambiguous) row.note += vote.note;
         }
         calls.push({ invocationId: raw.invocationId, promptSha256: raw.promptSha256,
           raw: await fingerprintFile(path.join(root, `${corpus}-judge-${pass + 1}-${offset}.json`)) });
       }
-      passes[pass] = [...combined.values()];
+      passes[pass] = [...combined.values()].map((v) => v.invalidDocumentReferences ? { ...v, relevantKeys: [] } : v);
       const passFile = path.join(root, `${corpus}-judge-${pass + 1}-pass.json`);
       const passReceipt = { identityHash, calls, votes: passes[pass] };
       if (fs.existsSync(passFile)) {
@@ -740,6 +750,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     allLabels[corpus] = consensus.queries;
     allProofs[corpus] = { formatVersion: 1, authority: 'independent-blind-transport', candidateRankingsExposed: false,
       frozenAt: new Date().toISOString(), snapshotSha256: snapshotFingerprint.sha256, labelsSha256: '', judges,
+      ...(consensus.formatAbstentions.length ? { formatAbstentions: consensus.formatAbstentions } : {}),
       queryIds: consensus.queries.map((q) => q.id), ambiguous: consensus.ambiguous, excluded: consensus.excluded, agreement: consensus.agreement };
     log(`blind ${corpus}: ${consensus.queries.length}/${questions.length} queries accepted; agreement ${consensus.agreement}`);
   }

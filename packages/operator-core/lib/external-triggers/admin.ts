@@ -835,7 +835,7 @@ export async function loadExternalTriggerRunVisibilities(
       FROM harness_shared.trigger_runs tr
       JOIN harness_shared.trigger_bindings b
         ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
-      JOIN harness_shared.trigger_sources s
+      JOIN harness_shared.data_sources s
         ON s.workspace_id = b.workspace_id AND s.id = b.source_id
       LEFT JOIN harness_shared.trigger_deliveries d
         ON d.workspace_id = tr.workspace_id AND d.id = tr.delivery_id
@@ -906,7 +906,7 @@ export async function createExternalTriggerSource(
       }
     >
   >`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, config, credential_ref, status, created_by)
     VALUES (
       ${required(workspaceId, 'workspace_id')}, ${kind}, ${config}::text::jsonb,
@@ -959,7 +959,7 @@ export async function createExternalTriggerBinding(
   const planSlug = goalId || directGiven || operationGiven ? null : required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
   const sources = await sql<Array<{ kind: string }>>`
-    SELECT kind FROM harness_shared.trigger_sources
+    SELECT kind FROM harness_shared.data_sources
      WHERE workspace_id = ${ws} AND id = ${sourceId}::uuid
      LIMIT 1`;
   if (!sources[0]) throw new Error(`external_trigger_unknown_source:${sourceId}`);
@@ -1155,7 +1155,7 @@ async function migrationBindingRow(
            b.created_at AS "createdAt",
            b.updated_at AS "updatedAt"
       FROM harness_shared.trigger_bindings b
-      JOIN harness_shared.trigger_sources s
+      JOIN harness_shared.data_sources s
         ON s.workspace_id = b.workspace_id AND s.id = b.source_id
      WHERE b.workspace_id = ${workspaceId}
        AND b.detached_at IS NULL
@@ -1322,7 +1322,7 @@ export async function ensureExternalTriggerBinding(
              b.created_at AS "createdAt",
              b.updated_at AS "updatedAt"
         FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE b.workspace_id = ${ws}
          AND b.source_id = ${sourceId}::uuid
@@ -1348,7 +1348,7 @@ export async function ensureExternalTriggerBinding(
            AND b.action IS DISTINCT FROM ${action}::text::jsonb
         RETURNING b.id::text,
                   b.source_id::text AS "sourceId",
-                  (SELECT kind FROM harness_shared.trigger_sources s
+                  (SELECT kind FROM harness_shared.data_sources s
                     WHERE s.workspace_id = ${ws} AND s.id = b.source_id) AS "sourceKind",
                   b.plan_harness_slug AS "planHarnessSlug",
                   b.plan_slug AS "planSlug",
@@ -1458,7 +1458,7 @@ export async function loadExternalTriggerAdminSnapshot(
                WHERE d.outcome = 'failed'
                  AND d.received_at >= now() - interval '24 hours'
              )::int AS "failedDeliveries24h"
-        FROM harness_shared.trigger_sources s
+        FROM harness_shared.data_sources s
         LEFT JOIN harness_shared.trigger_bindings b
           ON b.workspace_id = s.workspace_id
          AND b.source_id = s.id
@@ -1491,7 +1491,7 @@ export async function loadExternalTriggerAdminSnapshot(
              lr.completed_at AS "lastRunCompletedAt",
              lr.error AS "lastRunError"
         FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
         LEFT JOIN LATERAL (
           SELECT tr.id, tr.status, tr.triggered_at, tr.completed_at, tr.error
@@ -1771,7 +1771,7 @@ export async function queueExternalTriggerLastEventTestRun(
                d.source_id::text AS "sourceId",
                s.kind AS "sourceKind"
           FROM harness_shared.trigger_deliveries d
-          JOIN harness_shared.trigger_sources s
+          JOIN harness_shared.data_sources s
             ON s.workspace_id = d.workspace_id AND s.id = d.source_id
          WHERE d.workspace_id = ${ws}
            AND d.source_id = ${binding.sourceId}::uuid

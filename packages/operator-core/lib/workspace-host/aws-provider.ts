@@ -70,6 +70,13 @@ export interface AwsRunInstancesInput {
       SubnetId: string;
       Groups: readonly string[];
       DeleteOnTermination: true;
+      /**
+       * Always false (P-005): the host is reached only through SSM Session Manager, so it never
+       * needs a public address. Explicit rather than omitted, because an omitted value inherits the
+       * subnet's MapPublicIpOnLaunch — a customer subnet with that on would silently publish the
+       * host to the internet.
+       */
+      AssociatePublicIpAddress: false;
     },
   ];
   IamInstanceProfile: { Arn: string };
@@ -133,6 +140,13 @@ export interface AwsSnapshotObservation {
   observedAt: string;
 }
 
+/** One security group's inbound surface, as EC2 reports it (P-005). */
+export interface AwsSecurityGroupIngressObservation {
+  groupId: string;
+  /** Number of ingress permissions; any value above zero refuses the launch. */
+  ingressRuleCount: number;
+}
+
 export interface AwsProviderMutationResult {
   requestId?: string;
 }
@@ -183,6 +197,12 @@ export interface AwsWorkspaceHostSdkClient {
   ): Promise<AwsVolumeObservation | undefined>;
   deleteVolume(volumeId: string): Promise<AwsProviderMutationResult>;
 
+  /**
+   * Inbound rules of the security groups a host will be launched into (P-005). A workspace host is
+   * reached only over SSM, so the run-instance step refuses any group that admits inbound traffic.
+   * Every requested group must be returned; a missing one is treated as unverifiable.
+   */
+  describeSecurityGroupIngress(groupIds: readonly string[]): Promise<readonly AwsSecurityGroupIngressObservation[]>;
   runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance>;
   findInstanceByClientToken(clientToken: string): Promise<AwsInstanceObservation | undefined>;
   describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined>;
@@ -599,6 +619,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           SubnetId: settings.subnetId,
           Groups: settings.securityGroupIds,
           DeleteOnTermination: true,
+          AssociatePublicIpAddress: false,
         },
       ],
       IamInstanceProfile: { Arn: settings.instanceProfileArn },
@@ -837,6 +858,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       }
       case 'run-instance': {
         requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
+        await this.assertNoInboundRules(input.request.NetworkInterfaces[0].Groups);
         const created = await this.client.runInstances(input.request);
         const observed = await this.client.waitForInstanceState(created.instanceId, 'running', ctx.signal);
         if (!observed || observed.state !== 'running') return this.inProgress(request, created.requestId);
@@ -922,6 +944,29 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         if (!isVolumeAbsent(fresh)) return this.inProgress(request, result.requestId);
         return this.destroyed(request, input.hostId, input.volumeId, result.requestId);
       }
+    }
+  }
+
+  /**
+   * Refuse to launch into a security group that admits inbound traffic (P-005). The host is
+   * reached only over SSM Session Manager, which needs no inbound rule; GCP's equivalent is the
+   * IAP-only firewall. Checked at apply time, immediately before the launch, because the groups are
+   * customer-owned and can change between plan and apply. A group EC2 does not return is refused
+   * too: an unverifiable group is not a verified-closed one.
+   */
+  private async assertNoInboundRules(groupIds: readonly string[]): Promise<void> {
+    const observed = await this.client.describeSecurityGroupIngress(groupIds);
+    const byId = new Map(observed.map((group) => [group.groupId, group.ingressRuleCount]));
+    const open = groupIds.filter((groupId) => (byId.get(groupId) ?? 0) > 0);
+    const missing = groupIds.filter((groupId) => !byId.has(groupId));
+    if (missing.length > 0) {
+      throw new Error(`aws_workspace_host_security_group_unverifiable: ${missing.join(', ')}`);
+    }
+    if (open.length > 0) {
+      throw new Error(
+        `aws_workspace_host_security_group_has_ingress: ${open.join(', ')} admit inbound traffic; ` +
+          'a workspace host is reached only over SSM Session Manager and must have no inbound rule',
+      );
     }
   }
 

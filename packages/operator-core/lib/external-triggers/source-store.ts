@@ -76,7 +76,7 @@ export async function createOwnedExternalTriggerSource(
   const config = JSON.stringify(input.config ?? {});
   const cursor = JSON.stringify(input.cursor ?? {});
   const rows = await sql<ExternalTriggerSourceRow[]>`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor, created_by)
     VALUES (
       ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
@@ -113,7 +113,7 @@ export async function upsertOwnedExternalTriggerSource(
   const config = JSON.stringify(input.config ?? {});
   const cursor = JSON.stringify(input.cursor ?? {});
   const rows = await sql<ExternalTriggerSourceRow[]>`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor,
        last_connected_at, last_error, created_by)
     VALUES (
@@ -126,7 +126,7 @@ export async function upsertOwnedExternalTriggerSource(
     DO UPDATE SET
       credential_ref = EXCLUDED.credential_ref,
       status = CASE
-                 WHEN trigger_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN 'disabled'
+                 WHEN data_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN 'disabled'
                  ELSE EXCLUDED.status
                END,
       last_connected_at = now(),
@@ -161,7 +161,7 @@ export async function getExternalTriggerSource(
            status,
            config,
            cursor
-      FROM harness_shared.trigger_sources
+      FROM harness_shared.data_sources
      WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
        AND id = ${required(sourceId, 'source_id')}::uuid
      LIMIT 1`;
@@ -226,7 +226,7 @@ export async function getDataSourceRecord(
 ): Promise<DataSourceRecord | null> {
   const rows = await sql<DataSourceRecord[]>`
     SELECT ${dataSourceColumns(sql)}
-      FROM harness_shared.trigger_sources
+      FROM harness_shared.data_sources
      WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
        AND id = ${required(sourceId, 'source_id')}::uuid
      LIMIT 1`;
@@ -242,7 +242,7 @@ export async function listDataSourceRecords(
   const ws = required(workspaceId, 'workspace_id');
   return sql<DataSourceRecord[]>`
     SELECT ${dataSourceColumns(sql)}
-      FROM harness_shared.trigger_sources
+      FROM harness_shared.data_sources
      WHERE workspace_id = ${ws}
        ${opts.scope ? sql`AND scope = ${opts.scope}` : sql``}
      ORDER BY created_at, id`;
@@ -269,7 +269,7 @@ export async function listPollableExternalTriggerSources(
            status,
            config,
            cursor
-      FROM harness_shared.trigger_sources
+      FROM harness_shared.data_sources
      WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
        AND kind = ${required(kind, 'source_kind')}
        AND owner_user_id IS NOT NULL
@@ -297,7 +297,7 @@ export async function listOwnedExternalTriggerSources(
            last_error AS "lastError",
            last_connected_at::text AS "lastConnectedAt",
            updated_at::text AS "updatedAt"
-      FROM harness_shared.trigger_sources
+      FROM harness_shared.data_sources
      WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
        AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
      ORDER BY kind, id`;
@@ -326,7 +326,7 @@ export async function renameOwnedExternalTriggerSourceAccount(
   return sql.begin(async (tx) => {
     const existing = await tx<Array<{ id: string }>>`
       SELECT id::text
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${workspaceId}
          AND owner_user_id = ${ownerUserId}::uuid
          AND provider_account_id = ${previousProviderAccountId}
@@ -345,7 +345,7 @@ export async function renameOwnedExternalTriggerSourceAccount(
                status,
                config,
                cursor
-          FROM harness_shared.trigger_sources
+          FROM harness_shared.data_sources
          WHERE workspace_id = ${workspaceId}
            AND owner_user_id = ${ownerUserId}::uuid
            AND provider_account_id = ${providerAccountId}
@@ -353,7 +353,7 @@ export async function renameOwnedExternalTriggerSourceAccount(
     }
     const conflict = await tx<Array<{ present: boolean }>>`
       SELECT true AS present
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${workspaceId}
          AND owner_user_id = ${ownerUserId}::uuid
          AND provider_account_id = ${providerAccountId}
@@ -363,7 +363,7 @@ export async function renameOwnedExternalTriggerSourceAccount(
       throw new Error(`external_trigger_provider_account_conflict:${providerAccountId}`);
     }
     return tx<ExternalTriggerSourceRow[]>`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET provider_account_id = ${providerAccountId},
              updated_at = now()
        WHERE workspace_id = ${workspaceId}
@@ -408,7 +408,7 @@ export async function setOwnedExternalTriggerSourceCapability(
   const status = input.enabled ? 'connected' : 'disabled';
   const config = JSON.stringify({ capabilityEnabled: input.enabled });
   const rows = await sql<ExternalTriggerSourceRow[]>`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config,
        last_connected_at, last_error, created_by)
     VALUES (
@@ -420,14 +420,14 @@ export async function setOwnedExternalTriggerSourceCapability(
       WHERE owner_user_id IS NOT NULL AND provider_account_id IS NOT NULL
     DO UPDATE SET
       credential_ref = CASE
-                         WHEN trigger_sources.credential_ref IS NULL THEN EXCLUDED.credential_ref
-                         ELSE trigger_sources.credential_ref
+                         WHEN data_sources.credential_ref IS NULL THEN EXCLUDED.credential_ref
+                         ELSE data_sources.credential_ref
                        END,
       status = EXCLUDED.status,
-      config = trigger_sources.config || EXCLUDED.config,
+      config = data_sources.config || EXCLUDED.config,
       last_connected_at = CASE
-                            WHEN ${input.enabled} THEN COALESCE(trigger_sources.last_connected_at, now())
-                            ELSE trigger_sources.last_connected_at
+                            WHEN ${input.enabled} THEN COALESCE(data_sources.last_connected_at, now())
+                            ELSE data_sources.last_connected_at
                           END,
       last_error = NULL,
       updated_at = now()
@@ -463,7 +463,7 @@ export async function disconnectOwnedExternalTriggerSources(
   const rows = await sql<Array<{ sources: number; credentialRefs: string[] }>>`
     WITH matched AS (
       SELECT id, credential_ref
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${required(workspaceId, 'workspace_id')}
          AND owner_user_id = ${required(ownerUserId, 'owner_user_id')}::uuid
          AND (${accountId}::text IS NULL OR provider_account_id = ${accountId})
@@ -471,7 +471,7 @@ export async function disconnectOwnedExternalTriggerSources(
        FOR UPDATE
     ),
     disconnected AS (
-      UPDATE harness_shared.trigger_sources AS source
+      UPDATE harness_shared.data_sources AS source
          SET status = 'disabled',
              last_error = NULL,
              updated_at = now()
@@ -498,7 +498,7 @@ export async function updateExternalTriggerSourceSyncState(
   const cursor = input.cursor === undefined ? null : JSON.stringify(input.cursor);
   const lastError = input.lastError?.slice(0, 4000) ?? null;
   const rows = await sql<ExternalTriggerSourceRow[]>`
-    UPDATE harness_shared.trigger_sources
+    UPDATE harness_shared.data_sources
        SET cursor = CASE
                       WHEN ${cursor}::text IS NULL THEN cursor
                       ELSE ${cursor}::text::jsonb

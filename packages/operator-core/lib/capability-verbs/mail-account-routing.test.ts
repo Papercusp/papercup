@@ -62,7 +62,7 @@ function fakeSql(options: { singleAccount?: boolean } = {}) {
         ? documents.filter((row) => row.sourceId === requestedSourceId)
         : documents;
     }
-    if (text.includes('FROM harness_shared.trigger_sources')) return sources;
+    if (text.includes('FROM harness_shared.data_sources')) return sources;
     throw new Error(`unexpected_query:${text}`);
   };
   return query as unknown as postgres.Sql;

@@ -88,7 +88,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS}`;
 });
 

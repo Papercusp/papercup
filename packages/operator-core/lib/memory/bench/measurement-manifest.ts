@@ -166,8 +166,14 @@ export function validateIndependentCohort(entries: FrozenEntry[], queries: Froze
     judges: z.array(z.strictObject({ model: z.string().trim().min(1), revision: z.string().trim().min(1),
       transport: z.string().trim().min(1), promptSha256: sha, raw: fingerprint })).min(2),
     queryIds: z.array(z.string()), ambiguous: z.array(z.string()), excluded: z.array(z.string()),
+    formatAbstentions: z.array(z.strictObject({ queryId: z.string().min(1), pass: z.number().int().min(1).max(2),
+      documentIndices: z.array(z.number().int().nonnegative()).min(1) })).optional(),
     agreement: z.number().min(0).max(1),
   }).parse(receipt);
+  for (const abstention of proof.formatAbstentions ?? []) {
+    if (proof.queryIds.includes(abstention.queryId) || !proof.ambiguous.includes(abstention.queryId)
+      || !proof.excluded.includes(abstention.queryId)) throw new Error('malformed abstention must be excluded from scored queries');
+  }
   // Two array entries cannot stand in for two independently transported calls.
   unique(proof.judges.map((j) => j.transport), 'judge transport');
   unique(proof.judges.map((j) => path.resolve(j.raw.path)), 'judge raw artifact');

@@ -388,6 +388,8 @@
     "scripts/lib/mutation-probe-window.mjs",
     // shared-vector-search-libraries-2026-09-29 P-007 (WI-10004276): the BORROWABLE.md
     // generator's export index is imported by borrowable-export-index.test.ts.
-    "scripts/gen-borrowable-catalog.mjs"
+    "scripts/gen-borrowable-catalog.mjs",
+    // Shared inspector client is imported by memory and transport contract tests.
+    "scripts/cdp-inspector.mjs"
   ]
 }

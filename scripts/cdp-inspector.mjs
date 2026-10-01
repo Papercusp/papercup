@@ -5,6 +5,17 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000;
 const DEFAULT_CLOSE_POLL_MS = 100;
 
+/**
+ * The client accepts either Node or browser-style event transports. Injected
+ * test transports need only these operations, not WebSocket's static constants.
+ * @typedef {{ readyState: number, send: (payload: string) => void, close: () => void,
+ *   on?: (event: string, handler: (...args: any[]) => void) => unknown,
+ *   once?: (event: string, handler: (...args: any[]) => void) => unknown,
+ *   addEventListener?: (event: string, handler: (...args: any[]) => void, options?: object) => unknown }} CdpSocket
+ * @typedef {(url: string, options?: RequestInit) => Promise<{ ok: boolean, json: () => Promise<any> }>} InspectorFetch
+ * @typedef {(delay: number) => Promise<unknown>} InspectorSleep
+ */
+
 export class CdpEvaluationError extends Error {
   constructor(expression, exceptionDetails) {
     const description = exceptionDetails?.exception?.description
@@ -49,6 +60,8 @@ export class CdpTransportClosedError extends Error {
  * getBuiltinModule reaches the target's existing builtin instead. The caller
  * must name its PID so a reused inspector port cannot silently sample a peer.
  * These counters are not a retainer graph or an estimate of total native bytes.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * @param {{ expectedPid?: number }} [options]
  */
 export async function readProcessMemory(client, { expectedPid } = {}) {
   if (!Number.isInteger(expectedPid) || expectedPid <= 0) {
@@ -119,6 +132,10 @@ export function redactDiagnosticUrl(value) {
 /**
  * Create a small CDP client whose Runtime.evaluate path cannot mistake
  * `exceptionDetails` for a successful evaluation.
+ * @template {CdpSocket} [Socket=WebSocket]
+ * @param {string} wsUrl
+ * @param {{ WebSocketImpl?: new (url: string, options: import('ws').ClientOptions) => Socket,
+ *   webSocketOptions?: import('ws').ClientOptions, requestTimeoutMs?: number }} [options]
  */
 export function createCdpClient(
   wsUrl,
@@ -218,6 +235,8 @@ export function createCdpClient(
 
 /**
  * Find a Node inspector target and retain its port for post-close verification.
+ * @param {{ startPort?: number, portCount?: number, fetchImpl?: InspectorFetch,
+ *   requestTimeoutMs?: number }} [options]
  */
 export async function discoverInspector({
   startPort = 9229,
@@ -253,6 +272,11 @@ async function inspectorResponds(port, fetchImpl) {
   }
 }
 
+/**
+ * @param {number} port
+ * @param {{ fetchImpl?: InspectorFetch, sleepImpl?: InspectorSleep,
+ *   timeoutMs?: number, pollIntervalMs?: number }} [options]
+ */
 export async function waitForInspectorClosed(
   port,
   {
@@ -275,6 +299,10 @@ export async function waitForInspectorClosed(
  * Close the target inspector, then prove the listening port went away.
  * `_debugEnd()` tears down the CDP transport before its reply can arrive, so
  * transport close/timeout is expected; Runtime.evaluate exceptions are not.
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'close'>} client
+ * @param {number} port
+ * @param {{ evaluateTimeoutMs?: number, fetchImpl?: InspectorFetch,
+ *   sleepImpl?: InspectorSleep, verifyTimeoutMs?: number, pollIntervalMs?: number }} [options]
  */
 export async function closeInspector(
   client,

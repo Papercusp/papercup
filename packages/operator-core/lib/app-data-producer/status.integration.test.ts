@@ -14,7 +14,7 @@ import { countPendingRows, readPushRollup } from './status';
  * found during independent acceptance grading). This is that check.
  *
  * The workspace is the shared fixture workspace, because trigger_deliveries has
- * FKs onto trigger_sources and datatype_registry. Isolation comes from a fresh
+ * FKs onto data_sources and datatype_registry. Isolation comes from a fresh
  * user uuid per run: both queries are scoped by user, which is exactly the
  * scoping property worth testing.
  */
@@ -67,7 +67,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   const [source] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'google-calendar', 'connected') RETURNING id`;
   sourceId = source.id;
   userId = await makeUser('subject');
@@ -77,7 +77,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (sql) {
     await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${sourceId}`.catch(() => {});
-    await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS} AND id = ${sourceId}`.catch(() => {});
+    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${sourceId}`.catch(() => {});
     for (const id of [userId, neighbourId]) {
       if (id) {
         await sql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS} AND user_id = ${id}`.catch(() => {});

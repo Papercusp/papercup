@@ -8,7 +8,12 @@
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { raceDeadline, effectiveMcpDeadlineMs, dispatchLegacyWithDeadline } from '../_mcp-host';
+import {
+  raceDeadline,
+  effectiveMcpDeadlineMs,
+  dispatchLegacyWithDeadline,
+  dispatchNestedWithMcpDeadline,
+} from '../_mcp-host';
 
 const dispatchMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
@@ -64,6 +69,37 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
   it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
     expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
+  });
+});
+
+describe('dispatchNestedWithMcpDeadline (tools:invoke)', () => {
+  it('uses the nested target timeout plus buffer and returns a bounded unknown-commit error', async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const dispatch = vi.fn(() => new Promise<never>(() => {}));
+      const pending = dispatchNestedWithMcpDeadline('work_items:checkpoint', 0.02, dispatch, 10).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      // The nested target's 20ms timeout + 5s buffer exceeds the 10ms base.
+      await vi.advanceTimersByTimeAsync(5_019);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      const result = await pending;
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(result.isError).toBe(true);
+      const message = (result.content[0] as { text: string }).text;
+      expect(message).toContain('request_timeout');
+      expect(message).toContain('work_items:checkpoint');
+      expect(message).toContain('exceeded 5020ms');
+      expect(message).toContain('commit status is UNKNOWN');
+      expect(message).toContain('Re-read the target\'s state before retrying');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

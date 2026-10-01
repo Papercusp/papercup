@@ -63,7 +63,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_sync_state WHERE user_id = ${userId}`;
@@ -351,7 +351,7 @@ describe('Personal Vault core', () => {
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
     const sources = await org.adminSql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources
+      INSERT INTO harness_shared.data_sources
         (workspace_id, kind, owner_user_id, provider_account_id, status)
       VALUES (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready')
       RETURNING id`;

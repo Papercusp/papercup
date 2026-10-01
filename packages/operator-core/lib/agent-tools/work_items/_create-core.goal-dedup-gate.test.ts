@@ -79,10 +79,12 @@ vi.mock('../../issue-occurrence-ledger', async () => {
 
 import { createOneWorkItem } from './_create-core';
 import { findSemanticDupes, type SemanticDupeResult } from './semantic-dupe-guard';
+import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
 import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
 import { createWorkItem } from '../../work-items';
 
 const guardM = vi.mocked(findSemanticDupes);
+const recentM = vi.mocked(findRecentLexicalDupes);
 const fulltextM = vi.mocked(findFulltextLexicalDupes);
 const createM = vi.mocked(createWorkItem);
 // EI-21872682653374832 — createOneWorkItem stamps goal provenance (_create-core.ts:1198).
@@ -112,6 +114,8 @@ const verdict = (hard: number[], soft: number[]): SemanticDupeResult => ({
 beforeEach(() => {
   guardM.mockReset();
   guardM.mockResolvedValue(null);
+  recentM.mockReset();
+  recentM.mockResolvedValue(null);
   fulltextM.mockReset();
   fulltextM.mockResolvedValue([]);
   createM.mockClear();
@@ -146,6 +150,50 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     });
     expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
     expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('partial recent coverage fails the goal gate but ordinary and forced creates still stamp it', async () => {
+    guardM.mockResolvedValue(verdict([], []));
+    recentM.mockResolvedValue({
+      candidates: [],
+      coverage: { scanned: 1, unembedded: 1, truncated: false, complete: false },
+    });
+
+    const refused = await createOneWorkItem(
+      { kind: 'bug', title: 'fresh row without an embedding', goalDedupGate: true },
+      ctx,
+    );
+    expect(refused).toMatchObject({
+      ok: false,
+      error: 'dedup_unavailable',
+      dedupCoverage: { lexical: 'ok', semantic: 'partial', degraded: true },
+    });
+    if (refused.ok) throw new Error('unreachable');
+    expect(refused.message).toContain('semantic coverage is partial');
+    expect(createM).not.toHaveBeenCalled();
+
+    const ordinary = await createOneWorkItem(
+      { kind: 'bug', title: 'fresh row without an embedding' },
+      ctx,
+    );
+    expect(ordinary.ok).toBe(true);
+    if (!ordinary.ok) throw new Error('unreachable');
+    expect(ordinary.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'partial', degraded: true });
+
+    const forced = await createOneWorkItem(
+      { kind: 'bug', title: 'fresh row without an embedding', force: true, goalDedupGate: true },
+      ctx,
+    );
+    expect(forced.ok).toBe(true);
+    if (!forced.ok) throw new Error('unreachable');
+    expect(forced.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'partial', degraded: true });
+    expect(createM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          dedupCoverage: { lexical: 'ok', semantic: 'partial', degraded: true },
+        }),
+      }),
+    );
   });
 
   it('EI-23799808825983763: the retry disposition is ABSENT on a forced filing (nothing was refused)', async () => {

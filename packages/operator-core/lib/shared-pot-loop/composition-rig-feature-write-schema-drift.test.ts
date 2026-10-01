@@ -36,6 +36,9 @@ const FEATURES_PROJECTION_FILE = resolve(HERE, '..', 'sync/hyperbee/projections/
 
 const IDENT = /^[a-z_][a-z0-9_]*$/i;
 
+/** Read by the rig as a slice only; never a column source for this guard. */
+const SLICED_ONLY_BASELINE = '000-baseline.sql';
+
 /**
  * Pure, exported for its own coverage: the column list of the projection's
  * `INSERT INTO harness_shared.work_items (…) VALUES`.
@@ -66,7 +69,13 @@ export function extractRigMigrationFiles(rigSource: string): string[] {
     .filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l))
     .join('\n');
   const files = new Set<string>();
-  for (const m of code.matchAll(/'((?:archive\/)?\d{3}-[a-z0-9-]+\.sql)'/g)) files.add(m[1]);
+  // \d{3,}: migration numbers passed 999 (1055-…), and a 3-digit-only pattern
+  // would silently drop every 4-digit load from the column source.
+  for (const m of code.matchAll(/'((?:archive\/)?\d{3,}-[a-z0-9-]+\.sql)'/g)) files.add(m[1]);
+  // The rig only ever SLICES the generated baseline (one CREATE block, e.g.
+  // adv_sessions). Counting the whole file would credit the rig with every column
+  // the baseline knows, including work_items' own, and make this guard vacuous.
+  files.delete(SLICED_ONLY_BASELINE);
   return [...files];
 }
 
@@ -126,9 +135,16 @@ describe('feature-write drift parsers (sanity check the parsers themselves)', ()
   it('extractRigMigrationFiles finds the verbatim loads, both pre- and post-rename, and skips comment prose', () => {
     const files = extractRigMigrationFiles(readFileSync(RIG_FILE, 'utf8'));
     expect(files).toEqual(
-      expect.arrayContaining(['123-coordination-substrate.sql', 'archive/102-substrate-outbox.sql', '379-maintained-ready-column.sql']),
+      expect.arrayContaining([
+        '123-coordination-substrate.sql',
+        'archive/102-substrate-outbox.sql',
+        '379-maintained-ready-column.sql',
+        '1055-work-item-release-cooldown-sidecar.sql', // 4-digit numbers must count too
+      ]),
     );
     expect(extractRigMigrationFiles("// loads '999-only-cited-in-a-comment.sql'\nconst x = 1;")).toEqual([]);
+    // The baseline is sliced, never loaded whole, so it must never count as a column source.
+    expect(extractRigMigrationFiles("readFileSync(join(SQL_DIR, '000-baseline.sql'), 'utf8');")).toEqual([]);
   });
 
   it('extractRigWorkItemsColumns reaches the CREATE block, the pre-rename ALTERs and the post-rename ALTERs', () => {

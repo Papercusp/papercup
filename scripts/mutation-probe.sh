@@ -244,7 +244,9 @@
 # mutant. For a recognized test runner, exit 1 is caught only when its output
 # includes assertion-level failure evidence; a setup-hook failure can exit 1
 # while every assertion is skipped. Plain non-test guards (for example grep)
-# retain the exit-1 convention. Every other nonzero exit is a harness error.
+# retain the exit-1 convention. Cargo/libtest exit 101 is caught only with
+# executed, named test failures and a matching failed summary. Compilation,
+# setup and empty selection are never caught. Other exits are harness errors.
 #
 # Bash reads a script incrementally. A peer edit while a long baseline guard is
 # running can shift the reader's offset and turn a later diagnostic string into
@@ -1329,7 +1331,7 @@ detect_runner_misuse() {
 # return 1 and print why the known test run is inconclusive when it is not;
 # return 2 when the output is not a recognized test-run format.
 detect_assertion_failure_evidence() {
-  local result_line summary
+  local result_line summary cargo_rc
   if grep -Fq 'TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
     printf '%s' 'test-file-assertion-failure'
     return 0
@@ -1338,6 +1340,29 @@ detect_assertion_failure_evidence() {
   result_line="$(grep -E '^[[:space:]]*TEST_FILE_RESULT[[:space:]]' "$1" 2>/dev/null | tail -1)"
   if [ -n "$result_line" ]; then
     printf '%s' 'no-assertion-failure-evidence'
+    return 1
+  fi
+
+  # Cargo uses 101 for BOTH a failed test and a compilation/setup failure.
+  # Pair named failures with their own libtest run/summary, rather than crediting
+  # a stale failed line from a different binary or an arbitrary exit 101.
+  cargo_rc=0
+  sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null | awk '
+    /^running [0-9]+ tests?$/ { running=$2; named=0 }
+    /^test .+ \.\.\. FAILED$/ { if (running > 0) named++ }
+    /^test result: (ok|FAILED)\./ {
+      recognized=1
+      if ($3 == "FAILED." && running > 0 && named > 0 && $6 > 0 && named == $6) caught=1
+      running=0; named=0
+    }
+    /^error: (could not compile|failed to |could not execute|process didn.t exit successfully)/ { broken=1 }
+    END { if (caught && !broken) exit 0; if (recognized) exit 1; exit 2 }
+  ' || cargo_rc=$?
+  if [ "$cargo_rc" -eq 0 ]; then
+    printf '%s' 'cargo-libtest-failed-tests'
+    return 0
+  elif [ "$cargo_rc" -eq 1 ]; then
+    printf '%s' 'no-cargo-executed-test-failures'
     return 1
   fi
 
@@ -1363,6 +1388,12 @@ detect_assertion_failure_evidence() {
   fi
 
   return 2
+}
+
+# Exit 101 never inherits the plain guard exit-1 convention or evidence from
+# another runner. Both current-mutant and historical modes use the same rule.
+is_assertion_failure_exit() {
+  [ "$1" -eq 1 ] || { [ "$1" -eq 101 ] && [ "$2" = cargo-libtest-failed-tests ]; }
 }
 
 # EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
@@ -1392,7 +1423,15 @@ detect_assertion_failure_evidence() {
 # Emits nothing when the guard prints no count summary at all (a `grep -q` or
 # plain-node guard), so a non-test guard can never trip it.
 detect_zero_selection() {
-  local line
+  local line cargo_empty
+  cargo_empty="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null | awk '
+    /^test result: ok\./ { seen=1; if ($4 > 0) passed=1 }
+    END { if (seen && !passed) print "cargo-libtest-zero-passed" }
+  ')"
+  if [ -n "$cargo_empty" ]; then
+    printf '%s' "$cargo_empty"
+    return 0
+  fi
   # Vitest may print "Tests closed successfully ..." AFTER its count summary.
   # Diagnostic prose is not a zero-test result and must not replace that summary.
   line="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
@@ -1497,6 +1536,13 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     exit 2
   fi
 
+  CURRENT_ZERO_SELECTION="$(detect_zero_selection "$CURRENT_GUARD_LOG")"
+  if [ -n "$CURRENT_ZERO_SELECTION" ]; then
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=-1 zero_selection=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$CURRENT_ZERO_SELECTION"
+    die "the current snapshot guard selected no passing tests; refusing to score the historical source"
+  fi
+
   CALIBRATION_CURRENT_RC=0
   if run_snapshot_command calibration-current "current snapshot calibration" "$CURRENT_SNAPSHOT" "$CALIBRATION_CMD" "$CALIBRATION_CURRENT_LOG"; then
     :
@@ -1527,7 +1573,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   fi
 
   HISTORICAL_MISUSE_HITS="$(detect_runner_misuse "$HISTORICAL_GUARD_LOG")"
-  if [ "$HISTORICAL_RC" -eq 1 ] && [ -n "$HISTORICAL_MISUSE_HITS" ]; then
+  if { [ "$HISTORICAL_RC" -eq 1 ] || [ "$HISTORICAL_RC" -eq 101 ]; } && [ -n "$HISTORICAL_MISUSE_HITS" ]; then
     log "the historical guard's own output shows a runner-MISUSE marker, not an assertion failure: ${HISTORICAL_MISUSE_HITS}"
     printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s runner_misuse=%s\n' \
       "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "${HISTORICAL_MISUSE_HITS// /,}"
@@ -1545,21 +1591,21 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
       Inspect the captured guard output above for the exact runner message."
   fi
   HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
-  if [ "$HISTORICAL_RC" -eq 1 ]; then
+  if [ "$HISTORICAL_RC" -eq 1 ] || [ "$HISTORICAL_RC" -eq 101 ]; then
     if HISTORICAL_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$HISTORICAL_GUARD_LOG")"; then
       :
     else
       HISTORICAL_ASSERTION_EVIDENCE_RC=$?
       if [ "$HISTORICAL_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
-        log "the historical test run exited 1 without assertion-level failure evidence: ${HISTORICAL_ASSERTION_EVIDENCE}"
+        log "the historical test run exited $HISTORICAL_RC without assertion-level failure evidence: ${HISTORICAL_ASSERTION_EVIDENCE}"
         printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s assertion_evidence=%s\n' \
           "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$HISTORICAL_ASSERTION_EVIDENCE"
-        die "the historical guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the historical mutation was caught. Inspect the captured historical guard output and rerun only after the assertions execute."
+        die "the historical guard exited $HISTORICAL_RC, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the historical mutation was caught. Inspect the captured historical guard output and rerun only after the assertions execute."
       fi
       HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
     fi
   fi
-  if [ "$HISTORICAL_RC" -eq 1 ]; then
+  if is_assertion_failure_exit "$HISTORICAL_RC" "$HISTORICAL_ASSERTION_EVIDENCE"; then
     VERDICT="caught"
     log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
   elif [ "$HISTORICAL_RC" -eq 0 ]; then
@@ -2085,10 +2131,10 @@ TEST_RC=$?
 # those terms rather than leaking the raw exit code, because "the probe
 # succeeded" and "the test passed" mean OPPOSITE things here and conflating
 # them is its own error class. Exit 1 is the test/guard failure convention;
-# exit 2 (for example, a shell syntax error) and every other nonzero status
-# mean the harness did not produce a trustworthy verdict.
+# Cargo/libtest exit 101 requires executed-test evidence; other nonzero
+# statuses mean the harness did not produce a trustworthy verdict.
 MUTANT_MISUSE_HITS="$(detect_runner_misuse "$MUTANT_LOG")"
-if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
+if { [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; } && [ -n "$MUTANT_MISUSE_HITS" ]; then
   log "the mutant guard's own output shows a runner-MISUSE marker, not an assertion failure: ${MUTANT_MISUSE_HITS}"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s runner_misuse=%s\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "${MUTANT_MISUSE_HITS// /,}"
@@ -2113,16 +2159,16 @@ if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
 fi
 
 MUTANT_ASSERTION_EVIDENCE='exit-code-only'
-if [ "$TEST_RC" -eq 1 ]; then
+if [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; then
   if MUTANT_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$MUTANT_LOG")"; then
     :
   else
     MUTANT_ASSERTION_EVIDENCE_RC=$?
     if [ "$MUTANT_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
-      log "the mutant test run exited 1 without assertion-level failure evidence: ${MUTANT_ASSERTION_EVIDENCE}"
+      log "the mutant test run exited $TEST_RC without assertion-level failure evidence: ${MUTANT_ASSERTION_EVIDENCE}"
       printf 'MUTATION_PROBE_RESULT verdict=inconclusive expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
         "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
-      die "the mutant guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the mutation was caught. Inspect the captured guard output and rerun only after the assertions execute."
+      die "the mutant guard exited $TEST_RC, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the mutation was caught. Inspect the captured guard output and rerun only after the assertions execute."
     fi
     MUTANT_ASSERTION_EVIDENCE='exit-code-only'
   fi
@@ -2173,7 +2219,7 @@ if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
   esac
 fi
 
-if [ "$TEST_RC" -eq 1 ]; then
+if is_assertion_failure_exit "$TEST_RC" "$MUTANT_ASSERTION_EVIDENCE"; then
   VERDICT="caught"
   log "VERDICT: MUTANT CAUGHT (guard exited $TEST_RC) — the guard is falsifiable ✓"
 elif [ "$TEST_RC" -eq 0 ]; then

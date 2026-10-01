@@ -636,6 +636,92 @@ export function startCodexStartupProcessTrace({ agent, ownerId, pid, readCounter
     clear?: typeof clearInterval | undefined;
     platform?: NodeJS.Platform | undefined;
 }): (reason?: string) => void;
+export function redactSnapshotText(text: any, maxChars?: number): string;
+/** argv -> one bounded, redacted string. A credential-named flag also redacts
+ * the separate argument that follows it (`--token abc`). */
+export function redactSnapshotArgv(argv: any, { maxArgs, maxChars }?: {
+    maxArgs?: number | undefined;
+    maxChars?: number | undefined;
+}): string;
+/** Walk the descendants of `rootPid` breadth-first. Children are read from
+ * EVERY thread's /proc/PID/task/TID/children: the kernel lists a child under the
+ * thread that forked it, and Codex (a multithreaded Rust runtime) forks its MCP
+ * servers from worker threads, so the main thread's list alone is empty
+ * (measured on a live Codex: 156 threads, main-thread children empty, three
+ * worker threads holding all of them). */
+export function collectCodexStuckProcessTree(rootPid: any, { readFile, readDir, maxDepth, maxProcs, }?: {
+    readFile?: typeof readFileSync | undefined;
+    readDir?: typeof readdirSync | undefined;
+    maxDepth?: number | undefined;
+    maxProcs?: number | undefined;
+}): {
+    procs: any[];
+    truncated: boolean;
+};
+/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read. */
+export function readFileTail(path: any, maxBytes: any): {
+    text: string;
+    size: number;
+    truncatedHead: boolean;
+} | null;
+/** The tail of the CURRENT child's codex-tui.log, which covers only this
+ * child's startup because Codex starts the file fresh at launch. */
+export function readCodexTuiLogTail(codexHome: any, { readTail, maxLines, maxLineChars, maxBytes, }?: {
+    readTail?: typeof readFileTail | undefined;
+    maxLines?: number | undefined;
+    maxLineChars?: number | undefined;
+    maxBytes?: number | undefined;
+}): {
+    path: string;
+    present: boolean;
+    bytes?: undefined;
+    totalLinesInTail?: undefined;
+    lastTs?: undefined;
+    tail?: undefined;
+} | {
+    path: string;
+    present: boolean;
+    bytes: number;
+    totalLinesInTail: number;
+    lastTs: string | null;
+    tail: string[];
+} | null;
+/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`. */
+export function collectCodexStartingStuckSnapshot({ rootPid, codexHome, platform, readFile, readDir, readTail, }?: {
+    platform?: NodeJS.Platform | undefined;
+    readFile?: typeof readFileSync | undefined;
+    readDir?: typeof readdirSync | undefined;
+    readTail?: typeof readFileTail | undefined;
+}): {
+    rootPid: any;
+    procs: any[];
+    procsTruncated: boolean;
+    log: {
+        path: string;
+        present: boolean;
+        bytes?: undefined;
+        totalLinesInTail?: undefined;
+        lastTs?: undefined;
+        tail?: undefined;
+    } | {
+        path: string;
+        present: boolean;
+        bytes: number;
+        totalLinesInTail: number;
+        lastTs: string | null;
+        tail: string[];
+    } | null;
+    error?: undefined;
+} | {
+    rootPid: any;
+    error: {
+        errorCode?: string | undefined;
+        errorName: string;
+    };
+    procs?: undefined;
+    procsTruncated?: undefined;
+    log?: undefined;
+};
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
  * diagnostic while the shared event store gets only a stable error class/code. */
@@ -2997,4 +3083,5 @@ export type EnvironmentMap = Record<string, string | undefined>;
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
 import { readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

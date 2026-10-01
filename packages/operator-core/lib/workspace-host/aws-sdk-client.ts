@@ -33,10 +33,12 @@ import {
   DescribeInstanceTypesCommand,
   DescribeInstancesCommand,
   DescribeRegionsCommand,
+  DescribeSecurityGroupsCommand,
   DescribeSnapshotsCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
   EC2Client,
+  GetConsoleOutputCommand,
   RebootInstancesCommand,
   RunInstancesCommand,
   StartInstancesCommand,
@@ -118,6 +120,7 @@ import type {
   AwsInstanceObservation,
   AwsProviderMutationResult,
   AwsRunInstancesInput,
+  AwsSecurityGroupIngressObservation,
   AwsSnapshotObservation,
   AwsTag,
   AwsVolumeObservation,
@@ -1005,6 +1008,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
               SubnetId: nic.SubnetId,
               Groups: [...nic.Groups],
               DeleteOnTermination: nic.DeleteOnTermination,
+              AssociatePublicIpAddress: nic.AssociatePublicIpAddress,
             },
           ],
           IamInstanceProfile: { Arn: input.IamInstanceProfile.Arn },
@@ -1042,6 +1046,33 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
     const instances = (result.Reservations ?? []).flatMap((reservation) => reservation.Instances ?? []);
     const live = instances.find((instance) => instance.State?.Name !== 'terminated') ?? instances[0];
     return live?.InstanceId ? this.instanceObservation(live) : undefined;
+  }
+
+  async describeSecurityGroupIngress(
+    groupIds: readonly string[],
+  ): Promise<readonly AwsSecurityGroupIngressObservation[]> {
+    if (groupIds.length === 0) return [];
+    const result = await this.call('describe-security-groups', () =>
+      this.ec2.send(new DescribeSecurityGroupsCommand({ GroupIds: [...groupIds] })),
+    );
+    return (result.SecurityGroups ?? [])
+      .filter((group): group is typeof group & { GroupId: string } => Boolean(group.GroupId))
+      .map((group) => ({ groupId: group.GroupId, ingressRuleCount: (group.IpPermissions ?? []).length }));
+  }
+
+  /**
+   * The instance's serial console output, decoded (P-005). cloud-init prints the host's SSH public
+   * keys to the console between `-----BEGIN SSH HOST KEY KEYS-----` markers, and only the
+   * hypervisor can write there, so this is the EC2 analogue of GCP's `hostkeys/` guest attributes:
+   * an authenticated, out-of-band source the controller pins from before it first connects.
+   * `Latest` asks Nitro for the live buffer rather than the last periodic snapshot. An instance
+   * that has not produced output yet returns undefined.
+   */
+  async getConsoleOutput(instanceId: string): Promise<string | undefined> {
+    const result = await this.call('get-console-output', () =>
+      this.ec2.send(new GetConsoleOutputCommand({ InstanceId: instanceId, Latest: true })),
+    );
+    return result.Output ? Buffer.from(result.Output, 'base64').toString('utf8') : undefined;
   }
 
   async describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined> {

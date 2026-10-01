@@ -30,7 +30,7 @@ export const CANONICAL_SOURCE_BY_DATATYPE = {
 export type CanonicalDatatype = keyof typeof CANONICAL_SOURCE_BY_DATATYPE;
 
 /**
- * Vault source name → trigger_sources.kind. They differ for calendar
+ * Vault source name → data_sources.kind. They differ for calendar
  * ('calendar' in the vault, 'gcal' as a trigger source), which is exactly the
  * kind of drift a hand-maintained second copy would introduce silently.
  */

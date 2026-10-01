@@ -74,7 +74,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   const [source] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'gmail', 'connected') RETURNING id`;
   sourceId = source.id;
 }, 120_000);

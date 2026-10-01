@@ -114,8 +114,10 @@ vi.mock('./issues-engineer', () => ({
   issuesSupersededByRevision: async () => new Set<string>(),
 }));
 
-vi.mock('./rubrics', () => ({
+vi.mock('./rubrics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rubrics')>()),
   getRubric: async () => RUBRIC_DEFINITION,
+  getRubricWithoutSeeding: async () => RUBRIC_DEFINITION,
   rubricInstrumentContract: () => null,
 }));
 

@@ -91,11 +91,20 @@ describe('residualPathsForCommit', () => {
     ]);
   });
 
-  it('fails closed when the exact-tree lookup is unavailable', async () => {
-    expect(await residualPathsForCommit(manifest, SHA, () => undefined)).toEqual([
-      { path: 'a.ts', reason: 'identity-unavailable' },
-      { path: 'nested/b.ts', reason: 'identity-unavailable' },
-    ]);
+  // EI-24807349327024992: a whole-batch lookup failure (a 5s `git ls-tree` timeout under load)
+  // measured nothing. It must not become a persisted `identity-unavailable` verdict on every
+  // path — that kept a fully committed close `proposed` for ~3h. Undefined = skip, retry.
+  // CONTROL: one path the lookup DID answer as unresolvable still yields a persisted residue,
+  // so this cannot pass by returning undefined for everything.
+  it('skips (undefined) when the exact-tree lookup is unavailable, but keeps per-path residue', async () => {
+    expect(await residualPathsForCommit(manifest, SHA, () => undefined)).toBeUndefined();
+    expect(
+      await residualPathsForCommit(
+        manifest,
+        SHA,
+        () => new Map([['a.ts', resolved('d'.repeat(40))], ['nested/b.ts', unresolvable('submodule unreadable')]]),
+      ),
+    ).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
   });
 
   /**
@@ -390,6 +399,32 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
     expect(peak).toBe(2);
     expect(result).toMatchObject({ inspected: 2, upgraded: [], residual: 0, unreadable: [] });
     expect(onProgress.mock.calls.map(([progress]) => progress.completed)).toEqual([1, 2]);
+  });
+
+  it('writes nothing for a row whose exact-tree lookup returned nothing, and names it lookupUnavailable', async () => {
+    const sql = settlementSql({ updateHits: [true] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: async () => undefined,
+      emit: settlementEmitMock(),
+    });
+
+    expect(result).toMatchObject({
+      inspected: 1,
+      upgraded: [],
+      residual: 0,
+      unreadable: [],
+      lookupUnavailable: ['WI-42476'],
+    });
+    expect(
+      vi
+        .mocked(sql)
+        .mock.calls.some(([strings]) =>
+          (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'),
+        ),
+    ).toBe(false);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('exact-tree lookup') && String(line).includes('WI-42476'))).toBe(true);
   });
 
   it('stops before a late settlement write when the action signal aborts', async () => {

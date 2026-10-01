@@ -108,10 +108,12 @@ vi.mock('./issues-engineer', () => ({
   issuesSupersededByRevision: (ids: string[]) => issuesSupersededByRevision(ids),
 }));
 
-vi.mock('./rubrics', () => ({
+vi.mock('./rubrics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./rubrics')>()),
   // Unresolved rubric → the built-in key fallback; irrelevant to the link decision and
   // keeps this a pure unit test (no rubric store).
   getRubric: async () => null,
+  getRubricWithoutSeeding: async () => null,
   rubricInstrumentContract: () => null,
 }));
 

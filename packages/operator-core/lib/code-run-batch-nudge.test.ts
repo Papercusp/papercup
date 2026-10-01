@@ -1477,4 +1477,14 @@ describe('maybeBatchNudge — a door-forced re-issue after an aggregate spill is
   it('the forgiveness window never outlives the nudge window (nothing left to forgive AGAINST)', () => {
     expect(FORCED_REISSUE_WINDOW_MS).toBeLessThanOrEqual(NUDGE_WINDOW_MS);
   });
+
+  it('WIRING PIN: the MCP host feeds the door verdict into maybeBatchNudge (else the whole mechanism is inert)', () => {
+    // The nudge cannot see the result door; the host is the only seam that has both. Dropping this
+    // one line leaves every unit test above green while production never forgives anything.
+    const host = readFileSync(
+      new URL('./endpoint-route/routes/transport/_mcp-host.ts', import.meta.url),
+      'utf8',
+    );
+    expect(host).toContain("aggregateSpill: doorMeta?.reason === 'aggregate-output-budget-exceeded'");
+  });
 });

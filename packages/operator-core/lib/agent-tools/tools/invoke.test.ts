@@ -49,8 +49,9 @@ describe('tools:invoke registration', () => {
     expect(def.name).toBe('tools:invoke');
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
-    // The inner target dispatcher owns the real timeout (agent tools max at
-    // 600s). The meta-wrapper must not race it with defineTool's 60s default.
+    // The MCP host races nested dispatch against the target's declared timeout
+    // plus its buffer (agent tools max at 600s). The meta-wrapper must exceed
+    // that budget instead of using defineTool's 60s default.
     expect(def.timeoutSec).toBe(660);
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional

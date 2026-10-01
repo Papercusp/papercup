@@ -1688,10 +1688,61 @@
     "ownedFollowup": "EI-24778746019586062",
     "providerError": "429 rate_limit_error; first new author invocation failed after existing bounded retry policy; original labels unchanged"
   },
+  "expansionV3": {
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v3-targets32",
+    "durableTaskId": "0muq44v391ng4sestvw",
+    "status": "failed exit 1 at 2026-10-01T22:48:02Z; no labels or complete judgments",
+    "retainedAuthors": { "total": 128, "reused": 64, "new": 64 },
+    "retainedJudgeChunks": { "memory": 16, "prose": 1 },
+    "failure": {
+      "raw": "prose-judge-1-0.json",
+      "rawSha256": "1db5e645b7c810bceaa47c5ee78af5da2baa6f99c851a5ddf64fafb149ceb6aa",
+      "invocationId": "9c3d77ca-a7e7-4e7f-8eb5-071ee04b9f35",
+      "questionIndices": [0, 255],
+      "documentIndices": [0, 63],
+      "returnedVote": { "q": 184, "d": [184], "a": true },
+      "stopReason": "end_turn",
+      "inputTokens": 26064,
+      "outputTokens": 3465,
+      "costUsd": 0.130167,
+      "ownedFollowup": "EI-24819382685756294"
+    },
+    "outputLockReleased": true,
+    "historicalReceiptsChanged": false
+  },
+  "abstentionRepair": {
+    "workItem": "EI-24819382685756294",
+    "behavior": "An explicitly ambiguous vote with invalid document references becomes an excluded abstention with retained diagnostics. It cannot contribute relevance, scored queries or agreement. Invalid definitive references and question indices still fail. The entire four-class source target is excluded.",
+    "generationContractChanged": false,
+    "verification": {
+      "runId": "4e18c008-f738-4bd5-a406-a3bf425b8b35",
+      "testRunIds": [20454363, 20454364],
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": "four named files and their measured type/import closure clean, zero errors",
+      "actualSavedResponse": "256 votes parsed; vote184 retained as an abstention; the same reference with a:false rejected; raw receipt unchanged",
+      "provenance": "Current staging worktree verification. Edited source and tests were not yet byte-equal to HEAD when measured; this is not final-release evidence."
+    },
+    "sourcePins": {
+      "judged": "6fc4e883577ba934c8e5ad4388a536370e77081c805670eca26e1d9183e8b803",
+      "judgedTest": "11e6210dcfa894a9a2d0b2c2c44d05b138cfeb7b7470092c5310e745631e435f",
+      "manifest": "ff1c26aa623e78b381175e5b61a1ac787d9c16650d9b3b59ad7f27caf8f0b9ba",
+      "manifestTest": "079fad5ff23d9f2936147861204d9be4650af2a456ca8cc4d71e5ed500fcf8fd"
+    }
+  },
+  "expansionV4": {
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
+    "durableTaskId": "0muq5fy1x1d5o9gp1mz",
+    "status": "running at 2026-10-01T23:13:03Z; no complete-label or power claim",
+    "targetsPerPartition": 32,
+    "authorRecovery": "All128 saved v3 authors selected for reuse; no new author calls planned. Fresh independent judge calls use the unchanged frozen generation contract.",
+    "acceptanceComplete": false
+  },
   "limitations": [
     "Memory has five accepted heldout source targets; prose has two. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
     "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
-    "The larger full accessible source census remains unexhausted and provider-limited expansion did not produce new labels.",
+    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting, V3 stopped on a malformed ambiguous judgment, and V4 has not yet produced complete labels.",
     "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
     "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance."
   ],

@@ -47,7 +47,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = ${`plan-schedule-${PLAN}`}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
 
@@ -68,7 +68,7 @@ beforeEach(async () => {
             '2026-08-22T12:00:00.000Z'::timestamptz,
             '2026-08-23T13:00:00.000Z'::timestamptz)`;
   const sources = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources
+    INSERT INTO harness_shared.data_sources
       (workspace_id, kind, status, credential_ref, last_connected_at)
     VALUES (${WS}, 'gmail', 'connected', 'google-oauth:fixture', now())
     RETURNING id`;
@@ -925,7 +925,7 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
     const created = await createExternalTriggerSource(sql, WS, { kind: 'threads' });
     const at = new Date(Date.now() - 90_000).toISOString();
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = ${JSON.stringify({ watermark: at, boundaryIds: ['m1'] })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 
@@ -942,7 +942,7 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
     // reports a perfectly healthy reddit source as never synced, forever.
     const created = await createExternalTriggerSource(sql, WS, { kind: 'reddit' });
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = ${JSON.stringify({ newestFullname: 't3_abc123' })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 

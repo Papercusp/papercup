@@ -10,12 +10,30 @@ import {
   pidHasWindowAncestor,
   windowOwningPids,
   gatherOnDesktopSessions,
+  getActiveWindowId,
+  __resetActiveWindowCache,
+  X11_PROBE_SIDECAR_VAR,
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
 import { WINDOW_TITLE_PREFIX, __resetIsWindowsDesktopHostCache } from './windows-desktop-windows';
 
 const listWindowsByTitleMock = vi.fn();
+// vi.hoisted: the mock factory below runs before module-level consts initialize,
+// and it configures this mock at factory time.
+const { execFileViaSidecarMock } = vi.hoisted(() => ({ execFileViaSidecarMock: vi.fn() }));
+
+// The X11 probes' spawn seam. Delegates to the REAL implementation unless a test
+// stubs a call, so every pre-existing test sees exactly the old behaviour.
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fleet/git-via-sidecar')>();
+  execFileViaSidecarMock.mockImplementation(actual.execFileViaSidecar);
+  return {
+    ...actual,
+    execFileViaSidecar: (...args: Parameters<typeof actual.execFileViaSidecar>) =>
+      execFileViaSidecarMock(...args),
+  };
+});
 
 // Keep the real parseSessionIdFromWindowTitle/WINDOW_TITLE_PREFIX/isWindowsDesktopHost
 // (desktop-window-liveness.ts's own matcher + platform-detection logic depends on
@@ -184,6 +202,61 @@ describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
   it('a failed/empty wmctrl run yields [] (headless box / no DISPLAY)', async () => {
     const run = vi.fn(() => null);
     expect(await listOpenWindows({ run, nowMs: 1, ttlMs: 0 })).toEqual([]);
+  });
+});
+
+// EI-24748208098755918: an async execFile still forks synchronously on the caller's
+// event loop, at a cost that scales with the parent's RSS (49.7 ms in one :3070
+// worker profile). The presence path probes X11 every few seconds, so both probes
+// must go through the spawner-sidecar seam, which falls back locally on its own.
+describe('X11 probes fork through the spawner-sidecar seam (EI-24748208098755918)', () => {
+  const prevDisplay = process.env.DISPLAY;
+  beforeEach(() => {
+    __resetActiveWindowCache();
+    __resetIsWindowsDesktopHostCache();
+    process.env.DISPLAY = ':42';
+  });
+  afterEach(() => {
+    if (prevDisplay === undefined) delete process.env.DISPLAY;
+    else process.env.DISPLAY = prevDisplay;
+    execFileViaSidecarMock.mockClear();
+  });
+
+  it('listOpenWindows runs wmctrl via execFileViaSidecar, carrying the operator display env', async () => {
+    execFileViaSidecarMock.mockResolvedValueOnce({
+      stdout: '0x04200007  0 469879 thinkpad SH[adv:42]: my plan\n',
+      stderr: '',
+    });
+    const out = await listOpenWindows();
+    expect(out).toEqual<OpenWindow[]>([{ wid: '0x04200007', pid: 469879, title: 'SH[adv:42]: my plan' }]);
+    expect(execFileViaSidecarMock).toHaveBeenCalledTimes(1);
+    const [command, args, opts] = execFileViaSidecarMock.mock.calls[0];
+    expect(command).toBe('wmctrl');
+    expect(args).toEqual(['-lp']);
+    expect(opts).toMatchObject({
+      subsystem: 'desktop-window-liveness:wmctrl',
+      sidecarVar: X11_PROBE_SIDECAR_VAR,
+      env: { DISPLAY: ':42' },
+    });
+  });
+
+  it('getActiveWindowId runs xprop via the same seam', async () => {
+    execFileViaSidecarMock.mockResolvedValueOnce({
+      stdout: '_NET_ACTIVE_WINDOW(WINDOW): window id # 0x4200007\n',
+      stderr: '',
+    });
+    expect(await getActiveWindowId()).toBe(0x4200007);
+    const [command, args, opts] = execFileViaSidecarMock.mock.calls[0];
+    expect(command).toBe('xprop');
+    expect(args).toEqual(['-root', '_NET_ACTIVE_WINDOW']);
+    expect(opts).toMatchObject({ subsystem: 'desktop-window-liveness:xprop', env: { DISPLAY: ':42' } });
+  });
+
+  it('a failed probe degrades to no windows and unknown focus, never a throw', async () => {
+    execFileViaSidecarMock.mockRejectedValueOnce(new Error('wmctrl exited 1'));
+    execFileViaSidecarMock.mockRejectedValueOnce(new Error('xprop: unable to open display'));
+    await expect(listOpenWindows()).resolves.toEqual([]);
+    await expect(getActiveWindowId()).resolves.toBeNull();
   });
 });
 

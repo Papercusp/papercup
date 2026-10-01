@@ -2699,15 +2699,17 @@ async function buildMcpToolContext(
       effectiveWs === ctxRef.current!.workspaceId && clampResult.effectiveHarnessSlug === ctxRef.current!.harnessSlug
         ? ctxRef.current!
         : { ...ctxRef.current!, workspaceId: effectiveWs, harnessSlug: clampResult.effectiveHarnessSlug };
-    const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
-      const materializationCtx = projectionMaterializationContext(
-        ctx,
-        projectionNeedsFullSource,
-        projectionSpec?.pick !== undefined,
-        projectionSpec,
-      );
-      return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
-    })) as McpCallResult;
+    const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, async () =>
+      (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
+        const materializationCtx = projectionMaterializationContext(
+          ctx,
+          projectionNeedsFullSource,
+          projectionSpec?.pick !== undefined,
+          projectionSpec,
+        );
+        return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
+      })) as McpCallResult,
+    );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
@@ -4496,6 +4498,10 @@ export function registerMcpHost(server: McpServer): void {
                   args,
                   canCodeRun: canCodeRunHere,
                   codeRunInSurface,
+                  // EI-23761431768707969: the door spilled THIS call because its output cohort's
+                  // shared fan-out budget was already spent. The door tells the agent to re-issue
+                  // it, so the nudge must not count that forced re-issue as a chosen round-trip.
+                  aggregateSpill: doorMeta?.reason === 'aggregate-output-budget-exceeded',
                   // clusterTurns models inference turns from DISPATCH proximity.
                   // Completion time is duration-skewed, so parallel heterogeneous
                   // calls would otherwise look like several sequential turns.
@@ -5134,6 +5140,44 @@ export async function raceDeadline<T>(deadlineMs: number, run: () => Promise<T>,
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Apply the MCP request deadline to a target dispatched from tools:invoke.
+ * The target dispatcher also aborts its signal at `timeoutSec`, but a handler
+ * that ignores that signal can keep its promise pending. Direct tools/call
+ * requests have the outer P2-5 race below; without this nested race, the
+ * tools:invoke wrapper's 660s budget was the only hard bound for its target.
+ *
+ * The nested target has no independent transport replay record. If this race
+ * wins, its operation may still finish server-side, so the result explicitly
+ * reports unknown commit state and tells the caller to inspect state before a
+ * retry that could repeat a mutation.
+ */
+export function dispatchNestedWithMcpDeadline(
+  toolName: string,
+  toolTimeoutSec: number | null | undefined,
+  run: () => Promise<McpCallResult>,
+  baseDeadlineMs: number = MCP_DEADLINE_MS,
+): Promise<McpCallResult> {
+  const deadlineMs = effectiveMcpDeadlineMs(toolTimeoutSec, baseDeadlineMs);
+  return raceDeadline(
+    deadlineMs,
+    run,
+    () => ({
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text:
+            `request_timeout: nested tool "${toolName}" exceeded ${deadlineMs}ms via tools:invoke ` +
+            `(commit status is UNKNOWN: the target may still be running server-side. This nested call has no ` +
+            `independent idempotent replay. Re-read the target's state before retrying; a blind retry may ` +
+            `repeat a mutation.`,
+        },
+      ],
+    }),
+  );
 }
 
 /**

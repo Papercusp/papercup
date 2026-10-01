@@ -46,7 +46,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = 'ws-x'`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = 'ws-x'`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`;
   await org.adminSql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS}`;
   await org.adminSql`
@@ -108,7 +108,7 @@ describe('listPlanRuns enrichment (P-022)', () => {
   it('folds external-trigger provenance onto the existing plan-run row', async () => {
     const id = await seedRun({ outcome: 'success', launchedAt: 1_780_000_000_000, durationMs: 5000 });
     const sources = await org.adminSql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, config)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, config)
       VALUES ('ws-x', 'slack', 'connected', '{"teamId":"T1"}'::jsonb)
       RETURNING id`;
     const bindings = await org.adminSql<Array<{ id: string }>>`

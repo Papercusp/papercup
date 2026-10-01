@@ -2121,6 +2121,193 @@ export function startCodexStartupProcessTrace({
   return stop;
 }
 
+/* WI-10004943 (b): evidence for WHY a Codex child sits at its `Starting` footer.
+ * Codex starts a fresh CODEX_HOME/log/codex-tui.log at every launch (measured
+ * 2026-10-01: in every su-codex-home, log/'s mtime equals the file's first
+ * line), so the stuck child's own log is destroyed by the very respawn that
+ * replaces it, and the 30s startup trace ends long before a 180-600s stall is
+ * declared. Snapshot the evidence at the drop instead: the log tail plus the
+ * child's process tree, where Codex's MCP servers live, with each process's
+ * state and kernel wait channel. Host events reach a shared store, so every
+ * string is bounded and credential-shaped values are redacted. */
+const SNAPSHOT_SECRET_KEY = '[A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credential)[A-Za-z0-9_.-]*';
+const SNAPSHOT_SECRET_FLAG_RE = new RegExp(`^--?${SNAPSHOT_SECRET_KEY}$`, 'i');
+const SNAPSHOT_SECRET_PAIR_RE = new RegExp(`(${SNAPSHOT_SECRET_KEY})(\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s,;&"']+)`, 'gi');
+
+export function redactSnapshotText(text, maxChars = 240) {
+  const s = String(text ?? '')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 <redacted>')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,})/g, '<redacted>')
+    .replace(SNAPSHOT_SECRET_PAIR_RE, '$1$2<redacted>');
+  return s.length > maxChars ? `${s.slice(0, maxChars)}…` : s;
+}
+
+/** argv -> one bounded, redacted string. A credential-named flag also redacts
+ * the separate argument that follows it (`--token abc`). */
+export function redactSnapshotArgv(argv, { maxArgs = 6, maxChars = 200 } = {}) {
+  const out = [];
+  let redactNext = false;
+  for (let i = 0; i < argv.length; i++) {
+    if (out.length >= maxArgs) {
+      out.push(`…+${argv.length - i}`);
+      break;
+    }
+    const arg = String(argv[i]);
+    if (redactNext) {
+      out.push('<redacted>');
+      redactNext = false;
+      continue;
+    }
+    if (SNAPSHOT_SECRET_FLAG_RE.test(arg)) redactNext = true;
+    out.push(redactSnapshotText(arg, 120));
+  }
+  return redactSnapshotText(out.join(' '), maxChars);
+}
+
+function readProcText(readFile, path) {
+  try {
+    return String(readFile(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Walk the descendants of `rootPid` breadth-first. Children are read from
+ * EVERY thread's /proc/PID/task/TID/children: the kernel lists a child under the
+ * thread that forked it, and Codex (a multithreaded Rust runtime) forks its MCP
+ * servers from worker threads, so the main thread's list alone is empty
+ * (measured on a live Codex: 156 threads, main-thread children empty, three
+ * worker threads holding all of them). */
+export function collectCodexStuckProcessTree(rootPid, {
+  readFile = readFileSync,
+  readDir = readdirSync,
+  maxDepth = 5,
+  maxProcs = 20,
+} = {}) {
+  const procs = [];
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return { procs, truncated: false };
+  const queue = [{ pid: rootPid, ppid: null, depth: 0 }];
+  const seen = new Set();
+  let truncated = false;
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current.pid)) continue;
+    seen.add(current.pid);
+    if (procs.length >= maxProcs) {
+      truncated = true;
+      break;
+    }
+    const stat = readProcText(readFile, `/proc/${current.pid}/stat`);
+    if (stat === null) continue;
+    const open = stat.indexOf('(');
+    const close = stat.lastIndexOf(')');
+    if (open < 0 || close < open) continue;
+    const wchan = readProcText(readFile, `/proc/${current.pid}/wchan`)?.trim() ?? null;
+    const cmdline = readProcText(readFile, `/proc/${current.pid}/cmdline`);
+    let threads = null;
+    let tids = [String(current.pid)];
+    try {
+      const listed = readDir(`/proc/${current.pid}/task`).map(String).filter((t) => /^\d+$/.test(t));
+      if (listed.length > 0) {
+        tids = listed;
+        threads = listed.length;
+      }
+    } catch {
+      // Fall back to the main thread's own child list.
+    }
+    procs.push({
+      pid: current.pid,
+      ppid: current.ppid,
+      depth: current.depth,
+      comm: stat.slice(open + 1, close).slice(0, 64),
+      state: stat.slice(close + 2).trim().split(/\s+/)[0] || null,
+      wchan: wchan && wchan !== '0' ? wchan.slice(0, 64) : null,
+      threads,
+      cmd: cmdline ? redactSnapshotArgv(cmdline.split('\0').filter(Boolean)) : null,
+    });
+    if (current.depth >= maxDepth) continue;
+    for (const tid of tids) {
+      const children = readProcText(readFile, `/proc/${current.pid}/task/${tid}/children`) ?? '';
+      for (const token of children.trim().split(/\s+/)) {
+        const childPid = Number(token);
+        if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
+          queue.push({ pid: childPid, ppid: current.pid, depth: current.depth + 1 });
+        }
+      }
+    }
+  }
+  return { procs, truncated };
+}
+
+/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read. */
+export function readFileTail(path, maxBytes) {
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, Math.max(0, maxBytes));
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, size - length);
+    return { text: buffer.subarray(0, read).toString('utf8'), size, truncatedHead: size > length };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
+const CODEX_LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/;
+
+/** The tail of the CURRENT child's codex-tui.log, which covers only this
+ * child's startup because Codex starts the file fresh at launch. */
+export function readCodexTuiLogTail(codexHome, {
+  readTail = readFileTail,
+  maxLines = 30,
+  maxLineChars = 240,
+  maxBytes = 64 * 1024,
+} = {}) {
+  if (!codexHome) return null;
+  const path = join(String(codexHome), 'log', 'codex-tui.log');
+  const raw = readTail(path, maxBytes);
+  if (!raw) return { path, present: false };
+  const lines = stripAnsi(String(raw.text)).split('\n').filter((line) => line.trim());
+  // A tail cut mid-file starts with a partial line.
+  if (raw.truncatedHead) lines.shift();
+  const tail = lines.slice(-maxLines).map((line) => redactSnapshotText(line, maxLineChars));
+  const lastTs = [...lines].reverse().map((line) => line.match(CODEX_LOG_TS_RE)?.[1]).find(Boolean) ?? null;
+  return { path, present: true, bytes: raw.size, totalLinesInTail: lines.length, lastTs, tail };
+}
+
+/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`. */
+export function collectCodexStartingStuckSnapshot({
+  rootPid,
+  codexHome,
+  platform = process.platform,
+  readFile = readFileSync,
+  readDir = readdirSync,
+  readTail = readFileTail,
+} = {}) {
+  try {
+    const tree = platform === 'linux'
+      ? collectCodexStuckProcessTree(rootPid, { readFile, readDir })
+      : { procs: [], truncated: false };
+    return {
+      rootPid: Number.isInteger(rootPid) ? rootPid : null,
+      procs: tree.procs,
+      procsTruncated: tree.truncated,
+      log: readCodexTuiLogTail(codexHome, { readTail }),
+    };
+  } catch (error) {
+    return { rootPid: Number.isInteger(rootPid) ? rootPid : null, error: hostErrorEvidence(error) };
+  }
+}
+
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
  * diagnostic while the shared event store gets only a stable error class/code. */
@@ -8482,6 +8669,20 @@ export function hostThroughPty(o) {
       /* an unexpected inject error still falls through to the drop trace */
     }
     if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+    if (dropReason === 'codex-startup-still-starting') {
+      // WI-10004943 (b): capture what the stuck child was waiting on while it is
+      // still alive. The respawn this drop leads to starts a fresh codex-tui.log
+      // in the same CODEX_HOME, so this is the last chance to see its log.
+      try {
+        const snapshot = collectCodexStartingStuckSnapshot({
+          rootPid: child?.pid,
+          codexHome: env.CODEX_HOME,
+        });
+        appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, ...snapshot });
+      } catch {
+        /* diagnostic only */
+      }
+    }
     try {
       onDrop();
     } catch {

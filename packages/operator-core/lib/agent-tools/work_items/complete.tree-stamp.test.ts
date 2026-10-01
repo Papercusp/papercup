@@ -50,17 +50,19 @@
  * PURE: the filesystem is injected, so this never touches a real tree.
  */
 import { afterEach, describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import {
   completionCheckoutRootForPath,
   completionRepoRootsFromRegistry,
   completionSettlementManifest,
   completionTreeStamp,
+  completionTreeStampForClose,
   completionTreeStampForEvidence,
   resolveCanonicalCompletionRoot,
 } from './complete';
@@ -864,5 +866,61 @@ describe('completionTreeStampForEvidence — multi-repository completions (EI-21
     expect(stamp?.contentIdentity).toHaveLength(4);
     expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
     expect(committedCloseDowngradedForUnprovenContentIdentity('committed', declared, stamp)).toBe(true);
+  });
+});
+
+describe('completionTreeStampForClose — one stamp route for every close (EI-24814178215040083)', () => {
+  // Measured 2026-10-01 (WI-10005066): a close whose ONLY filesChanged entry was the owner's
+  // tunnel config (~/.cloudflared/…, in no repository) persisted treeStamp
+  // { repositoryRoot, headSha } with NO contentIdentity, so both authority floors read it as
+  // unproven and pinned it at `proposed` forever. No path was unresolved and none named a
+  // checkout, so registeredRepoRoots was never computed and complete.ts fell back to the
+  // single-repo completionTreeStamp, which drops an absolute out-of-checkout path.
+  const tempRepoWithHead = (): { repoRoot: string; outside: string } => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-close-route-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const repoRoot = join(workspaceRoot, 'repo');
+    mkdirSync(join(repoRoot, '.git'), { recursive: true });
+    writeFileSync(join(repoRoot, '.git', 'HEAD'), `${SHA}\n`);
+    const outsideDir = join(workspaceRoot, 'home', '.cloudflared');
+    mkdirSync(outsideDir, { recursive: true });
+    const outside = join(outsideDir, 'tunnel.yml');
+    writeFileSync(outside, 'ingress: []\n');
+    return { repoRoot, outside };
+  };
+
+  it('records an out-of-repo-only deliverable as an artifact the authority floor accepts', async () => {
+    const { repoRoot, outside } = tempRepoWithHead();
+    const stamp = await completionTreeStampForClose({ filesChanged: [outside] }, undefined, repoRoot);
+
+    expect(stamp?.headSha).toBe(SHA);
+    expect(stamp?.contentIdentity).toEqual([
+      { path: outside, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+    ]);
+    expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [outside], stamp)).toBe(false);
+  });
+
+  it('control: the retired single-repo route drops the path, and the floor downgrades that stamp', async () => {
+    // The defect this guards against, stated as a fact about the old route rather than
+    // assumed: if this ever stops downgrading, the test above has lost its witness.
+    const { repoRoot, outside } = tempRepoWithHead();
+    const legacy = await completionTreeStamp({ repoRoot, filesChanged: [outside], filesDeleted: [] });
+
+    expect(legacy?.headSha).toBe(SHA);
+    expect(legacy?.contentIdentity ?? []).not.toContainEqual(expect.objectContaining({ path: outside }));
+    expect(committedCloseDowngradedForUnprovenContentIdentity('committed', [outside], legacy)).toBe(true);
+  });
+
+  it('stays silent without any root, exactly like the route it replaced', async () => {
+    expect(await completionTreeStampForClose({ filesChanged: ['/nowhere/x.yml'] }, undefined, null)).toBeUndefined();
+  });
+
+  it('complete.ts stamps every close through completionTreeStampForClose, never the single-repo route', () => {
+    // Overridable so scripts/mutation-probe.sh can point the guard at a historical snapshot.
+    const subject = process.env.COMPLETE_TS_GUARD_SUBJECT ?? fileURLToPath(new URL('./complete.ts', import.meta.url));
+    const source = readFileSync(subject, 'utf8');
+    expect(source).toMatch(/completionTreeStampForClose\(completionEvidenceBeforeStamp,/);
+    expect(source).not.toMatch(/await completionTreeStamp\(\{/);
   });
 });

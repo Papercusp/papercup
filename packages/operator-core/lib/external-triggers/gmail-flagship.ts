@@ -268,7 +268,7 @@ export async function draftResponseToGmailTriggerPlanRun(
         FROM harness_shared.trigger_runs tr
         JOIN harness_shared.trigger_bindings b
           ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE tr.workspace_id = ${workspaceId}
          AND tr.plan_run_ref = ${String(planRunId)}

@@ -169,7 +169,7 @@ export async function createWebhookSource(
       VALUES (${workspaceId}, ${source.id}::uuid, pgp_sym_encrypt(${fresh}, ${dbKey}))`;
   } catch (error) {
     // A source with no key could never verify a delivery; do not leave one behind.
-    await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${workspaceId} AND id = ${source.id}::uuid`;
+    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${workspaceId} AND id = ${source.id}::uuid`;
     throw error;
   }
   return { source, path: webhookPath(source.id), signingKey: fresh };
@@ -198,7 +198,7 @@ export async function rotateWebhookSigningKey(
            secret_ct = pgp_sym_encrypt(${fresh}, ${dbKey}),
            rotated_at = now(),
            updated_at = now()
-      FROM harness_shared.trigger_sources AS s
+      FROM harness_shared.data_sources AS s
      WHERE w.workspace_id = ${input.workspaceId}
        AND w.source_id = ${input.sourceId}::uuid
        AND s.workspace_id = w.workspace_id
@@ -224,7 +224,7 @@ async function loadDeliveryTarget(sql: postgres.Sql, sourceId: string, dbKey: st
            pgp_sym_decrypt(w.secret_ct, ${dbKey}) AS current,
            CASE WHEN w.previous_secret_ct IS NOT NULL AND w.previous_valid_until > now()
                 THEN pgp_sym_decrypt(w.previous_secret_ct, ${dbKey}) END AS previous
-      FROM harness_shared.trigger_sources s
+      FROM harness_shared.data_sources s
       JOIN harness_shared.trigger_webhook_secrets w
         ON w.workspace_id = s.workspace_id AND w.source_id = s.id
      WHERE s.id = ${sourceId}::uuid

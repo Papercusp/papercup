@@ -2,7 +2,7 @@
  * enterprise-data-sources P-013 / D-010, BAR R-7 (spec AUTO-BAR-R-7-P-013):
  * "A trigger reads its connector configuration from its data-source record."
  *
- * Under D-010 the data-source record IS the `harness_shared.trigger_sources` row
+ * Under D-010 the data-source record IS the `harness_shared.data_sources` row
  * (migration 1317 extended it in place), so there are no separate trigger-only
  * columns that could be nulled while a copy survives elsewhere. The proof is
  * therefore behavioural: run the REAL Gmail poll trigger (`runGoogleGmailPoll`)
@@ -47,13 +47,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (sql) await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`.catch(() => {});
+  if (sql) await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`.catch(() => {});
   if (sql && userId) await sql`DELETE FROM harness_shared.users WHERE id = ${userId}`.catch(() => {});
   await org?.cleanup();
 });
 
 beforeEach(async () => {
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
 });
 
 interface ProviderCall {
@@ -127,7 +127,7 @@ async function createGmailDataSource(credentialRef: string): Promise<string> {
   });
   // Ingestion policy written on the same row, as a data-source writer would.
   await sql`
-    UPDATE harness_shared.trigger_sources
+    UPDATE harness_shared.data_sources
        SET sync_mode = 'poll',
            scope_mapping = ${JSON.stringify({ labels: ['INBOX'] })}::text::jsonb
      WHERE workspace_id = ${WS} AND id = ${source.id}::uuid`;
@@ -206,7 +206,7 @@ describe('a trigger reads its connector configuration from its data-source recor
   it('has no second copy to run from: clearing the record credential stops the trigger', async () => {
     const sourceId = await createGmailDataSource('google-workspace:record-v1');
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET credential_ref = NULL
        WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
     expect(await getDataSourceRecord(sql, WS, sourceId)).toMatchObject({ credentialRef: null });

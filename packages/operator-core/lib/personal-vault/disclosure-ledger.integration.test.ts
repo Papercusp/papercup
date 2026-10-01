@@ -57,7 +57,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.personal_disclosures WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_privacy_rules WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
 });
 
 function inWorkspace<T>(fn: (tx: postgres.TransactionSql) => Promise<T>, workspaceId = WS): Promise<T> {
@@ -179,7 +179,7 @@ describe('assertDisclosurePermits', () => {
 
   it("always permits the owner's own connected accounts, even under sender-only", async () => {
     await org.adminSql`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, owner_user_id, provider_account_id)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, owner_user_id, provider_account_id)
       VALUES (${WS}, 'gmail', 'connected', ${userId}::uuid, ${OWNER_ADDRESS})`;
     await setRule('sender-domain', 'private.example', 'sender-only');
     await disclose([privateMail()]);

@@ -119,9 +119,15 @@ export async function residualPathsForCommit(
     ? lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths, { signal })
     : lookup(receipt.repositoryRoot, commitSha, receipt.normalizedPaths));
   if (signal?.aborted) return undefined;
-  if (!committed) {
-    return receipt.normalizedPaths.map((path) => ({ path, reason: 'identity-unavailable' }));
-  }
+  // EI-24807349327024992: a whole-batch lookup failure measured NOTHING about this row. The
+  // exact-tree lookup runs every `git ls-tree` under a 5s per-call timeout, so under load
+  // (the pass routinely ran into its 90s budget) a timeout used to be persisted as an
+  // `identity-unavailable` residual on EVERY declared path. That fails the 1207 floor, moves
+  // the row from the never-attempted tier to the back of the rotation, and kept a fully
+  // committed close `proposed` for ~3h (WI-10004574). Return undefined instead: the row
+  // stays proposed (still fail-closed), nothing is written, and the next fire retries it.
+  // The reconciler counts these as `lookupUnavailable`, so the skip is never silent.
+  if (!committed) return undefined;
   const closeIdentity = new Map<string, SettlementIdentity>(
     receipt.contentIdentity.map((entry) => [entry.path, entry as SettlementIdentity]),
   );
@@ -355,6 +361,11 @@ type ReconcileResult = {
   floorRejected: string[];
   /** WI-10004711: rows that newly gained a `superseded-before-commit` path on this pass. */
   stranded: string[];
+  /**
+   * EI-24807349327024992: rows skipped because the exact-tree lookup returned nothing (a
+   * timeout or Git failure). Nothing was written for them; the next fire retries them.
+   */
+  lookupUnavailable: string[];
 };
 
 /**
@@ -397,6 +408,7 @@ export async function reconcileProposedCompletionsAtCommit(
     residual: result.residual,
     unreadable: result.unreadable.length,
     floorRejected: result.floorRejected.length,
+    lookupUnavailable: result.lookupUnavailable.length,
     neverAttemptedRemaining: null,
   });
   return result;
@@ -461,7 +473,7 @@ async function reconcileProposedCompletionsCore(
   deps: CompletionSettlementReconcilerDeps,
 ): Promise<ReconcileResult> {
   if (!SHA_RE.test(commitSha) || !scope.repositoryRoot.trim()) {
-    return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [], stranded: [] };
+    return { inspected: 0, upgraded: [], residual: 0, unreadable: [], floorRejected: [], stranded: [], lookupUnavailable: [] };
   }
   const sql = deps.sql ?? getOrgPg().sql;
   const lookup = deps.lookup ?? completionHeadBlobMap;
@@ -505,6 +517,7 @@ async function reconcileProposedCompletionsCore(
   // Zero residual, UPDATE matched, yet the authority floor kept the row 'proposed'.
   const floorRejectedByIndex: Array<string | undefined> = [];
   const strandedByIndex: Array<string | undefined> = [];
+  const lookupUnavailableByIndex: Array<string | undefined> = [];
   let completed = 0;
   const settleRow = async (row: CandidateRow, index: number): Promise<void> => {
     try {
@@ -542,7 +555,12 @@ async function reconcileProposedCompletionsCore(
         workingTreeLookup,
       );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
-      if (!residualPaths) return;
+      if (!residualPaths) {
+        // The manifest parsed above and the pass is not aborted, so the exact-tree lookup
+        // itself came back empty. Leave the row untouched for the next fire, but count it.
+        lookupUnavailableByIndex[index] = row.feature_id;
+        return;
+      }
       residualByIndex[index] = residualPaths.length;
       const nextManifest = { ...parsed.data, residualPaths };
       // EI-24710716781971154: the migration-1207 floor requires a proof for EVERY identity
@@ -716,6 +734,7 @@ async function reconcileProposedCompletionsCore(
   const unreadable = unreadableByIndex.filter((id): id is string => id !== undefined);
   const floorRejected = floorRejectedByIndex.filter((id): id is string => id !== undefined);
   const stranded = strandedByIndex.filter((id): id is string => id !== undefined);
+  const lookupUnavailable = lookupUnavailableByIndex.filter((id): id is string => id !== undefined);
   const residualCount = residualByIndex.reduce((sum, count) => sum + count, 0);
   if (stranded.length > 0) {
     console.warn(
@@ -742,7 +761,15 @@ async function reconcileProposedCompletionsCore(
         `${unreadable.slice(0, 10).join(', ')}${unreadable.length > 10 ? ` (+${unreadable.length - 10} more)` : ''}`,
     );
   }
-  return { inspected: rows.length, upgraded, residual: residualCount, unreadable, floorRejected, stranded };
+  if (lookupUnavailable.length > 0) {
+    console.warn(
+      `[git-sync-completion-settlement] ${scope.installSlug}: ${lookupUnavailable.length} of ${rows.length} ` +
+        `proposed completion(s) were skipped because the exact-tree lookup at ${commitSha.slice(0, 12)} ` +
+        'returned nothing (git timeout or failure); nothing was written and the next fire retries them: ' +
+        `${lookupUnavailable.slice(0, 10).join(', ')}${lookupUnavailable.length > 10 ? ` (+${lookupUnavailable.length - 10} more)` : ''}`,
+    );
+  }
+  return { inspected: rows.length, upgraded, residual: residualCount, unreadable, floorRejected, stranded, lookupUnavailable };
 }
 
 /**

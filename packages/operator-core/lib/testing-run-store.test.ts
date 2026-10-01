@@ -981,6 +981,33 @@ describe('durable detached snapshot lifecycle', () => {
     await expect(store.getTestRunLedgerRecoveryAsync('unmanifested-ledger-run', sql)).resolves.toBeNull();
   });
 
+  it('does not recover a pass when one requested file is missing from the detached ledger', async () => {
+    const requestedFiles = [
+      'lib/first.test.ts',
+      'lib/second.test.ts',
+      'lib/third.test.ts',
+      'lib/fourth.integration.test.ts',
+    ];
+    const ledgerRows = requestedFiles.slice(0, 3).map((file_path, index) => ({
+      file_path,
+      status: 'pass',
+      finished_at: new Date(1_700_000_001_000 + index * 1_000),
+      output_tail: null,
+    }));
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.task_ledger')) {
+        return [{ state: 'exited', exit_code: 0, requested_files: requestedFiles }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      return [];
+    }) as unknown as Sql;
+
+    await expect(
+      store.getTestRunLedgerRecoveryAsync('three-of-four-ledger-run', sql),
+    ).resolves.toBeNull();
+  });
+
   it('does not recover a detached verdict from a partial or unreadable test_runs group', async () => {
     const partialSql = vi.fn(async (strings: TemplateStringsArray) => {
       if (strings.join(' ').includes('FROM harness_shared.test_runs')) {

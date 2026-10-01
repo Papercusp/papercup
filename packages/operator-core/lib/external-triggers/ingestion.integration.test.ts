@@ -25,7 +25,7 @@ beforeAll(async () => {
       content_hash = EXCLUDED.content_hash,
       items = EXCLUDED.items`;
   const [source] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES ('papercusp-workspace', 'gmail', 'connected') RETURNING id`;
   sourceId = source.id;
 }, 120_000);
@@ -38,8 +38,10 @@ describe('external trigger ingestion core', () => {
   it('seeds the curated external datatypes with compilable schemas', async () => {
     const rows = await sql<{ id: string; payload_schema: Record<string, unknown> }[]>`
       SELECT id, payload_schema FROM harness_shared.datatype_registry
-       WHERE workspace_id = 'papercusp-workspace' ORDER BY id`;
+       WHERE workspace_id = 'papercusp-workspace' AND nature <> 'work' ORDER BY id`;
     // 877 seeds the first five; 1269 adds `webhook-payload` to the same platform catalog.
+    // 1318 also registers the built-in item kinds (feature, bug, change, task, chunk) as
+    // nature = 'work'; those are work, not curated external data, so they are excluded.
     expect(rows.map((row) => row.id)).toEqual([
       'calendar-event',
       'chat-message',

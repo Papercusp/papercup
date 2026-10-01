@@ -41,7 +41,7 @@ function fakeSql(options: {
     if (text.includes('FROM harness_shared.personal_documents')) {
       return options.vaultRows ?? [{ asContact: false, asParticipant: false, inBody: false }];
     }
-    if (text.includes('FROM harness_shared.trigger_sources')) return options.sources;
+    if (text.includes('FROM harness_shared.data_sources')) return options.sources;
     return [];
   };
   return query as unknown as postgres.Sql;

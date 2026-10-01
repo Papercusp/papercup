@@ -71,22 +71,37 @@ describe('independent blind label consensus', () => {
     expect(() => deriveBlindConsensus(entries, questions, [votes, votes.map((v) => ({ ...v, relevantKeys: ['unsubmitted'] }))])).toThrow('unknown');
     expect(() => deriveBlindConsensus(entries, questions.map((q) => ({ ...q, class: 'exact-identifier' })), [votes, votes])).toThrow('unbalanced');
   });
+  it('excludes malformed explicit abstentions from labels and agreement while retaining diagnostics', () => {
+    const abstentions = votes.map((v, i) => i === 0
+      ? { ...v, relevantKeys: [], ambiguous: true, invalidDocumentReferences: [184] } : v);
+    const result = deriveBlindConsensus(entries, questions, [abstentions, structuredClone(abstentions)]);
+    expect(result.queries.map((q) => q.group)).toEqual(['b', 'b', 'b', 'b']);
+    expect(result.excluded).toEqual(questions.filter((q) => q.group === 'a').map((q) => q.id));
+    expect(result.agreement).toBe(7 / 8);
+    expect(result.formatAbstentions).toEqual([
+      { queryId: questions[0].id, pass: 1, documentIndices: [184] },
+      { queryId: questions[0].id, pass: 2, documentIndices: [184] },
+    ]);
+    const invalid = abstentions.map((v, i) => i === 0 ? { ...v, ambiguous: false } : v);
+    expect(() => deriveBlindConsensus(entries, questions, [invalid, votes])).toThrow('invalid blind abstention');
+  });
 });
 
 describe('blind label collection through the injected stateless transport', () => {
-  function fixture() {
+  function fixture(perPartition = 1) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'blind-cohort-test-'));
     const seed = 'blind-test';
-    const sourceFor = (partition: 'calibration' | 'test') => {
-      for (let i = 0; i < 1000; i++) if (candidateSourcePartition(`session:s${i}`, seed) === partition) return `s${i}`;
+    const sourceFor = (partition: 'calibration' | 'test', ordinal: number) => {
+      let matched = 0;
+      for (let i = 0; i < 1000; i++) if (candidateSourcePartition(`session:s${i}`, seed) === partition && matched++ === ordinal) return `s${i}`;
       throw new Error('test source not found');
     };
-    const entries = ['calibration', 'test'].map((partition) => {
-      const sourceSession = sourceFor(partition as 'calibration' | 'test');
+    const entries = ['calibration', 'test'].flatMap((partition) => Array.from({ length: perPartition }, (_, ordinal) => {
+      const sourceSession = sourceFor(partition as 'calibration' | 'test', ordinal);
       return { key: sourceSession, text: `frozen source ${sourceSession}`, kind: 'fact', metadata: {
         cluster: `session:${sourceSession}`, sourceSession, sourceAttribution: 'session', partition,
       } };
-    });
+    }));
     const snapshot = path.join(root, 'snapshot.json');
     fs.writeFileSync(snapshot, JSON.stringify({ formatVersion: 1, seed, snapshotAt: '2026-01-01T00:00:00.000Z',
       suites: { memory: { entries }, prose: { entries } } }));
@@ -258,6 +273,31 @@ describe('blind label collection through the injected stateless transport', () =
       expect(f.calls).toBe(2);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
+  it('retains malformed abstention receipts and publishes only other balanced source targets', async () => {
+    const f = fixture(2);
+    try {
+      const out = path.join(f.root, 'abstention');
+      const llm: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        if (!JSON.parse(opts.messages[0].content).questions) return result;
+        const json = JSON.parse(result.text); json.votes[0] = { ...json.votes[0], d: [184], a: true };
+        return { ...result, json, text: JSON.stringify(json) };
+      };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 2 });
+      const labels = JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8'));
+      const proofs = JSON.parse(fs.readFileSync(receipt.judgments.path, 'utf8'));
+      for (const corpus of ['memory', 'prose']) {
+        expect(labels[corpus]).toHaveLength(12);
+        expect(labels[corpus].filter((q: { partition: string }) => q.partition === 'test')).toHaveLength(8);
+        expect(labels[corpus].filter((q: { partition: string }) => q.partition === 'calibration')).toHaveLength(4);
+        expect(proofs[corpus].excluded).toHaveLength(4);
+        expect(proofs[corpus].formatAbstentions).toHaveLength(2);
+        expect(proofs[corpus].agreement).toBe(15 / 16);
+        const raw = JSON.parse(fs.readFileSync(path.join(out, `${corpus}-judge-1-0.json`), 'utf8'));
+        expect(raw.result.json.votes[0]).toMatchObject({ d: [184], a: true });
+      }
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('retains an invalid numeric response and refuses labels before consensus', async () => {
     const f = fixture();
     try {
@@ -284,6 +324,18 @@ describe('blind numeric response validation', () => {
       { queryId: 'question-b', relevantKeys: [], ambiguous: false, note: '' },
       { queryId: 'question-a', relevantKeys: ['source-b'], ambiguous: false, note: '' },
     ]);
+  });
+  it('retains the 256-question/64-document explicit abstention without accepting its impossible source', () => {
+    const expandedQuestions = Array.from({ length: 256 }, (_, i) => ({ id: `q-${i}` }));
+    const sources = Array.from({ length: 64 }, (_, i) => ({ key: `source-${i}` }));
+    const rows = expandedQuestions.map((_, q) => ({ q, d: q === 184 ? [184] : [], a: q === 184 }));
+    const parsed = parseBlindChunkVotes({ votes: rows }, expandedQuestions, sources);
+    expect(parsed[184]).toMatchObject({ queryId: 'q-184', relevantKeys: [], ambiguous: true,
+      invalidDocumentReferences: [184] });
+    expect(() => parseBlindChunkVotes({ votes: rows.map((v) => ({ ...v, a: false })) }, expandedQuestions, sources))
+      .toThrow('document index 184 outside');
+    expect(() => parseBlindChunkVotes({ votes: rows.map((v) => v.q === 184 ? { ...v, q: 256 } : v) }, expandedQuestions, sources))
+      .toThrow('question index 256 outside');
   });
   it.each([
     ['missing', [votes[0]], 'missing question indices 1'],

@@ -260,11 +260,12 @@ export function summarizeNestedToolOutcome(result: {
 
 export default defineTool({
   name: 'tools:invoke',
-  // The target runs through its own projected dispatcher and therefore owns
-  // the authoritative deadline. Keep this wrapper outside the longest agent-
-  // tool deadline (600s) so its default 60s watchdog cannot abort first and
-  // turn a successfully-completed target into the misleading
-  // "handler returned but signal had aborted" timeout (EI-9242).
+  // The MCP host races nested dispatch against the target's effective MCP
+  // deadline; the projected dispatcher also owns the target's timeout signal.
+  // Keep this wrapper outside the longest target MCP deadline (600s + buffer)
+  // so its watchdog cannot abort first and turn a successfully-completed target
+  // into the misleading "handler returned but signal had aborted" timeout
+  // (EI-9242).
   timeoutSec: 660,
   description:
     'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +

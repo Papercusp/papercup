@@ -233,6 +233,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       while (!stdout.includes('\n') && Date.now() < deadline && child.exitCode === null) {
         await new Promise(resolve => setTimeout(resolve, 25));
       }
+      expect(stdout.trim(), `Inspector child produced no identity (exit ${child.exitCode}):\n${startup}`).not.toBe('');
       const identity = JSON.parse(stdout.trim());
       expect(identity, startup).toEqual({ pid: child.pid, cap: HOST_MALLOC_ARENA_MAX });
       const endpoints = inspectorEndpoints(startup);
@@ -242,7 +243,7 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
       const { createCdpClient, readProcessMemory } = await import('../../../scripts/cdp-inspector.mjs');
       const stale = createCdpClient(endpoints[0]);
       try { await expect(stale.connect()).rejects.toThrow(); } finally { stale.close(); }
-      client = createCdpClient(endpoints.at(-1));
+      client = createCdpClient(endpoints.at(-1)!);
       await client.connect();
       const measured = await client.evaluate('({ pid: process.pid, cap: process.env.MALLOC_ARENA_MAX })', { returnByValue: true });
       expect(measured.result.value).toEqual(identity);

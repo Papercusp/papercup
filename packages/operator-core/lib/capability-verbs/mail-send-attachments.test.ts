@@ -49,7 +49,7 @@ function fakeSql() {
     if (text.includes('FROM harness_shared.personal_documents')) {
       return [{ asContact: false, asParticipant: false, inBody: false }];
     }
-    if (text.includes('FROM harness_shared.trigger_sources')) return [source('s1', 'only@example.com')];
+    if (text.includes('FROM harness_shared.data_sources')) return [source('s1', 'only@example.com')];
     return [];
   };
   return query as unknown as postgres.Sql;

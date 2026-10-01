@@ -1601,7 +1601,7 @@ describe('applyResultDoor', () => {
         );
         const pointer = boundedBody(doored)._projection.next;
         expect(pointer).not.toContain('The FULL result is at');
-        expect(pointer).toContain('recover spill;');
+        expect(pointer).toMatch(/JSON starts after cursor\.bodyOffsetInPayload|the spill opens with a text header/);
         expect(pointer).toContain('No upstream truncation marker was detected');
         const spill = readSpill('ws-1', 'plans:get', RUN_ID);
         expect(spill).not.toContain('# result-door spill — FULL tool result');
@@ -1838,7 +1838,10 @@ describe('applyResultDoor', () => {
         { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID },
       );
       const pointer = boundedBody(doored)._projection.next;
-      expect(pointer).toContain('recover spill;');
+      // The recovery footer is "JSON starts after cursor.bodyOffsetInPayload…" when the body parses
+      // as JSON, else "the spill opens with a text header." (the literal `recover spill;` lead-in was
+      // dropped by the Codex no-base64 pointer rewrite) — either way a recovery footer must be present.
+      expect(pointer).toMatch(/JSON starts after cursor\.bodyOffsetInPayload|the spill opens with a text header/);
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 

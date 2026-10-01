@@ -6521,6 +6521,13 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(remoteAdvice).not.toMatch(/WAITING SETTLES THIS/);
       expect(remoteAdvice).not.toMatch(/re-send this IDENTICAL completion/);
       expect(remoteAdvice).toContain('do not re-call `work_items:complete` locally');
+
+      // EI-24814178215040083: the reconciler's candidate query keys on a persisted
+      // settlementManifest, never on origin, so a remote-origin close that persisted one IS
+      // settled here (WI-10004437: origin 'remote', settled proposed -> committed). Naming
+      // a remote settler for it pointed the closer at nobody.
+      expect(contentIdentityAdviceForOrigin('remote', 'su-author', localAdvice, true)).toBe(localAdvice);
+      expect(contentIdentityAdviceForOrigin('remote', 'su-author', localAdvice, false)).toMatch(/REMOTE-AUTHORED/);
     });
 
     it('verifiedHow + testResult lands `committed` and DOES count toward burn-down', async () => {

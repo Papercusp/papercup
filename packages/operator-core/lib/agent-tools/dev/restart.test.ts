@@ -1945,10 +1945,10 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       return { checked: true, changedPaths: [changedDropIn] };
     });
     const guardBehavior = runGuard(fenceOk(14));
-    guardM.mockImplementation((async (spec, run) => {
+    guardM.mockImplementation((async (spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
       underGuard = true;
       try {
-        return await guardBehavior(spec as GuardSpec, run as never);
+        return await guardBehavior(spec, run);
       } finally {
         underGuard = false;
       }

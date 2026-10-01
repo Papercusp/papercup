@@ -32,7 +32,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`
     DELETE FROM harness_shared.harness_plans
      WHERE workspace_id = ${WS}
@@ -60,14 +60,14 @@ describe('Google Workspace owned trigger-source provisioning', () => {
 
     const calendar = first.find((row) => row.kind === 'gcal')!;
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = '{"syncToken":"keep-me"}'::jsonb,
              status = 'degraded',
              last_error = 'transient'
        WHERE workspace_id = ${WS} AND id = ${calendar.id}::uuid`;
     const contacts = first.find((row) => row.kind === 'contacts')!;
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET config = config || '{"capabilityEnabled":false}'::jsonb,
              status = 'disabled'
        WHERE workspace_id = ${WS} AND id = ${contacts.id}::uuid`;
@@ -89,7 +89,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
 
     const rows = await sql<Array<{ kind: string; count: number }>>`
       SELECT kind, count(*)::int AS count
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${WS} AND owner_user_id = ${userId}::uuid
        GROUP BY kind
        ORDER BY kind`;
@@ -120,7 +120,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              b.armed,
              count(*)::int AS count
         FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE b.workspace_id = ${WS}
        GROUP BY s.kind, b.event_pattern, b.event_filter, b.plan_harness_slug,
@@ -148,7 +148,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
     });
     const firstGmail = first.find((row) => row.kind === 'gmail')!;
     await sql`
-      UPDATE harness_shared.trigger_sources
+      UPDATE harness_shared.data_sources
          SET cursor = '{"historyId":"keep-first-history"}'::jsonb,
              status = 'degraded',
              last_error = 'first-account-transient'
@@ -180,7 +180,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              credential_ref AS "credentialRef",
              status,
              cursor
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${WS}
          AND owner_user_id = ${userId}::uuid
        ORDER BY provider_account_id, kind`;
@@ -211,7 +211,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              s.provider_account_id AS "providerAccountId",
              b.armed
         FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE b.workspace_id = ${WS}
        ORDER BY s.provider_account_id`;
@@ -243,7 +243,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              credential_ref AS "credentialRef",
              status,
              cursor
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${WS}
          AND owner_user_id = ${userId}::uuid
        ORDER BY provider_account_id, kind`;
@@ -263,7 +263,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
              s.provider_account_id AS "providerAccountId",
              b.armed
         FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.trigger_sources s
+        JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
        WHERE b.workspace_id = ${WS}
        ORDER BY s.provider_account_id`;

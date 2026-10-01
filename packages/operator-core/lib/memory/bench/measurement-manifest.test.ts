@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { loadIndependentMeasurementInputs, type PreparedMeasurement } from './measurement-manifest';
+import { loadIndependentMeasurementInputs, validateIndependentCohort, type PreparedMeasurement } from './measurement-manifest';
 import { independentCohortFixture, measurementManifestFixture } from './fixtures/measurement-manifest';
 
 const roots: string[] = [];
@@ -23,6 +23,17 @@ function prepared(): PreparedMeasurement {
   return { manifest, cell, arm: manifest.arms[0], manifestSha256: 'a'.repeat(64), rawOutput: path.join(dir, 'out.json'), claimPath: path.join(dir, 'out.running') };
 }
 describe('independent relevance evaluator inputs', () => {
+  it('retains abstention diagnostics only for ambiguous excluded queries', () => {
+    const { entries, queries, proof } = independentCohortFixture();
+    const diagnostic = { queryId: 'excluded-query', pass: 1, documentIndices: [184] };
+    const receipt = { ...proof, ambiguous: ['excluded-query'], excluded: ['excluded-query'], formatAbstentions: [diagnostic] };
+    const validate = (value: unknown) => validateIndependentCohort(entries, queries, value,
+      proof.snapshotSha256, proof.labelsSha256, proof.frozenAt);
+    expect(() => validate(receipt)).not.toThrow();
+    expect(() => validate({ ...receipt, excluded: [] })).toThrow('must be excluded');
+    expect(() => validate({ ...receipt, formatAbstentions: [{ ...diagnostic, queryId: queries[0].id }] }))
+      .toThrow('must be excluded');
+  });
   it('loads actual corpus and blind labels, retaining partition metadata and hash-bound versions', () => {
     const p = prepared(), actual = loadIndependentMeasurementInputs(p, 'memory');
     expect(actual.entries.map((e) => e.text)).toEqual(['original source A', 'original source B']);

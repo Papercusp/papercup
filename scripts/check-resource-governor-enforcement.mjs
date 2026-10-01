@@ -1816,6 +1816,22 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "apps/operator/scripts/psu-pty-host.mjs::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-013 reviewed semantic disposition: resolveLinuxCodexStartupPid uses a function-local breadth-first walk of an existing process tree, stops descending at maxDepth (default 4), and discards its traversal queue on return; it enqueues no resident work or child process.",
+    },
+  ],
+  [
+    "packages/operator-core/lib/dbos/routines-workflow.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "P-015 reviewed semantic disposition: remainingStartsByQueue is a per-tick Map of available-start counters initialized from dispatchEpoch.queues and decremented as workflows are scheduled; it tracks admission credits, not queued work.",
+    },
+  ],
   // Outside every P-016 inventory row's paths (agent-tools/testing/), so it is
   // dispositioned here beside its sibling affected-plan.ts rather than in
   // P016_REVIEWED_DISPOSITIONS, whose census covers only P-016 paths.
@@ -1836,11 +1852,11 @@ export const BYPASS_REGISTRY = new Map([
     },
   ],
   [
-    "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts::unbounded-resident-queue",
+    "packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.ts::unbounded-resident-queue",
     {
       disposition: "semantic",
       reason:
-        "P-014 reviewed semantic disposition: this import-closure queue is a per-request graph traversal, not resident work. Each file enters once, the metafile input population is refused above CLOSURE_FILE_CAP (20,000), and the build has a 20-second deadline. It starts no independent task and is discarded when the one preflight returns.",
+        "P-014 reviewed semantic disposition for mutation-probe-closure.ts: this import-closure queue is a per-request graph traversal, not resident work. Each file enters once, the metafile input population is refused above CLOSURE_FILE_CAP (20,000), and the build has a 20-second deadline. It starts no independent task and is discarded when the one preflight returns.",
     },
   ],
   [
@@ -2388,7 +2404,7 @@ const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
 const HIDDEN_SEMAPHORE = /\b(?:Semaphore|semaphore|p-limit|Bottleneck)\b/;
-const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
+const DURABLE_QUEUE_OBJECT = /(?:work_items|durable|receipt|postgres|DBOS)/i;
 // Match collections whose identifier says they are a queue/backlog.  The old
 // `(?:queue|pending|backlog)\w*` prefix also matched diagnostic Sets such as
 // `pendingGradingAuditTargetIds.add(...)`: that is an ID accumulator, not a
@@ -2397,7 +2413,13 @@ const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
 // case, while requiring a Queue/Backlog suffix for compound names so pending
 // IDs, tokens, and targets do not look like resident work.
 const RESIDENT_QUEUE =
-  /\b(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog))\.(?:push|set|add)\s*\(/;
+  /\b((?:[A-Za-z_$][\w$]*\.)*(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog)))\.(?:push|set|add)\s*\(/g;
+function hasUndurableResidentQueue(code) {
+  for (const match of code.matchAll(RESIDENT_QUEUE)) {
+    if (!DURABLE_QUEUE_OBJECT.test(match[1] ?? "")) return true;
+  }
+  return false;
+}
 const RECEIPT_WRITE =
   /\b(?:[A-Za-z_$][\w$]*\.)*(?:enqueue|enqueueReceipt|createReceipt|persistReceipt|insertReceipt|saveReceipt|writeReceipt|storeReceipt)\s*\(/i;
 const DISHONEST_METRIC =
@@ -2456,8 +2478,7 @@ export function inspectGovernorSource(source) {
   ) {
     findings.push("hidden-or-static-capacity");
   }
-  if (RESIDENT_QUEUE.test(code) && !DURABLE.test(code))
-    findings.push("unbounded-resident-queue");
+  if (hasUndurableResidentQueue(code)) findings.push("unbounded-resident-queue");
   if (hasRetryAroundReceipt(code)) findings.push("retry-around-receipt");
   if (
     /\bgovernor\.admit\s*\(/.test(code) &&
