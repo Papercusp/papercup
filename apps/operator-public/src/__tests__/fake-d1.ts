@@ -108,6 +108,8 @@ export function makeListingRow(over: Partial<Row> = {}): Row {
     approved_commit_sha: null,
     approved_tree_digest: null,
     approved_at: null,
+    authority_unresolved: null,
+    authority_unresolved_cause: null,
     drift: 0,
     yanked_at: null,
     yanked_reason: null,
