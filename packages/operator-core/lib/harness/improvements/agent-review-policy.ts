@@ -236,6 +236,16 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
  * `deriveWorkItemIntakeStage` keeps both in intake — they are only the claim
  * behaviour that existed before producers were enrolled.
  */
+/**
+ * Recorded enforcement cutover (observation-candidate-acceptance-promotion D-009b,
+ * D-016). Rows created at or after this instant pass ordinary claim floors only
+ * with a `ready` verdict and a qualifying acceptance contract; older rows keep the
+ * legacy exception until P-011 reviews their cohort. Migration 1301 repeats this
+ * literal inside `work_item_claim_floors`; a unit test pins the two together.
+ */
+export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER = '2026-10-02T00:00:00.000Z' as const;
+export const IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS = Date.parse(IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER);
+
 export function implementationReadinessIsLegacyEquivalent(payload: unknown): boolean {
   const value = record(payload);
   if (!Object.prototype.hasOwnProperty.call(value, 'implementationReadiness')) return true;
@@ -554,9 +564,20 @@ export function acceptanceSourceRevisionSql(
   sql: OrgSql,
   columns: Pick<WorkItemIntakeStageSqlColumns, 'itemKind' | 'title' | 'summary'> = {},
 ) {
-  const itemKind = sql.unsafe(columns.itemKind ?? 'item_kind');
-  const title = sql.unsafe(columns.title ?? 'title');
-  const summary = sql.unsafe(columns.summary ?? 'summary');
+  return acceptanceSourceRevisionFromFragmentsSql(
+    sql,
+    sql.unsafe(columns.itemKind ?? 'item_kind'),
+    sql.unsafe(columns.title ?? 'title'),
+    sql.unsafe(columns.summary ?? 'summary'),
+  );
+}
+
+function acceptanceSourceRevisionFromFragmentsSql(
+  sql: OrgSql,
+  itemKind: postgres.Fragment,
+  title: postgres.Fragment,
+  summary: postgres.Fragment,
+) {
   return sql`(${ACCEPTANCE_SOURCE_REVISION_PREFIX}::text || encode(sha256(convert_to(
     ${itemKind} || chr(31) || ${title} || chr(31) || COALESCE(${summary}, ''),
     'UTF8'
@@ -947,20 +968,52 @@ export function agentReviewEligibility(
 }
 
 /**
- * Versioned readiness floor for ordinary self-selection. An absent key is the
- * explicit legacy exception, and so is a `creation-enrollment` / `unknown` row
- * (SQL twin of `implementationReadinessIsLegacyEquivalent`) until P-007 bounds
- * both by the recorded enforcement cutover. Any other present key passes only
- * when this reader knows its schema and it carries an affirmative ready verdict.
+ * The relation a claim-floor fragment reads. `work_items` (and its
+ * `harness_features_consolidated` view) carry `item_kind`, `summary` and the
+ * millisecond `created_ts`; the `engineer_issues` view exposes the same columns
+ * as `kind`, `body` and the timestamptz `created_at`.
+ */
+export type ClaimFloorRelationShape = 'work_items' | 'engineer_issues';
+export type ClaimFloorPayloadColumn = 'wi.payload' | 'ei.payload' | 'target.payload' | 'payload';
+
+function claimFloorColumns(sql: OrgSql, payloadCol: ClaimFloorPayloadColumn, shape: ClaimFloorRelationShape) {
+  const dot = payloadCol.indexOf('.');
+  const prefix = dot >= 0 ? payloadCol.slice(0, dot + 1) : '';
+  const columns = (
+    shape === 'engineer_issues'
+      ? { payload: payloadCol, itemKind: `${prefix}kind`, title: `${prefix}title`, summary: `${prefix}body` }
+      : { payload: payloadCol, itemKind: `${prefix}item_kind`, title: `${prefix}title`, summary: `${prefix}summary` }
+  ) as WorkItemIntakeStageSqlColumns;
+  const createdBeforeCutover =
+    shape === 'engineer_issues'
+      ? sql`COALESCE(${sql.unsafe(`${prefix}created_at`)} < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER}::timestamptz, TRUE)`
+      : sql`(COALESCE(${sql.unsafe(`${prefix}created_ts`)}, 0) < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS}::bigint)`;
+  return { columns, createdBeforeCutover };
+}
+
+/**
+ * The acceptance floor every ordinary execution path applies (P-007, D-016).
+ * A row passes when it carries a valid `ready` verdict with a qualifying
+ * acceptance contract. Rows created before the recorded enforcement cutover keep
+ * the pre-P-007 legacy exception (absent key, `ready`, or `creation-enrollment`
+ * `unknown` — SQL twin of `implementationReadinessIsLegacyEquivalent`) unless
+ * their acceptance is stale or carries invalid authority. Pass the relation shape
+ * the fragment is embedded in; the default is an aliased `work_items` row.
  */
 export function implementationReadinessNormalExclusionSql(
   sql: OrgSql,
-  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
+  payloadCol: ClaimFloorPayloadColumn = 'wi.payload',
+  shape: ClaimFloorRelationShape = payloadCol === 'ei.payload' || payloadCol === 'target.payload'
+    ? 'engineer_issues'
+    : 'work_items',
 ) {
   const payload = sql.unsafe(payloadCol);
+  const { columns, createdBeforeCutover } = claimFloorColumns(sql, payloadCol, shape);
   return implementationReadinessFloorSql(sql, {
     readiness: sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
     enrolled: sql`(COALESCE(${payload}, '{}'::jsonb) ? 'implementationReadiness')`,
+    acceptanceState: implementationAcceptanceStateSql(sql, columns),
+    createdBeforeCutover,
   });
 }
 
@@ -973,28 +1026,103 @@ export function implementationReadinessNormalExclusionSql(
  */
 export function implementationReadinessFloorSql(
   sql: OrgSql,
-  expressions: { readiness: postgres.Fragment; enrolled: postgres.Fragment },
+  expressions: {
+    readiness: postgres.Fragment;
+    enrolled: postgres.Fragment;
+    /** `implementationAcceptanceState(FromReadiness)Sql` over the same row. */
+    acceptanceState: postgres.Fragment;
+    /** TRUE when the row was created before IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER. */
+    createdBeforeCutover: postgres.Fragment;
+  },
 ) {
-  const { readiness, enrolled } = expressions;
+  const { readiness, enrolled, acceptanceState, createdBeforeCutover } = expressions;
   return sql`COALESCE((
-    NOT (${enrolled})
-    OR (
+    (
       ${readiness} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+      AND ${readiness} ->> 'status' = 'ready'
+      AND ${acceptanceState} = 'qualifying'
+    )
+    OR (
+      ${createdBeforeCutover}
+      AND ${acceptanceState} NOT IN ('stale-revision', 'invalid-authority')
       AND (
-        ${readiness} ->> 'status' = 'ready'
+        NOT (${enrolled})
         OR (
-          ${readiness} ->> 'status' = 'unknown'
-          AND ${readiness} ->> 'source' = 'creation-enrollment'
+          ${readiness} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+          AND (
+            ${readiness} ->> 'status' = 'ready'
+            OR (
+              ${readiness} ->> 'status' = 'unknown'
+              AND ${readiness} ->> 'source' = 'creation-enrollment'
+            )
+          )
         )
       )
     )
   ), FALSE)`;
 }
 
+/**
+ * The same floor for a census that already projected the readiness document and
+ * the row's identity columns (the admission promoter's writer-ready census).
+ */
+export function implementationReadinessProjectedFloorSql(
+  sql: OrgSql,
+  row: {
+    readiness: postgres.Fragment;
+    enrolled: postgres.Fragment;
+    itemKind: postgres.Fragment;
+    title: postgres.Fragment;
+    summary: postgres.Fragment;
+    /** Epoch-millisecond `work_items.created_ts`. */
+    createdTs: postgres.Fragment;
+  },
+) {
+  return implementationReadinessFloorSql(sql, {
+    readiness: row.readiness,
+    enrolled: row.enrolled,
+    acceptanceState: implementationAcceptanceStateFromReadinessSql(
+      sql,
+      row.readiness,
+      acceptanceSourceRevisionFromFragmentsSql(sql, row.itemKind, row.title, row.summary),
+    ),
+    createdBeforeCutover: sql`(COALESCE(${row.createdTs}, 0) < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS}::bigint)`,
+  });
+}
+
+/**
+ * TS twin of `implementationReadinessFloorSql` for one row: does the acceptance
+ * floor admit it for an ordinary (non-reviewer) claim?
+ */
+export function implementationReadinessAdmitsClaim(input: {
+  payload: unknown;
+  kind: string;
+  title: string;
+  summary: string | null | undefined;
+  /** Row creation time in epoch milliseconds; null/undefined is treated as legacy. */
+  createdAtMs: number | null | undefined;
+}): boolean {
+  const value = record(input.payload);
+  const acceptance = evaluateImplementationAcceptance(value, {
+    kind: input.kind,
+    title: input.title,
+    summary: input.summary ?? '',
+  }).state;
+  const readiness = readImplementationReadiness(value);
+  if (readiness?.status === 'ready' && acceptance === 'qualifying') return true;
+  const beforeCutover = (input.createdAtMs ?? 0) < IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS;
+  if (!beforeCutover || acceptance === 'stale-revision' || acceptance === 'invalid-authority') return false;
+  if (!Object.prototype.hasOwnProperty.call(value, 'implementationReadiness')) return true;
+  const raw = record(value.implementationReadiness);
+  if (raw.schemaVersion !== IMPLEMENTATION_READINESS_SCHEMA_VERSION) return false;
+  return raw.status === 'ready' || (raw.status === 'unknown' && raw.source === 'creation-enrollment');
+}
+
 /** Normal implementation lane: review/readiness work is invisible until approved. */
 export function agentReviewNormalExclusionSql(
   sql: OrgSql,
-  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
+  payloadCol: ClaimFloorPayloadColumn = 'wi.payload',
+  shape?: ClaimFloorRelationShape,
 ) {
   const payload = sql.unsafe(payloadCol);
   return sql`(
@@ -1011,7 +1139,7 @@ export function agentReviewNormalExclusionSql(
     OR (
       COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
       AND COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
-      AND ${implementationReadinessNormalExclusionSql(sql, payloadCol)}
+      AND ${shape ? implementationReadinessNormalExclusionSql(sql, payloadCol, shape) : implementationReadinessNormalExclusionSql(sql, payloadCol)}
     )
   )`;
 }

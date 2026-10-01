@@ -3968,3 +3968,67 @@ plane, and missing grading. No new binding, terminal disposition,
 shared-host restart or shipment is claimed. The next useful correlation
 is the exact 11:25:46.743Z upstream marker with its loaded runtime and
 existing request-stage/cancellation evidence.
+
+### Downstream cancellation misattribution — October 1, 12:52Z
+
+The exact October 1 11:25:46.743Z marker was read independently in its
+one-second journal window. The reader returned one matching entry, without
+clipping, journal error or truncation. Its extracted reason is
+`claude downstream response closed`, on account `aviynw6`, with no request ID.
+This resolves the earlier marker ambiguity to a downstream-close signal; it
+does not establish why the client closed, its application impact, or the
+account's historical proxy configuration. Receipt
+`/tmp/p008-fire73-marker-reason.json` has SHA-256
+`b2bebff0894ca198376d3ac36d3d49432f556964a2ff49b2d3593b1e0c89d950`.
+
+The current Claude attempt observer treated the kernel's typed `cancelled`
+error as an upstream failure: it incremented `upstreamErrors`, logged
+`STALLED`, and entered the egress failure/cooldown path when a proxy was
+configured. The existing request-stage timeline already classified it as
+cancellation, so that detector did not prevent the contradictory accounting
+and proxy penalty. The fix branches on the typed cancellation before either
+counter or penalty. Cancellation is logged at info level; both cancellation
+and genuine transport-failure markers carry the existing process instance,
+request ID and error code. No new service, tool, timer or telemetry store was
+introduced.
+
+The canonical HTTP regression compares a downstream disconnect with a real
+upstream first-byte timeout against the same proxy-configured fixture.
+Before the fix, cancellation produced `upstreamErrors:1` instead of zero;
+the timeout control also failed its missing-correlation assertion. After the
+fix, cancellation leaves both failure counters and the proxy cooldown quiet,
+retains the cancelled timeline, and allows a subsequent request to succeed.
+The genuine timeout still increments failures, cools the proxy and emits a
+correlated `ttfb-timeout` marker. Selected run: two passes with 26 tests
+excluded, exit 0. Full current matrix: **321 passes, zero skips, exit 0**:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/inference-gateway/gateway.test.ts \
+  packages/operator-core/lib/inference-gateway/request-kernel.test.ts \
+  packages/operator-core/lib/inference-gateway/gateway-stage-telemetry.test.ts
+```
+
+The full run began at 12:50:24.365Z on HEAD `783d3c0860` plus local test
+changes. Gateway and stage-test fingerprints remained unchanged across the
+run: `3d38a31c2dcfec4ec5685226f3b2433289e802484db94851dc9ebe5572511451`
+and `9fdfef97378fd9886d7ddd92ab21336efee71ba9c2878644cb94e8e16ff5a986`.
+Kernel source/test fingerprints were
+`833afabb7c48d111725271f90e4800631fa1137b23f298fabaf41f0ef5e691eb` /
+`56ced5c321269944549a6d3334cf293d0e47610223e3ad40c95acd40b1d5aa1c`;
+gateway-test fingerprint was
+`bfca80745f4162f28da8189056b5aa9e26363083ae5ad3bfa27b494d2a9e7614`.
+This does not certify an immutable whole import graph. Red, selected green
+and full-matrix logs are `/tmp/p008-fire73-abort-red.log`,
+`/tmp/p008-fire73-abort-green.log`, and `/tmp/p008-fire73-gateway-matrix.log`,
+with hashes `7ee84893f86b05198dc1a776cbb663c36ee4e6728b200b0db85d03c1874940f5`,
+`c687810a68bca7462107e5eb8bbbc81cab5b69c908207d402c9e5e8f15164d66`, and
+`9b5afd91e5784bf1f7fb2763ee0f3cb99526441554ff66b107212fd47f24552d`.
+Focused diff validation passed.
+
+Other Codex attempt observers still count cancellation through their error
+branches; their distinguishing tests remain the next source step. Loaded
+gateway adoption, the historical client-close cause and application impact
+remain unverified. The shared-runtime, Portal and live-gate exclusions are
+unchanged. **P-008/R-8 remains open; no terminal disposition or shipment is
+claimed.**

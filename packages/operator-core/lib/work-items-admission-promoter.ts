@@ -24,7 +24,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   hasStrictOwnerAction,
   readAgentReviewState,
-  implementationReadinessFloorSql,
+  implementationReadinessProjectedFloorSql,
   implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
@@ -2657,6 +2657,9 @@ export async function readWorkItemReadinessProjection(opts: {
         -- remains canonical for writers, while this full-population census reads
         -- only the narrow projections instead of detoasting it for every row.
         SELECT wi.feature_id,
+               wi.item_kind,
+               wi.title,
+               wi.summary,
                wi.status,
                wi.admission,
                wi.first_claimed_at,
@@ -2715,9 +2718,13 @@ export async function readWorkItemReadinessProjection(opts: {
                  OR (
                    p.agent_review ->> 'status' IS DISTINCT FROM 'pending'
                    AND p.agent_review ->> 'status' IS DISTINCT FROM 'revision-requested'
-                   AND ${implementationReadinessFloorSql(sql, {
+                   AND ${implementationReadinessProjectedFloorSql(sql, {
                      readiness: sql`p.implementation_readiness`,
                      enrolled: sql`p.readiness_enrolled`,
+                     itemKind: sql`p.item_kind`,
+                     title: sql`p.title`,
+                     summary: sql`p.summary`,
+                     createdTs: sql`p.created_ts`,
                    })}
                  )
                ) AS review_ready,

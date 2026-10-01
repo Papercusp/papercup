@@ -1966,7 +1966,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
     ${base}
     AND ${admittedWhereSql(sql, aliased ? 'ei' : undefined)}
     AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)}
-    AND ${agentReviewNormalExclusionSql(sql, aliased ? 'ei.payload' : 'payload')}
+    AND ${agentReviewNormalExclusionSql(sql, aliased ? 'ei.payload' : 'payload', 'engineer_issues')}
   )`;
 }
 
@@ -3118,6 +3118,23 @@ export async function claimIssue(
              )`
            : admissionFloor
        }
+       -- P-007 / D-016 (observation-candidate-acceptance-promotion): a by-id or
+       -- leader-dispatched NEW holder passes the same acceptance floor as
+       -- self-selection, so pending, rejected, stale-approved, unreviewed or
+       -- metadata-missing intake cannot be taken by naming it. Exempt: a same-holder
+       -- re-claim, the reviewer admission for a pending review, self-filed fallout
+       -- (the creator taking its own filing), the submitter's own revision interval,
+       -- and a terminal row (the WI-5826 reopen escape hatch below).
+       AND (
+         ${sameHolderPredicate}
+         ${agentReviewAdmission || selfFiledFalloutAdmission ? sql`OR TRUE` : sql``}
+         OR target.state IN ('resolved', 'closed', 'done', 'dropped')
+         OR (
+           COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
+           AND COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${assignee}
+         )
+         OR ${agentReviewNormalExclusionSql(sql, 'target.payload', 'engineer_issues')}
+       )
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
        -- "a completed row is STILL directly claimable by id — the floor only gates
