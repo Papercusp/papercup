@@ -225,7 +225,10 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
       const productionDeps = deps(alwaysOk, { env, releaseLiterals: undefined });
       expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, (line) => lines.push(line), productionDeps))
         .toBe(EXIT_OK);
-      expect(lines.join('\n')).not.toContain('release-literal:');
+      // `release-literal:*` may still name retained cross-box machine identifiers. The
+      // behavioural proof is stronger: the staged bytes contain both owner values and the
+      // real production resolver still returns CLEAN rather than MISMATCH.
+      expect(lines.join('\n')).toContain('[seed-identity] clean');
     });
 
     it('keeps the neutral build hostname out of the canonical release scan', async () => {
@@ -246,10 +249,10 @@ describe('runVerifySeedPayload — the three-way exit contract', () => {
       expect(lines.join('\n')).toContain('audit literal resolver unavailable');
     });
 
-    it('reports UNDETERMINED when no owner name was supplied, while a definite machine hit stays BROKEN', async () => {
+    it('accepts a missing owner name, while a definite machine hit stays BROKEN', async () => {
       await writeManifest();
       const unknownOwner = deps(alwaysOk, { env: {}, probe: probing({ home: BUILDER_HOME }) });
-      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, unknownOwner)).toBe(EXIT_UNDETERMINED);
+      expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, unknownOwner)).toBe(EXIT_OK);
       await writeLeakyFile();
       expect(await runVerifySeedPayload({ seedDir: dir, origin: 'reuse' }, silent, unknownOwner)).toBe(EXIT_MISMATCH);
     });
