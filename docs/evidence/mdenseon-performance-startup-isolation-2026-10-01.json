@@ -1,0 +1,80 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004539",
+  "issue": "EI-24784676128638572",
+  "status": "startup-isolation-verified; five-block-model-measurement-pending",
+  "observedFailure": {
+    "attempt": "performance-cpu-v2",
+    "successfulCells": ["performance-b0-harrier", "performance-b0-mdenseon", "performance-b0-gemma"],
+    "rawSamplesPerSuccessfulCell": 412,
+    "failedCell": "performance-b1-mdenseon",
+    "failedAt": "2026-10-01T13:33:48.952Z",
+    "errorCode": "08P01",
+    "failureStage": "before cell preparation and samples",
+    "originalUnhandledPromiseOrigin": "not reproduced; do not claim backend readSetting lacked a catch"
+  },
+  "verifiedCause": {
+    "contract": "Local embedding evaluation is self-contained and requires no Postgres",
+    "origin": "embedder-eval-cli.ts statically imported memory/configure.ts for the optional OpenAI arm; configure imports execute initMemoryBackendSelection at module load",
+    "measurement": "Fresh Node startup opened two database connections even when the OpenAI arm was not requested",
+    "fix": "Import OpenAI configuration only inside the explicit OpenAI arm; performance children forbid real database acquisition",
+    "detectorFailure": "Existing in-process model/HTTP tests did not exercise the production CLI import graph without Vitest environment guards"
+  },
+  "verification": {
+    "test": "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts",
+    "procedure": "A fresh Node/tsx subprocess loads the CLI with VITEST removed and database URLs pointing to a local TCP server returning the recorded FATAL08P01 startup error. An intentional argument guard prevents artifact writes and inference; the subprocess remains alive long enough for import-time promises to start.",
+    "before": {"testRunId": 20393978, "connections": 2, "result": "failed zero-connection invariant"},
+    "after": {"testRunId": 20393985, "connections": 0, "result": "passed zero-connection invariant"},
+    "focusedPass": {
+      "runGroup": "49041260-b529-43c5-b9b0-13d3efbc9764",
+      "testRunIds": [20393984, 20393985, 20393986],
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts",
+        "packages/operator-core/lib/memory/bench/sidecar-performance.integration.test.ts",
+        "packages/operator-core/lib/memory/bench/sidecar-performance.test.ts"
+      ]
+    },
+    "finalDriverPass": {
+      "recoveryRunId": "f53b6cb1-010a-4b3c-bccb-24cd566379c7",
+      "taskId": "0mupm2zgn5h8k9815ck",
+      "testedHead": "acfddd78b5",
+      "status": "pass",
+      "executedFiles": 3
+    },
+    "typecheck": {"namedFiles": 3, "typeReferencingFiles": 2, "errors": 0, "otherErrors": 0},
+    "distinguishingPrediction": {
+      "eagerOptionalConfiguration": "Moving the optional import removes both startup connections while the isolated HTTP route still admits all three model arms",
+      "databaseRequiredByLocalSidecar": "Removing the optional import leaves database connections or breaks the local HTTP route",
+      "actual": "Two connections become zero; real HTTP three-arm admission and collector guards pass"
+    }
+  },
+  "slowAttemptAudit": [
+    {"attempt": "v1", "defect": "Candidate-only builder map rejected incumbent HTTP requests", "fix": "Shared three-arm builder map plus driver population preflight", "guard": "Real HTTP/client admission of all three arms"},
+    {"attempt": "v2", "defect": "Unneeded operator database startup during local CLI measurement", "fix": "Lazy optional OpenAI import and database prohibition in performance children", "guard": "Fresh subprocess with unavailable Postgres and zero-connection invariant"}
+  ],
+  "replacementRecipe": {
+    "runId": "performance-cpu-v3",
+    "manifestSha256": "96e4b21ec7c7361ad37fec45c99d8da2de386226ef0ed64de4a82381691c49c3",
+    "freezeAuditSha256": "26f130ba370a4498fe9096bbb6ae1afef4017def5354995120c632e32f9f6b56",
+    "sourceCommit": "19f6855b490e042516b152ad36610f8cb61be480",
+    "requestSha256": "c8b94379d002efce7ceaf5fa145af41994cc03023434b7562c7088c7d17234e1",
+    "performanceCells": 15,
+    "freshProcessBlocks": 5,
+    "device": "cpu",
+    "threads": {"intraOp": 4, "interOp": 1},
+    "sourceAndArtifactPreflight": "Every declared input, model artifact and worker fingerprint verified; only evaluator and collector changed",
+    "priorEvidence": "Three successful v2 cells, samples and failure logs remain immutable separate evidence. A changed cold-start recipe requires new cells; old receipts are not rebound to the new manifest.",
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "limitations": [
+    "The precise promise that produced the original unhandled rejection was not reproduced",
+    "Synthetic startup and HTTP guards verify the harness; they do not fulfill the real-model five-block performance bar",
+    "GPU inference has not been claimed",
+    "No production model, index, account or live release-gate operation was performed"
+  ]
+}
