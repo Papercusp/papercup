@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { readShadowStatement, readShadowUsageAggregates, shadowMonthBounds } from './shadow-metering-reader';
+import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
+import { readShadowCostBasis, readShadowStatement, readShadowUsageAggregates, shadowMonthBounds } from './shadow-metering-reader';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlDir = resolve(here, '../../../../libs/papercusp/libs/db/sql');
@@ -80,6 +81,9 @@ beforeAll(async () => {
     );
   `);
   for (const file of MIGRATIONS) await applyMigrationForTest(db.sql, resolve(sqlDir, file));
+  // Read by readShadowCostBasis (D-018 point 4). Added AFTER the migrations: an earlier one builds
+  // the view from u.*, and 1275 replaces it with an explicit list, which cannot drop view columns.
+  await db.sql`ALTER TABLE harness_shared.agent_usage_samples ADD COLUMN usage_provenance jsonb, ADD COLUMN price_table_version text`;
 
   const specA = launchSpec(SPEC_A, 'codex', [
     layer('base'),
@@ -150,9 +154,11 @@ describe('readShadowStatement (P-003)', () => {
       axisLayers: [{ layerRef: 'autonomy:su.mode-auto', baseMicros: 1_500_000 }],
       toolCalls: { attributed: 1, unattributed: 1 },
     });
+    // D-018 point 4: 102/103/104/109 (estimated) and 108 (no cost) carry no price stamp; 108 is unpriced.
+    expect(st.costBasis).toEqual({ priceTableVersion: PRICE_TABLE_VERSION, samples: 6, staleSamples: 5, unpricedSamples: 1, lowerBoundSamples: 0 });
     expect(st.cleanliness).toEqual({
       verdict: 'not-bill-grade',
-      reasons: ['unattributed-cost', 'estimated-cost', 'inferred-base-identity'],
+      reasons: ['unattributed-cost', 'estimated-cost', 'inferred-base-identity', 'stale-price-table', 'unpriced-usage'],
       attributedShareBps: 9032,
       billGradeCostShareBps: 2580,
       inferredShareBps: 5714,
@@ -181,6 +187,19 @@ describe('readShadowStatement (P-003)', () => {
     } finally {
       await db.sql`UPDATE harness_shared.adv_sessions
         SET launch_spec = jsonb_set(launch_spec, '{specificationRevision}', to_jsonb(${SPEC_NEWER}::text)) WHERE id = 2`;
+    }
+  });
+
+  it('counts the cost basis against the price table it is given (D-018 point 4)', async () => {
+    await db.sql`UPDATE harness_shared.agent_usage_samples
+      SET price_table_version = 'v-it', usage_provenance = '{"costBound":"lower"}'::jsonb WHERE id IN (102, 103)`;
+    try {
+      // Stale = non-provider rows on another stamp: 104, 108, 109. Provider row 101 never counts.
+      expect(await readShadowCostBasis(db.sql, { workspaceId: WS, month: MONTH, priceTableVersion: 'v-it' })).toEqual({
+        workspaceId: WS, month: MONTH, priceTableVersion: 'v-it', samples: 6, staleSamples: 3, unpricedSamples: 1, lowerBoundSamples: 2,
+      });
+    } finally {
+      await db.sql`UPDATE harness_shared.agent_usage_samples SET price_table_version = NULL, usage_provenance = NULL WHERE id IN (102, 103)`;
     }
   });
 

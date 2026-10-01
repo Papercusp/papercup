@@ -354,6 +354,10 @@ export const bulkRunManifest = defineTool({
       "Acting on a single attention item outside a run (use the item's own verb: coord:resolve, plans:set-status, inbox:triage). Reading the human inbox generally → plans:attention.",
   },
   capability: 'coord:read',
+  // WI-10004577: reading the manifest REFRESHES the run's resolver heartbeat (recordRunHeartbeat) while the
+  // run is executing — a liveness write — so it declares effect:'write' rather than inferring 'read' from
+  // its `coord:read` capability (and is therefore not admitted by the host late-completion READ exemption).
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({

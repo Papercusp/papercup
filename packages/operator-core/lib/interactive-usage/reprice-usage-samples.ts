@@ -181,19 +181,27 @@ export async function repriceUsageSamples(sql: Sql, opts: RepriceUsageOptions = 
   for (let batch = 0; batch < maxBatches; batch++) {
     // (IS NULL OR < v OR > v) rather than IS DISTINCT FROM: it lets the partial index from
     // migration 1280 answer an empty stale set without reading the table.
+    // Every column is qualified with `u.` on purpose. The output alias `id` is TEXT, and an
+    // unqualified `ORDER BY id` binds to the output alias, not the bigint column. That sorted
+    // the keyset lexicographically ('10000' < '6775') while the cursor compared numerically,
+    // so each batch jumped the cursor past whole id ranges and the call reported `complete`
+    // with ~73% of the stale rows untouched (WI-10004517 backfill, 2026-10-01).
     const rows = await sql<StaleRow[]>`
-      SELECT id::text AS id, xmin::text AS row_xmin, source, provider, model,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-             cache_creation_5m_tokens, cache_creation_1h_tokens,
-             usage_provenance->>'grain' AS grain, cost_usd, cost_source,
-             usage_provenance->>'costBound' AS cost_bound
-        FROM harness_shared.agent_usage_samples
-       WHERE cost_source IS DISTINCT FROM 'provider'
-         AND (price_table_version IS NULL OR price_table_version < ${version} OR price_table_version > ${version})
-         AND source = ANY(${sql.array(sources)})
-         AND id > ${cursor}::bigint
-         ${opts.workspaceId ? sql`AND workspace_id = ${opts.workspaceId}` : sql``}
-       ORDER BY id
+      SELECT u.id::text AS id, u.xmin::text AS row_xmin, u.source, u.provider, u.model,
+             u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens,
+             u.cache_creation_5m_tokens, u.cache_creation_1h_tokens,
+             u.usage_provenance->>'grain' AS grain, u.cost_usd, u.cost_source,
+             u.usage_provenance->>'costBound' AS cost_bound
+        FROM harness_shared.agent_usage_samples u
+       WHERE u.cost_source IS DISTINCT FROM 'provider'
+         AND (u.price_table_version IS NULL OR u.price_table_version < ${version} OR u.price_table_version > ${version})
+         -- A list, not sql.array(): it needs no array-type OID, so it does not depend on the
+         -- client having run seedBuiltinArrayTypes (canonical clients do; a bare one-off
+         -- postgres(url) client does not, and refused the ANY form on its first query).
+         AND u.source IN ${sql([...sources])}
+         AND u.id > ${cursor}::bigint
+         ${opts.workspaceId ? sql`AND u.workspace_id = ${opts.workspaceId}` : sql``}
+       ORDER BY u.id
        LIMIT ${batchSize}`;
     if (rows.length === 0) {
       result.complete = true;

@@ -66,6 +66,8 @@ type InvocationRow = {
   specification_revision: string;
   target_kind: 'work-item' | 'plan';
   target_ref: string | null;
+  /** WI-10004562 / D-045: the work item's STORAGE slug; NULL = stored under harness_slug. */
+  target_harness_slug?: string | null;
 };
 
 type PlanRunRow = {
@@ -294,7 +296,8 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
 }> {
   const ref = OperationHandleSchema.parse(handle);
   const receipts = await sql<InvocationRow[]>`
-    SELECT id, caller_id, operation_id, specification_revision, target_kind, target_ref
+    SELECT id, caller_id, operation_id, specification_revision, target_kind, target_ref,
+           target_harness_slug
       FROM harness_shared.blueprint_operation_invocations
      WHERE id = ${ref.receiptId} AND workspace_id = ${ref.workspaceId}
        AND harness_slug = ${ref.harnessSlug}
@@ -310,7 +313,10 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
   if (ref.target.kind === 'work-item') {
     // WI-10004360: the accepted item is stored under the harness's pot home slug when the
     // harness is a pot MEMBER, so address it (and bound it) by that storage slug.
-    const storageHarness = await workItemStorageSlug(ref.harnessSlug, ref.workspaceId);
+    // WI-10004562 / D-045: admission records that slug on the receipt row read above, so
+    // the per-read pot lookup runs only for a receipt written before migration 1282.
+    const storageHarness = receipt.target_harness_slug
+      ?? await workItemStorageSlug(ref.harnessSlug, ref.workspaceId);
     const item = await getWorkItem(ref.target.id, storageHarness);
     if (!item || item.harness !== storageHarness) throw new Error('blueprint operation work item is missing or outside its harness');
     const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
@@ -403,7 +409,14 @@ export async function readAcceptedProgramRootGuard(
            ) AS cancel_requested
       FROM (SELECT 1) AS one
       LEFT JOIN harness_shared.work_items AS wi
-        ON wi.workspace_id = ${handle.workspaceId} AND wi.harness_slug = ${handle.harnessSlug}
+        ON wi.workspace_id = ${handle.workspaceId}
+       -- WI-10004562 / D-045: a pot member's root is stored under the pot home slug the
+       -- receipt records; a pre-1282 receipt (NULL) keeps the operation harness slug.
+       AND wi.harness_slug = COALESCE((
+             SELECT r.target_harness_slug FROM harness_shared.blueprint_operation_invocations AS r
+              WHERE r.id = ${handle.receiptId} AND r.workspace_id = ${handle.workspaceId}
+                AND r.harness_slug = ${handle.harnessSlug}
+           ), ${handle.harnessSlug})
        AND wi.feature_id = ${handle.target.id}
   `;
   // The LEFT JOIN always yields one row, so the receipt verdict is independent

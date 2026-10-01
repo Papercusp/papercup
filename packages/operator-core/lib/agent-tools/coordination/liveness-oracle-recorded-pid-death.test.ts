@@ -87,6 +87,14 @@ describe('EI-21572355077403526 — an affirmative ESRCH disqualifies the `record
     expect(v.sessionState).toBe('ended');
   });
 
+  it('repaired PID loss contract: real-pid-loss (WI-1074216)', async () => {
+    // This is the oracle's unit seam, paired with the existing real-process
+    // integration receipt. The wrong probe preserves the stale recorded rescue.
+    const wrongProbe = process.env.PAPERCUSP_GOAL_PID_LOSS_CONTROL === 'real-pid-loss';
+    const v = await verdictFor(() => wrongProbe ? true : false);
+    expect(v.sessionState, 'pid-loss-contract:real-pid-loss').toBe('ended');
+  });
+
   it('a probe reporting the process ALIVE leaves `recorded` intact', async () => {
     // Guards the disqualifier against being written as a mere truthiness check:
     // only `=== false` may disqualify, never `true`.

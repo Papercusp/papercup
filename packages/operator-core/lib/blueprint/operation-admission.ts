@@ -339,7 +339,8 @@ async function acceptBlueprintDirectWorkItemScoped(
             }
             if (receipt) {
               await tx`
-            UPDATE harness_shared.blueprint_operation_invocations SET target_ref = ${recovered.id}, updated_at = now()
+            UPDATE harness_shared.blueprint_operation_invocations
+               SET target_ref = ${recovered.id}, target_harness_slug = ${storageHarness}, updated_at = now()
              WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
                AND caller_id = ${callerId}
                AND operation_id = ${request.operationId} AND request_key = ${key}
@@ -348,9 +349,9 @@ async function acceptBlueprintDirectWorkItemScoped(
               await tx`
             INSERT INTO harness_shared.blueprint_operation_invocations
               (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,
-               specification_revision, target_kind, target_ref)
+               specification_revision, target_kind, target_ref, target_harness_slug)
             VALUES (${request.workspaceId}, ${request.harnessSlug}, ${callerId}, ${request.operationId}, ${key},
-                    ${fingerprint}, ${pin.specificationRevision}, 'work-item', ${recovered.id})
+                    ${fingerprint}, ${pin.specificationRevision}, 'work-item', ${recovered.id}, ${storageHarness})
           `;
             }
             return recovered;
@@ -401,7 +402,8 @@ async function acceptBlueprintDirectWorkItemScoped(
           });
           if (receipt) {
             await tx`
-          UPDATE harness_shared.blueprint_operation_invocations SET target_ref = ${item.id}, updated_at = now()
+          UPDATE harness_shared.blueprint_operation_invocations
+             SET target_ref = ${item.id}, target_harness_slug = ${storageHarness}, updated_at = now()
            WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
              AND caller_id = ${callerId}
              AND operation_id = ${request.operationId} AND request_key = ${key}
@@ -410,9 +412,9 @@ async function acceptBlueprintDirectWorkItemScoped(
             await tx`
           INSERT INTO harness_shared.blueprint_operation_invocations
             (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,
-             specification_revision, target_kind, target_ref)
+             specification_revision, target_kind, target_ref, target_harness_slug)
           VALUES (${request.workspaceId}, ${request.harnessSlug}, ${callerId}, ${request.operationId}, ${key},
-                  ${fingerprint}, ${revision}, 'work-item', ${item.id})
+                  ${fingerprint}, ${revision}, 'work-item', ${item.id}, ${storageHarness})
         `;
           }
           return item;
@@ -708,6 +710,9 @@ async function acceptScheduledBlueprintWorkItemScoped(
     callerId, operationId: '__scheduled_default', key };
   const flightFingerprint = request.allowDefinitionDrift
     ? createHash('sha256').update(canonicalJson(identity)).digest('hex') : fingerprint;
+  // WI-10004562 / D-045: the receipt records where the reserved item is STORED (the pot
+  // home slug for a pot-member target), resolved by the same resolver as the write path.
+  const targetStorageSlug = await workItemStorageSlug(request.targetHarnessSlug, request.workspaceId);
   return withInvocationSingleflight(identity, flightFingerprint, async () => {
     const receipt = await sql.begin(async (tx) => {
       const lockKey = 'blueprint-operation:' + [request.workspaceId, request.installSlug, callerId,
@@ -738,9 +743,10 @@ async function acceptScheduledBlueprintWorkItemScoped(
       const rows = await tx<ScheduledReceiptRow[]>`
         INSERT INTO harness_shared.blueprint_operation_invocations
           (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,
-           specification_revision, target_kind, target_ref, request_payload)
+           specification_revision, target_kind, target_ref, request_payload, target_harness_slug)
         VALUES (${request.workspaceId}, ${request.installSlug}, ${callerId}, ${identity.operationId},
-                ${key}, ${fingerprint}, ${revision}, 'work-item', ${targetRef}, ${saved}::text::jsonb)
+                ${key}, ${fingerprint}, ${revision}, 'work-item', ${targetRef}, ${saved}::text::jsonb,
+                ${targetStorageSlug})
         RETURNING id, request_fingerprint, target_kind, target_ref, specification_revision, request_payload
       `;
       return rows[0];

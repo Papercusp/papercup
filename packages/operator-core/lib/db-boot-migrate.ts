@@ -221,15 +221,19 @@ export async function reconcileMigrationReservations(
       reserved_by: 'reconcile-on-apply',
       intent: 'auto-reconciled (WI-38354): applied without a db:next-migration reservation row',
     }));
-    await client`
+    // A peer can reserve a number after our SELECT. ON CONFLICT preserves
+    // that row, so only RETURNING identifies rows this call actually inserted.
+    const inserted = await client<{ num: number }[]>`
       INSERT INTO harness_shared.migration_reservations
         ${client(reservationRows, 'num', 'filename', 'reserved_by', 'intent')}
-      ON CONFLICT (num) DO NOTHING`;
+      ON CONFLICT (num) DO NOTHING
+      RETURNING num`;
+    if (inserted.length === 0) return 0;
     log(
-      `reconciled ${rows.length} migration_reservations row(s) from applied history ` +
-        `(${rows.map((r) => r.num).join(', ')}) — lint:migrations check 5 would otherwise red the shared gate`,
+      `reconciled ${inserted.length} migration_reservations row(s) from applied history ` +
+        `(${inserted.map((r) => r.num).join(', ')}) — lint:migrations check 5 would otherwise red the shared gate`,
     );
-    return rows.length;
+    return inserted.length;
   } catch (e) {
     // Bookkeeping must never break the boot or the gate preflight.
     log(`migration_reservations reconcile skipped: ${(e as Error)?.message ?? String(e)}`);

@@ -9,6 +9,7 @@
  * the lifecycle module import this file so the status vocabulary cannot drift.
  */
 import type { OrgSql } from '../../work-items';
+import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import {
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
@@ -55,6 +56,15 @@ export const IMPLEMENTATION_READINESS_SOURCES = ['capture-policy', 'agent-review
 export type ImplementationReadinessSource = (typeof IMPLEMENTATION_READINESS_SOURCES)[number];
 
 export interface ImplementationReadinessEvidence {
+  /**
+   * The minimum executable acceptance contract used by the intake-stage
+   * derivation. Later acceptance-policy layers add authority, evidence and
+   * revision binding to this same object rather than creating a second store.
+   */
+  acceptance?: {
+    scope: string;
+    completionCheck: string;
+  };
   review?: {
     submittedBy?: string;
     reviewer?: string;
@@ -85,6 +95,10 @@ export interface ImplementationReadinessState {
   evidence?: ImplementationReadinessEvidence;
 }
 
+const IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE =
+  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$';
+const IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN = new RegExp(IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE);
+
 export function createImplementationReadiness(
   input: Omit<ImplementationReadinessState, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ImplementationReadinessState {
@@ -105,7 +119,12 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
   if (!IMPLEMENTATION_READINESS_STATUSES.includes(row.status as ImplementationReadinessStatus)) return null;
   if (!IMPLEMENTATION_READINESS_SOURCES.includes(row.source as ImplementationReadinessSource)) return null;
   if (typeof row.reason !== 'string' || !row.reason.trim()) return null;
-  if (typeof row.updatedAt !== 'string' || !Number.isFinite(Date.parse(row.updatedAt))) return null;
+  if (
+    typeof row.updatedAt !== 'string' ||
+    !IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN.test(row.updatedAt) ||
+    !Number.isFinite(Date.parse(row.updatedAt))
+  )
+    return null;
   const evidence = record(row.evidence);
   return {
     schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
@@ -115,6 +134,187 @@ export function readImplementationReadiness(payload: unknown): ImplementationRea
     updatedAt: row.updatedAt,
     ...(Object.keys(evidence).length > 0 ? { evidence: evidence as ImplementationReadinessEvidence } : {}),
   };
+}
+
+export const WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION = 'work-item-intake-stage-v1' as const;
+export const WORK_ITEM_INTAKE_PRIMARY_STAGES = ['observation', 'candidate', 'accepted', 'terminal', 'unknown'] as const;
+export type WorkItemIntakePrimaryStage = (typeof WORK_ITEM_INTAKE_PRIMARY_STAGES)[number];
+export const WORK_ITEM_INTAKE_READINESS_CLASSES = [
+  'not-applicable',
+  'legacy-missing',
+  'malformed',
+  ...IMPLEMENTATION_READINESS_STATUSES,
+] as const;
+export type WorkItemIntakeReadinessClass = (typeof WORK_ITEM_INTAKE_READINESS_CLASSES)[number];
+
+export interface WorkItemIntakeStageInput {
+  kind: string;
+  status: string;
+  payload?: unknown;
+  terminalOwner?: string | null;
+  terminalCompletionRef?: string | null;
+}
+
+export interface WorkItemIntakeStageDecision {
+  schemaVersion: typeof WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION;
+  primaryStage: WorkItemIntakePrimaryStage;
+  readiness: WorkItemIntakeReadinessClass;
+  reason:
+    | 'observation-evidence'
+    | 'terminal-history'
+    | 'legacy-readiness-unknown'
+    | 'malformed-readiness-unknown'
+    | 'qualifying-acceptance'
+    | 'ready-without-executable-acceptance'
+    | 'awaiting-qualifying-acceptance';
+  qualifyingAcceptance: boolean;
+  countsAsBugWork: boolean;
+}
+
+export interface ImplementationAcceptanceEssentials {
+  scope: string;
+  completionCheck: string;
+}
+
+/**
+ * Read the executable minimum of an acceptance record. A `ready` bit alone is
+ * not acceptance: the work must say what may be executed and what completes it.
+ */
+export function readImplementationAcceptanceEssentials(payload: unknown): ImplementationAcceptanceEssentials | null {
+  const readiness = readImplementationReadiness(payload);
+  const acceptance = record(readiness?.evidence?.acceptance);
+  const scope = typeof acceptance.scope === 'string' ? acceptance.scope.trim() : '';
+  const completionCheck = typeof acceptance.completionCheck === 'string' ? acceptance.completionCheck.trim() : '';
+  return scope && completionCheck ? { scope, completionCheck } : null;
+}
+
+/**
+ * One primary intake stage for every supported work-item record.
+ *
+ * Observation identity outranks lifecycle state so closing or consuming a
+ * sensor row never turns it into executable bug work. Terminal lifecycle is
+ * otherwise authoritative. Missing and malformed versioned readiness remain
+ * explicitly unknown; a current readiness verdict remains a candidate until a
+ * minimal executable acceptance contract exists.
+ */
+export function deriveWorkItemIntakeStage(input: WorkItemIntakeStageInput): WorkItemIntakeStageDecision {
+  const payload = record(input.payload);
+  const observation = payload.lane === 'observation';
+  const terminal =
+    ALL_TERMINAL_STATUSES.has(input.status) ||
+    Boolean(input.terminalOwner?.trim() && input.terminalCompletionRef?.trim());
+  const readinessEnrolled = Object.prototype.hasOwnProperty.call(payload, 'implementationReadiness');
+  const currentReadiness = readImplementationReadiness(payload);
+  const readiness: WorkItemIntakeReadinessClass = observation
+    ? 'not-applicable'
+    : !readinessEnrolled
+      ? 'legacy-missing'
+      : (currentReadiness?.status ?? 'malformed');
+  const qualifyingAcceptance =
+    currentReadiness?.status === 'ready' && readImplementationAcceptanceEssentials(payload) !== null;
+
+  let primaryStage: WorkItemIntakePrimaryStage;
+  let reason: WorkItemIntakeStageDecision['reason'];
+  if (observation) {
+    primaryStage = 'observation';
+    reason = 'observation-evidence';
+  } else if (terminal) {
+    primaryStage = 'terminal';
+    reason = 'terminal-history';
+  } else if (!readinessEnrolled) {
+    primaryStage = 'unknown';
+    reason = 'legacy-readiness-unknown';
+  } else if (!currentReadiness) {
+    primaryStage = 'unknown';
+    reason = 'malformed-readiness-unknown';
+  } else if (qualifyingAcceptance) {
+    primaryStage = 'accepted';
+    reason = 'qualifying-acceptance';
+  } else {
+    primaryStage = 'candidate';
+    reason =
+      currentReadiness.status === 'ready' ? 'ready-without-executable-acceptance' : 'awaiting-qualifying-acceptance';
+  }
+
+  return {
+    schemaVersion: WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION,
+    primaryStage,
+    readiness,
+    reason,
+    qualifyingAcceptance,
+    countsAsBugWork: input.kind === 'bug' && !observation && qualifyingAcceptance,
+  };
+}
+
+type WorkItemIntakeStageSqlColumns = {
+  payload?: 'payload' | 'wi.payload' | 'ei.payload';
+  itemKind?: 'item_kind' | 'wi.item_kind' | 'ei.item_kind';
+  status?: 'status' | 'wi.status' | 'ei.status';
+  terminalOwner?: 'terminal_owner' | 'wi.terminal_owner' | 'ei.terminal_owner';
+  terminalCompletionRef?: 'terminal_completion_ref' | 'wi.terminal_completion_ref' | 'ei.terminal_completion_ref';
+};
+
+/** SQL twin of deriveWorkItemIntakeStage for set-based queue projections. */
+export function workItemIntakeStageSql(sql: OrgSql, columns: WorkItemIntakeStageSqlColumns = {}) {
+  const payload = sql.unsafe(columns.payload ?? 'payload');
+  const itemKind = sql.unsafe(columns.itemKind ?? 'item_kind');
+  const status = sql.unsafe(columns.status ?? 'status');
+  const terminalOwner = sql.unsafe(columns.terminalOwner ?? 'terminal_owner');
+  const terminalCompletionRef = sql.unsafe(columns.terminalCompletionRef ?? 'terminal_completion_ref');
+  const terminalStatuses = [...ALL_TERMINAL_STATUSES];
+  const readinessStatuses = [...IMPLEMENTATION_READINESS_STATUSES];
+  const readinessSources = [...IMPLEMENTATION_READINESS_SOURCES];
+  const payloadJson = sql`COALESCE(${payload}, '{}'::jsonb)`;
+  const readinessJson = sql`${payloadJson} -> 'implementationReadiness'`;
+  const observation = sql`COALESCE(${payloadJson} ->> 'lane' = 'observation', FALSE)`;
+  const terminal = sql`(
+    ${status} = ANY(${terminalStatuses}::text[])
+    OR (${terminalOwner} IS NOT NULL AND ${terminalCompletionRef} IS NOT NULL)
+  )`;
+  const readinessEnrolled = sql`${payloadJson} ? 'implementationReadiness'`;
+  const readinessValid = sql`(
+    jsonb_typeof(${readinessJson}) = 'object'
+    AND ${readinessJson} ->> 'schemaVersion' = ${IMPLEMENTATION_READINESS_SCHEMA_VERSION}
+    AND ${readinessJson} ->> 'status' = ANY(${readinessStatuses}::text[])
+    AND ${readinessJson} ->> 'source' = ANY(${readinessSources}::text[])
+    AND NULLIF(btrim(${readinessJson} ->> 'reason'), '') IS NOT NULL
+    AND COALESCE(${readinessJson} ->> 'updatedAt', '') ~ ${IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN_SOURCE}
+  )`;
+  const qualifyingAcceptance = sql`(
+    ${readinessValid}
+    AND ${readinessJson} ->> 'status' = 'ready'
+    AND NULLIF(btrim(${readinessJson} #>> '{evidence,acceptance,scope}'), '') IS NOT NULL
+    AND NULLIF(btrim(${readinessJson} #>> '{evidence,acceptance,completionCheck}'), '') IS NOT NULL
+  )`;
+
+  return sql`jsonb_build_object(
+    'schemaVersion', ${WORK_ITEM_INTAKE_STAGE_SCHEMA_VERSION}::text,
+    'primaryStage', CASE
+      WHEN ${observation} THEN 'observation'
+      WHEN ${terminal} THEN 'terminal'
+      WHEN NOT (${readinessEnrolled}) THEN 'unknown'
+      WHEN NOT (${readinessValid}) THEN 'unknown'
+      WHEN ${qualifyingAcceptance} THEN 'accepted'
+      ELSE 'candidate'
+    END,
+    'readiness', CASE
+      WHEN ${observation} THEN 'not-applicable'
+      WHEN NOT (${readinessEnrolled}) THEN 'legacy-missing'
+      WHEN NOT (${readinessValid}) THEN 'malformed'
+      ELSE ${readinessJson} ->> 'status'
+    END,
+    'reason', CASE
+      WHEN ${observation} THEN 'observation-evidence'
+      WHEN ${terminal} THEN 'terminal-history'
+      WHEN NOT (${readinessEnrolled}) THEN 'legacy-readiness-unknown'
+      WHEN NOT (${readinessValid}) THEN 'malformed-readiness-unknown'
+      WHEN ${qualifyingAcceptance} THEN 'qualifying-acceptance'
+      WHEN ${readinessJson} ->> 'status' = 'ready' THEN 'ready-without-executable-acceptance'
+      ELSE 'awaiting-qualifying-acceptance'
+    END,
+    'qualifyingAcceptance', ${qualifyingAcceptance},
+    'countsAsBugWork', (${itemKind} = 'bug' AND NOT (${observation}) AND ${qualifyingAcceptance})
+  )`;
 }
 
 const STRICT_OWNER_CAPABILITIES = new Set<ExternalBlockerCapability>([
@@ -187,9 +387,7 @@ export function readStructuredOwnerAsk(payloadValue: unknown): StructuredOwnerAs
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 export function readAgentReviewState(payload: unknown): AgentReviewState | null {
@@ -276,11 +474,13 @@ export function matchesAgentReviewClaimAdmission(
     return false;
   }
   const current = readAgentReviewState(item.payload);
-  return current?.status === 'pending' &&
+  return (
+    current?.status === 'pending' &&
     current.submittedBy !== reviewer &&
     current.submittedBy === value.submittedBy &&
     current.ledgerIdeaId === value.ledgerIdeaId &&
-    current.round === value.round;
+    current.round === value.round
+  );
 }
 
 /**
@@ -317,7 +517,9 @@ export interface AgentReviewCandidate {
  * decision; only capabilities an agent cannot supply stay on the owner-capability
  * path. Remote rows remain owned by their authoring peer and never enter local review.
  */
-export function agentReviewEligibility(candidate: AgentReviewCandidate):
+export function agentReviewEligibility(
+  candidate: AgentReviewCandidate,
+):
   | { eligible: true }
   | { eligible: false; reason: 'not-review-kind' | 'remote-owned' | 'observation' | 'owner-capability' } {
   const payload = record(candidate.payload);
@@ -379,10 +581,7 @@ export function agentReviewNormalExclusionSql(
 }
 
 /** Reviewer lane: only submitted work, never revision work or approved work. */
-export function agentReviewPendingSelectorSql(
-  sql: OrgSql,
-  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
-) {
+export function agentReviewPendingSelectorSql(sql: OrgSql, payloadCol: 'wi.payload' | 'payload' = 'wi.payload') {
   const payload = sql.unsafe(payloadCol);
   return sql`COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'pending'`;
 }

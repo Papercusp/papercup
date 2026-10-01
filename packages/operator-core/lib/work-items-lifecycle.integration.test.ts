@@ -271,6 +271,8 @@ beforeAll(async () => {
   // composed-row and fired-delivery-intent columns in this isolated database.
   await db.sql.unsafe(readMigration('1215-event-await-delivery-intent-recovery-index.sql')).simple();
   await db.sql.unsafe(readMigration('1216-event-await-fired-delivery-intent-marker.sql')).simple();
+  // WI-10004562 / D-045: receipts record the work item's storage slug.
+  await db.sql.unsafe(readMigration('1282-blueprint-receipt-target-harness-slug.sql')).simple();
   const after1214 = await db.sql<{ intent: string | null }[]>`
     SELECT payload->>'_completionEventIntentId' AS intent
       FROM harness_shared.work_items WHERE feature_id = 'WI-P020-BACKFILL'

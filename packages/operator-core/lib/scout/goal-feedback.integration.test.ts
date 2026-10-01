@@ -184,9 +184,20 @@ describe('goal-local findings and outcomes reach the routed-idea ledger (real PG
   });
 
   it("learns the goal-local plan's verified outcome from its terminal state, like a Blender plan's", async () => {
-    await db.adminSql`
-      UPDATE harness_shared.harness_plans SET status = 'shipped', updated_at = ${new Date(T + 60_000)}
-       WHERE workspace_id = ${WS} AND plan_slug IN ('local-plan', 'blender-plan')`;
+    // A plan reaches 'shipped' only through plans:set-plan-status, whose accepted gate leaves
+    // a transaction-local receipt naming ONE plan (migration 1279). Ship each in its own xact.
+    for (const planSlug of ['local-plan', 'blender-plan']) {
+      await db.adminSql.begin(async (tx) => {
+        await tx`
+          SELECT set_config('papercusp.plan_shipment_acceptance_gate_receipt', jsonb_build_object(
+            'schemaVersion', 1, 'transactionId', txid_current()::text,
+            'workspaceId', ${WS}::text, 'harnessSlug', ${HARNESS}::text, 'planSlug', ${planSlug}::text
+          )::text, true)`;
+        await tx`
+          UPDATE harness_shared.harness_plans SET status = 'shipped', updated_at = ${new Date(T + 60_000)}
+           WHERE workspace_id = ${WS} AND plan_slug = ${planSlug}`;
+      });
+    }
     await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS, origin: 'su-ideate' });
     await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
 

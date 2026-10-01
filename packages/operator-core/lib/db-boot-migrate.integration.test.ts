@@ -152,6 +152,14 @@ beforeAll(async () => {
 
   rootSql = postgres(dbUrl, { max: 1, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
+  // Reconciliation cases must also run independently with a name filter.
+  // Earlier runner cases otherwise bootstrap this ledger as a side effect.
+  await rootSql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.schema_migrations (
+      filename text PRIMARY KEY,
+      sha256 text NOT NULL,
+      applied_at timestamptz NOT NULL DEFAULT now()
+    )`);
   // The native boot guard checks reservation provenance for every migration
   // at or above the enforced floor. Keep the throwaway database's schema
   // faithful to the live baseline so unrelated fixture migrations reach their

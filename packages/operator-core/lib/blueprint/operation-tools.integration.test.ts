@@ -288,6 +288,8 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('1214-work-item-completion-event-intent.sql')).simple();
   await db.sql.unsafe(readMigration('1215-event-await-delivery-intent-recovery-index.sql')).simple();
   await db.sql.unsafe(readMigration('1216-event-await-fired-delivery-intent-marker.sql')).simple();
+  // WI-10004562 / D-045: receipts record the work item's storage slug.
+  await db.sql.unsafe(readMigration('1282-blueprint-receipt-target-harness-slug.sql')).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS assignee_rank integer, ADD COLUMN IF NOT EXISTS rank_writer text,

@@ -1000,3 +1000,87 @@ describe('plans:add-decision — citedRuleAdvisory reaches the caller (R-4)', ()
     expect(result.results[1].citedRuleAdvisory).toBeUndefined();
   });
 });
+
+// WI-10004529 — plans:add-decision must refuse a STALE BASE instead of reusing an id and
+// overwriting governing decisions with ok:true (live row diverged below its own revision head).
+describe('plans:add-decision — stale-base refusal (WI-10004529)', () => {
+  const decisionPlan = (ids: string[]) =>
+    [
+      '---',
+      'slug: handler-plan',
+      'status: active',
+      '---',
+      '',
+      '## Now',
+      'State: testing',
+      '',
+      '## Decisions',
+      '',
+      ...ids.flatMap((id) => [`### ${id} — decision ${id}`, '', `Body of ${id}.`, '']),
+    ].join('\n');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlerMocks.readFrozenRepairMarker.mockReturnValue(null);
+    handlerMocks.carryProvenanceFields.mockResolvedValue({});
+    handlerMocks.planRevisionCapture.mockReturnValue({ afterWrite: undefined, recorded: { current: null } });
+    handlerMocks.harnessScopedCtx.mockImplementation((harness: unknown, ctx: Record<string, unknown>) => ({
+      ...ctx,
+      harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
+    }));
+  });
+
+  const runWith = (live: string, latestRevision: { seq: number; body: string } | null | undefined) => {
+    handlerMocks.withPlanLock.mockImplementationOnce(
+      async (
+        _ctx: unknown,
+        _opts: unknown,
+        mutate: (body: string, meta: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        const result = await mutate(live, { version: 33, ...(latestRevision === undefined ? {} : { latestRevision }) });
+        return { kind: 'ok', ...result, filePath: 'handler-plan.md' };
+      },
+    );
+    return handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'New ruling', body: 'A fresh decision.' },
+      handlerContext(),
+    );
+  };
+
+  it('opts in to reading the revision-spine head under the lock', async () => {
+    await runWith(decisionPlan(['D-001']), null);
+    expect(handlerMocks.withPlanLock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ slug: 'handler-plan', loadLatestRevision: true }),
+      expect.any(Function),
+    );
+  });
+
+  it('REFUSES (stale_base_decisions_lost) when the live body lacks decisions its latest revision recorded', async () => {
+    const result = (await runWith(decisionPlan(['D-001', 'D-002']), {
+      seq: 31,
+      body: decisionPlan(['D-001', 'D-002', 'D-003', 'D-004']),
+    })) as { counts: { ok: number; failed: number }; results: Array<Record<string, unknown>> };
+
+    expect(result.counts).toMatchObject({ ok: 0, failed: 1 });
+    expect(result.results[0]).toMatchObject({ ok: false, error: 'stale_base_decisions_lost' });
+    expect(String(result.results[0]!.reason)).toContain('D-003, D-004');
+    expect(String(result.results[0]!.reason)).toContain('seq 31');
+  });
+
+  it('control — appends normally when the spine is consistent with the live body', async () => {
+    const result = (await runWith(decisionPlan(['D-001', 'D-002']), {
+      seq: 31,
+      body: decisionPlan(['D-001', 'D-002']),
+    })) as { counts: { ok: number; failed: number } };
+    expect(result.counts).toMatchObject({ ok: 1, failed: 0 });
+  });
+
+  it('control — a spine that LAGS the bytes (live has MORE decisions) is not refused', async () => {
+    const result = (await runWith(decisionPlan(['D-001', 'D-002', 'D-003']), {
+      seq: 29,
+      body: decisionPlan(['D-001']),
+    })) as { counts: { ok: number; failed: number } };
+    expect(result.counts).toMatchObject({ ok: 1, failed: 0 });
+  });
+});

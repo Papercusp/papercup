@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   SHADOW_MARKUP_SHEET,
+  type ShadowCostBasisRow,
   type ShadowMarkupSheet,
   type ShadowUsageAggregate,
   buildShadowStatements,
@@ -30,6 +31,14 @@ function usage(over: Partial<ShadowUsageAggregate> = {}): ShadowUsageAggregate {
     costMicros: 1_000_000,
     samples: 10,
     ...over,
+  };
+}
+
+/** A measured cost basis with nothing stale or unpriced (D-018 point 4). */
+function basis(over: Partial<ShadowCostBasisRow> = {}): ShadowCostBasisRow {
+  return {
+    workspaceId: WS, month: MONTH, priceTableVersion: 'v-test', samples: 10,
+    staleSamples: 0, unpricedSamples: 0, lowerBoundSamples: 0, ...over,
   };
 }
 
@@ -96,8 +105,9 @@ describe('classifyShadowIdentity', () => {
 
 describe('buildShadowStatements', () => {
   it('produces a bill-grade statement for billed, fully attributed, spec-layer usage', () => {
-    const st = only(buildShadowStatements([usage({ specificationLayerRefs: ['domain:seller-a'] })]));
+    const st = only(buildShadowStatements([usage({ specificationLayerRefs: ['domain:seller-a'] })], [], SHADOW_MARKUP_SHEET, [basis()]));
     expect(st.sheetVersion).toBe(SHADOW_MARKUP_SHEET.version);
+    expect(st.costBasis).toEqual({ priceTableVersion: 'v-test', samples: 10, staleSamples: 0, unpricedSamples: 0, lowerBoundSamples: 0 });
     expect(only(st.lines)).toMatchObject({
       identityClass: 'domain:seller-a',
       baseMicros: 1_000_000,
@@ -141,7 +151,10 @@ describe('buildShadowStatements', () => {
 
   it("reports today's reality as not bill-grade: estimated cost and an inferred base identity", () => {
     const st = only(
-      buildShadowStatements([usage({ profile: 'engineer', costSource: 'estimated', specificationLayerRefs: ['launch-adapter-compatibility'] })]),
+      buildShadowStatements(
+        [usage({ profile: 'engineer', costSource: 'estimated', specificationLayerRefs: ['launch-adapter-compatibility'] })],
+        [], SHADOW_MARKUP_SHEET, [basis()],
+      ),
     );
     expect(only(st.lines)).toMatchObject({ identityClass: 'papercusp-engineer', basis: 'inferred-profile', markupMicros: 200_000 });
     expect(st.cleanliness.verdict).toBe('not-bill-grade');
@@ -156,7 +169,7 @@ describe('buildShadowStatements', () => {
         usage({ specificationLayerRefs: ['domain:seller-a'], costMicros: 900_000 }),
         usage({ attributed: false, costMicros: 60_000 }),
         usage({ profile: 'mystery', costMicros: 40_000 }),
-      ]),
+      ], [], SHADOW_MARKUP_SHEET, [basis()]),
     );
     expect(only(st.lines).baseMicros).toBe(900_000);
     expect(st.inference.costMicros).toBe(1_000_000);
@@ -187,6 +200,31 @@ describe('buildShadowStatements', () => {
     expect(st.lines).toEqual([]);
     expect(st.totals.wouldHaveChargedMicros).toBe(0);
     expect(st.cleanliness).toMatchObject({ verdict: 'not-bill-grade', reasons: ['no-usage'] });
+  });
+
+  // Plan decision D-018 point 4: a statement reports what its cost was priced against, and is
+  // not bill-grade while any row is stale, unpriced, or the basis was never measured.
+  it('is not bill-grade without a measured cost basis', () => {
+    const st = only(buildShadowStatements([usage({ specificationLayerRefs: ['domain:seller-a'] })]));
+    expect(st.costBasis).toBeNull();
+    expect(st.cleanliness).toMatchObject({ verdict: 'not-bill-grade', reasons: ['unmeasured-cost-basis'] });
+  });
+
+  it('names stale and unpriced rows, and reports lower-bound rows without failing on them', () => {
+    const clean = [usage({ specificationLayerRefs: ['domain:seller-a'] })];
+    const stale = only(buildShadowStatements(clean, [], SHADOW_MARKUP_SHEET, [basis({ staleSamples: 3, lowerBoundSamples: 2 })]));
+    expect(stale.cleanliness).toMatchObject({ verdict: 'not-bill-grade', reasons: ['stale-price-table'] });
+    expect(stale.costBasis).toMatchObject({ staleSamples: 3, lowerBoundSamples: 2 });
+    const unpriced = only(buildShadowStatements(clean, [], SHADOW_MARKUP_SHEET, [basis({ unpricedSamples: 1 })]));
+    expect(unpriced.cleanliness.reasons).toEqual(['unpriced-usage']);
+    // A lower bound is an estimate's property; `estimated-cost` already gates it, so it is reported only.
+    const bounded = only(buildShadowStatements(clean, [], SHADOW_MARKUP_SHEET, [basis({ lowerBoundSamples: 5 })]));
+    expect(bounded.cleanliness).toMatchObject({ verdict: 'bill-grade', reasons: [] });
+  });
+
+  it('names unpriced usage even when it leaves the month with no cost at all', () => {
+    const st = only(buildShadowStatements([usage({ costMicros: 0, costSource: null })], [], SHADOW_MARKUP_SHEET, [basis({ unpricedSamples: 10 })]));
+    expect(st.cleanliness.reasons).toEqual(['no-usage', 'unpriced-usage']);
   });
 
   it('prices from the sheet it is given, so a sheet revision changes the statement', () => {

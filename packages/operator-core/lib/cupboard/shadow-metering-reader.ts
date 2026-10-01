@@ -17,10 +17,12 @@
  * - `tool_invocations_identity_attribution`: tool calls, reported as counts (priced 0, D-009).
  */
 import type { Sql } from 'postgres';
+import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import {
   buildShadowStatements,
   SHADOW_MARKUP_SHEET,
   usdToMicros,
+  type ShadowCostBasisRow,
   type ShadowMarkupSheet,
   type ShadowStatement,
   type ShadowToolAggregate,
@@ -129,17 +131,50 @@ export async function readShadowToolAggregates(
   }));
 }
 
+/**
+ * Plan decision D-018 point 4: what one workspace-month's usage cost was priced against.
+ * Counts every usage row in the month, from the base table, because the attribution view
+ * exposes neither the price stamp nor the provenance. Measured 2026-10-01 over September
+ * (1.19M rows): about 250 ms, a parallel scan, the same population the usage read covers.
+ */
+export async function readShadowCostBasis(
+  sql: Sql,
+  input: { workspaceId: string; month: string; priceTableVersion?: string },
+): Promise<ShadowCostBasisRow> {
+  const { startMs, endMs } = shadowMonthBounds(input.month);
+  const version = input.priceTableVersion ?? PRICE_TABLE_VERSION;
+  const [row] = await sql<Array<{ samples: string; stale: string; unpriced: string; lower_bound: string }>>`
+    SELECT count(*)::text AS samples,
+           count(*) FILTER (WHERE u.cost_source IS DISTINCT FROM 'provider'
+                              AND u.price_table_version IS DISTINCT FROM ${version})::text AS stale,
+           count(*) FILTER (WHERE u.cost_usd IS NULL)::text AS unpriced,
+           count(*) FILTER (WHERE u.usage_provenance->>'costBound' = 'lower')::text AS lower_bound
+      FROM harness_shared.agent_usage_samples u
+     WHERE u.workspace_id = ${input.workspaceId}
+       AND u.ts >= ${startMs} AND u.ts < ${endMs}`;
+  return {
+    workspaceId: input.workspaceId,
+    month: input.month,
+    priceTableVersion: version,
+    samples: Number(row?.samples ?? 0),
+    staleSamples: Number(row?.stale ?? 0),
+    unpricedSamples: Number(row?.unpriced ?? 0),
+    lowerBoundSamples: Number(row?.lower_bound ?? 0),
+  };
+}
+
 /** The would-have-cost statement for one workspace-month. Read-only; bills nothing. */
 export async function readShadowStatement(
   sql: Sql,
-  input: { workspaceId: string; month: string; sheet?: ShadowMarkupSheet },
+  input: { workspaceId: string; month: string; sheet?: ShadowMarkupSheet; priceTableVersion?: string },
 ): Promise<ShadowStatement> {
   const sheet = input.sheet ?? SHADOW_MARKUP_SHEET;
-  const [usage, tools] = await Promise.all([
+  const [usage, tools, basis] = await Promise.all([
     readShadowUsageAggregates(sql, input),
     readShadowToolAggregates(sql, input),
+    readShadowCostBasis(sql, input),
   ]);
-  const statement = buildShadowStatements(usage, tools, sheet)
+  const statement = buildShadowStatements(usage, tools, sheet, [basis])
     .find((s) => s.workspaceId === input.workspaceId && s.month === input.month);
   if (statement) return statement;
   // No activity at all: still return the itemized empty statement (verdict `no-usage`).
@@ -147,7 +182,7 @@ export async function readShadowStatement(
     workspaceId: input.workspaceId, month: input.month, attributed: false, agent: null, profile: null,
     specificationLayerRefs: [], axisLayerRefs: [], costSource: null, costMicros: 0, samples: 0,
   };
-  return buildShadowStatements([empty], [], sheet)[0]!;
+  return buildShadowStatements([empty], [], sheet, [basis])[0]!;
 }
 
 function stringArray(value: unknown): string[] {

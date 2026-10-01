@@ -145,7 +145,13 @@ async function requireCurrentAcceptedCoordProgramRoot(
     const rows = await sql<Array<{ updated_ts: string | number }>>`
       SELECT updated_ts FROM harness_shared.work_items
        WHERE workspace_id = ${root.workspaceId}
-         AND harness_slug IN (${root.harnessSlug}, ${`harness:${root.harnessSlug}`})
+         -- WI-10004562 / D-045: a pot member's root is stored under the slug the receipt
+         -- records; a pre-1282 receipt (NULL) keeps the operation harness slug.
+         AND harness_slug IN (COALESCE((
+               SELECT r.target_harness_slug FROM harness_shared.blueprint_operation_invocations AS r
+                WHERE r.id = ${root.receiptId} AND r.workspace_id = ${root.workspaceId}
+                  AND r.harness_slug = ${root.harnessSlug}
+             ), ${root.harnessSlug}), ${`harness:${root.harnessSlug}`})
          AND feature_id = ${rootId}
          AND status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
          AND payload->'blueprintOperation'->>'operationId' = ${root.operationId}
@@ -373,7 +379,8 @@ export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): 
              AND EXISTS (
                SELECT 1 FROM harness_shared.work_items wi
                 WHERE wi.workspace_id = i.workspace_id
-                  AND wi.harness_slug IN (i.harness_slug, 'harness:' || i.harness_slug)
+                  AND wi.harness_slug IN (COALESCE(i.target_harness_slug, i.harness_slug),
+                                          'harness:' || i.harness_slug)
                   AND wi.feature_id = i.target_ref
                   AND wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
             -- Direct work-item operations (not programs) can never be launched
@@ -401,7 +408,8 @@ export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): 
       FROM harness_shared.blueprint_operation_invocations i
       JOIN harness_shared.work_items wi
         ON wi.workspace_id = i.workspace_id
-       AND wi.harness_slug IN (i.harness_slug, 'harness:' || i.harness_slug)
+       -- WI-10004562 / D-045: a pot member's root is stored under the pot home slug.
+       AND wi.harness_slug IN (COALESCE(i.target_harness_slug, i.harness_slug), 'harness:' || i.harness_slug)
        AND wi.feature_id = i.target_ref
       JOIN harness_shared.blueprint_specifications s
         ON s.workspace_id = i.workspace_id AND s.harness_slug = i.harness_slug

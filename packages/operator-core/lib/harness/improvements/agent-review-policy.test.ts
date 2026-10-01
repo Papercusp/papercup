@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentReviewEligibility,
   createImplementationReadiness,
+  deriveWorkItemIntakeStage,
   hasStrictOwnerAction,
   IMPLEMENTATION_READINESS_SCHEMA_VERSION,
   LEGACY_AGENT_REVIEW_SUBMITTER,
@@ -10,7 +11,22 @@ import {
   readAgentReviewState,
   readImplementationReadiness,
   readStructuredOwnerAsk,
+  WORK_ITEM_INTAKE_PRIMARY_STAGES,
 } from './agent-review-policy';
+
+const acceptedReadiness = () =>
+  createImplementationReadiness({
+    status: 'ready',
+    source: 'agent-review',
+    reason: 'agent-review-approved',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+    evidence: {
+      acceptance: {
+        scope: 'Fix the bounded parser defect.',
+        completionCheck: 'The regression fixture passes.',
+      },
+    },
+  });
 
 describe('implementation readiness payload', () => {
   it('round-trips a current three-valued verdict with a stable schema version', () => {
@@ -38,16 +54,127 @@ describe('implementation readiness payload', () => {
   });
 });
 
+describe('versioned work-item intake stage', () => {
+  it.each([
+    {
+      name: 'observation evidence outranks terminal lifecycle and never becomes bug work',
+      input: {
+        kind: 'bug',
+        status: 'done',
+        payload: { lane: 'observation', implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'observation', readiness: 'not-applicable', countsAsBugWork: false },
+    },
+    {
+      name: 'unverified current candidate stays in intake',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: createImplementationReadiness({
+            status: 'unknown',
+            source: 'agent-review',
+            reason: 'awaiting-review',
+            updatedAt: '2026-09-05T00:00:00.000Z',
+          }),
+        },
+      },
+      expected: { primaryStage: 'candidate', readiness: 'unknown', countsAsBugWork: false },
+    },
+    {
+      name: 'revision-requested candidate stays in intake',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: createImplementationReadiness({
+            status: 'not-ready',
+            source: 'agent-review',
+            reason: 'revision-requested',
+            updatedAt: '2026-09-05T00:00:00.000Z',
+          }),
+        },
+      },
+      expected: { primaryStage: 'candidate', readiness: 'not-ready', countsAsBugWork: false },
+    },
+    {
+      name: 'ready without executable acceptance remains a candidate',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: {
+          implementationReadiness: createImplementationReadiness({
+            status: 'ready',
+            source: 'capture-policy',
+            reason: 'legacy-immediate-policy',
+            updatedAt: '2026-09-05T00:00:00.000Z',
+          }),
+        },
+      },
+      expected: { primaryStage: 'candidate', readiness: 'ready', countsAsBugWork: false },
+    },
+    {
+      name: 'qualifying accepted bug is executable bug work',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'accepted', readiness: 'ready', countsAsBugWork: true },
+    },
+    {
+      name: 'accepted non-bug work is not a bug count',
+      input: {
+        kind: 'feature',
+        status: 'open',
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'accepted', readiness: 'ready', countsAsBugWork: false },
+    },
+    {
+      name: 'terminal accepted work remains terminal history',
+      input: {
+        kind: 'bug',
+        status: 'done',
+        payload: { implementationReadiness: acceptedReadiness() },
+      },
+      expected: { primaryStage: 'terminal', readiness: 'ready', countsAsBugWork: true },
+    },
+    {
+      name: 'missing legacy readiness is explicitly unknown',
+      input: { kind: 'bug', status: 'open', payload: {} },
+      expected: { primaryStage: 'unknown', readiness: 'legacy-missing', countsAsBugWork: false },
+    },
+    {
+      name: 'malformed enrolled readiness is explicitly unknown',
+      input: {
+        kind: 'bug',
+        status: 'open',
+        payload: { implementationReadiness: { schemaVersion: 'future-v9', status: 'ready' } },
+      },
+      expected: { primaryStage: 'unknown', readiness: 'malformed', countsAsBugWork: false },
+    },
+  ])('$name', ({ input, expected }) => {
+    const before = structuredClone(input);
+    const decision = deriveWorkItemIntakeStage(input);
+    expect(decision).toMatchObject(expected);
+    expect(WORK_ITEM_INTAKE_PRIMARY_STAGES.filter((stage) => stage === decision.primaryStage)).toHaveLength(1);
+    expect(input).toEqual(before);
+  });
+});
+
 describe('readAgentReviewState', () => {
   it('accepts only complete, versionable routing state', () => {
-    expect(readAgentReviewState({
-      agentReview: {
-        status: 'pending',
-        submittedBy: 'su-filer',
-        ledgerIdeaId: 'WI-7',
-        round: 1,
-      },
-    })).toEqual({
+    expect(
+      readAgentReviewState({
+        agentReview: {
+          status: 'pending',
+          submittedBy: 'su-filer',
+          ledgerIdeaId: 'WI-7',
+          round: 1,
+        },
+      }),
+    ).toEqual({
       status: 'pending',
       submittedBy: 'su-filer',
       ledgerIdeaId: 'WI-7',
@@ -55,8 +182,12 @@ describe('readAgentReviewState', () => {
     });
 
     expect(readAgentReviewState({ agentReview: { status: 'pending', round: 1 } })).toBeNull();
-    expect(readAgentReviewState({ agentReview: { status: 'unknown', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 1 } })).toBeNull();
-    expect(readAgentReviewState({ agentReview: { status: 'approved', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 0 } })).toBeNull();
+    expect(
+      readAgentReviewState({ agentReview: { status: 'unknown', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 1 } }),
+    ).toBeNull();
+    expect(
+      readAgentReviewState({ agentReview: { status: 'approved', submittedBy: 'su', ledgerIdeaId: 'WI-7', round: 0 } }),
+    ).toBeNull();
   });
 });
 
@@ -94,41 +225,49 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
         eligible: false,
         reason: 'owner-capability',
       });
-      expect(agentReviewEligibility({
-        kind: 'change',
-        payload: {
-          externalBlockers: [{
-            kind: 'human',
-            capability: humanCapability,
-            capabilitySource: 'explicit',
-            ref: `test:${humanCapability}`,
-            summary: 'required',
-            status: 'active',
-            createdAt: '2026-08-20T00:00:00.000Z',
-            createdBy: 'su-filer',
-            updatedAt: '2026-08-20T00:00:00.000Z',
-          }],
-        },
-      })).toEqual({ eligible: false, reason: 'owner-capability' });
+      expect(
+        agentReviewEligibility({
+          kind: 'change',
+          payload: {
+            externalBlockers: [
+              {
+                kind: 'human',
+                capability: humanCapability,
+                capabilitySource: 'explicit',
+                ref: `test:${humanCapability}`,
+                summary: 'required',
+                status: 'active',
+                createdAt: '2026-08-20T00:00:00.000Z',
+                createdBy: 'su-filer',
+                updatedAt: '2026-08-20T00:00:00.000Z',
+              },
+            ],
+          },
+        }),
+      ).toEqual({ eligible: false, reason: 'owner-capability' });
     },
   );
 
   it('recognizes product-decision as a strict structured owner capability', () => {
     expect(isStrictOwnerActionCapability('product-decision')).toBe(true);
-    expect(readStructuredOwnerAsk({
-      externalBlockers: [{
-        kind: 'human',
-        capability: 'product-decision',
-        capabilitySource: 'explicit',
-        ref: 'decision:scope',
-        summary: 'Choose the supported scope.',
-        nextVerb: 'Record the product decision.',
-        status: 'active',
-        createdAt: '2026-08-20T00:00:00.000Z',
-        createdBy: 'su-filer',
-        updatedAt: '2026-08-20T00:00:00.000Z',
-      }],
-    })).toMatchObject({
+    expect(
+      readStructuredOwnerAsk({
+        externalBlockers: [
+          {
+            kind: 'human',
+            capability: 'product-decision',
+            capabilitySource: 'explicit',
+            ref: 'decision:scope',
+            summary: 'Choose the supported scope.',
+            nextVerb: 'Record the product decision.',
+            status: 'active',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            createdBy: 'su-filer',
+            updatedAt: '2026-08-20T00:00:00.000Z',
+          },
+        ],
+      }),
+    ).toMatchObject({
       question: 'Choose the supported scope.',
       askedOf: 'product-owner',
       askedBy: 'su-filer',
@@ -137,10 +276,12 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
   });
 
   it('keeps product decisions agent-reviewable', () => {
-    expect(agentReviewEligibility({
-      kind: 'change',
-      payload: { humanCapability: 'product-decision' },
-    })).toEqual({ eligible: true });
+    expect(
+      agentReviewEligibility({
+        kind: 'change',
+        payload: { humanCapability: 'product-decision' },
+      }),
+    ).toEqual({ eligible: true });
     expect(hasStrictOwnerAction({ humanCapability: 'product-decision' })).toBe(false);
   });
 });

@@ -2926,3 +2926,83 @@ These checks fix causal overstatement at the diagnostic writer and preserve
 the existing scheduling policy. They do not establish live adoption or the
 cause, frequency, or app-latency effect of historical shedding. No shared
 service, live-gate, Portal or federation operation occurred. P-008 remains open.
+### Migration reservation accounting and backup safety — 2026-10-01 05:12Z
+
+**P-008 remains open.** This unit corrects a source diagnostic and verifies
+the existing backup boundary; it does not establish historical backup progress,
+loaded-host adoption, application latency improvement, or R-8 acceptance.
+
+The frozen F11 audit observed a backup advisory-lock holder and an idle SQL
+connection. The external producer's progress was not measured, so those facts
+cannot classify the historical wait as a stalled backup. Current boot source
+retries the rendezvous every five seconds, checks the pending files against
+backup-locked relations, and checks again before applying an unlocked pending
+file. The existing guard includes partition ancestors and indexes, and rejects
+unprovable SQL footprints. WI-10002822's stored recovery receipt covers the
+separate migration-readiness latch; no federation restart or induced outage
+was performed here.
+
+Root cause of the accounting defect: `reconcileMigrationReservations` logged
+and returned the number of planned rows after `ON CONFLICT (num) DO NOTHING`.
+A peer reservation committed after its SELECT makes that number differ from
+the rows this invocation inserted. The canonical integration regression
+commits such a peer row immediately before the real INSERT. The valid pre-fix
+run failed with **expected 0, received 1**. The existing INSERT now uses
+`RETURNING num`; the result and diagnostic use only those returned rows and
+remain silent when none were inserted. Peer reservations remain intact.
+No migration, table, timer, tool, or admission policy was added.
+
+The regression also exposed an order-dependent fixture: reconciliation cases
+relied on earlier runner cases to create `schema_migrations`. The canonical
+`beforeAll` now creates the ledger using the migration runner's table layout,
+so a name-filtered reconciliation case is independently runnable.
+
+Verification used the maintained `startDedicatedNativePg` helper and its
+documented `PAPERCUSP_TEST_PG_ADMIN_URL` override, with a fresh private cluster
+and the canonical test router. The final command was:
+
+```sh
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- \
+  packages/operator-core/lib/db-boot-migrate-reservations.test.ts \
+  packages/operator-core/lib/backup-lock-migration-proof.test.ts \
+  packages/operator-core/lib/db-boot-migrate.integration.test.ts
+```
+
+The helper supplied the private admin URL to the child, then `stop()` ran in
+`finally`; explicit assertions checked directory removal and connection refusal
+on the private port. Final result: **52/52 passed, zero skipped, exit 0**
+(24 unit cases and 28 integration cases), at HEAD `36e3f8e6e7` plus local edits.
+The tests cover conflicting-backup wait/resume with the advisory lock still
+held, unrelated relations, no-pending boot, snapshot admission, cooldown,
+ordinary reconciliation, historical-conflict filtering, and the peer race.
+Scoped `lint:tsc` for the two changed TypeScript files was clean, exit 0.
+Scoped `git diff --check` passed. Neither a typecheck nor an excluded case is
+counted as test evidence.
+
+Attempt audit: the initial tool foreground cutoff recovered a passing detached
+seven-case run (20 excluded). A later shared-Docker attempt never ran assertions:
+startup lock acquisition exhausted 180 seconds, then `beforeAll` expired at
+90 seconds. The first private attempt exposed the missing fixture ledger.
+Those attempts are not product counterexamples. The private rerun below is
+the actual expected-0/received-1 counterexample. No shared startup lock, holder,
+database, or service was altered to obtain it.
+
+Evidence files and SHA-256:
+
+- `/tmp/p008-reconcile-race-private-red-20261001-r2.log`:
+  `2cef757f828a757d3de518ca80e0612f570677be29f333339606eb13cf924f56`
+- `/tmp/p008-migration-private-matrix-20261001.log`:
+  `ddc6c4f30cae7e259c9a409d5210e2f64ad254d57d6eba7cebb1c8d358a4c1ae`
+- `/tmp/p008-migration-tsc-final-20261001.log`:
+  `ae86de4f16b5091448f3a678fd382bab03f63dc019312ca40ccb50f7bd5c2544`
+
+The six measured source/test fingerprints were unchanged across the final run:
+
+| Path under `packages/operator-core/lib/` | SHA-256 |
+|---|---|
+| `db-boot-migrate.ts` | `00e0444a5f0c879eafcdcce8894cdb64afd8e99653907040dd5236d21c172ca7` |
+| `migration-reservation.ts` | `5d4a0b678746db0d4a9066d6a19a9f049f4343236dcf3c032271ce82df5c41d5` |
+| `db-boot-migrate-reservations.test.ts` | `bc848fd25f8135ccce260b7af0c94fbba8c58c514748bcab059f4bbc75f5c3fe` |
+| `db-boot-migrate.integration.test.ts` | `dd37aca3f860e911c7e232cc4c644538f1c1e5f4d07dbceeb064ca5eb6bee478` |
+| `backup-lock-migration-proof.ts` | `40041543b475c38b4cf83d0096617213b063a64b9c1eb825e7f5dce85bfc9c13` |
+| `backup-lock-migration-proof.test.ts` | `4e7cde86f34ab9856ce64e1bfafadec13cc6e2d43fd0f8999ed93faf4e378c78` |

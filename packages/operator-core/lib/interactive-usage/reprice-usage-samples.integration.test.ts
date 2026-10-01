@@ -5,9 +5,17 @@
  * costed, provider cost is never touched, and a finished pass is a no-op.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { PRICE_TABLE_VERSION, costFromTokens, type CostOptions, type TokenUsage } from '@papercusp/model-pricing';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import {
+  PG_BIGINT_AS_NUMBER_TYPES,
+  PG_TIMESTAMP_NO_TZ_AS_UTC_TYPES,
+  installNumericArrayTyping,
+  restoreRawDateSerializers,
+  restoreRawJsonbSerializer,
+  seedBuiltinArrayTypes,
+} from '../../../../libs/papercusp/libs/db/src/raw-serializers';
 import { priceStoredUsageSample, repriceUsageSamples } from './reprice-usage-samples';
 
 const WS = 'ws-reprice-it';
@@ -147,6 +155,49 @@ describe('repriceUsageSamples', () => {
     expect(left).toBe(3);
     const rest = await repriceUsageSamples(sql, { workspaceId: WS, batchSize: 2, maxBatches: 10 });
     expect(rest).toMatchObject({ stamped: 3, skippedConcurrent: 0, complete: true });
+  });
+
+  it('walks ids in NUMERIC order across a digit-length boundary', async () => {
+    // WI-10004517 live backfill, 2026-10-01: the keyset was ordered by the TEXT output alias
+    // (`id::text AS id` ... ORDER BY id) while the cursor compared numerically. Text order puts
+    // '1000000001' before '900000001', so the first batch's cursor jumped past 900000001 and the
+    // pass reported complete with that row still stale. On the live table it left 934,532 of
+    // 1,272,436 rows untouched. Seeded ids elsewhere in this file share one digit length, so text
+    // and numeric order agree, which is why nothing else here could see it.
+    const ids = [900_000_001, 1_000_000_001, 9_000_000_001];
+    for (const id of ids) {
+      await sql`
+        INSERT INTO harness_shared.agent_usage_samples
+          (id, workspace_id, ts, bucket_key, provider, model_class, source, input_tokens, output_tokens, model)
+        OVERRIDING SYSTEM VALUE
+        VALUES (${id}, ${WS}, ${Date.now()}, 'openai:x', 'openai', 'x', 'jsonl', 10, 10, 'gpt-5.5')`;
+    }
+    const result = await repriceUsageSamples(sql, { workspaceId: WS, batchSize: 1, maxBatches: 10 });
+    expect(result).toMatchObject({ stamped: 3, complete: true });
+    for (const id of ids) expect((await read(id)).price_table_version).toBe(PRICE_TABLE_VERSION);
+  });
+
+  it('runs as the FIRST query on a fresh canonical-shaped client', async () => {
+    // WI-10004517: every other case here runs on a pool already warmed by seed(), so none of
+    // them exercises a cold pool. This builds a client the way buildClient() does (the raw
+    // serializer fixes) and makes the repricer its first statement — the shape of a one-off
+    // backfill script and of the first ingest tick after an operator restart.
+    const id = await seed({ source: 'jsonl', provider: 'openai', model: 'gpt-5.5', cost: null, costSource: null, version: null });
+    const fresh = postgres(org.adminDsn, {
+      max: 1, idle_timeout: 1, prepare: false, onnotice: () => {},
+      types: { ...PG_BIGINT_AS_NUMBER_TYPES, ...PG_TIMESTAMP_NO_TZ_AS_UTC_TYPES },
+    });
+    restoreRawDateSerializers(fresh);
+    restoreRawJsonbSerializer(fresh);
+    seedBuiltinArrayTypes(fresh);
+    installNumericArrayTyping(fresh);
+    try {
+      const result = await repriceUsageSamples(fresh, { workspaceId: WS });
+      expect(result).toMatchObject({ stamped: 1, newlyPriced: 1, complete: true });
+    } finally {
+      await fresh.end();
+    }
+    expect((await read(id)).price_table_version).toBe(PRICE_TABLE_VERSION);
   });
 
   it('only touches the requested workspace', async () => {

@@ -432,7 +432,10 @@ set -uo pipefail
 
 # ── Flock holder diagnostics (EI-21322804786723906) ─────────────────────────
 # Diagnostic-only helpers shared by the exclusive barrier and the retry path.
-# `/proc/locks` is the lock authority and is cheap to read directly. A row whose
+# `/proc/locks` is the lock authority, but read it ONCE: a bash `while read`
+# loop issues one read(2) per line, and the kernel regenerates the seq_file up
+# to that offset each time, so a line-wise scan is quadratic (measured 1.9s for
+# ~1,460 rows at load ~200, vs 22ms for one bulk read). A row whose
 # second token is `->` is a BLOCKED WAITER, not a holder, so it is ignored. The
 # kernel records the PID of the short-lived `flock <fd>` helper that originally
 # acquired an inherited open-file description; after that helper exits, the
@@ -475,7 +478,7 @@ _pc_heavy_publish_lock_owner() {
 _exclusive_describe_holders() {
   local _file="${1:-}" _target='' _dev='' _inode='' _major='' _minor=''
   local _lock_target='' _lock_id='' _kind='' _advisory='' _mode='' _pid=''
-  local _row_target='' _rest='' _candidate='' _out=''
+  local _row_target='' _rest='' _candidate='' _out='' _locks=''
   [ -n "$_file" ] || return 0
   [ -e "$_file" ] || return 0
   _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
@@ -483,7 +486,9 @@ _exclusive_describe_holders() {
 
   # Fast path for pc-heavy-owned locks. A waiter never publishes, so it cannot
   # overwrite the real owner's candidate while merely holding the path open.
-  IFS= read -r _candidate < "${_file}.owner" 2>/dev/null || _candidate=''
+  # The group matters: in `read < f 2>/dev/null` the input redirect fails
+  # before stderr is redirected, so a missing .owner printed noise.
+  { IFS= read -r _candidate < "${_file}.owner"; } 2>/dev/null || _candidate=''
   _out="$(_pc_heavy_verified_holder_desc "$_file" "$_target" "$_candidate" 2>/dev/null || true)"
   if [ -n "$_out" ]; then
     printf '%s' "$_out"
@@ -500,6 +505,8 @@ _exclusive_describe_holders() {
   _major=$(( ((_dev >> 8) & 0xfff) | ((_dev >> 32) & ~0xfff) ))
   _minor=$(( (_dev & 0xff) | ((_dev >> 12) & ~0xff) ))
   printf -v _lock_target '%02x:%02x:%s' "$_major" "$_minor" "$_inode"
+  { _locks="$(< /proc/locks)"; } 2>/dev/null || return 0
+  [ -n "$_locks" ] || return 0
   while read -r _lock_id _kind _advisory _mode _pid _row_target _rest; do
     # Blocked rows are `<id>: -> FLOCK ...`, so `_kind` is `->` and cannot
     # satisfy this holder shape.
@@ -509,7 +516,7 @@ _exclusive_describe_holders() {
     [ -n "$_out" ] || continue
     printf '%s' "$_out"
     return 0
-  done < /proc/locks 2>/dev/null
+  done <<< "$_locks"
 }
 
 # Probe an advisory flock without perturbing the lock owner. This is separate

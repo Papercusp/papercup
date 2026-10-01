@@ -34,6 +34,10 @@ export default defineTool({
       'memory:forget (resolve one side of a reported contradiction)',
     ],
   },
+  // WI-10004577: `mode:'apply'` soft-forgets duplicate rows while the capability is `memory:read` shared
+  // with genuine readers — declare the tool write and narrow the default `report` call back to read.
+  effect: 'write',
+  effectForCall: (args) => ((args as { mode?: unknown }).mode === 'apply' ? 'write' : 'read'),
   crossWorkspace: true,
   args: z.object({
     mode: z

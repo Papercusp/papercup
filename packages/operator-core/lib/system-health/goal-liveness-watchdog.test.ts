@@ -830,6 +830,79 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
   };
 }
 
+const respawnContractScenarios = [
+  'elected-loss-recovery',
+  'live-holder-no-double-spawn',
+  'concurrent-takeover-refusal',
+  'successful-recovery-control',
+] as const;
+type RespawnContractScenario = typeof respawnContractScenarios[number];
+const respawnContractControl = process.env.PAPERCUSP_GOAL_RESPAWN_CONTROL;
+if (respawnContractControl && !respawnContractScenarios.includes(respawnContractControl as RespawnContractScenario)) {
+  throw new Error(`Unknown permanent goal respawn control: ${respawnContractControl}`);
+}
+
+async function observeRespawnContract(scenario: RespawnContractScenario, wrong = false) {
+  const target = respawnGoal();
+  const live = scenario === 'live-holder-no-double-spawn';
+  const takeover = scenario === 'concurrent-takeover-refusal';
+  const elected = holder({ ownerId: 'elected', goalLeaseEpoch: 2, setAtMs: JUST_NOW });
+  const historical = holder({ ownerId: 'historical', goalLeaseEpoch: 1 });
+  const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+  const neutralize = vi.fn(async () => {});
+  const attach = vi.fn<GoalHolderRespawnDeps['attach']>(async () => {
+    if ((takeover && !wrong) || (scenario === 'successful-recovery-control' && wrong)) {
+      throw new Error('lease changed during launch');
+    }
+  });
+  // Reverse one documented seam per control. Production folding, recovery,
+  // expected-lease forwarding and attach reconciliation still execute.
+  const electedState = wrong && (live || scenario === 'elected-loss-recovery')
+    ? (live ? 'ended' : 'live') : (live ? 'live' : 'ended');
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const result = await runGoalHolderRespawnOnce({} as never, respawnDeps({
+      readGoals: async () => ({ goals: [target], holders: [historical, elected] }),
+      resolveLiveness: async () => vmap(verdict('historical', 'live'), verdict('elected', electedState)),
+      launch, attach, neutralize,
+      readAuthority: async () => ({
+        status: 'superseded', goalId: target.goalId, electedOwnerId: 'legitimate-takeover',
+        electedEpoch: 3, handoffExpiresAt: null,
+      }),
+    }));
+    return {
+      launches: launch.mock.calls.length,
+      respawned: result.respawned,
+      attachFailed: result.attachFailed,
+      neutralized: neutralize.mock.calls.length,
+      expectedLease: attach.mock.calls[0]?.[2] ?? null,
+    };
+  } finally {
+    warn.mockRestore();
+  }
+}
+
+describe('goal respawn causal contracts (WI-1074216)', () => {
+  it('respawn calibration: the running elected lease is left alone', async () => {
+    expect(await observeRespawnContract('live-holder-no-double-spawn')).toEqual({
+      launches: 0, respawned: 0, attachFailed: 0, neutralized: 0, expectedLease: null,
+    });
+  });
+
+  it.each(respawnContractScenarios)('repaired respawn contract: %s', async (scenario) => {
+    const live = scenario === 'live-holder-no-double-spawn';
+    const takeover = scenario === 'concurrent-takeover-refusal';
+    expect(await observeRespawnContract(scenario, respawnContractControl === scenario),
+      `respawn-contract:${scenario}`).toEqual({
+      launches: live ? 0 : 1,
+      respawned: live || takeover ? 0 : 1,
+      attachFailed: takeover ? 1 : 0,
+      neutralized: takeover ? 1 : 0,
+      expectedLease: live ? null : { ownerId: 'elected', epoch: 2 },
+    });
+  });
+});
+
 describe('goal holder respawn eligibility (P-009)', () => {
   it('requires an ACTIVE goal that explicitly earns respawn', () => {
     expect(goalEligibleForHolderRespawn(respawnGoal())).toBe(true);

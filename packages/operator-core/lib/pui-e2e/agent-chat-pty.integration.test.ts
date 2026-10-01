@@ -4414,6 +4414,81 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   }, 180_000);
 
+  // pui-chat-first-ux-2026-09-28 P-018 / D-019 (residue WI-10004597): the unit
+  // tests drive App::on_mouse directly; this drives the REAL binary. A terminal
+  // reports the wheel and drags only after the program asks for it, so the
+  // capture request is asserted on the raw stream first — crossterm's parser
+  // decodes an SGR report whether or not capture was ever enabled, so the
+  // behavioural half alone would pass against a binary that never asked.
+  // Before the fix the wheel arrived as Up/Down and recalled sent messages into
+  // the composer; the composer row is checked to still hold its placeholder.
+  test('P-018: the mouse wheel scrolls the conversation and a drag copies what it covers', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p018-mouse-')));
+    const tag = randomUUID().slice(0, 8);
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const rowText = (n: number): string => `p18 row ${String(n).padStart(2, '0')} ${tag}`;
+    const sgr = (button: number, col: number, row: number, release = false): string =>
+      `\x1b[<${button};${col};${row}${release ? 'm' : 'M'}`;
+    const composerRow = (): string | undefined =>
+      pane.screen().split('\n').find((line) => line.startsWith('> '));
+    onTestFailed(() => console.info('PUI_P018_MOUSE_FAILURE', JSON.stringify({
+      launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      const raw = pane.rawSince(0);
+      for (const mode of ['?1000h', '?1002h', '?1006h']) {
+        expect(raw.includes(`\x1b[${mode}`), `bare pui never sent CSI ${mode}`).toBe(true);
+      }
+
+      scriptedEngine.mode = 'success';
+      scriptedEngine.successText = Array.from({ length: 60 }, (_, i) => `- ${rowText(i + 1)}`).join('\n');
+      pane.write(`list ${tag}`);
+      pane.enter();
+      await pane.waitFor(rowText(60), { timeoutMs: 60_000 });
+      await pane.waitForSendReady();
+      const settled = pane.screen();
+      // 60 rows cannot fit a 44-row pane: the oldest must be off screen, or the
+      // wheel assertions below would be vacuous.
+      expect(settled, settled).not.toContain(rowText(1));
+      expect(composerRow(), settled).toMatch(/^> Message Claude/);
+
+      // Three notches (3 lines each) must move the newest row off the bottom.
+      const { rows: paneRows } = pane.size;
+      const inChat = Math.floor(paneRows / 3);
+      for (let i = 0; i < 3; i += 1) pane.write(sgr(64, 20, inChat));
+      await pane.waitForGone(rowText(60), { timeoutMs: 10_000 });
+      expect(composerRow(), pane.screen()).toMatch(/^> Message Claude/);
+
+      // Enough notches to reach the top: the first row and the prompt show.
+      for (let i = 0; i < 40; i += 1) pane.write(sgr(64, 20, inChat));
+      await pane.waitFor(rowText(1), { timeoutMs: 10_000 });
+      await pane.waitFor(`list ${tag}`);
+      expect(composerRow(), pane.screen()).toMatch(/^> Message Claude/);
+
+      // A left-button drag across one visible row copies that row's text.
+      const lines = pane.screen().split('\n');
+      const target = lines.findIndex((line) => line.includes(rowText(2)));
+      expect(target, lines.join('\n')).toBeGreaterThanOrEqual(0);
+      const start = lines[target].indexOf('p18 row');
+      const end = start + rowText(2).length - 1;
+      const before = pane.clipboardWrites().length;
+      pane.write(sgr(0, start + 1, target + 1));
+      pane.write(sgr(32, end + 1, target + 1));
+      pane.write(sgr(0, end + 1, target + 1, true));
+      const { ok: copiedInTime } = await pollUntil(() => pane.clipboardWrites().length > before, { timeoutMs: 10_000 });
+      expect(copiedInTime, `no OSC 52 write after the drag:\n${pane.screen()}`).toBe(true);
+      const copied = pane.clipboardWrites().slice(before);
+      expect(copied.join('\n'), pane.screen()).toContain(rowText(2));
+      expect(copied.join('\n')).not.toMatch(/\x1b/);
+      await pane.waitFor('Copied');
+      console.info('PUI_P018_MOUSE_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, copied }));
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   // pui-chat-first-ux-2026-09-28 P-003 / R-03, failed-start frame: when the
   // engine dies while starting, the default chat explains it in ONE plain
   // sentence with one next step, keeps the draft, and shows none of the

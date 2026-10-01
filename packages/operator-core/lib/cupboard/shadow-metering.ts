@@ -133,7 +133,36 @@ export type ShadowCleanlinessReason =
   | 'unattributed-cost'
   | 'estimated-cost'
   | 'inferred-base-identity'
-  | 'unclassified-identity';
+  | 'unclassified-identity'
+  /** Usage cost exists but nothing measured what it was priced against. */
+  | 'unmeasured-cost-basis'
+  /** Some estimated rows still carry an older price-table stamp (D-018 point 4). */
+  | 'stale-price-table'
+  /** Some rows have no cost at all, so the statement under-counts (D-018 point 4). */
+  | 'unpriced-usage';
+
+/**
+ * Plan decision D-018 point 4: what a statement's inference cost was priced against. Counted
+ * over every usage row in the workspace-month, attributed or not, which is the same population
+ * as `inference.samples`.
+ */
+export interface ShadowCostBasis {
+  /** `PRICE_TABLE_VERSION` of the process that read the statement. */
+  priceTableVersion: string;
+  samples: number;
+  /** Non-provider rows stamped with a different price table, which the repricer has not reached yet. */
+  staleSamples: number;
+  /** Rows with no cost. They add 0 to inference cost. */
+  unpricedSamples: number;
+  /** Rows priced at an unknown tier's cheapest rate (D-020), so their cost is a lower bound. */
+  lowerBoundSamples: number;
+}
+
+/** One reader row: the cost basis of one workspace-month. */
+export interface ShadowCostBasisRow extends ShadowCostBasis {
+  workspaceId: string;
+  month: string;
+}
 
 export interface ShadowCleanliness {
   verdict: 'bill-grade' | 'not-bill-grade';
@@ -152,6 +181,8 @@ export interface ShadowStatement {
   workspaceId: string;
   month: string;
   inference: { costMicros: number; billGradeMicros: number; samples: number };
+  /** Null when no basis row was supplied. A statement with cost then cannot be bill-grade. */
+  costBasis: ShadowCostBasis | null;
   lines: ShadowStatementLine[];
   totals: {
     markupMicros: number;
@@ -216,7 +247,15 @@ export function buildShadowStatements(
   usage: readonly ShadowUsageAggregate[],
   tools: readonly ShadowToolAggregate[] = [],
   sheet: ShadowMarkupSheet = SHADOW_MARKUP_SHEET,
+  costBases: readonly ShadowCostBasisRow[] = [],
 ): ShadowStatement[] {
+  const basisByKey = new Map<string, ShadowCostBasis>();
+  for (const { workspaceId, month, ...basis } of costBases) {
+    for (const n of [basis.samples, basis.staleSamples, basis.unpricedSamples, basis.lowerBoundSamples]) {
+      assertNonNegativeInteger(n, 'cost basis count');
+    }
+    basisByKey.set(`${workspaceId}\u0000${month}`, basis);
+  }
   interface Acc {
     workspaceId: string;
     month: string;
@@ -298,11 +337,13 @@ export function buildShadowStatements(
       .sort((a, b) => a.identityClass.localeCompare(b.identityClass) || a.basis.localeCompare(b.basis));
     const markupMicros = sum(lines.map((l) => l.markupMicros));
     const daoMicros = sum(lines.map((l) => l.daoMicros));
+    const costBasis = basisByKey.get(`${acc.workspaceId}\u0000${acc.month}`) ?? null;
     statements.push({
       sheetVersion: sheet.version,
       workspaceId: acc.workspaceId,
       month: acc.month,
       inference: { costMicros: acc.costMicros, billGradeMicros: acc.billGradeMicros, samples: acc.samples },
+      costBasis,
       lines,
       totals: {
         markupMicros,
@@ -316,7 +357,7 @@ export function buildShadowStatements(
           .sort((a, b) => a.layerRef.localeCompare(b.layerRef)),
         toolCalls: { attributed: acc.toolsAttributed, unattributed: acc.toolsUnattributed },
       },
-      cleanliness: assessCleanliness(acc, sheet),
+      cleanliness: assessCleanliness(acc, sheet, costBasis),
     });
   }
   return statements.sort((a, b) => a.workspaceId.localeCompare(b.workspaceId) || a.month.localeCompare(b.month));
@@ -325,6 +366,7 @@ export function buildShadowStatements(
 function assessCleanliness(
   acc: { costMicros: number; billGradeMicros: number; attributedMicros: number; inferredMicros: number; unclassifiedMicros: number },
   sheet: ShadowMarkupSheet,
+  costBasis: ShadowCostBasis | null,
 ): ShadowCleanliness {
   const reasons: ShadowCleanlinessReason[] = [];
   const attributedShareBps = shareBps(acc.attributedMicros, acc.costMicros);
@@ -336,7 +378,12 @@ function assessCleanliness(
     if (billGradeCostShareBps < sheet.billGradeMinShareBps) reasons.push('estimated-cost');
     if (acc.inferredMicros > 0) reasons.push('inferred-base-identity');
     if (acc.unclassifiedMicros > 0) reasons.push('unclassified-identity');
+    if (!costBasis) reasons.push('unmeasured-cost-basis');
   }
+  // Checked even when the month has no cost: a month whose every row is unpriced reads as
+  // `no-usage` on cost alone, and the basis is what says the usage was really there.
+  if (costBasis && costBasis.staleSamples > 0) reasons.push('stale-price-table');
+  if (costBasis && costBasis.unpricedSamples > 0) reasons.push('unpriced-usage');
   return {
     verdict: reasons.length === 0 ? 'bill-grade' : 'not-bill-grade',
     reasons,

@@ -81,6 +81,8 @@ const TOOL_ROWS = [
 ];
 
 function answer(text: string): unknown[] {
+  // D-018 point 4: the cost-basis read (the only one that names the price stamp).
+  if (text.includes('price_table_version')) return [{ samples: '12', stale: '0', unpriced: '0', lower_bound: '0' }];
   return text.includes('tool_invocations_identity_attribution') ? TOOL_ROWS : USAGE_ROWS;
 }
 
@@ -99,7 +101,9 @@ describe('readShadowStatement issues no writes (AUTO-BAR-R-12)', () => {
     const { sql, calls } = recordingSql(answer);
     const statement = await readShadowStatement(sql, { workspaceId: 'ws-1', month: '2026-09' });
 
-    expect(calls).toHaveLength(2);
+    // usage + tool calls + the D-018 cost basis.
+    expect(calls).toHaveLength(3);
+    expect(statement.costBasis).toMatchObject({ samples: 12, staleSamples: 0, unpricedSamples: 0 });
     for (const call of calls) {
       expect(isReadOnlyStatement(call.text), call.text).toBe(true);
       expect(call.values).toContain('ws-1');
