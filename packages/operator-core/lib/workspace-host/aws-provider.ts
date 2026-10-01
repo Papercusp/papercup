@@ -203,6 +203,11 @@ export interface AwsWorkspaceHostSdkClient {
    * Every requested group must be returned; a missing one is treated as unverifiable.
    */
   describeSecurityGroupIngress(groupIds: readonly string[]): Promise<readonly AwsSecurityGroupIngressObservation[]>;
+  /**
+   * The instance's decoded serial-console output, or undefined when EC2 has none yet (P-005).
+   * cloud-init prints the SSH host keys there, which is how trust is pinned before the first SSH.
+   */
+  getConsoleOutput(instanceId: string): Promise<string | undefined>;
   runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance>;
   findInstanceByClientToken(clientToken: string): Promise<AwsInstanceObservation | undefined>;
   describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined>;
