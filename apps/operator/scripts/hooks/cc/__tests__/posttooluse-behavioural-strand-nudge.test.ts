@@ -40,6 +40,7 @@ type Detector = {
   diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
   repoForPath: (rel: string, subs: string[]) => { submodule: string | null; cwd: string; relPath: string };
   submodulePaths: () => string[];
+  candidateSkipReason: (rel: string) => string | null;
 };
 type Hook = {
   nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
@@ -288,6 +289,50 @@ describe('behavioural-strand nudge — candidate filter', () => {
     const hook = await loadHook();
     expect(hook.isCandidateFile('README.md')).toBe(false);
     expect(hook.isCandidateFile('package.json')).toBe(false);
+  });
+
+  it('accepts JavaScript sources — scripts/*.mjs and hooks hold shared seams too (WI-10004906)', async () => {
+    const hook = await loadHook();
+    expect(hook.isCandidateFile('scripts/lib/test-pass-reuse.mjs')).toBe(true);
+    expect(hook.isCandidateFile('scripts/legacy.cjs')).toBe(true);
+    expect(hook.isCandidateFile('apps/web/src/Widget.jsx')).toBe(true);
+    expect(hook.isCandidateFile('scripts/lib/not-checked.d.mts')).toBe(false);
+    expect(hook.isCandidateFile('scripts/__tests__/a.test.mjs')).toBe(false);
+  });
+
+  it('agrees with the DETECTOR path by path — the hook copy cannot drift from candidateSkipReason', async () => {
+    // The hook keeps its own copy of the filter (it decides before loading TypeScript), so
+    // this is the pin: a widening made in the detector and not here — the WI-10004906 shape —
+    // fails this test instead of silently narrowing the nudge.
+    const [hook, detector] = await Promise.all([loadHook(), loadDetector()]);
+    const paths = [
+      'libs/generic/search/src/hybrid.ts',
+      'packages/operator-core/lib/x.tsx',
+      'packages/x/lib/y.mts',
+      'packages/x/lib/y.cts',
+      'scripts/lib/test-pass-reuse.mjs',
+      'scripts/legacy.cjs',
+      'apps/operator/scripts/hooks/cc/hook.js',
+      'apps/web/src/Widget.jsx',
+      'packages/operator-core/lib/__tests__/helpers.ts',
+      'packages/operator-core/lib/x.test.ts',
+      'packages/operator-core/lib/x.spec.tsx',
+      'scripts/__tests__/a.test.mjs',
+      'packages/x/lib/a.spec.cjs',
+      'packages/operator-core/lib/x.d.ts',
+      'scripts/lib/not-checked.d.mts',
+      'packages/x/index.d.cts',
+      'node_modules/pkg/index.ts',
+      'packages/operator-core/dist/x.js',
+      '.papercusp/scratch/probe.mts',
+      'papercup-release/apps/x.ts',
+      'README.md',
+      'package.json',
+      'scripts/run.sh',
+    ];
+    for (const p of paths) {
+      expect(hook.isCandidateFile(p), p).toBe(detector.candidateSkipReason(p) === null);
+    }
   });
 });
 

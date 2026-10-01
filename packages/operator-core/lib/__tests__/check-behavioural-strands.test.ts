@@ -31,8 +31,18 @@ import {
   seamMemberNames,
   reverseReachable,
   packageMapsByName,
+  candidateSkipReason,
+  exitForDeclaredRun,
+  EXIT_NOT_CHECKED,
   // @ts-expect-error — .mjs guard script, no type declarations by design
 } from '../../../../scripts/check-behavioural-strands.mjs';
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const DETECTOR_CLI = resolve(REPO_ROOT, 'scripts/check-behavioural-strands.mjs');
 
 /** The measured instance, reduced to its essential shape: a two-stage cascade. */
 const SHARED_LIB_BEFORE = `
@@ -530,4 +540,112 @@ describe('the blast radius crosses workspaces, which is the entire point', () =>
     // Reachability is REVERSE: the shared lib does not import its consumer.
     expect(reached.has('libs/generic/search/src/hybrid.ts')).toBe(false);
   });
+});
+
+/**
+ * WI-10004906 — `SOURCE_RE` accepted only TS, so `--files=a.mjs,b.ts` dropped the .mjs
+ * without a word and a clean verdict could cover a file that was never read. The scripts/
+ * *.mjs layer holds injected-collaborator seams that TS tests in other workspaces assert
+ * on, which is exactly this guard's trigger class.
+ */
+describe('the candidate set includes JavaScript, and declared files are never dropped silently', () => {
+  it('admits JS sources exactly like TS sources', () => {
+    for (const file of [
+      'scripts/lib/test-pass-reuse.mjs',
+      'scripts/legacy.cjs',
+      'apps/operator/scripts/hooks/cc/some-hook.js',
+      'apps/web/src/Widget.jsx',
+      'libs/generic/search/src/hybrid.ts',
+      'packages/x/lib/__tests__/helpers.ts',
+    ]) {
+      expect(candidateSkipReason(file), file).toBeNull();
+    }
+  });
+
+  it('names WHY a declared file is out of scope', () => {
+    expect(candidateSkipReason('README.md')).toBe('not-source');
+    expect(candidateSkipReason('package.json')).toBe('not-source');
+    expect(candidateSkipReason('scripts/lib/not-checked.d.mts')).toBe('declaration');
+    expect(candidateSkipReason('packages/x/index.d.ts')).toBe('declaration');
+    expect(candidateSkipReason('scripts/__tests__/a.test.mjs')).toBe('test-file');
+    expect(candidateSkipReason('packages/x/lib/a.spec.cjs')).toBe('test-file');
+    expect(candidateSkipReason('packages/x/dist/index.mjs')).toBe('excluded-path');
+    expect(candidateSkipReason('node_modules/pkg/index.js')).toBe('excluded-path');
+  });
+
+  it('counts a seam in plain JS: an imported binding gains a call', () => {
+    const before = `
+      import { readProofs } from './proof-store.mjs';
+      export async function reuse(opts) { return readProofs(opts); }
+    `;
+    const after = `
+      import { readProofs } from './proof-store.mjs';
+      export async function reuse(opts) {
+        const first = await readProofs(opts);
+        return first.length ? first : readProofs({ ...opts, wide: true });
+      }
+    `;
+    expect(increasedSeams(before, after, 'scripts/lib/reuse.mjs')).toEqual([
+      { seam: 'readProofs()', before: 1, after: 2 },
+    ]);
+  });
+
+  it('a declared path that names nothing makes the run NOT CHECKED, even beside a real diff', () => {
+    expect(
+      exitForDeclaredRun({
+        examinedFiles: ['a.ts'],
+        identicalFiles: [],
+        declared: true,
+        skipped: [{ file: 'scripts/typo.mjs', reason: 'not-found' }],
+      }),
+    ).toBe(EXIT_NOT_CHECKED);
+  });
+
+  it('an out-of-domain declared file is disclosed but does not void a real comparison', () => {
+    expect(
+      exitForDeclaredRun({
+        examinedFiles: ['a.mjs'],
+        identicalFiles: [],
+        declared: true,
+        skipped: [
+          { file: 'README.md', reason: 'not-source' },
+          { file: 'a.test.ts', reason: 'test-file' },
+          { file: 'new.mjs', reason: 'new-file' },
+        ],
+      }),
+    ).toBe(0);
+    // …and a set where NOTHING was examined still proves nothing.
+    expect(
+      exitForDeclaredRun({ examinedFiles: [], declared: true, skipped: [{ file: 'README.md', reason: 'not-source' }] }),
+    ).toBe(EXIT_NOT_CHECKED);
+  });
+
+  it(
+    'END TO END: a declared .mjs is EXAMINED, and an unresolvable declared path is named with exit 2',
+    () => {
+      const realMjs = 'scripts/lib/not-checked.mjs';
+      const missing = 'scripts/__wi10004906_no_such_file__.mjs';
+      expect(existsSync(resolve(REPO_ROOT, realMjs))).toBe(true);
+      expect(existsSync(resolve(REPO_ROOT, missing))).toBe(false);
+
+      const proc = spawnSync(
+        process.execPath,
+        [DETECTOR_CLI, '--base', 'HEAD', `--files=${realMjs},${missing},README.md`, '--json'],
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: 90_000, maxBuffer: 64 * 1024 * 1024 },
+      );
+      expect(proc.error).toBeUndefined();
+      const report = JSON.parse(proc.stdout) as {
+        examined: string[];
+        skipped: Array<{ file: string; reason: string }>;
+        notChecked: boolean;
+      };
+      // The defect: the .mjs used to vanish from `examined` with no trace.
+      expect(report.examined).toContain(realMjs);
+      expect(report.skipped).toContainEqual({ file: missing, reason: 'not-found' });
+      expect(report.skipped).toContainEqual({ file: 'README.md', reason: 'not-source' });
+      expect(report.notChecked).toBe(true);
+      expect(proc.status).toBe(EXIT_NOT_CHECKED);
+    },
+    120_000,
+  );
 });
