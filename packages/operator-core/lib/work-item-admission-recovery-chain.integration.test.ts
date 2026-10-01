@@ -166,6 +166,15 @@ beforeAll(async () => {
       '1257-coord-entity-subscriptions-allow-muted.sql',
     ],
     runtimeTables: ['harness_shared.coord_entity_subscriptions'],
+    knownInapplicable: [
+      {
+        file: '149-coord-threads-federation.sql',
+        reason:
+          'attaches federation outbox triggers to coord_threads/coord_thread_posts that call ' +
+          'harness_shared.capture_substrate_outbox(), created by 108-substrate-capture-reconcile ' +
+          'alongside tables this fixture does not build; this recovery chain never writes coord threads',
+      },
+    ],
   });
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
